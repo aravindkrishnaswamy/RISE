@@ -1,0 +1,732 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SceneEdit.h - Value-typed mutation record for the interactive
+//    scene editor.  Tagged-union of edit operations; trivially
+//    copyable so it composes into ring buffers and history stacks
+//    without dynamic allocation.
+//
+//  See docs/INTERACTIVE_EDITOR_PLAN.md for the design rationale.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RISE_SCENEEDIT_
+#define RISE_SCENEEDIT_
+
+#include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/RString.h"
+#include <string>
+#include "../Interfaces/ITransformable.h"
+
+namespace RISE
+{
+	//! Value-typed snapshot of an ICamera's stored state.  Used by
+	//! `SceneEdit::AddCamera` so Redo can re-create the cloned
+	//! camera deterministically even if the source camera's state
+	//! changed between the original Apply and the Redo.
+	//!
+	//! `type` discriminator picks which subset of fields the Add*
+	//! factory consumes — the unused fields carry zeros and are
+	//! harmless if read.  Kept trivially-copyable so it composes
+	//! into the SceneEdit value-record.
+	struct CameraSnapshot
+	{
+		enum Type { Pinhole = 0, ThinLens = 1, Fisheye = 2, Orthographic = 3 };
+
+		int          type;
+
+		// Shared across all camera kinds.
+		double       location[3];
+		double       lookat[3];
+		double       up[3];
+		double       exposure;
+		double       scanningRate;
+		double       pixelRate;
+		double       orientation[3];
+		double       target_orientation[2];
+		//! Source camera's pixelAR.  The Add*Camera factories read
+		//! pixelAR from the scene's active Film (last-Set wins), but
+		//! `SetPixelAR` lets a camera diverge from the Film value.
+		//! Captured here so the clone matches the source even after
+		//! the Film's pixelAR has moved.
+		double       pixelAR;
+		double       nearClip;
+
+		// Pinhole / ThinLens.
+		double       iso;
+		double       fov;             // Pinhole only
+
+		// ThinLens.
+		double       sensorSize;
+		double       focalLength;
+		double       fstop;
+		double       focusDistance;
+		double       sceneUnitMeters;
+		unsigned int apertureBlades;
+		double       apertureRotation;
+		double       anamorphicSqueeze;
+		double       tiltX;
+		double       tiltY;
+		double       shiftX;
+		double       shiftY;
+
+		// Fisheye.
+		double       fisheyeScale;
+
+		// Orthographic.
+		double       viewportScale[2];
+
+		CameraSnapshot()
+		: type( Pinhole )
+		, exposure( 0 ), scanningRate( 0 ), pixelRate( 0 )
+		, pixelAR( 1.0 ), nearClip( 0 )
+		, iso( 0 ), fov( 0 )
+		, sensorSize( 0 ), focalLength( 0 ), fstop( 0 ), focusDistance( 0 )
+		, sceneUnitMeters( 1 )
+		, apertureBlades( 0 ), apertureRotation( 0 ), anamorphicSqueeze( 1 )
+		, tiltX( 0 ), tiltY( 0 ), shiftX( 0 ), shiftY( 0 )
+		, fisheyeScale( 1 )
+		{
+			location[0] = location[1] = location[2] = 0;
+			lookat[0]   = lookat[1]   = lookat[2]   = 0;
+			up[0]       = 0; up[1] = 1; up[2] = 0;
+			orientation[0] = orientation[1] = orientation[2] = 0;
+			target_orientation[0] = target_orientation[1] = 0;
+			viewportScale[0] = viewportScale[1] = 1;
+		}
+	};
+
+	//! A single editor mutation captured as a value.
+	/// The forward op uses the v3a / v3b / s payload fields.  The
+	/// "prev*" fields capture the state immediately BEFORE the
+	/// mutation so undo is a deterministic restore (no need to
+	/// re-derive prior state from a setter delta).
+	///
+	/// Composite markers (CompositeBegin/End) bracket a user drag
+	/// so undo collapses one drag into one history entry.
+	struct SceneEdit
+	{
+		enum Op
+		{
+			// Object transforms (objectName must be non-empty)
+			TranslateObject,        ///< v3a = world delta
+			RotateObjectArb,        ///< v3a = unit axis, s = radians
+			SetObjectPosition,      ///< v3a = absolute world pos
+			SetObjectOrientation,   ///< v3a = absolute final-world Euler XYZ
+			SetObjectScale,         ///< s   = absolute final uniform scale
+			SetObjectStretch,       ///< v3a = absolute final per-axis scale
+			//! Anchor-based scale used by the gizmo drag.  Carries the
+			//! per-axis FACTOR in `v3a` and the object's final transform
+			//! matrix at drag-start in `prevTransform`. Apply replaces the
+			//! authoritative final matrix with
+			//! `prevTransform · Stretch(v3a)`, so imported/baked scale is
+			//! composed exactly once and later absolute setters remain valid.
+			//! Unlike the other transform
+			//! ops, the controller pre-populates `prevTransform` at
+			//! drag-start and Apply does NOT overwrite it (every
+			//! per-frame Apply needs the SAME anchor, not the
+			//! previous frame's already-scaled state).
+			ScaleObjectFromAnchor,
+			SetObjectMaterial,      ///< propertyValue = material name; prev captured for undo
+			SetObjectShader,        ///< propertyValue = shader name
+			SetObjectShadowFlags,   ///< s as int: bit0=castsShadows, bit1=receivesShadows
+			SetObjectGeometry,      ///< propertyValue = geometry name; prev captured for undo (runtime geometry swap)
+			//! Swap (or clear) an object's interior participating medium
+			//! by name.  Non-empty propertyValue is a medium name that
+			//! must resolve through IJob::GetMedium; empty propertyValue
+			//! routes through IObjectPriv::ClearInteriorMedium for
+			//! parser-parity with `interior_medium "none"` (which the
+			//! load-time parser treats as "leave the interior empty").
+			//! prevPropertyValue captures the old medium name via
+			//! reverse-lookup against IJob::EnumerateMediumNames so
+			//! undo round-trips losslessly — empty prev means "no
+			//! medium was bound" and the undo path calls
+			//! ClearInteriorMedium accordingly.  Object reference IS
+			//! resolved (FindObject), but the invariant chain is NOT
+			//! run — interior_medium swap is a pointer change that
+			//! doesn't invalidate spatial structure.
+			SetObjectInteriorMedium,
+			//! doc 89 slice C: set (or clear) the object's LOCAL mirror
+			//! axis.  `propertyValue` is "x" / "y" / "z", or "none" (or
+			//! empty) to clear it; anything else is refused by
+			//! `Job::SetObjectMirror` with a diagnostic naming the
+			//! accepted set.  `prevPropertyValue` captures the axis the
+			//! object currently carries, in the SAME spelling, so undo
+			//! round-trips through the identical path -- there is no
+			//! reverse-lookup to fail, unlike the binding ops.
+			//!
+			//! A TRANSFORM in effect (it changes the object's world
+			//! matrix and bounding box, hence OpNeedsSpatialRebuild
+			//! below) but NOT an IsObjectTransformOp: those commit to
+			//! the `matrix` param at the composite boundary, whereas
+			//! `mirror` is its own standard_object param and routes
+			//! per-op like a binding.  Legal on a CONTAINER, which is
+			//! why it is not one of the binding ops the container gate
+			//! refuses.
+			SetObjectMirror,
+
+			// Camera (objectName ignored)
+			SetCameraTransform,     ///< v3a = pos, v3b = look-at
+			//! Orbit around the look-at by deltas to the camera's
+			//! `target_orientation` parameter.  `v3a.x` = phi delta
+			//! (azimuth, around world up); `v3a.y` = theta delta
+			//! (elevation, around camera right).  `vPosition` and
+			//! `vLookAt` are NOT touched — they stay at their "rest"
+			//! values; `Recompute` derives the post-orbit position
+			//! from `target_orientation`.  This shape keyframes
+			//! cleanly (each angle is its own scalar) and round-trips
+			//! through `.RISEscene` (the angles are already declared
+			//! parameters).
+			OrbitCamera,
+			PanCamera,              ///< v3a   = world delta
+			ZoomCamera,             ///< s     = factor
+			//! Roll along the (camera→look-at) axis by `s` radians,
+			//! delta applied to `orientation.z`.  `vPosition` and
+			//! `vLookAt` are NOT touched.
+			RollCamera,
+
+			// Time (objectName ignored)
+			SetSceneTime,           ///< s = absolute time
+
+			// Properties-panel edit.  objectName carries the property
+			// name; propertyValue / prevPropertyValue carry the new
+			// and previous string forms (so undo round-trips through
+			// the same parser the panel uses on the way in).
+			SetCameraProperty,
+
+			//! Light edit.  objectName = light entity name (the
+			//! manager-registered name).  propertyName carries the
+			//! property identifier ("position" / "energy" / "color"
+			//! / "target" / etc.).  propertyValue carries the new
+			//! value, prevPropertyValue captures the prior value for
+			//! undo.  Undo route: re-apply prevPropertyValue through
+			//! the same KeyframeFromParameters + SetIntermediateValue
+			//! + RegenerateData pipeline the forward path uses.
+			SetLightProperty,
+
+			//! Register a new camera by cloning the state of an
+			//! existing one.  `objectName` carries the NEW camera's
+			//! name (the name the user picked or the auto-generated
+			//! dedup suffix).  `prevPropertyValue` captures the name
+			//! of the camera that was active immediately before the
+			//! Add so undo can restore the prior active-camera
+			//! selection.  `cameraSnapshot` carries the full field
+			//! set captured from the source camera at Apply time so
+			//! Redo can recreate the new camera deterministically
+			//! even if the source has since changed.  Forward path
+			//! goes through `IJob::Add{Pinhole,Thinlens,Fisheye,
+			//! Orthographic}Camera` (which set the new camera active
+			//! by the "last added wins" policy).  Undo route:
+			//! `RemoveCamera(newName)` + `SetActiveCamera(prev)`.
+			AddCamera,
+
+			//! Material edit.  `objectName` carries the material's
+			//! manager-registered name.  `propertyName` carries the
+			//! slot identifier (matches the chunk parameter name —
+			//! "reflectance", "ior", "alphax", "diffuse", etc.).
+			//! `propertyValue` carries the painter name (IPainter or
+			//! IScalarPainter depending on slot type — the per-
+			//! material dispatcher in `SceneEditor::Apply` knows
+			//! which manager to consult).  `prevPropertyValue` is
+			//! the previously-bound painter name, captured via the
+			//! material's Get accessor + reverse-lookup through the
+			//! matching manager.
+			//!
+			//! Forward path: routes through per-material `SetXxx`
+			//! virtual setters (added across all 25 material types
+			//! in Phase 4) which release the prior painter, addref
+			//! the new one, and bind it on the BRDF / SPF / Material.
+			//! No spatial-structure invalidation — material edits are
+			//! pointer swaps the render thread reads coherently
+			//! between passes (with cancel-and-park at the
+			//! controller).  Composed materials (PBRMetallicRoughness,
+			//! GGXEmissive — composed via painter graph) are rejected
+			//! up-front because rebinding a slot would break the
+			//! graph; the rejection comes via `IJob::IsMaterialComposed`.
+			SetMaterialProperty,
+
+			//! Edit a property on a medium.  objectName carries the
+			//! medium's manager-registered name, propertyName the slot
+			//! identifier ("absorption" / "scattering" / "emission"
+			//! per the parser), propertyValue a `"r g b"` triple
+			//! parsed via ParseStrictVec3.  Only HomogeneousMedium
+			//! accepts edits today — Heterogeneous rejects because its
+			//! majorant grid was baked at construction.
+			//!
+			//! Caller is responsible for the cancel-and-park gate
+			//! around Apply — Set* on the medium re-derives sigma_t
+			//! and sigma_t_max which are read by distance-sampling
+			//! workers; the swap is racy without the park.
+			SetMediumProperty,
+
+			//! Shared-undo U1: an AGENT-originated CST param edit, pushed by
+			//! SceneEditController::ApplyAgentParamEdit AFTER the mutation has
+			//! already landed via Job::ApplyCstParamEditChecked (unlike every
+			//! other op, the forward mutation for the FIRST apply happens
+			//! OUTSIDE SceneEditor::Apply -- see
+			//! SceneEditor::PushAgentCstParamEdit).  Redo re-applies via the
+			//! ordinary RouteCstParamEdit_ forward path; Undo reverts via
+			//! RouteCstParamEdit_ (or a param REMOVE when `prevValueWasAbsent`).
+			//! `objectName` = entity name, `cstEntityKind` = the CST chunk kind
+			//! (may be empty -- the agent can target kinds outside the GUI's
+			//! Category taxonomy), `propertyName` = the param role,
+			//! `propertyValue`/`prevPropertyValue` = new/prior string values.
+			SetAgentCstParam,
+
+			//! Shared-undo U2: an AGENT-originated chunk INSERT (SceneEditController::ApplyAgentInsertChunk),
+			//! pushed AFTER the mutation has already landed via Job::ApplyCstInsertChunk (same "forward already
+			//! happened outside SceneEditor::Apply" shape as SetAgentCstParam -- see
+			//! SceneEditor::PushAgentChunkCrudEdit).  `propertyValue` = the EXACT chunk text bytes the agent
+			//! supplied (re-inserted verbatim on Redo, via the SAME Job::ApplyCstInsertChunk call the original
+			//! forward apply made -- deterministic because Undo restores the pre-insert Document byte-identically,
+			//! so a Redo's positioned insert lands the same way).  `objectName` = the inserted chunk's resolved
+			//! `name` param (may be empty for an unnamed film/rasterizer/camera-class chunk).
+			//! `cstEntityKind` = the inserted chunk's resolved keyword.  `agentChunkIndex` = the top-level
+			//! document index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at -- ROUND-1 P1-A
+			//! FIX: this is now ApplyCstInsertChunk's OWN `outInsertedAt` out-param (the exact `at` the splice
+			//! itself used), NOT a post-hoc name/kind re-resolution -- a variant-tagged overlay chunk legitimately
+			//! shares its base chunk's (kind,name), so re-resolving "the chunk I just inserted" by name after the
+			//! fact can match MULTIPLE chunks and silently misreport the wrong index (the pre-fix bug: it fell
+			//! back to a FABRICATED index, and Undo then deleted the document's first three items).  `propertyValue`
+			//! (this op's chunk bytes) doubles as the P2 identity check's expected-bytes: Undo verifies the chunk
+			//! still at `agentChunkIndex + 1` byte-matches it before splicing.  Undo = remove EXACTLY those 3 items
+			//! at that exact index via Job::ApplyCstRemoveItemsAt (the EXACT-POSITION inverse -- NOT the general
+			//! Cst::DocEraseChunkTidy erase a manual remove_chunk uses, which is a heuristic single-adjacent-
+			//! separator collapse that -- by design -- leaves a residual blank line on a chunk with TWO fresh
+			//! separators around it; see AgentChunkCrudTest.cpp's T3).  ApplyCstRemoveItemsAt's own re-derive
+			//! dry-run still refuses honestly if something now REFERENCES the inserted chunk -- the derivability
+			//! gate is unaffected by which Document-splice mechanism reaches it.  Its identity check (round-1 P2)
+			//! ALSO refuses honestly if an out-of-band mutation shifted indices so `agentChunkIndex` is stale.
+			AgentInsertChunk,
+
+			//! Shared-undo U2: an AGENT-originated chunk REMOVE (SceneEditController::ApplyAgentRemoveChunk),
+			//! pushed AFTER the mutation has already landed via Job::ApplyCstRemoveChunk.  `objectName` /
+			//! `cstEntityKind` = the removed chunk's resolved name/keyword (Redo re-removes through the SAME
+			//! Job::ApplyCstRemoveChunk call).  `propertyValue` = the EXACT verbatim bytes the controller captured
+			//! from the retained Document immediately BEFORE the erase -- the concatenation, in document order, of
+			//! every top-level item Cst::DocEraseChunkTidy actually dropped (the chunk itself, plus its own tidied
+			//! trailing separator when the erase collapsed one).  `agentChunkIndex` = the top-level document INDEX
+			//! the chunk occupied at capture time.  Undo = splice `propertyValue` back verbatim AT that exact index
+			//! via Job::ApplyCstRestoreChunkAt (the EXACT-POSITION inverse -- NOT the fresh-insert two-tier
+			//! heuristic ApplyCstInsertChunk uses, which is for NEW chunks with no prior position to restore).
+			//! `agentChunkWasRasterizer` records whether the removed chunk was itself a `*_rasterizer` chunk --
+			//! Undo passes the inverse of that as ApplyCstRestoreChunkAt's `restoreActiveRasterizer`, mirroring
+			//! ApplyCstInsertChunk's own P1-B rule (re-inserting ANY rasterizer chunk must NOT have the pre-erase
+			//! active rasterizer restored over it).
+			AgentRemoveChunk,
+
+			//! R1a (2026-08-09, batched remove_chunks): an AGENT-originated BATCH chunk REMOVE
+			//! (SceneEditController::ApplyAgentRemoveChunks), pushed AFTER the mutation has already landed via
+			//! Job::ApplyCstRemoveChunks -- the SAME "forward already happened outside SceneEditor::Apply"
+			//! shape AgentRemoveChunk uses.  ONE of these records the WHOLE batch, so a single Cmd-Z restores
+			//! every removed chunk (the point of the verb: one head bump, one undo step).
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunk's own carriers rather than adding batch-only
+			//! members to every SceneEdit ever pushed):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the batch erase.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.  See that
+			//!                           virtual's doc for WHY the batch restores the whole document instead
+			//!                           of replaying N ApplyCstRestoreChunkAt splices: for ADJACENT targets
+			//!                           the per-chunk (bytes, index) record is not even well defined, since
+			//!                           Cst::DocEraseChunkTidy's trailing-separator collapse for chunk i
+			//!                           depends on whether chunk i+1 is still present -- which in a batch it
+			//!                           may not be.  Wholesale restore is byte-exact by construction for ANY
+			//!                           target set, and undo is LIFO so these bytes ARE the state the
+			//!                           immediately-preceding operation started from.
+			//!   * `prevPropertyValue` = the REDO descriptor: one line per removed target, `kind\tname`
+			//!                           ('\t' separator, '\n' between lines; an empty `kind` field means "no
+			//!                           kind narrowing", exactly as a null `kind` does at the Job call).
+			//!                           Redo re-runs Job::ApplyCstRemoveChunks over these -- deterministic
+			//!                           for the same reason AgentRemoveChunk's redo-by-name is: Undo restored
+			//!                           the pre-batch Document byte-identically first.
+			//!   * `objectName`        = a DISPLAY-ONLY comma-joined target list (logs); NOT an addressable
+			//!                           entity name, which is why `cstEntityKind` is left EMPTY -- that
+			//!                           routes MarkCstHeadDirty to its boolean CST-head channel rather than
+			//!                           inventing a per-entity dirty mark for a name that resolves to nothing.
+			//!   * `agentChunkWasRasterizer` = true iff ANY removed chunk was a `*_rasterizer` -- Undo passes
+			//!                           the inverse as ApplyCstReplaceDocumentText's `restoreActiveRasterizer`,
+			//!                           the SAME P1-B rasterizer-activation rule AgentRemoveChunk applies.
+			//!   * `agentChunkIndex`   = UNUSED (a batch has no single index); left at its default.
+			AgentRemoveChunks,
+
+			//! R2 (2026-08-10, replace_geometry_scaffold): an AGENT-originated COMPOSITE geometry
+			//! replacement (SceneEditController::ApplyAgentReplaceGeometry), pushed AFTER the mutation has
+			//! already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already happened
+			//! outside SceneEditor::Apply" shape AgentRemoveChunk / AgentRemoveChunks use.  ONE of these
+			//! records the WHOLE composite (new scaffold chunks spliced in + the target object's `geometry`
+			//! slot rebound + the orphaned old geometry chunk erased), so a single Cmd-Z restores the
+			//! byte-exact pre-call document -- the point of the verb.
+			//!
+			//! FIELD USE (deliberately reuses AgentRemoveChunks' own carriers -- see that op's doc for the
+			//! no-batch-only-members rationale; the ONE difference is that BOTH directions are a whole-
+			//! document text swap, because the forward mutation is itself a whole-document swap and there is
+			//! no by-name verb to replay):
+			//!   * `propertyValue`     = the BYTE-EXACT serialization (Cst::SerializeCst) of the retained
+			//!                           Document as it stood immediately BEFORE the composite.  Undo =
+			//!                           Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!   * `prevPropertyValue` = the BYTE-EXACT candidate document the forward commit installed.
+			//!                           Redo = Job::ApplyCstReplaceDocumentText on exactly these bytes.
+			//!                           Recording the POST text (rather than replaying the verb by name)
+			//!                           is what makes Redo byte-exact AND independent of the scaffold
+			//!                           generator: a Redo can never re-jitter, re-resolve, or re-collide.
+			//!   * `objectName`        = the rebound `standard_object`'s name; `cstEntityKind` =
+			//!                           "standard_object", so MarkCstHeadDirty routes it to that entity's
+			//!                           own channel exactly as the forward commit does.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb never creates or erases a
+			//!                           `*_rasterizer` chunk (its candidate differs from the head only by
+			//!                           geometry/painter/function chunks and one `geometry` param value),
+			//!                           so the document's last-wins rasterizer activation is invariant
+			//!                           across the composite and the pre-swap active rasterizer is
+			//!                           correctly restored in BOTH directions.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentReplaceGeometry,
+
+			//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the node-graph canvas's
+			//! POSITIONED Duplicate-node fork (SceneEditController::DuplicateGraphNode), pushed AFTER the
+			//! mutation has already landed via Job::ApplyCstReplaceDocumentText -- the SAME "forward already
+			//! happened outside SceneEditor::Apply" shape AgentRemoveChunks / AgentReplaceGeometry use, and
+			//! routed through the SAME whole-document prior/post text swap
+			//! (SceneEditor::RouteAgentDocumentSwap_).
+			//!
+			//! WHY NOT AgentInsertChunk, which is also "a chunk appeared".  That op's REDO replays through
+			//! Job::ApplyCstInsertChunk, whose TIER heuristic picks the position itself -- so a redo of a
+			//! POSITIONED insert would put the copy somewhere other than the forward commit did, and its
+			//! Undo (ApplyCstRemoveItemsAt at a recorded index) would then be removing the wrong items.  A
+			//! byte-exact prior/post document pair is position-agnostic in BOTH directions, which is the
+			//! only inverse a positioned splice actually has.
+			//!
+			//! FIELD USE -- identical to AgentReplaceGeometry's (see that op's doc for the
+			//! no-op-specific-members rationale):
+			//!   * `propertyValue`     = the BYTE-EXACT pre-duplicate document (Undo's payload).
+			//!   * `prevPropertyValue` = the BYTE-EXACT post-duplicate document (Redo's payload).
+			//!   * `objectName`        = the COPY's name; `cstEntityKind` = the copy's chunk keyword, so
+			//!                           MarkCstHeadDirty routes to that entity's own channel.
+			//!   * `agentChunkWasRasterizer` = ALWAYS false: this verb duplicates a Painter/Material-class
+			//!                           graph node, never a `*_rasterizer`, so the document's last-wins
+			//!                           rasterizer activation is invariant across the swap.
+			//!   * `agentChunkIndex`   = UNUSED (a whole-document swap has no single index).
+			AgentDuplicateNode,
+
+			//! Batched agent edits (2026-10-16): ONE record for a whole agent edit BATCH -- several chunk
+			//! inserts and/or param edits realized together by SceneEditController::ApplyAgentEditBatch
+			//! (Job::ApplyCstEditBatch, one full re-derive), pushed AFTER the mutation landed, like every
+			//! other agent op.  One record so a single Cmd-Z undoes the whole batch, the way
+			//! AgentRemoveChunks undoes a whole batch remove.
+			//!
+			//! The record is OPERATION-LEVEL (review round 3): the landed elements' inverses
+			//! (RISE::CstBatchUndoOp) in landing order -- remove an inserted chunk, restore a touched param slot.
+			//! Undo applies them in reverse to the CURRENT document and Redo forward, each direction realized by
+			//! ONE dry-run-gated derive; nothing the batch did not touch is rewritten, so edits made outside the
+			//! history (film / environment inspector edits) survive.  A refused Undo/Redo keeps the record in
+			//! place, like every refused record, and sets SceneEditor::ConsumeHistoryNotice.
+			//!
+			//! WHY NOT N AgentInsertChunk / SetAgentCstParam records bracketed by CompositeBegin/End: each of
+			//! those inverses re-derives the document it lands on and refuses one that does not derive, but a
+			//! batch validates only its END state -- an element listed before what it references lands (see
+			//! Job::ApplyCstEditBatch) -- so replaying them one derive at a time can stop half-way.
+			//!
+			//! FIELD USE:
+			//!   * `propertyValue`     = the encoded operation list (SceneEditor.cpp's EncodeBatchOps_).
+			//!   * `prevPropertyValue` = UNUSED.
+			//!   * `objectName`        = a DISPLAY-ONLY label (logs); `cstEntityKind` left EMPTY so
+			//!                           MarkCstHeadDirty routes to the boolean CST-head channel.
+			//!   * `agentChunkWasRasterizer` = true iff the batch LANDED a `*_rasterizer` insert: Redo then
+			//!                           lets the document's last-wins activation stand (the inserted one),
+			//!                           exactly as the forward commit did (the P1-B rule); Undo restores.
+			//!   * `agentChunkIndex`   = UNUSED.
+			AgentEditBatch,
+
+			// Composite markers — bracket a user drag so undo
+			// collapses one drag into one history entry.
+			CompositeBegin,         ///< objectName = label for UI
+			CompositeEnd
+		};
+
+		Op       op;
+		String   objectName;
+		Vector3  v3a;
+		Vector3  v3b;
+		Scalar   s;
+
+		//! Properties-panel value carriers (used by SetCameraProperty,
+		//! SetLightProperty, SetObjectMaterial, SetObjectShader).
+		//! `propertyValue` holds the typed-in new value;
+		//! `prevPropertyValue` is captured before the mutation so undo
+		//! can replay it through the same parser the forward path
+		//! uses.
+		String   propertyValue;
+		String   prevPropertyValue;
+
+		//! Used by `SetLightProperty` to disambiguate the property
+		//! identifier from the entity name (objectName carries the
+		//! light name, propertyName carries "position" / "energy" /
+		//! etc.).  Camera ops overload `objectName` for the property
+		//! name since cameras don't need an entity-name disambiguator
+		//! (the active camera is implicit).
+		String   propertyName;
+
+		//! Light-colour CST composite (2026-09-02 round 2), `SetLightProperty` on `color` ONLY.
+		//! TRUE when this edit's forward half wrote `colorspace Rec709RGB_Linear` ALONGSIDE the
+		//! colour digits, converting a chunk that spelled some OTHER colour space (in practice
+		//! `sRGB`, what `tools/migrate_scenes_light_colorspace.py` wrote onto every pre-2026-09-02
+		//! light) to the linear convention the properties panel speaks.  Set at CAPTURE time by
+		//! SceneEditor::LightColorCompositeState_; see that function's doc for WHY the conversion is
+		//! part of the edit rather than a re-encode of the value.
+		//!
+		//! When it is set, the two carriers below hold the chunk's ORIGINAL `color` and `colorspace`
+		//! VALUE TEXT -- raw, straight out of the Document, NOT the `%g`-formatted live RISEPel
+		//! `prevPropertyValue` carries -- and Undo writes BOTH back verbatim in one atomic edit
+		//! (SceneEditor::RouteCstLightColorComposite_), so the chunk returns byte-identical and the
+		//! light to its original decoded colour.  Redo re-applies the forward pair.
+		//!
+		//! Restoring the SPELLING, not just the value, is what makes shared undo (agent + user) sound:
+		//! an agent history entry captures RAW CHUNK TEXT (SceneEditController::
+		//! CaptureAgentPriorParamValue_), so an Undo that left the chunk linear would have an older
+		//! agent entry replay sRGB digits under a linear chunk -- landing the light ~6x too bright.
+		//!
+		//! FALSE (and both carriers empty) for every other op, for a `color` edit on an
+		//! already-linear chunk, for a light with no chunk, and on a legacy (no-Document) scene --
+		//! all of which take the unchanged single-param route.
+		bool     lightCstColorSpaceComposite;
+		String   prevCstColorText;
+		String   prevCstColorSpaceText;
+
+		//! Final matrix captured BEFORE mutation.  This is the fallback undo
+		//! representation for non-Transformable targets; Transformable objects
+		//! use prevTransformState below so their ordered stack is retained.
+		Matrix4  prevTransform;
+
+		//! Exact transform state captured before a transform op, including the
+		//! component matrices, every ordered stack entry, and authoritative
+		//! matrix-edit metadata.  Undo therefore preserves both the rendered
+		//! matrix and later absolute-setter / Push / Pop behavior.
+		//! `hasTransformState` is false
+		//! for ScaleObjectFromAnchor (prevTransform is managed specially) and
+		//! for non-Transformable targets -- those fall back to prevTransform.
+		bool           hasTransformState;
+
+		//! F5: the object had NO shader/material before a SetObjectShader/
+		//! SetObjectMaterial edit, so Undo must CLEAR the binding (not skip).
+		bool           prevBindingWasNull;
+
+		//! F4: name of the camera EDITED by a camera op, captured at Apply,
+		//! so Undo/Redo restore THAT camera -- not whatever camera is active
+		//! later.  Empty for legacy edits (Undo falls back to active).
+		String         cameraTargetName;
+		//! T3: only SceneCameraNamed routing opts an explicit-ONB camera
+		//! into the equivalent lookAt/up edit adapter.  Legacy active
+		//! SceneCamera behavior remains unchanged.
+		bool           allowONBPoseEdit;
+
+		//! Shared-undo U1 (SetAgentCstParam only): the CST chunk kind of the
+		//! edited entity, as resolved by SceneEditController::ApplyAgentParamEdit
+		//! (may be empty -- an agent commit can target a kind the GUI's
+		//! Category taxonomy does not cover; RouteCstParamEdit_ tolerates an
+		//! empty kind the same way Job::ApplyCstParamEditChecked does).
+		String         cstEntityKind;
+
+		//! Shared-undo U1 (SetAgentCstParam only): true when the param was
+		//! ABSENT on the entity's chunk at capture time (a defaulted slot the
+		//! scene text omitted, which Job::ApplyCstParamEditChecked's
+		//! DocSetOrAddParamValue then INSERTED).  Undo's inverse of an INSERT
+		//! is a param REMOVE (SceneEditor::RouteCstParamRemove_ ->
+		//! Job::ApplyCstParamRemoveChecked), not a re-SET of a (nonexistent)
+		//! prior value; `prevPropertyValue` is meaningless when this is true.
+		bool           prevValueWasAbsent;
+
+		//! doc 88 S4b (SetAgentCstParam only): WHICH occurrence of
+		//! `propertyName` this edit wrote, counted from the front (0 = first) --
+		//! the convention Cst::WithParamValue / WithParamRemovedOcc write with
+		//! and Cst::ParamValueAtOccurrence reads with.  DEFAULTS TO 0, which is
+		//! exactly what every pre-S4b push site meant, so those sites are
+		//! unchanged in source AND in behaviour.  Non-zero only for an edit that
+		//! came in through an occurrence-addressed row (`stop[2]`, `param[1]`).
+		int            cstParamOcc;
+
+		//! doc 88 S4b (SetAgentCstParam only): this edit was addressed BY
+		//! OCCURRENCE (a repeatable param's `<role>[<index>]` row), as opposed to
+		//! naming a param that occurs once.  It is NOT `cstParamOcc != 0` --
+		//! `stop[0]` is occurrence-addressed and still has occ 0.
+		//!
+		//! What it gates is the UNDO/REDO DRIFT GUARD.  A repeatable param's
+		//! occurrence LAYOUT is not stable across time: an agent chunk-CRUD verb
+		//! or another occurrence edit can add, remove or rewrite lines between
+		//! this edit and its Undo, and none of that invalidates the history
+		//! entry (chunk CRUD does not touch mHistory at all -- see
+		//! SceneEditor::RouteCstParamEditChecked_'s doc).  Blindly writing
+		//! "occurrence N" at Undo time would then clobber a DIFFERENT line --
+		//! the U2 lesson (blind index trust) applied to a param line rather than
+		//! a document index.  When this flag is set, SceneEditor::
+		//! OccurrenceEditStillAddressable_ re-checks that occurrence N still
+		//! exists AND still holds the value this direction expects to overwrite,
+		//! and refuses the Undo/Redo honestly if not (history entry stays put).
+		//!
+		//! A non-occurrence-addressed edit (every pre-S4b caller) leaves this
+		//! false and keeps the historical unguarded behaviour.
+		bool           cstParamOccAddressed;
+
+		//! Undo fidelity (2026-10-17, SetAgentCstParam only): the EXACT text of the chunk the edit landed on
+		//! (Job::CstParamEditOwnerChunkText -- the write's own owner resolution) before and after the write.
+		//! Undo swaps `agentOwnerPostText` back to `agentOwnerPreText` byte for byte, and Redo the reverse,
+		//! whenever the owner still holds the expected text (Job::ApplyCstParamEditOwnerRestore).  Replaying
+		//! `prevPropertyValue` instead re-spells the restored line and cannot bring back a param the write
+		//! stripped (a `position` patch strips `matrix`) where it was -- and either one makes an OLDER insert
+		//! record's exact-bytes inverse refuse.  Empty = not captured: the value replay below is the route.
+		std::string    agentOwnerPreText;
+		std::string    agentOwnerPostText;
+
+		//! Shared-undo U2 (AgentRemoveChunk only): the top-level document index the removed chunk (and, if
+		//! tidied away with it, its own trailing separator) occupied at capture time -- the EXACT position
+		//! Undo's Job::ApplyCstRestoreChunkAt splices `propertyValue` back at.  See the op's own doc for the
+		//! full rationale (DocInsertItem-at-the-same-index is the documented byte-exact inverse of the erase).
+		int            agentChunkIndex;
+
+		//! Shared-undo U2 (AgentRemoveChunk only): true iff the removed chunk was itself a `*_rasterizer`
+		//! chunk -- Undo passes `!agentChunkWasRasterizer` as ApplyCstRestoreChunkAt's `restoreActiveRasterizer`,
+		//! mirroring ApplyCstInsertChunk's own P1-B rasterizer-activation rule.
+		bool           agentChunkWasRasterizer;
+
+		//! F2: monotonic id stamped by EditHistory::Push, immune to front-
+		//! trimming.  A transaction baseline records the next seq so rollback
+		//! can identify its edits even after the 1024-entry cap trims the front.
+		unsigned long long historySeq;
+		//! P1: monotonic serial of the EDITED entity at capture time (0 = op tracks no
+		//! identity).  Apply/Undo/Redo re-resolve by name and compare; a mismatch means a
+		//! remove+re-add put a DIFFERENT instance under the name -> refuse (don't corrupt it).
+		unsigned long long capturedTargetSerial;
+		TransformStateV2 prevTransformState;
+
+		//! Previous scene time (for SetSceneTime undo).
+		Scalar   prevTime;
+
+		//! Previous camera state (for camera-op undo).  Captured by
+		//! SceneEditor::Apply before the camera mutation runs.
+		Point3   prevCameraPos;
+		Point3   prevCameraLookAt;
+		Vector3  prevCameraUp;
+		//! Previous angular state — captured for OrbitCamera (uses
+		//! prevCameraTargetOrient) and RollCamera (uses
+		//! prevCameraOrient).  PanCamera / ZoomCamera don't touch
+		//! these but capturing both for every camera op keeps Apply
+		//! uniform; they're cheap.
+		Vector2  prevCameraTargetOrient;
+		Vector3  prevCameraOrient;
+		//! Explicit-ONB representation captured before a camera op.  The live
+		//! edit temporarily converts ONB cameras to an equivalent lookAt/up
+		//! pose; an inverse restores this exact basis.
+		bool     prevCameraWasONB;
+		Vector3  prevCameraONBU;
+		Vector3  prevCameraONBV;
+		Vector3  prevCameraONBW;
+
+		//! Captured for SetObjectShadowFlags: prior cast/receive bits
+		//! packed the same way as `s` (cast in bit0, receive in bit1)
+		//! so undo restores both halves atomically.  Stored as Scalar
+		//! to fit the trivially-copyable struct shape.
+		Scalar   prevShadowFlags;
+
+		//! Used by AddCamera: full source-camera state at Apply time.
+		//! Embedded directly (rather than via shared_ptr) so SceneEdit
+		//! stays trivially-copyable.
+		CameraSnapshot cameraSnapshot;
+
+		SceneEdit()
+		: op( CompositeBegin )
+		, objectName()
+		, v3a()
+		, v3b()
+		, s( 0 )
+		, lightCstColorSpaceComposite( false )
+		, prevCstColorText()
+		, prevCstColorSpaceText()
+		, prevTransform( Matrix4Ops::Identity() )
+		, hasTransformState( false )
+		, prevBindingWasNull( false )
+		, cameraTargetName()
+		, allowONBPoseEdit( false )
+		, cstEntityKind()
+		, prevValueWasAbsent( false )
+		, cstParamOcc( 0 )
+		, cstParamOccAddressed( false )
+		, agentChunkIndex( 0 )
+		, agentChunkWasRasterizer( false )
+		, historySeq( 0 )
+		, capturedTargetSerial( 0 )
+		, prevTransformState()
+		, prevTime( 0 )
+		, prevCameraPos()
+		, prevCameraLookAt()
+		, prevCameraUp()
+		, prevCameraTargetOrient()
+		, prevCameraOrient()
+		, prevCameraWasONB( false )
+		, prevCameraONBU()
+		, prevCameraONBV()
+		, prevCameraONBW()
+		, prevShadowFlags( 0 )
+		{}
+
+		//! Returns true if this edit op refers to a named object.
+		static bool IsObjectOp( Op op )
+		{
+			return op == TranslateObject
+			    || op == RotateObjectArb
+			    || op == SetObjectPosition
+			    || op == SetObjectOrientation
+			    || op == SetObjectScale
+			    || op == SetObjectStretch
+			    || op == ScaleObjectFromAnchor
+			    || op == SetObjectMaterial
+			    || op == SetObjectShader
+			    || op == SetObjectShadowFlags
+			    || op == SetObjectGeometry
+			    || op == SetObjectInteriorMedium
+			    || op == SetObjectMirror;
+		}
+
+		//! Returns true if this edit op changes the object's bounding
+		//! box and therefore needs a top-level-acceleration (TLAS)
+		//! rebuild on the next render.  All transform ops qualify; so
+		//! does SetObjectGeometry (a runtime geometry swap changes the
+		//! object's extents); so does SetObjectMirror (doc 89 slice C --
+		//! a reflection about a plane through the node's own origin moves
+		//! every world vertex of an off-centre shape).  Property-only ops
+		//! (material / shader / shadow flags / interior medium) leave the
+		//! bbox unchanged.
+		static bool OpNeedsSpatialRebuild( Op op )
+		{
+			return op == TranslateObject
+			    || op == RotateObjectArb
+			    || op == SetObjectPosition
+			    || op == SetObjectOrientation
+			    || op == SetObjectScale
+			    || op == SetObjectStretch
+			    || op == ScaleObjectFromAnchor
+			    || op == SetObjectGeometry
+			    || op == SetObjectMirror;
+		}
+
+		//! Returns true if this edit op mutates the camera.
+		static bool IsCameraOp( Op op )
+		{
+			return op == SetCameraTransform
+			    || op == OrbitCamera
+			    || op == PanCamera
+			    || op == ZoomCamera
+			    || op == RollCamera;
+		}
+
+		//! Returns true if this is a composite bracket (no mutation).
+		static bool IsCompositeMarker( Op op )
+		{
+			return op == CompositeBegin || op == CompositeEnd;
+		}
+	};
+}
+
+#endif

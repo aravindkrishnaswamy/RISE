@@ -20,9 +20,11 @@
 // Interface includes
 //////////////////////////////////////////////////////////
 #include "Interfaces/IBezierPatchGeometry.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film overload
 #include "Interfaces/IBilinearPatchGeometry.h"
 #include "Interfaces/ICamera.h"
 #include "Interfaces/IDetectorSphere.h"
+#include "Interfaces/IFilm.h"
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IFunction3D.h"
@@ -36,8 +38,11 @@
 #include "Interfaces/IObject.h"
 #include "Interfaces/IOneColorOperator.h"
 #include "Interfaces/IOptions.h"
+#include "Interfaces/ICameraManager.h"
 #include "Interfaces/IPainter.h"
 #include "Interfaces/IPainterManager.h"
+#include "Interfaces/IScalarPainter.h"
+#include "Interfaces/IScalarPainterManager.h"
 #include "Interfaces/IPiecewiseFunction.h"
 #include "Interfaces/IPixelFilter.h"
 #include "Interfaces/IPhotonTracer.h"
@@ -51,6 +56,8 @@
 #include "Interfaces/ISampling1D.h"
 #include "Interfaces/ISampling2D.h"
 #include "Interfaces/IScenePriv.h"
+#include "Interfaces/IJobPriv.h"
+#include "Interfaces/ILogPrinter.h"
 #include "Interfaces/ISceneParser.h"
 #include "Interfaces/IShader.h"
 #include "Interfaces/IShaderManager.h"
@@ -58,13 +65,33 @@
 #include "Interfaces/IShaderOpManager.h"
 #include "Interfaces/IPhaseFunction.h"
 #include "Interfaces/IMedium.h"
+#include "Interfaces/IFunction1D.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
+#include "Interfaces/ITransformable.h"
 #include "Interfaces/ITwoColorOperator.h"
 #include "Interfaces/IWriteBuffer.h"
+#include "Rendering/DisplayTransform.h"
+#include "RasterImages/EXRCompression.h"
+#include "Utilities/SMSConfig.h"
+#include "Utilities/RasterizerDefaults.h"     // AutoIntegratorChoice (auto_rasterizer dispatcher)
+#include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
+#include "Interfaces/ProceduralDescriptors.h"
+#include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
+#include "Modifiers/ReliefModifier.h"	// Implementation::ReliefDomain (relief_modifier factory)
+#include "Painters/ExpressionParamSpec.h"	// Implementation::ParamSpec (expression_painter / scalar_painter{expression} factories)
+#include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (ramp_painter factory)
 
 namespace RISE
 {
+	// L6a-2 — forward decl for the optional `FrameStore*` param
+	// appended to every `RISE_API_Create*Rasterizer` factory.
+	// Default `nullptr` keeps existing call sites compiling
+	// unchanged; callers that want a non-null FrameStore (Job in
+	// L6b, anyone wanting a pre-allocated canonical buffer) pass
+	// it positionally.  Defined in
+	// `src/Library/Rendering/FrameStore.h`.
+	namespace Implementation { class FrameStore; }
 
 	//////////////////////////////////////////////////////////
 	// Library versioning information
@@ -108,6 +135,19 @@ namespace RISE
 		unsigned int infoStrMax								///< [in] Maximum characters to store in info string
 		);
 
+	//! Capture/restore the exact transform representation through the public
+	//! interface without changing ITransformable's established vtable or
+	//! TransformState's binary layout. These additive V2 entry points preserve
+	//! authoritative matrix metadata used by matrix-authored objects, so later
+	//! absolute position/orientation/scale setters retain their semantics.
+	//! Restore accepts snapshots returned by the capture entry point and rejects
+	//! malformed/non-finite state without mutating the target. Returns false for
+	//! invalid state, null pointers, or non-RISE ITransformable implementations.
+	bool RISE_API_CaptureTransformStateV2(
+		const ITransformable* transformable, TransformStateV2* outState );
+	bool RISE_API_RestoreTransformStateV2(
+		ITransformable* transformable, const TransformStateV2* state );
+
 	//////////////////////////////////////////////////////////
 	// Defines camera creation
 	//////////////////////////////////////////////////////////
@@ -127,7 +167,9 @@ namespace RISE
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
-		const Vector2& target_orientation						///< [in] Orientation relative to a target
+		const Vector2& target_orientation,						///< [in] Orientation relative to a target
+		const Scalar iso = Scalar( 0 ),							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.
+		const Scalar fstop = Scalar( 0 )						///< [in] Landing 5: f-number for EV computation.  Required when iso > 0.
 		);
 
 	//! Creates a traditional pinhole camera
@@ -142,17 +184,29 @@ namespace RISE
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
 		const Scalar exposure,									///< [in] Exposure time of the camera
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
-		const Scalar pixelRate									///< [in] Rate at which each pixel is recorded
+		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
+		const Scalar iso = Scalar( 0 ),							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.
+		const Scalar fstop = Scalar( 0 )						///< [in] Landing 5: f-number for EV computation.  Required when iso > 0.
 		);
 
 	//! Creates a camera based on thin lens model
+	/// Photographic parameters: sensor size + focal length + f-stop +
+	/// focus distance.  FOV is derived as 2*atan(sensor/(2*focal));
+	/// aperture diameter is derived as focal/fstop.  All three lengths
+	/// (sensor, focal, focus) must be in the same unit as scene
+	/// geometry; the lens equation v = f*u/(u-f) requires it, even
+	/// though the FOV formula's ratio is unit-free.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateThinlensCamera(
 		ICamera** ppi,											///< [out] Pointer to recieve the camera
 		const Point3& ptLocation,								///< [in] Absolute location of where the camera is located
 		const Point3& ptLookAt, 								///< [in] Absolute point the camera is looking at
 		const Vector3& vUp,										///< [in] Up vector of the camera
-		const Scalar fov,										///< [in] Field of view in radians
+		const Scalar sensorSize,								///< [in] Sensor width (mm)
+		const Scalar focalLength,								///< [in] Lens focal length (mm)
+		const Scalar fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
+		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+		const Scalar sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene, 0.001 = mm scene, 0.0254 = inches)
 		const unsigned int xres,								///< [in] X resolution of virtual screen
 		const unsigned int yres,								///< [in] Y resolution of virtual screen
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
@@ -161,9 +215,14 @@ namespace RISE
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
 		const Vector2& target_orientation,						///< [in] Orientation relative to a target
-		const Scalar aperture,									///< [in] Size of the aperture
-		const Scalar focalLength,								///< [in] Focal length
-		const Scalar focusDistance								///< [in] Focus distance
+		const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
+		const Scalar apertureRotation,							///< [in] Polygon rotation (radians)
+		const Scalar anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
+		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
+		const Scalar shiftX,									///< [in] Lens shift along x (mm); 0 = centered
+		const Scalar shiftY,									///< [in] Lens shift along y (mm); 0 = centered
+		const Scalar iso = Scalar( 0 )							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.  When > 0, fstop and exposure must also be > 0.
 		);
 
 	//! Creates a fisheye cemera
@@ -212,7 +271,7 @@ namespace RISE
 	bool RISE_API_CreatePointOmniLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
@@ -221,7 +280,7 @@ namespace RISE
 	bool RISE_API_CreatePointSpotLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
@@ -233,7 +292,7 @@ namespace RISE
 	bool RISE_API_CreateAmbientLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color										///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color										///< [in] Color of the light in linear Rec.709 (RISEPel)
 		);
 
 	//! Creates a infinite directional light, coming from a particular direction
@@ -241,7 +300,7 @@ namespace RISE
 	bool RISE_API_CreateDirectionalLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Vector3 vDir										///< [in] Direction the light is shining
 		);
 
@@ -280,7 +339,8 @@ namespace RISE
 								IGeometry** ppi,				///< [out] Pointer to recieve the geometry
 								const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 								const Scalar radius,			///< [in] Radius of the cylinder
-								const Scalar height			///< [in] Height of the cylinder
+								const Scalar height,			///< [in] Height of the cylinder
+								const bool capped = true		///< [in] TRUE: closed solid (end caps); FALSE: open tube
 								);
 
 	//! Creates an infinite plane that passes through the origin
@@ -314,24 +374,22 @@ namespace RISE
 									const Scalar minorRad		///< [in] Minor radius (as a percentage of the major radius)
 									);
 
-	//! Creates a triangle mesh geometry object
+	//! Creates a triangle mesh geometry object.
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometry(
 						ITriangleMeshGeometry** ppi,			///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+						const bool double_sided					///< [in] Are the triangles double sided ?
 						);
 
-	//! Creates an indexed triangle mesh geometry object
+	//! Creates an indexed triangle mesh geometry object.
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometryIndexed(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp,					///< [in] Use a BSP tree rather than an Octree
 						const bool face_normals				///< [in] Use face normals rather than vertex normals
 						);
 
@@ -341,20 +399,6 @@ namespace RISE
 						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
 						IReadBuffer* pBuffer					///< [in] The buffer to load the 3DS mesh from
 						);
-
-	//! Creates a mesh loader capable of loading from a series of bezier patches
-	/// \return TRUE if successful, FALSE otherwise
-	/// \todo this is deprecated and should be removed
-	bool RISE_API_CreateBezierTriangleMeshLoader(
-						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
-						const char* szFileName,					///< [in] Name of the file to load from
-						const unsigned int detail,				///< [in] Level of tesselation
-						const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-						const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
-						);
-
 
 	//! Creates a mesh loader capable of loading from a raw file
 	/// \return TRUE if successful, FALSE otherwise
@@ -381,23 +425,25 @@ namespace RISE
 						const bool bInvertFaces					///< [in] Should the faces be inverted?
 						);
 
-	//! Creates a geometry object made up of a series of bezier patches
+	// RISE_API_CreateGLTFTriangleMeshLoader was retired 2026-05-01.  glTF
+	// single-primitive imports now flow through
+	// Job::AddGLTFTriangleMeshGeometry, which constructs a
+	// GLTFSceneImporter and calls ImportPrimitive.  The intermediate
+	// ITriangleMeshLoaderIndexed wrapper re-parsed the .gltf per
+	// primitive (pathological on NewSponza-class assets); the importer
+	// now owns the parse for its lifetime.  See
+	// src/Library/Importers/GLTFSceneImporter.h "Lifecycle" for the
+	// design.
+
+	//! Creates a bezier-patch geometry with analytic ray intersection.
+	//! Displacement / bulk tessellation are handled by wrapping this in a
+	//! DisplacedGeometry (or `displaced_geometry` in the scene file).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBezierPatchGeometry(
 						IBezierPatchGeometry** ppi,				///< [out] Pointer to recieve the geometry
-						const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-						const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-						const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-						const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-						const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-						const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-						const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-						const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-						const unsigned int detail,				///< [in] Level of tesselation for polygons
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
+						const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+						const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+						const bool use_bsp						///< [in] Use BSP tree (true) or Octree (false)
 						);
 
 	//! Creates a geometry object made up of a series of bilinear patches
@@ -407,6 +453,245 @@ namespace RISE
 						const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
 						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 						const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+						);
+
+	//! Creates a displaced geometry that wraps any existing IGeometry, tessellates it, and
+	//! applies a displacement map along the vertex normals.  The base geometry must support
+	//! IGeometry::TessellateToMesh (InfinitePlaneGeometry does not — construction fails loudly).
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
+	/// \return TRUE if successful, FALSE if the base cannot be tessellated or ppi is null
+	bool RISE_API_CreateDisplacedGeometry(
+						IGeometry**         ppi,				///< [out] Pointer to receive the geometry
+						IGeometry*          pBase,				///< [in] Base geometry to wrap (AddRef'd internally)
+						const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
+						IFunction2D*        displacement,		///< [in] Displacement function (may be null for pure tessellation)
+						const Scalar        disp_scale,			///< [in] Displacement scale factor
+						const bool          double_sided,		///< [in] Are generated polygons double-sided?
+						const bool          face_normals,		///< [in] Use face normals rather than topologically re-averaged vertex normals
+						const bool          seam_fold = true,	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						const IScalarPainter* height = 0		///< [in] Scalar height FIELD evaluated at the vertex (object space); mutually exclusive with `displacement` -- pass at most one
+						);
+
+	//! Creates a signed-distance-field (implicit) geometry: transformed
+	//! primitives (sphere / box / roundbox / cylinder / torus / capsule /
+	//! roundcone / superellipsoid) composed with smooth-min / boolean ops,
+	//! ray-traced by sphere tracing.  This is the C-API construction boundary for SDF geometry;
+	//! IJob::AddSDFGeometry and the scene parser both route through here.
+	//! The part list comes from exactly ONE of `szParts` (inline, newline-
+	//! separated part lines -- the normal authoring path) or `szFileName`
+	//! (external parts file, same one-part-per-line grammar; for very large
+	//! SDFs).  szFileName must already be a resolvable path (the scene layer
+	//! applies the media-path search before calling).  Both sources share
+	//! SDFGeometry::ParsePartLines, so the grammar cannot drift.  Fails
+	//! (returns false, logs source / line / token context) on a missing file,
+	//! both-or-neither sources, a malformed part line, or an unknown
+	//! primitive / op token.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,				///< [out] Pointer to receive the geometry
+						const char*          szFileName,		///< [in] Parts file path (already media-path resolved); NULL / "" / "none" when szParts is given
+						const char*          szParts,			///< [in] Inline newline-separated part lines; NULL / "" when szFileName is given
+						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
+	//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
+	//! z = scale*field(u,v), clipped to a DISK of radius `radius` centred at
+	//! the origin in the local XY plane -- not a square -- via u=(x+R)/2R,
+	//! v=(y+R)/2R), sphere-traced with O(1) memory.  The exact-geometry
+	//! ground-truth twin of a `displaced_geometry` on a `cartesian_disk_geometry`
+	//! (which tessellates and shares this circular domain).  This is the C-API
+	//! construction boundary for the SDF heightfield mode;
+	//! IJob::AddSDFHeightfieldGeometry and the scene parser both route through
+	//! here.  `field` is an already-constructed IFunction2D (caller-owned; the
+	//! geometry addref's it).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSDFHeightfieldGeometry(
+						IGeometry**          ppGeometry,		///< [out] Pointer to receive the geometry
+						const IFunction2D*   field,				///< [in] Height field f(u,v) in [0,1] (addref'd by the geometry)
+						const double         radius,			///< [in] Radius of the disk domain, centred at the origin in local XY (object units)
+						const double         scale,				///< [in] World amplitude (surface z = scale*f(u,v))
+						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
+
+	//! Creates a FLAT Cartesian-grid circular disk (linear Cartesian UV,
+	//! +Z normals) -- the general flat base for displacing an arbitrary 2D
+	//! field onto a disk via displaced_geometry (uv_seam_fold FALSE).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const double         radius,		///< [in] Disk radius (world units)
+						const int            meshN			///< [in] Grid samples across the diameter
+						);
+
+	//! Creates a general PROFILE SWEEP: an arbitrary CLOSED 2D profile
+	//! polygon swept along an arbitrary 3D Catmull-Rom path with
+	//! rotation-minimizing frames, optional per-axis linear taper plus
+	//! optional non-linear per-station width (point widths), and
+	//! ear-clipped end caps.  Tubes, rails, mouldings, bands, cables.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSweepGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const SweepDescriptor&         desc	///< [in] Profile + path + taper + cap parameters
+						);
+
+	//! Creates a SURFACE OF REVOLUTION (lathe): an OPEN 2D profile
+	//! polyline authored in the (r, h) half-plane revolved about a world
+	//! axis, optionally through less than a full turn (which adds two flat
+	//! ear-clipped radial caps).  Vases, bottles, turned legs, lamp bases,
+	//! pedestals, knobs.  A profile point at r == 0 collapses to a single
+	//! POLE vertex fanned to its neighbouring ring, so a profile that
+	//! starts and ends on the axis is watertight with no caps at all.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateLatheGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const LatheDescriptor&         desc	///< [in] Profile + axis + sweep + resolution parameters
+						);
+
+	//! Creates a SKIN: the open ruled / billowed sheet spanning two
+	//! boundary polylines (rails).  Wings, fins, webbing, sails, leaves,
+	//! awnings, lampshade panels.  Both rails are resampled onto the
+	//! UNION of their arc-length parameters, so every authored vertex of
+	//! both survives verbatim; `billow` inflates the interior along the
+	//! ruled sheet's own normal with a falloff that is zero at both
+	//! rails.  The bake is one DOUBLE-SIDED sheet.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSkinGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const SkinDescriptor&          desc	///< [in] Rails + tessellation + billow parameters
+						);
+
+	//! Creates a HAIR GROOM: a `HairGeometry` curve primitive in
+	//! DEFERRED-GROOM mode (docs/HAIR_FUR_DESIGN.md section 5.3).  The
+	//! recipe -- a base geometry to grow on, up to three painters, and a
+	//! seed -- is stored and addref'd here; the actual strand generation
+	//! runs later in `IGeometry::Realize()`, once, single-threaded,
+	//! before the parallel rasterize.  This is the construction boundary
+	//! for hair geometry; `IJob::AddHairGeometry` and the `hair_geometry`
+	//! scene chunk both route through here.
+	//!
+	//! The recipe is VALIDATED here (ValidateHairGroomRecipe): a null or
+	//! non-tessellatable base, a zero / over-cap `count`, fewer than two
+	//! `segments`, a non-positive `length` / width, or a `curl_radius`
+	//! without a `curl_step` all fail with a named diagnostic and no
+	//! geometry -- at PARSE time, where the author can act on it, rather
+	//! than at realize time.  Failures that can only be seen by actually
+	//! tessellating (a base that meshes to zero area) surface at
+	//! Realize() and leave an empty, harmless groom.
+	//!
+	//! The caller keeps its own references to everything in the recipe.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairGeometryGroom(
+						IGeometry**             ppi,		///< [out] Pointer to receive the geometry
+						const HairGroomRecipe&  recipe,		///< [in] Base geometry + painters + numeric parameters + seed
+						const char*             chunkName	///< [in] Name of the authoring chunk, used in diagnostics (may be null)
+						);
+
+	//! Creates an IMPORTED HAIR GROOM: a `HairGeometry` curve primitive
+	//! built from a Cem Yuksel `.hair` file (Phase 2,
+	//! docs/HAIR_FUR_DESIGN.md section 7).  The sibling of
+	//! `RISE_API_CreateHairGeometryGroom` -- same primitive, other
+	//! source: that one stores a RECIPE and generates strands at
+	//! `Realize()`, this one reads strands that already exist.
+	//!
+	//! THE FILE IS READ HERE, i.e. at PARSE time for a scene, matching
+	//! every other file-backed geometry in RISE (`risemesh_geometry`,
+	//! `plymesh_geometry`, `gltf_geometry` all load in their
+	//! `IJob::Add*` call).  There is nothing to defer: unlike a groom
+	//! recipe, an import needs no resolved base geometry and no
+	//! painters, so the deferral that `Realize()` exists for buys
+	//! nothing and would only move the author's error message from
+	//! their own chunk to the middle of a render.  The resulting
+	//! geometry is in explicit-strand mode, so its `Realize()` is a
+	//! no-op.
+	//!
+	//! Fails with a named diagnostic and no geometry on: a missing or
+	//! unreadable file, a bad magic / truncated / corrupt file, counts
+	//! over the loader's caps, non-positive width scales, or a file
+	//! whose every strand was rejected.  See HairFileLoader.h for what
+	//! of the format is honoured and what is read and dropped.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairGeometryFromFile(
+						IGeometry**                     ppi,		///< [out] Pointer to receive the geometry
+						const HairFileGroomDescriptor&  desc,		///< [in] File path + the two width multipliers
+						const char*                     chunkName	///< [in] Name of the authoring chunk, used in diagnostics (may be null)
+						);
+
+	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
+	//! through the universal TessellateToMesh contract) stamped along a 3D
+	//! Catmull-Rom path at arc-length pitch with optional slant and scale.
+	//! Fence posts, rivets, beads, stitching, chain links.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const PathInstancesDescriptor& desc	///< [in] Template + path + pitch parameters
+						);
+
+	//! Function2DScalarPainter with the affine output out = bias + scale * f(u,v)
+	//! (mirrors RISE_API_CreateTextureScalarPainterAffine for procedural sources).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+						IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
+						const double         scale,			///< [in] Output scale
+						const double         bias			///< [in] Output bias
+						);
+
+	//! Wraps a named IFunction2D as a greyscale COLOUR painter (IPainter)
+	//! -- out = bias + scale * f(u,v) on all three channels.  The colour
+	//! analogue of RISE_API_CreateFunction2DScalarPainterAffine; lets any
+	//! procedural 2D field feed a colour slot or a blend_painter mask.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFunction2DColorPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
+						const double         scale,			///< [in] Output scale
+						const double         bias			///< [in] Output bias
+						);
+
+	//! Wraps a compiled in-scene math expression as a procedural 2D field
+	//! painter (colour / displacement / scalar).  The program is built by
+	//! the expression_function2d chunk parser (params + defs + final expr).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateExpressionFunction2D(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const Implementation::ExpressionProgram& prog	///< [in] Compiled expression program
+						);
+
+	//! Creates the expression_painter COLOUR-pipe surface (doc 88 P1, S2):
+	//! a compiled expression evaluated with the FULL 3D context (u, v, P,
+	//! Po, N, fw, time) -- unlike RISE_API_CreateExpressionFunction2D's
+	//! (u,v)-only surface.  vec3-typed programs are Rec.709 linear RGB;
+	//! scalar-typed programs broadcast to grayscale.  `paramSpecs` carries
+	//! the parsed `param` UI metadata (min/max/step/label) for later
+	//! introspection; it does not affect evaluation.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateExpressionPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
+						const std::vector<Implementation::ParamSpec>& paramSpecs,	///< [in] Parsed `param` metadata, for introspection
+						const Scalar time					///< [in] Initial `time` value (keyframeable at the scene level)
+						);
+
+	//! Creates ramp_painter (doc 88 P2.2, S3): the universal scalar ->
+	//! colour remap.  `input`'s channel (R/G/B/A) at the hit drives a
+	//! multi-stop colour ramp; `stops` must already be sorted ascending
+	//! by position with at least 2 entries (validated by the chunk
+	//! parser before this call).  Each stop's colour is eagerly
+	//! JH-uplifted ONCE here (Albedo kind); GetColorNM/GetSpectrum
+	//! never uplift per-sample.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateRampPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const IPainter&      input,		///< [in] Painter whose channel drives t (addref'd)
+						const unsigned int   channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+						const unsigned int   interpolation,	///< [in] 0=linear, 1=constant, 2=smooth
+						const std::vector<Implementation::RampPainter::Stop>& stops	///< [in] Authored (pos,color) stops, ascending, >= 2
 						);
 
 
@@ -450,6 +735,14 @@ namespace RISE
 								IMaterial** ppi				///< [out] Pointer to recieve the material
 								);
 
+	//! Creates an exact null medium boundary.  Unlike NullMaterial/"none",
+	//! this material is traversed with unit transmission and changes only the
+	//! ray's medium-enclosure state.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNullBoundaryMaterial(
+								IMaterial** ppi				///< [out] Pointer to receive the material
+								);
+
 	//! Creates Lambertian material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLambertianMaterial(
@@ -457,67 +750,261 @@ namespace RISE
 								const IPainter& ref				///< [in] Reflectance
 								);
 
-	//! Creates a Polished material
+	//! Creates a Polished material.  Scalar params (tau, IOR, scattering)
+	//! are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePolishedMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Reflectance of diffuse substrate
-								const IPainter& tau,			///< [in] Transmittance of the dielectric top
-								const IPainter& Nt,				///< [in] Index of refraction of dielectric coating
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
+								const IScalarPainter& tau,		///< [in] Transmittance of the dielectric top
+								const IScalarPainter& Nt,		///< [in] Index of refraction of dielectric coating
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG asymmetry)
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								);
 
-	//! Creates a Dielectric material
+	//! Creates a Coated material -- a transparent dielectric film over
+	//! a RESTRICTED substrate, with the film's coverage as a spatially
+	//! varying slot.  docs/WETNESS_COAT_DESIGN.md Phase 2 (7.1-7.6).
+	//!
+	//! Every physical scalar rides `IScalarPainter` (no JH spectral
+	//! uplift); only `coat_tint` is genuinely a colour and rides
+	//! `IPainter`.  See docs/ISCALARPAINTER_REFACTOR.md.
+	//!
+	//! `base` MUST be one of `lambertian_material`, `orennayar_material`,
+	//! `ggx_material` or `pbr_metallic_roughness_material`, and must not
+	//! emit.  Anything else is REFUSED here (returns FALSE, `*ppi` left
+	//! null) with a logged message naming the allowlist, rather than
+	//! rendering something quietly wrong -- the layered model needs the
+	//! substrate's directional albedo, which an arbitrary material
+	//! cannot supply.
+	/// \return TRUE if successful, FALSE otherwise
+	//! DL-192: `coat_normal`/`coat_normal_scale` are a trailing addition
+	//! to this SAME exported symbol (not a new "...Ex"/"...WithNormal"
+	//! sibling) -- unlike `RISE_API_CreateGGXMaterial`, this function had
+	//! never been extended before this row, so it is the ABI-preserving
+	//! extension point itself (the GGX precedent for adding a trailing
+	//! default param directly to a not-yet-frozen creation function,
+	//! before that function accumulates enough later growth to need its
+	//! own frozen/evolution split).  Existing callers are untouched:
+	//! `coat_normal = nullptr` (the default) is bit-identical to a
+	//! pre-DL-192 render.  See CoatedBRDF.h's matching ctor parameter
+	//! for the coat-lobe-only tangent-space normal map's full contract.
+	bool RISE_API_CreateCoatedMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const IMaterial& base,					///< [in] Substrate material (allowlisted -- see above)
+								const IScalarPainter& coat_weight,		///< [in] [0,1] coat coverage fraction
+								const IScalarPainter& coat_ior,			///< [in] Coat index of refraction (1.33 water, 1.5 varnish)
+								const IScalarPainter& coat_roughness,	///< [in] GGX alpha of the coat lobe
+								const IScalarPainter& coat_thickness,	///< [in] Coat thickness, world length (Beer-Lambert)
+								const IScalarPainter& coat_absorption,	///< [in] Coat absorption coefficient, 1/length
+								const IPainter& coat_tint,				///< [in] Coat transmission colour for one normal-incidence traversal
+								const IPainter* coat_normal = 0,			///< [in] DL-192: optional coat-lobe-only tangent-space normal map; NULL = no perturbation (default)
+								const Scalar coat_normal_scale = 1.0	///< [in] DL-192: xy scale on the decoded tangent-space normal (glTF normalTexture.scale analogue)
+								);
+
+	//! Creates a Fabric material -- an energy-compensated Charlie sheen
+	//! lobe over a RESTRICTED substrate, with the weave direction
+	//! delivered as a rotation of the frame the SUBSTRATE is evaluated
+	//! in.  docs/CLOTH_FABRIC_DESIGN.md Phase 1 (9.2-9.6).
+	//!
+	//! `sheen_color` is genuinely a colour (the dye / fuzz tint) and
+	//! rides `IPainter`; `sheen_roughness` and `weave_rotation` are
+	//! physical scalars and ride `IScalarPainter` (no JH spectral
+	//! uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
+	//!
+	//! `base` MUST be one of `lambertian_material`, `orennayar_material`,
+	//! `ggx_material` or `pbr_metallic_roughness_material` (which
+	//! resolves to a `ggx_material` at scene-build time and is therefore
+	//! admitted transitively), and must not emit.  Anything else is
+	//! REFUSED here (returns FALSE, `*ppi` left untouched) with a logged
+	//! message naming the allowlist, rather than rendering something
+	//! quietly wrong -- the layered model needs the substrate's
+	//! hemispherical albedo, which an arbitrary material cannot supply.
+	//!
+	//! NOTE the deliberate asymmetry with the SCENE-LANGUAGE path: the
+	//! preset-vs-substrate MISMATCH warning (9.3) lives in
+	//! `Job::AddFabricMaterial`, not here, because a preset is a
+	//! scene-language affordance and this factory takes no preset.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFabricMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const IMaterial& base,					///< [in] Substrate material (allowlisted -- see above)
+								const IPainter& sheen_color,			///< [in] Sheen / dye tint (colour painter)
+								const IScalarPainter& sheen_roughness,	///< [in] Charlie alpha, clamped to [0.04, 1]
+								const IScalarPainter& weave_rotation	///< [in] Weave angle in RADIANS, applied to the SUBSTRATE's frame
+								);
+
+	//! Creates a Weave material -- a structured TWO-THREAD-FAMILY cloth
+	//! BSDF (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+	//!
+	//! `weave` is the DRAFT's name -- one of `plain`, `twill_2_1`,
+	//! `twill_3_1`, `satin_5`, `custom` (WeavePresets.h's
+	//! `WeavePatternNamesText`).  It is passed as a STRING rather than as
+	//! an enum so this public header need not include a Materials header;
+	//! an unrecognised spelling resolves to `plain`, matching the chunk
+	//! descriptor's own default.
+	//!
+	//! `coverage` is read ONLY when `weave` is `custom`, and may be NULL
+	//! otherwise; passing NULL with `custom` yields a uniform 0.5 split.
+	//!
+	//! `warp_color` / `weft_color` are genuinely colours (the DYES) and
+	//! ride `IPainter`.  EVERY other slot is a physical scalar and rides
+	//! `IScalarPainter` -- including the two IORs, the two longitudinal
+	//! widths, the two azimuthal widths, the two k_d fractions and the
+	//! two float tilts, none of which may go through the JH spectral
+	//! uplift (docs/ISCALARPAINTER_REFACTOR.md).
+	//!
+	//! There is NO substrate and no allowlist: unlike
+	//! `fabric_material`, this material IS the BSDF rather than a layer
+	//! over one.  It is itself accepted as a `fabric_material` substrate,
+	//! which is the physical stack (fuzz over weave).
+	//!
+	//! NOTE the same deliberate asymmetry with the SCENE-LANGUAGE path
+	//! that `RISE_API_CreateFabricMaterial` has: the `fabric` PRESET is a
+	//! scene-language affordance consumed in the parser and in
+	//! `Job::AddWeaveMaterial`; this factory takes no preset and every
+	//! slot must be supplied.
+	/// \return TRUE if successful, FALSE otherwise
+	//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10) adds `transmission` (`none`
+	//! or `thin`; unrecognised => `none`, matching the chunk descriptor's
+	//! default) and a per-family `transmit` scalar in [0,1] -- the share
+	//! of that family's volume budget redirected to diffuse transmission
+	//! (WeaveBRDF.h section 2a).  `transmission none` with `transmit`
+	//! left at 0 reproduces the P2-A factory exactly.
+	bool RISE_API_CreateWeaveMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const char* weave,						///< [in] Draft name; unrecognised => `plain`
+								const char* transmission,				///< [in] `none` or `thin`; unrecognised => `none`
+								const IScalarPainter& weave_scale,		///< [in] Cells per UV unit
+								const IScalarPainter& weave_rotation,	///< [in] Warp direction, RADIANS, about the shading normal
+								const IScalarPainter& weft_skew,		///< [in] Weft offset from perpendicular, RADIANS
+								const IScalarPainter* coverage,			///< [in] `custom` only: warp-coverage field; may be NULL
+								const IScalarPainter& gap,				///< [in] Uncovered fraction, clamped to [0, 0.3]; also the `thin` delta lobe's aperture
+								const IPainter& warp_color,				///< [in] Warp dye (tints the VOLUME lobe and, `thin`, the diffuse TRANSMISSION lobe)
+								const IScalarPainter& warp_ior,			///< [in] Warp fibre IOR
+								const IScalarPainter& warp_width,		///< [in] Warp longitudinal width beta, RADIANS
+								const IScalarPainter& warp_azimuth,		///< [in] Warp azimuthal width gamma, RADIANS
+								const IScalarPainter& warp_kd,			///< [in] Warp isotropic volume-scattering fraction
+								const IScalarPainter& warp_tilt,		///< [in] Warp float tilt out of plane, RADIANS
+								const IScalarPainter& warp_transmit,	///< [in] P2-B: warp's diffuse-transmission share, [0,1]
+								const IPainter& weft_color,				///< [in] Weft dye
+								const IScalarPainter& weft_ior,			///< [in] Weft fibre IOR
+								const IScalarPainter& weft_width,		///< [in] Weft longitudinal width beta, RADIANS
+								const IScalarPainter& weft_azimuth,		///< [in] Weft azimuthal width gamma, RADIANS
+								const IScalarPainter& weft_kd,			///< [in] Weft isotropic volume-scattering fraction
+								const IScalarPainter& weft_tilt,			///< [in] Weft float tilt out of plane, RADIANS
+								const IScalarPainter& weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1]
+								);
+
+	//! GGX dielectric interface with reciprocal energy compensation, without bulk absorption.
+	//! All slots are single-valued scalar painters (spectral slot views retain
+	//! NM dispersion). Both alpha widths must be in (0,1]; invalid hit values
+	//! produce null scattering. World-position IOR fields are not supported.
+	bool RISE_API_CreateRoughDielectricMaterial(
+		IMaterial** ppi, const IScalarPainter& ior,
+		const IScalarPainter& alphaX, const IScalarPainter& alphaY);
+
+	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)
+	//! are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDielectricMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& tau,			///< [in] Transmittance
-								const IPainter& rIndex,			///< [in] Index of refraction
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
-								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 								);
 
-	//! Creates a SubSurface Scattering material
+	//! Legacy single-film AR overload.  Accepts ANY arithmetic spelling of the
+	//! three AR-film scalars -- all-double, all-int `(0,0,0)`, OR MIXED (e.g.
+	//! `(1.38, 0, 99.6)` with an integer extinction) -- and forwards to the
+	//! N-layer array form, so pre-N-layer external callers still compile
+	//! regardless of literal types.  It is a single SFINAE template (constrained
+	//! to arithmetic args) rather than a set of fixed overloads: a fixed
+	//! `(Scalar,Scalar,Scalar)` + `(int,int,int)` pair leaves mixed spellings with
+	//! no best match, whereas a template is an exact match for every combination
+	//! and -- being non-pointer -- never competes with the array form.
+	//! NO-COATING: arFilmThickness <= 0 => nLayers=0 (bare Fresnel), matching the
+	//! pre-N-layer scalar form; it does NOT build a zero-thickness/zero-index film.
+	/// \return TRUE if successful, FALSE otherwise
+	template< typename ARN, typename ARK, typename ART,
+	          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+	                                              std::is_arithmetic<ARK>::value &&
+	                                              std::is_arithmetic<ART>::value >::type >
+	inline bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const ARN arFilmN,				///< [in] Single AR film real index
+								const ARK arFilmK,				///< [in] Single AR film extinction
+								const ART arFilmThickness		///< [in] Single AR film thickness, nm
+								)
+	{
+		if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+			return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg,
+				(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+		}
+		const Scalar n[1]  = { Scalar( arFilmN ) };
+		const Scalar k[1]  = { Scalar( arFilmK ) };
+		const Scalar th[1] = { Scalar( arFilmThickness ) };
+		return RISE_API_CreateDielectricMaterial( ppi, tau, rIndex, scat, hg, n, k, th, 1u );
+	}
+
+	//! Creates a SubSurface Scattering material.  ior / absorption /
+	//! scattering are physical scalars carried by `IScalarPainter`
+	//! — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSubSurfaceScatteringMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness			///< [in] Surface roughness [0,1]
 								);
 
-	//! Creates a Random Walk SSS material
+	//! Creates a Random Walk SSS material.  ior / absorption /
+	//! scattering are physical scalars carried by `IScalarPainter`.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateRandomWalkSSSMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness,			///< [in] Surface roughness [0,1]
 								const unsigned int maxBounces	///< [in] Maximum walk steps
 								);
 
-	//! Creates an isotropic phong material
+	//! Creates an isotropic phong material.
+	//! `exponent` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& exponent		///< [in] Phong exponent
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& exponent		///< [in] Phong exponent (physical scalar)
 								);
 
-	//! Creates the anisotropic phong material of Ashikmin and Shirley
+	//! Creates the anisotropic phong material of Ashikmin and Shirley.
+	//! `Nu` / `Nv` are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& Nu,				///< [in] Phong exponent in U
-								const IPainter& Nv				///< [in] Phong exponent in V
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& Nu,			///< [in] Phong exponent in U (physical scalar)
+								const IScalarPainter& Nv			///< [in] Phong exponent in V (physical scalar)
 								);
 
 	//! Creates a perfect reflector
@@ -528,125 +1015,77 @@ namespace RISE
 								);
 
 	//! Creates a perfect refractor
+	//! `ior` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePerfectRefractorMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Amount of refraction
-								const IPainter& ior				///< [in] Index of refraction
+								const IScalarPainter& ior		///< [in] Index of refraction
 								);
 
-	//! Creates a translucent material
+	//! Creates a translucent material.  Scalar params (extinction,
+	//! Phong exponent, multiple-scattering) are physical scalars
+	//! carried by `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTranslucentMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rF,				///< [in] Reflectance
-								const IPainter& T,				///< [in] Transmittance
-								const IPainter& ext,			///< [in] Extinction
-								const IPainter& N,				///< [in] Phong exponent
-								const IPainter& scat			///< [in] Multiple scattering component
+								const IPainter& rF,				///< [in] Reflectance (color)
+								const IPainter& T,				///< [in] Transmittance (color)
+								const IScalarPainter& ext,		///< [in] Extinction (scalar)
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
+								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
 								);
 
 	//! Creates a BioSpec skin material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBioSpecSkinMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-								const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+								const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+								const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+								const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+								const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+								const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+								const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+								const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+								const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+								const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+								const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+								const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+								const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+								const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+								const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+								const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+								const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+								const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+								const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+								const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 								const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
-								);
-
-	//! Creates a BioSpec skin BSSRDF material (BDPT-compatible)
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinBSSRDFMaterial(
-								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-								const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
-								const bool bSubdermalLayer,									///< Should the model simulate a perfectly reflecting subdermal layer?
-								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
-								);
-
-	//! Creates a BioSpec skin random-walk SSS material
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinRWMaterial(
-								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-								const Scalar roughness,										///< Surface roughness for microfacet boundary [0, 1]
-								const unsigned int maxBounces								///< Maximum random walk steps
 								);
 
 	//! Creates a Donner & Jensen 2008 spectral skin BSSRDF material (BDPT-compatible)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
-								const IPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
-								const IPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
-								const IPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
-								const IPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
-								const IPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
-								const IPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
-								const IPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
-								const IPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
+								const IScalarPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
+								const IScalarPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
+								const IScalarPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
+								const IScalarPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
+								const IScalarPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
+								const IScalarPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
+								const IScalarPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
+								const IScalarPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
+								const IScalarPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
 								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
 								);
 
-	//! Creates a generic human tissue material
+	//! Creates a generic human tissue material.  `sca` and `g` are
+	//! physical scalars carried by `IScalarPainter`.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGenericHumanTissueMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& sca,										///< [in] Scattering co-efficient
-								const IPainter& g,											///< [in] The g factor in the HG phase function
+								const IScalarPainter& sca,									///< [in] Scattering co-efficient (scalar)
+								const IScalarPainter& g,									///< [in] HG phase function g (scalar)
 								const Scalar whole_blood_,									///< Percentage of the tissue made up of whole blood
 								const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 								const Scalar bilirubin_concentration_,						///< Concentration of Bilirubin in whole blood
@@ -660,73 +1099,242 @@ namespace RISE
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
 								const IMaterial& top,										///< [in] Material on top
 								const IMaterial& bottom,									///< [in] Material on the bottom
-								const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-								const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-								const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-								const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-								const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+								const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+								const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+								const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+								const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+								const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 								const Scalar thickness,										///< [in] Thickness between the materials
-								const IPainter& extinction									///< [in] Extinction coefficient for absorption between layers
+								const IScalarPainter& extinction							///< [in] Extinction coefficient for absorption between layers (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								);
 
-	//! Creates Ward's isotropic gaussian material
+	//! Creates Ward's isotropic gaussian material.
+	//! `alpha` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardIsotropicGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alpha			///< [in] Standard deviation (RMS) of surface slope
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alpha			///< [in] Surface slope RMS (physical scalar)
 								);
 
-	//! Creates Ward's anisotropic elliptical gaussian material
+	//! Creates Ward's anisotropic elliptical gaussian material.
+	//! `alphax` / `alphay` are physical scalars carried by `IScalarPainter` —
+	//! see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardAnisotropicEllipticalGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alphax,			///< [in] Standard deviation (RMS) of surface slope in x
-								const IPainter& alphay			///< [in] Standard deviation (RMS) of surface slope in y
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alphax,		///< [in] Surface slope RMS in x (physical scalar)
+								const IScalarPainter& alphay		///< [in] Surface slope RMS in y (physical scalar)
 								);
 
-	//! Creates a GGX anisotropic microfacet material
+	//! Creates a GGX anisotropic microfacet material.
+	//! `alphaX` / `alphaY` (roughness), `ior`, and `ext` are physical scalars
+	//! carried by `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
-								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& ext				///< [in] Extinction coefficient
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar; ignored in schlick_f0 and constant modes)
+								const IScalarPainter& ext,			///< [in] Extinction coefficient (physical scalar; ignored in schlick_f0 and constant modes)
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
 
-	//! Creates a Cook Torrance material
+	//! Creates a GGX anisotropic microfacet material WITH the thin-film
+	//! interference slots (eFresnelThinFilmConductor).  This is the
+	//! ABI-preserving evolution of RISE_API_CreateGGXMaterial: that older
+	//! exported symbol is kept byte-for-byte (it now delegates here with
+	//! NULL film painters) so out-of-tree callers compiled against the old
+	//! header keep linking.  New callers that want thin-film use THIS
+	//! function.  The three film slots are IScalarPainter (physical scalar,
+	//! NO JH spectral uplift — see docs/ISCALARPAINTER_REFACTOR.md) and carry
+	//! the oxide FILM (the substrate metal stays on `ior`/`ext`).  They MUST
+	//! be non-NULL when `fresnel_mode == eFresnelThinFilmConductor`; the
+	//! parser/Job layer enforces presence before reaching here.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n (physical scalar); NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k (physical scalar); NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr,	///< [in] Thin-film oxide thickness in nm (physical scalar; may be spatially varying)
+								const IScalarPainter* tangent_rotation_scalar = nullptr	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation` (physical scalar, no JH uplift); preferred over `tangent_rotation` when both are non-NULL.  NULL = not bound via the Scalar pipe (falls back to `tangent_rotation`).
+								);
+
+	//! Creates a GGX material with an optional emissive painter.  Pass
+	//! emissive=NULL to skip the emitter (equivalent to RISE_API_CreateGGXMaterial).
+	//! Same scalar-slot conventions as RISE_API_CreateGGXMaterial.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterial(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy.  See RISE_API_CreateGGXMaterial.
+								);
+
+	//! Thin-film-aware sibling of RISE_API_CreateGGXEmissiveMaterial (the
+	//! emissive + thin-film combination).  ABI-preserving: the old symbol is
+	//! retained and delegates here with NULL film painters.  See
+	//! RISE_API_CreateGGXMaterialThinFilm for the film-slot conventions.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr,	///< [in] Thin-film oxide thickness in nm
+								const IScalarPainter* tangent_rotation_scalar = nullptr	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation`; see RISE_API_CreateGGXMaterialThinFilm.
+								);
+
+	//! Creates a glTF-spec pbrMetallicRoughness material.  Composes the
+	//! same painter graph as IJob::AddPBRMetallicRoughnessMaterial but
+	//! WITHOUT the Job-level painter manager — all internal helper
+	//! painters live as members of the returned material's BSDF/SPF
+	//! refcount chain (BlendPainter / UniformColorPainter constructors
+	//! addref their inputs; GGXMaterial addrefs the chain head).  The
+	//! caller is therefore responsible only for the lifetime of THEIR
+	//! input painters and the returned IMaterial — internal helpers
+	//! are reclaimed automatically when the material is released.
+	//!
+	//! Defaults preserve every pre-L7 / pre-L8 PBR-MR semantic:
+	//!   - specular_factor = NULL → 1.0 (standard 0.04 dielectric F0)
+	//!   - specular_color  = NULL → white (untinted)
+	//!   - anisotropy_factor = NULL → 0 (isotropic; αx = αy = roughness²)
+	//!   - anisotropy_rotation = NULL → 0 (aligned with surface tangent)
+	//!
+	//! Embedders that want the new L7 / L8 controls supply non-NULL
+	//! painters for the corresponding parameter; the resulting material
+	//! exhibits KHR_materials_specular and / or KHR_materials_anisotropy
+	//! behaviour.  See docs/PHYSICALLY_BASED_PIPELINE_PLAN.md Landings
+	//! 7 + 8 for the formulas.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePBRMetallicRoughnessMaterial(
+								IMaterial** ppi,					///< [out] Pointer to receive the material
+								const IPainter& base_color,			///< [in] baseColor painter (sRGB-decoded RGB)
+								const IPainter& metallic,			///< [in] Metallic painter (scalar in [0, 1])
+								const IPainter& roughness,			///< [in] Roughness painter (scalar in [0, 1])
+								const IPainter* emissive,			///< [in] Optional emissive painter; NULL = no emitter
+								const Scalar    emissive_scale,		///< [in] Multiplier on emissive radiance
+								const IPainter* specular_factor = nullptr,		///< [in] Landing 7 / KHR_materials_specular.  NULL = 1.0 (default 0.04 dielectric F0).
+								const IPainter* specular_color = nullptr,		///< [in] Landing 7 / KHR_materials_specular.  NULL = white (untinted).  Final dielectric F0 = 0.04 × specular_color × specular_factor.
+								const IPainter* anisotropy_factor = nullptr,	///< [in] Landing 8 / KHR_materials_anisotropy.  NULL = 0 (isotropic).
+								const IPainter* anisotropy_rotation = nullptr	///< [in] Landing 8 / KHR_materials_anisotropy.  NULL = no rotation.
+								);
+
+	//! Creates a Charlie sheen material for fabric / cloth (Estevez &
+	//! Kulla 2017 -- Lambda-polynomial visibility, NOT the Neubelt closed
+	//! form, which was replaced in 2026-05; see SheenBRDF.h).
+	//! Designed as the top layer in a CompositeMaterial(top=sheen,
+	//! bottom=baseGGX) pairing for glTF KHR_materials_sheen assets.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSheenMaterial(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& sheenColor,			///< [in] Sheen tint colour (typical 0..1)
+								const IScalarPainter& sheenRoughness	///< [in] Sheen roughness (physical scalar, typical 0..1; clamped to >= 1e-3 internally)
+								);
+
+	//! Creates a Cook Torrance material.
+	//! `facet` (roughness), `ior`, and `ext` are physical scalars carried by
+	//! `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCookTorranceMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& facet,			///< [in] Facet distribution
-								const IPainter& ior,			///< [in] IOR delta
-								const IPainter& ext				///< [in] Extinction factor
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& facet,		///< [in] Facet distribution (roughness — physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar)
+								const IScalarPainter& ext			///< [in] Extinction coefficient (physical scalar)
 								);
 
-	//! Creates a Oren-Nayar material
+	//! Creates a Oren-Nayar material.
+	//! `roughness` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateOrenNayarMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& reflectance,	///< [in] Reflectance
-								const IPainter& roughness		///< [in] Roughness
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& reflectance,		///< [in] Reflectance
+								const IScalarPainter& roughness		///< [in] Roughness (physical scalar)
 								);
 
-	//! Creates a Schlick material
+	//! Creates an Oren-Nayar material with an explicit model.
+	//! `energy_preserving` false is the classic model (what
+	//! RISE_API_CreateOrenNayarMaterial makes); true is EON, the
+	//! energy-preserving model whose `roughness` is in [0, 1] (see
+	//! OrenNayarBRDF::EONValue).  A separate function, so the existing
+	//! export keeps its signature.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateOrenNayarMaterialModel(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& reflectance,		///< [in] Reflectance
+								const IScalarPainter& roughness,	///< [in] Roughness (physical scalar)
+								const bool energy_preserving		///< [in] true: EON; false: classic
+								);
+
+	//! Creates a physically-based bounded N-ary mix material (`mix_material`).
+	//! Weights are response coefficients (sum <= 1; shortfall absorbs; sum > 1
+	//! divides by sum and logs once).  `pChildren[i]` may be NULL for an
+	//! explicit black absorber (`none`); `pModifiers` or `pModifiers[i]` may
+	//! be NULL; `pPassthroughWeight` may be NULL.  Refuses nested mixes and
+	//! containment-tracking / refracting leaves.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMixMaterial(
+								IMaterial** ppi,								///< [out] Pointer to receive the material
+								const IMaterial* const* pChildren,				///< [in] Array of child materials (nullable entry = none)
+								const IScalarPainter* const* pWeights,			///< [in] Array of scalar weight painters (required non-null)
+								const IRayIntersectionModifier* const* pModifiers, ///< [in] Optional per-child modifiers (array or entries nullable)
+								const unsigned int numChildren,					///< [in] Number of child entries (>= 1)
+								const IScalarPainter* pPassthroughWeight		///< [in] Optional pass-through weight scalar painter
+								);
+
+	//! Creates a thin two-sided diffuse reflection + diffuse transmission material
+	//! (`diffuse_transmission_material`).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDiffuseTransmissionMaterial(
+								IMaterial** ppi,				///< [out] Pointer to receive the material
+								const IPainter& reflectance,	///< [in] Diffuse reflectance painter
+								const IPainter& transmittance	///< [in] Diffuse transmittance painter
+								);
+
+	//! Creates a Schlick material.
+	//! `roughness` and `isotropy` are physical scalars carried by
+	//! `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSchlickMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& roughness,		///< [in] Roughness
-								const IPainter& isotropy		///< [in] Isotropy
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& roughness,	///< [in] Roughness (physical scalar)
+								const IScalarPainter& isotropy		///< [in] Isotropy (physical scalar)
 								);
 
 	//! Creates a datadriven material
@@ -746,14 +1354,39 @@ namespace RISE
 								const Scalar scale				///< [in] Value to scale radiant exitance by
 								);
 
-	//! Creates a phong luminaire material
+	//! Creates a phong luminaire material.  `N` is a physical scalar
+	//! carried by `IScalarPainter` (Phong exponent).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePhongLuminaireMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& radEx,			///< [in] Radiance exitance
+								const IPainter& radEx,			///< [in] Radiance exitance (color)
 								const IMaterial& mat,			///< [in] Material to use for all non emmission properties
-								const IPainter& N,				///< [in] Phong exponent
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
 								const Scalar scale				///< [in] Value to scale radiant exitance by
+								);
+
+	//! Creates a hair material (Chiang et al. 2016 near-field hair/fur
+	//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly one of `eumelanin` /
+	//! `pheomelanin` (either or both -- they count as ONE tier),
+	//! `sigma_a`, or `color` should be non-NULL; the caller (Job /
+	//! the chunk parser) enforces the exclusivity diagnostic before
+	//! reaching here.  `beta_m` / `beta_n` / `alpha` / `ior` are all
+	//! physical scalars carried by `IScalarPainter` -- see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairMaterial(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IScalarPainter* eumelanin,	///< [in] Tier 1a: eumelanin concentration; NULL = tier not bound
+								const IScalarPainter* pheomelanin,	///< [in] Tier 1b: pheomelanin concentration; NULL = tier not bound
+								const IScalarPainter* sigma_a,		///< [in] Tier 2: direct absorption; NULL = tier not bound
+								const IPainter* color,				///< [in] Tier 3: artist reflectance; NULL = tier not bound
+								const IScalarPainter& beta_m,		///< [in] Longitudinal roughness (physical scalar)
+								const IScalarPainter& beta_n,		///< [in] Azimuthal roughness (physical scalar)
+								const IScalarPainter& alpha,		///< [in] Cuticle scale tilt, degrees (physical scalar)
+								const IScalarPainter& ior,			///< [in] Fibre index of refraction (physical scalar)
+								const IScalarPainter* medulla_ratio,	///< [in] Yan 2017 medulla radius ratio kappa; NULL or 0 = no medulla
+								const IScalarPainter* medulla_scatter,	///< [in] Medulla scattering coefficient (physical scalar); NULL = default
+								const IScalarPainter* medulla_g			///< [in] Medulla HG anisotropy (physical scalar); NULL = default
 								);
 
 
@@ -806,6 +1439,107 @@ namespace RISE
 								const Vector2& vShift			///< [in] How much to shift the function by
 								);
 
+	//! Creates a controlled-smoothness radial-bump painter (test/diagnostic).
+	//! Implements both IPainter and IFunction2D.  smoothnessMode: 0=Heaviside,
+	//! 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian.  See
+	//! `Painters/ControlledSmoothness2DPainter.h` for details.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateControlledSmoothness2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Low/zero-end color painter
+								const IPainter& cB,				///< [in] High/peak-end color painter
+								const Scalar centerU,			///< [in] Bump center, U axis (UV space)
+								const Scalar centerV,			///< [in] Bump center, V axis (UV space)
+								const Scalar radius,			///< [in] Bump radius (UV space)
+								const Scalar amplitude,			///< [in] Peak height
+								const unsigned int smoothnessMode	///< [in] 0/1/2/3/5/99
+								);
+
+	//! Creates a polynomial-based Function2D painter.  Evaluates a
+	//! polynomial in normalised coords (x,y) = ((u−center.u)/scale.u,
+	//! (v−center.v)/scale.v).  `polynomialType`:
+	//!   0 = radial_bump        (amplitude × max(0, 1 − r²)^degree)
+	//!   1 = monomial           (amplitude × x^powerX × y^powerY)
+	//!   2 = paraboloid         (amplitude × (x² + y²))
+	//!   3 = hyperbolic_saddle  (amplitude × (x² − y²))
+	//!   4 = monkey_saddle      (amplitude × (x³ − 3·x·y²))
+	//!   5 = bivariate          (amplitude × Σ a_{ij} x^i y^j, i+j ≤ degree)
+	//! For bivariate, pCoeffs supplies the (degree+1)(degree+2)/2
+	//! coefficients in row-major triangular order — see
+	//! `Painters/PolynomialFunction2DPainter.h` for the exact
+	//! ordering.  Pass nullptr / 0 for non-bivariate types.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePolynomialFunction2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Zero/low-end color painter
+								const IPainter& cB,				///< [in] Positive/peak-end color painter
+								const unsigned int polynomialType,	///< [in] Type enum (0..5)
+								const Scalar centerU,			///< [in] U origin for normalised x
+								const Scalar centerV,			///< [in] V origin for normalised y
+								const Scalar scaleU,			///< [in] U divisor (x = (u − cu)/sU)
+								const Scalar scaleV,			///< [in] V divisor
+								const Scalar amplitude,			///< [in] Global multiplier
+								const unsigned int degree,		///< [in] Degree (radial_bump / bivariate)
+								const unsigned int powerX,		///< [in] x exponent (monomial only)
+								const unsigned int powerY,		///< [in] y exponent (monomial only)
+								const Scalar* pCoeffs,			///< [in] Bivariate coefficients (or nullptr)
+								const unsigned int nCoeffs		///< [in] Number of bivariate coefficients (or 0)
+								);
+
+	//! Creates a composable Function2D painter.  Combines two operand
+	//! Function2Ds per a chosen binary operator (sum/product/lerp/max/min/
+	//! difference), after applying per-operand weight and (u,v) affine
+	//! transform, then a global output remap.  Implements both IPainter
+	//! (color interp between cA/cB by composite value) and IFunction2D
+	//! (the scalar combination — driveable by DisplacedGeometry).
+	//! Operator integer mapping: 0=Sum, 1=Product, 2=Lerp, 3=Max, 4=Min,
+	//! 5=Difference.  Unknown values fall back to Sum with a warning.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCompositeFunction2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Low-value color painter
+								const IPainter& cB,				///< [in] High-value color painter
+								const IFunction2D& childA,		///< [in] First operand Function2D
+								const IFunction2D& childB,		///< [in] Second operand Function2D
+								const unsigned int op,			///< [in] Operator (0/1/2/3/4/5)
+								const Scalar weightA,			///< [in] Scalar multiplier on A
+								const Scalar uvScaleAU,			///< [in] U scale applied to (u,v) before sampling A
+								const Scalar uvScaleAV,			///< [in] V scale applied to (u,v) before sampling A
+								const Scalar uvOffsetAU,		///< [in] U offset applied to (u,v) before sampling A
+								const Scalar uvOffsetAV,		///< [in] V offset applied to (u,v) before sampling A
+								const Scalar weightB,			///< [in] Scalar multiplier on B
+								const Scalar uvScaleBU,			///< [in] U scale applied to (u,v) before sampling B
+								const Scalar uvScaleBV,			///< [in] V scale applied to (u,v) before sampling B
+								const Scalar uvOffsetBU,		///< [in] U offset applied to (u,v) before sampling B
+								const Scalar uvOffsetBV,		///< [in] V offset applied to (u,v) before sampling B
+								const Scalar lerpT,				///< [in] Lerp parameter (clamped to [0,1]; only used if op == Lerp)
+								const Scalar outputScale,		///< [in] Final-stage scalar multiplier
+								const Scalar outputOffset		///< [in] Final-stage scalar offset
+								);
+
+	//! Creates a sum-of-sines water-wave painter (Gerstner height variant).
+	/// Evaluate(u,v) returns the summed height of `numWaves` sine waves derived
+	/// from wind parameters + a deterministic seed.  Intended for
+	/// DisplacedGeometry displacement; color is interpolated between cA and cB
+	/// by the normalized height.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGerstnerWavePainter(
+								IPainter** ppi,						///< [out] Pointer to receive the painter
+								const IPainter& cA,					///< [in] Trough color painter
+								const IPainter& cB,					///< [in] Crest color painter
+								const unsigned int numWaves,		///< [in] Number of sine waves to sum
+								const Scalar medianWavelength,		///< [in] Central wavelength (UV units)
+								const Scalar wavelengthRange,		///< [in] Multiplicative range; span is [median/range, median*range]
+								const Scalar medianAmplitude,		///< [in] Amplitude at median wavelength
+								const Scalar amplitudePower,		///< [in] A_i = medianAmplitude * (lambda_i/medianWavelength)^power
+								const Scalar windDirX,				///< [in] Wind direction X (normalized internally)
+								const Scalar windDirY,				///< [in] Wind direction Y (normalized internally)
+								const Scalar directionalSpread,		///< [in] Per-wave angle jitter around wind direction (radians)
+								const Scalar dispersionSpeed,		///< [in] Multiplies sqrt(g*k) for the dispersion relation; tune motion speed
+								const unsigned int seed,			///< [in] RNG seed; identical seeds produce identical spectra
+								const Scalar time					///< [in] Simulation time (keyframeable at the scene level)
+								);
+
 	//! Creates a 2D perlin noise painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePerlin3DPainter(
@@ -819,6 +1553,135 @@ namespace RISE
 								);
 
 
+	bool RISE_API_CreateWavelet3DPainter(
+								IPainter** ppi,
+								const unsigned int nTileSize,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	bool RISE_API_CreateReactionDiffusion3DPainter(
+								IPainter** ppi,
+								const unsigned int nGridSize,
+								const Scalar dDa,
+								const Scalar dDb,
+								const Scalar dFeed,
+								const Scalar dKill,
+								const unsigned int nIterations,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	bool RISE_API_CreateGabor3DPainter(
+								IPainter** ppi,
+								const Scalar dFrequency,
+								const Scalar dBandwidth,
+								const Vector3& vOrientation,
+								const Scalar dImpulseDensity,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D simplex noise painter
+	bool RISE_API_CreateSimplex3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D SDF primitives painter
+	bool RISE_API_CreateSDF3DPainter(
+								IPainter** ppi,
+								const unsigned int nType,
+								const Scalar dParam1,
+								const Scalar dParam2,
+								const Scalar dParam3,
+								const Scalar dShellThickness,
+								const Scalar dNoiseAmplitude,
+								const Scalar dNoiseFrequency,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D curl noise painter
+	bool RISE_API_CreateCurlNoise3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dEpsilon,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D domain-warped noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDomainWarp3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D Perlin-Worley hybrid (cloud noise) painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePerlinWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence for Perlin FBM
+								const unsigned int nOctaves,	///< [in] Number of octaves for Perlin
+								const Scalar dWorleyJitter,		///< [in] Worley jitter [0,1]
+								const Scalar dBlend,			///< [in] Blend factor [0,1]: 0=Perlin, 1=Worley
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB,				///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
+	//! Creates a 3D Worley (cellular) noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dJitter,			///< [in] Jitter amount [0,1]
+								const unsigned int nMetric,		///< [in] Distance metric (0=Euclidean, 1=Manhattan, 2=Chebyshev)
+								const unsigned int nOutput,		///< [in] Output mode (0=F1, 1=F2, 2=F2-F1)
+								const IPainter& cA, 			///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
+	//! Creates a 3D turbulence noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTurbulence3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const IPainter& cA, 			///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
 	//! Creates a spectral color painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSpectralColorPainter(
@@ -827,18 +1690,34 @@ namespace RISE
 								const Scalar scale				///< [in] How much to scale the amplitudes by
 								);
 
-	//! Creates a texture painter
+	//! Creates a texture painter.  The optional `kind` selects the
+	//! spectral-uplift role applied at sample time (see
+	//! RISE_API_CreateUniformColorPainter for the role semantics).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTexturePainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								IRasterImageAccessor* pSA		///< [in] Raster Image accessor to the image containing the texture
+								IRasterImageAccessor* pSA,		///< [in] Raster Image accessor to the image containing the texture
+								SpectrumKind kind = eSpectrumKind_Albedo	///< [in] Spectral-uplift role
 								);
 
-	//! Creates a painter that paints a uniform color
+	//! Creates a painter that paints a uniform color.  The optional
+	//! `kind` selects the spectral-uplift role: Albedo (default; rgb
+	//! ∈ [0,1] reflectance) / Unbounded (rgb ≥ 0; for HDR / emissive)
+	//! / Illuminant (reference-SPD-pre-multiplied; D65 post Stage B colour-space migration, for light SPDs).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformColorPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								const RISEPel& c				///< [in] Color to paint
+								const RISEPel& c,				///< [in] Color to paint
+								SpectrumKind kind = eSpectrumKind_Albedo	///< [in] Spectral-uplift role
+								);
+
+	//! Creates a painter that returns the per-vertex color the geometry
+	//! interpolates at the hit point (`ri.vColor`).  Falls back to the
+	//! supplied default for hits on geometry without vertex colors.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVertexColorPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const RISEPel& fallback			///< [in] Color to use when no per-vertex color is present
 								);
 
 	//! Creates a painter that paints a voronoi diagram
@@ -861,6 +1740,24 @@ namespace RISE
 								const Scalar bsize				///< [in] Size of the borders
 								);
 
+	//! P1-A fix (S7 review round 1): RISE_API_CreateVoronoi3DPainter's
+	//! signature above must stay byte-identical for out-of-tree link
+	//! compatibility (a defaulted parameter still changes the mangled
+	//! symbol -- an old caller's call site references a symbol the new
+	//! binary would no longer export).  The `space` (P2.5, doc 88) form
+	//! is therefore a new, separately-named function, matching the
+	//! repo's `*WithFilter` / `*WithEmission` / `*WithBasis` /
+	//! `*WithVariant` idiom (there is no `*InSpace`/`*In<X>` precedent).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVoronoi3DPainterWithSpace(
+								IPainter**	ppi,				///< [out] Pointer to recieve the painter
+								const std::vector<Point3> pts,	///< [in] The locations of the generators
+								const std::vector<IPainter*> p,	///< [in] The painters for the generators
+								const IPainter& border,			///< [in] Painter for the border
+								const Scalar bsize,				///< [in] Size of the borders
+								const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+								);
+
 	//! Creates a iridescent painter (a painter whose color changes as viewing angle changes)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIridescentPainter(
@@ -870,7 +1767,9 @@ namespace RISE
 								const double bias				///< [in] Biases the iridescence to one color or another
 								);
 
-	//! Creates a painter that paints a spectrum from a Function1D
+	//! Creates a painter that paints a spectrum from a Function1D.
+	//! Precondition: `func` must be fully built (all control points added)
+	//! before this call -- its RGB projections (DL-396) are cached here.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFunction1DSpectralPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
@@ -898,6 +1797,103 @@ namespace RISE
 								const IPainter& mask			///< [in] Blend mask
 								);
 
+	//! P1-A fix (S7 review round 1): same rationale as
+	//! RISE_API_CreateVoronoi3DPainterWithSpace above -- the `mode`
+	//! (P2.4, doc 88) form is a new, separately-named function so the
+	//! 4-argument signature above stays byte-identical.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendPainterWithMode(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& a,				///< [in] First color
+								const IPainter& b,				///< [in] Second color
+								const IPainter& mask,			///< [in] Blend mask
+								const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+								);
+
+	//! Creates a channel-extraction painter (glTF MR-texture helper).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateChannelPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter
+								const char channel,				///< [in] 0=R, 1=G, 2=B
+								const Scalar scale,				///< [in] Scale on extracted channel
+								const Scalar bias				///< [in] Bias added after scale
+								);
+
+	//! Creates a TEXCOORD_1 selector painter (glTF L12.D).  Wraps the
+	//! source painter and routes its UV reads through ri.ptCoord1
+	//! instead of ri.ptCoord.  When the geometry has no TEXCOORD_1,
+	//! the intersection code mirrors ptCoord into ptCoord1, so the
+	//! wrapper degrades to a passthrough.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTexCoord1Painter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source			///< [in] Source painter
+								);
+
+	//! Creates a UV-transform wrapper painter (glTF KHR_texture_transform).
+	//! Applies T * R * S to the source's (u, v) before sampling, with the
+	//! KHR sign convention (positive `rotation` rotates the IMAGE clockwise).
+	//! Defaults (0/0/0/1/1) collapse to a passthrough.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateUVTransformPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter
+								const Scalar offset_u,			///< [in] U translation
+								const Scalar offset_v,			///< [in] V translation
+								const Scalar rotation,			///< [in] Rotation in radians (KHR sign)
+								const Scalar scale_u,			///< [in] U scale
+								const Scalar scale_v			///< [in] V scale
+								);
+
+	//! Creates a mapping_painter (doc 88 P2.3): the author-facing
+	//! scale/rotate/translate/reproject wrapper -- NOT the glTF
+	//! KHR_texture_transform bridge (that stays UVTransformPainter).
+	//! See MappingPainter.h for the design rationale.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMappingPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+								const Vector3& scale,				///< [in] Per-axis scale (uv: x/y only)
+								const Vector3& rotateDeg,			///< [in] Per-axis rotation in DEGREES (uv: z only)
+								const Vector3& translate,			///< [in] Per-axis translation (uv: x/y only)
+								const Scalar blendSharpness		///< [in] Triplanar normal-weight exponent (ignored otherwise)
+								);
+
+	//! Creates a stochastic_tile_painter (doc 88 P3.1, S8): hex-tiling
+	//! with histogram-preserving blending over `source` -- breaks the
+	//! visible tile-grid repetition of a photographic source without
+	//! authoring extra content.  See StochasticTilePainter.h for the
+	//! full algorithm (Heitz & Neyret 2018; Burley JCGT 2019).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateStochasticTilePainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const Scalar tileScale,			///< [in] Lattice density (larger = smaller/more tiles)
+								const unsigned int seed,			///< [in] Hash seed for per-vertex offsets
+								const RISEPel& mean,				///< [in] Source's mean value (author-supplied, NOT estimated -- see header)
+								const Scalar blendGamma			///< [in] Barycentric-weight sharpening exponent
+								);
+
+	//! Creates a scatter_painter (doc 88 P3.2, S8): texture-bombing /
+	//! FX-map-lite, stamping `source` over `background` on a jittered
+	//! square lattice.  See ScatterPainter.h for the full algorithm
+	//! and the neighbourhood-reach proof the parser enforces.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateScatterPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Stamp painter (addref'd)
+								const IPainter& background,		///< [in] Background painter (addref'd)
+								const Scalar cellScale,			///< [in] Lattice density
+								const Scalar stampScale,			///< [in] Base stamp size within a cell
+								const Scalar jitterPosition,		///< [in] Position jitter, [0,1]
+								const Scalar jitterRotationDeg,	///< [in] Max rotation jitter, degrees
+								const Scalar jitterScale,			///< [in] Relative +/- scale jitter, [0,1)
+								const Scalar probability,			///< [in] Per-cell occupancy probability, [0,1]
+								const unsigned int seed			///< [in] Hash seed
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Radiance maps
@@ -909,6 +1905,28 @@ namespace RISE
 								IRadianceMap** ppi,				///< [out] Pointer to recieve the radiance map
 								const IPainter& painter,		///< [in] Painter to use for the map
 								const Scalar scale				///< [in] How much to scale the values in the map by
+								);
+
+	//! Creates an analytic Hosek-Wilkie spectral sun-and-sky radiance
+	//! map (Landing 3.D).  v1 internally uses Preetham 1999 Perez form
+	//! (HW supplemental coefficients are a future landing); the public
+	//! API stays stable for the v2 swap.
+	//!
+	//! Solar elevation is in degrees from the horizon (0 = horizon,
+	//! 90 = zenith).  Azimuth in degrees, 0 = +Z, 90 = +X.  Turbidity
+	//! ∈ [1, 10] (1 = arctic clear, ~3 = typical clear day, 10 =
+	//! polluted).  Ground albedo per-channel ∈ [0, 1].  The
+	//! `skyIntensityScale` is a scene-level multiplier on the sky
+	//! radiance only — it does NOT affect the matched directional
+	//! light's intensity (which is created separately).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHosekWilkieRadianceMap(
+								IRadianceMap** ppi,				///< [out] Pointer to receive the radiance map
+								const Scalar solarElevationDegrees,
+								const Scalar solarAzimuthDegrees,
+								const Scalar turbidity,
+								const RISEPel& groundAlbedo,
+								const Scalar skyIntensityScale
 								);
 
 	//////////////////////////////////////////////////////////
@@ -1188,6 +2206,186 @@ namespace RISE
 								IPainterManager** ppi			///< [out] Pointer to recieve the manager
 								);
 
+	//! Creates a scalar-painter manager (see IScalarPainter.h).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateScalarPainterManager(
+								IScalarPainterManager** ppi		///< [out] Pointer to recieve the manager
+								);
+
+	// =========================================================================
+	// Scalar painters (physical-scalar values; no colorspace).  Each
+	// painter implements `IScalarPainter` (see IScalarPainter.h).  Used
+	// for material parameters like IOR, scattering, roughness, etc.
+	// =========================================================================
+
+	//! Constant scalar value at every position and wavelength.
+	bool RISE_API_CreateUniformScalarPainter(
+								IScalarPainter** ppi,			///< [out] Created painter
+								Scalar value					///< [in]  Scalar value
+								);
+
+	//! Per-channel scalar triple (R, G, B authored independently).  In
+	//! the spectral path interpolates piecewise-linearly across the
+	//! channel nominal wavelengths (450/550/650 nm).
+	bool RISE_API_CreateRGBScalarPainter(
+								IScalarPainter** ppi,
+								Scalar r,
+								Scalar g,
+								Scalar b
+								);
+
+	//! Piecewise-linear interpolation across (nm, value) samples.
+	//! `samples` is a vector of (wavelength, scalar) pairs; the
+	//! constructor sorts and clamps outside the sample range.
+	bool RISE_API_CreatePiecewiseLinearScalarPainter(
+								IScalarPainter** ppi,
+								const std::vector<std::pair<Scalar, Scalar>>& samples
+								);
+
+	//! Analytic Sellmeier IOR formula:
+	//!   n²(λ) = 1 + Σᵢ Bᵢ·λ² / (λ² - Cᵢ),  λ in micrometres.
+	bool RISE_API_CreateSellmeierScalarPainter(
+								IScalarPainter** ppi,
+								Scalar B1, Scalar B2, Scalar B3,
+								Scalar C1, Scalar C2, Scalar C3
+								);
+
+	//! Polynomial function of wavelength:
+	//!   f(λ) = c₀ + c₁·λ + … + cₙ·λⁿ
+	//! Horner-form evaluation.
+	bool RISE_API_CreatePolynomialScalarPainter(
+								IScalarPainter** ppi,
+								const std::vector<Scalar>& coeffs
+								);
+
+	//! Wraps an existing IFunction1D as a wavelength-varying scalar
+	//! painter.  Lets authors reuse RISE's existing function-1d
+	//! infrastructure (piecewise-linear, polynomial, custom C++
+	//! subclasses) as a scalar painter.
+	bool RISE_API_CreateFunction1DScalarPainter(
+								IScalarPainter** ppi,
+								IFunction1D* pFunc				///< [in] Wavelength-driven function (addref'd)
+								);
+
+	//! Wraps an existing IFunction2D as a spatially-varying scalar
+	//! painter.  Evaluates at `(ri.ptCoord.x, ri.ptCoord.y)`.
+	bool RISE_API_CreateFunction2DScalarPainter(
+								IScalarPainter** ppi,
+								IFunction2D* pFunc				///< [in] Spatial function (addref'd)
+								);
+
+	//! Texture-driven scalar painter.  Samples the raster texture at
+	//! `ri.ptCoord` and returns the chosen channel value as a pure
+	//! scalar — no JH-uplift, no colorspace conversion.
+	bool RISE_API_CreateTextureScalarPainter(
+								IScalarPainter** ppi,
+								IRasterImageAccessor* pRIA,		///< [in] Texture accessor (addref'd)
+								unsigned int channel			///< [in] 0=R, 1=G, 2=B
+								);
+
+	//! Texture-driven scalar painter with an affine remap of the
+	//! sampled channel: `out = bias + scale * rawTexel` (rawTexel in
+	//! [0,1]).  Lets a [0,1] greyscale map drive a physical quantity
+	//! in real units (e.g. an oxide-thickness map `scale 220 bias 30`
+	//! -> 30..250 nm) without a separate scaling painter in the chain.
+	//! Like the un-remapped variant: NO JH-uplift, NO colourspace
+	//! conversion.  Distinct symbol from
+	//! RISE_API_CreateTextureScalarPainter so the frozen 3-arg ABI is
+	//! preserved for out-of-tree callers.
+	bool RISE_API_CreateTextureScalarPainterAffine(
+								IScalarPainter** ppi,
+								IRasterImageAccessor* pRIA,		///< [in] Texture accessor (addref'd)
+								unsigned int channel,			///< [in] 0=R, 1=G, 2=B
+								Scalar scale,					///< [in] multiplier on the raw texel
+								Scalar bias						///< [in] additive offset
+								);
+
+	//! Composition: child scalar painter × constant.
+	bool RISE_API_CreateScaledScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pChild,			///< [in] Base painter (addref'd)
+								Scalar scale
+								);
+
+	//! Composition: element-wise product of two scalar painters
+	//! (`ScalarTriple` and per-wavelength).  Used for spatial × spectral
+	//! and similar combinations.
+	bool RISE_API_CreateMultiplyScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pA,				///< [in] Painter A (addref'd)
+								IScalarPainter* pB				///< [in] Painter B (addref'd)
+								);
+
+	//! Composition: element-wise WEIGHTED SUM of two scalar painters
+	//! (`ScalarTriple` and per-wavelength) -- `weightA*a + weightB*b`.
+	//! Multiply's additive sibling: layers one field's detail on top of
+	//! another's without a missing/zero region in one operand zeroing
+	//! the whole result the way a product would.
+	bool RISE_API_CreateAddScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pA,				///< [in] Painter A (addref'd)
+								IScalarPainter* pB,				///< [in] Painter B (addref'd)
+								Scalar weightA = Scalar( 1.0 ),	///< [in] Multiplier on A's contribution
+								Scalar weightB = Scalar( 1.0 )	///< [in] Multiplier on B's contribution
+								);
+
+	//! Composition: two-argument arctangent of two scalar painters
+	//! (`ScalarTriple` and per-wavelength) -- atan2(y, x).  DL-17: built
+	//! for KHR_materials_anisotropy's per-texel rotation, where `y`/`x`
+	//! are typically PainterChannelScalarPainters reading a texture's G/R
+	//! channels remapped to [-1, 1].
+	bool RISE_API_CreateAtan2ScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pY,				///< [in] Y operand (addref'd)
+								IScalarPainter* pX				///< [in] X operand (addref'd)
+								);
+
+	//! Creates the scalar_painter { expression ... } PHYSICAL-SCALAR-pipe
+	//! surface (doc 88 P1, S2): no colorspace, no JH uplift, by
+	//! construction.  A scalar-typed program yields a uniform
+	//! ScalarTriple; a vec3-typed program yields a genuine per-channel
+	//! (x->R, y->G, z->B) triple with HasPerChannelVariation() == true.
+	//! `time` is fixed at 0 (IScalarPainter has no IKeyframable hook; see
+	//! ExpressionScalarPainter's class doc comment).
+	bool RISE_API_CreateExpressionScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const Implementation::ExpressionProgram& prog,	///< [in] Compiled expression program (context vars enabled)
+								const std::vector<Implementation::ParamSpec>& paramSpecs	///< [in] Parsed `param` metadata, for introspection
+								);
+
+	//! Creates the scalar_painter { painter ... } PHYSICAL-SCALAR-pipe
+	//! bridge (doc 88 P2.1, S3): generalizes the raster-only `texture`
+	//! form to ANY colour painter.  Reads one channel of `source`'s
+	//! GetColor (R/G/B) or GetAlpha (A), remapped `out = bias + scale *
+	//! rawChannel` -- no JH-uplift, no colourspace conversion (source's
+	//! own GetColor already carries whatever colourspace it was
+	//! authored in; see PainterChannelScalarPainter.h's caveat).
+	bool RISE_API_CreatePainterChannelScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const IPainter&      source,		///< [in] Any colour painter (addref'd)
+								unsigned int         channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+								Scalar               scale,		///< [in] multiplier on the raw channel
+								Scalar               bias			///< [in] additive offset
+								);
+
+	//! Creates a 3-channel RGB bridge from any IPainter to IScalarPainter
+	//! (`scalar_painter { painter ... channel RGB }`).  Forwards all three RGB
+	//! channels of `source.GetColor(ri)` remapped as `bias + scale * c[i]`,
+	//! with `RGBScalarPainter`'s 450/550/650 nm piecewise-linear spectral
+	//! interpolation for `GetValueAtNM`.
+	bool RISE_API_CreatePainterRGBScalarPainter(
+								IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+								const IPainter&      source,		///< [in] Any colour painter (addref'd)
+								Scalar               scale,		///< [in] multiplier on each RGB channel
+								Scalar               bias			///< [in] additive offset on each RGB channel
+								);
+
+	//! Creates a camera manager
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCameraManager(
+								ICameraManager** ppi			///< [out] Pointer to recieve the manager
+								);
+
 	//! Creates a material manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateMaterialManager(
@@ -1226,13 +2424,142 @@ namespace RISE
 	// Modifiers
 	//////////////////////////////////////////////////////////
 
-	//! Creates a bump map
+	//! LEGACY SHIM.  Creates a bump map -- which since 2026-09-06 is a
+	//! `ReliefModifier` over a `Function2DScalarPainter` in the UV domain,
+	//! with the design-7.2 amplitude fold applied (`S' = -S*2W`, or `-S`
+	//! through the `Ex` form with normalizeGradient TRUE; a non-positive
+	//! `window` folds to an inert `scale 0`).  The `BumpMap` class and the
+	//! `bumpmap_modifier` chunk were REMOVED in that change
+	//! (docs/RELIEF_MODIFIER_DESIGN.md 7.5); these two entry points remain
+	//! ONLY because their signatures are ABI-frozen for out-of-tree callers
+	//! and for the Blender bridge, which reaches them through
+	//! `IJob::AddBumpMapModifier`.  NEW code should call
+	//! `RISE_API_CreateReliefModifier` directly: it takes any
+	//! `IScalarPainter` height field, needs no texcoords in its default
+	//! `Surface` domain, and does not carry the legacy sign inversion.
+	//! See RISE_API.cpp for the fold's derivation.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBumpMapModifier(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
 								const IFunction2D& func,		///< [in] The function to use for the bumps
 								const Scalar scale,				///< [in] Factor to scale values by
 								const Scalar window				///< [in] Size of the window
+								);
+
+	//! LEGACY SHIM.  Creates a bump map, with control over whether `scale`
+	//! is the window-independent gradient multiplier.  The legacy entry
+	//! point above is a thin wrapper that calls this with
+	//! normalizeGradient=false (preserving its amplitude-couples-to-window
+	//! behaviour).  Same removal note as above.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
+								);
+
+	//! Creates a tangent-space normal-map modifier.  Painter must be
+	//! linear-RGB (no sRGB decode).  See Modifiers/NormalMap.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNormalMapModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IPainter& painter,		///< [in] Linear-RGB normal-map painter
+								const Scalar scale				///< [in] glTF normalTexture.scale
+								);
+
+	//! Creates a discrete-facet glint modifier: an object-space cell
+	//! hash places sparse mirror-like micro-facets (jittered centre +
+	//! radius test, Bernoulli existence); a hit on a facet has its
+	//! shading normal replaced by the facet's Rayleigh-tilted normal,
+	//! making the EXISTING materials twinkle (enamel flecks, metallic
+	//! flake, snow, glitter).  See Modifiers/GlintModifier.h and
+	//! docs/ENAMEL_SPARKLE_BRDF.md.  Parameters MUST be finite — the
+	//! ctor goes inert on garbage (volatile-laundered check), but the
+	//! caller owns loud rejection.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+								);
+
+	//! Creates a painter-driven micro-relief modifier: the height field is
+	//! ANY `IScalarPainter` (an expression, a voronoi cell field, a ramp, a
+	//! texture, or any colour painter through the
+	//! `scalar_painter { painter X channel R }` bridge), differenced
+	//! centrally in the hit's tangent plane to tilt the shading normal.
+	//! Needs no texcoords in the default `Surface` domain.  Positive height
+	//! RISES ALONG +N (Blinn / PBRT-v4 convention) -- the OPPOSITE sign of
+	//! the removed `bumpmap_modifier`, which treated its field as depth.  A zero or
+	//! non-finite `scale` makes the modifier inert.  See
+	//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd); `.v[0]` is read
+								const Scalar scale,							///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+								const Implementation::ReliefDomain domain,	///< [in] Surface (3D field, no texcoords needed) or UV (legacy sampling geometry)
+								const Scalar step							///< [in] Central-difference half-step; <= 0 selects the automatic rule
+								);
+
+	//! As `RISE_API_CreateReliefModifier`, plus `maxSlope`: an upper bound
+	//! on the tangent-plane tilt `|scale * grad h|`, expressed as a SLOPE
+	//! (1.0 = 45 degrees, 0.577 = 30).  When the scaled gradient exceeds
+	//! it, the gradient is rescaled to that magnitude with its DIRECTION
+	//! PRESERVED.  `<= 0` (what the plain entry point above passes) means
+	//! no clamp -- the legacy unbounded behaviour.
+	//!
+	//! The clamp exists because an unbounded tilt on a fine field is not a
+	//! cosmetic problem: at a `scale` large enough for the relief to read,
+	//! the shading normal leans far enough that the materials'
+	//! geometric-horizon gates reject nearly every sampled direction and
+	//! the surface shades BLACK.  See Modifiers/ReliefModifier.h for the
+	//! precise statement (it is the horizon as seen from the ray, not the
+	//! surface plane, that gets crossed) and
+	//! docs/RELIEF_MODIFIER_DESIGN.md section 3.2.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateReliefModifierEx(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd); `.v[0]` is read
+								const Scalar scale,							///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+								const Implementation::ReliefDomain domain,	///< [in] Surface (3D field, no texcoords needed) or UV (legacy sampling geometry)
+								const Scalar step,							///< [in] Central-difference half-step; <= 0 selects the automatic rule
+								const Scalar maxSlope						///< [in] Tilt bound as a slope (1 = 45 deg); <= 0 = unclamped
+								);
+
+	//! Creates a modifier_stack: an ordered composition of OTHER modifiers,
+	//! applied in authored order -- each member sees the PREVIOUS member's
+	//! vNormal/onb, so a stack behaves exactly like a hand-written chain of
+	//! `Modify` calls.  The smallest fix for `Object::pModifier` being a
+	//! single pointer (docs/RELIEF_MODIFIER_DESIGN.md section 4): "normal
+	//! map, then relief, then glint" needs a list, not a slot.  Rejects
+	//! `count == 0` or any null entry in `mods` -- an empty stack is a
+	//! parse-time mistake, not a legitimate no-op (matching
+	//! glint_modifier's stance).  See Modifiers/ModifierStack.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored (application) order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
+								);
+
+	//! Creates a blended_modifier: weighted blend of two ray-intersection
+	//! modifiers (`modA` at weight 0, `modB` at weight 1; either may be null
+	//! for the unperturbed surface normal, at least one must be non-null).
+	//! See Modifiers/BlendedModifier.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendedModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to receive the modifier
+								const IRayIntersectionModifier* pModA,		///< [in] Modifier at weight 0 (nullable = unperturbed normal)
+								const IRayIntersectionModifier* pModB,		///< [in] Modifier at weight 1 (nullable = unperturbed normal)
+								const IScalarPainter& weight				///< [in] Scalar blend factor in [0, 1]
 								);
 
 
@@ -1344,6 +2671,16 @@ namespace RISE
 	bool RISE_API_CreateObject(
 							IObjectPriv** ppi,					///< [out] Pointer to recieve object
 							const IGeometry* geom				///< [in] Geometry making up this objectzz
+							);
+
+	//! Creates a CONTAINER object -- a scene-graph node with NO geometry, used
+	//! as a pure transform that other objects are parented to
+	//! (docs/agentic-redesign/87-recursive-scene-graph.md).  The caller must
+	//! also hide it (SetWorldVisible(false)); every consumer that walks the
+	//! world-visible object list assumes a real intersectable.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateContainerObject(
+							IObjectPriv** ppi					///< [out] Pointer to recieve object
 							);
 
 	//! Creates a CSG object
@@ -1517,24 +2854,48 @@ bool RISE_API_CreateIrradianceCache(
 
 
 	//////////////////////////////////////////////////////////
+	// Film
+	//////////////////////////////////////////////////////////
+
+	//! Creates a Film — the pixel-grid descriptor that the
+	//! rasterizer reads to know what resolution and pixel aspect
+	//! ratio to produce.  A Scene has one active Film at a time;
+	//! the default (qHD 960x540, square pixels) is installed by
+	//! Job::InitializeContainers and can be overridden by a
+	//! `film` chunk in the scene file or by a CLI flag.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFilm(
+								IFilm** ppi,					///< [out] Pointer to receive the film object
+								const unsigned int width,		///< [in] Image width in pixels
+								const unsigned int height,		///< [in] Image height in pixels
+								const Scalar pixelAR			///< [in] Pixel aspect ratio (1.0 = square pixels)
+								);
+
+
+	//////////////////////////////////////////////////////////
 	// Rasterizer outputs
 	//////////////////////////////////////////////////////////
 
 	//! Creates a file rasterizer output
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFileRasterizerOutput(
-								IRasterizerOutput** ppi,			///< [out] Pointer to recieve the rasterizer output
-								const char* szPattern,				///< [in] File pattern
-								const bool bMultiple,				///< [in] Output multiple files (for animations usually)
-								const char type,					///< [in] Type of file
-																	///		0 - TGA
-																	///		1 - PPM
-																	///		2 - PNG
-																	///		3 - HDR
-																	///		4 - TIFF
-																	///		5 - RGBEA
-								const unsigned char bpp,			///< [in] Bits / pixel for the file
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								IRasterizerOutput** ppi,				///< [out] Pointer to recieve the rasterizer output
+								const char* szPattern,					///< [in] File pattern
+								const bool bMultiple,					///< [in] Output multiple files (for animations usually)
+								const char type,						///< [in] Type of file
+																		///		0 - TGA
+																		///		1 - PPM
+																		///		2 - PNG
+																		///		3 - HDR
+																		///		4 - TIFF
+																		///		5 - RGBEA
+																		///		6 - EXR
+								const unsigned char bpp,				///< [in] Bits / pixel for the file
+								const COLOR_SPACE color_space,			///< [in] Color space to apply
+								const Scalar exposureEV,				///< [in] Exposure offset in EV stops (LDR formats only)
+								const DISPLAY_TRANSFORM display_transform,	///< [in] Tone curve (LDR formats only)
+								const EXR_COMPRESSION exr_compression,	///< [in] EXR compression mode (EXR only)
+								const bool exr_with_alpha				///< [in] Write alpha channel (EXR only)
 								);
 
 	//////////////////////////////////////////////////////////
@@ -1608,25 +2969,39 @@ bool RISE_API_CreateIrradianceCache(
 								const RISEColor& shift				///< [in] Shift factor
 								);
 
-	//! Creates a nearest neighbour raster image accessor
+	//! Creates a nearest neighbour raster image accessor.  `wrap_s` /
+	//! `wrap_t` choose the per-axis address-wrap mode (0 = clamp, 1 =
+	//! repeat, 2 = mirrored repeat — see eRasterWrapMode).  Default 0
+	//! preserves the pre-2026-05-01 clamp-to-edge behaviour for any
+	//! existing caller that doesn't pass wrap params (notably the
+	//! `imageconverter` and `meshconverter` standalones built on
+	//! Linux/macOS that don't go through Job's painter API).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateNNBRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a bilinear raster image accessor
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBiLinRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0,				///< [in] Wrap mode for V axis
+								const bool mipmap = true,			///< [in] Build a mip pyramid + LOD-aware sampling (Landing 2; default ON for new code, OFF for vector-quantity normal maps — set explicitly false in those cases)
+								const bool supersample = false		///< [in] Footprint stochastic supersampling fallback for lowmem mode (no pyramid; jitter at base).  When mipmap is also true, mipmap wins.
 								);
 
 	//! Creates a catmull rom bicubic raster image accessor
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCatmullRomBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 
@@ -1634,7 +3009,9 @@ bool RISE_API_CreateIrradianceCache(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformBSplineBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a bicubic raster image accessor that uses the given matrix as the weights
@@ -1642,7 +3019,9 @@ bool RISE_API_CreateIrradianceCache(
 	bool RISE_API_CreateBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
 								IRasterImage& image,				///< [in] Raster image to access
-								const Matrix4& m
+								const Matrix4& m,
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a PNG reader
@@ -1660,6 +3039,14 @@ bool RISE_API_CreateIrradianceCache(
 								IWriteBuffer& buffer,				///< [in] Buffer to write to
 								const unsigned char bpp,			///< [in] Bits / pixel for the file
 								const COLOR_SPACE color_space		///< [in] Color space to apply
+								);
+
+	//! Creates a JPEG reader
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateJPEGReader(
+								IRasterImageReader** ppi,			///< [out] Pointer to recieve the raster image reader
+								IReadBuffer& buffer,				///< [in] Buffer containing JPEG data
+								const COLOR_SPACE color_space		///< [in] Color space in the file
 								);
 
 	//! Creates a TGA reader
@@ -1737,7 +3124,24 @@ bool RISE_API_CreateIrradianceCache(
 	bool RISE_API_CreateEXRWriter(
 								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
 								IWriteBuffer& buffer,				///< [in] Buffer to write to
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode (PIZ default)
+								const bool with_alpha				///< [in] Write alpha channel (true default)
+								);
+
+	//! Creates a EXR writer, choosing the channel pixel type.
+	//! Overload of the 5-arg form (which stays half/FP16 for ABI
+	//! stability).  `write_float == true` emits 32-bit FLOAT channels so
+	//! bright HDR pixels above the FP16 max (65504) survive instead of
+	//! being clamped to +Inf on write.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateEXRWriter(
+								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
+								IWriteBuffer& buffer,				///< [in] Buffer to write to
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode (PIZ default)
+								const bool with_alpha,				///< [in] Write alpha channel (true default)
+								const bool write_float				///< [in] true => 32-bit FLOAT channels; false => half (FP16)
 								);
 
 
@@ -1767,10 +3171,7 @@ bool RISE_API_CreateIrradianceCache(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDirectLightingShaderOp(
 								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const IMaterial* bsdf,			///< [in] BSDF to use when computing radiance (overrides object BSDF)
-								const bool nonmeshlights,		///< [in] Compute lighting from non mesh lights?
-								const bool meshlights,			///< [in] Compute lighting from mesh lights (area light sources)?
-								const bool cache					///< [in] Should the rasterizer state cache be used?
+								const IMaterial* bsdf			///< [in] BSDF to use when computing radiance (overrides object BSDF)
 								);
 
 	//! Creates a caustic pel photonmap shaderop
@@ -1816,7 +3217,6 @@ bool RISE_API_CreateIrradianceCache(
 								const unsigned int samples,		///< [in] Number of sample to use in distribution
 								const bool irradiancecaching,	///< [in] Should irradiance caching be used if available?
 								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool branch,				///< [in] Should we branch when doing scattering?
 								const bool reflections,			///< [in] Should reflections be traced?
 								const bool refractions,			///< [in] Should refractions be traced?
 								const bool diffuse,				///< [in] Should diffuse rays be traced?
@@ -1849,7 +3249,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
 								IShaderOp** pShaderOp,
-								const bool branch,
 								const bool smsEnabled,
 								const unsigned int smsMaxIterations,
 								const double smsThreshold,
@@ -1917,7 +3316,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int samples,				///< [in] Number of samples to take
 								const IPainter& emm,					///< [in] Emission of this light
 								const Scalar power,						///< [in] Power scale
-								const IPainter& N,						///< [in] Phong factor for focussing the light
+								const IScalarPainter& N,				///< [in] Phong factor for focussing the light (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								const Scalar hotSpot,					///< [in] Angle in radians of the light's hot spot
 								const bool cache						///< [in] Should the rasterizer state cache be used?
 								);
@@ -1928,6 +3327,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IShaderOp** ppi,						///< [out] Pointer to recieve the shaderop
 								const IPainter& transparency,			///< [in] Transparency
 								const bool one_sided					///< [in] One sided transparency only (ignore backfaces)
+								);
+
+	//! Creates an alpha-test (cutout) shaderop.  See IJob::AddAlphaTestShaderOp
+	//! for the integrator-compatibility caveat.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAlphaTestShaderOp(
+								IShaderOp** ppi,						///< [out] Pointer to recieve the shaderop
+								const IPainter& alpha_painter,			///< [in] Alpha painter
+								const Scalar    cutoff					///< [in] alpha < cutoff -> continue ray past surface
 								);
 
 
@@ -2002,8 +3410,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Creates a luminary manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLuminaryManager(
-								ILuminaryManager** ppi,				///< [out] Pointer to recieve the luminary manager
-								const bool bChooseOnlyOneLight		///< [in] Choose only one luminaire for each sample
+								ILuminaryManager** ppi				///< [out] Pointer to recieve the luminary manager
 								);
 
 	//! Creates a ray caster (something similar to a ray server)
@@ -2013,8 +3420,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool seeRadianceMap,			///< [in] Is the radiance map (environment) visible to the view rays?
 								const unsigned int maxR,			///< [in] Maximum recursion level
 								const IShader& pDefaultShader,		///< [in] The default global shader
-								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
-								const bool chooseonlyonelight		///< [in] For luminaire sampling, a random light is chosen for each sample
+								const bool showLuminaires			///< [in] Should we be able to see luminaries?
 								);
 
 	//////////////////////////////////////////////////////////
@@ -2029,10 +3435,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -2046,9 +3456,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,				///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a Pel (RGB) BDPT rasterizer
@@ -2060,20 +3474,22 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
-								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
-								const double smsThreshold,			///< [in] SMS convergence threshold
-								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
-								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
-	//! Creates a spectral BDPT rasterizer
+	//! Creates a spectral BDPT rasterizer (legacy — no adaptive sampling).
+	/// Kept for ABI compatibility.  New callers should prefer
+	/// RISE_API_CreateBDPTSpectralRasterizerAdaptive.  This thin wrapper
+	/// delegates with a default-constructed AdaptiveSamplingConfig
+	/// (adaptive disabled).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBDPTSpectralRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2086,17 +3502,97 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] End wavelength (nm)
 								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
 								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
-								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
-								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
-								const double smsThreshold,			///< [in] SMS convergence threshold
-								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
-								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates a spectral BDPT rasterizer with adaptive sampling support.
+	/// Spectral counterpart of RISE_API_CreateBDPTPelRasterizer's
+	/// `adaptiveConfig` parameter.  Convergence is driven by the
+	/// Welford-tracked Y channel of the XYZ accumulator (CIE photometric
+	/// luminance).  Pass AdaptiveSamplingConfig() (maxSamples == 0) to
+	/// disable adaptive termination — that's exactly what the legacy
+	/// overload above does internally.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizerAdaptive(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMPelRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar mergeRadius,			///< [in] Merge radius (0 => scene-auto fallback)
+								const bool enableVC,				///< [in] Enable vertex connection strategies
+								const bool enableVM,				///< [in] Enable vertex merging strategy
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates a spectral Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const Scalar mergeRadius,			///< [in] Merge radius (0 => scene-auto fallback)
+								const bool enableVC,				///< [in] Enable vertex connection strategies
+								const bool enableVM,				///< [in] Enable vertex merging strategy
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a pure path tracing Pel rasterizer (bypasses shader ops)
@@ -2112,12 +3608,114 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
+								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
+								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
+								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
+
+	//! ABI-preserving extension of RISE_API_CreatePathTracingPelRasterizer: identical, plus
+	//! `smsExtended` (ManifoldSolverConfig::extendedMode, scene parameter
+	//! `sms_extended`).  The frozen symbol above forwards here with false.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathTracingPelRasterizerEx(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
+								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
+								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
+								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
+								const bool smsExtended,				///< [in] Extended SMS (`sms_extended`): reference estimators (A for point/spot lights; B + PT ownership partition for area emitters; per-lane HWSS).  Ignores smsBiased/smsSeedingMode; see docs/SMS_EXTENDED_DESIGN.md "Using extended SMS".
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates an auto-routing integrator dispatcher (the `auto_rasterizer`
+	//! shell — Phase 1 of docs/AUTO_RASTERIZER_DESIGN.md).  It owns the
+	//! shared build inputs and, at the first render-time entry, selects one
+	//! of PT / BDPT / VCM and delegates to a concrete rasterizer built with
+	//! that integrator's canonical defaults.  No integrator algorithm of its
+	//! own.  Phase-1 selection is Tier-0 only (author pin, else PT).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAutoRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const AutoIntegratorChoice integrator,	///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const ProgressiveConfig& progressiveConfig,	///< [in] Progressive multi-pass configuration (applied to the delegate)
+								const bool probeEnabled = false,	///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
+								);
+	//! Creates the SPECTRAL auto-routing integrator dispatcher
+	//! (`auto_spectral_rasterizer` - Phase 1b of docs/AUTO_RASTERIZER_DESIGN.md).
+	//! Identical dispatcher to RISE_API_CreateAutoRasterizer (same AutoRasterizer
+	//! class, same Tier-0 pin / Tier-1 static / Tier-2 probe decision logic via
+	//! its domain flag), but the resolved delegate is one of the `*_spectral_`
+	//! rasterizers, built with the spectral-core params below.  No path-guiding
+	//! / optimal-MIS on the spectral domain (matching the concrete `*_spectral_`
+	//! chunks); the disabled PathGuidingConfig the BDPT/VCM spectral factories
+	//! still take is supplied internally.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAutoSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const AutoIntegratorChoice integrator,	///< [in] Author pin (Auto = dispatcher decides)
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const ProgressiveConfig& progressiveConfig,	///< [in] Progressive multi-pass configuration (applied to the delegate)
+								const bool probeEnabled = false,	///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
+								);
+
 
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise
@@ -2136,11 +3734,58 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
+								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
+								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
+								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! ABI-preserving extension of RISE_API_CreatePathTracingSpectralRasterizer: identical, plus
+	//! `smsExtended` (ManifoldSolverConfig::extendedMode, scene parameter
+	//! `sms_extended`).  The frozen symbol above forwards here with false.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathTracingSpectralRasterizerEx(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
+								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
+								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
+								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
+								const bool smsExtended,				///< [in] Extended SMS (`sms_extended`): reference estimators (A for point/spot lights; B + PT ownership partition for area emitters; per-lane HWSS).  Ignores smsBiased/smsSeedingMode; see docs/SMS_EXTENDED_DESIGN.md "Using extended SMS".
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Configures progressive multi-pass rendering on a pixel-based rasterizer.
@@ -2151,7 +3796,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int samplesPerPass	///< [in] SPP per progressive pass
 								);
 
-	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+	//! LEGACY signature preserved for ABI/source compatibility with
+	//! external code linked against pre-filter RISE.  Equivalent to
+	//! RISE_API_CreateMLTRasterizerWithFilter with null sampler/filter,
+	//! which makes the MLT render loop fall back to round-to-nearest
+	//! point splats (the pre-change behaviour).  New code should call
+	//! the *WithFilter variant directly.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateMLTRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2162,10 +3813,35 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nChains,					///< [in] Number of Markov chains
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
 								const Scalar largeStepProb,					///< [in] Large step probability
-								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
-	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	//! Extended MLT rasterizer factory with pixel sampler + filter.
+	//! This is the entry point Job::SetMLTRasterizer uses — it wires
+	//! up sub-pixel reconstruction via SplatFilm::SplatFiltered.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTRasterizerWithFilter(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
+								const unsigned int nChains,					///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,					///< [in] Large step probability
+								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,				///< [in] OIDN quality preset (Auto = scene-static work policy)
+								const OidnDevice oidnDevice,				///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,			///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
+								IPixelFilter* pFilter,						///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+	//! LEGACY signature preserved for ABI compatibility — see the Pel
+	//! variant above.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateMLTSpectralRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2180,19 +3856,37 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] End of spectral range (nm)
 								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Extended spectral MLT rasterizer factory with pixel sampler + filter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,		///< [in] Number of bootstrap samples
+								const unsigned int nChains,			///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,	///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,			///< [in] Large step probability
+								const Scalar lambda_begin,			///< [in] Start of spectral range (nm)
+								const Scalar lambda_end,			///< [in] End of spectral range (nm)
+								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
+								IPixelFilter* pFilter,				///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//////////////////////////////////////////////////////////
 	// Parsers
 	//////////////////////////////////////////////////////////
-
-	//! Creates a parser capable of loading a job from a text file
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								);
 
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
@@ -2252,6 +3946,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const IPhaseFunction& phase			///< [in] Phase function for scattering
 								);
 
+	//! Creates a homogeneous participating medium with optional
+	//! per-wavelength coefficient curves for the spectral (NM) path
+	//! (G1, vitreous enamel).  \a sigma_a_spectral / \a sigma_s_spectral
+	//! may be null; when both are null the medium is byte-identical to
+	//! RISE_API_CreateHomogeneousMediumWithEmission.  The RGB triples
+	//! drive the RGB/preview path; the curves drive the spectral path.
+	//! Curve output is clamped to non-negative in the spectral path.
+	//! NOTE: give each curve at least two control points — a
+	//! single-point IFunction1D evaluates to 1.0 everywhere (the
+	//! PiecewiseLinearFunction degenerate convention), silently giving a
+	//! sigma=1.0/unit medium rather than the intended value.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient (RGB preview)
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient (RGB preview)
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IFunction1D* sigma_a_spectral,///< [in] sigma_a(lambda) curve, or null
+								const IFunction1D* sigma_s_spectral,///< [in] sigma_s(lambda) curve, or null
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
 
 	//! Creates a heterogeneous participating medium driven by a volume dataset
 	/// Uses delta tracking for distance sampling and deterministic ray
@@ -2291,6 +4007,161 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								);
 
 
+	//! Creates a heterogeneous participating medium driven by a painter
+	/// The painter is evaluated at world-space points to produce density
+	/// values.  A virtual resolution controls the majorant grid granularity.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePainterHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const IPainter& densityPainter,		///< [in] Painter to evaluate for density
+								const unsigned int virtualResolution,///< [in] Virtual grid resolution per axis
+								const char colorToScalar,			///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+	//! Creates a heterogeneous participating medium driven by a painter, with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePainterHeterogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const IPainter& densityPainter,		///< [in] Painter to evaluate for density
+								const unsigned int virtualResolution,///< [in] Virtual grid resolution per axis
+								const char colorToScalar,			///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+	//! Creates the Phase-A painter-baked carbon + temperature medium.
+	//! Both physical scalar painters are sampled once onto the same
+	//! trilinear lattice.  Optical coefficients are authored in SI and
+	//! converted to inverse scene units using sceneUnitMeters.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to receive the medium
+								const IScalarPainter& carbonPainter,	///< [in] Carbon concentration [g/m^3]
+								const IScalarPainter& temperaturePainter,///< [in] Temperature [K]
+								unsigned int volWidth,
+								unsigned int volHeight,
+								unsigned int volDepth,
+								const Point3& bboxMin,
+								const Point3& bboxMax,
+								Scalar sceneUnitMeters,
+								Scalar sootEm,
+								Scalar sootDensity,
+								Scalar sootAlbedoHot,
+								Scalar sootGHot,
+								Scalar smokeKmCarbon,
+								Scalar smokeNCarbon,
+								Scalar smokeAlbedoCarbon,
+							Scalar smokeGCarbon
+							);
+
+	//! Creates the Phase-A medium with the optional condensed-organic channel.
+	//! Kept as a distinct ABI entry so the original two-channel factory remains
+	//! source- and binary-compatible.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter& condensedPainter,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									Scalar sootEm,
+									Scalar sootDensity,
+									Scalar sootAlbedoHot,
+									Scalar sootGHot,
+									Scalar smokeKmCarbon,
+									Scalar smokeNCarbon,
+									Scalar smokeAlbedoCarbon,
+									Scalar smokeGCarbon,
+									Scalar smokeKmCond,
+									Scalar smokeNCond,
+									Scalar smokeAlbedoCond,
+									Scalar smokeGCond
+									);
+
+	//! Creates the Phase-A medium with an optional condensed channel and the
+	//! all-or-none CH/C2/CO2 chemiluminescence channel bundle.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter* condensedPainter,
+									const IScalarPainter& chemCHPainter,
+									const IScalarPainter& chemC2Painter,
+									const IScalarPainter& chemCO2Painter,
+									const IFunction1D& chemCHSPD,
+									const IFunction1D& chemC2SPD,
+									const IFunction1D& chemCO2SPD,
+									Scalar chemCHIntervalMin,
+									Scalar chemCHIntervalMax,
+									Scalar chemC2IntervalMin,
+									Scalar chemC2IntervalMax,
+									Scalar chemCO2IntervalMin,
+									Scalar chemCO2IntervalMax,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									Scalar sootEm,
+									Scalar sootDensity,
+									Scalar sootAlbedoHot,
+									Scalar sootGHot,
+									Scalar smokeKmCarbon,
+									Scalar smokeNCarbon,
+									Scalar smokeAlbedoCarbon,
+									Scalar smokeGCarbon,
+									Scalar smokeKmCond,
+									Scalar smokeNCond,
+									Scalar smokeAlbedoCond,
+									Scalar smokeGCond
+									);
+
+	//! Creates a fire medium from one named, versioned optical record.  The
+	//! condensed channel and chem bundle are independently optional; chem is
+	//! admitted only as an all-or-none synthetic-fixture path.
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter* condensedPainter,
+									const IScalarPainter* chemCHPainter,
+									const IScalarPainter* chemC2Painter,
+									const IScalarPainter* chemCO2Painter,
+									const IFunction1D* chemCHSPD,
+									const IFunction1D* chemC2SPD,
+									const IFunction1D* chemCO2SPD,
+									Scalar chemCHIntervalMin,
+									Scalar chemCHIntervalMax,
+									Scalar chemC2IntervalMin,
+									Scalar chemC2IntervalMax,
+									Scalar chemCO2IntervalMin,
+									Scalar chemCO2IntervalMax,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									const char* opticalRecord
+									);
+
+
 	//////////////////////////////////////////////////////////
 	// Virtual measurement devices
 	//////////////////////////////////////////////////////////
@@ -2307,6 +4178,2029 @@ bool RISE_API_CreateFinalGatherShaderOp(
 																	///<      1 - Equal Areas (equal solid angle)
 																	///<      2 - Equal Projected solid angles
 								);
+
+	//////////////////////////////////////////////////////////
+	// Interactive scene editor (cross-platform 3D viewport)
+	//
+	// See docs/INTERACTIVE_EDITOR_PLAN.md.  These are the C-API
+	// entry points that platform bridges (RISEViewportBridge.mm
+	// on macOS, the Qt RenderEngine on Windows, the JNI bridge on
+	// Android) consume.  The controller owns the render thread,
+	// the cancel-restart loop, and the toolbar state machine; the
+	// platform code just forwards events here.
+	//////////////////////////////////////////////////////////
+
+	class SceneEditController;
+
+	//! Tool enum mirroring SceneEditController::Tool.  Kept as a
+	//! plain int in the C-API surface for ABI stability across
+	//! language bridges (Swift, Kotlin/JNI, Qt).
+	enum SceneEditTool
+	{
+		SceneEditTool_Select           = 0,
+		SceneEditTool_TranslateObject  = 1,
+		SceneEditTool_RotateObject     = 2,
+		SceneEditTool_ScaleObject      = 3,
+		SceneEditTool_OrbitCamera      = 4,
+		SceneEditTool_PanCamera        = 5,
+		SceneEditTool_ZoomCamera       = 6,
+		SceneEditTool_ScrubTimeline    = 7,
+		SceneEditTool_RollCamera       = 8
+	};
+
+	//! Category enum for the right-side accordion.  Mirrors
+	//! SceneEditController::Category.  Numeric values match
+	//! SceneEditController::PanelMode so the C-API can return either
+	//! as the same int.
+	enum SceneEditCategory
+	{
+		SceneEditCategory_None       = 0,
+		SceneEditCategory_Camera     = 1,
+		SceneEditCategory_Rasterizer = 2,
+		SceneEditCategory_Object     = 3,
+		SceneEditCategory_Light      = 4,
+		SceneEditCategory_Film       = 5,  ///< Output Settings (single Film per scene)
+		SceneEditCategory_Material   = 6,  ///< Materials (editable for non-composed types)
+		SceneEditCategory_Medium     = 7,  ///< Participating media (Homogeneous editable;
+		                                   ///< Heterogeneous read-only)
+		SceneEditCategory_Animation  = 8,  ///< Named animations (Category::Animation)
+		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
+		SceneEditCategory_Painter   = 10,  ///< Painters (union of the IPainter + IScalarPainter
+		                                   ///< managers; Category::Painter)
+		SceneEditCategory_Geometry  = 11   ///< Geometry (IGeometryManager; every "*_geometry" chunk;
+		                                   ///< Category::Geometry -- GUI redesign 2026-07-22)
+	};
+
+	//! Construct a SceneEditController over an existing job.
+	/// @param pJob                   Borrowed.  Must outlive the controller.
+	///                               In practice this is the same object
+	///                               returned by Job::GetScene's owner —
+	///                               IJobPriv inherits IJob and Job
+	///                               concretely implements IJobPriv.
+	/// @param pInteractiveRasterizer Borrowed.  May be NULL for skeleton
+	///                               mode.  Must outlive the controller.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSceneEditController(
+		IJobPriv* pJob,
+		IRasterizer* pInteractiveRasterizer,
+		SceneEditController** ppOut
+		);
+
+	//! Destroy a controller.  The borrowed Job must still be alive (the same
+	//! lifetime contract as Create); pending interactions are finalized first.
+	//! The owner must first stop/join all ordinary external callers, as required
+	//! for any C++ object whose storage is about to be released; this function
+	//! quiesces controller-owned workers/callbacks, not unknown caller threads.
+	//! A call re-entered synchronously from a Last Render sink callback or final
+	//! controller-owned sink release is rejected: the callout may be inside its
+	//! own drain or a controller mutation, and asynchronous delete would violate
+	//! the synchronous lifetime contract for borrowed sinks.  Return from the
+	//! callout and call Destroy from the owner thread.  Dirty-changed callback
+	//! invocation and copied-target finalization have the same rule.  A
+	//! concurrent/re-entrant call after a raw C++ destructor has begun is
+	//! likewise rejected.
+	void RISE_API_DestroySceneEditController( SceneEditController* p );
+
+	//! Explicit terminal Job-alive teardown preparation.  Detaches callbacks,
+	//! stops the controller, and is safe to call redundantly.  Returns false if
+	//! pending interaction persistence fails or if called from a Last Render or
+	//! dirty-changed callback/final release that cannot synchronously tear down
+	//! its owner.  Success permanently closes mutation admission;
+	//! DestroySceneEditController calls it automatically.  The owner must first
+	//! stop/join ordinary external callers; Prepare arbitrates controller-owned
+	//! work and lifecycle calls but does not grant concurrent-use-after-free.
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p );
+
+	//! Finalize controller-owned pointer/time/property interactions whose
+	//! platform End event may have been dropped.
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p );
+
+	//! Start the controller's render thread.
+	bool RISE_API_SceneEditController_Start( SceneEditController* p );
+
+	//! Start the controller's render thread WITHOUT the one-shot
+	//! initial render pass.  The GUI uses this when it restarts the
+	//! interactive viewport immediately after a production render, so
+	//! the finished render stays on screen until the user interacts
+	//! (rather than being overwritten by the first live-preview pass).
+	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
+		SceneEditController* p );
+
+	//! Stop the controller's render thread.  Joins the thread.  ALSO
+	//! permanently retires the agent-render worker -- every later
+	//! agent/production render submission on this controller is refused
+	//! ("controller stopped").  Correct for controller teardown (the
+	//! destructor calls this); NOT what a platform shell should call
+	//! merely to pause the interactive viewport before a production
+	//! render -- use RISE_API_SceneEditController_StopInteractive for
+	//! that (see its doc, and SceneEditController::Stop's header doc).
+	bool RISE_API_SceneEditController_Stop( SceneEditController* p );
+
+	//! Stop ONLY the controller's interactive render thread.  Joins the
+	//! thread; leaves the agent-render worker (and any in-flight/queued
+	//! agent or production render) untouched, so a production render
+	//! submitted immediately afterward via SubmitProductionRenderSync /
+	//! RunProductionRenderComposed is still served normally.  This is
+	//! what a platform shell's Render action should call to pause the
+	//! interactive viewport ahead of a production render -- Start() /
+	//! RISE_API_SceneEditController_StartSuppressingInitialRender can
+	//! re-spawn the interactive loop afterward exactly as after a full
+	//! Stop().  Model-B F2 slice S4 fix round 4.
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p );
+
+	//! Install the preview image sink (typically a platform-specific
+	//! IRasterizerOutput that marshals the framebuffer to the UI
+	//! thread).  Set BEFORE Start().
+	bool RISE_API_SceneEditController_SetPreviewSink(
+		SceneEditController* p, IRasterizerOutput* sink );
+
+	bool RISE_API_SceneEditController_SetProgressSink(
+		SceneEditController* p, IProgressCallback* sink );
+
+	bool RISE_API_SceneEditController_SetLogSink(
+		SceneEditController* p, ILogPrinter* sink );
+
+	//! Set the active toolbar mode.  Use SceneEditTool_* constants.
+	bool RISE_API_SceneEditController_SetTool( SceneEditController* p, int tool );
+
+	//! Read the active toolbar tool — the value most recently passed to
+	//! SetTool, or the default `Select` on a fresh controller.  Returns
+	//! `Select` (0) on null controller.  Numeric values match
+	//! SceneEditTool_* constants.
+	int  RISE_API_SceneEditController_CurrentTool( SceneEditController* p );
+
+	//! Map a tool int to its category int (Photoshop-style toolbar
+	//! slot membership).  0 = Select, 1 = Camera, 2 = ObjectTransform.
+	//! Pure-function; takes no controller pointer.  Out-of-range
+	//! `tool` returns 0 (Select).
+	int  RISE_API_SceneEditController_CategoryForTool( int tool );
+
+	//! Per-category default sub-tool (the one a category's slot shows
+	//! before the user picks anything from the flyout).  Pure-function.
+	//! Out-of-range `category` returns Select (0).
+	int  RISE_API_SceneEditController_DefaultSubToolForCategory( int category );
+
+	//! Photoshop "last-used" memory: returns the sub-tool the user
+	//! most recently picked from this category's flyout, or the
+	//! category default if nothing has been picked yet.  Returns
+	//! Select (0) on null controller / out-of-range category.
+	int  RISE_API_SceneEditController_GetLastSubToolForCategory(
+		SceneEditController* p, int category );
+
+	//! Gizmo handle math — recompute the screen-space handle array
+	//! from the current Object selection + tool + camera projection.
+	//! No-op when the active tool isn't an Object-transform tool,
+	//! when no Object is selected, or when the camera projection is
+	//! degenerate.  Returns true on success (including the "no-op,
+	//! count is 0" case); false on null controller.
+	//!
+	//! Platform UIs call this once per preview frame before reading
+	//! the handle array.  Handle positions are in the camera's
+	//! CURRENT image-pixel space — the same space the bridge's
+	//! pointer events live in.  Apply the same `fullW`/`fullH`
+	//! normalisation pointer events use (`GetCameraDimensions`) to
+	//! map to widget space.
+	bool RISE_API_SceneEditController_RefreshGizmoHandles( SceneEditController* p );
+
+	//! Number of gizmo handles in the current array (0 when the
+	//! gizmo system has no active object-transform tool / no
+	//! selection).  Read AFTER `RefreshGizmoHandles`.
+	unsigned int RISE_API_SceneEditController_GizmoHandleCount(
+		SceneEditController* p );
+
+	//! Read one gizmo handle.  Out parameters are populated when the
+	//! call succeeds; values stay valid until the next refresh.
+	//!   outKind: `GizmoHandle::Kind` cast to int (0..6).
+	//!   outAxis: 0=X, 1=Y, 2=Z; -1 for screen-aligned handles.
+	//!   outScreenX / outScreenY: image-pixel-space position.
+	//!   outScreenRadius: hit-test radius / icon size hint in pixels.
+	//! Returns false on null controller, out-of-range idx, or any
+	//! null out-parameter pointer (caller may pass null for fields
+	//! they don't need; non-null pointers all share the same return
+	//! semantics).
+	bool RISE_API_SceneEditController_GizmoHandle(
+		SceneEditController* p, unsigned int idx,
+		int* outKind, int* outAxis,
+		double* outScreenX, double* outScreenY, double* outScreenRadius );
+
+	//! Hit-test the current gizmo handle array against an image-
+	//! pixel-space pointer position.  Returns the index of the
+	//! closest hit handle, or -1 on miss / null controller.  Pure
+	//! read (doesn't mutate drag state) — the platform UI can use
+	//! this to render hover feedback before a real pointer-down.
+	int  RISE_API_SceneEditController_GizmoHandleAt(
+		SceneEditController* p, Scalar x, Scalar y );
+
+	//! True iff a gizmo handle was hit on the most recent
+	//! `OnPointerDown` and the drag is still active (no
+	//! `OnPointerUp` yet).  False on null controller.  Platform UIs
+	//! use this to switch the cursor / draw the active-handle
+	//! highlight between PointerDown and PointerUp.
+	bool RISE_API_SceneEditController_IsGizmoDragActive( SceneEditController* p );
+
+	//! Active drag handle kind / axis.  Both return -1 when no drag
+	//! is in progress (or on null controller).  Numeric values match
+	//! `GizmoHandle::Kind`.
+	int  RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p );
+	int  RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p );
+
+	//! -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+	//! Recompute the six ±X/±Y/±Z nubs for a ball centered at (centerX,
+	//! centerY) with `ballRadius`, each nub `nubRadius`, all in the caller's
+	//! widget space.  Returns false (count 0) when there is no supported
+	//! (pinhole) interactive camera or the geometry is non-positive.  Call
+	//! once per preview frame before reading nubs.
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius );
+
+	//! Number of nav-gizmo nubs (0 or 6).  Read AFTER RefreshNavGizmo.
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p );
+
+	//! Read one nub.  outAxis: 0=X,1=Y,2=Z; outNegative/outFacing are
+	//! bool-as-int (0/1); outScreenX/Y + outScreenRadius in the caller's
+	//! ball-geometry space.  Returns false on null controller, out-of-range
+	//! idx, or any null out-parameter (all fields optional per pointer).
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing );
+
+	//! Hit-test a pointer position (same space as RefreshNavGizmo geometry)
+	//! against the nubs; front-facing nubs win ties.  Returns the nub index
+	//! or -1 (miss / null controller).
+	int  RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y );
+
+	//! -------- View navigation (Tier 2 §4-5): non-destructive --------
+	//! These drive the transient free-fly ViewportPose (the interactive pass
+	//! renders through it) and NEVER mutate a scene camera.  All return false
+	//! on null controller / the documented refusal cases.  `negative` is
+	//! bool-as-int.  See SceneEditController for the contracts.
+	//! user-review P1-1: the UNINDEXED entries alias PANE 0 (§7.4 "existing
+	//! calls = pane 0"); the *Pane* twins take an explicit pane index for the
+	//! N-up nav overlay (drawn on the primary pane).
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative );
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p );
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p );
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p );
+	//! Pane-indexed navigation twins (EnterFreeFly/ExitFreeFly already have
+	//! PaneEnterFreeFly / PaneExitFreeFly).
+	bool RISE_API_SceneEditController_SnapPaneViewToAxis(
+		SceneEditController* p, unsigned int pane, int axis, int negative );
+	bool RISE_API_SceneEditController_IsPaneFreeFlyActive( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneSetHomeView( SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneGoToHomeView( SceneEditController* p, unsigned int pane );
+
+	//! -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) --------
+	//! Mode switch = a caster swap on the interactive rasterizer; see
+	//! SceneEditController::SetViewportRenderMode for the full contract
+	//! (unknown/non-selectable name, render-owns-scene, skeleton-mode
+	//! refusals; every scene load/reload resets to "preview").
+
+	//! Switch the interactive viewport to render-mode `name` (a registry
+	//! wire name -- see RISE_API_GetViewportRenderModeInfo below for the
+	//! full set).  Returns false on a null controller/name, an unknown or
+	//! non-viewport-selectable name (e.g. "objectmap"), or the documented
+	//! controller-level refusals.
+	bool RISE_API_SceneEditController_SetViewportRenderMode(
+		SceneEditController* p, const char* name );
+
+	//! The registry wire name of the CURRENTLY active viewport render mode
+	//! ("preview" on a null controller).  Points at a static registry
+	//! string -- no allocation, do not free.
+	const char* RISE_API_SceneEditController_GetViewportRenderMode(
+		SceneEditController* p );
+
+	//! Registry-level accessors (NOT controller-scoped -- callable before
+	//! any SceneEditController exists, e.g. to populate a mode dropdown or
+	//! an agent tool schema at startup).  Mirror
+	//! RISE::Implementation::GetViewportRenderModes 1:1.
+	unsigned int RISE_API_GetViewportRenderModeCount();
+
+	//! Read registry entry `index`.  All out-parameters are nullable
+	//! (caller may pass null for fields it doesn't need) and point at
+	//! STATIC registry strings -- no allocation, do not free.  Returns
+	//! false (outputs untouched) on an out-of-range index.
+	bool RISE_API_GetViewportRenderModeInfo(
+		unsigned int index,
+		const char** name, const char** title, const char** question,
+		bool* viewportSelectable );
+
+	//! GUI render modes P2a (docs/gui/RENDER_MODES.md §6): registry entry
+	//! `index`'s `wantsDenoise` flag -- ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo above (that function's signature
+	//! is left unchanged for ABI stability; a new accessor is added instead
+	//! of widening it).  Now that the BeautyVariant modes (deep_reflect,
+	//! direct) genuinely denoise, the "DENOISED — NOT FINAL" polish-status
+	//! label should key off THIS flag rather than a hardcoded
+	//! `mode == "preview"` check.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeWantsDenoise(
+		unsigned int index, bool* out );
+
+	//! GUI render modes P2a review fix (docs/gui/RENDER_MODES.md §6):
+	//! registry entry `index`'s "is this a BeautyVariant row" flag
+	//! (`RISE::Implementation::IsBeautyVariantMode`) — ADDITIVE sibling of
+	//! RISE_API_GetViewportRenderModeInfo, same pattern as
+	//! RISE_API_GetViewportRenderModeWantsDenoise above.  Registry-driven
+	//! honesty for the viewport x-ray toggle: while the ACTIVE mode is a
+	//! BeautyVariant row (`deep_reflect`/`direct`), x-ray has no effect —
+	//! those modes drive an entirely separate ephemeral PT pipeline
+	//! (`mVariantRasterizer`) that never reads the x-ray flag/caster the
+	//! toggle stamps (see SetViewportXray's doc); only
+	//! `mInteractiveImpl`'s own caster(s) are stamped.  Both GUIs use this
+	//! to DISABLE the x-ray control while a variant mode is active, so the
+	//! control never silently no-ops.  This does NOT change
+	//! SetViewportXray/GetViewportXray's own behaviour: the stored flag is
+	//! set/read exactly as before and still applies immediately the moment
+	//! the user returns to a non-variant mode — only the UI-facing
+	//! enablement is additive here.  Returns false (out untouched) on an
+	//! out-of-range index or a null `out`.
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out );
+
+	//! -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") --------
+	//! An orthogonal boolean that composes with all four data modes
+	//! (Normals/Depth/Facets/Wireframe): resolves each hit THROUGH
+	//! transmissive surfaces to the first OPAQUE hit, straight-line, no
+	//! refraction bending.  Same refusal contract as the render-mode
+	//! wrappers above (null controller, render-owns-scene, skeleton mode).
+
+	//! Set the x-ray flag.  Returns false on a null controller or the
+	//! documented controller-level refusals.
+	bool RISE_API_SceneEditController_SetViewportXray(
+		SceneEditController* p, bool xray );
+
+	//! Read the CURRENT x-ray flag into `*out`.  Returns false (and
+	//! leaves `*out` untouched) on a null controller or a null `out`.
+	bool RISE_API_SceneEditController_GetViewportXray(
+		SceneEditController* p, bool* out );
+
+	//! -------- N-up multi-viewport pane model (RENDER_MODES.md §7, P3a) ----
+	//! Layout values: 0 Single, 1 TwoH, 2 OnePlusTwo, 3 Quad (the
+	//! controller's ViewportLayout enum).  Vantage kinds: 0 SceneCamera,
+	//! 1 FreeFly, 2 NamedView, 3 SceneCameraNamed (secondary panes only;
+	//! pane 0 refuses kind 3).  Mutating vantage/render-mode calls are
+	//! fail-closed per the controller contract (§7.4): unknown or hidden
+	//! pane / render owns scene => false, nothing mutated.  Read-only getters
+	//! can inspect retained hidden-pane state, and SetPaneSink has its
+	//! documented hidden-pane pre-wiring exception below.  EXISTING
+	//! single-viewport calls are unchanged and alias pane 0.
+	//!
+	//! SCOPE NOTE (review-r2, CLOSED by slice 3): every §7.4-specified
+	//! entry now ships -- dims/sinks (display half) and the pane-indexed
+	//! pointer events, per-pane free-fly twins, and per-pane refinement
+	//! status (pointer half).  The UN-indexed calls remain byte-identical
+	//! pane-0 aliases; the shells adopt the indexed surface in P3b.
+
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout );
+	//! Returns false (and leaves `*out` untouched) on null controller/out.
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out );
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out );
+
+	//! Pane 0 forwards to SetViewportRenderMode (alias contract).
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! Never null; "preview" on any invalid input (mirrors
+	//! _GetViewportRenderMode's fail-closed default).
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane );
+
+	//! T4 pane content source. Stable wire values: 0 Interactive,
+	//! 1 LastRender.  LastRender is not a render-mode registry row.
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source );
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out );
+
+	//! P3a slice 3: displayed pane-surface dims (the GUI's aspect-fitted
+	//! pane rect); 0/0 resets to film dims. N-up uses these as render dims,
+	//! while Single pane 0 retains its legacy fit-capped render resolution
+	//! and uses them only for display-space gizmo sizing. Fail-closed per the
+	//! block contract.
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h );
+
+	//! P3a slice 3: per-pane preview sink (controller addrefs; null
+	//! clears).  Valid for ANY pane index 0-3 (sinks may be pre-wired for
+	//! panes a later layout reveals).
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink );
+
+	//! P3a slice 3 (pointer half): pane-indexed pointer input.  Down
+	//! promotes the pane to primary ONLY for a non-navigation tool --
+	//! §7.8 ratified decision 1: "navigation drags never steal primary",
+	//! so a camera-motion tool's Down (orbit/pan/zoom/roll) does NOT
+	//! promote (the pane still becomes the render target for the
+	//! gesture's duration -- that is gesture exclusivity, a separate
+	//! concern from primary/gizmo ownership).  Down also parks +
+	//! context-switches before the gesture pin, and converts a SECONDARY
+	//! pane tracking the scene camera to per-pane FreeFly for
+	//! camera-motion tools (§7.2, 2026-07-21 amendment: pane 0 keeps
+	//! classic direct-camera-edit navigation).  False = drop the gesture
+	//! (hidden pane / render owns scene).
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y );
+
+	//! Per-pane free-fly twins (§7.4).  Pane 0 aliases the classic
+	//! EnterFreeFlyFromActiveCamera / ExitFreeFly.
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane );
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane );
+
+	//! Per-pane refinement status: phase (0 Idle / 1 Rendering / 2
+	//! Refining / 3 Polishing / 4 Paused -- same contract as the
+	//! un-indexed call) + scale divisor.  For the currently-scheduled
+	//! pane this is the live status; for others, the honest coarse
+	//! answer from its saved state.
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor );
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane );
+	//! Bind a secondary pane to one manager-registered scene camera.
+	//! Pane 0 refuses: it remains the active-camera editing surface.
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name );
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name );
+	//! `outKind` receives the stable wire kind (0 SceneCamera / 1 FreeFly /
+	//! 2 NamedView / 3 SceneCameraNamed); `outNamedView`/`cap` receive the
+	//! NUL-terminated referenced name for kinds 2/3 ("" otherwise).  Returns
+	//! false on null controller / null outs / invalid pane / cap==0.
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap );
+
+	//! Pointer events from the platform UI.  Coordinates are in the
+	//! preview surface's pixel space.
+	bool RISE_API_SceneEditController_OnPointerDown(
+		SceneEditController* p, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPointerMove(
+		SceneEditController* p, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPointerUp(
+		SceneEditController* p, Scalar x, Scalar y );
+
+	//! Time scrubber.  RETURN SEMANTICS (unified render/editor admission, 2026-07):
+	//! `false` is a REFUSAL, not only a null-controller guard.  All three refuse
+	//! while a coordinated/agent render holds the interactive-admission gate
+	//! (agent-render-blocks-interactive); OnTimeScrub additionally refuses while a
+	//! production render owns the scene (render-owns-scene) and when the
+	//! SetSceneTime edit itself is refused by the editor.  A refused call performs
+	//! NO mutation and opens/closes NO undo composite -- the shell should simply
+	//! drop the gesture event (and may retry on the next event; the gates clear
+	//! when the render completes or is cancelled).  Bracketing is self-healing
+	//! across refusals: a Begin whose End was refused leaves its composite to be
+	//! reconciled by the next successful Begin (orphan-composite guard), so shells
+	//! need no bracketing bookkeeping around refusals.
+	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p );
+	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t );
+	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p );
+
+	//! Bracket a property-panel scrub gesture (chevron drag on a
+	//! numeric row).  Same scale-bump machinery as the camera tools
+	//! use during a drag, exposed so the panel can drive it.  Begin
+	//! arms the adaptive preview-scale loop and bumps the divisor
+	//! to kPreviewScaleMotionStart; End restores full resolution.
+	//! Without these brackets the rapid-fire SetProperty stream
+	//! cancels every in-flight render before the outer tiles get a
+	//! chance, so only the center of the image updates.
+	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p );
+	bool RISE_API_SceneEditController_EndPropertyScrub( SceneEditController* p );
+
+	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
+	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
+
+	//! Human-readable label of the next Undo/Redo step ("Translate",
+	//! "Agent Edit", ...) for the shells' Edit-menu items.  Empty string
+	//! when the corresponding stack is empty.
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	//! 2026-10-16: the user-facing notice the last REFUSED Undo/Redo set (e.g. an agent batch edit whose inverse
+	//! would leave a document that does not derive -- the step stays in the history), cleared on read.  Returns
+	//! true and fills `buf` when there is one; false (buf = "") when there is none.  Shells call it after
+	//! Undo/Redo and show the text to the user.
+	bool RISE_API_SceneEditController_ConsumeHistoryNotice(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	// ---- Refinement pause + status (UI redesign, design brief A2) ----
+	// See SceneEditController::PauseRefinement / GetRefinementStatus.
+
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p );
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p );
+
+	//! Returns the RefinementPhase as int (0 Idle, 1 Rendering,
+	//! 2 Refining, 3 Polishing, 4 Paused); -1 on null controller.
+	//! *outScaleDivisor receives the preview-scale divisor (1..32,
+	//! 1 = full resolution) when non-null.
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor );
+
+	// ---- Interactive region-of-interest (UI redesign, A4) ------------
+	// Full-resolution film pixel coords, INCLUSIVE.  See
+	// SceneEditController::SetInteractiveRegion for semantics (full-res
+	// passes only; preserved while production rendering is in flight).
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom );
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p );
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom );
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p );
+
+	// ---- Phase 6.5 scene-file save ----------------------------------
+	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
+	// + SceneEditController.h "Phase 6.5".
+
+	//! Drives the GUI's "Save Scene" button enable state.
+	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p );
+
+	// ---- Editor live-sync (UI refinement item 1) ---------------------
+	// See SceneEditController::SerializedSceneText — callers must NOT
+	// poll while a render owns the scene (both take the controller's
+	// commit mutex).
+
+	//! Malloc'd NUL-terminated copy of the serialized scene text, or
+	//! NULL when no document is retained.  Free with RISE_API_FreeString.
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p );
+	//! Frees a string returned by *_SerializedSceneTextAlloc.  NULL-safe.
+	void RISE_API_FreeString( char* s );
+	//! Retained CST head version (uuid, revision); both 0 when none.
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision );
+
+	//! "Reveal in scene file": resolve entity (category, name) to its byte
+	//! offset + 1-based line number inside SerializedSceneTextAlloc's text.
+	//! `category` uses the SAME SceneEditCategory_* numbering as PanelMode
+	//! (see RISE_API_SceneEditController_PanelMode below). Returns false
+	//! (outputs unchanged) on a null controller/name, no retained CST
+	//! document, an unresolvable/ambiguous name, or a category with no
+	//! chunk-name addressing scheme (Rasterizer/Film/None — see
+	//! SceneEditController::EntitySourceLocation's doc comment). Same
+	//! mMutex caveat as the rest of this section: callers must NOT poll
+	//! while a render owns the scene.
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine );
+
+	//! Source traceability (any UI element -> its scene-file span).  Generalizes
+	//! GetEntitySourceLocation to param granularity (`param` empty = whole chunk;
+	//! non-empty = the `occ`-th matching param's tight `role value` run) and to the
+	//! Film / Rasterizer singletons (so the Environment section reveals its
+	//! radiance_* rows via category=Rasterizer + the HDRI file via category=Painter
+	//! + the bound painter name).  Fills byteOffset/byteLength (length 0 for a whole
+	//! chunk) + 1-based line/column.  Returns false (outputs unchanged) on a null
+	//! controller, no retained CST, or an unresolvable ref.  Same no-poll-during-
+	//! render caveat as GetEntitySourceLocation.
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn );
+
+	//! Reverse (a text-editor byte offset -> the UI element it backs).  Fills
+	//! `outCategory` (a SceneEditCategory_* int), `outName` (the entity name, empty
+	//! for an unnamed singleton), and `outParam` (empty when the offset is on a
+	//! chunk header rather than a specific param) so the caller can select +
+	//! highlight that element.  Returns false when there is no retained CST or the
+	//! offset isn't inside an addressable entity/singleton chunk.
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence );
+
+	//! Save the in-memory edits to `filePath`.  Returns the engine's
+	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
+	//! 3=Failed).  On Refused / Failed, `errOut` is filled with the
+	//! engine's diagnostic — caller passes a buffer of at least
+	//! `errOutCap` bytes; the function null-terminates and truncates
+	//! if needed.  On success, `errOut` is set to "".
+	//! Returns -1 on null controller / null filePath.
+	int RISE_API_SceneEditController_RequestSave(
+		SceneEditController* p,
+		const char* filePath,
+		char* errOut,
+		unsigned int errOutCap );
+
+	//! Install a C-callback fired on each `HasUnsavedChanges()`
+	//! TRANSITION (clean→dirty or dirty→clean).  `userData` is passed
+	//! verbatim to every invocation.  Pass `cb = nullptr` to detach.
+	//! Caller is responsible for `userData` lifetime — typical pattern
+	//! is __bridge_retained / CFBridgingRelease around an Obj-C block
+	//! or an objc_storeWeak slot.
+	//!
+	//! THREADING CONTRACT (document-first phase 1 + round-5, 2026-07-22):
+	//! the callback is delivered from a post-mutation DRAIN on whichever
+	//! thread drove the edit, with NO controller lock held, and transitions
+	//! are COALESCED -- it reports the CURRENT hasUnsavedChanges whenever it
+	//! differs from the last report; a clean->dirty->clean burst between
+	//! drains produces no call (key on the VALUE, never count calls).
+	//! Re-entering the controller from the callback is deadlock-hardened
+	//! (single-deliverer drain + snapshot getters) but still discouraged --
+	//! marshal to your own event loop / dispatch queue (both in-tree shells
+	//! do: dispatch_async(main) on macOS, Qt::QueuedConnection on Windows).
+	typedef void (*RISE_API_DirtyChangedFn)( void* userData, int hasUnsavedChanges );
+	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
+		SceneEditController* p,
+		RISE_API_DirtyChangedFn cb,
+		void* userData );
+
+	//! Canonical scene time tracked by the controller's edit history.
+	//! Updated by OnTimeScrub AND by Undo/Redo of a SetSceneTime edit
+	//! — i.e. the scrubber widget's local copy goes stale after an
+	//! undo/redo, but this getter returns the truth.  Platform UIs
+	//! should query this just before the production-render handoff
+	//! (instead of trusting their timeline-widget state) so a Render
+	//! click after Undo doesn't roll the scene back to the pre-undo
+	//! time.  Returns true on success; on null controller, returns
+	//! false and leaves *out unchanged.
+	bool RISE_API_SceneEditController_LastSceneTime(
+		SceneEditController* p, double* out );
+
+	//! Run the production rasterizer (whatever the scene declared)
+	//! on the in-memory mutated scene.  Blocks until complete.
+	bool RISE_API_SceneEditController_RequestProductionRender( SceneEditController* p );
+
+	// Properties panel — descriptor-driven introspection of the
+	// currently active editable entity.  The platform UI calls
+	// RefreshProperties() before reading the rest, then iterates by
+	// index.  Returns 0/empty on null controller.
+
+	bool RISE_API_SceneEditController_RefreshProperties( SceneEditController* p );
+
+	//! Returns the panel-mode discriminator the platform UI uses to
+	//! decide whether the right-side panel renders a header / list.
+	//! Values match SceneEditCategory_*:
+	//!   0 = None
+	//!   1 = Camera
+	//!   2 = Rasterizer
+	//!   3 = Object
+	//!   4 = Light
+	//!   5 = Film (Output Settings — single Film per scene)
+	//! Maps onto SceneEditController::PanelMode.  -1 on null controller.
+	int RISE_API_SceneEditController_PanelMode( SceneEditController* p );
+
+	//! Copies up to bufLen-1 bytes of the panel header into buf and
+	//! null-terminates.  "Camera", "Object: <name>", or empty.  Returns
+	//! true on success.
+	bool RISE_API_SceneEditController_PanelHeader(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	unsigned int RISE_API_SceneEditController_PropertyCount( SceneEditController* p );
+
+	//! Copies up to bufLen-1 bytes of the parameter name into buf
+	//! and null-terminates.  Returns true if idx is in range.
+	bool RISE_API_SceneEditController_PropertyName(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	bool RISE_API_SceneEditController_PropertyValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	bool RISE_API_SceneEditController_PropertyDescription(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Returns the parameter's ValueKind enum cast to int, or -1 on
+	//! out-of-range idx.  Map at the call site to an enum the bridge
+	//! can interpret.
+	int RISE_API_SceneEditController_PropertyKind(
+		SceneEditController* p, unsigned int idx );
+
+	bool RISE_API_SceneEditController_PropertyEditable(
+		SceneEditController* p, unsigned int idx );
+
+	//! Quick-pick preset accessors.  PropertyPresetCount returns 0 for
+	//! parameters whose descriptor declared no presets, in which case
+	//! the GUI falls back to a plain line edit.  Otherwise the GUI
+	//! shows a combo box with the labels and writes the corresponding
+	//! parser-acceptable value through SetProperty when the user picks.
+	unsigned int RISE_API_SceneEditController_PropertyPresetCount(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyPresetLabel(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyPresetValue(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+
+	//! Short unit suffix shown next to the editor field — e.g. "mm"
+	//! for camera lens lengths, "°" for angles, "scene units" for
+	//! focus_distance.  Empty when the descriptor declared no unit
+	//! label.
+	bool RISE_API_SceneEditController_PropertyUnitLabel(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! doc 88 S4b (Tier-1 param sliders): the row's authored numeric range.
+	//! `PropertyHasRange` is true only when BOTH bounds are known -- a shell
+	//! must not draw a slider otherwise, and keeps its text field either way
+	//! (the range is a presentation hint, not a validation rule).  The
+	//! min/max/step readers answer 0 for a row with no range and for an
+	//! out-of-range index, which is why "has a range" is its own call rather
+	//! than an in-band 0/0.  Step is 0 when the author declared none
+	//! ("continuous").  Populated today only for an expression painter's
+	//! `param[i]` rows, from the `min`/`max`/`step` metadata on the scene
+	//! text's `param` line.
+	bool   RISE_API_SceneEditController_PropertyHasRange(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMin(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMax(
+		SceneEditController* p, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeStep(
+		SceneEditController* p, unsigned int idx );
+	bool   RISE_API_SceneEditController_PropertyTargetsPainter(
+		SceneEditController* p, unsigned int idx );
+	int    RISE_API_SceneEditController_PropertyInlinePainterKind(
+		SceneEditController* p, unsigned int idx );
+	bool   RISE_API_SceneEditController_PropertyInlinePainterValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCount(
+		SceneEditController* p, unsigned int idx );
+
+	//! Jump-to-definition (GUI redesign, 2026-07-22): for a Reference-kind
+	//! row whose value names another element, resolve which UI category
+	//! that element lives in (probing the descriptor's declared target
+	//! categories against the live managers, first-wins).  On success
+	//! writes the SceneEditCategory to `outCategory` and the element name
+	//! to `nameBuf`, so the shell can _SetSelection(outCategory, name) --
+	//! the "right-click a reference -> jump to its definition" affordance.
+	//! False for non-Reference rows, empty values, or dangling references
+	//! (shells grey the menu item).  The ForCategory twin indexes the
+	//! per-category snapshot, same convention as every accessor pair here.
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen );
+
+	//! Apply an edited value.  Triggers a re-render via the
+	//! cancel-restart loop.  Returns false on parse failure,
+	//! read-only property, OR (Object edits, A2) when the live edit
+	//! applied but the CST transform-commit follow-through failed --
+	//! in that last case the scene DID change and re-renders even
+	//! though this returns false (the failure is logged; callers
+	//! must not treat false as "nothing happened").
+	bool RISE_API_SceneEditController_SetProperty(
+		SceneEditController* p, const char* name, const char* valueStr );
+
+	//! Read the scene's animation options (start time, end time,
+	//! number of frames) for sizing the interactive timeline
+	//! scrubber.  Defaults are (0, 1, 30) when the .RISEscene file
+	//! declared no `animation_options` chunk.  Returns false without
+	//! touching the outputs on null input, while a render owns the scene,
+	//! or while the editor commit mutex is contended; polling callers
+	//! retain their last successful tuple and retry.
+	bool RISE_API_SceneEditController_GetAnimationOptions(
+		SceneEditController* p,
+		double* outTimeStart, double* outTimeEnd,
+		unsigned int* outNumFrames );
+
+	//! Read whether the CURRENT live scene contains any keyframed elements.
+	//! This is deliberately a controller-level snapshot rather than a direct
+	//! Job query: agent edits may re-derive the scene from another thread.
+	//! Returns false and leaves `*outHasAnimation` untouched on null input,
+	//! while a render owns the scene, or while the editor commit mutex is
+	//! contended; polling UIs should retain their last successful value.
+	bool RISE_API_SceneEditController_GetHasAnimation(
+		SceneEditController* p, bool* outHasAnimation );
+
+	// ---- Simulation M3c: viewport playback, baked ranges, live simulation ----
+	// (docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation above also reports
+	// true for scenes whose only time-varying content is simulation assets
+	// (simulated meshes, fire media); GetAnimationOptions then takes the range
+	// from their caches' time maps when the scene declares no animation.  All
+	// of these return false on a null controller; string outputs are
+	// NUL-terminated and truncated to the buffer; every out pointer may be null.
+
+	//! Registers the solvers shipped in the library (cloth.shell, and
+	//! fire.methane, which is not interactive) with the process-wide solver
+	//! registry.  Idempotent; call once before LiveSimulationAttach.
+	bool RISE_API_RegisterBuiltinSolvers( char* errorBuf, unsigned int errorBufLen );
+
+	//! Time-varying assets (for drawing baked ranges).  The count and each
+	//! index read a fresh snapshot: re-read the count when an index fails.
+	//! `outKind`: 0 simulated mesh, 1 fire medium.  `outState`: 0 complete,
+	//! 1 partial, 2 baking (a writer holds the cache), 3 live (in memory).
+	//! `outPredictive`: the cache's fidelity label is predictive.  Times are
+	//! scene seconds: first and last frame of the cache's support, and the end
+	//! of the run of frames present from the first (`outAvailableEnd`).
+	//! Non-blocking like GetAnimationOptions (false while contended).
+	bool RISE_API_SceneEditController_GetTimeVaryingAssetCount(
+		SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetTimeVaryingAsset(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen,
+		int* outKind, int* outState, bool* outPredictive,
+		double* outStart, double* outEnd, double* outAvailableEnd, double* outInterval,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal );
+
+	//! Library playback clock: plays scene time through the time-scrub path on
+	//! a controller thread at `fps` frames per wall-clock second (<= 0: the
+	//! timeline's frame spacing), over the timeline range (PlaybackPlayRange:
+	//! the given one), from the current scene time.  Coalesces frames when the
+	//! viewport renders slower than the clock (counted as dropped).  Starts
+	//! attached live simulations and never runs ahead of their latest frame.
+	//! A shell's own OnTimeScrubBegin (a manual scrub) pauses it.
+	bool RISE_API_SceneEditController_PlaybackPlay( SceneEditController* p, double fps, bool loop );
+	bool RISE_API_SceneEditController_PlaybackPlayRange(
+		SceneEditController* p, double timeStart, double timeEnd, double fps, bool loop );
+	bool RISE_API_SceneEditController_PlaybackPause( SceneEditController* p );
+	//! While playing, moves the clock; while paused, one scrub.  Clamped to the
+	//! latest live frame when a live simulation is attached.
+	bool RISE_API_SceneEditController_PlaybackSeek( SceneEditController* p, double t );
+	bool RISE_API_SceneEditController_GetPlaybackStatus(
+		SceneEditController* p, bool* outPlaying, bool* outLive, bool* outWaitingForSolver,
+		double* outTime, double* outTimeStart, double* outTimeEnd, double* outFps,
+		unsigned long long* outFramesShown, unsigned long long* outFramesDropped,
+		unsigned long long* outSolverWaits, unsigned long long* outPassesCompleted,
+		double* outWallSeconds );
+
+	//! Attach an in-process simulation to the simulated_mesh_geometry
+	//! `geometryName`: a registered interactive solver and its parameters
+	//! (`parameters`: a JSON object or canonical CBOR map, `parametersLen`
+	//! bytes).  Blocks while the solver configures and publishes its first
+	//! frame (up to about a second for cloth.shell's evidence on first use).
+	//! The published topology must equal the bound mesh's.  PlaybackPlay then
+	//! steps it; scrubbing backwards reads published frames, scrubbing past
+	//! the latest one clamps to it (read LastSceneTime).  API-only: the
+	//! scene-file binding is M4.
+	bool RISE_API_SceneEditController_LiveSimulationAttach(
+		SceneEditController* p, const char* geometryName, const char* solverId,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Stops and joins the solver and rebinds the baked cache.
+	bool RISE_API_SceneEditController_LiveSimulationDetach(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen );
+	//! Restart from the initial state (published frames dropped), showing frame 0.
+	bool RISE_API_SceneEditController_LiveSimulationReset(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen );
+	//! New parameters (a new cache key); restarts.
+	bool RISE_API_SceneEditController_LiveSimulationSetParameters(
+		SceneEditController* p, const char* geometryName,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Restart while also recording every frame to a new epoch of the disk
+	//! cache at `cacheDirectory` (sealed when the run finishes; the writer
+	//! refuses a directory with group-writable ancestors).
+	bool RISE_API_SceneEditController_LiveSimulationRecord(
+		SceneEditController* p, const char* geometryName, const char* cacheDirectory,
+		char* errorBuf, unsigned int errorBufLen );
+	//! False when `geometryName` has no live simulation, or while a scrub holds
+	//! the live state (non-blocking: keep the last value and poll again).
+	//! `outLatestFrame`: the last frame of the run published from the first.
+	bool RISE_API_SceneEditController_GetLiveSimulationStatus(
+		SceneEditController* p, const char* geometryName,
+		bool* outPlaying, bool* outFinished, bool* outFailed,
+		long long* outLatestFrame, double* outLatestSceneTime,
+		double* outFirstSceneTime, double* outLastSceneTime,
+		unsigned long long* outFramesPublished, unsigned long long* outFramesTotal,
+		double* outSimulatedTime );
+	unsigned int RISE_API_SceneEditController_LiveSimulationCount( SceneEditController* p );
+
+	//! Simulation M4: run the scene's simulation `simulationName` live in the
+	//! viewport -- its declared solver, parameters and scene inputs -- bound to
+	//! the simulated_mesh_geometry whose `source` names it.  No pre-bake is
+	//! needed.  Detach with LiveSimulationDetach( <that geometry's name> ).
+	bool RISE_API_SceneEditController_LiveSimulationAttachSimulation(
+		SceneEditController* p, const char* simulationName, char* errorBuf, unsigned int errorBufLen );
+	//! Simulation M4: after a scene edit, restart every live scene simulation
+	//! whose configuration or consumer changed (a new cache key).  The agent
+	//! edit path calls it itself; a GUI calls it after its own edits.
+	bool RISE_API_SceneEditController_LiveSimulationResync(
+		SceneEditController* p, char* errorBuf, unsigned int errorBufLen );
+	//! Simulation M4: the declared simulations and their states.  Non-blocking:
+	//! false while the scene is busy (poll again).  `outState`: 0 missing,
+	//! 1 baking, 2 partial, 3 complete, 4 stale, 5 failed.  Every out pointer may
+	//! be null; text is truncated to its buffer.
+	bool RISE_API_SceneEditController_GetSimulationCount( SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetSimulation(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen );
+
+	// ---- Simulation M5: baking (docs/SIMULATION_M5A_RESULTS.md) ----
+	// A bake is a separate rise-sim process run on the scene FILE, managed by
+	// one process-wide bake manager shared by every document and the agent:
+	// it queues simulations upstream first, runs one GPU bake at a time
+	// (machine-wide, through a lock the worker takes), caps concurrent CPU
+	// bakes, checks a memory budget, monitors each bake from its cache's
+	// status record, adopts bakes still running from an earlier session, and
+	// stops a bake at a checkpoint so it can be resumed.  A bake never changes
+	// the loaded scene.  Save rule: the scene must have been saved; a bake of
+	// a simulation whose key the document knows is refused by the worker when
+	// the file on disk plans another key ("save first: ..."), and with unsaved
+	// changes a simulation whose key is not known yet is refused at once.
+	// Every function returns false on a null controller; text outputs are
+	// NUL-terminated and truncated to their buffers; every out pointer may be
+	// null; exceptions never cross the ABI.
+
+	//! The rise-sim executable bakes run (null or "" = search: $RISE_SIM_WORKER,
+	//! then beside the running executable -- rise-sim, rise_sim, tools/rise_sim,
+	//! ../tools/rise_sim, ../Helpers/rise-sim, ../Resources/rise-sim -- then $PATH).
+	bool RISE_API_SimulationBake_SetWorkerPath( const char* path );
+	//! The worker a bake would run now; false (with the places searched in
+	//! errorBuf) when none is found.
+	bool RISE_API_SimulationBake_GetWorkerPath( char* pathBuf, unsigned int pathBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! `maxConcurrentCpuBakes` (0 keeps the current value; default 2) and the
+	//! budget for running bakes' declared memory estimates (0 = half the
+	//! physical memory).
+	bool RISE_API_SimulationBake_SetLimits( unsigned int maxConcurrentCpuBakes,
+		unsigned long long memoryBudgetBytes );
+	//! Bumped on every change of any bake (state, progress, new frames).  A GUI
+	//! polls it at ~2 Hz; when it moves, re-read the job rows and call
+	//! RefreshSimulationFrames.
+	unsigned long long RISE_API_SimulationBake_ChangeCounter();
+	//! Optional push form of the same signal: one callback per process (null
+	//! clears it).  Called on the bake manager's thread, never under its lock:
+	//! hop to the UI thread before touching UI or calling a controller.
+	typedef void ( *RISE_SimulationBakeChangeCallback )( void* userData, unsigned long long changeCounter );
+	bool RISE_API_SimulationBake_SetChangeCallback( RISE_SimulationBakeChangeCallback callback, void* userData );
+
+	//! Queue a bake of `simulationName` (plus every upstream simulation that is
+	//! not complete).  `force` rebakes it even when complete (not its
+	//! upstreams).  A partial cache of the current key is continued, a stale
+	//! one rebaked as a new epoch.  `outJobId`: the job of `simulationName`.
+	bool RISE_API_SceneEditController_SimulationBake( SceneEditController* p, const char* simulationName,
+		bool force, unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen );
+	//! Every simulation with a solver (`staleOnly`: only those not complete
+	//! with their current key -- "bake all stale"); `outJobCount` jobs queued
+	//! or reused.
+	bool RISE_API_SceneEditController_SimulationBakeAll( SceneEditController* p, bool staleOnly, bool force,
+		unsigned int* outJobCount, char* errorBuf, unsigned int errorBufLen );
+	//! Continue a stopped, interrupted or failed bake (partial cache, current key).
+	bool RISE_API_SceneEditController_SimulationBakeResume( SceneEditController* p, const char* simulationName,
+		unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen );
+	//! Stop the queued or running bake of `simulationName`: a queued one is
+	//! cancelled; a running one checkpoints at its next safe point and ends
+	//! stopped and resumable (the row goes stopping, then stopped).  `kill`
+	//! ends the process at once with no checkpoint -- only for an explicit
+	//! "force stop".
+	bool RISE_API_SceneEditController_SimulationBakeStop( SceneEditController* p, const char* simulationName,
+		bool kill, char* errorBuf, unsigned int errorBufLen );
+	//! Cancel every queued (not yet started) bake of this document.
+	bool RISE_API_SceneEditController_SimulationBakeCancelQueued( SceneEditController* p, unsigned int* outCancelled );
+	//! This document's bake jobs, oldest first (the queue order), including
+	//! finished ones and bakes adopted from an earlier session.  The count and
+	//! each index read a fresh snapshot: re-read the count when an index
+	//! fails.  The first call for a scene also adopts its running bakes.
+	//! `outState`: 0 queued, 1 waiting for GPU, 2 running, 3 stopping,
+	//! 4 stopped, 5 finished, 6 failed, 7 cancelled.  `outResumable`: stopped
+	//! or failed with a partial cache of the current key (Resume continues
+	//! it).  `outAdopted`: a worker this app did not start.  `outInterrupted`:
+	//! it ended without a clean stop.  Times: solver seconds (end = last output
+	//! time); `outWallSeconds` the worker's wall time over bake and resumes;
+	//! `outEtaSeconds` remaining wall seconds, -1 unknown.  `waitingFor`: why a
+	//! queued job has not started (upstream, CPU slot, GPU slot, memory).
+	bool RISE_API_SceneEditController_GetSimulationBakeJobCount( SceneEditController* p, unsigned int* outCount );
+	bool RISE_API_SceneEditController_GetSimulationBakeJob( SceneEditController* p, unsigned int index,
+		unsigned long long* outJobId, char* simulationBuf, unsigned int simulationBufLen,
+		int* outState, bool* outResumable, bool* outAdopted, bool* outInterrupted,
+		double* outSimulatedTime, double* outEndTime,
+		unsigned long long* outFramesWritten, unsigned long long* outFramesTotal,
+		double* outWallSeconds, double* outEtaSeconds, unsigned long long* outPid,
+		char* backendBuf, unsigned int backendBufLen, char* waitingForBuf, unsigned int waitingForBufLen,
+		char* detailBuf, unsigned int detailBufLen, char* errorBuf, unsigned int errorBufLen );
+	//! When new frames landed in this scene's caches since the last call,
+	//! rebinds consumers whose cache began a new epoch or had no frames, and
+	//! installs the current time's frames (the scrub path's install) and
+	//! re-renders.  `outRefreshed` false: nothing new (cheap, no lock).
+	bool RISE_API_SceneEditController_RefreshSimulationFrames( SceneEditController* p, bool* outRefreshed,
+		char* errorBuf, unsigned int errorBufLen );
+	//! Detach the live run of scene simulation `simulationName` (the partner
+	//! of LiveSimulationAttachSimulation).
+	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
+		const char* simulationName, char* errorBuf, unsigned int errorBufLen );
+
+	//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of a
+	//! named painter -- see PainterPreview.h (src/Library/SceneEditor) for
+	//! the domain / display-encode / scalar-normalization contract this
+	//! call does not repeat.  `defIndex < 0` previews the painter's own
+	//! output; `defIndex >= 0` previews that expression `def` slot's
+	//! intermediate stage (refused for a non-expression painter or an
+	//! out-of-range index).  `outRGBA` is CALLER-OWNED and must have room
+	//! for exactly `w*h*4` bytes (row-major, top-to-bottom); the caller
+	//! already knows `w`/`h`, so there is no separate size-query call.
+	//! `outWasScalar`/`outRangeMin`/`outRangeMax` are optional (pass null
+	//! to skip) and report the auto-range normalization actually applied
+	//! when the previewed stage is scalar-typed -- untouched for a
+	//! colour-typed stage.  Returns false (buffer untouched) on: null
+	//! controller/name/buffer, w or h outside (0, PainterPreview::kMaxDim],
+	//! an unresolved painter name, an out-of-range/inapplicable defIndex,
+	//! or the render-owns-scene / contended-lock refusal every other
+	//! SceneEditController getter in this section documents.  A request
+	//! whose w*h exceeds PainterPreview::kMaxSampleBudget is evaluated on
+	//! a decimated grid and nearest-upscaled into `outRGBA` -- still
+	//! exactly `w*h*4` bytes; see PainterPreview.h's EVALUATION BUDGET
+	//! note.
+	bool RISE_API_SceneEditController_PainterPreview(
+		SceneEditController* p, const char* painterName, int defIndex,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		bool* outWasScalar, double* outRangeMin, double* outRangeMax );
+
+	//! doc 88 S10: a ramp_painter's own colour interpolation over its
+	//! authored stop domain, as a horizontal gradient strip -- see
+	//! PainterPreview::RenderRampStripPreview's doc comment.  Same
+	//! buffer/refusal contract as RISE_API_SceneEditController_PainterPreview
+	//! above; additionally refuses when `painterName` does not resolve to
+	//! a ramp_painter.
+	bool RISE_API_SceneEditController_RampStripPreview(
+		SceneEditController* p, const char* painterName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA );
+
+	//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D
+	//! shaderball RGBA8 preview of a named material -- see MaterialPreview.h.
+	//! Same caller-owned `w*h*4` buffer and refusal contract as
+	//! RISE_API_SceneEditController_PainterPreview above.
+	bool RISE_API_SceneEditController_MaterialPreview(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA );
+
+	//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+	//! spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+	//! Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+	bool RISE_API_SceneEditController_ThinFilmAngleStrip(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		double* outThicknessNm, double* outFilmIor );
+
+	bool RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+		SceneEditController* p, const char* materialName,
+		double angleDeg, unsigned char* outRGBA4,
+		double* outThicknessNm, double* outFilmIor );
+
+	bool RISE_API_SceneEditController_BlackbodyKelvinStrip(
+		unsigned int w, unsigned int h,
+		double minKelvin, double maxKelvin,
+		unsigned char* outRGBA );
+
+	bool RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+		double kelvin, double* outPeakNm, unsigned char* outRGBA4 );
+
+	bool RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+		const char* sellmeierParamValue,
+		double* outNd, double* outAbbeVd );
+
+	bool RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+		const char* presetId, unsigned char* outRGBA4 );
+
+	bool RISE_API_SceneEditController_ApplySpectralPreset(
+		SceneEditController* p, int category, const char* presetId );
+
+
+	//! Read the scene camera's stable full-resolution dimensions.
+	//! Bridges call this from their pointer-event handlers to convert
+	//! window-space mouse coords to a coord space that doesn't drift
+	//! with the preview-scale state machine.  See
+	//! SceneEditController::GetCameraDimensions for the full
+	//! rationale — short version: ICamera::GetWidth/Height flicker
+	//! during subsampling, this getter doesn't.  Returns false on
+	//! null controller / no camera attached / cache uninitialised.
+	bool RISE_API_SceneEditController_GetCameraDimensions(
+		SceneEditController* p, unsigned int* outW, unsigned int* outH );
+
+	// Accordion list entries -----------------------------------------
+	//
+	// The right-side panel renders one collapsible section per
+	// SceneEditCategory.  Each section's list of selectable rows is
+	// pulled by polling these getters.  The platform UIs cache the
+	// (epoch, category) → list mapping and refresh when SceneEpoch()
+	// advances.
+
+	//! Number of selectable entries in `category`.  Returns 0 for
+	//! Category::None or on null controller.
+	unsigned int RISE_API_SceneEditController_CategoryEntityCount(
+		SceneEditController* p, int category );
+
+	//! Display name for the `idx`-th entry of `category`.  Returns
+	//! false on null controller, out-of-range idx, or unknown
+	//! category.
+	bool RISE_API_SceneEditController_CategoryEntityName(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	// Selection (the accordion's "expanded section + picked row") ----
+
+	//! Current selection's category, mapped to SceneEditCategory_*.
+	//! -1 on null controller.
+	int RISE_API_SceneEditController_GetSelectionCategory(
+		SceneEditController* p );
+
+	//! Display name of the currently-selected entity within the
+	//! selected category.  Empty when the section is open with no row
+	//! highlighted.  Returns false on null controller.
+	bool RISE_API_SceneEditController_GetSelectionName(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	//! The OUTLINER ROW the current selection should highlight.
+	//!
+	//! Identical to `_GetSelectionName` for every ordinary entity.  It
+	//! differs only when the selection names a SYNTHESIZED instancing entry
+	//! (`I[1,0]`, `I.X`) -- which is what a VIEWPORT PICK necessarily
+	//! produces, since a ray can only return a live object -- where the
+	//! outliner's row is the instancing CHUNK those entries were expanded
+	//! from.  Without this an outliner matching `_GetSelectionName` against
+	//! its row names highlights nothing at all.
+	//!
+	//! Use this for ROW HIGHLIGHTING ONLY.  `_GetSelectionName` remains the
+	//! selected ENTITY -- what the property panel inspects, what the gizmo
+	//! transforms, what the viewport chrome names -- and folding those onto
+	//! the array would edit every copy at once (and, for a counted chunk
+	//! whose row has no live object, would leave the gizmo with nothing to
+	//! attach to).  Falls back to the unfolded name whenever nothing
+	//! resolves, so a caller can always use it and never lands on a wrong
+	//! row.  Returns false on null controller.
+	bool RISE_API_SceneEditController_GetSelectionRowName(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	//! Apply a (category, name) selection.  Empty `name` selects the
+	//! category with no row picked (the section opens, the property
+	//! panel below shows nothing).  Camera / Rasterizer selections
+	//! also activate the named entity (calls SetActiveCamera /
+	//! SetActiveRasterizer respectively); Object / Light / Film
+	//! selections are UI state only.  Returns false on null controller
+	//! or category-specific failures (e.g. unknown camera name).
+	bool RISE_API_SceneEditController_SetSelection(
+		SceneEditController* p, int category, const char* name );
+
+	//! Scene-level active entity for a category, independent of the UI
+	//! selection.  Camera → active camera name; Rasterizer → active
+	//! rasterizer type name; Film → "default" (a scene has exactly one
+	//! Film by construction); Object/Light/None → empty.  Used by the
+	//! accordion to populate the dropdown with the scene's current
+	//! active entity on first load.  Returns false on null controller.
+	bool RISE_API_SceneEditController_CategoryActiveName(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen );
+
+	// Authored-graph node tree (87 section 5 step 4a) -----------------
+	//
+	// The generic node-children surface the tree outliners are built on.
+	// A category with no hierarchy (Camera, Material, Painter, ...)
+	// reports its entities as roots with no children, so a shell needs no
+	// per-category branch.
+	//
+	// A node is addressed by an OPAQUE 64-BIT HANDLE that carries the
+	// snapshot generation it was minted in.  A handle from an older
+	// snapshot FAILS every getter -- it does not resolve to whatever
+	// object now sits at that index.  A shell that gets a false back from
+	// a getter it expected to succeed should restart its walk from
+	// TreeRootCount, not treat the failure as "no such row"; the two are
+	// distinguishable by re-reading TreeGeneration.
+	//
+	// See SceneEditController::TreeNodeCount for the refresh cadence:
+	// TreeNodeCount / TreeRootCount refresh the snapshot, the per-node
+	// getters serve it, and a refresh republishes (and bumps the
+	// generation) only when the tree actually changed.  Walk from the
+	// roots and the ordering is right.
+	//
+	// TRAP for 4b/4c: a shell re-reads when SceneEpoch() advances, which
+	// covers every re-parent TODAY only because `parent` is read-only and
+	// every re-parent goes through a document chunk edit.  DRAG-TO-REPARENT
+	// must bump the scene epoch itself -- it changes the TREE without
+	// changing any category's entity LIST, so nothing else would notice.
+	//
+	// THE `ByHandle` SUFFIX IS A DELIBERATE LINK BREAK, not a hint that
+	// some other addressing mode exists -- a handle is the only way to
+	// name a node.  Five entry points here took an `unsigned int` INDEX in
+	// af83e5e4 and take a generation-tagged 64-bit handle now.  For THREE
+	// of them (TreeRootNode, TreeChildNode, TreeNodeParent) the OUT-pointer
+	// widened too, and `unsigned int*` does not convert to
+	// `unsigned long long*`, so a caller written against the old signature
+	// already fails to compile.  For the other TWO -- child count and name
+	// -- the handle is the only changed parameter, `unsigned int` converts
+	// to `unsigned long long` implicitly, and that caller would have kept
+	// COMPILING and silently degraded to "every node is a childless row"
+	// (a raw index leaves the generation tag 0, which matches no published
+	// generation).  That degradation is indistinguishable from a
+	// legitimately flat category, which is exactly the kind of wrong a
+	// shell sits on for a long time.  So those two, and only those two,
+	// are renamed: a stale caller now fails to build on every path.  If the
+	// handle encoding ever changes again, rename again.
+	//
+	// ROUND 4 APPLIED THE SAME RENAME ON THE C++ SIDE, so the two surfaces
+	// now agree name for name.  The argument above transfers verbatim to
+	// `SceneEditController::TreeChildCountByHandle` /
+	// `TreeNodeNameByHandle`: those two C++ methods also had the handle as
+	// their only changed parameter.  It does NOT transfer to the other
+	// three C++ methods -- they have no out-pointer, but each changed its
+	// RETURN type from `unsigned int` to a 64-bit handle, so a stale caller
+	// storing the result gets a narrowing conversion the compiler can warn
+	// about rather than a silently wrong answer.
+	//
+	// (And note what this rename does NOT protect, on either surface: a
+	// handle from ANOTHER CONTROLLER used to decode cleanly.  That is fixed
+	// by making generations process-global, not by a name -- see
+	// `SceneEditController::HandleFor`.)
+
+	//! Total nodes in `category`'s tree.  0 on null controller or an
+	//! unknown category.
+	unsigned int RISE_API_SceneEditController_TreeNodeCount(
+		SceneEditController* p, int category );
+
+	//! Number of ROOT nodes in `category`'s tree.
+	unsigned int RISE_API_SceneEditController_TreeRootCount(
+		SceneEditController* p, int category );
+
+	//! The generation of `category`'s currently published tree.  Does NOT
+	//! refresh.  0 on a null controller, an unknown category, or a
+	//! category nothing has ever been published for.  Read it before and
+	//! after a multi-call walk to learn whether the walk spanned a
+	//! republish.
+	unsigned long long RISE_API_SceneEditController_TreeGeneration(
+		SceneEditController* p, int category );
+
+	//! Handle of the `rootIdx`-th root.  Returns false -- leaving
+	//! `*outNode` untouched -- on null controller / null out-pointer /
+	//! out-of-range index.
+	bool RISE_API_SceneEditController_TreeRootNode(
+		SceneEditController* p, int category, unsigned int rootIdx,
+		unsigned long long* outNode );
+
+	//! How many children `node` has.  0 for an unknown or STALE handle.
+	//! (`ByHandle`: see the LINK BREAK note above.)
+	unsigned int RISE_API_SceneEditController_TreeChildCountByHandle(
+		SceneEditController* p, int category, unsigned long long node );
+
+	//! Handle of `node`'s `childIdx`-th child.  Returns false -- leaving
+	//! `*outNode` untouched -- on null controller / null out-pointer /
+	//! unknown or stale handle / out-of-range index.
+	bool RISE_API_SceneEditController_TreeChildNode(
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned int childIdx, unsigned long long* outNode );
+
+	//! Handle of `node`'s parent.  Returns FALSE for a ROOT as well as for
+	//! an unknown or stale handle -- a shell that is walking up to build a
+	//! tree path stops on either, and a root is not an error.
+	bool RISE_API_SceneEditController_TreeNodeParent(
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned long long* outParent );
+
+	//! `node`'s entity name -- what a row displays and what
+	//! RISE_API_SceneEditController_SetSelection takes.  Returns false on
+	//! null controller or an unknown / stale handle.
+	//! (`ByHandle`: see the LINK BREAK note above.)
+	bool RISE_API_SceneEditController_TreeNodeNameByHandle(
+		SceneEditController* p, int category, unsigned long long node,
+		char* buf, unsigned int bufLen );
+
+	// NO `ReadTree` AND NO `HandleFor` ON THIS SURFACE, and that is not an
+	// omission to be corrected.  `SceneEditController::AuthoredTree` is a
+	// nested C++ type; this header only FORWARD-DECLARES the controller
+	// (`class SceneEditController;`, above the SceneEditController block)
+	// and cannot name it without pulling SceneEditController.h into the
+	// most-included header in the tree.  A caller that has no
+	// ReadTree has no raw index either -- every handle it holds came out of
+	// TreeRootNode or TreeChildNode already tagged -- so the way back that
+	// `SceneEditController::HandleFor` provides has nothing to answer here.
+	// A C++ shell (Qt ViewportBridge) reaches both through the controller
+	// directly.
+
+	// Painter/Material node graph (doc-88 Phase 3 S11/S14,
+	// docs/gui/NODE_GRAPH_CANVAS.md sect. 6) -----------------------------
+	//
+	// SAME two-surface split as the tree above, and the SAME reason: no
+	// `ReadPainterMaterialGraph`/`ReadPainterMaterialGraphLaidOut`/
+	// `HandleFor`-equivalent here either -- `SceneEditController::
+	// PainterMaterialGraph` is a nested C++ type this header cannot name.
+	// A C++ shell (both platform bridges) reaches the bulk read directly
+	// through the controller, exactly like `-categoryTree:` does for the
+	// tree; this flat surface is for a caller that cannot name the nested
+	// type (and for the C-ABI smoke test, `SceneGraphNodeApiTest.cpp`-
+	// style, that proves the two surfaces agree).
+	//
+	// UNLIKE the tree, this graph is FLAT (no root/child distinction --
+	// `SceneEditController::PainterMaterialGraph::nodes` is a plain list),
+	// so there is no `*RootNode`/`*ChildNode` pair here: one node-count +
+	// one handle-at-index getter covers enumeration.  `category` crosses as
+	// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's enum
+	// to int, do not hand-mirror it" convention `RISEViewportProperty.kind`
+	// already uses for `ValueKind` (see `SceneEditController::
+	// PainterGraphNodeCategory`'s own comment for why no bespoke per-value
+	// mirror is needed on either bridge).  Every "the other end of this
+	// port" value is a `GraphNodeHandle` (never the raw `GraphPort::
+	// otherNode` array index), so ports and nodes share ONE identity space
+	// -- `kInvalidGraphNode` doubles as both "no such node" and "node-less
+	// (dangling/out-of-scope) port".
+
+	//! Total nodes in the CURRENT Painter/Material graph.  Refreshes.  0 on
+	//! a null controller.
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeCount(
+		SceneEditController* p );
+
+	//! The generation of the currently published graph.  Does NOT refresh.
+	//! 0 on a null controller or a graph never published.
+	unsigned long long RISE_API_SceneEditController_PainterGraphGeneration(
+		SceneEditController* p );
+
+	//! Handle of the `idx`-th node (presentation order).  Returns false --
+	//! leaving `*outNode` untouched -- on null controller / null out-pointer
+	//! / out-of-range index.
+	bool RISE_API_SceneEditController_PainterGraphNodeHandleAt(
+		SceneEditController* p, unsigned int idx, unsigned long long* outNode );
+
+	//! `node`'s name / chunk keyword (e.g. "ramp_painter").  Returns false
+	//! on null controller or an unknown/stale handle.
+	bool RISE_API_SceneEditController_PainterGraphNodeName(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PainterGraphNodeKeyword(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen );
+
+	//! `node`'s `RISE::ChunkCategory`, cast to int.  -1 on null controller
+	//! or an unknown/stale handle (never a valid category ordinal).
+	int RISE_API_SceneEditController_PainterGraphNodeCategory(
+		SceneEditController* p, unsigned long long node );
+
+	//! `node`'s expression-family def-stage count (0 for a non-expression
+	//! chunk).  -1 on null controller or an unknown/stale handle.
+	int RISE_API_SceneEditController_PainterGraphNodeDefCount(
+		SceneEditController* p, unsigned long long node );
+
+	//! `node`'s laid-out position (S12 auto-layout + S13 saved-position
+	//! sidecar, composed by `ReadPainterMaterialGraphLaidOut`).  Returns
+	//! false -- `*outX`/`*outY` untouched -- on null controller / null
+	//! out-pointer / an unknown or stale handle.  Re-composes (sidecar read
+	//! + layout) on every call -- fine for this smoke-test/occasional-caller
+	//! surface, but a bulk walk should use the C++ `ReadPainterMaterialGraphLaidOut`
+	//! directly instead (see that method's own comment).
+	bool RISE_API_SceneEditController_PainterGraphNodePosition(
+		SceneEditController* p, unsigned long long node, double* outX, double* outY );
+
+	//! Port counts for `node`'s two port lists.  0 on null controller or an
+	//! unknown/stale handle.
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeOutEdgeCount(
+		SceneEditController* p, unsigned long long node );
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeInEdgeCount(
+		SceneEditController* p, unsigned long long node );
+
+	//! One port at `portIdx` on `node`'s out-edge / in-edge list.
+	//! `*outOtherNode` is `kInvalidGraphNode`-equivalent (0xFFFFFFFFFFFFFFFF)
+	//! for a node-less port (dangling or out-of-scope reference) --
+	//! `outOtherNameBuf` still carries the target's name either way.
+	//! Returns false -- no out-param touched -- on null controller / null
+	//! out-pointer / an unknown or stale handle / an out-of-range `portIdx`.
+	bool RISE_API_SceneEditController_PainterGraphNodeOutEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen );
+	bool RISE_API_SceneEditController_PainterGraphNodeInEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen );
+
+	//! Write ONE node's layout position into the current scene's sidecar
+	//! (`SceneEditController::WriteGraphLayoutPositions` with a single-
+	//! element update -- the shape a canvas drag commits: one node moved at
+	//! a time).  `outError` (optional -- may be null/0-length) receives an
+	//! error message on failure; unused/truncated like every other
+	//! `char*, len` out-buffer on this surface.  Returns true on success,
+	//! INCLUDING the two documented no-op cases (positions unchanged on
+	//! disk; scene never saved) -- see `WriteGraphLayoutPositions`'s own
+	//! comment.  Returns false on null controller / empty `nodeName` / an
+	//! actual I/O failure / a render owning the scene.
+	bool RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+		SceneEditController* p, const char* nodeName, double x, double y,
+		char* outError, unsigned int outErrorLen );
+
+	//! doc-88 Phase 3 S17 -- connection-legality passthrough for the future
+	//! S21 drag-drop canvas (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S17;
+	//! ConnectionLegality.h). `targetCategory`/`candidateCategory` are
+	//! `RISE::ChunkCategory` ordinals -- the SAME convention
+	//! `RISE_API_SceneEditController_PainterGraphNodeCategory` already
+	//! returns, NOT `SceneEditController::Category` (the panel's own,
+	//! coarser union enum -- see ConnectionLegality.h's own note on why a
+	//! Function/Painter distinction matters here and Category can't carry
+	//! it). Returns the legality verdict directly; `outDiagBuf` (optional,
+	//! may be null/0-length) receives the diagnostic text -- empty iff the
+	//! return is true. Returns false with no diagnostic written on a null
+	//! controller.
+	bool RISE_API_SceneEditController_CheckConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* paramName,
+		int candidateCategory, const char* candidateName,
+		char* outDiagBuf, unsigned int outDiagBufLen );
+
+	//! `SceneEditController::WouldCycle` passthrough -- same (category,
+	//! name) addressing as `_CheckConnection` above. Returns false (never
+	//! a crash) on a null controller or either name failing to resolve.
+	bool RISE_API_SceneEditController_WouldCycle(
+		SceneEditController* p,
+		int fromCategory, const char* fromName,
+		int toCategory, const char* toName );
+
+	//! doc-88 Phase 3 S21 -- `ConnectionLegality::CheckConnectionByKeyword`
+	//! passthrough for the "add node" palette's required-reference
+	//! candidate picker, which must filter candidates for a node keyword
+	//! the document does not contain YET (the by-name form above needs a
+	//! real target chunk to resolve). Pure descriptor form: no
+	//! `SceneEditController*`, no document, no locking -- safe before any
+	//! scene is even loaded. `candidateIsPerChannelValues` narrows a
+	//! `requireSingle` Scalar-pipe target when the candidate is itself a
+	//! `scalar_painter` authored in the per-channel `values` form (pass 0
+	//! when unknown). Returns the legality verdict directly; `outDiagBuf`
+	//! (optional) receives the diagnostic text, empty iff the return is
+	//! true. Returns false with no diagnostic on a null keyword argument.
+	bool RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+		const char* targetKeyword, const char* paramName,
+		const char* candidateKeyword, int candidateCategory,
+		int candidateIsPerChannelValues,
+		char* outDiagBuf, unsigned int outDiagBufLen );
+
+	//! doc-88 Phase 3 S19 -- the ownership-closure REWIRE verb
+	//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S19; OwnershipClosure.h;
+	//! docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  Re-points
+	//! `targetName`.`param` (occurrence `occurrence`) at `newRefName` as ONE
+	//! undoable commit, or REFUSES with the head left byte-identical.
+	//!
+	//! `targetCategory` / `newRefCategory` are `RISE::ChunkCategory`
+	//! ordinals -- the SAME convention `_CheckConnection` above uses, NOT
+	//! `SceneEditController::Category`.
+	//!
+	//! `outClosure` (optional) receives the `RISE::ClosureClassification`
+	//! ordinal: 0 Clean / 1 UnresolvedTarget / 2 AmbiguousTargetName /
+	//! 3 ExpressionDrivenTarget / 4 SharedTarget.  BRIDGE-ENUM MIRROR
+	//! (P2-3, S19 review round 1 -- corrects an earlier false claim here):
+	//! this crosses the ABI as a plain `int`, but BOTH bridges DO
+	//! re-declare a real mirror enum on the platform side --
+	//! `RewireClosure` (build/VS2022/RISE-GUI/ViewportBridge.h) and
+	//! `RISERewireClosure` (build/XCode/rise/RISE-GUI/Bridge/
+	//! RISEViewportBridge.h) -- so there IS a mirror, and it CAN drift.
+	//! `tests/RewireConnectionTest.cpp` carries a block of `static_assert`s
+	//! pinning these five ordinals directly against
+	//! `RISE::ClosureClassification`; the two bridge headers carry a
+	//! comment pointing at that block.
+	//! `outLegalityRefused` / `outCycleRefused` (optional)
+	//! receive 1/0 for the two non-closure refusal kinds.
+	//!
+	//! `outStatus` is the commit status ("applied" / "rejected" /
+	//! "diagnosed" / "conflict") and `outMessage` its message -- on a
+	//! legality refusal that message is the REAL PARSER's own diagnostic
+	//! verbatim, so a canvas-rejected wire reads exactly like a
+	//! hand-edited scene's failure.
+	//!
+	//! `outShared` / `outReferrers` / `outOwners` / `outNowUnreferenced`
+	//! (each optional) receive '\n'-JOINED name lists -- sect. 3.7a's (a) the
+	//! shared chunk(s), (b) the out-of-closure referrers, the owning roots,
+	//! and the chunks this rewire leaves unreferenced (a canvas badge; this
+	//! slice does NOT delete them -- that is S20's reference-safe delete).
+	//! The '\n'-joined convention matches
+	//! `ApplyAgentRemoveChunks`'s own batch echo rather than inventing a
+	//! second list-across-the-ABI idiom; a name can never contain a newline
+	//! (the parser's chunk names are single tokens), so the join is
+	//! unambiguous.  Every buffer is NUL-terminated and truncated to fit,
+	//! like every other `char*, len` pair on this surface.
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.  A "diagnosed"
+	//! result returns false but DID mutate (see `AgentCommitResult`).
+	bool RISE_API_SceneEditController_RewireConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
+	//! RewireConnection with the additional adapter-availability result; preserves the original ABI.
+	bool RISE_API_SceneEditController_RewireConnectionEx(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outCanInsertScalarAdapter, int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen );
+
+	bool RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+		SceneEditController* p, int targetCategory, const char* targetName,
+		const char* param, int occurrence, int sourceCategory, const char* sourceName,
+		char* outAdapterName, unsigned int outAdapterNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+	//! ParameterPipe ordinal (Color=1, Scalar=2, Material=3, Function1D=4, Function2D=5); -1 for invalid handles.
+	int RISE_API_SceneEditController_PainterGraphNodeOutputPipe( SceneEditController* p, unsigned long long node );
+	//! Published port metadata; incoming selects inEdges instead of outEdges. Clears outputs on refusal.
+	bool RISE_API_SceneEditController_PainterGraphNodePortPipe( SceneEditController* p,
+		unsigned long long node, unsigned int portIdx, bool incoming,
+		int* outPipe, int* outColorAlsoAcceptsScalar );
+
+
+	//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the canvas's
+	//! REFERENCE-SAFE DELETE (`SceneEditController::DeleteGraphNode`, which
+	//! implements docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade policy).
+	//!
+	//! `category` is a `RISE::ChunkCategory` as an int -- the DECLARED
+	//! descriptor category, the same addressing `_RewireConnection` above
+	//! takes, NOT the UI `Category` the outliner's `_RemoveEntity` uses.
+	//! `cascade` selects `GraphDeleteMode`: 0 = TargetOnly, 1 = Cascade
+	//! (delete the target AND its solely-owned, unreferenced-after closure as
+	//! ONE undoable composite).
+	//!
+	//! `outClosure` receives the SAME `RISE::ClosureClassification` int the
+	//! rewire verb documents (0 Clean / 1 UnresolvedTarget /
+	//! 2 AmbiguousTargetName / 3 ExpressionDrivenTarget / 4 SharedTarget) --
+	//! ordinal-pinned by `tests/RewireConnectionTest.cpp`'s static_assert
+	//! block; only 0/1/2 are reachable through THIS verb.
+	//! `outReferenceRefused` / `outCascadeRefused` (optional) receive 1/0 for
+	//! the two policy refusal kinds, so a shell can offer "rewire those away"
+	//! or "delete without cascade" without parsing prose.
+	//!
+	//! `outReferrers` receives the '\n'-JOINED `chunk`.`param` list of every
+	//! referrer that blocked the delete; `outRemoved` the '\n'-JOINED names of
+	//! the chunks removed, in DOCUMENT ORDER.  Same '\n'-joined list
+	//! convention the rewire verb and `ApplyAgentRemoveChunks`'s batch echo
+	//! use, for the same reason (a chunk name is a single parser token and can
+	//! never contain a newline, so the join is unambiguous); the ORDER is part
+	//! of `outRemoved`'s contract, which is why it is a joined list and not a
+	//! set.  REFUSAL PROPAGATION: on ANY refusal, including a cascade
+	//! refusal, `outRemoved` is EMPTY (corrected -- S20 review round 1 P2-2:
+	//! an earlier draft of this comment claimed a cascade refusal leaves a
+	//! sweep PREVIEW here, but the underlying field has exactly one writer,
+	//! gated on the same internal "no refusal yet" condition the
+	//! shared-cascade guard itself trips first -- see
+	//! `SceneEditController::DeleteResult::removed`'s own corrected
+	//! comment). Read it as a mutation record only when this call returned
+	//! true.  Every buffer is NUL-terminated and truncated to fit.
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.
+	bool RISE_API_SceneEditController_DeleteGraphNode(
+		SceneEditController* p,
+		int category, const char* name, int cascade,
+		int* outClosure, int* outReferenceRefused, int* outCascadeRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outRemoved, unsigned int outRemovedLen );
+
+	//! doc-88 Phase 3 S20: the canvas's DUPLICATE-NODE fork
+	//! (`SceneEditController::DuplicateGraphNode`) -- MATERIAL_EDITOR.md
+	//! sect. 3.7a's escape hatch, which the rewire verb's shared-closure refusal
+	//! names but S19 could not deliver.
+	//!
+	//! `category` is a `RISE::ChunkCategory` as an int (Painter / Function /
+	//! Material only -- every other kind is refused).  The copy is placed
+	//! IMMEDIATELY AFTER the original in declaration order, so every consumer
+	//! that could reference the original can legally be re-pointed at the copy.
+	//! SHALLOW by design: the copy shares everything the original referenced --
+	//! the fork unshares exactly ONE level.
+	//!
+	//! `outNewName` receives the DEDUPED name that actually landed -- READ IT
+	//! rather than assuming the requested name survived; it is filled whenever
+	//! the Document was mutated (a clean apply OR a diagnosed-but-mutated
+	//! commit), never only on a clean apply.  `outOriginalIndex` (optional)
+	//! receives the original's top-level document index, or -1 when nothing
+	//! landed.  `outClosure` carries the same ordinals as above (only
+	//! 0/1/2 reachable).
+	//!
+	//! Returns `applied` -- true ONLY on a clean commit.
+	bool RISE_API_SceneEditController_DuplicateGraphNode(
+		SceneEditController* p,
+		int category, const char* name,
+		int* outClosure, int* outOriginalIndex,
+		char* outNewName, unsigned int outNewNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Monotonic counter — bumped on any structural mutation that
+	//! could change a category's entity list.  Platform UIs cache
+	//! (epoch, category) → entity-name list and re-pull when this
+	//! advances.  0 on null controller.
+	unsigned int RISE_API_SceneEditController_SceneEpoch(
+		SceneEditController* p );
+
+	//! Phase 4b — per-category selection accessor.  Returns the
+	//! entity name picked in `category`'s panel section, or empty
+	//! when nothing is picked in that section.  Distinct from
+	//! `_GetSelectionName` which returns only the primary
+	//! (most-recently-set) selection: the multi-section panel uses
+	//! this to query each section's expansion + content
+	//! independently (an Object pick auto-fills the Material section
+	//! with the bound material name, so both sections report
+	//! non-empty selections after a single click).  Returns false on
+	//! null controller or bufLen == 0.
+	bool RISE_API_SceneEditController_GetSelectionForCategory(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen );
+
+	//! Phase 4b — is `category`'s accordion section expanded?
+	//! Tracked SEPARATELY from the per-category selection so a
+	//! user can click a section header to expand it without yet
+	//! picking an entity (the dropdown shows the active-fallback;
+	//! Camera/Rasterizer/Film render their active entity's rows
+	//! beneath).  Returns false on null controller.
+	bool RISE_API_SceneEditController_IsSectionExpanded(
+		SceneEditController* p, int category );
+
+	//! Phase 4b — collapse `category`'s section: clears both the
+	//! expanded flag AND the per-category selection.  Does NOT
+	//! affect other sections (use `_SetSelection` with category
+	//! None for the panel-wide collapse).
+	bool RISE_API_SceneEditController_CollapseSection(
+		SceneEditController* p, int category );
+
+	//! Phase 4b — per-category property snapshot accessors.  Each
+	//! mirrors the matching single-tuple PropertyXxx call but takes
+	//! a `category` (mirroring `SceneEditCategory_*`) so multi-
+	//! section panels can read each expanded section's rows.
+	//! `_RefreshProperties` populates all per-category snapshots in
+	//! one pass; callers don't need to refresh per-category.
+	unsigned int RISE_API_SceneEditController_PropertyCountFor(
+		SceneEditController* p, int category );
+	bool RISE_API_SceneEditController_PropertyNameFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyDescriptionFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	int RISE_API_SceneEditController_PropertyKindFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyEditableFor(
+		SceneEditController* p, int category, unsigned int idx );
+	unsigned int RISE_API_SceneEditController_PropertyPresetCountFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyPresetLabelFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyPresetValueFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyUnitLabelFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	//! doc 88 S4b: per-category twins of the range trio -- the form both GUI
+	//! shells read (they snapshot by category).  Same contract as the
+	//! single-selection readers above.
+	bool   RISE_API_SceneEditController_PropertyHasRangeFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMinFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeMaxFor(
+		SceneEditController* p, int category, unsigned int idx );
+	double RISE_API_SceneEditController_PropertyRangeStepFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyTargetsPainterFor(
+		SceneEditController* p, int category, unsigned int idx );
+	int RISE_API_SceneEditController_PropertyInlinePainterKindFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyInlinePainterValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(
+		SceneEditController* p, int category, unsigned int idx );
+
+	//! Phase 4b — per-category SetProperty.  Routes the edit through
+	//! `category`'s per-section selection (matches the panel's
+	//! multi-section layout: editing a row in the Materials section
+	//! while Object is the primary still targets the right material).
+	bool RISE_API_SceneEditController_SetPropertyForCategory(
+		SceneEditController* p, int category, const char* name, const char* valueStr );
+
+	//! Material Editor Slice 3 — inline constant-painter editing & fork on
+	//! reference slots targeting painters.
+	bool RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+		SceneEditController* p, int category, const char* slotParam, const char* valueStr );
+	bool RISE_API_SceneEditController_ForkReferenceSlotPainter(
+		SceneEditController* p, int category, const char* slotParam,
+		char* outNewPainterName, unsigned int outNewPainterNameLen );
+
+	//! Clone the currently-active camera under a new name and switch
+	//! the scene to the new camera.  `proposedName` is canonicalized to a
+	//! CST-safe identifier (ASCII letters, digits, `_`, `-`, and `.`;
+	//! other bytes become `_`) before a numeric dedup suffix is appended.
+	//! The actual chosen name is written to `outName`
+	//! (NUL-terminated; caller-owned buffer of `outLen` bytes).
+	//! Returns false on null controller, no-active-camera, an
+	//! unclonable camera type, or `outLen == 0`.  Bumps the controller's
+	//! SceneEpoch so the platform UI auto-rebuilds the camera list.
+	//!
+	//! Persistence: the clone lives only in memory.  Reloading the
+	//! .RISEscene file drops it (scene-text round-trip is the
+	//! pending Phase 6 work).
+	bool RISE_API_SceneEditController_AddCameraFromActive(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+
+	//! B3 fly-then-stamp (Tier 2 §5.3): promote the CURRENT free-fly
+	//! ViewportPose into a NEW named scene camera.  `proposedName` is
+	//! canonicalized to a CST-safe identifier before deduplication; `outName`
+	//! receives the chosen name.  Returns false — outName cleared — on
+	//! null controller, `outLen == 0`, no active free-fly pose to stamp, no
+	//! camera manager, a too-small buffer, or a refused edit.  Bumps the
+	//! SceneEpoch; persists via the retained CST Document; undoable.
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+	//! user-review P1-1: pane-indexed stamp (unindexed aliases pane 0).
+	bool RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		SceneEditController* p, unsigned int pane,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
+
+	//! -------- Named Views (Tier 2 §3): session/UI bookmarks --------
+	//! Capture the current view (free-fly pose if active, else the active
+	//! camera) as a new named view.  Names are limited to 255 payload bytes
+	//! so they round-trip through the platform bridges' 256-byte (including
+	//! NUL) enumeration buffer.  Restore lands the payload in the transient
+	//! ViewportPose (non-destructive — no scene write); promote is the only
+	//! scene write.  All return false on null controller / the documented
+	//! refusal cases.
+	bool RISE_API_SceneEditController_CaptureNamedView(
+		SceneEditController* p, const char* name );
+	unsigned int RISE_API_SceneEditController_NamedViewCount(
+		SceneEditController* p );
+	bool RISE_API_SceneEditController_NamedViewName(
+		SceneEditController* p, unsigned int idx, char* out, unsigned int outLen );
+	bool RISE_API_SceneEditController_RestoreNamedView(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_UpdateNamedView(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_DeleteNamedView(
+		SceneEditController* p, unsigned int idx );
+	//! Promote view `idx` into a NEW named scene camera. `proposedName` is
+	//! canonicalized to a CST-safe identifier before deduplication; `outName`
+	//! receives the chosen name and the new camera becomes active.
+	bool RISE_API_SceneEditController_PromoteNamedViewToCamera(
+		SceneEditController* p, unsigned int idx, const char* proposedName,
+		char* outName, unsigned int outLen );
+
+	//! Entity-creation slice: number of "Add Entity" templates
+	//! registered for `category` (0 for categories with none —
+	//! Camera/Rasterizer/Film/Animation/SceneVariant/None).
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category );
+
+	//! Display label for the template at `idx` within `category`
+	//! (e.g. "Sphere", "Omni Light").  Returns false (buf untouched
+	//! beyond a NUL) for a null controller or an out-of-range idx.
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Instantiate the template at `idx` within `category` (see
+	//! SceneEditController::InstantiateEntityTemplate).  Returns the
+	//! AgentCommitResult's `applied` flag; `outName` (optional, may be
+	//! null) receives the deduped instance name on success, `outStatus`
+	//! / `outMessage` (optional, may be null) always receive the
+	//! result's status ("applied"/"rejected"/"diagnosed") and a
+	//! human-readable message, success or failure.  A multi-chunk
+	//! template undoes as several separate steps — see the C++ method's
+	//! header doc.
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Duplicate the named entity in `category` under a freshly-deduped
+	//! name (see SceneEditController::DuplicateEntity).  Returns
+	//! `applied`; `outName` / `outStatus` / `outMessage` as above
+	//! (each optional, may be null).
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! -------- S18: node-graph canvas chunk creation --------
+	//! (docs/gui/NODE_GRAPH_CANVAS.md sect. 6 S18; see
+	//! SceneEditController::CreateChunkNode for the full contract and
+	//! for WHY this exists alongside the template picker above.)
+	//! Deliberately NOT an agent verb: the agent surface's insert_chunk
+	//! already accepts arbitrary chunk TEXT, which strictly dominates a
+	//! keyword + arg list.  This pair is the S21 canvas's passthrough.
+
+	//! Number of arguments the caller MUST supply to create a node of
+	//! type `keyword` (required descriptor parameters with no static
+	//! default — in practice the required REFERENCE slots, e.g.
+	//! `ramp_painter`'s `input`).  0 for a keyword that needs nothing,
+	//! for a non-painter/material keyword, and for an unknown keyword.
+	unsigned int RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+		SceneEditController* p, const char* keyword );
+
+	//! Describe required argument `idx` for `keyword`: `outParam`
+	//! receives the parameter name, `outDescription` the descriptor's
+	//! own help text, and `*outIsReference` 1 when the value must name
+	//! another chunk (use the S17 connection-legality check for the
+	//! legal candidate set) or 0 for a literal.  Every out-param is
+	//! optional.  Returns false for a null controller or an
+	//! out-of-range idx.
+	bool RISE_API_SceneEditController_ChunkNodeRequiredArg(
+		SceneEditController* p, const char* keyword, unsigned int idx,
+		char* outParam, unsigned int outParamLen,
+		char* outDescription, unsigned int outDescriptionLen,
+		int* outIsReference );
+
+	//! Create one painter/material node of type `keyword`, named from
+	//! `baseName` (deduped on collision — READ `outName`, do not assume
+	//! the base was granted; `outName` is written through a 256-byte C
+	//! ABI buffer, so a pathologically long base is truncated with
+	//! suffix bytes reserved first, same discipline as
+	//! CloneActiveCamera's UniqueCameraName).  `argParams` / `argValues`
+	//! are ORDERED parallel arrays of `argCount` entries (either may be
+	//! null when argCount is 0) -- order is caller order, and a
+	//! repeated `argParams[i]` is legal (e.g. voronoi's repeatable
+	//! `gen`).  Each `argParams[i]` must be a parameter the keyword's
+	//! descriptor declares, and every required argument above must be
+	//! present.  Returns the AgentCommitResult's `applied`; `outName` /
+	//! `outStatus` / `outMessage` as the entity CRUD wrappers above
+	//! (each optional, may be null).
+	//!
+	//! On a REJECTED refusal (`applied` false, `outStatus` "rejected")
+	//! the retained Document is left byte-identical.  A DIAGNOSED
+	//! refusal (`outStatus` "diagnosed") is different and NOT byte-
+	//! identical: the chunk was spliced into the Document and the live
+	//! managers were rebuilt, but the full re-derive also emitted
+	//! diagnostics -- `applied` is still false, but the mutation is
+	//! real (and undoable), and `outName` is filled with the name that
+	//! landed.
+	bool RISE_API_SceneEditController_CreateChunkNode(
+		SceneEditController* p, const char* keyword, const char* baseName,
+		const char* const* argParams, const char* const* argValues, unsigned int argCount,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! doc-88 Phase 3 S21 -- the "add node" search palette's keyword list
+	//! (SceneEditController::PaletteKeywords passthrough).  `category` is
+	//! a `RISE::ChunkCategory` ordinal, the SAME convention every other
+	//! graph-canvas ABI call on this surface uses. Pure descriptor read:
+	//! safe at any time, no locking, no scene dependency. 0 for an
+	//! unmodeled category or a null controller.
+	unsigned int RISE_API_SceneEditController_PaletteKeywordCount(
+		SceneEditController* p, int category );
+
+	//! Keyword at `idx` in `category`'s sorted palette list. Returns
+	//! false (buffer untouched) for a null controller, an out-of-range
+	//! idx, or a null/zero-length buffer.
+	bool RISE_API_SceneEditController_PaletteKeyword(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outKeyword, unsigned int outKeywordLen );
+
+	//! DL-401 -- is `keyword` a DEPRECATED chunk type (DL-323 follow-through)?
+	//! Returns true and fills `outReplacement` (optional; the descriptor's
+	//! replacement hint, modern keyword first) when it is; false (buffer
+	//! untouched) for a modern or unknown keyword or a null controller.
+	//! The palette list itself already sorts deprecated keywords last; the
+	//! GUI badges them with this.  Pure descriptor read.
+	bool RISE_API_SceneEditController_PaletteKeywordDeprecation(
+		SceneEditController* p, const char* keyword,
+		char* outReplacement, unsigned int outReplacementLen );
+
+	//! Legacy-deprecation Phase 1 (2026-10-09) -- is `keyword` a FROZEN
+	//! chunk type (legacy and UNSUPPORTED: it still loads and renders but
+	//! receives no fixes)?  A frozen type is also deprecated, so
+	//! `..._PaletteKeywordDeprecation` fills its replacement hint as well;
+	//! the GUIs use this to badge it "legacy, unsupported".  False for a
+	//! modern, merely deprecated, or unknown keyword, or a null controller.
+	bool RISE_API_SceneEditController_PaletteKeywordFrozen(
+		SceneEditController* p, const char* keyword );
+
+	//! Remove the named entity in `category` (see
+	//! SceneEditController::RemoveEntity) — refused with a non-empty
+	//! `outMessage` if it is still referenced (e.g. a material a
+	//! standard_object still binds) or not found.  Returns `applied`;
+	//! `outStatus` / `outMessage` as above (each optional, may be null).
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! -------- Environment / IBL section (GUI Environment panel) --------
+	//! See SceneEditController's EnvironmentInfo + env accessors and
+	//! docs/gui/ENVIRONMENT_SECTION.md.  The environment is a scene-level
+	//! singleton (an hdr/exr painter bound via `radiance_*` on the active
+	//! rasterizer), not an ILight.
+
+	//! Read the current environment binding.  Returns false only when there is
+	//! no scene / no active rasterizer; otherwise every optional out-param is
+	//! filled (int flags are 0/1; `outHasEnvironment=0` means unbound).
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground );
+
+	//! Set the environment intensity / background-visibility / rotation (degrees).
+	//! Each applies live (viewport re-renders) and persists (CST mirror).
+	//! Returns false when no editable bound environment exists.
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale );
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background );
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg );
+
+	//! Swap the bound environment painter's HDRI file (an existing path; the
+	//! GUI file picker is the guard).  Returns false when none is bound.
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath );
+
+	//! Create an environment from an HDRI file when none exists (inserts an
+	//! hdr/exr painter chosen from the extension + binds radiance_map).
+	//! Returns `applied`; out-params as the entity CRUD wrappers above.
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen );
+
+	//! Remove the environment (unbinds radiance_map, live + CST).  Returns false
+	//! when no editable environment exists.
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p );
+
+	// ---- Simulation M5 (GUI shell support; docs/SIMULATION_M5B_RESULTS.md) ----
+	// Additive wrappers the macOS (and later Windows) simulations panel needs.
+	// Same conventions as the M3c/M4 block: false on a null controller or a
+	// busy scene (poll again), text NUL-terminated and truncated, every out
+	// pointer may be null.
+
+	//! One declared simulation (same index and snapshot rules as
+	//! GetSimulation), with what that call leaves out: the solver id, its
+	//! backend ("" = not stated), the cache's fidelity label ("" when there is
+	//! no cache), the configuration's time support (first frame time and frame
+	//! interval, scene seconds), the first simulated_mesh_geometry bound to it
+	//! by `source` (what LiveSimulationDetach / GetLiveSimulationStatus /
+	//! LiveSimulationReset / LiveSimulationRecord address; "" when none), and
+	//! the upstream simulations and scene inputs, comma-separated.
+	//! `outState` as GetSimulation (0 missing .. 5 failed).
+	bool RISE_API_SceneEditController_GetSimulationDetails(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		char* solverBuf, unsigned int solverBufLen, char* backendBuf, unsigned int backendBufLen,
+		char* fidelityBuf, unsigned int fidelityBufLen, char* consumerBuf, unsigned int consumerBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		double* outStartTime, double* outInterval,
+		char* cacheBuf, unsigned int cacheBufLen,
+		char* upstreamBuf, unsigned int upstreamBufLen, char* inputsBuf, unsigned int inputsBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+
+	//! Simulation cache location policy (docs/SIMULATION_SOLVER_CONTRACT.md
+	//! "Cache location policy"; Simulation/SimulationCache.h).  A trusted root
+	//! is process-wide and lasts until exit: the GUI persists the roots the user
+	//! chose and calls this at launch.  `root` must be an existing absolute
+	//! directory.  On POSIX the roots in force are also exported to this
+	//! process's RISE_SIMULATION_TRUSTED_ROOTS, so rise-sim bake workers
+	//! started afterwards inherit them.
+	bool RISE_API_AddTrustedCacheRoot( const char* root, char* errorBuf, unsigned int errorBufLen );
+	//! Would the cache writer accept `cacheDirectory` (nothing is created)?
+	//! True when accepted.  When refused: `errorBuf` holds the writer's reason,
+	//! and `suggestedRootBuf` the narrowest directory whose trust would stop the
+	//! ancestor check -- the deepest existing directory above the cache
+	//! directory (empty when there is none to suggest, e.g. the cache directory
+	//! itself is not private).  Trusting is the caller's (the user's) decision.
+	bool RISE_API_CheckCacheLocation( const char* cacheDirectory,
+		char* suggestedRootBuf, unsigned int suggestedRootBufLen,
+		char* errorBuf, unsigned int errorBufLen );
+	//! The trusted roots in force (environment, then added), joined by '\n'.
+	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen );
 }
 
 #endif

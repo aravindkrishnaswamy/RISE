@@ -11,7 +11,10 @@
 //  contribution to all pixels within the filter's support.
 //
 //  After the render pass, Resolve() computes the final pixel value
-//  as colorSum / weightSum, which is the proper filtered result.
+//  as colorSum / weightSum for opaque pixels (alphaSum == weightSum),
+//  or straight RGB (colorSum / weightSum / alpha) paired with clamped
+//  coverage alpha (alphaSum / weightSum) when transparent-background
+//  misses contribute fractional alpha (or (0,0,0,0) when alpha <= 1e-6).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 10, 2026
@@ -32,6 +35,7 @@
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Threads/Threads.h"
 #include <vector>
+#include <memory>
 #include <cmath>
 
 namespace RISE
@@ -42,44 +46,79 @@ namespace RISE
 		{
 		protected:
 
+			// PBRT-v4 RGBFilm-style storage: accumulator is XYZPel (linear
+			// CIE XYZ), converted to RISEPel (Rec709RGBPel post Stage B)
+			// once at Resolve via the standard `ColorUtils::XYZtoRec709RGB`
+			// (D65→D65, matrix-only — no Bradford adapt).  Splat takes
+			// XYZPel so spectral integrators feed XYZ directly; RGB
+			// integrators rely on the implicit XYZPel(const RISEPel&)
+			// lossless conversion at the call site.
 			struct FilteredPixel
 			{
-				RISEPel		colorSum;
+				XYZPel		colorSum;
 				Scalar		weightSum;
+				Scalar		alphaSum;
 
 				FilteredPixel() :
-				colorSum( RISEPel( 0, 0, 0 ) ),
-				weightSum( 0 )
+				colorSum( XYZPel( 0, 0, 0 ) ),
+				weightSum( 0 ),
+				alphaSum( 0 )
 				{
 				}
 			};
 
+			// Pure native-size/vector preflight; does not allocate film storage.
+			static std::size_t CheckedPixelCount(unsigned int w, unsigned int h);
+
 			unsigned int				width;
 			unsigned int				height;
 			std::vector<FilteredPixel>	pixels;
-			std::vector<RMutex*>		rowMutexes;		///< One mutex per scanline for concurrent access
+			std::vector<std::unique_ptr<RMutex>> rowMutexes;		///< One mutex per scanline for concurrent access
 
-			virtual ~FilteredFilm();
+			~FilteredFilm() override;
+
+			//! Snapshot row.size() pixels of row @a y starting at @a startX
+			//! under that row's mutex (the lock Splat takes).
+			void CopyRow( const unsigned int y, const unsigned int startX, std::vector<FilteredPixel>& row ) const;
 
 		public:
+			// Zero extents produce a no-op film; native-size/vector overflow
+			// throws length_error before allocating film storage.
 			FilteredFilm(
 				const unsigned int w,					///< [in] Width of the film in pixels
 				const unsigned int h					///< [in] Height of the film in pixels
 				);
+			FilteredFilm(const FilteredFilm&) = delete;
+			FilteredFilm& operator=(const FilteredFilm&) = delete;
 
 			//! Thread-safe: splats a sample contribution to all pixels within
 			//! the filter's support around the given screen position.
+			//! Accumulator is XYZ (linear, no gamut clip).  Spectral
+			//! integrators pass XYZPel directly; RGB integrators rely on
+			//! the implicit XYZPel(const ROMMRGBPel&) lossless conversion.
+			//! Nonfinite positions or negative/nonfinite support are no-ops.
+			//! Finite off-image positions still contribute when support intersects.
 			void Splat(
 				const Scalar screenX,					///< [in] Sample screen X position
 				const Scalar screenY,					///< [in] Sample screen Y position
-				const RISEPel& color,					///< [in] Sample radiance
-				const IPixelFilter& filter				///< [in] Pixel filter for weight evaluation
+				const XYZPel& color,					///< [in] Sample radiance (CIE XYZ tristimulus)
+				const IPixelFilter& filter,				///< [in] Pixel filter for weight evaluation
+				const Scalar sampleAlpha = 1.0			///< [in] Sample opacity (1.0 opaque, 0.0 transparent miss)
 				);
 
-			//! After rendering: resolves accumulated contributions into the final image.
-			//! Each pixel's value is colorSum / weightSum.
+			//! Resolves accumulated contributions into the image (overwrites
+			//! pixels whose weightSum is nonzero).  Opaque pixels resolve to
+			//! (colorSum / weightSum, 1.0); partial-coverage pixels (when
+			//! transparent-background misses pass sampleAlpha = 0) resolve to
+			//! straight RGB (colorSum / weightSum / alpha) with clamped alpha
+			//! (alphaSum / weightSum), or (0,0,0,0) when alpha <= 1e-6.
+			//! Safe to call concurrently with Splat writers (each row is read
+			//! under its row mutex) and with other Resolve calls on disjoint
+			//! target regions.  The caller must not hold any of this film's
+			//! row mutexes.
 			void Resolve(
-				IRasterImage& target					///< [out] Target image to receive resolved result
+				IRasterImage& target,					///< [out] Target image to receive resolved result
+				const Rect* region = 0					///< [in] Optional inclusive write region
 				) const;
 
 			//! Subtracts previously resolved values from the image (inverse of Resolve).

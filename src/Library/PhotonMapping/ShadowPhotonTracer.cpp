@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "ShadowPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Interfaces/ILog.h"
@@ -24,7 +25,7 @@ ShadowPhotonTracer::ShadowPhotonTracer(
 	const unsigned int temporal_samples,
 	const bool regenerate
 	) : 
-  PhotonTracer<ShadowPhotonMap>( false, false, 1.0, temporal_samples, regenerate )
+  PhotonTracer<ShadowPhotonMap>( false, 1.0, temporal_samples, regenerate )
 {
 }
 
@@ -42,7 +43,8 @@ void ShadowPhotonTracer::TracePhoton(
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray = ray;
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
-	pScene->GetObjects()->IntersectRay( ri, true, false, false );
+	IndependentSampler alphaSampler(random);
+	pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler, true, false);
 
 	if( ri.geometric.bHit )
 	{

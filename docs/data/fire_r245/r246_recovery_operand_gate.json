@@ -1,0 +1,138 @@
+{
+  "schema": "rise.fire.r246.recovery-operand-gate.v1",
+  "status": "accepted_retained_operand_prerequisite_only",
+  "recovery_accepted": false,
+  "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_runtime.v3/FireSequenceTest",
+  "binary_sha256": "7d35cd1624e736c44871bcf5dc46c79a43895354d798e6d9cb6f90d4781e5a63",
+  "binary_identity_note": "900f2d1d7 dirty CSV candidate-bound retained-operand reader; original producer retained.",
+  "results": [
+    {
+      "stage": "changed_manifest",
+      "exit_code": 98,
+      "log_sha256": "1ee6d6f38aa0b68bccde55a425307fcfeb957c16f964f3572c7cffeb746c483e"
+    },
+    {
+      "stage": "missing_seal",
+      "exit_code": 98,
+      "log_sha256": "1beaa1a6528f6d7849474964838f6429b5821433f22c62d51148ed79a3d8812f"
+    },
+    {
+      "stage": "source_capture_reds",
+      "exit_code": 0,
+      "log_sha256": "184e8a9e5abbfc2be0e2838c6ebd332f9b4244b499db7e57ab91792721316c6c"
+    },
+    {
+      "stage": "occupied_output",
+      "exit_code": 98,
+      "log_sha256": "d25c7b33c2cde46b477c1ed98f31f4fea2015c71c0e808a958e626eed35c29e8"
+    },
+    {
+      "stage": "actual_retained_operands",
+      "exit_code": 0,
+      "log_sha256": "c5f71966d8e1aa316bf82158adfbc082b5a46d7079f476bfff0df46b07be469e"
+    }
+  ],
+  "operand_metadata": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/actual_operands/checkpoint_operands.json",
+  "operand_metadata_sha256": "81df738946e1f8537a7845554fd1b81158dd0b6303fd3617ead2e1a64a4fce33",
+  "row_counts": {
+    "centerline_probes.csv": 8916,
+    "station_probes.csv": 1426560,
+    "centerline_integrals.csv": 160
+  },
+  "sha256": {
+    "tests/FireSequenceTest.cpp": "8cd40144c4cb6e9e231b8646a925ddde807691bf6ae4e86b2c2e585af2bd3592",
+    "tools/fire/r246_recovery_operand_controls.py": "fe79018d54039959ce3aa2248b3bf4ca3a86a5926733b68f687c5d32ddcb0eb4",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operands.v3.build.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/report.json": "2709358357fa068a7ee5a9af971a9d210168b4caaaffb11f1af8f4c5f214e17c",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v3/completion.json": "44233ff6e32a30a4637210b048dadb5ad7b26c811c3aa6de323f240143715ff7",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_runtime.v3/RendererBuildIdentity.generated.h": "d3b3fd85d23fa091a9edcd5b716a081059650f5b025596817c9cc845f980f29e"
+  },
+  "self_audit": [
+    "Original checkpoint/manifest/frameCSV hashes and producer are explicitly pinned; mandatory seals and accepted source-history path remain required.",
+    "Only raw persisted integrals/probes/dt exported. Post-loop defaults and unpersisted retry/externalfuel are unavailable.",
+    "New reader-issued seals/provenance must not become original producer seals or original success.",
+    "Occupied output refuses; source originals and legacy serialization remain untouched.",
+    "Trajectory dt/time correspondence alone does not authenticate other unsealed observations or prove capsule/ledger coverage."
+  ],
+  "limitations": [
+    "Only retained checkpoint operands exported; no original success relabel.",
+    "Trajectory clock comparison does not authenticate unsealed observations or other fields.",
+    "Complete ledger/capsule binding, derived summaries, recovery and budget audit remain pending."
+  ],
+  "prior_v1": {
+    "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_runtime.v1/FireSequenceTest",
+    "binary_sha256": "98be6c59fbdd5941db79e96018ac1f85d4dfa95ff276a23ff61822fd05997bae",
+    "operand_metadata": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v1/actual_operands/checkpoint_operands.json",
+    "operand_metadata_sha256": "7b782f5f83fb209ee46531b6c1672a5334feb9fd0b1dae6bea176bd5aa858a9e",
+    "results": [
+      {
+        "stage": "changed_manifest",
+        "exit_code": 98,
+        "log_sha256": "1ee6d6f38aa0b68bccde55a425307fcfeb957c16f964f3572c7cffeb746c483e"
+      },
+      {
+        "stage": "missing_seal",
+        "exit_code": 98,
+        "log_sha256": "e9e68595f98bb12d4ace4821cbacfd72e961fbb24dcc5a1723d06ece0a753318"
+      },
+      {
+        "stage": "occupied_output",
+        "exit_code": 98,
+        "log_sha256": "d25c7b33c2cde46b477c1ed98f31f4fea2015c71c0e808a958e626eed35c29e8"
+      },
+      {
+        "stage": "actual_retained_operands",
+        "exit_code": 0,
+        "log_sha256": "1d4058ab4a9bdaf85cb5d963b0e127693da9ac30b573d78104129903fd635f04"
+      }
+    ],
+    "status": "round1_lifecycle_P2_repaired_pending_fresh_round2"
+  },
+  "round1": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "P2 exporter captured before lifecycle admission; fixed using shared pre/post capture admission and deterministic old/fixed controls."
+  },
+  "prior_v2": {
+    "binary": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_runtime.v2/FireSequenceTest",
+    "binary_sha256": "0b5b072bd7321e0e5c7a48876abfa6c7b726f6a540c6d233cf48672382cf6777",
+    "operand_metadata": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_operand_validation.v2a/actual_operands/checkpoint_operands.json",
+    "operand_metadata_sha256": "677b8414dd45d67df2f8c4f740a7f4ff4bbde361b7e82b37470a7b3e610946f3",
+    "results": [
+      {
+        "stage": "changed_manifest",
+        "exit_code": 98,
+        "log_sha256": "1ee6d6f38aa0b68bccde55a425307fcfeb957c16f964f3572c7cffeb746c483e"
+      },
+      {
+        "stage": "missing_seal",
+        "exit_code": 98,
+        "log_sha256": "1beaa1a6528f6d7849474964838f6429b5821433f22c62d51148ed79a3d8812f"
+      },
+      {
+        "stage": "source_capture_reds",
+        "exit_code": 0,
+        "log_sha256": "c619fddca36c12dfb1c70eb64290f9ee79038f6e60fc2e255c970aecd490838a"
+      },
+      {
+        "stage": "occupied_output",
+        "exit_code": 98,
+        "log_sha256": "d25c7b33c2cde46b477c1ed98f31f4fea2015c71c0e808a958e626eed35c29e8"
+      },
+      {
+        "stage": "actual_retained_operands",
+        "exit_code": 0,
+        "log_sha256": "f3677a1133c5fe116a55213065684c33244044f47c9f732de3c6197d512a6c88"
+      }
+    ],
+    "status": "round2_lifecycle_P2_CSV_snapshot_binding_repaired"
+  },
+  "round2": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "P2 pinned CSV snapshot differed from semantic reader capture; fixed passing exact candidate CSV through source admission and inspector."
+  },
+  "reviewed_implementation": "c1299470f",
+  "fresh_round3": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "zero P1/P2"
+  }
+}

@@ -16,31 +16,39 @@
 
 #include "pch.h"
 #include "BurleyNormalizedDiffusionProfile.h"
+#include "../Utilities/BSSRDFSampling.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 BurleyNormalizedDiffusionProfile::BurleyNormalizedDiffusionProfile(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
+	const IScalarPainter& absorption_,
+	const IScalarPainter& scattering_,
 	const Scalar g_
 	) :
-  ior( ior_ ),
+  pIOR( &ior_ ),
   absorption( absorption_ ),
   scattering( scattering_ ),
   g( g_ )
 {
-	ior.addref();
+	pIOR->addref();
 	absorption.addref();
 	scattering.addref();
 }
 
 BurleyNormalizedDiffusionProfile::~BurleyNormalizedDiffusionProfile()
 {
-	ior.release();
+	safe_release( pIOR );
 	absorption.release();
 	scattering.release();
+}
+
+void BurleyNormalizedDiffusionProfile::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 //=============================================================
@@ -55,20 +63,6 @@ Scalar BurleyNormalizedDiffusionProfile::ComputeScalingFactor( const Scalar A )
 	// For high albedo, the profile is wide (light scatters many times).
 	const Scalar diff = A - 0.8;
 	return 1.9 - A + 3.5 * diff * diff;
-}
-
-Scalar BurleyNormalizedDiffusionProfile::SchlickFresnel(
-	const Scalar cosTheta,
-	const Scalar eta
-	)
-{
-	// Schlick's approximation for Fresnel reflectance.
-	// R0 = ((eta_i - eta_t) / (eta_i + eta_t))^2
-	// F(cos) = R0 + (1 - R0) * (1 - cos)^5
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
 }
 
 //=============================================================
@@ -109,16 +103,16 @@ RISEPel BurleyNormalizedDiffusionProfile::EvaluateProfile(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
 	RISEPel result;
 	for( int c = 0; c < 3; c++ )
 	{
 		// Similarity relation: reduce scattering to account for
 		// anisotropy of the phase function (Wyman et al. 1989)
-		const Scalar ss_prime = ss[c] * (1.0 - g);
-		const Scalar st_prime = ss_prime + sa[c];
+		const Scalar ss_prime = ss.v[c] * (1.0 - g);
+		const Scalar st_prime = ss_prime + sa.v[c];
 		const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 		const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 		const Scalar s = ComputeScalingFactor( albedo );
@@ -135,8 +129,8 @@ Scalar BurleyNormalizedDiffusionProfile::EvaluateProfileNM(
 	const Scalar nm
 	) const
 {
-	const Scalar sa = absorption.GetColorNM( ri, nm );
-	const Scalar ss = scattering.GetColorNM( ri, nm );
+	const Scalar sa = absorption.GetValueAtNM( ri, nm );
+	const Scalar ss = scattering.GetValueAtNM( ri, nm );
 
 	const Scalar ss_prime = ss * (1.0 - g);
 	const Scalar st_prime = ss_prime + sa;
@@ -157,11 +151,11 @@ Scalar BurleyNormalizedDiffusionProfile::SampleRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
-	const Scalar ss_prime = ss[channel] * (1.0 - g);
-	const Scalar st_prime = ss_prime + sa[channel];
+	const Scalar ss_prime = ss.v[channel] * (1.0 - g);
+	const Scalar st_prime = ss_prime + sa.v[channel];
 	const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 	const Scalar s = ComputeScalingFactor( albedo );
@@ -200,11 +194,11 @@ Scalar BurleyNormalizedDiffusionProfile::PdfRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
-	const Scalar ss_prime = ss[channel] * (1.0 - g);
-	const Scalar st_prime = ss_prime + sa[channel];
+	const Scalar ss_prime = ss.v[channel] * (1.0 - g);
+	const Scalar st_prime = ss_prime + sa.v[channel];
 	const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 	const Scalar s = ComputeScalingFactor( albedo );
@@ -232,15 +226,22 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = ior.GetColor( ri )[0];
-	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
+	// DL-49: the boundary is an interface between this material and the
+	// medium the ray arrived through (`ri.ambientIOR`, stamped from the
+	// IOR stack; 1.0 = air for a stackless record), so Fresnel is a
+	// function of the RELATIVE index.  DL-306: the EXACT dielectric law,
+	// the one SubSurfaceScatteringSPF prices the surface reflection of the
+	// same interface with, so reflection + transmission = 1 (a denser
+	// exterior is totally reflected past the critical angle).
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ),
+		pIOR->GetValuesAt( ri ).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
 }
 
 Scalar BurleyNormalizedDiffusionProfile::GetIOR(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	return ior.GetColor( ri )[0];
+	return pIOR->GetValuesAt( ri ).v[0];
 }
 
 //=============================================================
@@ -276,4 +277,14 @@ RISEPel BurleyNormalizedDiffusionProfile::ComputeTotalExtinction(
 	// accurately.  Return zero — the actual evaluation is done
 	// through EvaluateProfile() which has access to ri.
 	return RISEPel( 0, 0, 0 );
+}
+
+// DL-334: material and exterior indices describe the same wavelength.
+Scalar BurleyNormalizedDiffusionProfile::GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const
+{ return pIOR->GetValueAtNM(ri, nm); }
+Scalar BurleyNormalizedDiffusionProfile::FresnelTransmissionNM(const Scalar cosTheta,
+    const RayIntersectionGeometric& ri, const Scalar nm) const
+{
+    return BSSRDFSampling::BoundaryTransmission(fabs(cosTheta),
+        GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri));
 }

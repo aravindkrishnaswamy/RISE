@@ -33,6 +33,7 @@
 #define SUBSURFACE_SCATTERING_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
@@ -50,7 +51,13 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			BurleyNormalizedDiffusionProfile*		pProfile;
-			const IPainter&							iorPainter;
+			//! Pointer so the interactive editor can rebind via SetIOR
+			//! (the diffusion profile keeps the old binding because it
+			//! was constructed once with `ior`; per-slot live edit on
+			//! the diffusion profile is out of scope).
+			const IScalarPainter*					pIORPainter;
+			const IScalarPainter*					pAbsorptionPainter;
+			const IScalarPainter*					pScatteringPainter;
 			const Scalar							surfaceRoughness;
 
 			virtual ~SubSurfaceScatteringMaterial()
@@ -58,25 +65,31 @@ namespace RISE
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pProfile );
-				iorPainter.release();
+				safe_release( pIORPainter );
+				safe_release( pAbsorptionPainter );
+				safe_release( pScatteringPainter );
 			}
 
 		public:
 			SubSurfaceScatteringMaterial(
-				const IPainter& ior,
-				const IPainter& absorption,
-				const IPainter& scattering,
+				const IScalarPainter& ior,
+				const IScalarPainter& absorption,
+				const IScalarPainter& scattering,
 				const Scalar g,
 				const Scalar roughness
 				) :
-			iorPainter( ior ),
+			pIORPainter( &ior ),
+			pAbsorptionPainter( &absorption ),
+			pScatteringPainter( &scattering ),
 			surfaceRoughness( roughness )
 			{
-				iorPainter.addref();
-				pBSDF = new SubSurfaceScatteringBSDF( ior, absorption, scattering, g, roughness );
+				pIORPainter->addref();
+				pAbsorptionPainter->addref();
+				pScatteringPainter->addref();
+				pBSDF = new SubSurfaceScatteringBSDF( ior, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
-				pSPF = new SubSurfaceScatteringSPF( ior, absorption, scattering, g, roughness, true );
+				pSPF = new SubSurfaceScatteringSPF( ior, g, roughness, true );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				pProfile = new BurleyNormalizedDiffusionProfile( ior, absorption, scattering, g );
@@ -88,6 +101,11 @@ namespace RISE
 
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
+
+			//! DL-482: the ordinary finite surface BSDF is reflection only.
+			//! Nonlocal jumps and isBSSRDFEntry re-emission keep their separate rules.
+			inline unsigned int ConnectionScatterTypes() const { return 1u << ScatteredRay::eRayReflection; }
+			inline bool HasConnectionTypeSplit() const { return true; }
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
@@ -112,7 +130,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColor( ri )[0];
+				info.ior = pIORPainter->GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -126,9 +144,35 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.ior = pIORPainter->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
+			}
+
+			//! Read-back + rebind for the interactive editor.  Only the
+			//! IOR painter is rebindable; absorption/scattering were
+			//! consumed by the diffusion profile's scattering model at
+			//! construction and are not surfaced as editable slots.
+			//! IOR rebinding hits BSDF, SPF, the local cached pointer,
+			//! AND the diffusion profile in lockstep so the BSSRDF
+			//! Fresnel transmission stays coherent with the surface
+			//! boundary.
+			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
+			inline void SetIOR( const IScalarPainter& v ) {
+				v.addref();
+				safe_release( pIORPainter );
+				pIORPainter = &v;
+				pBSDF->SetIOR( v );
+				pSPF->SetIOR( v );
+				pProfile->SetIOR( v );
+			}
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					( pIORPainter ? pIORPainter->GetPathDependence() : 0u ) |
+					( pAbsorptionPainter ? pAbsorptionPainter->GetPathDependence() : 0u ) |
+					( pScatteringPainter ? pScatteringPainter->GetPathDependence() : 0u );
 			}
 		};
 	}

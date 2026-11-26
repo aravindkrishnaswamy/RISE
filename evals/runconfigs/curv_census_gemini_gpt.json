@@ -1,0 +1,12 @@
+{
+  "//": "Geometry-shading-signals Phase-1 adoption census (2026-08-29, docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §11 step 5). Single instrument: rich_material_closeup -- its prompt ('weathered brass doorknob') summons wear-mask work without naming any mechanism, and it is the SAME instrument the doc-88 S6 census ran, so painter-kind results stay comparable. Question under measurement: do agents reach for curv / occlusion(r) (taught via descriptor text + the two proven-pull skill examples) for the weathering, or still fake it with position proxies / flat materials? Detection is post-hoc over the committed scenes in the runDir (grep curv/curvR/occlusion/thickness vs P-dot-z-style proxies) layered on the scenario's existing gating checkpoints. Two providers x 3 repeats (C-MEAS minimum), deliberately token-lean per user direction -- extend cross-provider only if a result is a surprising null.",
+  "scenarios": [
+    "evals/scenarios/rich_material_closeup.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/curv_census"
+}

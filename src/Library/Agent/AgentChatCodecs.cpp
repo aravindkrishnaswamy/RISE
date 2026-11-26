@@ -1,0 +1,5834 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentChatCodecs.cpp - provider wire-format codecs for the sans-IO
+//    LLM chat loop (see AgentChatCodecs.h).
+//
+//  Layout:
+//    (1) the THIRTY-SIX provider-neutral tool definitions -- thirty-five are
+//        1:1 with the AgentRpc verbs (parameter names/shapes mirror
+//        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
+//        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is
+//        intercepted by the HOST (GUI drive loop / eval runner) before
+//        reaching HandleLine (see AgentChatLoop.cpp / AgentEvalRunner.cpp),
+//    (2) a small raw-span JSON scanner (byte-exact extraction of the
+//        assistant content from a response body, so provider-opaque
+//        fields -- thinking-block signatures -- echo back VERBATIM),
+//    (3) the Anthropic Messages API codec,
+//    (4) the Gemini v1beta generateContent codec,
+//    (5) the OpenAI Chat Completions codec.
+//
+//  NO LOGGING anywhere in this file: request/response bodies may embed
+//  scene content, and the API key must never reach a log.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include "AgentChatCodecs.h"
+
+#include "Base64.h"   // Arc 77 Phase 2: decode a provider's base64 image payload
+#include "ChatHttpTransport.h"   // GUI wiring (2026-08-11): IChatHttpTransport -- MakeChatImageGenerator's transport seam
+#include "Json.h"
+
+#include <cstdlib>   // getenv -- ONLY for the RISE_IMAGE_* endpoint/model/size overrides (config, not credentials; see ImageEnvOr_)
+#include <cstring>
+#include <map>
+#include <string>
+
+namespace RISE
+{
+	namespace Agent
+	{
+		namespace
+		{
+			//------------------------------------------------------------------
+			// (1) The provider-neutral tool definitions.
+			//
+			// One entry per JSON-RPC verb.  `schemaJson` is a JSON-Schema
+			// object literal (the subset all providers accept); nullptr
+			// means "no parameters" (Anthropic then gets an empty object
+			// schema -- input_schema is mandatory there -- while Gemini
+			// omits `parameters` entirely).  Descriptions are PRESCRIPTIVE:
+			// they say WHEN to call, not just what the verb does.
+			//
+			// KEEP IN SYNC BY HAND: `render`'s "mode" enum below is a raw
+			// string literal (these are `const char*`, not built at runtime),
+			// so unlike AgentMcpAdapter.cpp's DescribeViewModes() helper it
+			// CANNOT be generated from the registry.  The accepted set is
+			// RISE::Implementation::GetViewportRenderModes' casterFactory
+			// entries UNION its BeautyVariant entries (IsBeautyVariantMode)
+			// + "beauty"/"objectmap" (docs/gui/RENDER_MODES.md §8) -- when a
+			// mode is added there, update this literal's enum array and
+			// description by hand.
+			//------------------------------------------------------------------
+			struct NeutralToolDef
+			{
+				const char* name;
+				const char* description;
+				const char* schemaJson;   // nullptr = no parameters
+			};
+
+			const NeutralToolDef kToolDefs[] =
+			{
+				{
+					"read_document",
+					"Read the current scene document. Call this FIRST, before any edit, "
+					"to see the live .RISEscene text and the current headVersion "
+					"{uuid,revision}. Always pass the headVersion you last read here as "
+					"propose_patch's baseHeadVersion. Re-call after a conflict to rebase.",
+					nullptr
+				},
+				{
+					"read_schema",
+					"Read the scene-language schema (chunk and parameter reference). "
+					"WHEN YOU NEED SEVERAL CHUNK KINDS, ASK FOR THEM IN ONE CALL: pass "
+					"keywords as an ARRAY (e.g. keywords:[\"sdf_geometry\","
+					"\"pbr_metallic_roughness_material\",\"uniformcolor_painter\","
+					"\"omni_light\",\"standard_object\"]) and you get every one of those "
+					"schemas back in this single result, in the order you asked. That is "
+					"the DEFAULT way to prepare for authoring a scene -- one batch of "
+					"at most 24 keywords, instead of a round-trip per chunk kind. Use the "
+					"single "
+					"`keyword` form only when you genuinely want one. Pass `category` "
+					"(\"material\", \"geometry\", \"painter\" -- the TEXTURE system, 36 "
+					"kinds from flat colour through procedural noise -- \"light\", "
+					"\"rasterizer\", "
+					"...) only when you do NOT yet know which chunk kinds exist -- it "
+					"returns just that category's keyword list + one-line descriptions, "
+					"which you then batch-fetch via keywords. Omitting all three returns "
+					"the whole grammar (large; rarely needed). Use this before proposing a "
+					"patch whose parameter name or value format you are not sure about.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"keywords\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"PREFERRED when you need more than one: an array of chunk keywords (at most 24, counting `keyword` if you also send it) fetched in ONE call. The result's `schema` is then an ARRAY POSITIONALLY ALIGNED with this one -- schema[i] is keywords[i], never reordered, never collapsed -- and each entry also names its own `keyword`. An unrecognized keyword occupies its own slot as {keyword, error}, so one typo neither fails the batch nor shifts the rest. Batch the chunk kinds you have DECIDED to use (typically 4-8: geometry, material, painter, light, object); a full 24-entry batch runs roughly 30-45 KB depending on which kinds, so do not pad it with kinds you might not need.\"},"
+						"\"keyword\":{\"type\":\"string\",\"description\":"
+						"\"A single chunk keyword (e.g. sphere_geometry) to fetch just that chunk's schema. Use `keywords` instead when you want two or more.\"},"
+						"\"category\":{\"type\":\"string\",\"description\":"
+						"\"A chunk category (e.g. material, geometry, painter -- the texture system -- light, rasterizer) to CHEAPLY list its chunk keywords + one-line descriptions -- discovery only, no parameters. Do the category listings you need FIRST, then ONE `keywords` batch for everything you picked across all of them -- not one batch per category. Omit all three for the whole grammar.\"}"
+					"}}"
+				},
+				{
+					"read_skill",
+					"Read a scene-authoring skill (curated RISE how-to notes with "
+					"verified scene snippets). Pass a NAME to read one BEFORE authoring "
+					"or explaining scenes -- the skills carry the conventions (light "
+					"directions, power semantics, painter wiring) that make first-try "
+					"scenes render correctly. Your system prompt already lists every "
+					"skill name with a one-line hook, so go straight to the name you "
+					"need.",
+					// `name` is deliberately OPTIONAL.  It was briefly made
+					// "required" on the strength of a misdiagnosis: a recorded run
+					// opened with a bare read_skill{} and never read a named skill,
+					// which was read as the model ignoring guidance.  It was not --
+					// SkillsRoot() was not resolving in that GUI session, the index
+					// was EMPTY (0 skills), and calling read_skill{} to discover
+					// names was the correct move for a model with no index.  Making
+					// `name` required then removed the only discovery path: the next
+					// run guessed the example name out of this very description,
+					// failed, guessed "index", failed again, and ran 41 turns
+					// against the previous run's 22.
+					//
+					// The listing form is the recovery path for exactly the case
+					// where the prompt carries no index.  Do not remove it; if a
+					// bare call is genuinely wasteful, the fix is to ensure the
+					// index is PRESENT, not to forbid asking for it.
+					"{\"type\":\"object\",\"properties\":{"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A skill name from the index (the list in your system prompt, or what read_skill with no arguments returns); omit to list the available skills.\"}"
+					"}}"
+				},
+				{
+					"validate",
+					"Check a scene for problems without touching or re-rendering it. "
+					"CALL IT WITH NO ARGUMENTS to validate the CURRENT scene -- that is "
+					"the normal post-edit check, and it also returns the headVersion it "
+					"validated. NEVER re-send the document you just edited: the engine "
+					"already has it, and echoing a whole scene back costs thousands of "
+					"output tokens and tens of seconds for nothing. Pass `text` ONLY to "
+					"check a CANDIDATE document you have not applied -- e.g. a "
+					"from-scratch scene you are composing before inserting it chunk by "
+					"chunk; that form works even with no scene loaded, while the "
+					"no-argument form needs one. Validate the candidate ONCE, when it "
+					"is COMPLETE -- not after each chunk you add. Every `text` call "
+					"re-sends the whole document, and a clean result (empty "
+					"diagnostics) has told you all it can, so go insert rather than "
+					"re-validating a superset of text that already came back clean. "
+					"Either way, no error-severity "
+					"diagnostics means the scene has no SEMANTIC errors (warnings/info "
+					"alone are not failures; a candidate still needs its `RISE ASCII "
+					"SCENE 7` header line to actually load, which this does not check), "
+					"and the result's `validated` field says which it actually checked -- "
+					"\"head\" or \"text\". If your edit came back status=\"staged\" it is "
+					"NOT in the current scene yet, so the no-argument form will not see it.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"text\":{\"type\":\"string\",\"description\":"
+						"\"OPTIONAL. A complete candidate .RISEscene document to check INSTEAD of the current scene. Omit it to validate the current scene -- do not re-send a document you already applied.\"}"
+					"}}"
+				},
+				{
+					"propose_patch",
+					"Set one parameter of one named scene entity (the ONLY way to change "
+					"a PARAMETER; insert_chunk/remove_chunk add and delete whole "
+					"entities). To edit ONE line of a REPEATABLE param (skeleton_geometry's "
+					"`joint`, sdf_geometry's `part` -- a chunk with many `joint`/`part` "
+					"lines), pass `occurrence` (0-based, document order) naming which one; "
+					"without it every patch targets occurrence 0 regardless of intent, "
+					"which is why rewriting joint #12 of a 23-joint skeleton by `param` "
+					"alone either silently edits joint #1 or fails to derive. Always pass the headVersion you last read as "
+					"baseHeadVersion. If the result has status=conflict, re-call "
+					"read_document and re-propose against the new headVersion. If "
+					"retriable=true the refusal is transient -- retry the SAME patch "
+					"after a moment. Only status=applied means the edit landed cleanly. "
+					"status=diagnosed means the edit WAS applied but the re-derive "
+					"produced diagnostics -- read them and fix the reported problem; do "
+					"not blindly re-propose the same patch. A REJECTED patch may return "
+					"\"issues\": [{param,value,reason,suggestions:[...]}] (the same shape "
+					"insert_chunk/remove_chunk use). reason is one of \"unknown_target\" "
+					"(target does not resolve -- check suggestions for a near-miss name), "
+					"\"unknown_param\" (param is not declared on that entity's chunk type "
+					"-- message also lists every valid parameter), "
+					"\"numeric_in_reference_slot\" (this slot needs the NAME of another "
+					"chunk, not a literal number), \"unresolved_reference\" (value names a "
+					"chunk not defined anywhere -- check suggestions for a near-miss "
+					"already-defined name), or \"invalid_value\" (value is ill-typed for "
+					"the parameter -- for an Enum, message lists the allowed values). An "
+					"EMPTY or missing issues list on a rejection does not mean the patch "
+					"was fine, only that this could not be statically pinned; message "
+					"still carries the engine's own diagnostic. "
+					"A rasterizer chunk's own parameters are freely editable through this "
+					"verb -- including on a bdpt/mlt/auto rasterizer the USER authored -- "
+					"with exactly one exception: pinning an auto_rasterizer's or "
+					"auto_spectral_rasterizer's `integrator` to `bdpt` is refused, because "
+					"that IS selecting BDPT (`pt`, `vcm` and `auto` are all fine). See "
+					"insert_chunk for the rasterizer allowlist this belongs to.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"The entity NAME to edit (a chunk name from the document). For a chunk that has NO name -- the sole camera, the film, the rasterizer -- leave this EMPTY and pass `kind` instead; that is the kind-addressed singleton form. Do NOT pass the chunk keyword here as if it were a name: `target:\\\"pinhole_camera\\\"` does not resolve and is rejected.\"},"
+						"\"kind\":{\"type\":\"string\",\"description\":"
+						"\"Entity KIND keyword (e.g. lambertian_material). Two uses: disambiguate a name clash, OR -- with an EMPTY `target` -- address the sole unnamed chunk of that kind, e.g. {target:\\\"\\\", kind:\\\"camera\\\", param:\\\"location\\\", value:\\\"0 1 4\\\"} to move an unnamed camera without removing and re-inserting it.\"},"
+						"\"param\":{\"type\":\"string\",\"description\":"
+						"\"The parameter to set (e.g. radius, color, location).\"},"
+						"\"value\":{\"type\":\"string\",\"description\":"
+						"\"The new value as scene-language text (e.g. 0.9 0.1 0.1).\"},"
+						"\"occurrence\":{\"type\":\"number\",\"description\":"
+						"\"OPTIONAL 0-based index of WHICH occurrence to edit when `param` is a REPEATABLE line on the target chunk (e.g. skeleton_geometry's `joint`, sdf_geometry's `part` -- read_document lists them in document order, so the 5th joint line is occurrence 4). Omit for a param that occurs at most once on its chunk. Out-of-range is refused, not clamped.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"target\",\"param\",\"value\"]}"
+				},
+				{
+					"propose_patches",
+					"BATCH form of propose_patch: set MULTIPLE parameters across one or "
+					"several named scene entities in ONE call instead of one call per parameter. "
+					"USE THIS whenever you are modifying multiple parameters or entities -- "
+					"e.g. position, orientation, power, or materials across objects -- "
+					"it is one round-trip instead of N. Elements are applied IN ARRAY ORDER. "
+					"SEQUENTIAL and BEST-EFFORT: a rejected patch element does NOT stop "
+					"the batch -- every remaining element is still attempted in order. Always "
+					"pass the headVersion you last read as baseHeadVersion -- it is checked "
+					"against the FIRST element only, and if it is STALE the whole batch stops "
+					"with every element status=\"conflict\" (nothing was applied): re-read the "
+					"document and resubmit. Returns {applied,total,results:[...]}: "
+					"total is patches.length, applied is how many results have applied=true, and "
+					"each results[i] is the EXACT same shape propose_patch returns.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"patches\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"target\":{\"type\":\"string\",\"description\":\"The entity NAME to edit.\"},"
+							"\"kind\":{\"type\":\"string\",\"description\":\"Optional entity KIND keyword to disambiguate a name clash.\"},"
+							"\"param\":{\"type\":\"string\",\"description\":\"The parameter to set.\"},"
+							"\"value\":{\"type\":\"string\",\"description\":\"The new value as scene-language text.\"},"
+							"\"occurrence\":{\"type\":\"number\",\"description\":\"OPTIONAL 0-based occurrence index for a REPEATABLE param -- same meaning as propose_patch's own occurrence.\"}"
+						"},\"required\":[\"target\",\"param\",\"value\"]},\"description\":"
+						"\"An array of patch objects ({target,param,value,kind?,occurrence?}), applied in order.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- checked against the FIRST element only.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"patches\"]}"
+				},
+				{
+					"insert_chunk",
+					"ADD one new entity to the live scene by inserting a complete chunk. "
+					"chunkText must be EXACTLY ONE `keyword { ... }` block with the braces "
+					"on their own lines -- no scene header, no directives, no comments "
+					"outside the chunk, one chunk per call. Order matters: an entity must "
+					"appear EARLIER in the document than its consumer -- insert_chunk "
+					"positions declaration chunks (painters, materials, geometry, "
+					"shaders, media) before the objects that consume them automatically "
+					"and appends everything else at the end; a rasterizer inserted this "
+					"way becomes the ACTIVE integrator (matching save+reload). "
+					"RASTERIZER SELECTION IS ALLOWLISTED on this surface: you may insert "
+					"pathtracing_pel_rasterizer, pathtracing_spectral_rasterizer, "
+					"vcm_pel_rasterizer or vcm_spectral_rasterizer -- PT for general "
+					"scenes, VCM for caustic/refractive/dispersive transport. "
+					"bdpt_pel_rasterizer, bdpt_spectral_rasterizer, mlt_rasterizer, "
+					"mlt_spectral_rasterizer, auto_rasterizer and auto_spectral_rasterizer "
+					"are SPECIALIZED and are refused, with no override parameter -- only "
+					"the user selects those (in the GUI, or by authoring the chunk into "
+					"the scene file). The frozen legacy rasterizers pixelpel_rasterizer and "
+					"pixelintegratingspectral_rasterizer are refused too (material alpha "
+					"works under PT and VCM). A scene that "
+					"ALREADY contains a blocked rasterizer stays fully editable, including "
+					"that chunk's own parameters. An insert "
+					"that would leave the document unable to derive is refused cleanly. "
+					"Unnamed film and rasterizer chunks can NEVER be removed through "
+					"this surface once inserted -- insert them deliberately. The SOLE "
+					"camera (even unnamed) IS removable via remove_chunk kind=\"camera\", "
+					"so to SWAP cameras REMOVE the old one FIRST, THEN insert the "
+					"replacement -- insert-first creates two cameras and strands the old "
+					"unnamed one (a NAMED second camera stays removable by name) "
+					"(the positional fallback requires exactly one). "
+					"Unnamed chunks are singletons per keyword EXCEPT append-class kinds "
+					"(timeline, keyframe -- see read_schema's unnamedRepeatable), which may "
+					"legally repeat unnamed. "
+					"Use read_schema for the chunk's parameters; for a BIG "
+					"addition, compose the full candidate document and validate it "
+					"FIRST, then insert chunk by chunk. Always pass the headVersion you "
+					"last read as baseHeadVersion. A duplicate (kind,name) is rejected "
+					"-- pick a fresh name. status=applied means the entity is live (a "
+					"full re-derive ran); render {imageMaxEdge:192} to verify. "
+					"EITHER a successful OR a rejected insert may return "
+					"\"issues\": [{param,value,reason,suggestions:[...]}]. reason is one of "
+					"\"unresolved_reference\" (the value names a chunk not defined ANYWHERE "
+					"in the document -- fine if you are about to insert that missing chunk "
+					"next, a legitimate forward reference; otherwise insert the missing "
+					"chunk or correct the misspelled name), \"unknown_param\" (the param "
+					"name is not declared on this chunk type -- the message also lists "
+					"every valid parameter name), \"numeric_in_reference_slot\" (this slot "
+					"needs the NAME of another chunk, not a literal number), or "
+					"\"unknown_chunk_type\" (the keyword itself is not registered). On a "
+					"SUCCESSFUL insert (applied=true) issues are always "
+					"unresolved_reference WARNINGS and do NOT change applied/status; check "
+					"`suggestions` first, it lists near-miss names already defined in the "
+					"document. On a REJECTED insert, issues explain the cause -- but an "
+					"EMPTY issues list on a rejection does not mean the chunk was fine, "
+					"only that this could not be statically pinned; the message still "
+					"carries the engine's own diagnostic.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"chunkText\":{\"type\":\"string\",\"description\":"
+						"\"One complete chunk as scene-language text, e.g. omni_light\\n{\\nname key\\nposition 0 5 0\\ncolor 1 1 1\\npower 3.0\\n}\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"chunkText\"]}"
+				},
+				{
+					"insert_chunks",
+					"BATCH form of insert_chunk: add SEVERAL complete chunks to the live "
+					"scene in ONE call instead of one call per chunk. USE THIS instead of "
+					"many separate insert_chunk calls whenever you're adding a coherent "
+					"group of entities together -- e.g. a painter plus the material that "
+					"references it, a geometry, and the object that binds them, or a whole "
+					"lighting rig -- it is one round-trip instead of N. Elements are "
+					"applied IN ARRAY ORDER; the SAME ordering rule as insert_chunk applies "
+					"WITHIN the array: a chunk referenced by a later chunk must appear "
+					"BEFORE it (e.g. a painter at index 0 then a material at index 1 that "
+					"names it resolves cleanly, because index 0 has already landed by the "
+					"time index 1 is applied). SEQUENTIAL and BEST-EFFORT: a rejected "
+					"element does NOT stop the batch -- every remaining element is still "
+					"attempted (a later chunk that depended on a rejected earlier one will "
+					"simply also fail, with its own actionable issues, rather than being "
+					"silently skipped). Always pass the headVersion you last read as "
+					"baseHeadVersion -- it is checked against the FIRST element only, since "
+					"the whole batch is one logical operation. Returns "
+					"{applied,total,results:[...]}: total is chunks.length, applied is how "
+					"many results have applied=true, and each results[i] is the shape "
+					"insert_chunk returns for chunks[i] (applied, rawCode, status, "
+					"retriable, headVersion, message, name, kind, and optional issues with "
+					"the same reasons insert_chunk documents) -- except that a clean "
+					"success (status applied, no issues, nothing to report beyond the "
+					"standard insert) carries only applied, status, headVersion, name, kind "
+					"and (inside an element window) element; any element with something to report keeps every field. Check "
+					"every element's own "
+					"status -- do not assume the whole batch succeeded just because the "
+					"call returned. Each array element must be EXACTLY ONE `keyword "
+					"{ ... }` block, same grammar as insert_chunk's chunkText. "
+					"The rasterizer allowlist insert_chunk documents applies here too, and "
+					"it is the ONE refusal that is NOT best-effort: a blocked rasterizer "
+					"anywhere in the array refuses the WHOLE batch atomically -- nothing "
+					"is inserted and the head version does not move.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"chunks\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"An array of complete chunks, one keyword { ... } block per element (same grammar as insert_chunk's chunkText), applied in order. A chunk referenced by a later element must appear before it in this array -- e.g. a uniformcolor_painter chunk at index 0 followed by a lambertian_material chunk at index 1 that names it in its reflectance parameter.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale batch is rejected as a conflict instead of clobbering. Checked against the FIRST element only.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"chunks\"]}"
+				},
+				{
+					"insert_material_scaffold",
+					"Expand ONE of five material-family templates into a small wired painter graph "
+					"(2-4 painters + 1 material) added to the scene in one call -- so a richly-varied "
+					"material costs one tool call instead of hand-typing a scalar/painter graph and "
+					"choosing which slot takes a painter yourself. Families: \"weathered_wood\" "
+					"(pbr_metallic_roughness, base_color AND roughness both bound to a domainwarp3d wood-"
+					"grain painter), \"rough_stone\" (ggx with fresnel_mode schlick_f0 and a 0.04 dielectric F0 tint, rd bound to a worley3d pebble field, "
+					"alphax/alphay both bound to a spatially-varying scalar field), \"brushed_metal\" "
+					"(ggx with fresnel_mode schlick_f0, alphax/alphay both bound to a spatially-varying scalar field at "
+					"different scale for the anisotropic groove), \"aged_bronze\" (ggx conductor, rd bound "
+					"to a reactiondiffusion3d oxidation-patina field, alphax/alphay both bound to a spatially-varying "
+					"scalar field), \"glazed_ceramic\" (ggx with fresnel_mode schlick_f0, alphax/alphay "
+					"both bound to a LOW-amplitude spatially-varying scalar field). Every family binds AT "
+					"LEAST ONE microsurface parameter to a real painter chunk -- that is the whole point "
+					"of the tool. ALL FIVE params are REQUIRED, no defaults: `family` (exactly one of the "
+					"five names above), `name` (a fresh, unique prefix -- every generated chunk is named "
+					"tmpl_<name>_<role>, e.g. tmpl_desk1_mat, tmpl_desk1_grain; a name whose derived chunks "
+					"collide with existing ones is refused, document unchanged), `tone` (\"r g b\", each "
+					"0..1 -- the base colour), `wear` (0..1 -- variation intensity), `scale` (>0 -- spatial "
+					"frequency of the variation). Internal graph constants (noise phase/frequency, "
+					"secondary darkening, per-axis anisotropy) are jittered deterministically from `name` "
+					"-- the SAME name reproduces byte-identical chunks, a DIFFERENT name visibly differs. "
+					"Every generated chunk is an ORDINARY, EDITABLE document chunk -- read_document shows "
+					"them at the exact site of any future edit, and propose_patch/remove_chunk work on "
+					"them exactly like any hand-authored chunk (change tmpl_desk1_grain's `scale` to "
+					"retune the grain, or point a different material at tmpl_desk1_glaze). Applied IN "
+					"ORDER through the same batch machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; "
+					"see that tool's description) -- returns {applied,total,results:[...]} (the EXACT "
+					"insert_chunk per-element shape) plus `material` ({name,kind} of the one material "
+					"chunk) and `boundSlots` ([{param,painter},...] -- every microsurface parameter this "
+					"expansion bound, purely factual). Check every element's own status; do not assume "
+					"the whole expansion landed just because the call returned. A missing/invalid param, "
+					"an unrecognized family, or a name collision refuses the WHOLE call before any chunk "
+					"is generated (document unchanged) -- these come back as a tool error, not a partial "
+					"result. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: weathered_wood, rough_stone, brushed_metal, aged_bronze, glazed_ceramic.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"tone\":{\"type\":\"string\",\"description\":"
+						"\"Base colour as \\\"r g b\\\", each 0..1, e.g. \\\"0.55 0.42 0.30\\\".\"},"
+						"\"wear\":{\"type\":\"number\",\"description\":"
+						"\"Variation intensity, 0..1.\"},"
+						"\"scale\":{\"type\":\"number\",\"description\":"
+						"\"Spatial frequency of the variation, > 0 (larger = tighter/finer features).\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"tone\",\"wear\",\"scale\"]}"
+				},
+				{
+					"insert_geometry_scaffold",
+					"Expand ONE of SEVEN geometry-family templates into a small chunk graph added to the scene "
+					"in one call -- so an advanced geometric form costs one tool call instead of hand-composing "
+					"the underlying chunk(s) yourself. Families: \"displaced_slab\" (a box tessellated + "
+					"bumped by a perlin2d noise source via displaced_geometry), \"sweep_rail\" (a compact "
+					"closed polygon profile swept along a short bowed path with a taper, via sweep_geometry), "
+					"\"blended_vessel\" (a base/belly/rim roundcone chain smoothly blended into a vessel or "
+					"bowl silhouette, via sdf_geometry), \"sdf_column\" (a base/shaft/capital roundcone chain "
+					"into a turned-column silhouette, via sdf_geometry), \"blended_chain\" (a smin-blended "
+					"chain of spheres swept along a path YOU author with `points` -- a continuous, tapered "
+					"limb/branch/tendril; the path is this family's creative essence), \"volume_bank\" (an "
+					"elongated atmospheric volume -- container + near-invisible dielectric shell + a "
+					"swirling painter-driven heterogeneous medium, fully wired), \"quadruped\" (alias "
+					"\"creature\": a generic four-legged animal SKELETON via skeleton_geometry -- spine, neck, "
+					"head, muzzle, two proportioned ears, a tapering tail, four upper/lower/paw legs, ~18-24 "
+					"joints, ready to rename/reposition/re-radius. THE START-FROM-RIGHT MOVE for a creature "
+					"body: call this FIRST rather than hand-authoring a joint graph -- skeleton_geometry's "
+					"blend radius is per-bone and self-scaling, so it structurally cannot fall into the "
+					"fixed-k trap the DESIGN_SDF_BLEND_SCALE advisory catches on hand-authored sdf_geometry). "
+					"The FIRST SIX families emit GEOMETRY ONLY -- YOU wire the standard_object (and any "
+					"material) yourself, referencing the returned `geometry.name`. volume_bank is "
+					"the SOLE exception -- it also emits a dielectric material, a medium, and a standard_object "
+					"(a bare volume graph does nothing until an object binds it, and the medium's density-field "
+					"bbox must match that object's placement -- see the returned `message` on success for the "
+					"one wiring caveat this implies if you reposition it). Families cover common forms; "
+					"anything else (an unusual silhouette, a shape none of the seven fit) is hand-authored "
+					"alongside using the ordinary geometry chunks -- this tool composes with hand authoring, "
+					"it does not replace it. REQUIRED params DIFFER BY FAMILY, no defaults -- a missing one for "
+					"the resolved family is a blocking error naming it: `family` and `name` (a fresh, unique "
+					"prefix -- every generated chunk is named tmpl_<name>_<role>, e.g. tmpl_rail1_rail; a name "
+					"whose derived chunks collide with existing ones is refused, document unchanged) are always "
+					"required. displaced_slab/sweep_rail/blended_vessel/sdf_column additionally require `size` "
+					"(>0 -- overall scale), `detail` (0..1 -- displacement amplitude / profile complexity / "
+					"smin blend tightness / tessellation, whichever is honest for that family), `aspect` (>0 -- "
+					"elongation; 1.0 is roughly proportionate). blended_chain additionally requires `points` "
+					"(2-6 semicolon-separated \"x y z\" triplets, e.g. \"0 0 0; 0.5 1.2 -0.3; 1 3 0\" -- the "
+					"chain's first/last node lands EXACTLY on the first/last point, so an endpoint can be aimed "
+					"precisely at another part's surface), `size` (>0 -- base radius at the FIRST point), "
+					"`taper` (0..1 -- end-to-end radius falloff toward the LAST point), `detail` (0..1 -- node "
+					"density along the path, more nodes = smoother) -- NO `aspect`. volume_bank additionally "
+					"requires `size` (>0), `aspect` (>0 -- elongation), `detail` (0..1 -- density-field "
+					"wispiness/swirl), `tone` (\"r g b\" each 0..1 -- the medium's scatter tint) -- NO "
+					"`points`/`taper`. quadruped additionally requires ONLY `size` (>0) -- NEITHER `detail` NOR "
+					"`aspect` (omit both; there is no honest use for either on a joint graph), and takes an "
+					"OPTIONAL `build` (\"lean\"/\"average\"/\"stocky\", default \"average\" -- a stance preset "
+					"rescaling leg length/girth and body girth together). Internal graph constants (noise "
+					"phase/frequency, profile-point phase, path bow, smin blend radii, segment counts, per-node "
+					"path/radius jitter, stance jitter) are jittered deterministically from `name` -- the SAME "
+					"name (and other params) reproduces byte-identical chunks, a DIFFERENT name visibly "
+					"differs. Every generated chunk is an ORDINARY, EDITABLE document chunk -- read_document "
+					"shows them at the exact site of any future edit, and propose_patch/remove_chunk work on "
+					"them exactly like any hand-authored chunk. Applied IN ORDER through the same batch "
+					"machinery insert_chunks uses (SEQUENTIAL, BEST-EFFORT; see that tool's description) -- "
+					"returns {applied,total,results:[...]} (the EXACT insert_chunk per-element shape) plus "
+					"`geometry` ({name,kind} of the one geometry chunk to bind into a standard_object.geometry "
+					"slot) and, for volume_bank only, `material`/`medium`/`object` ({name,kind} each) plus a "
+					"factual `message`. Check every element's own status; do not assume the whole expansion "
+					"landed just because the call returned. A missing/invalid param, an unrecognized family, "
+					"or a name collision refuses the WHOLE call before any chunk is generated (document "
+					"unchanged) -- these come back as a tool error, not a partial result. Always pass the "
+					"headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, volume_bank, quadruped (alias: creature).\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"size\":{\"type\":\"number\",\"description\":"
+						"\"Overall scale, > 0 (for blended_chain: base radius at the FIRST point).\"},"
+						"\"detail\":{\"type\":\"number\",\"description\":"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / node density / density-field swirl, per family. NOT used by quadruped.\"},"
+						"\"aspect\":{\"type\":\"number\",\"description\":"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for every family EXCEPT blended_chain and quadruped.\"},"
+						"\"points\":{\"type\":\"string\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \\\"x y z\\\" triplets, e.g. \\\"0 0 0; 0.5 1.2 -0.3; 1 3 0\\\" -- the spine path; the first/last node lands exactly on the first/last triplet.\"},"
+						"\"taper\":{\"type\":\"number\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last.\"},"
+						"\"tone\":{\"type\":\"string\",\"description\":"
+						"\"volume_bank ONLY, REQUIRED: \\\"r g b\\\", each 0..1 -- the medium's scatter tint.\"},"
+						"\"build\":{\"type\":\"string\",\"description\":"
+						"\"quadruped ONLY, optional (default \\\"average\\\"): lean / average / stocky.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"family\",\"name\",\"size\"]}"
+				},
+				{
+					"replace_geometry_scaffold",
+					"REPLACE THE FORM of a part you already placed: expand a geometry family template "
+					"exactly as insert_geometry_scaffold does, and rebind an EXISTING object's geometry to "
+					"it, in ONE call. Use this whenever you look at a render and think \"that shape is too "
+					"plain / the wrong form\" -- it costs the same one call a colour tweak costs, so revise "
+					"form as freely as you revise a parameter. `target` is the standard_object's name (NOT "
+					"the geometry chunk's -- passing a geometry name is refused with the object names that "
+					"use it). The object's position, orientation, scale, material and every other parameter "
+					"are PRESERVED byte-for-byte -- only its `geometry` changes, so placement you tuned by "
+					"looking survives the new form. The families and their per-family required params are "
+					"IDENTICAL to insert_geometry_scaffold's (see that tool, including \"quadruped\"/"
+					"\"creature\", the self-scaling skeleton_geometry family) with one exception: "
+					"\"volume_bank\" is NOT available here, because that family emits its own "
+					"standard_object -- use insert_geometry_scaffold for it. The old geometry chunk is "
+					"REMOVED automatically when nothing else references it; if something else still uses it "
+					"the tool keeps it and tells you which chunks; chunks left unreferenced one hop deeper "
+					"(e.g. the noise source that only fed the old displaced geometry) are REPORTED in "
+					"`orphans` for you to clear with remove_chunks if you want -- they are never deleted "
+					"silently. The whole thing is ONE atomic edit: one head version, one undo step, and on "
+					"ANY refusal (unknown/ambiguous target, name collision, a stale baseHeadVersion "
+					"conflict, a candidate that would not derive, or a transient busy/in-progress reject) "
+					"NOTHING changes -- check `status`: \"applied\" is the only outcome where anything "
+					"landed. The ONE exception is \"diagnosed\": the Document WAS mutated (the new geometry "
+					"landed and the object's slot was rebound) but the re-derive still emitted diagnostics, "
+					"so `previousGeometry`/`orphans` describe something real, not a discarded plan -- look at "
+					"the log before touching this part again. Returns {applied,total,results:[...],status,"
+					"retriable,headVersion,target,geometry:{name,kind},previousGeometry:{name,kind,removed,"
+					"referrers},orphans,message} -- every `results` element carries the SAME verdict, because "
+					"the call is one mutation, not a batch. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"The name of the standard_object whose geometry to replace -- the OBJECT, not the geometry chunk.\"},"
+						"\"family\":{\"type\":\"string\",\"description\":"
+						"\"One of: displaced_slab, sweep_rail, blended_vessel, sdf_column, blended_chain, quadruped (alias: creature). (volume_bank is not available here -- it emits its own object.)\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"A fresh, unique prefix for this expansion (letters/digits/underscore/hyphen). Every generated chunk is named tmpl_<name>_<role>.\"},"
+						"\"size\":{\"type\":\"number\",\"description\":"
+						"\"Overall scale, > 0 (for blended_chain: base radius at the FIRST point).\"},"
+						"\"detail\":{\"type\":\"number\",\"description\":"
+						"\"0..1: displacement amplitude / profile complexity / smin blend tightness / tessellation / node density, per family. NOT used by quadruped.\"},"
+						"\"aspect\":{\"type\":\"number\",\"description\":"
+						"\"Elongation, > 0 (1.0 is roughly proportionate; larger stretches the form). Required for every family EXCEPT blended_chain and quadruped.\"},"
+						"\"points\":{\"type\":\"string\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 2-6 semicolon-separated \\\"x y z\\\" triplets, e.g. \\\"0 0 0; 0.5 1.2 -0.3; 1 3 0\\\" -- the spine path; the first/last node lands exactly on the first/last triplet.\"},"
+						"\"taper\":{\"type\":\"number\",\"description\":"
+						"\"blended_chain ONLY, REQUIRED: 0..1, end-to-end radius falloff from the first point to the last.\"},"
+						"\"build\":{\"type\":\"string\",\"description\":"
+						"\"quadruped ONLY, optional (default \\\"average\\\"): lean / average / stocky.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale call is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"target\",\"family\",\"name\",\"size\"]}"
+				},
+				{
+					"remove_chunk",
+					"DELETE one entity (a whole chunk) from the live scene by name. "
+					"Removal is whole-chunk only; the target is the chunk's bare name "
+					"(the same addressing as propose_patch), with optional kind (the "
+					"chunk keyword or a suffix like material) to narrow a name clash. "
+					"A remove is rejected when the remaining document would not derive: "
+					"usually the target is still REFERENCED by another chunk (retarget "
+					"or remove the consumers first), or the document no longer derives "
+					"in order -- read_document and validate to inspect. If a retarget "
+					"is refused because the new entity sits later in the document, "
+					"remove_chunk the consumer and re-insert it (it will be appended "
+					"after the entity it references). Unnamed film and rasterizer "
+					"chunks cannot be removed at all -- they have no addressable name; "
+					"insert them deliberately. The SOLE camera CAN be removed even "
+					"unnamed: pass kind=\"camera\" (the target resolves by position "
+					"when exactly one camera exists). To SWAP cameras, remove the old "
+					"one FIRST, then insert the replacement -- insert-first creates two "
+					"cameras and strands the old unnamed one (a NAMED second camera "
+					"stays removable by name). Always "
+					"pass the headVersion you last read as baseHeadVersion. There is no "
+					"rename verb -- the safe recipe: insert_chunk the renamed entity "
+					"(declarations are positioned before their consumers), retarget its "
+					"consumers via propose_patch, then remove_chunk the old one. "
+					"Removing a repeatable-unnamed kind (timeline, keyframe) by kind alone "
+					"while 2+ unnamed instances exist is refused as ambiguous -- address a "
+					"named chunk, or use kind only when exactly one unnamed instance remains. "
+					"A REJECTED remove may return \"issues\": [{param,value,reason,"
+					"suggestions:[...]}] (the same shape propose_patch/insert_chunk use). "
+					"The one reason remove_chunk produces is \"still_referenced\": value is "
+					"the target's own name and suggestions NAMES every chunk still "
+					"referencing it -- edit or remove those first, then retry. An EMPTY or "
+					"missing issues list on a rejection does NOT mean the target was "
+					"unreferenced -- it may instead be the order-derive cause, or a DYNAMIC "
+					"reference (e.g. a timeline naming this entity) this pass cannot see; "
+					"message still carries the engine's own hedged diagnostic in that case.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"The bare NAME of the chunk to remove (a chunk name from the document).\"},"
+						"\"kind\":{\"type\":\"string\",\"description\":"
+						"\"Optional entity KIND keyword (e.g. omni_light) to disambiguate a name clash.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"target\"]}"
+				},
+				{
+					"collapse_to_instances",
+					"REWRITE a run of hand-authored copies as ONE instancing chunk. Call this the moment you "
+					"notice (or are told) that several standard_objects share one geometry and differ only in "
+					"where they sit -- five bottles along a shelf, a grid of books, a row of fence posts. It "
+					"keeps the FIRST copy, replaces the others with a `source` + `count_u` chunk whose "
+					"`position expr(...)` reproduces exactly the positions they already had, and does the whole "
+					"thing in ONE call, ONE headVersion bump and ONE undo step. The RENDERED SCENE IS "
+					"UNCHANGED -- this is a re-expression, not a redesign: nothing moves, nothing disappears "
+					"(`source` COPIES, so the kept copy keeps rendering and `count_u` is one less than the "
+					"number of copies). Pass NO ARGUMENTS to collapse the largest such run in the document -- "
+					"that is the normal way to call it, and it is what a DESIGN NOTE naming repeated copies is "
+					"asking for. Pass `target` (the name of any ONE copy) to choose a different run, and `name` "
+					"to name the new chunk. It REFUSES, changing nothing and costing only this call, whenever "
+					"it cannot prove the rewrite is exact: copies that are not on a regular line or grid, "
+					"copies that differ in orientation/quaternion/scale as well as position, any copy carrying "
+					"a `matrix`, or any copy named by another chunk (a parent link, an override_object, a CSG "
+					"operand). A refusal is a real answer -- read it and leave the objects alone; do NOT retry "
+					"with hand-written chunks. A GRID takes two instancing chunks rather than one, because the "
+					"kept copy occupies the first cell. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name of ANY ONE standard_object in the run to collapse. Omit it to take the largest run of hand-authored copies in the document -- which is what a DESIGN NOTE about repeated copies is pointing at, so the no-argument call is the usual one.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name for the instancing chunk. Omit for <source>_array. A grid also mints <name>_row0 for the remainder of the first row.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"vary_material",
+					"MAKE ONE MATERIAL'S ROUGHNESS VARY ACROSS THE SURFACE, in one call. Call this the moment "
+					"you notice (or are told) that a scene's materials all carry a bare number in their "
+					"microsurface slot -- `roughness 0.3`, `alphax 0.1`, `facets 0.05`. Real surfaces are not "
+					"uniformly polished, and a scene where every roughness is one constant reads as untextured "
+					"geometry no matter how good the lighting is. It adds ONE `scalar_painter { expression ... }` "
+					"chunk holding an fbm wear field BANDED AROUND THE NUMBER THAT IS ALREADY THERE (roughly "
+					"0.7x .. 1.4x of it, or 0.7x .. 1.15x once that number is already above 1, so the band "
+					"always keeps headroom) and rebinds the material's roughness slot(s) to it -- ONE headVersion "
+					"bump, ONE undo step. The material stays the material you authored: only the microsurface "
+					"stops being flat. Pass NO ARGUMENTS to take the most prominent qualifying material -- that "
+					"is the normal way to call it, and it is what a DESIGN NOTE about constant microsurface is "
+					"asking for. Pass `material` to name a different one, or `all:true` to fix EVERY currently-"
+					"flagged material in ONE call instead of one call per material (capped at 24; the response "
+					"names how many remain -- call again with `all:true` to continue). A DESIGN NOTE reporting "
+					"\\\"N of M materials vary\\\" is exactly when `all:true` is the right call. Every knob it "
+					"writes is a named "
+					"`param` carrying min/max/step/label (rough_lo, rough_hi, field_scale, field_contrast) plus "
+					"a `seed`, so retuning it afterwards is one propose_patch on a named line rather than an "
+					"edit to expression text -- and that is the idiom to COPY when you author varying scalars "
+					"by hand. It REFUSES, changing nothing and costing only this call, when no material's "
+					"microsurface is a readable constant (already varying, absent, a per-channel triple, or a "
+					"deliberate mirror-specular zero). Roughness only -- it never repaints colour. A refusal is "
+					"a real answer: read it rather than retrying. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to vary. Omit it to take the most prominent material whose microsurface is still a bare number -- which is what a DESIGN NOTE about constant microsurface is pointing at, so the no-argument call is the usual one. Mutually exclusive with all.\"},"
+						"\"all\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default false. Fix EVERY currently-flagged material in this one call, most-referenced-first, capped at 24 -- the coverage-per-call fix when a DESIGN NOTE reports many materials still flat. Mutually exclusive with material.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"fix_blend_scale",
+					"CLAMP AN SDF `smin` BLEND THAT IS TOO WIDE, in one call. Call this the moment you notice "
+					"(or are told) that an sdf_geometry joint's blend radius (k) is comparable to the size of "
+					"the part it joins -- a wide k dissolves a small feature (a limb, an ear, a fin) into its "
+					"neighbour instead of blending it. It finds EVERY offending smin joint in scope and rewrites "
+					"just its `k` value down to the safe bound for that joint, leaving position/orientation/"
+					"scale/shape untouched -- ONE headVersion bump, ONE undo step, no matter how many joints it "
+					"fixes. Pass NO ARGUMENTS to fix every offending joint in the WHOLE document -- that is the "
+					"normal way to call it, and it is what a DESIGN NOTE naming a blend-scale joint is asking "
+					"for. Pass `target` (the name of one sdf_geometry chunk) to scope the fix to just that "
+					"chunk. It REFUSES, changing nothing and costing only this call, when no joint in scope is "
+					"currently offending (a clean, honest \\\"nothing to fix\\\"). NOTE: if the response names a "
+					"proportion problem on a joint (the part is much smaller than what it joins), narrowing k "
+					"alone will not make that part readable -- the part itself needs enlarging toward "
+					"proportion, or the body needs rebuilding with skeleton_geometry; this verb still clamps "
+					"that joint's k (it is not wrong to do), it just cannot fix size on its own. Always pass "
+					"the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of one sdf_geometry chunk to scope the fix to. Omit it to fix every offending joint in the whole document -- which is what a DESIGN NOTE about a blend-scale joint is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_wear",
+					"WEAR ONE MATERIAL ALONG ITS OWN FORM -- edges rubbed, crevices grimed -- in one call. "
+					"Call this the moment a surface is meant to read as USED: weathered, tarnished, aged, "
+					"dusty, chipped, mossy, salt-crusted, or simply not factory-new. The failure it exists to "
+					"prevent is a mask built from a WORLD AXIS: a `P.z` threshold paints a band of dirt at a "
+					"fixed altitude no matter what the object's shape is, and reads as a stripe. Real wear "
+					"follows CURVATURE -- `curv` is positive on a convex edge, negative in a concave crease, 0 "
+					"on a flat -- and that is what this writes. It adds ONE `expression_painter` whose edge "
+					"mask is `clamp(curv*k + noise, 0, 1)` and whose crevice mask is "
+					"`clamp(-curv*k + noise, 0, 1)` deepened by `occlusion()` (inert on legacy "
+					"`rawmesh_geometry`, whose non-indexed loader publishes no occlusion signal -- the curv "
+					"half still works there), mixes a lightened edge tint and "
+					"a darkened patina tint BANDED AROUND THE COLOUR THAT IS ALREADY THERE (both tints derived "
+					"from that colour, so this suits wood, stone and painted steel as much as bronze), and "
+					"rebinds the material's colour slot to it. Where the material also carries a constant "
+					"roughness it adds a SECOND chunk reading the SAME masks -- polished on the rubbed edges, "
+					"rougher in the crevices -- so the two agree. ONE headVersion bump, ONE undo step. Pass NO "
+					"ARGUMENTS to take the most prominent qualifying material -- that is the normal way to "
+					"call it, and it is what a DESIGN NOTE about unworn materials is asking for. Pass "
+					"`material` to name a different one. Every knob it writes is a named `param` carrying "
+					"min/max/step/label (edge_wear, crevice_grime, cavity_gain, breakup_amp, base_r/g/b and "
+					"the tint knobs) plus a `seed`, so retuning it afterwards is one propose_patch on a named "
+					"line rather than an edit to expression text -- and that is the idiom to COPY when you "
+					"author wear by hand. It REFUSES, changing nothing and costing only this call, when no "
+					"material is a readable flat colour, when the material is already worn (its slots already "
+					"read curv/occlusion), when every object bound to it sits on planar geometry, "
+					"where `curv` is 0 everywhere and the mask would render the flat colour it started from, or "
+					"when it collides with `add_wetness`'s own composition (a WET material's colour slot is "
+					"already bound to an expression_painter, never a plain uniformcolor_painter -- the two "
+					"verbs cannot currently be combined on one material; whichever ran first locks the other "
+					"out). THE FLAT-RECEIVER REFUSAL IS LIFTED BY `contact_radius`: with it set, a material "
+					"whose every object sits on planar geometry becomes a candidate, and the body it "
+					"gets is the CONTACT recipe -- proximity() alone, no curv and no occlusion, since neither "
+					"would say anything on a flat face. A refusal is a real answer: read it rather than "
+					"retrying. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to wear. Omit it to take the most prominent material that is still one flat colour on curved geometry -- which is what a DESIGN NOTE about unworn materials is pointing at, so the no-argument call is the usual one.\"},"
+						"\"contact_radius\":{\"type\":\"number\",\"description\":"
+						"\"Optional, a WORLD LENGTH; default 0 = off. Above 0 this ALSO grimes the CONTACT SEAM -- where this material's surface comes within that distance of ANOTHER object -- using proximity(), and it lets a FLAT receiver qualify at all: a plank lying on a plane, a flange bolted to a box. Those are refused without it, because curvature alone has nothing to key on there. YOU choose the number from the scene's own feature sizes and units: 0.002 is two millimetres in a metre-scale scene, which suits a nail resting on a board; a 2 cm radius (0.02) suits a bench foot on a floor. Too large and the seam becomes a wash.\"},"
+						"\"contact_grime\":{\"type\":\"number\",\"description\":"
+						"\"Optional, 0..1, default 0.5. How strongly the contact seam grimes, relative to the curvature crevices. Only read when contact_radius > 0.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_wetness",
+					"MAKE ONE MATERIAL WET -- darkened/saturated reflectance in the damp, a coat/gloss where it "
+					"pools -- in one call. Call this the moment a surface is meant to read RAIN-SLICKED, DAMP, or "
+					"STANDING IN WATER: a wet street, a rained-on wall, a damp cave floor. The physics: wetting a "
+					"porous substrate darkens and saturates it (index-matching plus internal-reflection recycling "
+					"at the water/air interface -- Lekner & Dorf 1988), and only WATER DEEP ENOUGH TO POOL lies "
+					"flat and mirror-smooth -- a merely-damp film still shows the substrate's own relief, "
+					"sharpened but not mirrored. This writes a shared `damp`/`wet` mask pair (`damp` drives "
+					"darkening; `wet = clamp(damp*film_amount, 0, damp)` drives the coat, so `wet` can never "
+					"exceed `damp` by construction) keyed on `curv` (dry ridges), `occlusion()` (pooling "
+					"cavities, gated by an up-facing term so water never pools on ceilings) and `fbm` (breakup). "
+					"A Lambertian base is WRAPPED, not rewritten: the original chunk is left byte-for-byte "
+					"untouched, a new `coated_material` chunk is minted (`base` naming the original, "
+					"`coat_weight` = coat coverage under `wet`, `coat_roughness` = a GGX gloss keyed on POOLING "
+					"so damp-but-unpooled regions stay broad-lobed rather than instantly mirror-flat), and every "
+					"bound object's `material` reference is moved to the new chunk. There is no separate "
+					"darkening painter on this branch -- `coated_material`'s own layered transport performs the "
+					"recycling-driven darkening, so a `pow(base,k)` painter on top would double-count it. A "
+					"GGX/PBR base is "
+					"left as its own kind and modulated IN PLACE (reflectance darkened the same way; roughness "
+					"driven toward a wet floor under `wet` -- an approximation of a film, not a real second "
+					"layer, so it sharpens the base's OWN tinted lobe and can flatten an authored anisotropy "
+					"where it bites). An Oren-Nayar base gets DARKENING ONLY, no coat (its retroreflective lobe "
+					"has no film analogue). The gravity gate (keeps pooling off ceilings/undersides) assumes "
+					"+Y UP -- `dot(N, vec3(0,1,0))` in the emitted `up_facing`/`gravity` lines -- a Z-up scene "
+					"needs that axis vector hand-edited. A single `dryness` param sweeps the whole thing back "
+					"to bone-dry. "
+					"ONE headVersion bump, ONE undo step. Pass NO ARGUMENTS to take the most prominent "
+					"qualifying material -- that is the normal way to call it, and it is what a DESIGN NOTE "
+					"about a dry rain scene is asking for. Pass `material` to name a different one, including a "
+					"metallic material (coat/gloss only, no darkening -- a wet metal has no subsurface to "
+					"darken). Every knob it writes is a named `param` carrying min/max/step/label (dryness, "
+					"base_wetness, pool_gain, ridge_shed, gravity_bias, film_amount, film_gloss_lo, breakup_amp/"
+					"scale, plus the darkening `k`/`base_r/g/b` where present) plus a `seed`, so retuning it "
+					"afterwards is one propose_patch on a named line. It REFUSES, changing nothing and costing "
+					"only this call, when nothing qualifies, when the material is already wet, when its colour "
+					"is a painter this cannot classify as either a flat constant or a genuinely textured/"
+					"procedural field (a blackbody/spectral painter, a non-default `colorspace`, or an "
+					"unresolvable reference -- there is no base to darken from), or when it "
+					"collides with `add_wear`'s own composition on a NON-Lambertian material (GGX/PBR/"
+					"Oren-Nayar's in-place darkening needs the SAME colour slot `add_wear` already rewrote, so "
+					"those kinds cannot currently be combined with `add_wear` -- each verb's refusal names the "
+					"other). A `lambertian_material` `add_wear` already wore IS combinable: this verb's "
+					"coat-WRAP branch never reads or rewrites the substrate's own colour slot at all, so "
+					"calling `add_wetness` on an already-worn Lambertian wraps the worn result in a new "
+					"`coated_material` -- wet grime settling over a worn surface. The reverse order (this verb "
+					"first, then `add_wear` on the same material) still refuses; `add_wear` names the reason. "
+					"A TEXTURED/PROCEDURAL albedo (a png_painter, a checker_painter, a plain expression_painter "
+					"not already worn) now darkens PER-TEXEL via the expression VM's sample(name) builtin "
+					"(DL-25) instead of being refused. "
+					"A refusal is a real answer: read it rather than retrying. Always pass the headVersion you "
+					"last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to make wet. Omit it to take the most prominent non-metallic material that is still a flat, readable colour on a bound object -- which is what a DESIGN NOTE about a dry rain scene is pointing at, so the no-argument call is the usual one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"make_fabric",
+					"TURN ONE MATERIAL INTO CLOTH in one call. Call this the moment a surface is meant to "
+					"read as FABRIC: a cushion, a curtain, a jacket, upholstery, a tablecloth, a banner, "
+					"bedding. What makes cloth look like cloth is a SHEEN LOBE -- a bright grazing halo at "
+					"the silhouette, from light scattering off the fuzz and the fibre ends -- sitting over a "
+					"substrate whose own highlight follows the WEAVE. A plain lambertian_material with a "
+					"cloth-coloured albedo has neither, and reads as painted cardboard no matter how good "
+					"the colour is. This writes the whole composition: a `fabric_material` (an "
+					"energy-compensated Charlie sheen over a restricted substrate -- it SUBTRACTS the "
+					"sheen's energy from the base, so a white fabric never returns more light than it "
+					"receives at grazing) wrapping a substrate of the class the preset was calibrated for. "
+					"WHEN THE BOUND BASE IS NOT THAT CLASS IT MINTS ONE, re-homing the colour painter that "
+					"is already there so your dye, texture or expression graph survives the conversion "
+					"untouched. That mint is the point: a preset CANNOT configure a substrate it merely "
+					"references, so wrapping a Lambertian in `fabric satin` gives chalk with a faint sheen "
+					"-- the tight, directional, anisotropic highlight that IS satin lives in the substrate. "
+					"A minted ggx substrate also gets `fresnel_mode schlick_f0` and an `rs` bound to a 0.04 "
+					"dielectric-F0 painter this call mints too, because `rs` resolves BY NAME and an unset "
+					"one is the BLACK `none` painter under conductor Fresnel -- i.e. no highlight at all, "
+					"the single most likely way to hand-author a silent black satin. For the anisotropic "
+					"presets it also mints a `weave_rotation` scalar_painter at a constant 0: a no-op "
+					"today, but the SLOT is then wired, so making the twill wale or the satin float "
+					"direction follow the yarn (including across a seam) is one propose_patch. "
+					"`sheen_color` and `sheen_roughness` are left unwritten on purpose so the chunk seeds "
+					"them from the same preset table. THE ORIGINAL CHUNK IS NEVER EDITED -- but after a "
+					"mint NOTHING REFERENCES IT ANY MORE (every bound object moved to the wrapper), which "
+					"the result reports as `originalNowUnreferenced`; when the base already matches the "
+					"preset's class it does the pure wrap instead and says so. ONE headVersion bump, ONE "
+					"undo step. Pass NO ARGUMENTS to take the most prominent convertible material and infer "
+					"the fabric from the object's own name -- that is the normal way to call it. Pass "
+					"`fabric` to say which cloth, and `material` to name a different one. Pass `weft_color` "
+					"only when this call MINTS a weave_material substrate (denim/silk/satin, and only when "
+					"the bound base is not already one): `\"match\"` binds the minted substrate's "
+					"`weft_color` to the SAME painter `warp_color` just took, for a single uniform dye "
+					"across both thread families instead of the preset's own two-tone weft; or name an "
+					"existing painter chunk to bind that painter instead. It REFUSES, "
+					"changing nothing and costing only this call, when nothing qualifies; when the material "
+					"is already a `fabric_material` (or already the substrate of one); when every bound "
+					"object is PLANAR and the preset's look is a tight grazing halo that a constant normal "
+					"field cannot show (velvet/satin/silk -- cotton, linen, denim and wool read fine on a "
+					"flat); when the base cannot become an allowlisted substrate -- a dielectric, an "
+					"emissive/luminaire, a hair material, a BSSRDF/subsurface material, an existing "
+					"coated/composite stack, or a material carrying none of `reflectance`/`base_color`/`rd` "
+					"to re-home; when it collides with an `add_wetness` coat on the same material (wet "
+					"fabric is a legitimate composition, but it needs coated_material to accept a fabric "
+					"substrate, which is a separate slice); and, when `weft_color` was passed, when the "
+					"preset does not mint a weave, when the weave base was REUSED rather than minted (set "
+					"`weft_color` on that existing chunk directly instead), or when the named value is "
+					"neither `match` nor an existing painter chunk. A refusal is a real answer: read it "
+					"rather than retrying. Always pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the material to convert into cloth. Omit it to take the most prominent convertible material bound to an object -- the no-argument call is the intended one.\"},"
+						"\"fabric\":{\"type\":\"string\",\"enum\":[\"cotton\",\"denim\",\"silk\",\"satin\",\"velvet\",\"wool\",\"linen\"],\"description\":"
+						"\"Optional. Which fabric. This picks BOTH the fabric_material's own slots AND the substrate class and parameters the verb mints -- it is the one place a preset gets to configure the substrate, because this verb, unlike the chunk, can create chunks. cotton/linen/wool mint an orennayar_material (sigma 0.4 / 0.5 / 0.6); denim/silk/satin mint a weave_material -- the structured two-thread-family cloth BSDF -- carrying that fabric's own draft (denim a 3/1 twill wale, silk and satin a 5-harness satin float), because for those three the PATTERN is the fabric and a single anisotropic lobe cannot make one; velvet mints a lambertian_material and no direction at all (it is a pile, not a weave). Omit it to infer the fabric from the object's own name where that is unambiguous (denim_jacket -> denim; cushion names no fabric, so it falls back to cotton and the message SAYS so). custom is deliberately absent: it has no recommended substrate to mint.\"},"
+						"\"weft_color\":{\"type\":\"string\",\"description\":"
+						"\"Optional, and only meaningful when this call MINTS a weave_material substrate (the denim/silk/satin presets, and only when the bound base is not already one). match binds the minted substrate's weft_color to the SAME painter warp_color just took, for a single uniform dye across both thread families instead of the preset's own two-tone weft. Otherwise, name an existing painter chunk in this document to bind that painter instead. Omit it entirely to leave weft_color unwritten, so the chunk seeds it from the preset's own weft dye -- the no-argument path, unchanged. Refused, changing nothing, when the preset does not mint a weave (cotton/linen/wool/velvet); when the bound base is already a weave_material and is therefore REUSED rather than minted (set weft_color on that existing chunk directly instead); or when the named value is neither match nor an existing painter chunk.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"add_fuzz",
+					"GROW A SILHOUETTE FUZZ SHELL over a fabric -- a sparse hair_geometry/hair_material pair "
+					"added alongside a fabric_material/weave_material's own object(s), giving the silhouette "
+					"a fibrous fringe no BSDF term can produce (the fringe extends PAST the analytic edge; "
+					"measured 3.7 px extension and 14.6x more edge non-monotonicity than the bare material). "
+					"Call this the moment a fabric's edge should read as fuzzy rather than a mathematically "
+					"perfect curve: a wool throw, a felted cushion, a chenille blanket, anything whose fibre "
+					"ends should be visible at the silhouette. This ADDS chunks; it NEVER edits or rebinds "
+					"the target material or its bound objects. For EVERY object bound to the picked material "
+					"it mints a hair_geometry (`<obj>_fuzz`) grown on that object's own geometry, a "
+					"hair_material (`<obj>_fuzz_material`) whose `color` is the fabric's own dye copied "
+					"VERBATIM (name or inline literal alike, never re-resolved), and a standard_object "
+					"(`<obj>_fuzz_object`) binding the two with `parent <obj>` and no transform of its own, "
+					"so it exactly tracks the target's placement including any LATER edit to it. Density/"
+					"length/width scale with each object's own live bounding box off a tuned baseline "
+					"recipe, so `amount` looks consistent across differently-sized objects. `segments`/"
+					"`base_detail`/`frizz` stay at the tuned recipe's constants regardless of `amount`; no "
+					"comb/clump/gravity/curl is written -- the cheapest groom that measurably produces the "
+					"fringe. Pass NO ARGUMENTS to take the most prominent fabric_material/weave_material "
+					"bound to an object -- that is the normal way to call it. Pass `material` to fuzz a "
+					"named plain diffuse (orennayar_material/lambertian_material) surface instead -- a bare "
+					"call never reaches one on its own. Pass `amount` to say how dense/long. It REFUSES, "
+					"changing nothing and costing only this call, when nothing qualifies (no fabric/weave "
+					"material bound to an object, and no explicitly-named diffuse either); when a "
+					"`<obj>_fuzz`/`<obj>_fuzz_material`/`<obj>_fuzz_object` name already exists for a bound "
+					"object (an existing fuzz shell); when a bound object's own geometry cannot host a groom "
+					"(an infiniteplane_geometry, another hair_geometry, or no resolvable geometry); or when "
+					"the picked material resolves to the `silk` or `satin` fabric preset (their tight, "
+					"glossy structural sheen reads wrong with a fibrous fringe). A scene with fewer than two "
+					"non-ambient lights is NOT refused -- the message WARNS instead, because the shell mints correctly "
+					"either way and only its LOOK needs a rim/back light to glow rather than read dark. A "
+					"refusal is a real answer: read it rather than retrying. Always pass the headVersion you "
+					"last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"material\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The NAME of the fabric_material or weave_material to grow a fuzz shell over. Omit it to take the most prominent fabric_material/weave_material bound to an object -- the no-argument call is the intended one. Name a plain diffuse material (orennayar_material / lambertian_material) explicitly to fuzz it too -- a bare call never reaches one on its own.\"},"
+						"\"amount\":{\"type\":\"string\",\"enum\":[\"light\",\"medium\",\"heavy\"],\"description\":"
+						"\"Optional. How dense/long the fuzz shell is. medium (the default) reproduces the Phase 3 evaluation's own tuned recipe unscaled; light is half the density and shorter/thinner strands; heavy is double the density and longer/thicker strands. All three scale with the target object's own bounding box, so the same amount looks the same fuzz on a small object and a large one.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
+					"remove_chunks",
+					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
+					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "
+					"separate remove_chunk costs a full round-trip and a separate undo step, while one "
+					"remove_chunks call is one round-trip, ONE headVersion bump, and ONE undo step. "
+					"ALL-OR-NOTHING -- unlike insert_chunks, which applies what it can: if ANY target fails "
+					"(unknown name, ambiguous name, or still referenced from outside the batch) then NOTHING is "
+					"removed and the head is unchanged, so you can fix the one offender and resend. The result "
+					"carries applied, removed/total, and results: one entry per UNIQUE target (first-occurrence "
+					"order -- match by name, not index) whose issues localize exactly which target blocked the "
+					"batch. A chunk referenced ONLY by other chunks IN THE SAME BATCH is removable, in ANY order "
+					"-- list a painter and the material that uses it together and both go; you never need to "
+					"order the list by dependency. \"still_referenced\" is therefore reported only for referrers "
+					"OUTSIDE the batch, and suggestions NAMES them -- edit or remove those (or add them to the "
+					"batch) and retry. Duplicate names are deduped, not refused: the chunk is removed once and "
+					"note says which names you listed twice. There is NO per-target kind here -- targets are "
+					"bare names only. If a name is ambiguous, or you need the unnamed-camera case, use the "
+					"singular remove_chunk with kind for that one chunk (an ambiguous target refuses the batch "
+					"and names itself). Every other rule remove_chunk documents still applies: unnamed film and "
+					"rasterizer chunks are unremovable, there is no rename verb, and a repeatable-unnamed kind "
+					"(timeline, keyframe) is not addressable by kind here at all. Always pass the headVersion "
+					"you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"targets\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"The bare NAMES of the chunks to remove (chunk names from the document), 1 or more. Order does not matter -- intra-batch references resolve automatically.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"targets\"]}"
+				},
+				{
+					"render",
+					"Re-render the live scene headlessly and return lean statistics "
+					"(dimensions + linear per-channel means -- a stable image signature "
+					"-- plus `integrator`, the ACTIVE rasterizer's chunk keyword, e.g. "
+					"pathtracing_pel_rasterizer). Call after a successful propose_patch; "
+					"compare the channel means against the previous render to confirm "
+					"the edit changed the image. After inserting a rasterizer, check "
+					"`integrator` to confirm which one is live. "
+					"AGENT RENDERS ARE CAPPED: this verb never renders above 256px on the "
+					"long edge or above 16 samples/pixel -- an omitted width/height renders "
+					"at the scene's own aspect ratio scaled to fit that cap (never the full "
+					"authored Film resolution), and an omitted `samples` is likewise capped "
+					"whenever the scene's authored sample count exceeds 16; an explicit "
+					"width/height/samples above the cap is silently clamped, never rejected. "
+					"When either cap actually reduced this render, the result carries an "
+					"`agentRenderCap` object naming what happened (omitted entirely when "
+					"nothing was capped) -- read it, don't guess. This is a fixed property "
+					"of the agent surface, not a per-call choice: the user's own full-frame, "
+					"full-sample renders happen from the GUI, a separate path this cap does "
+					"not touch. "
+					"TO SEE THE RESULT, pass imageMaxEdge (e.g. 192) and the PNG comes back "
+					"in THIS call -- do not follow an ordinary render with a separate "
+					"read_image; that is a wasted round-trip. Call read_image only to re-read "
+					"a render you already have at a DIFFERENT size, to read an objectmap at "
+					"native size, or for representation:\"perception\". "
+					"BUILD CADENCE: while BUILDING a scene, call this after each "
+					"OBJECT GROUP you place -- not once at the end. A small look per "
+					"object or pair is what keeps placement honest; four renders "
+					"across a six-object scene is too few. Do NOT render to confirm "
+					"a parameter value took (the apply response already said so), but "
+					"DO render to judge placement, shape, or composition -- those are "
+					"visual facts no apply response can report. Any RELATIONAL claim "
+					"in the request (resting against, behind, in front of, "
+					"overlapping, breaking the horizon) has to be checked against an "
+					"actual image before you call the task done; plausible "
+					"coordinates routinely do not touch. "
+					"TOKEN ECONOMY: for modeling/placement checks use width/height 128-192 "
+					"and imageMaxEdge ~192 -- a tiny preview is enough to confirm "
+					"placement/shape/color and costs a fraction of the tokens and render "
+					"time; omitting width/height already renders at or under the 256px cap, "
+					"so there is rarely a reason to pass a SMALLER pair than that. Use "
+					"`camera` to check the scene from 2-3 DIFFERENT ANGLES without editing "
+					"the actual camera chunk -- the override is EPHEMERAL (restored after "
+					"this one render) and never touches the document, so it's the cheap way "
+					"to look at a scene from the side/above/behind before committing to a "
+					"placement. To judge ONE part's shape, pass `isolate` with that object's "
+					"name: it renders that object alone, auto-framed to fill the frame, so a "
+					"part that is only a few pixels (or in shadow, or behind something) in the "
+					"full scene becomes large enough to actually evaluate. mode:\"normals\" or "
+					"mode:\"facets\" read form best there -- surface direction and tessellation, "
+					"with no material or lighting in the way. Add `target` with the name of a part "
+					"you filed in file_build_plan (an ELEMENT name) and the same call also measures that object's "
+					"silhouette against the sketch you drew for it: it returns iou/mirroredIou plus a "
+					"[sketch | silhouette | overlay] image, rendered from the axis-aligned vantage your "
+					"sketch declared. To see how an object's material and fine detail (fur, weave, "
+					"grain, small parts) READ at full resolution from your own camera -- with its "
+					"neighbours and your lighting left in place -- pass `zoom` with its name "
+					"(nothing is hidden, unlike `isolate`). For the CHEAPEST possible orientation check (is the "
+					"geometry/camera roughly right, nothing else), set quality:\"draft\" -- "
+					"it renders through a fixed studio-preview shader that IGNORES the "
+					"scene's authored LIGHTING (a fixed synthetic studio rig stands in "
+					"for it, no shadows/GI), capped at 4 samples. It DOES shade each hit "
+					"with the material's own BSDF (colour/roughness, not just albedo) "
+					"under that fixed rig, so an expression-driven painter (including one "
+					"that queries `proximity`/`occlusion`) DOES run under draft -- it does "
+					"NOT show emission, transmission/refraction, or subsurface scattering. "
+					"Geometry/composition/camera framing ARE representative in a draft "
+					"image, and coarse material colour/roughness CAN be judged from it; "
+					"true lighting, exposure, and colour balance are NOT -- never "
+					"judge those from a draft, and check the result's `renderMode` field "
+					"(not `integrator`, which never changes with quality) to confirm which "
+					"pipeline actually ran. "
+					"quality:\"production\" (the default) is the fullest fidelity this verb "
+					"ever gives you -- geometry/composition/camera/materials/lighting/colour "
+					"are all real, just capped at 256px/16spp as described above; use it for "
+					"the FINAL verification once you're confident the edit is right, and for "
+					"ANY judgement of materials/lighting/exposure/colour. A full-resolution, "
+					"full-authored-sample-count render is a GUI action, not something this "
+					"tool can produce -- tell the user to render from the app if that's what "
+					"they need. "
+					"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no isolate, no zoom, no mode:) "
+					"also comes back with an `inventory` block: how many objects the scene has, how "
+					"many covered at least one pixel, and one line per object saying how much of the "
+					"frame it covers and where it is -- in the frame for the ones that appeared, and "
+					"in the world plus which way it lies (behind the camera, off-frame left, "
+					"overlapping the frame but covering nothing, ...) for the ones that did not. It "
+					"is measured in a small one-ray-per-pixel identity pass through this render's "
+					"camera, whose dimensions the block states. Read it before concluding anything "
+					"about an empty-looking frame: an object that covered no pixels is still there, "
+					"and the block says where.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"samples\":{\"type\":\"number\",\"description\":"
+						"\"Optional sample-count override, CLAMPED to [1,16] (an agent-surface cap -- see this tool's own description). Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored -- this also applies when the CAP itself could not be applied (no `samples` given, but the scene's authored count exceeds 16 and the rasterizer doesn't support the override): the message says so plainly rather than silently rendering at the higher count. Omit this and the render still runs at 16spp or less -- if the scene's own authored sample count is under 16, that count is used unchanged; if it's higher, it's capped to 16 and `effectiveSamples`/the result's `agentRenderCap.samplesCapped` report the cap honestly. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
+						"\"width\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT preview width in pixels, clamped to [16,256] (an agent-surface cap -- see this tool's own description). Must be paired with height -- if only one of width/height is given, NEITHER is applied, not rejected. Omitting BOTH (the common case) does NOT mean 'the scene's full authored resolution' -- it renders at the scene's own aspect ratio, scaled so the long edge is 256px; check previewWidth/previewHeight (or the result's `agentRenderCap.filmWidth`/`filmHeight`, present when this default actually reduced the render) to confirm the actual dims and what the uncapped size would have been. Does not touch the document.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT preview height in pixels, clamped to [16,256] (an agent-surface cap -- see this tool's own description). Must be paired with width -- see width's description for the unpaired behavior.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE render only -- captured and restored automatically, never touches the document. Use to check the scene from a different angle.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" (space-separated, e.g. \\\"0 5 10\\\") -- required if camera is given. Malformed shapes (wrong token count, non-numeric component) are rejected with a clean error.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given. Same shape rule as location.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\"; defaults to the camera's current up. Same shape rule as location.\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180); defaults to the camera's current fov. 0, 180, negative, or non-finite values are rejected.\"}"
+						"},\"required\":[\"location\",\"lookat\"]},"
+						"\"quality\":{\"type\":\"string\",\"enum\":[\"draft\",\"production\"],\"description\":"
+						"\"Optional, default \\\"production\\\" (today's exact behaviour). \\\"draft\\\" renders through a wholly SEPARATE, cheap studio-preview pipeline (same fixed shader the GUI's live interactive editor uses) that IGNORES the scene's authored LIGHTING entirely (a fixed synthetic studio rig stands in for it, no shadows/GI) but DOES shade each hit with the material's own BSDF (colour/roughness, not just albedo) under that fixed rig -- so an expression-driven painter (including one that queries `proximity`/`occlusion`) DOES run under draft, and relief/bump/normal modifiers still apply; it does NOT show emission, transmission/refraction, or subsurface scattering. Geometry/composition/camera framing are representative, and coarse material colour/roughness can be judged; true lighting/exposure/colour balance are NOT. Samples are capped at 4 under draft. Check the result's `renderMode` field to see which pipeline ran; `integrator` does not change with `quality`.\"},"
+						"\"mode\":{\"type\":\"string\",\"enum\":[\"beauty\",\"objectmap\",\"normals\",\"depth\",\"facets\",\"wireframe\",\"deep_reflect\",\"direct\",\"indirect\",\"clay_lights\"],\"description\":"
+						"\"Optional, default \\\"beauty\\\". \\\"objectmap\\\" renders a flat per-object IDENTITY segmentation -- each scene object a distinct high-contrast colour, no lighting/materials -- and adds a `legend` array of {name,colorHex,pixelCount} to the result. Use it to reason about which object is where and how much of the frame each covers. Read the objectmap image at NATIVE size (do NOT pass read_image maxEdge -- downscaling box-blends the identity colours and corrupts colorHex matching). quality/samples are ignored under objectmap (one fidelity). Orthogonal to quality (objectmap = geometry identity, draft = cheap shading); check renderMode==\\\"objectmap\\\" in the result. A synthesized legend name (e.g. grid[0,1] from a `source` chunk with count_u/count_v) identifies one repetition but is NOT a CST chunk -- to EDIT it, target the instancing chunk (strip the [i,j] suffix, e.g. grid), not the instance name. \\\"normals\\\"/\\\"depth\\\"/\\\"facets\\\"/\\\"wireframe\\\" are single-pass false-colour DIAGNOSTIC modes, no legend: \\\"normals\\\" (which way do surfaces face -- world-space shading normal as RGB), \\\"depth\\\" (how far away is everything -- grayscale, near=bright, brightness normalized PER RENDER to the VISIBLE hit-distance range in that frame, auto-calibrated -- a wide shot and a close-up of the same scene use DIFFERENT brightness scales, self-calibrating within a single render call, falling back to the scene's bounding-box diagonal only for a degenerate/empty scene), \\\"facets\\\" (what does the actual tessellation look like -- headlamp-shaded GEOMETRIC normal, no smoothing), \\\"wireframe\\\" (where are the polygon edges -- triangle-mesh edges only; analytic primitives like sphere/box/SDF render as dim facet shading with no lines, which is correct, not a bug). quality/samples are ignored under all four too; check renderMode for the exact name that ran (e.g. \\\"normals\\\"). \\\"deep_reflect\\\"/\\\"direct\\\"/\\\"indirect\\\"/\\\"clay_lights\\\" are DIFFERENT: REAL production-class path-traced renders at a FIXED reduced resolution and FIXED higher sample count, not single-pass diagnostics -- \\\"deep_reflect\\\" (what do reflections and refractions resolve to -- quarter-res, 16 spp, 24 bounces; use it to check specular/glass/metal content), \\\"direct\\\" (what does direct lighting alone contribute -- half-res, 8 spp, 1 bounce; use it to check lighting placement independent of indirect bounce), \\\"indirect\\\" (beauty minus the direct/emission contribution at the camera-visible vertex, all indirect bounces intact -- half-res, 12 spp, 16 bounces; a directly-lit surface or directly-visible emitter/env background reads black, energy arriving after >=1 bounce reads normally; use it to see where bounced light actually lands), and \\\"clay_lights\\\" (full transport with every surface's reflectance replaced by a neutral mid-grey clay Lambertian, real lights/GI untouched -- half-res, 12 spp, 12 bounces; use it to check whether the LIGHTING is right independent of any surface's material). quality/samples are STILL ignored (the mode's config is fixed by the registry) -- check the result's `effectiveSamples` field for the actual spp used.\"},"
+						"\"xray\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default FALSE. Only meaningful when mode is one of the false-colour diagnostics (normals/depth/facets/wireframe) -- when true, resolves the ray THROUGH transmissive (glass-like) surfaces to the first OPAQUE hit, following a STRAIGHT LINE with no refraction bending (deliberately an x-ray, not an optics simulation), up to 16 surfaces skipped. By default the transmissive surface itself is shown; pass xray:true to inspect opaque geometry underneath or inside it. If no opaque surface is ever reached, the LAST transmissive surface is shown instead of a black hole. Silently ignored under mode beauty/objectmap or a production-transport mode (deep_reflect/direct/indirect/clay_lights -- skipping glass would defeat their purpose).\"},"
+						"\"view\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of a saved viewport bookmark (a live in-app GUI session's Named Views) or, headless, a scene CAMERA name -- renders from that vantage for THIS call only, composing with every mode above. If both view and camera are supplied, view wins. PINHOLE-ONLY: the override carries pose+FOV and cannot re-type the active camera, so a view naming a thin-lens/fisheye/orthographic camera FAILS the render (ok:false) naming the unsupported type rather than silently using the active camera's optics. An unresolvable name likewise FAILS with the available-name list in message.\"},"
+						"\"zoom\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of ONE standard_object to look at CLOSE UP from the SCENE camera's own position: the camera keeps its location, aims at that object and narrows its field of view until the object fills ~85% of the frame (never wider than the scene's own fov; if the object already fills the frame the fov is kept and the result says so). Unlike `isolate`, NOTHING is hidden -- every other object, every light and the environment stay exactly as they are, so you see what a viewer of THIS scene would see of that object, occlusion included, at a size where its material and fine detail (fur, weave, grain, small parts) can actually be judged. Use it when the full frame shows an object too small to judge (a ~20-pixel cat tells you nothing about its fur). Composes with quality and mode. Mutually exclusive with `isolate`, `view` and `camera` (a clean error). Needs a pinhole active camera. On success (ok:true) the result adds a `zoom` object {object, eye, fovDegrees, sceneFovDegrees, keptSceneFov, coverage?, fitBasis}; `coverage` is the fraction of the frame covered by the projected bounds of the object's surface points (an UPPER BOUND on its silhouette); `fitBasis` is surface when the fit used points on the object's real surface, bbox when it fell back to the bounding box. An unknown name, a generator name covering several instances, or a CSG operand FAILS the render (ok:false) with the available names in message. A zoom render carries no inventory, anchor, sceneTarget or tonal fact (its camera is not the scene camera's full frame). Zoom also FAILS (ok:false, no zoom block) when the object is NOT IN VIEW of the scene camera (behind it, or its surface centre more than ~10% past the frame edge -- use isolate or camera for those), when any part of its surface lies on or behind the plane through the camera (the camera is inside or beside it, e.g. a floor or room around the camera), or when its extent is degenerate or unbounded.\"},"
+						"\"isolate\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of ONE standard_object to render BY ITSELF, with the camera automatically framed on its surface (a three-quarter view filling the frame). Every other object is hidden for this one render -- it is hit by no camera, bounce, or shadow ray -- and the document is untouched. Use it to actually LOOK AT a part you just built when it is small, dark, or occluded in the full scene: a 20-pixel wing in a wide night shot tells you nothing about its shape. mode:\\\"normals\\\" or mode:\\\"facets\\\" read FORM best here (surface direction / tessellation, no material or lighting to confuse the read); mode:\\\"beauty\\\" still works but note that a hidden emissive object also stops lighting the scene, so a scene lit ONLY by other objects' emissive materials isolates dark -- explicit lights and the environment are unaffected. If you also pass camera or view, YOURS wins and no auto-framing happens (the result says which). On success (ok:true) the result carries an `isolate` object with the resolved name, world bbox/longest edge (omitted if the bbox turned out degenerate/unbounded), autoFramed, and bboxCoverage: the fraction of the frame covered by the projected screen bounds of points on the object's real surface (its bounding box only when it has no surface points, e.g. a CSG composite -- isolate.fitBasis says which; a camera-and-geometry calculation, not a pixel count, so identical across modes) -- an UPPER BOUND on its silhouette, not a pixel count, so it can OVERSTATE a thin or diagonal silhouette by a large factor (e.g. a wing seen edge-on); for an EXACT per-pixel count use mode:\\\"objectmap\\\" and read the legend's pixelCount instead. bboxCoverage is OMITTED (not approximated) whenever the active camera is not a pinhole, since the projected-bbox formula assumes pinhole projection; message says so when that happens. An unknown name, a generator name that covers several instances (pass one instance's full name), a CSG operand (message names the composite that consumes it), or an object with a degenerate/unbounded bbox and no camera/view of your own FAILS the render (ok:false) with the available names in message. The fit and bboxCoverage use points on the object's real surface (isolate.fitBasis = surface) or, where it has none (a CSG composite, an infinite plane), its bounding box (bbox).\"},"
+						// G3b fix-round (2026-08-10) FIX 2.  THIS text is the CANONICAL
+						// statement of the `target` contract; AgentMcpAdapter.cpp's `target`
+						// StringProp MIRRORS it, sentence for sentence, with the wording kept
+						// literally identical wherever the two surfaces' differing escape
+						// conventions allow -- so SourceHygieneTest's fact pins can be ONE
+						// substring per fact, checked against BOTH files.  This is the SECOND
+						// slice running in which the codec surface silently dropped caveats the
+						// MCP text carried (G1's bboxCoverage upper-bound disclosure was the
+						// first); three were missing here -- the canvas-vs-frame distinction for
+						// the two area fractions, and the two omitted-field conditions.  A caveat
+						// added to only ONE of these surfaces is a caveat added to NEITHER: every
+						// provider reads this one, and the MCP hosts read the other.
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of an ELEMENT in the build plan you filed with file_build_plan -- compares that element's SKETCH against what the isolated object actually renders as. REQUIRES `isolate` (you make the plan-element-to-object join yourself, here); target without isolate is rejected. When you supply no camera or view, the render uses the AXIS-ALIGNED vantage your sketch declared: front = looking along -Z (world +X right, +Y up), side = looking along -X (world -Z right, +Y up), top = looking straight down (world +X right, -Z up in frame). Your own camera or view still wins, and the result's target.vantage then reads \\\"caller-camera\\\" instead of the view name. The comparison runs one extra internal identity render at the same pose and dims, so the silhouette it measures is exact and does not depend on mode, quality, lighting or materials. On success the result carries a `target` object: {element, view, vantage, iou, mirroredIou, sketchAreaFraction, silhouetteAreaFraction, sketchAspect, silhouetteAspect?, thinnestAxisRatio?, compositeWidth, compositeHeight}. iou is intersection-over-union in [0,1] of the two silhouettes after BOTH are cropped to their own bounding box and fitted to the same 256x256 canvas -- so it measures SHAPE ONLY, not position and not size; mirroredIou is the same number with the render flipped left-right. `sketchAreaFraction`/`silhouetteAreaFraction` are each mask's filled fraction OF THAT SHARED CANVAS (not of the frame -- `isolate.bboxCoverage` is the frame measurement). `silhouetteAspect` is OMITTED when no pixel of the object landed in the frame; `thinnestAxisRatio` (the object's smallest 3D bounding-box extent over its largest -- 1.0 for a cube, near 0 for a flat plane) is OMITTED when the bounding box is unusable. These are MEASUREMENTS, not scores: nothing is gated on them and no particular value is required. The image returned with this call is a [sketch | silhouette | overlay] strip -- three 256x256 tiles: your sketch, the rendered silhouette, and both together with sketch-only in RED, silhouette-only in CYAN, overlap in WHITE and neither in BLACK. That composite REPLACES the rendered frame as this call's image (imageMaxEdge is not needed and is not used when target is given); re-render without target, or call read_image, if you want the frame itself. An unknown element name, or no filed plan at all, FAILS the render (ok:false) with the filed element names in message.\"},"
+					"\"light\":{\"type\":\"string\",\"description\":"
+						"\"Optional name of a light (or an emissive object) to render with as the ONLY active light -- every other light contributes exactly zero, an unbiased partition of the full lighting, not a dim/approximate preview of it. Valid with mode:beauty (default) and the four production-transport modes (deep_reflect/direct/indirect/clay_lights); silently ignored (honestly noted in message) under objectmap, the false-colour diagnostics (normals/depth/facets/wireframe), or quality:draft -- none of those evaluate scene lighting. An unresolvable name FAILS the render (ok:false) with the available-name list in message, same contract as an unresolvable view. Use it to check one light's contribution in isolation.\"},"
+						"\"perception\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default TRUE for agent transports. On a production beauty render, capture albedo, world-space normal, and primary-camera-hit depth alongside beauty without changing beauty pixels. Set false to save perception-specific memory when you only need beauty; OIDN may still allocate its own denoising auxiliaries. Ignored for draft/objectmap/view modes, which are already diagnostics.\"},"
+						"\"imageMaxEdge\":{\"type\":\"number\",\"description\":"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Supply it and the rendered PNG comes back INLINE in this result -- one call instead of render then read_image. The image is downscaled (box filter, aspect-preserving, never upscales) by the same code read_image uses, so the bytes are exactly what read_image with that maxEdge would have returned. Use ~192 for a modeling/placement check. Omit it when you only want the statistics -- you then get no image. NOT allowed with mode:objectmap: that call is REJECTED, because an objectmap must be read at native size -- render it without this parameter, then call read_image with no maxEdge.\"}"
+					"}}"
+				},
+				{
+					"read_image",
+					"Fetch the LAST successful render as a PNG image so you can SEE the "
+					"scene. If nothing has been rendered yet this "
+					"returns an empty png_base64 (byteLength 0) -- call render first. "
+					"DO NOT call this straight after your own render just to look at it: "
+					"pass imageMaxEdge on the render instead and the PNG arrives in that "
+					"one call. Use this verb to re-read a render you ALREADY have at a "
+					"different size without re-rendering, to read an objectmap at native "
+					"size, and for representation:\"perception\". "
+					"TOKEN ECONOMY: pass maxEdge ~192 for a modeling/placement check -- the "
+					"image is downscaled (no re-render) before being sent to you, so a "
+					"quick look costs far fewer tokens than the full-resolution image. "
+					"Omit maxEdge only for the final, full-detail look once you're done. "
+					"EXCEPTION -- objectmap: if the last render was mode:\"objectmap\", read at "
+					"NATIVE size (omit maxEdge). Downscaling box-blends the flat identity "
+					"colours and corrupts the exact-byte legend match; the ~192 economy "
+					"pattern applies to beauty/draft renders only. Set representation:\"perception\" "
+					"after a production beauty render to receive one 2x2 atlas ordered "
+					"[beauty, albedo; world normal, log depth] plus guide-prefilter, depth, exact persistent-memory metadata, and a conservative session peak bound. "
+					"If maxEdge is omitted, beauty remains native but perception is bounded to 1024.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"maxEdge\":{\"type\":\"number\",\"description\":"
+						"\"Optional long-edge bound in pixels, clamped to [16,1024]. Downscales (box filter, aspect-preserving, never upscales) the cached image before sending -- no re-render. Use ~192 for cheap modeling checks. Omission keeps beauty native and bounds perception to 1024.\"},"
+						"\"representation\":{\"type\":\"string\",\"enum\":[\"beauty\",\"perception\"],\"description\":"
+						"\"Optional, default beauty. perception returns a conventional 2x2 beauty/albedo/world-normal/log-depth atlas from the same render, with guidePrefilter and no re-render.\"}"
+					"}}"
+				},
+				{
+					"query_object_at",
+					"Identify WHICH single object is at one pixel (x,y) -- the cheap way to "
+					"answer \"what is that\" / locate ONE object before acting on it (e.g. "
+					"before a propose_patch that moves or recolors it), without paying for a "
+					"full render mode:\"objectmap\" segmentation. Returns hit:false (a NORMAL "
+					"result, not an error) when the pixel is empty background -- name is empty "
+					"in that case. width/height/camera compose EXACTLY like render's own "
+					"overrides (ephemeral, restored automatically, never touch the document) -- "
+					"use camera to aim at a spot, then query a known pixel (e.g. the image "
+					"center) to name what's there. An out-of-range x/y for the effective film "
+					"dims is refused as an error, never a silent hit:false. Works even with no "
+					"active production rasterizer -- it runs its own cheap identity render "
+					"internally.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"x\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel X coordinate, in the EFFECTIVE film dims (the width/height override below when both are given, else the scene's authored dims).\"},"
+						"\"y\":{\"type\":\"number\",\"description\":"
+						"\"Required integer pixel Y coordinate, same effective-dims rule as x.\"},"
+						"\"width\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-width override in pixels, clamped to [16,512]. Must be paired with height.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Optional TRANSIENT film-height override in pixels, clamped to [16,512]. Must be paired with width.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE query -- captured and restored automatically, never touches the document.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\".\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
+						"},\"required\":[\"location\",\"lookat\"]}"
+					"},\"required\":[\"x\",\"y\"]}"
+				},
+				// Arc 80 (2026-08-12).  THIS text is the CANONICAL statement of the
+				// scene_inventory contract; AgentMcpAdapter.cpp's entry MIRRORS it
+				// sentence for sentence, per the convention G3b's `target` block
+				// records -- a caveat added to only ONE of these surfaces is a
+				// caveat added to NEITHER.
+				{
+					"scene_inventory",
+					"Ask WHERE EVERYTHING IS: one line per object in the scene, saying how much of "
+					"the frame it covers and where it sits. Takes no arguments -- it inventories the "
+					"ACTIVE camera's view. This is the FORWARD question; query_object_at is the "
+					"inverse one (\"what is at this pixel\"), which can only answer about a spot you "
+					"already guessed, and whose \"no object at this pixel\" tells you nothing about "
+					"where anything actually is. An object that covered pixels is reported with its "
+					"pixel count, its share of the frame, and its position in the frame as fractions "
+					"from the left and from the top. An object that covered none is reported with its "
+					"world bounding-box centre and where it lies relative to the view: entirely behind "
+					"the camera, entirely off-frame (with the direction), overlapping the frame but "
+					"covering no pixels (occluded, or smaller than one pass pixel -- this does not "
+					"distinguish those), or crossing the camera plane. Positions are measured in a "
+					"small one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
+					"as 0, and the pass's dimensions are reported. An object that is part of an "
+					"assembly also carries the name of its `parent` node, and a repetition of an "
+					"instancing chunk (`grid[3,1]`) carries `instancedFrom` -- the chunk you can "
+					"actually EDIT, since a repetition is not a chunk of its own. Both are omitted "
+					"for an ordinary top-level object. Where an object lies relative to "
+					"the view is NOT computed -- and says so -- when the active camera is not a "
+					"pinhole, or the render was taken from a named view or an orientation-only camera "
+					"override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory comes back "
+					"automatically, in the same words, on every full-scene beauty render's result "
+					"under `inventory`. Returns {ok,objects,covered,passWidth,passHeight,"
+					"framePositionComputed,framePositionNote,entries,notAreaSampled,text,message}. "
+					"`notAreaSampled` is an array of {name,reason} for emissive objects this render "
+					"measured as not selected by light sampling (their emission still shows on direct "
+					"view and BSDF hits); omitted when empty. It renders "
+					"internally (one cheap identity pass), changes nothing in the document, and does "
+					"not replace the image read_image returns.",
+					"{\"type\":\"object\",\"properties\":{}}"
+				},
+				{
+					"compare_to_reference",
+					"Measure how closely the current scene's render matches a reference photo -- "
+					"the SAME RMSE objective function an image-reconstruction grader uses, handed "
+					"to you directly instead of leaving you to render-then-eyeball. Renders the "
+					"live scene at the NAMED reference's exact pixel dimensions (no width/height "
+					"override -- the comparison needs pixel-for-pixel alignment) and returns "
+					"{rmse, channelDelta:{r,g,b}, grid, worstCell, width, height, reference, "
+					"summary}. rmse = sqrt(mean((render-reference)/255)^2) over all pixels -- "
+					"lower is better, 0 is a perfect match; treat this as the primary objective to "
+					"minimize. channelDelta is the mean SIGNED per-channel difference (render minus "
+					"reference, [-1,1]) -- positive means your render runs brighter than the "
+					"reference on that channel (e.g. channelDelta.b > 0 means too blue). grid is a "
+					"3x3 ROW-MAJOR array (index 0 = top-left ... index 8 = bottom-right) of "
+					"{rmse,dr,dg,db} -- the SAME two measures broken down spatially, so you can "
+					"find WHICH region is worst (background/environment staging is the most common "
+					"weak spot) instead of guessing from one number; worstCell names that region "
+					"(e.g. \"top-right\"). QUALITY TRADEOFF: omit `samples` (the default) and the "
+					"comparison renders quality:\"draft\" -- cheap, but IGNORES the scene's "
+					"authored LIGHTING (a fixed synthetic studio rig stands in for it, with no "
+					"shadows and no GI), so a low draft-mode RMSE only confirms "
+					"geometry/composition/camera alignment, NOT true lighting/exposure/colour "
+					"match (draft DOES shade each hit with the material's own BSDF -- colour, "
+					"roughness, and any procedural/expression painter it drives, including one "
+					"that queries `proximity`/`occlusion`, still runs -- just under the fixed "
+					"rig instead of the scene's real lights). "
+					"Pass `samples` (e.g. 8-16 -- an agent-"
+					"surface cap of 16 applies here too, same as the render verb's own samples cap) "
+					"to switch to quality:\"production\" for the real, grader-equivalent reading -- recommended "
+					"workflow: iterate cheaply under the draft default while getting composition "
+					"right, then request `samples` once composition looks plausible. `visual` "
+					"(default true) also returns a [render | reference | abs-diff heatmap] "
+					"composite image; set it false once you only need the numbers. `split` "
+					"(default false) additionally returns split:{objectRmse,backgroundRmse,"
+					"objectPixelFraction,ok,note} -- an object-vs-background RMSE breakdown from "
+					"an EXTRA ephemeral mode:\"objectmap\" render of your own candidate. Reach for "
+					"it once your overall rmse plateaus: a high backgroundRmse means staging "
+					"(ground/environment/lighting) is still the biggest lever; a low backgroundRmse "
+					"with a high objectRmse means staging is DONE -- stop tuning it and spend "
+					"remaining iterations on the object's silhouette/proportions instead. Honesty "
+					"caveat: the object mask comes from YOUR candidate only (the reference PNG has "
+					"no objectmap of its own), so it answers \"on the pixels where my object is, how "
+					"wrong am I\" and \"on my background pixels, how wrong am I\" -- a badly "
+					"misplaced object still shows up (high objectRmse on the candidate's object "
+					"pixels, AND the reference's real object pixels raise backgroundRmse since your "
+					"candidate has no object there). Both figures sentinel to -1 when their bucket is "
+					"EMPTY: objectRmse is -1 when no object pixels are visible (camera pointed "
+					"away, object off-frame), backgroundRmse is -1 when registered objects cover "
+					"the ENTIRE frame. Check for >= 0 before trusting either -- -1 means \"not "
+					"measured\", NOT \"perfect match\". WARNING: without `splitObjects`, EVERY "
+					"registered object counts as OBJECT -- including a ground plane, backdrop, or "
+					"any other staging geometry you built as a real scene object -- so an unscoped "
+					"split measures \"geometry vs. environment\", not \"hero object vs. staging\" "
+					"(observed averaging 86% of the frame in the OBJECT bucket on scenes with a "
+					"modeled ground plane). Pass `splitObjects` (an array of object names) to scope "
+					"the OBJECT bucket to just your hero object -- every other pixel, including "
+					"other registered geometry, then falls into BACKGROUND instead, giving a true "
+					"hero-object-vs-staging reading. A requested name absent from the candidate's "
+					"objectmap legend is dropped from the mask (not a hard failure) and surfaced in "
+					"split.note along with the names that ARE available, so a typo can't silently "
+					"shrink your mask unnoticed; if NONE of the requested names match, objectRmse "
+					"comes back -1 with a note saying so explicitly (distinct from the ordinary "
+					"\"object off-frame\" -1 case).",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"reference\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of a host-registered reference image (e.g. view1, view2, ... in prompt-attachment order). An unknown name is an error listing every registered reference.\"},"
+						"\"camera\":{\"type\":\"object\",\"description\":"
+						"\"Optional EPHEMERAL camera-pose override for this ONE comparison render -- captured and restored automatically, never touches the document.\","
+						"\"properties\":{"
+							"\"location\":{\"type\":\"string\",\"description\":\"Eye position, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"lookat\":{\"type\":\"string\",\"description\":\"Target point, a string of EXACTLY 3 finite numbers \\\"x y z\\\" -- required if camera is given.\"},"
+							"\"up\":{\"type\":\"string\",\"description\":\"Optional up vector, a string of EXACTLY 3 finite numbers \\\"x y z\\\".\"},"
+							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
+						"},\"required\":[\"location\",\"lookat\"]},"
+						"\"visual\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default true. When true, also returns a composite [render|reference|heatmap] diff image. Set false to save tokens once you only need the numeric feedback.\"},"
+						"\"samples\":{\"type\":\"number\",\"description\":"
+						"\"Optional sample-count override, clamped to [1,16] (an agent-surface cap, same as the render verb's own samples cap). Omit for a cheap quality:draft comparison (scene lighting ignored, a fixed studio rig stands in; materials ARE shaded under it); supply for a real quality:production RMSE reading -- see the tool description's quality tradeoff. When a requested value above 16 is clamped, the result carries an `agentRenderCap` object naming the cap.\"},"
+						"\"split\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default false. Returns an object-vs-background RMSE breakdown (one extra objectmap render) -- see the tool description's split paragraph.\"},"
+						"\"splitObjects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":"
+						"\"Optional array of object names, only meaningful alongside split:true. Scopes the OBJECT bucket to ONLY the named registered object(s) -- every other pixel, including other registered geometry like a ground plane or backdrop, falls into BACKGROUND instead. Without this, a modeled ground plane/backdrop counts as OBJECT too, inflating the OBJECT bucket -- see the tool description's WARNING. A name not found in the candidate's objectmap legend is dropped from the mask and surfaced in split.note (never a hard failure).\"}"
+					"},\"required\":[\"reference\"]}"
+				},
+				{
+					"file_build_plan",
+					"File the build plan for the scene you are building: one entry per ELEMENT, each broken "
+					"into named PIECES, each naming how that element will be constructed AND carrying a 2D "
+					"outline sketch of it. On a "
+					"session that has not filed one, EVERY call "
+					"that creates geometry (insert_chunk/insert_chunks carrying a geometry chunk, "
+					"insert_geometry_scaffold, replace_geometry_scaffold) is refused and names this "
+					"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
+					"intercepting for the rest of the session. `pieces` is REQUIRED per element: at "
+					"least one name, in your own words; any names are accepted and nothing checks them. "
+					"`construction` is REQUIRED per element: an ARRAY of one or two methods (a single "
+					"method may also be written as a plain string, e.g. \"lathe\" instead of "
+					"[\"lathe\"] -- both are accepted). Name TWO when the element genuinely needs two, "
+					"e.g. [\"lathe\",\"sweep\"] for a copper still whose pot is a solid of revolution "
+					"and whose condenser is a coiled tube: you are then given the grammar and a worked "
+					"example for BOTH, and hand-approximating one of them is what naming only one "
+					"leads to. At most 2 per element and no repeats -- each method you name adds its "
+					"own grammar to what the builder reads, and an element needing three methods is "
+					"two elements. Every entry "
+					"must be one of exactly: \"primitive\" (a single built-in shape chunk -- balls, "
+					"crates, poles, rings; the blockout default), \"csg\" (a csg_object or an "
+					"sdf_geometry combining shapes with boolean ops -- union/subtract/intersect: drilled "
+					"bores, clipped tapers, lenses), \"sweep\" (a sweep_geometry profile swept along a "
+					"path -- tentacles, stems, handles; taper and closed loops), \"lathe\" (a "
+					"lathe_geometry: an open `profile_point <r> <h>` silhouette spun about an axis -- "
+					"vases, bottles, goblets, turned legs, finials, any solid of revolution), \"chain\" "
+					"(a skeleton_geometry joint graph, or sdf_geometry parts blended with smin, into "
+					"one continuous form -- creature bodies, limbs, spines, necks, vessel bodies; a "
+					"chunk mixing smin AND booleans is \"chain\" -- the blend characterises the form, "
+					"booleans are trim), \"displaced\" (a "
+					"displaced_geometry driven by a painter -- terrain, bark, rock faces), \"mesh\" (a "
+					"triangle-mesh chunk -- imported "
+					"or authored assets). Only `sweep`, `chain` and `lathe` summon their chunk's schema "
+					"and a worked example into the builder prompt; every other value (`primitive`, "
+					"`csg`, `displaced`, `mesh`) adds nothing beyond the always-present basics and "
+					"costs one of the two method slots -- declare those alone for a simple element, "
+					"never beside a richer method; a creature is typically `chain` + `sweep`. "
+					"`outline` is REQUIRED per element: a closed 2D polygon of at "
+					"least 3 \"x y\" "
+					"points separated by semicolons, in any units you like (it is scaled to fit its own "
+					"bounding box). Any shape is accepted, a rough blob included. Each outline is drawn "
+					"into a 256x256 silhouette and returned to you as one tiled image alongside its point "
+					"count, filled-area fraction and aspect ratio, so you can see what you sketched. Any "
+					"construction answer is accepted, including \"primitive\" for every element. The plan is "
+					"NOT binding: declaring one construction and then authoring a different chunk kind is "
+					"allowed and is never refused, and no piece has to become a chunk. "
+					"FILING STARTS THE BUILD: the session enters the PIECES phase with the FIRST element "
+					"active, every chunk you create while an element is active is recorded against it, "
+					"finish_element closes it (reporting what was recorded and returning an isolate render "
+					"of it) and makes the next element active, and after the last one the session enters "
+					"the COMPOSE phase for arrangement, lighting and camera. An edit aimed at a chunk "
+					"recorded against a DIFFERENT element is refused (up to 3 times, then the phase rules "
+					"stop intercepting); chunks with no element recorded against them, and light, camera, "
+					"film, rasterizer, rasterizer-output, material and painter chunks, are editable in "
+					"every phase. "
+					"Filing does not change the document -- no chunk, no "
+					"head version, no undo step. Returns {filed,replacedPreviousPlan,elementCount,elements:"
+					"[{element,pieces,construction,note,outline,view,pointCount,areaFraction,aspect}],phase,"
+					"activeElement,png_base64,compositeWidth,compositeHeight,message}. Calling it again "
+					"replaces the previous plan, every sketch filed with it and every chunk-to-element "
+					"record, and makes the first element of the new plan active.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"elements\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"description\":"
+						"\"Required, at least one entry -- the elements of the scene you are about to build.\","
+						"\"items\":{\"type\":\"object\",\"properties\":{"
+							"\"element\":{\"type\":\"string\",\"description\":"
+							"\"Required. The name of this element, in your own words (e.g. \\\"wizard\\\", \\\"terrain\\\").\"},"
+							"\"pieces\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":32,\"items\":{\"type\":\"string\"},\"description\":"
+							"\"Required, at least one -- the pieces this element breaks down into, in your own words (e.g. [\\\"robe\\\",\\\"hat\\\",\\\"beard\\\",\\\"staff\\\"]). Any names are accepted and nothing checks what they say. They are a declaration, not a commitment: nothing requires a chunk per piece and no piece is separately gated.\"},"
+							"\"construction\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":2,"
+							"\"items\":{\"type\":\"string\","
+							"\"enum\":[\"primitive\",\"csg\",\"sweep\",\"lathe\",\"chain\",\"displaced\",\"mesh\"]},"
+							"\"description\":"
+							"\"Required. One or two of: primitive, csg, sweep, lathe, chain, displaced, mesh -- no repeats. Name two when the element really is built two ways (e.g. [\\\"lathe\\\",\\\"sweep\\\"] for a turned vessel with a coiled pipe); you then get the grammar for both. A single method may also be sent as a plain string instead of a one-item array.\"},"
+							"\"outline\":{\"type\":\"string\",\"description\":"
+							"\"Required. A closed 2D outline of this element as semicolon-separated \\\"x y\\\" points, at least 3 of them -- e.g. \\\"0 0; 3 0.4; 4 1.6; 1.2 2.1; -0.3 1.1\\\". The last point joins back to the first automatically. Units and origin are yours; the shape is scaled to fit its own bounding box. Self-intersecting outlines are allowed (filled by the even-odd rule). Rejected only if it has fewer than 3 points, a point that is not two finite numbers, or all points on one horizontal or vertical line.\"},"
+							"\"view\":{\"type\":\"string\","
+							"\"enum\":[\"front\",\"side\",\"top\"],"
+							"\"description\":"
+							"\"Optional, default \\\"front\\\". Which axis-aligned direction this outline is drawn from.\"},"
+							"\"note\":{\"type\":\"string\",\"description\":"
+							"\"Optional free text about this element.\"}"
+						"},\"required\":[\"element\",\"pieces\",\"construction\",\"outline\"]}}"
+					"},\"required\":[\"elements\"]}"
+				},
+				{
+					"finish_element",
+					"Close the element you are working on and move to the next one. Takes no arguments -- it "
+					"closes whichever element is currently active. Returns the facts of that element: the "
+					"chunks recorded against it, which of its declared pieces have a chunk whose NAME "
+					"contains that piece name (a case-insensitive substring check on names only -- it says "
+					"nothing about what was built or how well), the phase the session is now in, and the "
+					"next active element. It also returns TWO ISOLATE RENDERS of the element side by side -- "
+					"the object recorded against it, alone in the frame and auto-framed AT CLOSE RANGE; when "
+					"several objects were recorded, the one with the most authored parts (an sdf_geometry's "
+					"part lines, say), ties going to the larger bounding box and then the name; the message "
+					"says which, and finishing again with no change to the shape shows the next one. LEFT is a DRAFT (studio-preview shading: the material's own BSDF shaded under a "
+					"crude fixed rig, so form, proportion and coarse colour are visible but there is no true "
+					"light response -- no shadows, reflection/refraction, or emission); "
+					"RIGHT is the same object's MATERIALS under a fixed studio light rig that replaces the "
+					"scene's own lighting for that render only. The message asks you to reopen_element if "
+					"detail you authored is missing or melted, and to fix the material if a surface reads as "
+					"one flat colour or something meant to be glass or membrane reads opaque. After the "
+					"LAST element the session enters the COMPOSE phase, where arrangement, lighting, "
+					"camera, materials and edits to any element's chunks are allowed and creating new "
+					"geometry is refused. Nothing is required of an element before you finish it, and "
+					"nothing is scored. It changes nothing in the document -- no chunk, no head version, no "
+					"undo step. ok:false means the call did nothing (no build plan filed, or every element "
+					"is already finished) and message says which. Returns {ok,element,phase,nextElement,"
+					"chunks,piecesNamed,piecesNotNamed,isolate,isolateCandidates,rendered,png_base64,"
+					"message}.",
+					"{\"type\":\"object\",\"properties\":{}}"
+				},
+				{
+					"reopen_element",
+					"Go back to an element you already finished, or switch to a different one. The named "
+					"element becomes active, the session returns to the PIECES phase, and chunks you create "
+					"from then on are recorded against it. Legal from any phase, including compose; it is "
+					"never refused and never counts against any refusal cap. It is the way out of the "
+					"compose phase's refusal to create new geometry. It changes nothing in the document -- no "
+					"chunk, no head version, no undo step. ok:false means the call did nothing (no build "
+					"plan filed, or that name is not in it, in which case the message lists the names that "
+					"are). Returns {ok,element,phase,previousPhase,chunks,unfinished,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"}"
+					"},\"required\":[\"element\"]}"
+				},
+				{
+					"build_element",
+					"Build the ACTIVE element in one go: this call asks your provider, in a FRESH "
+					"context that contains nothing but the scene-language grammar for the chunk kinds "
+					"involved, the pieces you declared for this element, the outline you sketched for "
+					"it, the height you ask for and a fixed local-frame contract, to construct the "
+					"whole element on its own. What comes back is split into chunks, checked, and "
+					"inserted here. It is the way the FIRST geometry for an element gets made: while "
+					"the active element has no chunk recorded against it, insert_chunk and "
+					"insert_chunks carrying a geometry chunk are refused and name this tool -- up to 3 "
+					"refusals shared with the other build-phase rules, after which they stop "
+					"intercepting. Once the element has any chunk recorded against it, authoring "
+					"geometry for it by hand is allowed and is never refused again. Only geometry "
+					"chunks are ever refused this way; materials, painters and standard_objects never "
+					"are. THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE: the contract sent to the "
+					"builder puts the element's base-centre at (0,0,0) with +Y up, facing +Z -- "
+					"place_element is what moves it into the scene afterwards. `height` is a REQUEST, "
+					"not a limit: the realised bounding box is measured and reported back to you, and "
+					"nothing is refused for missing it. EVERY CHUNK NAME MUST BEGIN with the element's "
+					"prefix (the element name lowercased, non-alphanumerics collapsed to underscores, "
+					"plus a trailing underscore -- \"wizard\" gives \"wizard_\"); a chunk whose name "
+					"does not begin with the required prefix is rejected and is NOT renamed, because "
+					"renaming would break the references between the builder's own chunks. If anything "
+					"is rejected, ONE repair retry runs automatically with the exact rejection text -- "
+					"one, then it stops, and whatever landed stays landed. Nothing is ever dropped "
+					"silently: a chunk that came back unclosed, unnamed, wrongly prefixed or rejected "
+					"by insertion is reported with its reason. Everything that lands is recorded "
+					"against the active element exactly as if you had inserted it yourself. The "
+					"element's FIRST object also mints its ROOT NODE -- a geometry-less "
+					"`standard_object` container named \"<prefix>element_root\" that every object of "
+					"this element is parented to, so the element is one subtree in the scene graph "
+					"and place_element moves it with a single transform. You may parent objects to "
+					"each other inside the element to build real internal hierarchy; a `parent` you "
+					"write yourself is never overruled. On a "
+					"provider that cannot run a separate completion this returns ok:false with a plain "
+					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
+					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}; "
+					"landed names every chunk that went in (landedKinds gives each one's kind, landedAttempts the attempt -- 1, or 2 for the repair retry -- that landed it; each rejected entry carries its attempt too), and "
+					"chunkResults details only the chunks that did not insert cleanly or carry a "
+					"notice.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
+						"\"height\":{\"type\":\"number\",\"description\":"
+						"\"Required. How tall the element should be in world units (its Y extent). Must be greater than 0. A request, not a limit -- the realised bounding box comes back in the result and nothing is refused for missing it.\"},"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the builder alongside the pieces and the outline -- anything about this element the plan does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[\"element\",\"height\"]}"
+				},
+				{
+					"place_element",
+					"Move an element into the scene: ONE local transform written to the element's "
+					"ROOT NODE -- a container object every chunk the element created is parented to "
+					"-- so an element built at the origin ends up where you want it without you "
+					"patching each object. `position` is where the element's base-centre goes; each "
+					"object's own position inside the element is scaled, rotated and then added to it "
+					"by the engine's `world = parent.world * local` composition, so the objects keep "
+					"their arrangement relative to one another. `scale` is one uniform factor or "
+					"three per-axis factors about that same origin. `orientation` is Euler degrees "
+					"about it. Rotation and scale are EXACT for every object under the root, "
+					"including objects that carry a rotation of their own and objects authored with "
+					"`quaternion` or `matrix` -- a child's transform is its LOCAL one and composes as "
+					"a matrix. The objects' own authored values are NEVER rewritten, and the "
+					"placement is ABSOLUTE: calling again with the same arguments changes nothing, so "
+					"you can re-place freely. Legal in the pieces phase and in the compose phase. The "
+					"whole placement is ONE batch, so ONE head version bump and ONE undo step. "
+					"`skipped` names any object recorded against the element that the root does not "
+					"carry (it was authored with a `parent` of its own pointing outside the element, "
+					"or it is a CSG operand, which cannot be parented). ok:false means nothing was "
+					"submitted (no build plan, an element that is not in it, or an element with no "
+					"root node -- the root is created with the element's FIRST object) and the "
+					"document is unchanged. Returns {ok,element,root,objects,"
+					"skipped:[{object,reason}],patchResults,patchesApplied,patchesRejected,"
+					"bbox:{min,max},message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"},"
+						"\"position\":{\"type\":\"string\",\"description\":"
+						// 87 step 5 (2026-08-18): this SHORT line and the fuller
+						// description below now agree that the placement is
+						// ABSOLUTE.  It used to say OFFSET, because there was no
+						// node to hold the pose and the verb had to add into
+						// every object's own position; with a root node the
+						// value is simply where the element IS.
+						"\"Required. Where the element's base-centre goes in WORLD space, as "
+						"\\\"x y z\\\". ABSOLUTE, not an offset: it is written to the element's root "
+						"node, so calling again with the same value changes nothing. Each object's own "
+						"position inside the element is scaled, rotated and then added to it.\"},"
+						"\"scale\":{\"type\":\"string\",\"description\":"
+						"\"Optional, default \\\"1\\\". ONE uniform factor (\\\"2\\\") or THREE per-axis factors (\\\"sx sy sz\\\"). Every component must be finite and greater than 0 -- a zero makes the element's composed transform singular for every object under it. Scaling is about the element's own origin.\"},"
+						"\"orientation\":{\"type\":\"string\",\"description\":"
+						"\"Optional, default \\\"0 0 0\\\". Euler degrees about the element's own origin, as \\\"ex ey ez\\\".\"}"
+					"},\"required\":[\"element\",\"position\"]}"
+				},
+				{
+					"light_scene",
+					"Design the whole scene's lighting: this call first answers WHAT IN THIS WORLD "
+					"PHYSICALLY EMITS LIGHT for this scene in one request -- the sun or sky, an opening "
+					"light arrives through, a fixture or lamp, or something that itself glows; things in "
+					"the world, never a renderer light kind -- then authors the chunks for ALL of those "
+					"sources together in one further request. Both requests run in their own separate "
+					"FRESH context that contains nothing but this scene's object inventory (every object, "
+					"its screen footprint and its world position), the camera, the scene's world bounds, "
+					"the description you imagined if you wrote one, and the lights that already exist; "
+					"the second request additionally gets the light palette with its grammar. At most 16 "
+					"sources; a longer enumeration is cut to its first 16 and the result says so. For you "
+					"this is still ONE call and ONE result: both requests run here, so your turn count "
+					"does not grow with the lighting. What comes back is split into chunks, checked, and "
+					"inserted here. THE "
+					"PALETTE LEADS WITH AREA LIGHTING and is the only entry carrying a complete worked "
+					"example. A rectangular area light is ONE chunk, rect_light, taking center, size, "
+					"facing, color and exitance. A glowing SOLID is also ONE chunk, shape_light, taking "
+					"shape (sphere, ellipsoid, box or cylinder), center, size, orientation, color and "
+					"exitance -- a closed solid emits outward in every direction, so it needs no facing. "
+					"The parser expands either into the general form, which is "
+					"what any other shape of emitter needs -- an ordinary "
+					"object wearing an emissive lambertian_luminaire_material, which is a painter plus "
+					"that material plus a geometry plus a standard_object -- and being an ordinary "
+					"object, it is rendered like one: the camera sees its surface, so it is both a "
+					"light and a thing the picture shows. Then hosek_wilkie_skylight "
+					"(a physically based analytic sun-and-sky). Then omni_light, spot_light and "
+					"directional_light with their parameters and no example -- they are zero-area "
+					"idealizations whose shadows have no penumbra, for special cases. Each request to "
+					"insert one is refused once with the facts and the alternatives, and the identical "
+					"request after that refusal is applied. shape_light, rect_light, an emissive object "
+					"and hosek_wilkie_skylight are never subject to this at all. ambient_light is "
+					"NOT offered and is REFUSED on every path that could create one, in every phase and "
+					"with the build protocol off: it contributes the same color * power at every "
+					"shading point, has no position or direction, and casts no shadow ray, so it can "
+					"produce neither a shadow nor any falloff. It is the way the FIRST "
+					"lighting for a composed scene gets made: in the COMPOSE phase, while light_scene has "
+					"not run, insert_chunk and insert_chunks carrying a light chunk are refused and name "
+					"this tool -- up to 3 refusals shared with the other build-phase rules, after which "
+					"they stop intercepting. Once light_scene has run, authoring lights by hand is allowed "
+					"and is never refused again; editing a light that already exists is never refused at "
+					"all, and lights created inside an element window in the pieces phase are not affected "
+					"by any of this. THERE IS NO NAME PREFIX -- lights are scene-global and belong to no "
+					"element -- but a name already used in the scene is rejected and NOT renamed, because "
+					"renaming would break the references between the pass's own chunks. This call only "
+					"ADDS: it never removes a light, and it will not accept a camera, a film, a rasterizer "
+					"or a shader op, nor geometry unless the same answer defines an emissive material to "
+					"put on it. If the build's answer rejects anything, ONE repair retry runs automatically "
+					"with the exact rejection text over the WHOLE build, then it stops, and whatever landed "
+					"stays landed. Nothing is "
+					"ever dropped silently. The result then reports WHAT EACH LIGHT ACTUALLY DOES: every "
+					"light, emissive object and environment in the scene is rendered ALONE at a small size "
+					"and its frame's mean luma reported, against the same frame with all of them lit. That "
+					"measurement is capped and the message says so when the cap applies; the figures do "
+					"not sum to the all-lights frame, because light transport through this renderer is not "
+					"additive. On a provider that cannot run a separate completion this returns ok:false "
+					"with a plain statement, nothing else changes, and authoring lights by hand is not "
+					"blocked. Returns {ok,provider,model,chunksExtracted,landed,"
+					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,soloableLights,"
+					"soloed,allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
+					"sourcesPlanned,sourcesReturned,sourcesTruncated,completions,areaLights,"
+					"zeroAreaLights,skyLights,otherLights,"
+					"sources:[string],"
+					"message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the lighting pass alongside the inventory and the camera -- anything about the mood or the look this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"populate_scene",
+					"Populate the scene: this call asks your provider, in a FRESH context that "
+					"contains nothing but this scene's object inventory (every object, its screen "
+					"footprint and its world position), the camera, the scene's world bounds, the "
+					"description you imagined if you wrote one, and A LIST OF THE GEOMETRIES AND "
+					"MATERIALS THIS SCENE ALREADY HAS with the objects currently using each, to place "
+					"more objects. What comes back is split into chunks, checked, and inserted here. "
+					"IT CREATES standard_object CHUNKS AND NOTHING ELSE: no geometry, no material, no "
+					"painter, no light, no camera. Each chunk must do one of two things. Either it "
+					"must name a geometry and a material THAT ALREADY EXIST, or it clones an existing "
+					"object with `source <object>` -- a clone keeps its source's geometry, material "
+					"and children, so omit `material` there, and it may add count_u / count_v and "
+					"expr(...) positions. Counts must be positive integer literals (no expr, let "
+					"names or decimals), and count_v needs count_u. The source must already exist in "
+					"the scene: not declared in the same call, not itself carrying counts, and not "
+					"given new children in the same call. A chunk may not repeat a parameter such as "
+					"count_u or parent. One chunk may make at most 256 objects, counting the source's "
+					"whole subtree, and one call at most 1024. A chunk naming an unknown geometry, "
+					"material or source is rejected with that reason, and a chunk of any other kind "
+					"is rejected too. Making new form is "
+					"build_element's job, not this one's. The prompt carries ONE worked example, built "
+					"from this scene's own geometry and material names so it is literally insertable "
+					"here. It is the way the FIRST compose-phase render gets earned: in the COMPOSE "
+					"phase, while populate_scene has not run, the first full-scene render is refused "
+					"ONCE and names this tool -- one refusal, shared with the other build-phase rules "
+					"and capped with them, after which every render proceeds whether or not this ran; "
+					"renders in the pieces phase are never refused, and neither is a render with "
+					"`isolate` or `zoom` (inspection looks at one object). A name already used in the scene is rejected and NOT renamed. If "
+					"anything is rejected, ONE repair retry runs automatically with the exact "
+					"rejection text -- one, then it stops, and whatever landed stays landed. Nothing "
+					"is ever dropped silently. The result reports which objects were created and what "
+					"geometry and material each one repeats, what was rejected and why, and the "
+					"scene's object count before and after. On a provider that cannot run a separate "
+					"completion this returns ok:false with a plain statement, nothing else changes, "
+					"and authoring standard_object chunks by hand is not blocked. A scene with no "
+					"standard_object naming both a geometry and a material has nothing to repeat, and "
+					"this returns ok:false saying so without calling the provider. Returns "
+					"{ok,provider,model,chunksExtracted,created:[{name,geometry,material}],"
+					"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,objectsBefore,"
+					"objectsAfter,message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in created, with its kind.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the population pass alongside the inventory and the camera -- anything about what this scene is that its own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"environment_scene",
+					"Author the scene's SURROUND: what fills the frame where no object is, and the "
+					"medium light travels through. This call asks your provider, in a FRESH context "
+					"that contains nothing but this scene's object inventory (every object, its screen "
+					"footprint and its world position), the camera, the scene's world bounds, the "
+					"lights that already exist, the description you imagined if you wrote one, and "
+					"WHAT ENVIRONMENT THIS SCENE ALREADY HAS, to write the environment. It is ONE "
+					"request, because there is one environment. What comes back is split into chunks, "
+					"checked, and inserted here. THE PALETTE IS TWO FAMILIES. THE DOME is a PAINTER -- "
+					"there is no environment chunk in this language -- evaluated at a u,v derived from "
+					"the ray direction, and a graded one is two colours plus an expression_function2d "
+					"ramp plus a blend_painter mixing them, while a noise painter gives cloud or foam "
+					"structure and an hdr_painter or exr_painter names an image file. THE MEDIUM is a "
+					"homogeneous_medium (absorption, scattering, and phase on one line as either "
+					"`isotropic` or `hg <g>`) or a painter_heterogeneous_medium, plus a global_medium "
+					"chunk naming it, which is how this renderer spells fog, haze, underwater depth "
+					"falloff and shafts of light. THE BINDING IS MADE FOR YOU: the LAST painter the "
+					"answer lands is bound as the scene's radiance map with the camera background on, "
+					"by a rasterizer chunk this call appends carrying every parameter the previous one "
+					"had -- so any painter written before it is an input that one is built from, and "
+					"the document ends with two rasterizer chunks of which the last is live. IT "
+					"ACCEPTS painter, function and medium chunks and NOTHING ELSE: a geometry or a "
+					"standard_object is rejected by name, because a backdrop plane or a sky dome built "
+					"as a shape is FORM and making new form is build_element's job, not this one's; a "
+					"camera, a film, a rasterizer and a shader op are rejected too; and "
+					"hosek_wilkie_skylight is rejected because it is a light chunk that installs a "
+					"dome itself and belongs to light_scene -- on a scene that already carries one, "
+					"this pass authors no dome at all and writes only the medium. It is HALF of the "
+					"way the FIRST compose-phase render gets earned: in the COMPOSE phase the first "
+					"full-scene render is refused ONCE and names whichever of populate_scene and "
+					"environment_scene have not yet run -- one refusal for the whole checklist, "
+					"shared with the other build-phase rules and capped with them, after which every "
+					"render proceeds whether or not either ran; renders in the pieces phase are never "
+					"refused, and neither is a render with `isolate` or `zoom`. A name already used in the scene "
+					"is rejected and NOT renamed. If anything is rejected, ONE repair retry runs "
+					"automatically with the exact rejection text -- one, then it stops, and whatever "
+					"landed stays landed. Nothing is ever dropped silently. The result reports what "
+					"landed, what was bound, whether the scene has a dome and a global medium before "
+					"and after, and the frame's TONAL DISTRIBUTION measured before and after -- a "
+					"mean, a spread and two percentiles of the same small internal render, compared to "
+					"nothing. On a provider that cannot run a separate completion this returns "
+					"ok:false with a plain statement, nothing else changes, and authoring painter and "
+					"medium chunks by hand is not blocked. Returns {ok,provider,model,chunksExtracted,"
+					"landed,rejected:[{name,kind,reason}],chunkResults,patchResults,retryRan,"
+					"retrySucceeded,"
+					"completions,painters,media,boundPainter,bindingApplied,bindingReason,rasterizer,"
+					"radianceMapBefore,radianceMapAfter,globalMediumBefore,globalMediumAfter,"
+					"toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},toneAfter:{...},message}. chunkResults lists only the chunks that did not insert cleanly, carry a notice, or have no name (empty on an all-clean pass); every chunk that went in is named in landed, with its kind in landedKinds.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the environment pass alongside the inventory and the camera -- anything about the place or the weather this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"frame_scene",
+					"Frame the scene: decide where the camera goes and what it looks at. This call "
+					"asks your provider, in a FRESH context that contains nothing but THE FULL "
+					"INVENTORY OF THIS SCENE -- every object, its screen footprint, where it sits in "
+					"the frame and, for the ones covering no pixels, WHY (its bounding box is behind "
+					"the camera, or projects entirely off-frame in a named direction, or crosses the "
+					"camera plane) -- plus the current camera chunk VERBATIM and its resolved pose, "
+					"the scene's world bounds, the frame's measured tone, the description you imagined "
+					"if you wrote one, and the camera palette with each kind's own parameters. It is "
+					"ONE request, because there is one camera. IT RETURNS CAMERA PARAMETERS ONLY: "
+					"exactly ONE camera chunk is accepted, a second is rejected with that reason, and "
+					"a geometry, a light, a material or a `film` chunk is rejected by name -- film "
+					"carries width, height and pixelAR, which is raster-size policy rather than "
+					"framing, and this call never changes them. If the camera it writes is the SAME "
+					"KIND the scene already has, each parameter it names is applied to that chunk as "
+					"one patch batch -- one head bump, one undo step -- and any parameter it leaves "
+					"out keeps the value it has; a DIFFERENT kind is inserted and the previous camera "
+					"chunk then removed, in that order so a failed insert can never leave the scene "
+					"with no camera. THE RESULT IS MEASURED, NOT ASSERTED: the same object-coverage "
+					"pass runs through the camera before the edit and again through the camera after "
+					"it, and the result states how many objects covered at least one pixel on each "
+					"side, naming the ones brought into the picture and the ones no longer in it. If "
+					"the new camera covers FEWER objects that is stated plainly and NOTHING is "
+					"reverted -- a closer view of fewer things is a framing decision, not an error. It "
+					"is the way the FIRST framing of a composed scene gets made: in the COMPOSE phase, "
+					"while frame_scene has not run, the first camera-authoring edit -- an insert or a "
+					"patch of a camera chunk -- is refused ONCE and names this tool; one refusal, "
+					"shared with the other build-phase rules and capped with them, after which every "
+					"camera edit proceeds whether or not this ran. Camera edits in the pieces phase "
+					"are never refused. THIS CALL ITSELF IS ORDERED, too: frame_scene frames what "
+					"the scene CONTAINS, and in the COMPOSE phase, while populate_scene has not yet "
+					"reached the provider, frame_scene is refused ONCE and names populate_scene -- "
+					"the same shared refusal, capped with the others, after which every frame_scene "
+					"call proceeds whether or not populate_scene ran. If anything is rejected, ONE "
+					"repair retry runs automatically with the exact rejection text -- one, then it "
+					"stops. Nothing is ever dropped "
+					"silently. On a provider that cannot run a separate completion this returns "
+					"ok:false with a plain statement, nothing else changes, and editing the camera by "
+					"hand is not blocked. Returns {ok,provider,model,chunksExtracted,action,"
+					"cameraKindBefore,cameraNameBefore,cameraKindAfter,cameraNameAfter,paramsApplied,"
+					"rejected:[{name,kind,reason}],patchResults,chunkResults,retryRan,retrySucceeded,"
+					"completions,objectsBefore,coveredBefore,objectsAfter,coveredAfter,"
+					"broughtIntoFrame,pushedOutOfFrame,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the framing pass alongside the inventory and the current camera -- anything about the shot you want that this scene's own state does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"imagine_scene",
+					"Imagine the finished scene before you build it: write your own visual description "
+					"of what it should look like -- subject, composition, lighting, mood, colour -- and "
+					"this call asks your provider to generate one image from exactly that text, returns "
+					"it to you, and holds it as this session's SCENE TARGET. `description` is REQUIRED "
+					"and is free text; nothing checks what it says, and no wording is preferred. Writing "
+					"the description IS the imagining -- the image is what lets you check yourself "
+					"against it afterwards. Your words are the SUBJECT; the image is requested in a "
+					"simple, flat-shaded 3D-render style so it is something this renderer can actually "
+					"approach, rather than concept art it cannot. Once a target exists, every full-frame "
+					"production render (not draft, not a mode: render, not an isolate or zoom render) also "
+					"carries a `sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
+					"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
+					"that target ABOVE your render in one picture, separated by a grey rule, in place of "
+					"the rendered frame on its own. The render half is exactly the size the frame alone "
+					"would have been, so looking at the target costs you no resolution. THERE IS NO "
+					"SCORE and there is deliberately no similarity number: comparing the two pictures is "
+					"your job, not a metric's, and nothing is gated on the target, no reproduction is "
+					"expected, and the target is a reminder of what you set out to make rather than a "
+					"specification. Calling it again replaces this session's scene target. On a provider "
+					"that does not generate images this returns ok:false with a plain statement and "
+					"nothing else changes -- no call is blocked by the absence of a target. Returns "
+					"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"description\":{\"type\":\"string\",\"description\":"
+						"\"Required. Your own words for what the finished scene should look like -- what is in it, how it is arranged, how it is lit, what it feels like. Write it as you would describe a picture to someone who will draw it.\"}"
+					"},\"required\":[\"description\"]}"
+				},
+				{
+					// Doc 90 slice R1 (2026-08-22) -- THE ITERATION RATCHET's
+					// verb.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason as file_build_plan / imagine_scene.
+					"set_render_anchor",
+					"Keep the render you are looking at as this session's ANCHOR -- the picture "
+					"every later render is shown beside. Call it the moment a render is better "
+					"than the one you have been comparing against; it takes NO arguments and pins "
+					"your MOST RECENT full-frame production render. WHY IT EXISTS: without an "
+					"anchor you only ever see the newest frame, so an edit that made the scene "
+					"worse looks exactly like one that made it better, and a long refinement pass "
+					"can walk a good scene downhill with nothing noticing. From the first "
+					"full-frame production render after you finish your last element (or, in a "
+					"session with no build plan, your first full-frame render), every such render "
+					"you ask an image of comes back as ONE picture -- the anchor ABOVE, this "
+					"render BELOW, each pane labelled with the head revision it was rendered at -- "
+					"and the result carries an `anchor` block: {anchored, established, "
+					"anchorRevision, currentRevision, composite, compositeWidth, compositeHeight}. "
+					"THERE IS NO SCORE and there is deliberately no similarity number: which of "
+					"the two pictures is better is your judgment, nothing is gated on it, and no "
+					"particular answer is expected. The render that BECAME the anchor carries no "
+					"composite -- there is nothing yet to set it beside. Draft renders, mode: "
+					"renders, isolate renders and zoom renders are never anchored and never compared, because a "
+					"difference against one of those would be a render setting rather than a "
+					"change to the scene. It changes nothing in the document -- no chunk, no head "
+					"version, no undo step -- so there is no baseHeadVersion and no conflict "
+					"outcome. Returns {ok,pinned,anchorRevision,previousAnchorRevision,message}; "
+					"ok:false means only that no full-frame production render has completed in "
+					"this session yet.",
+					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
+					// Doc 90 slice R2 (2026-08-23) -- THE WAY BACK, the other
+					// half of the ratchet.  Kept semantically identical to
+					// AgentMcpAdapter.cpp's tools/list entry for the same
+					// drift-class reason set_render_anchor above is.
+					"revert_to_revision",
+					"PUT THE WHOLE DOCUMENT BACK to what it was at an earlier head revision of this "
+					"session. Call it the moment you can see that the scene got worse -- most often "
+					"straight after a render whose anchor pane looks better than the render below "
+					"it, passing the anchor's revision. Every render and every edit result you have "
+					"received carries the head revision it belongs to; those are the numbers this "
+					"takes. WHAT IT DOES: the restore is ONE NEW EDIT producing a NEW head revision "
+					"whose contents equal the old one's. Nothing is rewound and no history is "
+					"rewritten -- the revision you are leaving stays available, so you can revert "
+					"the revert if the older scene turns out to be worse after all, and one undo in "
+					"the app undoes the restore like any other edit. It is a WHOLE-DOCUMENT "
+					"restore: everything goes back together, including chunks you added since. It "
+					"REFUSES, changing nothing, when the revision is the CURRENT head (there is "
+					"nothing to restore), is higher than the head (it does not exist yet), or is "
+					"one this session no longer holds -- it keeps the recent revisions its own "
+					"edits and renders passed through, and a refusal names the oldest one still "
+					"available. Returns {ok,applied,status,headVersion,requestedRevision,"
+					"previousRevision,oldestAvailableRevision,droppedAttributions?,"
+					"restoredAttributions?,message}; `previousRevision` is the "
+					"head you just left, which is the number to pass to undo this restore. Always "
+					"pass the headVersion you last read as baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"revision\":{\"type\":\"number\",\"description\":"
+						"\"Required. The head revision to restore the document to -- a number this session has already reported to you (a render's anchorRevision, or the headVersion.revision of an earlier edit result). Not the CURRENT head: that one is refused, because there would be nothing to restore.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"revision\"]}"
+				},
+				{
+					"ask_user",
+					"Pause and ask the user a single, SPECIFIC clarifying question when a "
+					"real ambiguity would MATERIALLY change the scene you build -- subject "
+					"identity, style/mood, or a key composition choice. Do NOT ask about "
+					"details you can decide yourself with reasonable taste (exact colours, "
+					"minor placement, secondary props) -- pick something sensible and note "
+					"the choice in your final summary instead. If the brief is already "
+					"clear, do NOT call this tool at all; asking when the answer is obvious "
+					"wastes the user's time. Budget: at most 2-3 calls per task, and prefer "
+					"ONE call carrying your single most important question over several "
+					"small ones. Prefer `options` (2-5 short choices the user can click) "
+					"over a fully open-ended question -- options are faster for the user to "
+					"answer and easier for you to act on. Returns either {\"answer\": "
+					"\"...\"} -- the text of the option the user picked (verbatim) or their "
+					"typed freeform reply -- or, when no interactive user is available to "
+					"answer (e.g. a headless eval run), {\"available\": false, \"note\": "
+					"\"...\"}. On available:false, do NOT re-ask -- make your best judgment "
+					"from the brief as given and proceed.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"question\":{\"type\":\"string\",\"description\":"
+						"\"Required. ONE specific question, phrased so a short answer resolves it (e.g. \\\"Should the mood be warm sunset or cool overcast?\\\").\"},"
+						"\"options\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"minItems\":2,\"maxItems\":5,\"description\":"
+						"\"Optional, 2-5 short strings the user can pick from with one click. Preferred over leaving the question fully open-ended -- offer options whenever the plausible answers are enumerable.\"},"
+						"\"allowFreeform\":{\"type\":\"boolean\",\"description\":"
+						"\"Optional, default true. Whether a typed answer (instead of clicking one of options) is acceptable. Set false only when options is exhaustive and a freeform reply would not make sense.\"}"
+					"},\"required\":[\"question\"]}"
+				},
+			};
+
+			const std::size_t kToolDefCount = sizeof( kToolDefs ) / sizeof( kToolDefs[0] );
+
+			//! Anthropic-native tools array: [{name,description,input_schema},...].
+			const std::string& AnthropicToolsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						out += ",\"input_schema\":";
+						out += kToolDefs[i].schemaJson ? kToolDefs[i].schemaJson
+						                               : "{\"type\":\"object\",\"properties\":{}}";
+						out += "}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
+			//! Gemini-native function declarations: [{name,description[,parameters]},...].
+			const std::string& GeminiFunctionDeclarationsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						if( kToolDefs[i].schemaJson ) {
+							out += ",\"parameters\":";
+							out += kToolDefs[i].schemaJson;
+						}
+						out += "}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
+			//! OpenAI-native tools array: [{type:"function",function:{...}},...].
+			const std::string& OpenAIToolsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"type\":\"function\",\"function\":{\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						out += ",\"parameters\":";
+						out += kToolDefs[i].schemaJson ? kToolDefs[i].schemaJson
+						                               : "{\"type\":\"object\",\"properties\":{}}";
+						out += "}}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
+			//! Responses-native tools put name/description/parameters directly
+			//! on the tool object (there is no Chat-Completions `function`
+			//! wrapper).
+			const std::string& OpenAIResponsesToolsJson()
+			{
+				static const std::string json = []() {
+					std::string out = "[";
+					for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+						if( i ) out += ",";
+						out += "{\"type\":\"function\",\"name\":";
+						JsonAppendEscapedString( out, kToolDefs[i].name );
+						out += ",\"description\":";
+						JsonAppendEscapedString( out, kToolDefs[i].description );
+						out += ",\"parameters\":";
+						out += kToolDefs[i].schemaJson ? kToolDefs[i].schemaJson
+						                               : "{\"type\":\"object\",\"properties\":{}}";
+						out += "}";
+					}
+					out += "]";
+					return out;
+				}();
+				return json;
+			}
+
+			//------------------------------------------------------------------
+			// (2) Raw-span JSON scanner.
+			//
+			// The assistant content must be echoed back BYTE-PRESERVED on
+			// later requests (thinking-block signatures are opaque and
+			// must round-trip unmodified), so we extract it as a raw byte
+			// span of the response body rather than parse + re-serialize.
+			// The keys we navigate by ("content", "candidates") never
+			// contain escapes, so a raw key comparison is exact.
+			//------------------------------------------------------------------
+
+			const std::size_t kNpos = std::string::npos;
+
+			std::size_t SkipWs( const std::string& s, std::size_t i )
+			{
+				while( i < s.size() &&
+				       ( s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' ) ) ++i;
+				return i;
+			}
+
+			//! `i` at the opening quote; returns one past the closing quote.
+			std::size_t ScanRawString( const std::string& s, std::size_t i )
+			{
+				++i;
+				while( i < s.size() ) {
+					const char c = s[i];
+					if( c == '\\' ) { i += 2; continue; }
+					if( c == '"' ) return i + 1;
+					++i;
+				}
+				return kNpos;
+			}
+
+			//! `i` at (or before, in whitespace) the first char of a JSON
+			//! value; returns one past its end.  Balanced-bracket walk that
+			//! skips strings; kNpos on malformation.
+			std::size_t ScanRawValue( const std::string& s, std::size_t i )
+			{
+				i = SkipWs( s, i );
+				if( i >= s.size() ) return kNpos;
+				const char c = s[i];
+				if( c == '"' ) return ScanRawString( s, i );
+				if( c == '{' || c == '[' ) {
+					int depth = 0;
+					while( i < s.size() ) {
+						const char d = s[i];
+						if( d == '"' ) {
+							i = ScanRawString( s, i );
+							if( i == kNpos ) return kNpos;
+							continue;
+						}
+						if( d == '{' || d == '[' ) ++depth;
+						else if( d == '}' || d == ']' ) {
+							--depth;
+							if( depth == 0 ) return i + 1;
+						}
+						++i;
+					}
+					return kNpos;
+				}
+				// number / true / false / null: scan to a structural delimiter
+				std::size_t j = i;
+				while( j < s.size() && s[j] != ',' && s[j] != '}' && s[j] != ']' &&
+				       s[j] != ' ' && s[j] != '\t' && s[j] != '\n' && s[j] != '\r' ) ++j;
+				return ( j > i ) ? j : kNpos;
+			}
+
+			//! Find member `key` of the object starting at `objBegin`
+			//! (whitespace allowed before the '{') and return the raw span
+			//! of its value.  LAST match wins, deliberately matching
+			//! JsonValue::find's last-set-wins rule -- so on a hostile
+			//! body that repeats a key, the parsed view we act on and the
+			//! raw span we echo back are the SAME value.
+			bool RawObjectMember( const std::string& s, std::size_t objBegin, const char* key,
+			                      std::size_t& valBegin, std::size_t& valEnd )
+			{
+				std::size_t i = SkipWs( s, objBegin );
+				if( i >= s.size() || s[i] != '{' ) return false;
+				++i;
+				const std::size_t keyLen = std::strlen( key );
+				bool found = false;
+				while( true ) {
+					i = SkipWs( s, i );
+					if( i >= s.size() ) return false;
+					if( s[i] == '}' ) return found;
+					if( s[i] != '"' ) return false;
+					const std::size_t keyBegin = i + 1;
+					const std::size_t afterKey = ScanRawString( s, i );
+					if( afterKey == kNpos ) return false;
+					const std::size_t rawKeyLen = ( afterKey - 1 ) - keyBegin;
+					const bool match = ( rawKeyLen == keyLen ) &&
+					                   ( s.compare( keyBegin, keyLen, key ) == 0 );
+					i = SkipWs( s, afterKey );
+					if( i >= s.size() || s[i] != ':' ) return false;
+					++i;
+					i = SkipWs( s, i );
+					const std::size_t vEnd = ScanRawValue( s, i );
+					if( vEnd == kNpos ) return false;
+					if( match ) { valBegin = i; valEnd = vEnd; found = true; }
+					i = SkipWs( s, vEnd );
+					if( i < s.size() && s[i] == ',' ) { ++i; continue; }
+					if( i < s.size() && s[i] == '}' ) return found;
+					return false;
+				}
+			}
+
+			//! Raw span of element `index` of the array starting at `arrBegin`.
+			bool RawArrayElement( const std::string& s, std::size_t arrBegin, std::size_t index,
+			                      std::size_t& valBegin, std::size_t& valEnd )
+			{
+				std::size_t i = SkipWs( s, arrBegin );
+				if( i >= s.size() || s[i] != '[' ) return false;
+				++i;
+				std::size_t n = 0;
+				while( true ) {
+					i = SkipWs( s, i );
+					if( i >= s.size() || s[i] == ']' ) return false;
+					const std::size_t vEnd = ScanRawValue( s, i );
+					if( vEnd == kNpos ) return false;
+					if( n == index ) { valBegin = i; valEnd = vEnd; return true; }
+					++n;
+					i = SkipWs( s, vEnd );
+					if( i < s.size() && s[i] == ',' ) { ++i; continue; }
+					return false;
+				}
+			}
+
+			//------------------------------------------------------------------
+			// Shared response/result helpers.
+			//------------------------------------------------------------------
+
+			//! Output-token budget for Anthropic requests.  Adaptive
+			//! thinking on claude-sonnet-5 (the default model) counts
+			//! against max_tokens, and tool results routinely carry whole
+			//! scene documents into context -- 8192 was realistically
+			//! exhaustible mid-reply.  16000 keeps the cap a safety net
+			//! rather than a limit the loop actually hits.
+			const int kAnthropicMaxTokens = 16000;
+
+			//! Output-token budget for OpenAI Chat Completions.  Mirrors
+			//! Anthropic's headroom: tool results can carry whole scene docs,
+			//! and gpt-5.5 reasoning/output may otherwise hit too small a cap.
+			const int kOpenAIMaxCompletionTokens = 16000;
+
+			//! Strip every control character (< 0x20 -- CR, LF, TAB, ...)
+			//! from a caller-supplied string before splicing it into an
+			//! HTTP header VALUE, so a pasted API key carrying a stray
+			//! newline cannot smuggle extra headers into the request
+			//! (header-injection defense; a stripped key simply fails
+			//! auth, which is the honest outcome).
+			std::string SanitizeHeaderValue( const std::string& v )
+			{
+				std::string out;
+				out.reserve( v.size() );
+				for( std::size_t i = 0; i < v.size(); ++i ) {
+					const unsigned char c = static_cast<unsigned char>( v[i] );
+					if( c >= 0x20 ) out += v[i];
+				}
+				return out;
+			}
+
+			//! Percent-escape any modelId character outside [A-Za-z0-9._-]
+			//! before splicing it into a URL path segment, so a hostile or
+			//! mistyped model id cannot alter the request path or smuggle
+			//! query parameters.
+			std::string SanitizeModelIdForUrl( const std::string& modelId )
+			{
+				static const char* const kHex = "0123456789ABCDEF";
+				std::string out;
+				out.reserve( modelId.size() );
+				for( std::size_t i = 0; i < modelId.size(); ++i ) {
+					const char c = modelId[i];
+					const bool ok = ( c >= 'A' && c <= 'Z' ) || ( c >= 'a' && c <= 'z' ) ||
+					                ( c >= '0' && c <= '9' ) ||
+					                c == '.' || c == '_' || c == '-';
+					if( ok ) {
+						out += c;
+					}
+					else {
+						const unsigned char u = static_cast<unsigned char>( c );
+						out += '%';
+						out += kHex[( u >> 4 ) & 0xF];
+						out += kHex[u & 0xF];
+					}
+				}
+				return out;
+			}
+
+			//! Bound model-authored text quoted into an error message.
+			std::string CapSnippet( const std::string& t )
+			{
+				const std::size_t kCap = 600;
+				return t.size() <= kCap ? t : t.substr( 0, kCap ) + "...";
+			}
+
+			ChatStepResult MakeProviderError( ChatErrorKind kind, const std::string& message )
+			{
+				ChatStepResult r;
+				r.kind = ChatStepResult::Kind::ProviderError;
+				r.errorKind = kind;
+				r.errorMessage = message;
+				return r;
+			}
+
+			//! A ProviderError for a non-200 HTTP status, carrying the
+			//! provider's error.message when the body parses (providers
+			//! use the {"error":{"message":...}} shape).  The raw body is
+			//! deliberately NOT included (it may be large / arbitrary).
+			ChatStepResult MakeHttpError( const char* provider, long status, const std::string& body )
+			{
+				std::string msg;
+				JsonValue root;
+				std::string perr;
+				if( JsonParse( body, root, perr ) && root.isObject() ) {
+					const JsonValue& m = root.get( "error" ).get( "message" );
+					if( m.isString() ) msg = m.asString();
+				}
+				std::string full = std::string( provider ) + " HTTP " + std::to_string( status );
+				if( !msg.empty() ) full += ": " + msg;
+				else full += " (no parseable error message)";
+				return MakeProviderError( ChatErrorKind::Http, full );
+			}
+
+			//! The text that replaces an elided (superseded) image block or
+			//! part -- see AgentChatLoop.h "IMAGE RETENTION".
+			const char* const kImageElidedNote =
+				"[image elided -- superseded by a newer image]";
+
+			//! The text that replaces an elided user reference-image
+			//! attachment once the live-image cap is exceeded -- see
+			//! AgentChatLoop.h "USER IMAGE RETENTION".  Deliberately
+			//! distinct wording from kImageElidedNote (a different policy:
+			//! capped-oldest-first, not most-recent-only) and actionable
+			//! ("re-attach if needed") since, unlike a read_image result
+			//! the loop can always regenerate by rendering again, a user
+			//! photo is gone for good unless the user attaches it again.
+			const char* const kUserImageElidedNote =
+				"[reference image elided -- re-attach if needed]";
+
+			JsonValue MakeTextBlock( const std::string& text )
+			{
+				JsonValue b = JsonValue::MakeObject();
+				b.set( "type", JsonValue::MakeString( "text" ) );
+				b.set( "text", JsonValue::MakeString( text ) );
+				return b;
+			}
+
+			//! For a read_image result: `result` minus the png_base64 field,
+			//! plus a note that the image travels as a real image block/part.
+			//! Stripping the base64 from the textual half keeps it from being
+			//! double-sent.
+			JsonValue StripPngBase64( const JsonValue& result, const char* note )
+			{
+				JsonValue summary = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& members = result.members();
+				for( std::size_t i = 0; i < members.size(); ++i ) {
+					if( members[i].first == "png_base64" ) continue;
+					summary.set( members[i].first, members[i].second );
+				}
+				// Check-then-set: JsonValue::set APPENDS members, so blindly
+				// setting "note" would serialize a DUPLICATE key if the RPC
+				// result ever grows a note field of its own.
+				summary.set( summary.has( "note" ) ? "image_note" : "note",
+				             JsonValue::MakeString( note ) );
+				return summary;
+			}
+
+			//! True + the base64 payload iff this call is one of the
+			//! image-CAPABLE verbs and its JSON-RPC result actually carries a
+			//! non-empty png_base64 string.  compare_to_reference (visual:true),
+			//! render (imageMaxEdge:N, OR -- G3b, 2026-08-10 -- a `target`
+			//! comparison, which returns its [sketch | silhouette | overlay]
+			//! composite with or without imageMaxEdge and in place of the
+			//! rendered frame) and read_viewport all reuse read_image's
+			//! "png_base64" field name deliberately, so this ONE predicate --
+			//! and every retention/elision policy built on it -- covers all
+			//! five without a second code path.  The field test is what makes
+			//! listing render here safe: a render without imageMaxEdge has no
+			//! png_base64 and is not an image result; likewise a read_viewport
+			//! that came back available:false carries an empty png_base64 and
+			//! is correctly not counted as an image.
+			//!
+			//! read_viewport is NOT declared in kToolDefs today, so no model
+			//! is told about it -- but ToolCallToJsonRpcLine forwards whatever
+			//! name the model emits and the dispatcher answers it, so an
+			//! injected or hallucinated read_viewport really does return a PNG
+			//! into the transcript.  Listing it here is what keeps the
+			//! image-retention cap covering every PNG that can actually get in.
+			//!
+			//! G3a (2026-08-10): file_build_plan joins the set -- its result
+			//! carries the composite SKETCH PNG under the same field name.
+			//! This is purely about the IMAGE POLICIES (build the image block,
+			//! count it against the retention cap, elide it when superseded);
+			//! it says NOTHING about the E4 sequencing gate, where
+			//! file_build_plan remains neither a mutation nor a look.  The two
+			//! classifications are independent on purpose: "carries pixels" is
+			//! a transport fact, "observed the scene" is a behavioural one, and
+			//! a sketch is the model's own drawing, not an observation.  See
+			//! AgentChatLoop.cpp's IsVisualObserveToolName.
+			//!
+			//! 2026-08-11: AgentMcpAdapter.cpp's tools/call handler now routes
+			//! through the public wrapper (ChatToolResultCarriesImage) too,
+			//! rather than keeping its own hardcoded verb list -- which it had
+			//! been doing, and which HAD drifted (it omitted a plain render).
+			//! This function is now the single source of truth for "does this
+			//! result carry an image" across all three transports.
+			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
+			{
+				if( ( call.name != "read_image" && call.name != "compare_to_reference"
+				      && call.name != "render" && call.name != "read_viewport"
+				      && call.name != "file_build_plan"
+				      // S1 (2026-08-11): finish_element's result carries the
+				      // element's ISOLATE RENDER under the same field name.
+				      // Unlike the sketch echo and the imagined target, these
+				      // ARE scene pixels -- which is why finish_element is also
+				      // on AgentChatLoop.cpp's IsVisualObserveToolName, the one
+				      // place where the two classifications coincide.
+				      && call.name != "finish_element"
+				      // Arc 77 Phase 2 (2026-08-11): imagine_scene's result carries
+				      // the generated scene target under the same `png_base64`
+				      // field name every other image-bearing verb uses.  `render`
+				      // is ALREADY on this list, so the whole-scene comparison
+				      // composite needs no entry of its own -- verified rather
+				      // than assumed: this predicate keys on the VERB plus a
+				      // non-empty png_base64, and AgentRpc.cpp's render handler
+				      // writes the composite into exactly that field.
+				      && call.name != "imagine_scene" )
+				    || !result.isObject() ) return false;
+				const JsonValue* b64 = result.find( "png_base64" );
+				if( !b64 || !b64->isString() || b64->asString().empty() ) return false;
+				outB64 = b64->asString();
+				return true;
+			}
+
+			//! Rewrite the attach note inside a StripPngBase64-produced
+			//! textual summary so an elided image is not described as
+			//! "attached" (contradictory context for the model).  The
+			//! summary is LOOP-OWNED JSON (StripPngBase64 wrote it), so
+			//! parse + rewrite is legal.  Prefers "image_note" -- the key
+			//! StripPngBase64 falls back to when the RPC result already
+			//! owned a "note" of its own -- so an RPC-owned note field is
+			//! never clobbered.  Text that does not parse as an object, or
+			//! carries neither key, is returned unchanged.
+			std::string RewriteElidedSummaryText( const std::string& text )
+			{
+				JsonValue obj;
+				std::string perr;
+				if( !JsonParse( text, obj, perr ) || !obj.isObject() ) return text;
+				// INVARIANT: this prefer-image_note-else-note order matches
+				// StripPngBase64's collision fallback (which writes the attach
+				// note under "image_note" ONLY when the RPC result already
+				// owns a "note").  If an RPC result ever grows an
+				// "image_note" field of its own WITHOUT a "note", the two
+				// rules diverge (this rewrite would clobber the RPC's field)
+				// -- keep the key-choice rules in lockstep.
+				const char* key = obj.has( "image_note" ) ? "image_note"
+				                : obj.has( "note" )       ? "note"
+				                : nullptr;
+				if( !key ) return text;
+				// VALUE GATE (added with SUPERSEDED-READ RETENTION): rewrite
+				// ONLY a note this loop wrote to announce an ATTACHED image.
+				// StripPngBase64's three attach notes all read "... is attached
+				// as ..."; nothing else does.  Without this gate the key alone
+				// decides, and `note` is NOT exclusively ours -- read_skill's
+				// missing-skills-root advisory (AgentRpc.cpp) is an RPC-owned
+				// top-level `note`, and OpenAI's RewriteElidedImages applies
+				// this rewrite to EVERY tool message of an image-bearing entry,
+				// not just the image one.  A parallel read_skill + read_image
+				// turn therefore had its ADVISORY silently replaced by
+				// "[image elided ...]" -- a pre-existing defect this gate
+				// closes, and the same collision the superseded-read
+				// placeholder would otherwise have hit.  Idempotent: a value
+				// already rewritten to kImageElidedNote no longer matches, so a
+				// second pass skips it (it was a self-assignment before).
+				if( obj.get( key ).asString().find( "is attached as" ) == std::string::npos )
+					return text;
+				JsonValue out = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = obj.members();
+				for( std::size_t i = 0; i < mem.size(); ++i ) {
+					out.set( mem[i].first, mem[i].first == key
+					         ? JsonValue::MakeString( kImageElidedNote )
+					         : mem[i].second );
+				}
+				return JsonSerialize( out );
+			}
+
+			JsonValue MakeOpenAIImageUrlBlock( const std::string& mimeType,
+			                                   const std::string& b64 )
+			{
+				JsonValue imageUrl = JsonValue::MakeObject();
+				imageUrl.set( "url", JsonValue::MakeString(
+					"data:" + mimeType + ";base64," + b64 ) );
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "image_url" ) );
+				block.set( "image_url", imageUrl );
+				return block;
+			}
+
+			JsonValue MakeOpenAITextContentBlock( const std::string& text )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "text" ) );
+				block.set( "text", JsonValue::MakeString( text ) );
+				return block;
+			}
+
+			JsonValue MakeOpenAIResponsesImageBlock( const std::string& mimeType,
+			                                         const std::string& b64 )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_image" ) );
+				block.set( "image_url", JsonValue::MakeString(
+					"data:" + mimeType + ";base64," + b64 ) );
+				return block;
+			}
+
+			JsonValue MakeOpenAIResponsesTextBlock( const std::string& text )
+			{
+				JsonValue block = JsonValue::MakeObject();
+				block.set( "type", JsonValue::MakeString( "input_text" ) );
+				block.set( "text", JsonValue::MakeString( text ) );
+				return block;
+			}
+
+			//! True when `text` is empty or contains only ASCII whitespace --
+			//! nothing a user could read.  Mirrors AgentChatLoop's user-side
+			//! IsBlank (kept local: the codec is a separate TU).
+			bool ChatContentIsBlank( const std::string& text )
+			{
+				for( std::size_t i = 0; i < text.size(); ++i ) {
+					const char c = text[i];
+					if( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) return false;
+				}
+				return true;
+			}
+
+			std::string JsonObjectContentToText( const JsonValue& content )
+			{
+				if( content.isString() ) return content.asString();
+				if( !content.isArray() ) return std::string();
+				std::string out;
+				for( std::size_t i = 0; i < content.size(); ++i ) {
+					const JsonValue& b = content.at( i );
+					if( b.get( "type" ).asString() == "text" )
+						out += b.get( "text" ).asString();
+				}
+				return out;
+			}
+		}
+
+		bool ChatToolResultCarriesImage( const ChatToolCall& call,
+		                                 const std::string& rawJsonRpcResponseLine )
+		{
+			// Same predicate the pack paths apply: a parseable JSON-RPC
+			// SUCCESS envelope (an error envelope never packs an image)
+			// whose result is a read_image payload with non-empty
+			// png_base64.
+			JsonValue env;
+			std::string perr;
+			if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return false;
+			if( env.find( "error" ) ) return false;
+			std::string b64;
+			return IsImageResult( call, env.get( "result" ), b64 );
+		}
+
+		std::string ChatToolResultSupersessionKey( const ChatToolCall& call,
+		                                           const std::string& rawJsonRpcResponseLine )
+		{
+			// THE ALLOWLIST.  See the header for the four admission properties
+			// and, per excluded verb, the property it fails.  Because every
+			// listed verb is ARGUMENT-INDEPENDENT (property 3), the key is the
+			// verb name itself -- `call.argsJson` is deliberately NOT
+			// consulted, which is why a model that sends stray params to
+			// read_document still gets correct supersession.
+			static const char* const kSupersedableVerbs[] = { "read_document", "list_proposals" };
+
+			// THE ONE ARGUMENT-NORMALIZING KEY (doc 91 slice L3a): a NAMED
+			// read_skill is the whole view of ONE named skill file, so a later
+			// read of the SAME name fully contains the earlier copy (property
+			// (1) holds per name) and the key is "read_skill" + the skill's
+			// name -- the argument-normalizing key function property (3) calls
+			// for.  Two DIFFERENT skills never share a key, and the INDEX form
+			// (no name; result {skills:[...]}) is never keyed.  The name comes
+			// from the RESULT (AgentSession::ReadSkill's canonical `name`) when
+			// present, else from the call's `name` argument.  Property (2) is
+			// NOT what admits it: a skill file is static, so the earlier copy
+			// is redundant rather than stale -- the cost rule doc 91 measured
+			// (three skill reads, 165 KB live to the end of a session).
+			if( call.name == "read_skill" ) {
+				JsonValue env;
+				std::string perr;
+				if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+				if( env.find( "error" ) ) return std::string();
+				const JsonValue& result = env.get( "result" );
+				if( !result.isObject() || !result.get( "markdown" ).isString() ) return std::string();
+				std::string skill = result.get( "name" ).asString();
+				if( skill.empty() ) {
+					JsonValue args;
+					if( JsonParse( call.argsJson, args, perr ) && args.isObject() )
+						skill = args.get( "name" ).asString();
+				}
+				if( skill.empty() ) return std::string();
+				return std::string( kChatReadSkillKeyPrefix ) + skill;
+			}
+
+			bool listed = false;
+			for( std::size_t i = 0; i < sizeof( kSupersedableVerbs ) / sizeof( kSupersedableVerbs[0] ); ++i )
+				if( call.name == kSupersedableVerbs[i] ) { listed = true; break; }
+			if( !listed ) return std::string();
+
+			// A result only supersedes -- and is only supersedable -- when it
+			// is a parseable JSON-RPC SUCCESS.  See the header: an errored
+			// read must never evict the last good one.
+			JsonValue env;
+			std::string perr;
+			if( !JsonParse( rawJsonRpcResponseLine, env, perr ) || !env.isObject() ) return std::string();
+			if( env.find( "error" ) ) return std::string();
+			const JsonValue* result = env.find( "result" );
+			if( !result ) return std::string();
+
+			// INFORMATIVE-RESULT GATE.  "Success" is not enough: read_document
+			// answers the NO-HEAD case with a SUCCESS carrying
+			// {document:"", hasDocument:false, headVersion:{0,0}} (AgentRpc.cpp).
+			// In the co-editing GUI the user can close the scene between two
+			// agent reads, and without this gate that empty success would
+			// supersede -- evicting the last real document and leaving the
+			// model with neither it nor a useful remedy (the placeholder's
+			// "call read_document again" would return empty too).  The MUTABLE
+			// property in the header assumes the newer view is at least as
+			// informative as the older; this is the one shape where it is not.
+			// An uninformative result is simply not in the game: it neither
+			// supersedes nor is elided (it is a few bytes, so leaving it live
+			// costs nothing).
+			if( call.name == "read_document" &&
+			    !result->get( "hasDocument" ).asBool( false ) ) return std::string();
+			return call.name;
+		}
+
+		std::string ChatSupersededResultNote( const std::string& verbName )
+		{
+			return "[" + verbName + " result elided -- superseded by a later " + verbName +
+			       " call in this conversation; call " + verbName + " again for the current state]";
+		}
+
+		std::string ChatSupersededResultNoteForKey( const std::string& supersessionKey )
+		{
+			const std::string prefix( kChatReadSkillKeyPrefix );
+			if( supersessionKey.compare( 0, prefix.size(), prefix ) == 0 ) {
+				const std::string skill = supersessionKey.substr( prefix.size() );
+				return "[read_skill \"" + skill + "\" result elided -- superseded by a later read_skill "
+				       "of the same skill in this conversation; call read_skill {\"name\":\"" + skill +
+				       "\"} again if you need it]";
+			}
+			return ChatSupersededResultNote( supersessionKey );
+		}
+
+		std::string ChatElementFinishedRetirementNote( const std::string& verbName,
+		                                               const std::string& element,
+		                                               const std::string& facts,
+		                                               const std::string& carried )
+		{
+			// IMMUTABLE FACTS ONLY (review rounds 5-6): nothing about the
+			// CURRENT session or document -- no phase, mode or edit rule, and
+			// no claim that the element HAS chunks (nothing may have landed;
+			// a later edit or undo may remove them).  The stub is never
+			// rewritten, so every sentence is either past tense about this
+			// result or a pointer to where the current state is read.  The
+			// live rule is stated where it applies: the session's own refusal
+			// names reopen_element.
+			const std::string q = "\"" + element + "\"";
+			std::string note = "[" + verbName + " result for element " + q + " elided -- retired when " + q +
+				" was finished; read_document shows the current document; finish_element / reopen_element "
+				"results list the element's chunks.";
+			if( !facts.empty() ) note += " " + facts;
+			if( !carried.empty() )
+				note += " Per-chunk outcomes that call reported: " + carried + ".";
+			return note + "]";
+		}
+
+		std::string ChatComposeSkillRetirementNote( const std::string& skillName )
+		{
+			// Past tense (review round 6): reopen_element or a new plan makes
+			// "every element is finished" false later, and the stub stays.
+			return "[read_skill \"" + skillName + "\" elided -- retired when every element of the build "
+			       "plan was finished (compose phase); call read_skill {\"name\":\"" + skillName +
+			       "\"} again if you need it]";
+		}
+
+		int ChatUserEntryLiveImageCount( const std::string& userEntryJson )
+		{
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return 0;
+
+			int count = 0;
+			// Anthropic shape: {"role":"user","content":[{"type":"image",...},...]}
+			const JsonValue& content = root.get( "content" );
+			if( content.isArray() ) {
+				for( std::size_t i = 0; i < content.size(); ++i )
+					if( content.at( i ).get( "type" ).asString() == "image" ) ++count;
+			}
+			// Gemini shape: {"role":"user","parts":[{"inlineData":{...}},...]}
+			const JsonValue& parts = root.get( "parts" );
+			if( parts.isArray() ) {
+				for( std::size_t i = 0; i < parts.size(); ++i )
+					if( parts.at( i ).get( "inlineData" ).isObject() ) ++count;
+			}
+			// OpenAI Chat/Responses shapes use image_url/input_image respectively.
+			if( root.get( "role" ).asString() == "user" && content.isArray() ) {
+				for( std::size_t i = 0; i < content.size(); ++i ) {
+					const std::string type = content.at( i ).get( "type" ).asString();
+					if( type == "image_url" || type == "input_image" ) ++count;
+				}
+			}
+			return count;
+		}
+
+		//======================================================================
+		// Shared token-usage normalization.
+		//
+		// ChatUsage's contract (AgentChatCodecs.h) is ESTABLISHED here and
+		// nowhere else: every provider's ParseUsage reads its counts through
+		// ReadTokenCount, folds (if that provider's counter is a separate
+		// summand) through FoldReasoningIntoOutput, and ends in
+		// EnforceUsageInvariant.  Keeping the three steps in one place is what
+		// makes "0 <= reasoningOutputTokens <= outputTokens" a property of the
+		// TYPE rather than a claim each branch has to re-honour by hand.
+		//======================================================================
+		namespace
+		{
+			//! Ceiling on any single parsed token count.  1e12 is ~5 orders of
+			//! magnitude above the largest count any real model can emit, is
+			//! exactly representable as a double, and leaves >7 orders of
+			//! headroom under LLONG_MAX so a fold can never overflow.
+			//!
+			//! The cap is not cosmetic.  `static_cast<long long>(d)` for a `d`
+			//! outside long long's range is UNDEFINED BEHAVIOUR (and a UBSan
+			//! trap), and a JSON number is an arbitrary-magnitude double: a
+			//! body carrying `"reasoning_tokens":1e19` reaches this code from
+			//! any provider.  So the RANGE CHECK happens in double arithmetic,
+			//! BEFORE the cast.
+			const long long kMaxTokenCount = 1000000000000LL;   // 1e12
+
+			//! Reads `container[key]` as a token count, normalizing every
+			//! shape a provider (or a gateway in front of one) can emit:
+			//!   absent / null / non-number  -> -1  (the ABSENT sentinel)
+			//!   negative                    ->  0  (garbage, never a count,
+			//!                                       and must never SUBTRACT)
+			//!   NaN                         ->  0  (fails every comparison)
+			//!   >= kMaxTokenCount           ->  kMaxTokenCount (saturate)
+			//!   otherwise                   ->  the truncated integer
+			//! `container` need not be an object: JsonValue::get on a non-object
+			//! yields null, which reads as absent.
+			long long ReadTokenCount( const JsonValue& container, const char* key )
+			{
+				const JsonValue& v = container.get( key );
+				if( !v.isNumber() ) return -1;
+				const double d = v.asNumber();
+				if( d >= static_cast<double>( kMaxTokenCount ) ) return kMaxTokenCount;
+				if( d > 0.0 ) return static_cast<long long>( d );
+				return 0;   // <= 0 and NaN both land here
+			}
+
+			//! Folds a SEPARATE-SUMMAND reasoning count into the billed total.
+			//! Both operands are <= kMaxTokenCount by construction, so the sum
+			//! cannot overflow.  A ZERO visible-output count still folds (a
+			//! turn can bill thinking and emit nothing visible).
+			//!
+			//! The ABSENT case (outputTokens < 0) is deliberately NOT handled
+			//! here: it is not fold-specific -- an INCLUSIVE provider reporting
+			//! reasoning with no output counter needs the identical answer --
+			//! so it lives once, in EnforceUsageInvariant, which every
+			//! ParseUsage runs.  Handling it in both places would leave one of
+			//! the two unreachable by any observable behaviour.
+			void FoldReasoningIntoOutput( ChatUsage& u )
+			{
+				if( u.reasoningOutputTokens <= 0 || u.outputTokens < 0 ) return;
+				u.outputTokens += u.reasoningOutputTokens;
+			}
+
+			//! The LAST statement of every ParseUsage, and the only place the
+			//! invariant is established.  It also PRESERVES the provider's own
+			//! reasoning number in `reasoningOutputTokensReported` before any
+			//! clamp can overwrite it -- the clamp is a normalization, not a
+			//! correction, and the evidence that it fired (what the body
+			//! actually claimed) is exactly what a later audit needs.
+			//!
+			//! Two cases:
+			//!   * output ABSENT (-1) while a reasoning count was REPORTED (>=
+			//!     0 -- i.e. anything but the -1 sentinel).  Reasoning is a
+			//!     SUBSET of the billed generation, so the reported count is
+			//!     itself a lower bound on that generation -- publish it
+			//!     rather than leaving an "absent" total next to a known
+			//!     subset.  The bound is taken at >= 0 rather than > 0 so the
+			//!     header's contract ("reasoningOutputTokens >= 0 implies
+			//!     outputTokens >= 0") holds LITERALLY, with no zero-shaped
+			//!     hole: `{"output_tokens_details":{"thinking_tokens":0}}` with
+			//!     no output counter used to publish output -1 beside
+			//!     reasoning 0, so `output - reasoning` read -1 -- a negative
+			//!     "visible output" from a body that contained no
+			//!     contradiction at all.  A published 0 is the same claim the
+			//!     positive case makes (the subset is a lower bound), and the
+			//!     recorder's cross-turn sums are untouched either way (they
+			//!     add only counts > 0).  This makes every provider behave
+			//!     identically in this shape (a separate-summand provider's
+			//!     fold already lands exactly here) and keeps the invariant
+			//!     unconditional: a run's reasoning total can never exceed its
+			//!     output total.
+			//!   * reasoning > output.  The body contradicts itself.  The
+			//!     BILLED TOTAL is the number a cost model must not lose, so
+			//!     the subset is clamped down to it (never the total raised to
+			//!     meet a suspect subset) and the anomaly is flagged for the
+			//!     trajectory record.
+			void EnforceUsageInvariant( ChatUsage& u )
+			{
+				// Captured BEFORE either branch can move a number: post-fold,
+				// post-normalization, pre-clamp.  On a healthy body this equals
+				// reasoningOutputTokens; on a clamped one it is the only
+				// surviving copy of what the provider actually said.
+				u.reasoningOutputTokensReported = u.reasoningOutputTokens;
+				if( u.outputTokens < 0 ) {
+					if( u.reasoningOutputTokens >= 0 ) u.outputTokens = u.reasoningOutputTokens;
+					return;
+				}
+				if( u.reasoningOutputTokens > u.outputTokens ) {
+					u.reasoningOutputTokens = u.outputTokens;
+					u.reasoningClamped = true;
+				}
+			}
+		}
+
+		//======================================================================
+		// (3) AnthropicChatCodec
+		//======================================================================
+
+		namespace
+		{
+			//! Below this many bytes of message history BuildRequest places no
+			//! rolling cache breakpoint: a separate cache entry over a few
+			//! hundred bytes cannot repay its write premium, and the static
+			//! system/tools breakpoint already covers the request's bulk.
+			const std::size_t kAnthropicMinRollingCacheBytes = 2048;
+
+			//! Returns `entryJson` with cache_control:ephemeral added to the
+			//! LAST block of its content array, or `entryJson` unchanged when
+			//! that is not safe.  Three guards:
+			//!   * role must be "user" -- those entries are loop-generated
+			//!     (user turns, packed tool results) and reparsing them is
+			//!     already established practice (RewriteElidedImages).
+			//!     Assistant entries carry the verbatim byte-preservation
+			//!     contract and are never touched.
+			//!   * the content array must be non-empty and end in an object
+			//!     that does not already carry a marker.
+			//!   * the parse must round-trip to byte-identical input, so the
+			//!     ONLY difference from `entryJson` is the inserted marker.
+			//! The marker is request metadata, not message content: an entry
+			//! marked in one request and unmarked in the next still matches
+			//! the cached prefix (this is Anthropic's documented multi-turn
+			//! pattern -- the breakpoint moves to the newest turn each time).
+			std::string MarkAnthropicEntryCacheable( const std::string& entryJson )
+			{
+				JsonValue root;
+				std::string perr;
+				if( !JsonParse( entryJson, root, perr ) || !root.isObject() ) return entryJson;
+				if( root.get( "role" ).asString() != "user" ) return entryJson;
+				const JsonValue& content = root.get( "content" );
+				if( !content.isArray() || content.size() == 0 ) return entryJson;
+				const JsonValue& last = content.at( content.size() - 1 );
+				if( !last.isObject() || last.has( "cache_control" ) ) return entryJson;
+				if( JsonSerialize( root ) != entryJson ) return entryJson;
+
+				JsonValue cc = JsonValue::MakeObject();
+				cc.set( "type", JsonValue::MakeString( "ephemeral" ) );
+				JsonValue marked = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& lm = last.members();
+				for( std::size_t i = 0; i < lm.size(); ++i ) marked.set( lm[i].first, lm[i].second );
+				marked.set( "cache_control", cc );
+
+				JsonValue newContent = JsonValue::MakeArray();
+				for( std::size_t i = 0; i + 1 < content.size(); ++i )
+					newContent.push_back( content.at( i ) );
+				newContent.push_back( marked );
+
+				JsonValue newRoot = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& rm = root.members();
+				for( std::size_t i = 0; i < rm.size(); ++i )
+					newRoot.set( rm[i].first, rm[i].first == "content" ? newContent : rm[i].second );
+				return JsonSerialize( newRoot );
+			}
+		}
+
+		const char* AnthropicChatCodec::ProviderName() const { return "anthropic"; }
+
+		const char* AnthropicChatCodec::DefaultModelId() const { return "claude-sonnet-5"; }
+
+		std::string AnthropicChatCodec::MakeUserEntry(
+			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
+		{
+			JsonValue msg = JsonValue::MakeObject();
+			msg.set( "role", JsonValue::MakeString( "user" ) );
+			JsonValue content = JsonValue::MakeArray();
+			// Images FIRST, then the caption -- see the header note on
+			// MakeUserEntry (an empty attachments vector reproduces the
+			// pre-attachment byte shape exactly: one text block, nothing
+			// else, since the loop below then simply doesn't run).
+			for( std::size_t i = 0; i < attachments.size(); ++i ) {
+				JsonValue source = JsonValue::MakeObject();
+				source.set( "type", JsonValue::MakeString( "base64" ) );
+				source.set( "media_type", JsonValue::MakeString( attachments[i].mimeType ) );
+				source.set( "data", JsonValue::MakeString( attachments[i].base64Data ) );
+				JsonValue img = JsonValue::MakeObject();
+				img.set( "type", JsonValue::MakeString( "image" ) );
+				img.set( "source", source );
+				content.push_back( img );
+			}
+			// Anthropic hard-400s an EMPTY text block -- an attachment-
+			// only message (no caption) must therefore omit the text
+			// block entirely rather than send {"type":"text","text":""}.
+			// A text-only call (the common case) is unaffected: text is
+			// non-empty by the loop's blank-message no-op contract.
+			if( !text.empty() ) content.push_back( MakeTextBlock( text ) );
+			msg.set( "content", content );
+			return JsonSerialize( msg );
+		}
+
+		std::string AnthropicChatCodec::RewriteElidedUserImages(
+			const std::string& userEntryJson, int countToElide ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// MakeUserEntry above (loop-generated), never by a provider --
+			// only assistant entries carry the byte-preservation contract.
+			if( countToElide <= 0 ) return userEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return userEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return userEntryJson;
+
+			bool changed = false;
+			int remaining = countToElide;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& b = content.at( i );
+				if( b.get( "type" ).asString() == "image" && remaining > 0 ) {
+					newContent.push_back( MakeTextBlock( kUserImageElidedNote ) );
+					--remaining;
+					changed = true;
+				}
+				else {
+					newContent.push_back( b );
+				}
+			}
+			if( !changed ) return userEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string AnthropicChatCodec::PackToolResults(
+			const std::vector<std::pair<ChatToolCall, std::string>>& results ) const
+		{
+			// ONE user message carrying one tool_result block per tool_use --
+			// Anthropic requires every tool_use of the assistant turn to be
+			// answered in the SAME following user message.
+			//
+			// IMAGE RETENTION, entry-internal half: within one flush only
+			// the LAST image-bearing result keeps a live image block --
+			// earlier ones are packed PRE-ELIDED (summary note + elision
+			// text, exactly what RewriteElidedImages would later produce)
+			// so the "one live image globally" rule holds even when one
+			// assistant turn requested read_image twice.
+			std::size_t lastImage = results.size();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				if( ChatToolResultCarriesImage( results[i].first, results[i].second ) )
+					lastImage = i;
+			}
+
+			JsonValue contentArr = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				const ChatToolCall& call = results[i].first;
+				JsonValue env;
+				std::string perr;
+				const bool parsed = JsonParse( results[i].second, env, perr ) && env.isObject();
+
+				bool isError = false;
+				JsonValue blocks = JsonValue::MakeArray();
+				if( !parsed ) {
+					isError = true;
+					blocks.push_back( MakeTextBlock( "tool transport error: the JSON-RPC response line did not parse as JSON" ) );
+				}
+				else if( const JsonValue* e = env.find( "error" ) ) {
+					// JSON-RPC error envelope -> error tool result.
+					isError = true;
+					blocks.push_back( MakeTextBlock( JsonSerialize( *e ) ) );
+				}
+				else {
+					const JsonValue& result = env.get( "result" );
+					std::string b64;
+					if( IsImageResult( call, result, b64 ) ) {
+						if( i == lastImage ) {
+							blocks.push_back( MakeTextBlock( JsonSerialize(
+								StripPngBase64( result, "the PNG is attached as an image block" ) ) ) );
+							JsonValue source = JsonValue::MakeObject();
+							source.set( "type", JsonValue::MakeString( "base64" ) );
+							source.set( "media_type", JsonValue::MakeString( "image/png" ) );
+							source.set( "data", JsonValue::MakeString( b64 ) );
+							JsonValue img = JsonValue::MakeObject();
+							img.set( "type", JsonValue::MakeString( "image" ) );
+							img.set( "source", source );
+							blocks.push_back( img );
+						}
+						else {
+							// Superseded within this very flush: pack it
+							// already elided (see the header comment above).
+							blocks.push_back( MakeTextBlock( JsonSerialize(
+								StripPngBase64( result, kImageElidedNote ) ) ) );
+							blocks.push_back( MakeTextBlock( kImageElidedNote ) );
+						}
+					}
+					else {
+						blocks.push_back( MakeTextBlock( JsonSerialize( result ) ) );
+					}
+				}
+
+				JsonValue tr = JsonValue::MakeObject();
+				tr.set( "type", JsonValue::MakeString( "tool_result" ) );
+				tr.set( "tool_use_id", JsonValue::MakeString( call.id ) );
+				tr.set( "content", blocks );
+				if( isError ) tr.set( "is_error", JsonValue::MakeBool( true ) );
+				contentArr.push_back( tr );
+			}
+
+			JsonValue msg = JsonValue::MakeObject();
+			msg.set( "role", JsonValue::MakeString( "user" ) );
+			msg.set( "content", contentArr );
+			return JsonSerialize( msg );
+		}
+
+		std::string AnthropicChatCodec::RewriteElidedImages( const std::string& packedEntryJson ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider --
+			// only assistant entries carry the byte-preservation contract.
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& tr = content.at( i );
+				const JsonValue& blocks = tr.get( "content" );
+				if( tr.get( "type" ).asString() != "tool_result" || !blocks.isArray() ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				// Swap each {type:"image",...} element for the elision text
+				// block; every other member of the tool_result (tool_use_id
+				// included) is copied through, so the rewritten entry stays
+				// wire-valid.  In an image-bearing tool_result the textual
+				// summary's attach note ("the PNG is attached as an image
+				// block") is rewritten too -- it is loop-written content
+				// (StripPngBase64 produced it) and leaving it would show
+				// the model a note contradicting the elided block.
+				bool hasImage = false;
+				for( std::size_t j = 0; j < blocks.size(); ++j )
+					if( blocks.at( j ).get( "type" ).asString() == "image" ) hasImage = true;
+				if( !hasImage ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
+				JsonValue newBlocks = JsonValue::MakeArray();
+				for( std::size_t j = 0; j < blocks.size(); ++j ) {
+					const JsonValue& b = blocks.at( j );
+					const std::string btype = b.get( "type" ).asString();
+					if( btype == "image" ) {
+						newBlocks.push_back( MakeTextBlock( kImageElidedNote ) );
+					}
+					else if( btype == "text" ) {
+						newBlocks.push_back( MakeTextBlock(
+							RewriteElidedSummaryText( b.get( "text" ).asString() ) ) );
+					}
+					else {
+						newBlocks.push_back( b );
+					}
+				}
+				JsonValue newTr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newTr.set( mem[j].first, mem[j].first == "content" ? newBlocks : mem[j].second );
+				newContent.push_back( newTr );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string AnthropicChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ,
+			const std::string& /*noteKey: Anthropic carries a plain text block*/ ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& tr = content.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || tr.get( "type" ).asString() != "tool_result" ) {
+					newContent.push_back( tr );
+					continue;
+				}
+				changed = true;
+				// Swap the whole content-block array for the single
+				// placeholder text block.  Every OTHER member of the
+				// tool_result -- crucially tool_use_id -- is copied through,
+				// so this entry still answers its assistant turn's tool_use.
+				JsonValue newBlocks = JsonValue::MakeArray();
+				newBlocks.push_back( MakeTextBlock( placeholderText ) );
+				JsonValue newTr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = tr.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newTr.set( mem[j].first, mem[j].first == "content" ? newBlocks : mem[j].second );
+				newContent.push_back( newTr );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		ChatHttpRequest AnthropicChatCodec::BuildRequest(
+			const std::string& modelId,
+			const std::string& apiKey,
+			const std::string& systemPrompt,
+			const std::vector<std::string>& rawEntries,
+			bool /*forceReasoningEffortNone*/ ) const
+		{
+			// Anthropic has no reasoning_effort field / tools-vs-effort 400
+			// -- the parameter exists only to satisfy the shared
+			// IChatProviderCodec::BuildRequest signature (see its header
+			// doc); this codec ignores it.
+			ChatHttpRequest r;
+			r.url = "https://api.anthropic.com/v1/messages";
+			// The key appears ONLY here, in the auth header -- control
+			// characters stripped so a pasted key cannot inject headers.
+			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			r.headers.push_back( std::make_pair( "x-api-key", SanitizeHeaderValue( apiKey ) ) );
+			r.headers.push_back( std::make_pair( "anthropic-version", "2023-06-01" ) );
+
+			// The body is assembled as a string so assistant entries (raw
+			// provider-native JSON) splice in VERBATIM.  No thinking config
+			// is set (omitted = adaptive on models that support it).
+			std::string body = "{\"model\":";
+			JsonAppendEscapedString( body, modelId );
+			body += ",\"max_tokens\":" + std::to_string( kAnthropicMaxTokens );
+			// Prompt caching: the system prompt + the tool definitions are a
+			// large, byte-identical prefix on EVERY request in a session (the
+			// system string is fixed and AnthropicToolsJson() is a static
+			// built once from a fixed-order table).  Mark the single system
+			// block with cache_control:ephemeral so Anthropic caches that
+			// whole prefix -- tools render before system in the cache prefix,
+			// so one breakpoint on the last (only) system block covers tools
+			// AND system together.  The growing message history is covered
+			// separately, by the rolling breakpoints below.
+			// Cache reads bill at ~0.1x input and the 5-minute TTL is
+			// refreshed by any request in the window, which a live chat turn
+			// trivially satisfies.  Only this codec needs an explicit marker:
+			// OpenAI/xAI (auto prefix caching >=1024 tokens) and Gemini
+			// (implicit caching) reuse the identical leading prefix with no
+			// client action.  An empty system prompt would be an illegal
+			// empty cacheable text block, so fall back to the plain-string
+			// form in that (never-in-practice) case.
+			if( systemPrompt.empty() ) {
+				body += ",\"system\":\"\"";
+			}
+			else {
+				body += ",\"system\":[{\"type\":\"text\",\"text\":";
+				JsonAppendEscapedString( body, systemPrompt );
+				body += ",\"cache_control\":{\"type\":\"ephemeral\"}}]";
+			}
+			body += ",\"tools\":";
+			body += AnthropicToolsJson();
+			body += ",\"messages\":[";
+			// ROLLING PROMPT-CACHE BREAKPOINTS.  The system marker above
+			// covers only the STATIC prefix; the message history grows every
+			// turn and would otherwise be re-sent uncached each time.
+			//
+			// Placement: the last content block of the TAIL entry, plus the
+			// last content block of entry n-3.  The loop appends exactly two
+			// entries between consecutive BuildRequests (assistant turn +
+			// packed tool results, or final assistant turn + the next user
+			// message), so n-3 is the position the PREVIOUS request marked --
+			// an exact-prefix read anchor that does not depend on Anthropic's
+			// backward scan to find a hit, and that still anchors a round
+			// whose two new entries carry many blocks.  The tail marker
+			// extends the cached prefix over this request's whole history so
+			// the NEXT request can read it.  Where the n-3 assumption misses
+			// (compaction dropped entries, two user turns in a row) that
+			// marker writes instead of reading; it is a strict prefix of the
+			// tail marker, so the loss is bounded by one extra cache entry.
+			//
+			// Both positions are role:"user" entries -- BuildRequest is only
+			// ever reached with a user turn or a tool-results turn last -- so
+			// MarkAnthropicEntryCacheable never reparses an assistant echo
+			// (and refuses to, if that ever changed).
+			//
+			// ELISION INTERACTION: the IMAGE RETENTION and SUPERSEDED-READ
+			// rules (AgentChatLoop.h) rewrite OLDER entries in place, i.e.
+			// inside the prefix both markers depend on, so the turn after a
+			// rewrite is a cache miss up to the tail.  No marker position
+			// avoids that: the rules can touch any entry, and the codec sees
+			// only the already-rewritten result.  It costs one re-write turn,
+			// not the feature -- both rules are convergent (an entry is
+			// elided at most once per rule), so the prefix re-stabilizes and
+			// the marker is read again on the following turn.
+			//
+			// Three breakpoints total (system + two), under the cap of four.
+			std::size_t rollingTail = rawEntries.size();
+			std::size_t rollingAnchor = rawEntries.size();
+			{
+				std::size_t historyBytes = 0;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i )
+					historyBytes += rawEntries[i].size();
+				if( !rawEntries.empty() && historyBytes >= kAnthropicMinRollingCacheBytes ) {
+					rollingTail = rawEntries.size() - 1;
+					if( rawEntries.size() >= 3 ) rollingAnchor = rawEntries.size() - 3;
+				}
+			}
+			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+				if( i ) body += ",";
+				body += ( i == rollingTail || i == rollingAnchor )
+					? MarkAnthropicEntryCacheable( rawEntries[i] )
+					: rawEntries[i];
+			}
+			body += "]}";
+			r.body = body;
+			return r;
+		}
+
+		ChatParsedResponse AnthropicChatCodec::ParseResponse(
+			long httpStatus, const std::string& rawBody ) const
+		{
+			ChatParsedResponse out;
+			if( httpStatus != 200 ) {
+				out.step = MakeHttpError( ProviderName(), httpStatus, rawBody );
+				return out;
+			}
+
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
+				out.step = MakeProviderError( ChatErrorKind::Parse,
+					"anthropic response did not parse as JSON: " + perr );
+				return out;
+			}
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic response carries no content array" );
+				return out;
+			}
+
+			std::string text;
+			// DISPLAY-LAYER ENRICHMENT (regression fix): reasoning text is a
+			// PARALLEL extraction alongside `text` -- collected here from
+			// every "thinking" content block's "thinking" field, joined by
+			// "\n\n" when the turn carries more than one.  This NEVER
+			// touches the raw echo below (assistantEntryJson splices the
+			// content array VERBATIM, signature and all); it only feeds
+			// ChatParsedResponse::reasoningText / ChatStepResult::reasoningText
+			// for display.
+			std::string reasoningText;
+			std::vector<ChatToolCall> calls;
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& block = content.at( i );
+				const std::string type = block.get( "type" ).asString();
+				if( type == "text" ) {
+					text += block.get( "text" ).asString();
+				}
+				else if( type == "thinking" ) {
+					const std::string t = block.get( "thinking" ).asString();
+					if( !t.empty() ) {
+						if( !reasoningText.empty() ) reasoningText += "\n\n";
+						reasoningText += t;
+					}
+				}
+				else if( type == "tool_use" ) {
+					ChatToolCall c;
+					c.id = block.get( "id" ).asString();
+					c.name = block.get( "name" ).asString();
+					if( c.id.empty() ) {
+						// A tool_use with no id could never be answered (the
+						// tool_result must echo tool_use_id) -- executing the
+						// rest of the turn would ship an unanswerable block,
+						// so refuse the WHOLE response instead of emitting
+						// tool_use_id:"" downstream.
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"anthropic tool_use block carries no id; refusing the turn (its result could never be matched)" );
+						return out;
+					}
+					// Duplicate ids within one turn make result matching
+					// ambiguous -- ids are the result-matching key and must
+					// be unique.  Without this gate, AddToolResult would
+					// ignore the second call as already-answered, the flush
+					// would synthesize a SECOND result for the SAME id, and
+					// the wire would carry duplicate tool_use ids answered by
+					// duplicate tool_use_id results (a permanent 400).
+					// Refuse the whole turn instead (mirrors the Gemini
+					// duplicate-functionCall-id gate).
+					for( std::size_t k = 0; k < calls.size(); ++k ) {
+						if( calls[k].id == c.id ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"anthropic response repeats tool_use id \"" + c.id +
+								"\" -- refusing the turn (results could not be matched unambiguously)" );
+							return out;
+						}
+					}
+					// RECORD-OR-REFUSE: an ABSENT "input" key is Anthropic's
+					// legal no-args tool_use shape (maps to "{}"); a PRESENT
+					// "input" that is not an object (including an explicit
+					// "input":null) must not be recorded and then executed
+					// with fabricated empty args -- refuse the WHOLE
+					// response instead (mirrors the OpenAI malformed-
+					// arguments gate below).
+					if( block.has( "input" ) ) {
+						const JsonValue& input = block.get( "input" );
+						if( !input.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"anthropic tool_use block \"" + c.name + "\" carries a non-object "
+								"\"input\" -- refusing the turn (executing it would fabricate empty args)" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( input );
+					}
+					else {
+						c.argsJson = "{}";
+					}
+					calls.push_back( c );
+				}
+				// other block kinds (e.g. server_tool_use): not displayed;
+				// the raw echo below preserves them for the provider.
+			}
+
+			// EVERY exit from here on goes through AttachReasoning: the
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so thinking
+			// blocks collected above have to be attached AFTER that assignment
+			// or they are dropped.  SIBLING of the Gemini and Responses sites
+			// (same bug pattern, same fix).  The stop_reason=="max_tokens" exit
+			// is the sharp case: extended thinking that runs into the output
+			// cap produces thinking blocks and NOTHING else, so dropping the
+			// reasoning discards the entire turn's output.
+			//
+			// The STRUCTURAL refusals ABOVE (an id-less / duplicate-id /
+			// non-object-input tool_use) deliberately stay OUTSIDE this, and
+			// that exclusion is a decision rather than an oversight: they
+			// reject a MALFORMED body mid-scan, with the content array not read
+			// to the end, so the reasoning collected so far is a partial read
+			// of a body being declined as untrustworthy.  A disposition refusal
+			// below is the opposite -- a WELL-FORMED turn the provider itself
+			// ended early -- and there the reasoning is complete and is often
+			// all the turn produced.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
+			const std::string stopReason = root.get( "stop_reason" ).asString();
+			if( stopReason == "tool_use" ) {
+				if( calls.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"anthropic stopped with stop_reason \"tool_use\" but no tool_use blocks were present" );
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::ToolCalls;
+				out.step.toolCalls = calls;
+			}
+			else if( stopReason == "max_tokens" ) {
+				// Distinct, actionable dead-end message (the reply is
+				// discarded -- transcript consistency: record nothing).
+				out.step = MakeProviderError( ChatErrorKind::MaxTokens,
+					"anthropic: the response hit the output-token cap (stop_reason max_tokens) -- "
+					"the truncated reply was discarded; try a narrower request" );
+				return AttachReasoning();
+			}
+			else if( stopReason == "refusal" ) {
+				out.step = MakeProviderError( ChatErrorKind::Refusal,
+					"anthropic: the provider declined this request (stop_reason refusal)" );
+				return AttachReasoning();
+			}
+			else if( !calls.empty() ) {
+				// WIRE-INVARIANT GATE: tool_use blocks under a non-tool_use
+				// stop_reason (a hostile or corrupted body).  Recording this
+				// turn would echo tool_use blocks the loop never pends --
+				// so no tool_result could EVER answer them and every later
+				// request would replay an unanswered tool_use (a permanent
+				// 400).  Refuse the WHOLE response; record nothing.
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic response carries tool_use blocks under stop_reason \"" + stopReason +
+					"\" -- refusing the turn (its calls would be recorded but never answerable)" );
+				return AttachReasoning();
+			}
+			else if( stopReason == "end_turn" ) {
+				if( ChatContentIsBlank( text ) ) {
+					// A degenerate final turn with no readable text.  The
+					// empty-array case (content:[]) also poisons the echo (the
+					// API rejects an assistant message with no content blocks);
+					// but a NON-empty array whose only text is blank/absent (a
+					// whitespace-only text block, or nothing but non-text
+					// blocks) is equally a silent blank bubble to the user --
+					// testing the extracted `text` for blankness catches both.
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"anthropic ended the turn with no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::FinalText;
+				out.step.finalText = text;
+			}
+			else {
+				// pause_turn / anything unexpected -> error with the
+				// stop_reason in the message.
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"anthropic stopped with stop_reason \"" + stopReason + "\"" );
+				return AttachReasoning();
+			}
+			out.assistantDisplayText = text;
+			out.step.assistantDisplayText = text;
+			AttachReasoning();
+
+			// The assistant transcript entry: the content array as a RAW
+			// byte span of the body (verbatim echo -- signatures intact).
+			std::size_t b = 0, e = 0;
+			if( RawObjectMember( rawBody, 0, "content", b, e ) ) {
+				out.assistantEntryJson = "{\"role\":\"assistant\",\"content\":" +
+				                         rawBody.substr( b, e - b ) + "}";
+			}
+			else {
+				// Defensive fallback (should not happen for a body that
+				// parsed above): re-serialize; loses byte-fidelity only.
+				out.assistantEntryJson = "{\"role\":\"assistant\",\"content\":" +
+				                         JsonSerialize( content ) + "}";
+			}
+			return out;
+		}
+
+		ChatUsage AnthropicChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+			u.inputTokens          = ReadTokenCount( usage, "input_tokens" );
+			u.outputTokens         = ReadTokenCount( usage, "output_tokens" );
+			u.cacheReadInputTokens = ReadTokenCount( usage, "cache_read_input_tokens" );
+
+			// THINKING TOKENS.  PROVIDER DISPOSITION: INCLUSIVE -- Anthropic
+			// reports them as a BREAKDOWN of output_tokens
+			// (`usage.output_tokens_details.thinking_tokens`), not as a
+			// separate summand, so this is published as the reasoning subset
+			// and NOT folded in (folding would double count).
+			// Evidence from the recorded runs (819 Anthropic usage blocks under
+			// evals/runs/**): output_tokens_details is present on all 819, and
+			// thinking_tokens is 0 on all 819 because the harness never enables
+			// extended thinking.  The field is parsed anyway so that enabling
+			// thinking later reports the split without another codec change --
+			// this is the provider's own number, never a synthesized one.
+			u.reasoningOutputTokens =
+				ReadTokenCount( usage.get( "output_tokens_details" ), "thinking_tokens" );
+			// A body claiming thinking > output contradicts itself; the shared
+			// enforcement clamps it rather than publishing a negative
+			// "visible output" downstream.
+			EnforceUsageInvariant( u );
+			return u;
+		}
+
+		std::size_t AnthropicChatCodec::ToolsWireBytes() const
+		{
+			return AnthropicToolsJson().size();
+		}
+
+		//======================================================================
+		// (4) GeminiChatCodec
+		//======================================================================
+
+		namespace
+		{
+			//! Gemini's functionResponse.response rides the wire as a protobuf
+			//! Struct, which HARD-REJECTS duplicate map keys ("Repeated map
+			//! key: '...'" -> HTTP 400, killing the whole turn).  Our JsonValue
+			//! happily round-trips duplicate object keys (Json.h: "duplicate
+			//! object keys: last wins ... we store an ordered vector of
+			//! pairs" -- JsonValue::find() scans from the end so LOOKUPS
+			//! already resolve last-wins; only *serialization* blindly
+			//! re-emits every stored pair).  A tool result can legitimately
+			//! arrive with duplicate keys -- e.g. read_schema's SchemaGenAll()
+			//! used to emit the same chunk keyword twice when a legacy alias
+			//! (mis_pathtracing_shaderop) shared a descriptor with its
+			//! canonical keyword (pathtracing_shaderop); see SchemaGen.cpp for
+			//! the source-side fix.  This is the wire-side backstop: whatever
+			//! a tool emits, no duplicate key ever reaches Gemini.  Recurses
+			//! into array/object children so a nested duplicate (inside an
+			//! array element, say) is caught too.  Keeps the LAST value per
+			//! key, matching JsonValue::find()'s documented last-wins lookup
+			//! semantics so behavior here is consistent with what the rest of
+			//! the loop already sees when it reads the (un-deduplicated)
+			//! JsonValue via find()/get().  Deliberately scoped to this file
+			//! (not JsonParse/JsonSerialize) -- other JsonValue consumers
+			//! (e.g. the eval-harness E3 checker) depend on today's
+			//! preserve-duplicates serialize behavior.
+			JsonValue DedupeJsonKeysLastWins( const JsonValue& v )
+			{
+				if( v.isArray() ) {
+					JsonValue out = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < v.size(); ++i )
+						out.push_back( DedupeJsonKeysLastWins( v.at( i ) ) );
+					return out;
+				}
+				if( !v.isObject() ) return v;
+
+				const std::vector<std::pair<std::string, JsonValue>>& mem = v.members();
+				std::vector<std::string> order;             // first-seen key order
+				std::map<std::string, JsonValue> latest;    // key -> last raw value
+				for( std::size_t i = 0; i < mem.size(); ++i ) {
+					if( latest.find( mem[i].first ) == latest.end() )
+						order.push_back( mem[i].first );
+					latest[ mem[i].first ] = mem[i].second;  // later duplicate overwrites -> last wins
+				}
+				JsonValue out = JsonValue::MakeObject();
+				for( std::size_t i = 0; i < order.size(); ++i )
+					out.set( order[i], DedupeJsonKeysLastWins( latest[ order[i] ] ) );
+				return out;
+			}
+		}
+
+		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
+
+		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-4-argon"; }
+
+		std::string GeminiChatCodec::MakeUserEntry(
+			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
+		{
+			JsonValue parts = JsonValue::MakeArray();
+			// Images FIRST, then the caption -- mirrors the Anthropic
+			// codec (see the interface doc on MakeUserEntry); an empty
+			// attachments vector reproduces the pre-attachment byte shape
+			// exactly (one text part, nothing else).
+			for( std::size_t i = 0; i < attachments.size(); ++i ) {
+				JsonValue blob = JsonValue::MakeObject();
+				blob.set( "mimeType", JsonValue::MakeString( attachments[i].mimeType ) );
+				blob.set( "data", JsonValue::MakeString( attachments[i].base64Data ) );
+				JsonValue part = JsonValue::MakeObject();
+				part.set( "inlineData", blob );
+				parts.push_back( part );
+			}
+			// An attachment-only message (no caption) omits the text part
+			// entirely rather than sending an empty-string text part --
+			// the inlineData part(s) already satisfy Gemini's non-empty-
+			// parts requirement.  A text-only call (the common case) is
+			// unaffected: text is non-empty by the loop's blank-message
+			// no-op contract.
+			if( !text.empty() ) {
+				JsonValue part = JsonValue::MakeObject();
+				part.set( "text", JsonValue::MakeString( text ) );
+				parts.push_back( part );
+			}
+			JsonValue msg = JsonValue::MakeObject();
+			msg.set( "role", JsonValue::MakeString( "user" ) );
+			msg.set( "parts", parts );
+			return JsonSerialize( msg );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedUserImages(
+			const std::string& userEntryJson, int countToElide ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// MakeUserEntry above (loop-generated), never by a provider --
+			// only model entries carry the byte-preservation contract.
+			// A FunctionResponsePart-style inlineData part carries only
+			// media (no text form), so elision replaces the WHOLE part
+			// with a plain text part (unlike the tool-result elision,
+			// which rewrites the response object in place -- there is no
+			// surrounding response object here to carry a note).
+			if( countToElide <= 0 ) return userEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return userEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return userEntryJson;
+
+			bool changed = false;
+			int remaining = countToElide;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				if( p.get( "inlineData" ).isObject() && remaining > 0 ) {
+					JsonValue textPart = JsonValue::MakeObject();
+					textPart.set( "text", JsonValue::MakeString( kUserImageElidedNote ) );
+					newParts.push_back( textPart );
+					--remaining;
+					changed = true;
+				}
+				else {
+					newParts.push_back( p );
+				}
+			}
+			if( !changed ) return userEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string GeminiChatCodec::PackToolResults(
+			const std::vector<std::pair<ChatToolCall, std::string>>& results ) const
+		{
+			// ONE user turn: one functionResponse part per call.  When the
+			// model's functionCall carried an id it is echoed back as
+			// functionResponse.id (the documented matching rule); only
+			// synthesized ids are withheld (those calls match by name +
+			// order).  read_image results deliver the PNG through
+			// functionResponse.parts[].inlineData -- the documented
+			// FunctionResponsePart mechanism for multimodal function
+			// output -- with the base64 stripped from the JSON half.
+			//
+			// IMAGE RETENTION, entry-internal half (mirrors the Anthropic
+			// codec): within one flush only the LAST image-bearing result
+			// keeps a live inlineData part; earlier ones are packed
+			// PRE-ELIDED (no parts array; the note already reads elided).
+			std::size_t lastImage = results.size();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				if( ChatToolResultCarriesImage( results[i].first, results[i].second ) )
+					lastImage = i;
+			}
+
+			JsonValue parts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				const ChatToolCall& call = results[i].first;
+				JsonValue env;
+				std::string perr;
+				const bool parsed = JsonParse( results[i].second, env, perr ) && env.isObject();
+
+				JsonValue respObj = JsonValue::MakeObject();
+				std::string b64;
+				if( !parsed ) {
+					respObj.set( "error", JsonValue::MakeString(
+						"tool transport error: the JSON-RPC response line did not parse as JSON" ) );
+				}
+				else if( const JsonValue* e = env.find( "error" ) ) {
+					respObj.set( "error", *e );
+				}
+				else {
+					const JsonValue& result = env.get( "result" );
+					if( IsImageResult( call, result, b64 ) ) {
+						if( i == lastImage ) {
+							respObj = StripPngBase64( result, "the PNG is attached as a functionResponse media part" );
+						}
+						else {
+							// Superseded within this very flush: pack it
+							// already elided (note reads elided; b64 cleared
+							// so no inlineData parts array is emitted below).
+							respObj = StripPngBase64( result, kImageElidedNote );
+							b64.clear();
+						}
+					}
+					else if( result.isObject() ) {
+						respObj = result;
+					}
+					else {
+						// functionResponse.response must be an object.
+						respObj.set( "result", result );
+					}
+				}
+
+				JsonValue fr = JsonValue::MakeObject();
+				if( !call.idSynthesized && !call.id.empty() )
+					fr.set( "id", JsonValue::MakeString( call.id ) );
+				fr.set( "name", JsonValue::MakeString( call.name ) );
+				// Wire-side backstop (see DedupeJsonKeysLastWins above): every
+				// branch above (`error` echo, image-strip, `respObj = result`,
+				// the scalar/array `result` wrap) can embed a JsonValue parsed
+				// straight from the tool's JSON-RPC line, which may carry
+				// duplicate object keys our JsonValue tolerates but Gemini's
+				// protobuf Struct backend rejects outright.  Applying the
+				// dedupe here, once, downstream of every branch, covers all
+				// of them without needing a call site in each.
+				fr.set( "response", DedupeJsonKeysLastWins( respObj ) );
+				if( !b64.empty() ) {
+					// FunctionResponse.parts: [{inlineData:{mimeType,data}}]
+					// (FunctionResponsePart / FunctionResponseBlob, per the
+					// ai.google.dev/api Content reference, 2026-07-02).
+					JsonValue blob = JsonValue::MakeObject();
+					blob.set( "mimeType", JsonValue::MakeString( "image/png" ) );
+					blob.set( "data", JsonValue::MakeString( b64 ) );
+					JsonValue frp = JsonValue::MakeObject();
+					frp.set( "inlineData", blob );
+					JsonValue frParts = JsonValue::MakeArray();
+					frParts.push_back( frp );
+					fr.set( "parts", frParts );
+				}
+				JsonValue frPart = JsonValue::MakeObject();
+				frPart.set( "functionResponse", fr );
+				parts.push_back( frPart );
+			}
+
+			JsonValue msg = JsonValue::MakeObject();
+			msg.set( "role", JsonValue::MakeString( "user" ) );
+			msg.set( "parts", parts );
+			return JsonSerialize( msg );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedImages( const std::string& packedEntryJson ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider --
+			// only assistant (model) entries carry the byte-preservation
+			// contract.  The image travels as functionResponse.parts
+			// [{inlineData:...}]; a FunctionResponsePart carries only
+			// media (no text form exists), so elision DROPS the parts
+			// array and rewrites the response object's note to say the
+			// image is gone.
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				const JsonValue* fr = p.find( "functionResponse" );
+				const bool hasImage = fr && fr->isObject() && fr->get( "parts" ).isArray();
+				if( !hasImage ) {
+					newParts.push_back( p );
+					continue;
+				}
+				changed = true;
+				// Rebuild the functionResponse WITHOUT its parts array and
+				// with the response note rewritten to the elision text
+				// (PackToolResults always sets a note on an image result;
+				// append one defensively if it is ever absent).
+				JsonValue newFr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
+				for( std::size_t j = 0; j < mem.size(); ++j ) {
+					if( mem[j].first == "parts" ) continue;
+					if( mem[j].first == "response" && mem[j].second.isObject() ) {
+						// Rewrite the ATTACH note StripPngBase64 wrote --
+						// preferring "image_note" (the key it falls back to
+						// when the RPC result already owned a "note"), so an
+						// RPC-owned note field is never clobbered.
+						JsonValue newResp = JsonValue::MakeObject();
+						bool noted = false;
+						const std::vector<std::pair<std::string, JsonValue>>& rm = mem[j].second.members();
+						// INVARIANT (mirrors RewriteElidedSummaryText's rule):
+						// prefer-image_note-else-note matches StripPngBase64's
+						// collision fallback; if an RPC result ever grows
+						// image_note WITHOUT note, the rules diverge -- keep
+						// the key-choice rules in lockstep.
+						bool hasImageNote = false;
+						for( std::size_t k = 0; k < rm.size(); ++k )
+							if( rm[k].first == "image_note" ) hasImageNote = true;
+						const char* noteKey = hasImageNote ? "image_note" : "note";
+						for( std::size_t k = 0; k < rm.size(); ++k ) {
+							if( rm[k].first == noteKey ) {
+								newResp.set( rm[k].first, JsonValue::MakeString( kImageElidedNote ) );
+								noted = true;
+							}
+							else {
+								newResp.set( rm[k].first, rm[k].second );
+							}
+						}
+						if( !noted )
+							newResp.set( "note", JsonValue::MakeString( kImageElidedNote ) );
+						newFr.set( "response", newResp );
+					}
+					else {
+						newFr.set( mem[j].first, mem[j].second );
+					}
+				}
+				JsonValue newPart = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
+				for( std::size_t j = 0; j < pm.size(); ++j )
+					newPart.set( pm[j].first, pm[j].first == "functionResponse" ? newFr : pm[j].second );
+				newParts.push_back( newPart );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string GeminiChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// PackToolResults above (loop-generated), not by a provider.
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isObject() ) return packedEntryJson;
+			const JsonValue& parts = root.get( "parts" );
+			if( !parts.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue newParts = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& p = parts.at( i );
+				const JsonValue* fr = p.find( "functionResponse" );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				if( !hit || !fr || !fr->isObject() ) {
+					newParts.push_back( p );
+					continue;
+				}
+				changed = true;
+				// functionResponse.response MUST be an object, so the
+				// placeholder rides as its `note`.  A superseded result never
+				// carries an inlineData `parts` array (image results are on
+				// the separate IMAGE RETENTION path), but drop it defensively
+				// so a rewrite can never leave orphaned media behind.  id and
+				// name are copied through, keeping the call binding intact.
+				// KEY NAMESPACE (defense in depth alongside
+				// RewriteElidedSummaryText's value gate): deliberately NOT
+				// "note".  `note` is claimed by the image-elision rewrite AND
+				// is an RPC-owned field on some results (read_skill's
+				// missing-root advisory), so a distinct key makes a
+				// cross-rule collision structurally impossible rather than
+				// merely gated.
+				JsonValue newResp = JsonValue::MakeObject();
+				newResp.set( noteKey, JsonValue::MakeString( placeholderText ) );
+				JsonValue newFr = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = fr->members();
+				for( std::size_t j = 0; j < mem.size(); ++j ) {
+					if( mem[j].first == "parts" ) continue;
+					newFr.set( mem[j].first, mem[j].first == "response" ? newResp : mem[j].second );
+				}
+				if( !newFr.find( "response" ) ) newFr.set( "response", newResp );
+				JsonValue newPart = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& pm = p.members();
+				for( std::size_t j = 0; j < pm.size(); ++j )
+					newPart.set( pm[j].first, pm[j].first == "functionResponse" ? newFr : pm[j].second );
+				newParts.push_back( newPart );
+			}
+			if( !changed ) return packedEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "parts" ? newParts : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		ChatHttpRequest GeminiChatCodec::BuildRequest(
+			const std::string& modelId,
+			const std::string& apiKey,
+			const std::string& systemPrompt,
+			const std::vector<std::string>& rawEntries,
+			bool /*forceReasoningEffortNone*/ ) const
+		{
+			// Gemini has no reasoning_effort field / tools-vs-effort 400 --
+			// the parameter exists only to satisfy the shared
+			// IChatProviderCodec::BuildRequest signature (see its header
+			// doc); this codec ignores it.
+			ChatHttpRequest r;
+			// The model id is percent-escaped so it cannot alter the URL
+			// path or smuggle query parameters.
+			r.url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+			        SanitizeModelIdForUrl( modelId ) + ":generateContent";
+			// The key appears ONLY here, in the auth header (NOT as the
+			// ?key= query parameter the docs also allow -- a URL leaks into
+			// logs/history far more easily than a header).  Control
+			// characters are stripped so a pasted key cannot inject headers.
+			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			r.headers.push_back( std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+
+			// Gemini requires ALTERNATING roles on the wire, but the
+			// transcript can legally hold ADJACENT user entries (an
+			// interrupt-flushed tool-results entry followed by the user's
+			// next text message).  Merge every run of adjacent role:"user"
+			// entries into ONE content whose parts are the run's parts
+			// concatenated with the functionResponse parts FIRST (the tool
+			// answers must lead the content that answers a functionCall
+			// turn).  User entries are loop-generated (MakeUserEntry /
+			// PackToolResults), so parse + re-serialize is legal for them;
+			// model entries splice VERBATIM (byte-preservation contract)
+			// and are never merged -- ParseResponse guarantees a recorded
+			// model entry's role really is "model" (a candidate spoofing
+			// any other role is refused outright; role-less content is
+			// wrapped under an explicit "model"), so a provider body can
+			// never smuggle an assistant turn into this user merge.
+			std::vector<std::string> wireEntries;
+			std::vector<JsonValue>   userRun;
+			std::vector<std::size_t> userRunSrc;   // rawEntries index per userRun element
+			wireEntries.reserve( rawEntries.size() );
+			const auto flushUserRun = [&]() {
+				if( userRun.empty() ) return;
+				if( userRun.size() == 1 ) {
+					// A lone user entry needs no merge: splice the original
+					// string (cheaper, and trivially byte-stable).
+					wireEntries.push_back( rawEntries[userRunSrc[0]] );
+				}
+				else {
+					JsonValue parts = JsonValue::MakeArray();
+					for( int wantFr = 1; wantFr >= 0; --wantFr ) {
+						for( std::size_t i = 0; i < userRun.size(); ++i ) {
+							const JsonValue& runParts = userRun[i].get( "parts" );
+							for( std::size_t j = 0; j < runParts.size(); ++j ) {
+								const bool isFr = runParts.at( j ).has( "functionResponse" );
+								if( isFr == ( wantFr == 1 ) ) parts.push_back( runParts.at( j ) );
+							}
+						}
+					}
+					JsonValue merged = JsonValue::MakeObject();
+					merged.set( "role", JsonValue::MakeString( "user" ) );
+					merged.set( "parts", parts );
+					wireEntries.push_back( JsonSerialize( merged ) );
+				}
+				userRun.clear();
+				userRunSrc.clear();
+			};
+			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+				JsonValue e;
+				std::string perr;
+				if( JsonParse( rawEntries[i], e, perr ) && e.isObject() &&
+				    e.get( "role" ).asString() == "user" && e.get( "parts" ).isArray() ) {
+					userRun.push_back( e );
+					userRunSrc.push_back( i );
+				}
+				else {
+					flushUserRun();
+					wireEntries.push_back( rawEntries[i] );
+				}
+			}
+			flushUserRun();
+
+			std::string body = "{\"systemInstruction\":{\"parts\":[{\"text\":";
+			JsonAppendEscapedString( body, systemPrompt );
+			body += "}]},\"tools\":[{\"functionDeclarations\":";
+			body += GeminiFunctionDeclarationsJson();
+			body += "}],\"contents\":[";
+			for( std::size_t i = 0; i < wireEntries.size(); ++i ) {
+				if( i ) body += ",";
+				body += wireEntries[i];
+			}
+			body += "]}";
+			r.body = body;
+			return r;
+		}
+
+		ChatParsedResponse GeminiChatCodec::ParseResponse(
+			long httpStatus, const std::string& rawBody ) const
+		{
+			ChatParsedResponse out;
+			if( httpStatus != 200 ) {
+				out.step = MakeHttpError( ProviderName(), httpStatus, rawBody );
+				return out;
+			}
+
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
+				out.step = MakeProviderError( ChatErrorKind::Parse,
+					"gemini response did not parse as JSON: " + perr );
+				return out;
+			}
+			const JsonValue& candidates = root.get( "candidates" );
+			if( !candidates.isArray() || candidates.size() == 0 ) {
+				std::string msg = "gemini response carries no candidates";
+				ChatErrorKind kind = ChatErrorKind::Provider;
+				const JsonValue& em = root.get( "error" ).get( "message" );
+				if( em.isString() ) msg += ": " + em.asString();
+				const JsonValue& block = root.get( "promptFeedback" ).get( "blockReason" );
+				if( block.isString() ) {
+					// A blocked prompt is the provider declining the request.
+					msg += " (blockReason " + block.asString() + ")";
+					kind = ChatErrorKind::Refusal;
+				}
+				out.step = MakeProviderError( kind, msg );
+				return out;
+			}
+
+			const JsonValue& cand = candidates.at( 0 );
+			const JsonValue& content = cand.get( "content" );
+
+			// RECORD-OR-REFUSE role gate: the raw-span echo below records
+			// candidates[0].content VERBATIM whenever it carries a "role"
+			// member, and BuildRequest's adjacent-user merge classifies
+			// transcript entries by parsing that role.  A hostile candidate
+			// spoofing content.role:"user" would therefore be recorded as
+			// the assistant turn and then MERGED into the surrounding user
+			// run on the next request -- the conversation collapses into
+			// ONE user content with a functionCall part inside it (wire-
+			// invalid, permanent poison).  Refuse any candidate whose
+			// content.role is present and not "model"; an ABSENT role keeps
+			// the wrap-as-model behavior below.
+			if( content.isObject() ) {
+				const JsonValue* role = content.find( "role" );
+				if( role && !( role->isString() && role->asString() == "model" ) ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"gemini candidate content carries role \"" +
+						( role->isString() ? role->asString() : std::string( "(non-string)" ) ) +
+						"\" instead of \"model\" -- refusing the turn (a spoofed role would corrupt the wire-role alternation on replay)" );
+					return out;
+				}
+			}
+
+			const JsonValue& parts = content.get( "parts" );
+
+			std::string text;
+			// DISPLAY-LAYER ENRICHMENT: Gemini marks a thought-summary part by
+			// setting `thought: true` ALONGSIDE its "text" key --
+			//     {"text":"...","thought":true}
+			// -- rather than by a distinct part type.  Such a part is the
+			// model's REASONING, not its answer, and must not be concatenated
+			// into `text`: `text` is what becomes finalText / the assistant's
+			// visible answer, AND what the blank-turn gate below tests, so a
+			// thought-only turn would otherwise be mistaken for a real answer.
+			// This mirrors the Anthropic codec's `type=="thinking"` branch and
+			// the Responses codec's `type=="reasoning"` branch -- reasoning
+			// goes to `reasoningText`, never to `text`.
+			//
+			// The harness does not currently request thought summaries (no
+			// generationConfig.thinkingConfig.includeThoughts on the wire --
+			// see BuildRequest), so no `thought`-marked part appears in any
+			// recorded run today; this branch exists so that enabling them --
+			// or Gemini returning one unbidden -- cannot silently corrupt the
+			// answer text.  Note that NOT requesting summaries does not mean no
+			// thinking happens: ParseUsage below shows 6,086 of the 6,087
+			// recorded Gemini responses billed a non-zero thoughtsTokenCount.
+			std::string reasoningText;
+			std::vector<ChatToolCall> calls;
+			std::vector<std::string> usedIds;   // every id captured this turn (provider + synthesized)
+			int synthCounter = 0;
+			const auto idUsed = [&usedIds]( const std::string& id ) {
+				for( std::size_t k = 0; k < usedIds.size(); ++k )
+					if( usedIds[k] == id ) return true;
+				return false;
+			};
+			for( std::size_t i = 0; i < parts.size(); ++i ) {
+				const JsonValue& part = parts.at( i );
+				// Only the literal boolean true marks a thought part; any other
+				// shape (absent, false, "true", 1) leaves the part visible, so
+				// a malformed marker can never silently swallow real answer
+				// text.
+				const JsonValue* thoughtFlag = part.find( "thought" );
+				const bool isThought = thoughtFlag && thoughtFlag->isBool() && thoughtFlag->asBool();
+				if( const JsonValue* t = part.find( "text" ) ) {
+					if( t->isString() ) {
+						if( isThought ) {
+							const std::string& s = t->asString();
+							if( !s.empty() ) {
+								if( !reasoningText.empty() ) reasoningText += "\n\n";
+								reasoningText += s;
+							}
+						}
+						else {
+							text += t->asString();
+						}
+					}
+				}
+				if( const JsonValue* fc = part.find( "functionCall" ) ) {
+					if( !fc->isObject() ) {
+						// WIRE-INVARIANT GATE: a functionCall-keyed part whose
+						// value is not an object cannot become a pending call,
+						// but it WOULD ride in the raw echo -- an un-answered
+						// call on every later request.  Refuse the whole turn.
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"gemini response carries a malformed functionCall part (not an object) -- refusing the turn" );
+						return out;
+					}
+					// Gemini 3.x populates functionCall.id and the docs
+					// require the response to echo the matching id --
+					// capture it.  Synthesize "call_0", "call_1", ...
+					// ONLY when absent (those match by name + order and
+					// no id field is emitted in the functionResponse).
+					ChatToolCall c;
+					const JsonValue* idv = fc->find( "id" );
+					if( idv && idv->isString() && !idv->asString().empty() ) {
+						c.id = idv->asString();
+						// Duplicate ids (a repeated provider id, or a provider
+						// id colliding with one synthesized earlier this turn)
+						// make result matching ambiguous -- refuse the whole
+						// turn rather than guess (consistent with the other
+						// record-or-refuse gates).
+						if( idUsed( c.id ) ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"gemini response repeats functionCall id \"" + c.id +
+								"\" -- refusing the turn (results could not be matched unambiguously)" );
+							return out;
+						}
+					}
+					else {
+						// Skip any candidate that collides with an id already
+						// captured this turn (e.g. a provider id literally
+						// named "call_0").
+						do {
+							c.id = "call_" + std::to_string( synthCounter++ );
+						} while( idUsed( c.id ) );
+						c.idSynthesized = true;
+					}
+					usedIds.push_back( c.id );
+					c.name = fc->get( "name" ).asString();
+					// RECORD-OR-REFUSE: an ABSENT "args" key is Gemini's
+					// legal no-args functionCall shape (maps to "{}"); a
+					// PRESENT "args" that is not an object (including an
+					// explicit "args":null) must not be recorded and then
+					// executed with fabricated empty args -- refuse the
+					// WHOLE response instead (mirrors the Anthropic
+					// malformed-input gate above / the OpenAI malformed-
+					// arguments gate below).
+					if( fc->has( "args" ) ) {
+						const JsonValue& args = fc->get( "args" );
+						if( !args.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"gemini functionCall \"" + c.name + "\" carries non-object "
+								"\"args\" -- refusing the turn (executing it would fabricate empty args)" );
+							return out;
+						}
+						c.argsJson = JsonSerialize( args );
+					}
+					else {
+						c.argsJson = "{}";
+					}
+					calls.push_back( c );
+				}
+			}
+
+			// DISPLAY-LAYER ENRICHMENT (corrected 2026-07-25; the previous
+			// claim here -- "Gemini exposes no reasoning/thinking field on the
+			// wire" -- was wrong).  Gemini DOES have a reasoning surface, in
+			// two independent forms:
+			//   * thought SUMMARIES, returned as parts marked
+			//     `{"text":"...","thought":true}`.  They only appear when the
+			//     request asks for them via
+			//     generationConfig.thinkingConfig.includeThoughts, which this
+			//     harness deliberately does NOT send (instrumentation only --
+			//     changing how runs are DRIVEN would break comparability with
+			//     the recorded baselines).  So reasoningText is "" on every
+			//     Gemini turn RECORDED SO FAR -- because of our request shape,
+			//     not because the field does not exist.  The parts loop above
+			//     routes such parts to reasoningText the moment one arrives.
+			//   * thought TOKEN COUNTS (usageMetadata.thoughtsTokenCount),
+			//     which arrive unconditionally and were non-zero on 461 of the
+			//     462 recorded responses in gemini_only_e12/build_ambiguous
+			//     (6,086 of 6,087 across every recorded Gemini run) -- see
+			//     ParseUsage.  Thinking happens on essentially every turn; only
+			//     its TEXT is withheld.
+			// Thought SIGNATURES (`thoughtSignature`, an opaque per-part blob
+			// riding on functionCall and text parts alike) are neither
+			// summaries nor counts: they are provider-opaque state that must
+			// round-trip untouched, which the verbatim raw-span echo below
+			// already guarantees.  They are PER PART, not per response: 6,086
+			// of the 6,398 recorded content parts carry one (in the 462-block
+			// slice, 461 of 493 parts).
+			//
+			// EVERY exit from here on goes through AttachReasoning.  The
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so reasoning
+			// collected above has to be attached AFTER that assignment or it is
+			// dropped -- and a refused turn is exactly when it matters most:
+			// for a thought-ONLY turn the reasoning is the only text the model
+			// produced, and returning a ProviderError with an empty
+			// reasoningText discards it.  The STRUCTURAL refusals above (a
+			// malformed / id-colliding functionCall) deliberately stay OUTSIDE
+			// this -- see the Anthropic site for the full rationale: they
+			// abandon a mid-scan read of a body being declined as malformed,
+			// where a disposition refusal declines a well-formed turn whose
+			// reasoning is complete.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
+			const std::string finishReason = cand.get( "finishReason" ).asString();
+			// Classify a non-STOP finish for the error kind: token cap and
+			// the safety-ish family get their own kinds so a driver can
+			// react without string-matching.
+			const ChatErrorKind finishKind =
+				( finishReason == "MAX_TOKENS" ) ? ChatErrorKind::MaxTokens :
+				( finishReason == "SAFETY" || finishReason == "RECITATION" ||
+				  finishReason == "BLOCKLIST" || finishReason == "PROHIBITED_CONTENT" ||
+				  finishReason == "SPII" || finishReason == "IMAGE_SAFETY" ) ? ChatErrorKind::Refusal :
+				// MALFORMED_FUNCTION_CALL: the model tried to call a tool but
+				// emitted an unparseable call (observed: chunk text without
+				// JSON string quoting).  The candidate carries one empty text
+				// part and a finishMessage quoting the attempt; recoverable by
+				// asking the model to re-issue -- see AgentChatLoop::HandleResponse.
+				( finishReason == "MALFORMED_FUNCTION_CALL" ) ? ChatErrorKind::MalformedToolCall :
+				ChatErrorKind::Provider;
+			if( !calls.empty() ) {
+				// Mirror the Anthropic stop_reason gate: a call turn that
+				// was cut short (MAX_TOKENS, SAFETY, ...) may be missing
+				// calls or carry mangled arguments -- it must NOT execute.
+				// POLICY on an ABSENT/empty finishReason: finishReason is
+				// nominally optional in the proto, so TEXT-ONLY turns stay
+				// lenient (below) -- but a calls-bearing turn without an
+				// explicit STOP cannot be distinguished from one cut short
+				// mid-call-list, and executing a truncated call set is
+				// worse than refusing.  Require STOP before calls execute.
+				if( finishReason != "STOP" ) {
+					out.step = MakeProviderError( finishKind,
+						finishReason.empty()
+							? std::string( "gemini returned function calls without a finishReason -- "
+							               "refusing (an explicit STOP is required before a call turn executes)" )
+							: "gemini returned function calls but stopped with finishReason \"" +
+							  finishReason + "\" -- a truncated call turn is not executed" );
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::ToolCalls;
+				out.step.toolCalls = calls;
+			}
+			else if( finishReason == "STOP" || finishReason.empty() ) {
+				if( ChatContentIsBlank( text ) ) {
+					// A degenerate final turn with no readable text.  A
+					// missing/empty parts array (parts:null or []) poisons the
+					// echo (a partless model turn is invalid on replay); a
+					// NON-empty parts array whose only text is blank/absent (a
+					// whitespace-only text part, or nothing but non-text parts
+					// such as inlineData) is equally a silent blank bubble --
+					// testing the extracted `text` for blankness catches both
+					// (text is "" when parts is not an array).  A turn
+					// whose ONLY text lives in `thought:true` parts lands
+					// here too, and correctly so: a thought summary is the
+					// model's reasoning, not its answer -- but the reasoning
+					// itself still rides out on the error (AttachReasoning),
+					// since it is then the only text the model produced.
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"gemini candidate carries no readable text -- refusing the degenerate turn" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::FinalText;
+				out.step.finalText = text;
+			}
+			else {
+				// SAFETY / MAX_TOKENS / RECITATION / ... -> error with the
+				// finishReason in the message.
+				std::string stopMsg = "gemini stopped with finishReason \"" + finishReason + "\"";
+				if( finishKind == ChatErrorKind::MalformedToolCall ) {
+					const JsonValue fm = cand.get( "finishMessage" );
+					if( fm.isString() && !fm.asString().empty() )
+						stopMsg += ": " + CapSnippet( fm.asString() );
+				}
+				out.step = MakeProviderError( finishKind, stopMsg );
+				return AttachReasoning();
+			}
+			out.assistantDisplayText = text;
+			out.step.assistantDisplayText = text;
+			AttachReasoning();
+
+			// Raw-span echo of candidates[0].content (verbatim -- preserves
+			// provider-opaque fields such as thought signatures).
+			std::size_t cb = 0, ce = 0, eb = 0, ee = 0, vb = 0, ve = 0;
+			if( RawObjectMember( rawBody, 0, "candidates", cb, ce ) &&
+			    RawArrayElement( rawBody, cb, 0, eb, ee ) &&
+			    RawObjectMember( rawBody, eb, "content", vb, ve ) ) {
+				if( content.has( "role" ) ) {
+					out.assistantEntryJson = rawBody.substr( vb, ve - vb );
+				}
+				else {
+					// Defensive: a content object with no role -- wrap the
+					// raw parts span under an explicit model role.
+					std::size_t pb = 0, pe = 0;
+					if( RawObjectMember( rawBody, vb, "parts", pb, pe ) ) {
+						out.assistantEntryJson = "{\"role\":\"model\",\"parts\":" +
+						                         rawBody.substr( pb, pe - pb ) + "}";
+					}
+				}
+			}
+			if( out.assistantEntryJson.empty() ) {
+				// Defensive fallback: re-serialize (loses byte-fidelity only).
+				JsonValue msg = JsonValue::MakeObject();
+				msg.set( "role", JsonValue::MakeString( "model" ) );
+				msg.set( "parts", parts );
+				out.assistantEntryJson = JsonSerialize( msg );
+			}
+			return out;
+		}
+
+		ChatUsage GeminiChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& m = root.get( "usageMetadata" );
+			if( !m.isObject() ) return u;
+			u.inputTokens          = ReadTokenCount( m, "promptTokenCount" );
+			u.outputTokens         = ReadTokenCount( m, "candidatesTokenCount" );
+			u.cacheReadInputTokens = ReadTokenCount( m, "cachedContentTokenCount" );
+
+			// THINKING TOKENS (2026-07-25).  PROVIDER DISPOSITION: SEPARATE
+			// SUMMAND -- Gemini bills hidden reasoning as output but reports it
+			// in its OWN counter, `thoughtsTokenCount`, which
+			// `candidatesTokenCount` does NOT include.  Dropping it made every
+			// Gemini cost figure downstream wrong: across the 20 recorded
+			// Gemini eval cells (954 LLM calls -- evals/runs/gemini_only_e12
+			// and evals/runs/ask_user_board_e12, 10 cells each) the harness
+			// recorded 168,582 output tokens against 425,194 thinking tokens
+			// actually generated.  Real generation was 593,776, so the recorded
+			// figure was 28 % of it -- a ~72 % undercount.
+			//
+			// EMPIRICAL BASIS for folding it into outputTokens rather than
+			// leaving it purely informational (measured, not assumed; the
+			// identity is tested only on blocks carrying all four numbers):
+			//                                       build_ambiguous  ALL gemini
+			//                                       (gemini_only_e12) runs
+			//     total == prompt+candidates+thoughts   461/461      6086/6086
+			//     total == prompt+candidates              0/461         0/6086
+			// i.e. candidates and thoughts are DISJOINT summands of the total,
+			// so candidatesTokenCount alone is the VISIBLE output only.  Per
+			// ChatUsage's contract, outputTokens must be the total billed
+			// generation, so thoughts are added in and also published verbatim
+			// as the reasoning subset.  thoughtsTokenCount was present AND
+			// non-zero on 461 of those 462 blocks (6,086 of 6,087 across all
+			// recorded Gemini runs) even though the harness never requests
+			// thought SUMMARIES -- the tokens are generated (and charged)
+			// regardless of whether their text is returned.  The one odd block
+			// out carries NEITHER candidatesTokenCount NOR thoughtsTokenCount
+			// (an empty generation), which is why the identity above is 461 of
+			// 461 testable blocks rather than 462 of 462.
+			//
+			// The fold is a PER-PROVIDER decision from that evidence, never
+			// re-derived per response from the body's own arithmetic -- see the
+			// PROVIDER DISPOSITION note in OpenAIChatCodec::ParseUsage.
+			u.reasoningOutputTokens = ReadTokenCount( m, "thoughtsTokenCount" );
+			FoldReasoningIntoOutput( u );
+			EnforceUsageInvariant( u );
+			return u;
+		}
+
+		std::size_t GeminiChatCodec::ToolsWireBytes() const
+		{
+			return GeminiFunctionDeclarationsJson().size();
+		}
+
+		//======================================================================
+		// (5) OpenAIChatCodec
+		//======================================================================
+
+		OpenAIChatCodec::OpenAIChatCodec()
+		{
+			mConfig.providerName   = "openai";
+			mConfig.baseUrl        = "https://api.openai.com/v1/responses";
+			mConfig.defaultModelId = "gpt-5.6-terra";
+			mConfig.requiresAuth   = true;
+			mConfig.useResponsesApi = true;
+		}
+
+		OpenAIChatCodec::OpenAIChatCodec( const Config& config ) : mConfig( config )
+		{
+		}
+
+		const char* OpenAIChatCodec::ProviderName() const { return mConfig.providerName.c_str(); }
+
+		const char* OpenAIChatCodec::DefaultModelId() const { return mConfig.defaultModelId.c_str(); }
+
+		std::string OpenAIChatCodec::MakeUserEntry(
+			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
+		{
+			JsonValue msg = JsonValue::MakeObject();
+			msg.set( "role", JsonValue::MakeString( "user" ) );
+			if( mConfig.useResponsesApi ) {
+				if( attachments.empty() ) {
+					msg.set( "content", JsonValue::MakeString( text ) );
+					return JsonSerialize( msg );
+				}
+				JsonValue content = JsonValue::MakeArray();
+				for( std::size_t i = 0; i < attachments.size(); ++i )
+					content.push_back( MakeOpenAIResponsesImageBlock(
+						attachments[i].mimeType, attachments[i].base64Data ) );
+				if( !text.empty() ) content.push_back( MakeOpenAIResponsesTextBlock( text ) );
+				msg.set( "content", content );
+				return JsonSerialize( msg );
+			}
+			if( attachments.empty() ) {
+				msg.set( "content", JsonValue::MakeString( text ) );
+				return JsonSerialize( msg );
+			}
+
+			JsonValue content = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < attachments.size(); ++i )
+				content.push_back( MakeOpenAIImageUrlBlock( attachments[i].mimeType,
+				                                            attachments[i].base64Data ) );
+			if( !text.empty() ) content.push_back( MakeOpenAITextContentBlock( text ) );
+			msg.set( "content", content );
+			return JsonSerialize( msg );
+		}
+
+		std::string OpenAIChatCodec::RewriteElidedUserImages(
+			const std::string& userEntryJson, int countToElide ) const
+		{
+			// Parse + regenerate is LEGAL here: this entry was produced by
+			// MakeUserEntry above (loop-generated), never by the provider.
+			if( countToElide <= 0 ) return userEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( userEntryJson, root, perr ) || !root.isObject() ) return userEntryJson;
+			const JsonValue& content = root.get( "content" );
+			if( !content.isArray() ) return userEntryJson;
+
+			bool changed = false;
+			int remaining = countToElide;
+			JsonValue newContent = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < content.size(); ++i ) {
+				const JsonValue& b = content.at( i );
+				const std::string blockType = b.get( "type" ).asString();
+				if( ( blockType == "image_url" || blockType == "input_image" ) && remaining > 0 ) {
+					newContent.push_back( mConfig.useResponsesApi
+						? MakeOpenAIResponsesTextBlock( kUserImageElidedNote )
+						: MakeOpenAITextContentBlock( kUserImageElidedNote ) );
+					--remaining;
+					changed = true;
+				}
+				else {
+					newContent.push_back( b );
+				}
+			}
+			if( !changed ) return userEntryJson;
+
+			JsonValue newRoot = JsonValue::MakeObject();
+			const std::vector<std::pair<std::string, JsonValue>>& mem = root.members();
+			for( std::size_t i = 0; i < mem.size(); ++i )
+				newRoot.set( mem[i].first, mem[i].first == "content" ? newContent : mem[i].second );
+			return JsonSerialize( newRoot );
+		}
+
+		std::string OpenAIChatCodec::PackToolResults(
+			const std::vector<std::pair<ChatToolCall, std::string>>& results ) const
+		{
+			// Chat Completions requires one role:"tool" message per
+			// tool_call_id.  It does not carry image bytes inside that tool
+			// message, so the LAST read_image PNG is attached as a following
+			// user message; earlier image results in the same flush are
+			// packed pre-elided to preserve the "one live render image"
+			// invariant.
+			std::size_t lastImage = results.size();
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				if( ChatToolResultCarriesImage( results[i].first, results[i].second ) )
+					lastImage = i;
+			}
+
+			JsonValue messages = JsonValue::MakeArray();
+			std::string liveB64;
+			for( std::size_t i = 0; i < results.size(); ++i ) {
+				const ChatToolCall& call = results[i].first;
+				JsonValue env;
+				std::string perr;
+				const bool parsed = JsonParse( results[i].second, env, perr ) && env.isObject();
+
+				JsonValue payload = JsonValue::MakeObject();
+				std::string b64;
+				if( !parsed ) {
+					payload.set( "error", JsonValue::MakeString(
+						"tool transport error: the JSON-RPC response line did not parse as JSON" ) );
+				}
+				else if( const JsonValue* e = env.find( "error" ) ) {
+					payload.set( "error", *e );
+				}
+				else {
+					const JsonValue& result = env.get( "result" );
+					if( IsImageResult( call, result, b64 ) ) {
+						if( i == lastImage ) {
+							payload = StripPngBase64( result,
+								"the PNG is attached as a following user image_url message" );
+							liveB64 = b64;
+						}
+						else {
+							payload = StripPngBase64( result, kImageElidedNote );
+						}
+					}
+					else if( result.isObject() ) {
+						payload = result;
+					}
+					else {
+						payload.set( "result", result );
+					}
+				}
+
+				JsonValue msg = JsonValue::MakeObject();
+				if( mConfig.useResponsesApi ) {
+					msg.set( "type", JsonValue::MakeString( "function_call_output" ) );
+					msg.set( "call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "output", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
+				else {
+					msg.set( "role", JsonValue::MakeString( "tool" ) );
+					msg.set( "tool_call_id", JsonValue::MakeString( call.id ) );
+					msg.set( "content", JsonValue::MakeString( JsonSerialize( payload ) ) );
+				}
+				messages.push_back( msg );
+			}
+
+			if( !liveB64.empty() ) {
+				JsonValue content = JsonValue::MakeArray();
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesTextBlock( "The PNG returned by read_image is attached below." )
+					: MakeOpenAITextContentBlock( "The PNG returned by read_image is attached below." ) );
+				content.push_back( mConfig.useResponsesApi
+					? MakeOpenAIResponsesImageBlock( "image/png", liveB64 )
+					: MakeOpenAIImageUrlBlock( "image/png", liveB64 ) );
+				JsonValue imageMsg = JsonValue::MakeObject();
+				imageMsg.set( "role", JsonValue::MakeString( "user" ) );
+				imageMsg.set( "content", content );
+				messages.push_back( imageMsg );
+			}
+			return JsonSerialize( messages );
+		}
+
+		std::string OpenAIChatCodec::RewriteElidedImages( const std::string& packedEntryJson ) const
+		{
+			// PackToolResults emits a loop-owned ARRAY of messages.  Elide
+			// the user image_url message and rewrite the tool summary note
+			// that pointed at it.
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isArray() ) return packedEntryJson;
+
+			bool changed = false;
+			JsonValue out = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < root.size(); ++i ) {
+				const JsonValue& msg = root.at( i );
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( chatTool || responsesTool ) {
+					const std::string rewritten =
+						RewriteElidedSummaryText( msg.get( chatTool ? "content" : "output" ).asString() );
+					if( rewritten != msg.get( chatTool ? "content" : "output" ).asString() ) changed = true;
+					JsonValue newMsg = JsonValue::MakeObject();
+					const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
+					for( std::size_t j = 0; j < mem.size(); ++j )
+						newMsg.set( mem[j].first, mem[j].first == ( chatTool ? "content" : "output" )
+							? JsonValue::MakeString( rewritten ) : mem[j].second );
+					out.push_back( newMsg );
+					continue;
+				}
+
+				const JsonValue& content = msg.get( "content" );
+				if( msg.get( "role" ).asString() == "user" && content.isArray() ) {
+					JsonValue newContent = JsonValue::MakeArray();
+					bool msgChanged = false;
+					for( std::size_t j = 0; j < content.size(); ++j ) {
+						const JsonValue& b = content.at( j );
+						const std::string blockType = b.get( "type" ).asString();
+						if( blockType == "image_url" || blockType == "input_image" ) {
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( kImageElidedNote )
+								: MakeOpenAITextContentBlock( kImageElidedNote ) );
+							msgChanged = true;
+						}
+						else if( blockType == "text" || blockType == "input_text" ) {
+							std::string t = b.get( "text" ).asString();
+							if( t.find( "attached" ) != std::string::npos ) {
+								t = kImageElidedNote;
+								msgChanged = true;
+							}
+							newContent.push_back( mConfig.useResponsesApi
+								? MakeOpenAIResponsesTextBlock( t ) : MakeOpenAITextContentBlock( t ) );
+						}
+						else {
+							newContent.push_back( b );
+						}
+					}
+					if( msgChanged ) {
+						changed = true;
+						JsonValue newMsg = JsonValue::MakeObject();
+						const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
+						for( std::size_t j = 0; j < mem.size(); ++j )
+							newMsg.set( mem[j].first,
+								mem[j].first == "content" ? newContent : mem[j].second );
+						out.push_back( newMsg );
+						continue;
+					}
+				}
+				out.push_back( msg );
+			}
+			return changed ? JsonSerialize( out ) : packedEntryJson;
+		}
+
+		std::string OpenAIChatCodec::RewriteElidedToolResults(
+			const std::string& packedEntryJson,
+			const std::vector<std::size_t>& resultIndices,
+			const std::string& placeholderText ,
+			const std::string& noteKey ) const
+		{
+			// PackToolResults emits a loop-owned ARRAY of messages: one per
+			// result IN ORDER, so index i is result i.  (The only element
+			// that is not a result is the trailing image user message, which
+			// is APPENDED after all N of them and therefore never collides
+			// with a result index -- and is guarded against below anyway.)
+			if( resultIndices.empty() ) return packedEntryJson;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( packedEntryJson, root, perr ) || !root.isArray() ) return packedEntryJson;
+
+			// The payload keeps the SHAPE every other result uses -- a
+			// serialized JSON object -- so a model parsing tool output
+			// uniformly does not hit a lone bare string here.
+			// See the Gemini twin above for why the key is NOT "note".
+			JsonValue note = JsonValue::MakeObject();
+			note.set( noteKey, JsonValue::MakeString( placeholderText ) );
+			const std::string notePayload = JsonSerialize( note );
+
+			bool changed = false;
+			JsonValue out = JsonValue::MakeArray();
+			for( std::size_t i = 0; i < root.size(); ++i ) {
+				const JsonValue& msg = root.at( i );
+				bool hit = false;
+				for( std::size_t k = 0; k < resultIndices.size(); ++k )
+					if( resultIndices[k] == i ) { hit = true; break; }
+				const bool chatTool = msg.get( "role" ).asString() == "tool" &&
+				                      msg.get( "content" ).isString();
+				const bool responsesTool = msg.get( "type" ).asString() == "function_call_output" &&
+				                           msg.get( "output" ).isString();
+				if( !hit || ( !chatTool && !responsesTool ) ) {
+					out.push_back( msg );
+					continue;
+				}
+				changed = true;
+				// tool_call_id / call_id are copied through, so the rewritten
+				// message still answers its tool call.
+				const char* const payloadKey = chatTool ? "content" : "output";
+				JsonValue newMsg = JsonValue::MakeObject();
+				const std::vector<std::pair<std::string, JsonValue>>& mem = msg.members();
+				for( std::size_t j = 0; j < mem.size(); ++j )
+					newMsg.set( mem[j].first, mem[j].first == payloadKey
+						? JsonValue::MakeString( notePayload ) : mem[j].second );
+				out.push_back( newMsg );
+			}
+			return changed ? JsonSerialize( out ) : packedEntryJson;
+		}
+
+		ChatHttpRequest OpenAIChatCodec::BuildRequest(
+			const std::string& modelId,
+			const std::string& apiKey,
+			const std::string& systemPrompt,
+			const std::vector<std::string>& rawEntries,
+			bool forceReasoningEffortNone ) const
+		{
+			ChatHttpRequest r;
+			r.url = mConfig.baseUrl;
+			r.timeoutSeconds = mConfig.requestTimeoutSeconds;
+			r.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			// Emit the Bearer header when the provider requires auth (OpenAI,
+			// xAI) OR when a key was supplied anyway (a local server started
+			// with --api-key).  A KEYLESS local provider (requiresAuth=false,
+			// empty key) emits NO Authorization header at all -- Ollama and
+			// friends expect none, and an empty "Bearer " is worse than
+			// absent.  This is the key-hygiene inverse of the OpenAI path:
+			// no key in, no auth header out.
+			if( mConfig.requiresAuth || !apiKey.empty() ) {
+				r.headers.push_back( std::make_pair( "authorization",
+					"Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			}
+
+			std::string body = "{\"model\":";
+			JsonAppendEscapedString( body, modelId );
+			body += mConfig.useResponsesApi
+				? ",\"max_output_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens )
+				: ",\"max_completion_tokens\":" + std::to_string( kOpenAIMaxCompletionTokens );
+			if( mConfig.useResponsesApi ) {
+				// OpenAI recommends medium as the balanced default for agentic,
+				// multi-step tool workflows.  Naming it explicitly makes the
+				// eval configuration reproducible across server-default changes.
+				body += ",\"reasoning\":{\"effort\":\"medium\"},\"instructions\":";
+				JsonAppendEscapedString( body, systemPrompt );
+				body += ",\"input\":[";
+				bool firstInput = true;
+				for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+					JsonValue e;
+					std::string perr;
+					if( JsonParse( rawEntries[i], e, perr ) && e.isArray() ) {
+						for( std::size_t j = 0; j < e.size(); ++j ) {
+							if( !firstInput ) body += ",";
+							body += JsonSerialize( e.at( j ) );
+							firstInput = false;
+						}
+					}
+					else {
+						if( !firstInput ) body += ",";
+						body += rawEntries[i];
+						firstInput = false;
+					}
+				}
+				body += "],\"tools\":";
+				body += OpenAIResponsesToolsJson();
+				body += ",\"store\":false}";
+				r.body = body;
+				return r;
+			}
+			// REASONING-MODEL TOOLS-VS-EFFORT 400 RECOVERY (see
+			// ChatStepResult::retryReasoningEffortNone): a reasoning-family
+			// model's server-side default reasoning_effort is incompatible
+			// with function tools over this endpoint.  This codec never
+			// sends reasoning_effort otherwise -- there is no default value
+			// to omit -- so once the loop has proven the conflict, EXPLICITLY
+			// override it to "none" (the alternative the provider's own
+			// error message documents, short of switching off
+			// /v1/chat/completions entirely).
+			if( forceReasoningEffortNone ) body += ",\"reasoning_effort\":\"none\"";
+			body += ",\"messages\":[{\"role\":\"system\",\"content\":";
+			JsonAppendEscapedString( body, systemPrompt );
+			body += "}";
+			for( std::size_t i = 0; i < rawEntries.size(); ++i ) {
+				JsonValue e;
+				std::string perr;
+				if( JsonParse( rawEntries[i], e, perr ) && e.isArray() ) {
+					for( std::size_t j = 0; j < e.size(); ++j ) {
+						body += ",";
+						body += JsonSerialize( e.at( j ) );
+					}
+				}
+				else {
+					body += ",";
+					body += rawEntries[i];
+				}
+			}
+			body += "],\"tools\":";
+			body += OpenAIToolsJson();
+			body += "}";
+			r.body = body;
+			return r;
+		}
+
+		ChatParsedResponse OpenAIChatCodec::ParseResponse(
+			long httpStatus, const std::string& rawBody ) const
+		{
+			ChatParsedResponse out;
+			if( httpStatus != 200 ) {
+				out.step = MakeHttpError( ProviderName(), httpStatus, rawBody );
+				return out;
+			}
+
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) {
+				out.step = MakeProviderError( ChatErrorKind::Parse,
+					"openai response did not parse as JSON: " + perr );
+				return out;
+			}
+			// Parse by response shape rather than configured request mode.  This
+			// keeps the codec useful for archived Chat-Completions trajectories
+			// and OpenAI-compatible fixture tests during the migration.
+			if( mConfig.useResponsesApi && ( root.find( "output" ) || root.find( "status" ) ) ) {
+				// Reasoning-item summaries, harvested from `output` WITHOUT the
+				// strict per-item validation the completed path applies (a
+				// non-completed turn is under no obligation to carry a
+				// well-formed message item, and refusing to read its reasoning
+				// because some OTHER item is malformed would defeat the point).
+				// This exists because the status dispositions below return
+				// BEFORE the completed path's output loop ever runs, so the
+				// AttachReasoning lambda further down cannot reach them.
+				const auto ResponsesReasoningText = []( const JsonValue& output ) -> std::string {
+					std::string s;
+					if( !output.isArray() ) return s;
+					for( std::size_t i = 0; i < output.size(); ++i ) {
+						const JsonValue& item = output.at( i );
+						if( item.get( "type" ).asString() != "reasoning" ) continue;
+						const JsonValue& summary = item.get( "summary" );
+						if( !summary.isArray() ) continue;
+						for( std::size_t j = 0; j < summary.size(); ++j ) {
+							const std::string t = summary.at( j ).get( "text" ).asString();
+							if( t.empty() ) continue;
+							if( !s.empty() ) s += "\n\n";
+							s += t;
+						}
+					}
+					return s;
+				};
+
+				const std::string status = root.get( "status" ).asString();
+				if( status != "completed" ) {
+					// SIBLING of Anthropic's stop_reason=="max_tokens" exit, and
+					// the same sharp case: `incomplete` with
+					// incomplete_details.reason "max_output_tokens" is the
+					// NORMAL output-cap outcome on the Responses wire (not a
+					// protocol violation), and OpenAI populates `output` with
+					// the reasoning item on exactly that turn -- a reasoning-
+					// only response whose summary is then the ONLY text the
+					// model produced.  Returning before reading it discarded the
+					// entire turn's output.
+					if( status == "incomplete" ) {
+						const std::string reason =
+							root.get( "incomplete_details" ).get( "reason" ).asString();
+						out.step = MakeProviderError(
+							reason == "max_output_tokens" ? ChatErrorKind::MaxTokens : ChatErrorKind::Provider,
+							"openai response incomplete" + ( reason.empty() ? std::string() : ": " + reason ) );
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai response status is \"" + status + "\" instead of \"completed\"" );
+					}
+					// AFTER the MakeProviderError assignment (it builds a FRESH
+					// ChatStepResult, so an earlier write would be overwritten).
+					out.reasoningText = ResponsesReasoningText( root.get( "output" ) );
+					out.step.reasoningText = out.reasoningText;
+					return out;
+				}
+				const JsonValue& output = root.get( "output" );
+				if( !output.isArray() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai response carries no output array" );
+					return out;
+				}
+
+				std::vector<ChatToolCall> calls;
+				std::string text;
+				std::string refusal;
+				std::string reasoningText;
+				for( std::size_t i = 0; i < output.size(); ++i ) {
+					const JsonValue& item = output.at( i );
+					if( !item.isObject() || !item.get( "type" ).isString() ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output item lacks an object type" );
+						return out;
+					}
+					const std::string type = item.get( "type" ).asString();
+					if( type == "function_call" ) {
+						ChatToolCall c;
+						c.id = item.get( "call_id" ).asString();
+						c.name = item.get( "name" ).asString();
+						if( c.id.empty() || c.name.empty() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses function_call lacks call_id or name" );
+							return out;
+						}
+						for( std::size_t k = 0; k < calls.size(); ++k ) {
+							if( calls[k].id == c.id ) {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai response repeats function call_id \"" + c.id + "\"" );
+								return out;
+							}
+						}
+						JsonValue args;
+						std::string aerr;
+						if( !JsonParse( item.get( "arguments" ).asString(), args, aerr ) ||
+						    !args.isObject() ) {
+							out.step = MakeProviderError( ChatErrorKind::MalformedToolCall,
+								"openai function_call \"" + c.name +
+								"\" carries malformed arguments JSON: " +
+								CapSnippet( item.get( "arguments" ).asString() ) );
+							return out;
+						}
+						c.argsJson = JsonSerialize( args );
+						calls.push_back( c );
+					}
+					else if( type == "message" ) {
+						if( item.get( "role" ).asString() != "assistant" ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message role is not assistant" );
+							return out;
+						}
+						const JsonValue& content = item.get( "content" );
+						if( !content.isArray() ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai Responses message content is not an array" );
+							return out;
+						}
+						for( std::size_t j = 0; j < content.size(); ++j ) {
+							const JsonValue& part = content.at( j );
+							const std::string partType = part.get( "type" ).asString();
+							if( partType == "output_text" ) {
+								if( !part.get( "text" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses output_text has no text string" );
+									return out;
+								}
+								if( !text.empty() ) text += "\n";
+								text += part.get( "text" ).asString();
+							}
+							else if( partType == "refusal" ) {
+								if( !part.get( "refusal" ).isString() ) {
+									out.step = MakeProviderError( ChatErrorKind::Provider,
+										"openai Responses refusal has no refusal string" );
+									return out;
+								}
+								if( !refusal.empty() ) refusal += "\n";
+								refusal += part.get( "refusal" ).asString();
+							}
+							else {
+								out.step = MakeProviderError( ChatErrorKind::Provider,
+									"openai Responses message has unsupported content type \"" +
+									partType + "\"" );
+								return out;
+							}
+						}
+					}
+					else if( type == "reasoning" ) {
+						const JsonValue& summary = item.get( "summary" );
+						if( !summary.isArray() ) continue;
+						for( std::size_t j = 0; j < summary.size(); ++j ) {
+							const std::string s = summary.at( j ).get( "text" ).asString();
+							if( s.empty() ) continue;
+							if( !reasoningText.empty() ) reasoningText += "\n\n";
+							reasoningText += s;
+						}
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai Responses output has unsupported item type \"" +
+							type + "\"" );
+						return out;
+					}
+				}
+
+				// EVERY exit from here on goes through AttachReasoning: the
+				// disposition below REPLACES out.step wholesale on a refusal
+				// (MakeProviderError builds a fresh ChatStepResult), so the
+				// reasoning-item summaries collected above have to be attached
+				// AFTER that assignment or they are dropped.  SIBLING of the
+				// Gemini and Anthropic sites (same bug pattern, same fix): a
+				// Responses turn that emits a reasoning item and no message is
+				// exactly the "blank" case below, and its summary text is then
+				// the only text the model produced.  The STRUCTURAL refusals
+				// above (a typeless / unsupported output item, a malformed
+				// function_call) deliberately stay OUTSIDE this -- see the
+				// Anthropic site for the full rationale.  The non-"completed"
+				// STATUS exits earlier are a third case again: they never reach
+				// the output loop at all, so they harvest their reasoning
+				// through ResponsesReasoningText instead.
+				const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+					out.reasoningText = reasoningText;
+					out.step.reasoningText = reasoningText;
+					return out;
+				};
+
+				if( !calls.empty() ) {
+					out.step.kind = ChatStepResult::Kind::ToolCalls;
+					out.step.toolCalls = calls;
+				}
+				else if( !refusal.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Refusal,
+						"openai declined this request: " + refusal );
+					return AttachReasoning();
+				}
+				else if( ChatContentIsBlank( text ) ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai ended the response with no text or function calls" );
+					// Observed on local qwen3-thinking backends: a premature
+					// end-of-turn mid-reasoning, not a considered refusal -- see
+					// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+					// assignment above (same hazard AttachReasoning documents:
+					// MakeProviderError REPLACES out.step wholesale).
+					out.step.retryDegenerateTurn = true;
+					return AttachReasoning();
+				}
+				else {
+					out.step.kind = ChatStepResult::Kind::FinalText;
+					out.step.finalText = text;
+				}
+				out.assistantDisplayText = text;
+				out.step.assistantDisplayText = text;
+				AttachReasoning();
+
+				std::size_t ob = 0, oe = 0;
+				if( RawObjectMember( rawBody, 0, "output", ob, oe ) )
+					out.assistantEntryJson = rawBody.substr( ob, oe - ob );
+				if( out.assistantEntryJson.empty() )
+					out.assistantEntryJson = JsonSerialize( output );
+				return out;
+			}
+			const JsonValue& choices = root.get( "choices" );
+			if( !choices.isArray() || choices.size() == 0 ) {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"openai response carries no choices" );
+				return out;
+			}
+
+			const JsonValue& choice = choices.at( 0 );
+			const JsonValue& msg = choice.get( "message" );
+			if( !msg.isObject() ) {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"openai choice carries no assistant message object" );
+				return out;
+			}
+			const JsonValue* role = msg.find( "role" );
+			if( role && !( role->isString() && role->asString() == "assistant" ) ) {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"openai message carries role \"" +
+					( role->isString() ? role->asString() : std::string( "(non-string)" ) ) +
+					"\" instead of \"assistant\" -- refusing the turn" );
+				return out;
+			}
+
+			const std::string text = JsonObjectContentToText( msg.get( "content" ) );
+
+			// DISPLAY-LAYER ENRICHMENT (regression fix): this ONE codec
+			// serves OpenAI, xAI, and a local/Ollama-style server (see the
+			// class doc), and each names its reasoning field differently --
+			// Ollama's /api/chat-compatible local server emits
+			// `message.reasoning`, xAI emits `message.reasoning_content`.
+			// Prefer `reasoning` when it is a non-empty string, else fall
+			// back to `reasoning_content`; a plain gpt response carries
+			// neither, so reasoningText stays "" (its default) exactly as
+			// documented on ChatStepResult::reasoningText.
+			std::string reasoningText;
+			if( const JsonValue* r = msg.find( "reasoning" ) ) {
+				if( r->isString() && !r->asString().empty() ) reasoningText = r->asString();
+			}
+			if( reasoningText.empty() ) {
+				if( const JsonValue* rc = msg.find( "reasoning_content" ) ) {
+					if( rc->isString() && !rc->asString().empty() ) reasoningText = rc->asString();
+				}
+			}
+
+			std::vector<ChatToolCall> calls;
+			const JsonValue& toolCalls = msg.get( "tool_calls" );
+			if( toolCalls.isArray() ) {
+				for( std::size_t i = 0; i < toolCalls.size(); ++i ) {
+					const JsonValue& tc = toolCalls.at( i );
+					if( !tc.isObject() || tc.get( "type" ).asString() != "function" ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai response carries a malformed/non-function tool_call -- refusing the turn" );
+						return out;
+					}
+					ChatToolCall c;
+					c.id = tc.get( "id" ).asString();
+					if( c.id.empty() ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai tool_call carries no id; refusing the turn (its result could never be matched)" );
+						return out;
+					}
+					for( std::size_t k = 0; k < calls.size(); ++k ) {
+						if( calls[k].id == c.id ) {
+							out.step = MakeProviderError( ChatErrorKind::Provider,
+								"openai response repeats tool_call id \"" + c.id +
+								"\" -- refusing the turn (results could not be matched unambiguously)" );
+							return out;
+						}
+					}
+					const JsonValue& fn = tc.get( "function" );
+					c.name = fn.get( "name" ).asString();
+					if( c.name.empty() ) {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai tool_call carries no function name -- refusing the turn" );
+						return out;
+					}
+					JsonValue args;
+					std::string aerr;
+					const std::string argText = fn.get( "arguments" ).asString();
+					if( !JsonParse( argText, args, aerr ) || !args.isObject() ) {
+						// RECORD-OR-REFUSE: a tool_call whose arguments did not
+						// parse as a JSON object must not be recorded and then
+						// executed with fabricated empty args -- refuse the
+						// WHOLE response instead of silently degrading to "{}".
+						// A reply cut off by the token cap is truncation, not a
+						// model formatting error: a corrective retry would just
+						// truncate again.
+						out.step = MakeProviderError(
+							choice.get( "finish_reason" ).asString() == "length"
+								? ChatErrorKind::MaxTokens : ChatErrorKind::MalformedToolCall,
+							"openai tool_call \"" + c.name + "\" carries malformed arguments JSON -- "
+							"refusing the turn (executing it would fabricate empty args): " + CapSnippet( argText ) );
+						return out;
+					}
+					c.argsJson = JsonSerialize( args );
+					calls.push_back( c );
+				}
+			}
+
+			// EVERY exit from here on goes through AttachReasoning: the
+			// disposition below REPLACES out.step wholesale on a refusal
+			// (MakeProviderError builds a fresh ChatStepResult), so the
+			// `reasoning` / `reasoning_content` text captured above has to be
+			// attached AFTER that assignment or it is dropped.  SIBLING of the
+			// Gemini, Anthropic and Responses sites (same bug pattern, same
+			// fix), and the likeliest of the four to fire in practice: a local
+			// reasoning model that emits `reasoning` with EMPTY content lands
+			// in the blank-turn refusal below, where its reasoning is the only
+			// text the turn produced.  The STRUCTURAL refusals above (a
+			// non-function / id-less / duplicate-id / malformed-arguments
+			// tool_call, a spoofed role) deliberately stay OUTSIDE this -- see
+			// the Anthropic site for the full rationale.
+			const auto AttachReasoning = [&]() -> ChatParsedResponse& {
+				out.reasoningText = reasoningText;
+				out.step.reasoningText = reasoningText;
+				return out;
+			};
+
+			const std::string finishReason = choice.get( "finish_reason" ).asString();
+			if( finishReason == "tool_calls" ) {
+				if( calls.empty() ) {
+					out.step = MakeProviderError( ChatErrorKind::Provider,
+						"openai stopped with finish_reason \"tool_calls\" but no tool_calls were present" );
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::ToolCalls;
+				out.step.toolCalls = calls;
+			}
+			else if( !calls.empty() ) {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"openai response carries tool_calls under finish_reason \"" + finishReason +
+					"\" -- refusing the turn (its calls would be recorded but never answerable)" );
+				return AttachReasoning();
+			}
+			else if( finishReason == "stop" ) {
+				// A "stop" turn with no tool_calls is degenerate when it
+				// carries no readable text -- it would otherwise emit a silent
+				// blank (or whitespace-only) assistant bubble.  `text` is the
+				// fully extracted content (JsonObjectContentToText already
+				// handles the string, null, and content-ARRAY shapes), so a
+				// single blank test on it catches every degenerate shape
+				// uniformly: absent/null/empty-string content (documented
+				// OpenAI), a whitespace-only string, AND an array that is empty
+				// or has no "text"-typed parts (a non-conformant
+				// OpenAI-compatible proxy -- content is string|null in the real
+				// schema, but a proxy can send anything).  Whitespace-only is
+				// refused deliberately, matching the user-side IsBlank policy:
+				// a blank bubble is never a useful answer and a clean refusal
+				// lets the caller retry.  When OpenAI's structured-refusal
+				// field (message.refusal, a string) is present, surface ITS
+				// text so the user sees why.
+				if( ChatContentIsBlank( text ) ) {
+					const JsonValue* refusal = msg.find( "refusal" );
+					if( refusal && refusal->isString() && !refusal->asString().empty() ) {
+						out.step = MakeProviderError( ChatErrorKind::Refusal,
+							"openai declined this request: " + refusal->asString() );
+					}
+					else {
+						out.step = MakeProviderError( ChatErrorKind::Provider,
+							"openai ended the turn with no content -- refusing the degenerate turn" );
+						// Observed on local qwen3-thinking backends: a premature
+						// end-of-turn mid-reasoning, not a considered refusal -- see
+						// ChatStepResult::retryDegenerateTurn.  Set AFTER the
+						// assignment above (same hazard AttachReasoning documents:
+						// MakeProviderError REPLACES out.step wholesale).  NOT set on
+						// the sibling Refusal branch above (message.refusal is a
+						// considered decision, not a serving glitch).
+						out.step.retryDegenerateTurn = true;
+					}
+					return AttachReasoning();
+				}
+				out.step.kind = ChatStepResult::Kind::FinalText;
+				out.step.finalText = text;
+			}
+			else if( finishReason == "length" ) {
+				out.step = MakeProviderError( ChatErrorKind::MaxTokens,
+					"openai: the response hit the output-token cap (finish_reason length) -- "
+					"the truncated reply was discarded; try a narrower request" );
+				return AttachReasoning();
+			}
+			else if( finishReason == "content_filter" ) {
+				out.step = MakeProviderError( ChatErrorKind::Refusal,
+					"openai: the provider declined this request (finish_reason content_filter)" );
+				return AttachReasoning();
+			}
+			else {
+				out.step = MakeProviderError( ChatErrorKind::Provider,
+					"openai stopped with finish_reason \"" + finishReason + "\"" );
+				return AttachReasoning();
+			}
+			out.assistantDisplayText = text;
+			out.step.assistantDisplayText = text;
+			AttachReasoning();
+
+			std::size_t cb = 0, ce = 0, eb = 0, ee = 0, mb = 0, me = 0;
+			if( RawObjectMember( rawBody, 0, "choices", cb, ce ) &&
+			    RawArrayElement( rawBody, cb, 0, eb, ee ) &&
+			    RawObjectMember( rawBody, eb, "message", mb, me ) ) {
+				out.assistantEntryJson = rawBody.substr( mb, me - mb );
+			}
+			if( out.assistantEntryJson.empty() ) {
+				JsonValue fallback = JsonValue::MakeObject();
+				fallback.set( "role", JsonValue::MakeString( "assistant" ) );
+				fallback.set( "content", msg.get( "content" ) );
+				if( toolCalls.isArray() ) fallback.set( "tool_calls", toolCalls );
+				out.assistantEntryJson = JsonSerialize( fallback );
+			}
+			return out;
+		}
+
+		ChatUsage OpenAIChatCodec::ParseUsage( const std::string& rawBody ) const
+		{
+			ChatUsage u;
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( rawBody, root, perr ) || !root.isObject() ) return u;
+			const JsonValue& usage = root.get( "usage" );
+			if( !usage.isObject() ) return u;
+
+			// PROVIDER DISPOSITION (the ONE decision this function makes about
+			// reasoning tokens).  Several providers share this codec and they
+			// DISAGREE about whether reasoning_tokens is inside their output
+			// counter, so the question is answered PER PROVIDER -- from that
+			// provider's recorded evidence -- and not per response from the
+			// body's arithmetic:
+			//   * "openai"  INCLUSIVE.  Documented as a SUBSET of
+			//     completion_tokens / output_tokens, and confirmed on 273
+			//     recorded Responses blocks (204 with non-zero reasoning):
+			//         total_tokens == input_tokens + output_tokens   273/273
+			//         output_tokens >  reasoning_tokens              204/204
+			//     A separate summand would have broken the first identity on
+			//     every one of the 204 reasoning turns.
+			//   * "xai"     SEPARATE SUMMAND.  Measured over the 733 recorded
+			//     grok-4.5 blocks with non-zero reasoning (evals/runs/**):
+			//         total == prompt + completion + reasoning       733/733
+			//         total == prompt + completion                     0/733
+			//         completion_tokens < reasoning_tokens           356/733
+			//     the last line is decisive on its own: a subset can never
+			//     exceed the set that contains it, so grok's completion_tokens
+			//     is the VISIBLE output only (e.g. completion 51 vs reasoning
+			//     362 -- the same ~72 %-class undercount as Gemini's).
+			//   * "local"   INCLUSIVE by default.  No recorded local block
+			//     reports the field at all (0 of 3,524 carry
+			//     completion_tokens_details), so there is no evidence to decide
+			//     on; the OpenAI-compatible contract such a server claims to
+			//     implement documents inclusion, and assuming inclusion FAILS
+			//     SAFE -- it under-reports rather than double counting, and a
+			//     self-contradictory body is caught by EnforceUsageInvariant.
+			//
+			// WHY NOT decide per response from the body's arithmetic (the shape
+			// this replaced): the evidence above is per-provider, and the codec
+			// already knows the provider, so deriving the same answer from
+			// arithmetic buys nothing the data supports while introducing three
+			// failure modes of its own.  (1) It FLIPS between turns of ONE
+			// conversation: with identical (prompt, completion, reasoning) =
+			// (7183, 43, 32) the old code folded when total_tokens was present
+			// and did not when it was absent, stringified by a gateway, or
+			// unaccompanied by prompt_tokens -- and the trajectory recorder
+			// SUMS outputTokens across turns, so a single run silently mixed
+			// folded and unfolded turns.  Streaming without
+			// stream_options.include_usage produces exactly that.  (2) The
+			// three-way identity is NOT a proof of exclusion: it only says the
+			// total exceeds prompt+completion by exactly `reasoning`, which any
+			// other summand of equal size also satisfies -- e.g.
+			// {prompt 100, completion 50, total 180, reasoning 30, audio 30}
+			// double counted to 80 where the billed generation was 50.  (3) The
+			// `completion < reasoning` size test was unreachable in practice
+			// and its "proof" was untested.  A per-provider switch dissolves
+			// all three.
+			const bool reasoningIsSeparateSummand = ( mConfig.providerName == "xai" );
+
+			if( usage.find( "input_tokens" ) || usage.find( "output_tokens" ) ) {
+				// ---- Responses-API shape -------------------------------------
+				u.inputTokens  = ReadTokenCount( usage, "input_tokens" );
+				u.outputTokens = ReadTokenCount( usage, "output_tokens" );
+				u.cacheReadInputTokens =
+					ReadTokenCount( usage.get( "input_tokens_details" ), "cached_tokens" );
+				u.reasoningOutputTokens =
+					ReadTokenCount( usage.get( "output_tokens_details" ), "reasoning_tokens" );
+				// The disposition is the PROVIDER's, not the shape's: a
+				// provider whose counter is a separate summand stays that way
+				// whichever wire shape it answers in, and -- more to the point
+				// -- a "local" gateway that happens to answer in Responses
+				// shape must NOT inherit OpenAI's disposition by accident.
+				if( reasoningIsSeparateSummand ) FoldReasoningIntoOutput( u );
+				EnforceUsageInvariant( u );
+				return u;
+			}
+
+			// ---- Chat-Completions shape (OpenAI, xAI, Ollama) ----------------
+			u.inputTokens  = ReadTokenCount( usage, "prompt_tokens" );
+			u.outputTokens = ReadTokenCount( usage, "completion_tokens" );
+			u.cacheReadInputTokens =
+				ReadTokenCount( usage.get( "prompt_tokens_details" ), "cached_tokens" );
+			u.reasoningOutputTokens =
+				ReadTokenCount( usage.get( "completion_tokens_details" ), "reasoning_tokens" );
+			if( reasoningIsSeparateSummand ) FoldReasoningIntoOutput( u );
+			EnforceUsageInvariant( u );
+			return u;
+		}
+
+		std::size_t OpenAIChatCodec::ToolsWireBytes() const
+		{
+			return ( mConfig.useResponsesApi ? OpenAIResponsesToolsJson() : OpenAIToolsJson() ).size();
+		}
+
+		//======================================================================
+		// Arc 77 Phase 2 (2026-08-11): PROVIDER IMAGE GENERATION -- the wire
+		// half of `imagine_scene`.  See AgentChatCodecs.h for the contract.
+		//
+		// THE INVARIANT THIS BORROWS, STATED SO IT CAN BE CHECKED.  The chat
+		// transport's auth idiom is: the key appears ONLY in the provider's
+		// own auth HEADER, sanitized of control characters, never in the URL
+		// and never in a log; a failure maps to a header-free CATEGORY, never
+		// to a dump of the request.  That idiom holds here for exactly the
+		// same reason it holds there -- these builders emit a ChatHttpRequest
+		// and the SAME IChatHttpTransport performs it, so the transport's
+		// documented key-hygiene contract (ChatHttpTransport.h) covers this
+		// call unchanged.  The one thing that is NOT inherited is response
+		// parsing: an image response body can echo the prompt, so the parse
+		// errors below name a SHAPE, never a body substring.
+		//======================================================================
+		namespace
+		{
+			//! Environment override, or `fallback` when unset/empty.  CONFIG
+			//! ONLY -- see the header's note; no credential is ever read from
+			//! the environment here.  Control characters are stripped for the
+			//! same header/URL-injection reason SanitizeHeaderValue exists.
+			std::string ImageEnvOr_( const char* name, const char* fallback )
+			{
+				const char* v = std::getenv( name );
+				if( !v || !*v ) return std::string( fallback );
+				std::string out;
+				for( const char* p = v; *p; ++p ) {
+					if( static_cast<unsigned char>( *p ) >= 0x20 ) out += *p;
+				}
+				if( out.empty() ) return std::string( fallback );
+				return out;
+			}
+
+			//! Arc 77 Phase 2b (2026-08-11): THE REACHABILITY WRAPPER.
+			//!
+			//! WHY THIS TEXT EXISTS.  Phase 2 forwarded the model's
+			//! description verbatim, and providers answered with cinematic
+			//! concept art: painterly brushwork, volumetric god-rays,
+			//! photographic depth of field, lens bloom.  A path tracer
+			//! driving SDF primitives cannot approach any of that, so the
+			//! target the model was handed to steer by was an unreachable
+			//! ideal -- it could show a difference on every render and never
+			//! a difference the model could close.  This directive asks for
+			//! an image of the SAME subject in a form this renderer can
+			//! actually get to.  The imagining stays the model's act; only
+			//! the rendering STYLE is constrained.
+			//!
+			//! Do not smuggle SUBJECT guidance in here (no "make it a
+			//! product shot", no composition advice): the moment this text
+			//! decides what is in the picture, the target stops being the
+			//! model's own imagination and the mechanism loses the property
+			//! the whole arc rests on.
+			const char* const kImageStyleDirectiveDefault =
+				"Style: render this as a simple 3D-rendered image -- plain matte flat-shaded "
+				"surfaces, simple clean geometric forms, neutral even lighting, a plain uncluttered "
+				"background. No painterly, sketched or hand-drawn texture; no photographic "
+				"depth-of-field, lens flare, bloom or film grain; no text, labels or watermarks. "
+				"Depict only the subject described above, in that style.";
+
+			//! Depth-first search for the first object under `v` that carries
+			//! BOTH `data` and a mime key -- the Gemini inlineData part, whose
+			//! exact nesting has moved between API revisions (`inlineData` vs
+			//! `inline_data`, and `parts` sometimes under `content`).  Shape-
+			//! tolerant on purpose: a nesting change should degrade to "found
+			//! it anyway", not to a false "the provider returned no image".
+			bool FindInlineImagePart_( const JsonValue& v, std::string& outB64, std::string& outMime,
+			                           int depth )
+			{
+				if( depth > 8 ) return false;
+				if( v.isArray() ) {
+					for( std::size_t i = 0; i < v.size(); ++i )
+						if( FindInlineImagePart_( v.at( i ), outB64, outMime, depth + 1 ) ) return true;
+					return false;
+				}
+				if( !v.isObject() ) return false;
+				const JsonValue* inl = v.find( "inlineData" );
+				if( !inl ) inl = v.find( "inline_data" );
+				if( inl && inl->isObject() ) {
+					const JsonValue* d = inl->find( "data" );
+					if( d && d->isString() && !d->asString().empty() ) {
+						outB64 = d->asString();
+						const JsonValue* m = inl->find( "mimeType" );
+						if( !m ) m = inl->find( "mime_type" );
+						outMime = ( m && m->isString() ) ? m->asString() : std::string( "image/png" );
+						return true;
+					}
+				}
+				const std::vector<std::pair<std::string, JsonValue> >& mem = v.members();
+				for( std::size_t i = 0; i < mem.size(); ++i )
+					if( FindInlineImagePart_( mem[i].second, outB64, outMime, depth + 1 ) ) return true;
+				return false;
+			}
+		}
+
+		bool ChatProviderSupportsImageGeneration( const std::string& providerName )
+		{
+			return providerName == "gemini" || providerName == "openai";
+		}
+
+		std::string ChatImageStyleDirective()
+		{
+			return ImageEnvOr_( "RISE_IMAGE_STYLE_PROMPT", kImageStyleDirectiveDefault );
+		}
+
+		std::string ComposeImageGenerationPrompt( const std::string& description )
+		{
+			const std::string style = ChatImageStyleDirective();
+			if( style.empty() ) return description;
+			if( description.empty() ) return style;
+			// The model's own words FIRST and unaltered -- the subject is
+			// its imagining, and the directive that follows constrains only
+			// how that subject is drawn.
+			return description + "\n\n" + style;
+		}
+
+		std::string ChatImageGenerationModelId( const std::string& providerName )
+		{
+			if( providerName == "gemini" )
+				// VERIFIED LIVE 2026-08-11: `gemini-3.6-flash-image` does NOT
+				// exist -- the first live imagine_scene 404'd on it.  The
+				// account's image-capable generateContent models are
+				// gemini-3.1-flash-image / -lite-image / gemini-3-pro-image
+				// (imagen-4.0-* are `predict`-method, a different shape this
+				// builder does not speak).  Do not "modernise" this to match
+				// the chat default's version number without listing
+				// v1beta/models first -- the image and chat model lines are
+				// versioned independently.
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_GEMINI", "gemini-3.1-flash-image" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_IMAGE_MODEL_OPENAI", "gpt-image-1" );
+			return std::string();
+		}
+
+		bool BuildImageGenerationRequest( const std::string& providerName,
+		                                  const std::string& modelId,
+		                                  const std::string& apiKey,
+		                                  const std::string& prompt,
+		                                  ChatHttpRequest& outRequest,
+		                                  std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsImageGeneration( providerName ) ) {
+				outError = "provider `" + providerName + "` has no image-generation endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no image model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+
+			// Arc 77 Phase 2b (2026-08-11): the model's description is the
+			// SUBJECT; the host appends the style directive that makes the
+			// generated target something this renderer can approach.  Done
+			// ONCE here, so both provider bodies below send the identical
+			// composed prompt and neither can drift.
+			const std::string composedPrompt = ComposeImageGenerationPrompt( prompt );
+
+			if( providerName == "gemini" ) {
+				// The SAME surface, auth header and model-id escaping as
+				// GeminiChatCodec::BuildRequest -- image generation is a
+				// generateContent call whose responseModalities ask for an
+				// image, not a separate API.
+				const std::string base =
+					ImageEnvOr_( "RISE_IMAGE_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+
+				// responseModalities is a JSON array of bare enum tokens; the
+				// accepted set is model-version-dependent (some revisions
+				// require TEXT alongside IMAGE), hence the env override.
+				std::string modalities;
+				{
+					const std::string raw = ImageEnvOr_( "RISE_IMAGE_MODALITIES_GEMINI", "IMAGE" );
+					std::size_t start = 0;
+					while( start <= raw.size() ) {
+						const std::size_t comma = raw.find( ',', start );
+						const std::string tok = raw.substr(
+							start, comma == std::string::npos ? std::string::npos : comma - start );
+						if( !tok.empty() ) {
+							if( !modalities.empty() ) modalities += ",";
+							JsonAppendEscapedString( modalities, tok );
+						}
+						if( comma == std::string::npos ) break;
+						start = comma + 1;
+					}
+					if( modalities.empty() ) JsonAppendEscapedString( modalities, "IMAGE" );
+				}
+
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, composedPrompt );
+				body += "}]}],\"generationConfig\":{\"responseModalities\":[" + modalities + "]}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// openai: the dedicated images endpoint, Bearer auth -- the SAME
+			// header OpenAIChatCodec::BuildRequest emits.
+			outRequest.url = ImageEnvOr_( "RISE_IMAGE_ENDPOINT_OPENAI",
+			                              "https://api.openai.com/v1/images/generations" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "Authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			std::string body = "{\"model\":";
+			JsonAppendEscapedString( body, modelId );
+			body += ",\"prompt\":";
+			JsonAppendEscapedString( body, composedPrompt );
+			body += ",\"n\":1,\"size\":";
+			JsonAppendEscapedString( body, ImageEnvOr_( "RISE_IMAGE_SIZE_OPENAI", "1024x1024" ) );
+			body += "}";
+			outRequest.body = body;
+			return true;
+		}
+
+		bool ParseImageGenerationResponse( const std::string& providerName,
+		                                   const std::string& body,
+		                                   std::vector<unsigned char>& outBytes,
+		                                   std::string& outMimeType,
+		                                   std::string& outError )
+		{
+			outBytes.clear();
+			outMimeType.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the image response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string b64;
+			if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the image response carried no `candidates`";
+					return false;
+				}
+				if( !FindInlineImagePart_( *cands, b64, outMimeType, 0 ) ) {
+					outError = "the image response's candidate carried no inlineData image part";
+					return false;
+				}
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* data = root.find( "data" );
+				if( !data || !data->isArray() || data->size() == 0 ) {
+					outError = "the image response carried no `data` array";
+					return false;
+				}
+				const JsonValue& first = data->at( 0 );
+				const JsonValue* b = first.isObject() ? first.find( "b64_json" ) : nullptr;
+				if( !b || !b->isString() || b->asString().empty() ) {
+					outError = "the image response's data[0] carried no `b64_json` payload "
+					           "(a url-only response is not accepted -- the bytes must arrive inline)";
+					return false;
+				}
+				b64 = b->asString();
+				outMimeType = "image/png";
+			}
+			else {
+				outError = "provider `" + providerName + "` has no image-response shape in this build";
+				return false;
+			}
+
+			if( !Base64Decode( b64, outBytes ) || outBytes.empty() ) {
+				outBytes.clear();
+				outError = "the image payload was not valid base64";
+				return false;
+			}
+			if( outMimeType.empty() ) outMimeType = "image/png";
+			return true;
+		}
+
+		ChatImageGenerator MakeChatImageGenerator( const std::string& providerName,
+		                                            const std::string& apiKey,
+		                                            std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatImageGenerator out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsImageGeneration( providerName );
+			out.modelId      = ChatImageGenerationModelId( providerName );
+			if( !out.supported ) return out;
+
+			// `modelId` and `apiKey` are captured BY VALUE (not `providerName`
+			// again -- `out.providerName` above already holds the identical
+			// string, reused below by value-capture through the lambda's own
+			// copy) so the returned callable is self-contained and safe to
+			// outlive this function's locals.  `transport` is a shared_ptr:
+			// the callable keeps it alive for as long as the generator itself
+			// is held, exactly like AgentSession::AgentImageGenerator's own
+			// documented lifetime contract.
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.generate =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& description ) -> ChatImageGenOutcome
+			{
+				ChatImageGenOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildImageGenerationRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                  description, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for image generation";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the
+					// request and never the key -- see
+					// ChatHttpTransport.h's key-hygiene contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result
+					// the model reads.
+					result.error = "the image provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string perr;
+				if( !ParseImageGenerationResponse( providerCopy, resp.body, result.bytes,
+				                                   result.mimeType, perr ) ) {
+					result.bytes.clear();
+					result.error = perr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
+		}
+
+		//======================================================================
+		// Arc 79 slice S2 (2026-08-11): PROVIDER TEXT COMPLETION -- the wire
+		// half of `build_element`, the text sibling of the image block above.
+		// See AgentChatCodecs.h for the contract; the key discipline, the
+		// body-free parse errors and the endpoint/model override idiom are
+		// the image block's, reused rather than restated.
+		//======================================================================
+		namespace
+		{
+			//! Concatenate every `text`-bearing element of a provider content
+			//! array, tolerating both a bare {text:...} shape (Gemini parts)
+			//! and a typed {type:"...",text:...} shape (Anthropic blocks,
+			//! OpenAI output_text blocks).  `typeFilter` empty accepts any
+			//! typed block; otherwise only that `type`.  Shape-TOLERANT for
+			//! the same reason FindInlineImagePart_ is: an API revision that
+			//! moves a key should degrade to "found it anyway", never to a
+			//! false "the provider returned nothing".
+			void AppendTextBlocks_( const JsonValue& arr, const char* typeFilter, std::string& out )
+			{
+				if( !arr.isArray() ) return;
+				for( std::size_t i = 0; i < arr.size(); ++i ) {
+					const JsonValue& b = arr.at( i );
+					if( !b.isObject() ) continue;
+					// Gemini thinking models (e.g. gemini-4-argon) may emit
+					// thought-summary parts marked `"thought": true` alongside
+					// the visible answer text; skip them just as
+					// GeminiChatCodec::ParseResponse does so reasoning traces
+					// never leak into extracted builder chunks.
+					const JsonValue* thoughtFlag = b.find( "thought" );
+					if( thoughtFlag && thoughtFlag->isBool() && thoughtFlag->asBool() ) continue;
+					if( typeFilter && *typeFilter ) {
+						const JsonValue* t = b.find( "type" );
+						if( !t || !t->isString() || t->asString() != typeFilter ) continue;
+					}
+					const JsonValue* tx = b.find( "text" );
+					if( tx && tx->isString() ) out += tx->asString();
+				}
+			}
+		}
+
+		bool ChatProviderSupportsTextCompletion( const std::string& providerName )
+		{
+			return providerName == "anthropic" || providerName == "gemini" ||
+			       providerName == "openai"    || providerName == "xai";
+		}
+
+		std::string ChatTextCompletionModelId( const std::string& providerName )
+		{
+			// The DEFAULTS are each chat codec's own DefaultModelId, so a
+			// builder completion runs on the same model line the session
+			// runs on.  Keep them in step by hand when a codec default
+			// moves -- there is no shared constant to read them from
+			// (DefaultModelId is a virtual on a codec INSTANCE, and this
+			// function has no instance and must answer for a provider the
+			// caller may not have constructed a codec for).
+			if( providerName == "anthropic" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_ANTHROPIC", "claude-sonnet-5" );
+			if( providerName == "gemini" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-4-argon" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_OPENAI", "gpt-5.6-terra" );
+			if( providerName == "xai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_XAI", "grok-4.5" );
+			return std::string();
+		}
+
+		unsigned int ChatTextCompletionMaxTokens()
+		{
+			return 16384u;
+		}
+
+		bool BuildTextCompletionRequest( const std::string& providerName,
+		                                 const std::string& modelId,
+		                                 const std::string& apiKey,
+		                                 const std::string& prompt,
+		                                 ChatHttpRequest& outRequest,
+		                                 std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsTextCompletion( providerName ) ) {
+				outError = "provider `" + providerName +
+					"` has no text-completion endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no text model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+			if( prompt.empty() ) {
+				outError = "the text-completion prompt was empty";
+				return false;
+			}
+
+			const std::string maxTok = std::to_string( ChatTextCompletionMaxTokens() );
+
+			if( providerName == "anthropic" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_ANTHROPIC",
+				                              "https://api.anthropic.com/v1/messages" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				// The SAME two headers AnthropicChatCodec::BuildRequest emits,
+				// with the same sanitization.
+				outRequest.headers.push_back(
+					std::make_pair( "x-api-key", SanitizeHeaderValue( apiKey ) ) );
+				outRequest.headers.push_back( std::make_pair( "anthropic-version", "2023-06-01" ) );
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "gemini" ) {
+				const std::string base =
+					ImageEnvOr_( "RISE_BUILDER_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+				// Gemini 4 Argon counts thinking tokens (thoughtsTokenCount)
+				// toward maxOutputTokens with a 32,768 non-streaming ceiling;
+				// use the full 32K ceiling so deep spatial reasoning on complex
+				// builder prompts never starves the visible .RISEscene output.
+				const std::string geminiMaxTok =
+					std::to_string( ChatTextCompletionMaxTokens() * 2u );
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}],\"generationConfig\":{\"maxOutputTokens\":" + geminiMaxTok + "}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "openai" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_OPENAI",
+				                              "https://api.openai.com/v1/responses" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+				// The responses API's simplest single-turn form: `input` as a
+				// plain string.  No `instructions`, no `tools` -- a fresh
+				// minimal context is the mechanism.
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_output_tokens\":" + maxTok + ",\"input\":";
+				JsonAppendEscapedString( body, prompt );
+				body += ",\"store\":false}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// xai: the OpenAI-compatible chat-completions surface, Bearer
+			// auth -- the SAME shape AgentChatLoop configures OpenAIChatCodec
+			// with for this provider.
+			outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_XAI",
+			                              "https://api.x.ai/v1/chat/completions" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			{
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_completion_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+			}
+			return true;
+		}
+
+		bool ParseTextCompletionResponse( const std::string& providerName,
+		                                  const std::string& body,
+		                                  std::string& outText,
+		                                  std::string& outError )
+		{
+			outText.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the completion response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string text;
+			if( providerName == "anthropic" ) {
+				const JsonValue* content = root.find( "content" );
+				if( !content || !content->isArray() ) {
+					outError = "the completion response carried no `content` array";
+					return false;
+				}
+				AppendTextBlocks_( *content, "text", text );
+				if( text.empty() ) AppendTextBlocks_( *content, "", text );
+			}
+			else if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the completion response carried no `candidates`";
+					return false;
+				}
+				const JsonValue& c0 = cands->at( 0 );
+				const JsonValue* content = c0.isObject() ? c0.find( "content" ) : nullptr;
+				const JsonValue* parts = ( content && content->isObject() )
+					? content->find( "parts" ) : nullptr;
+				if( !parts || !parts->isArray() ) {
+					outError = "the completion response's candidate carried no content parts";
+					return false;
+				}
+				AppendTextBlocks_( *parts, "", text );
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* convenience = root.find( "output_text" );
+				if( convenience && convenience->isString() ) text = convenience->asString();
+				if( text.empty() ) {
+					const JsonValue* output = root.find( "output" );
+					if( !output || !output->isArray() ) {
+						outError = "the completion response carried neither `output_text` nor an "
+						           "`output` array";
+						return false;
+					}
+					for( std::size_t i = 0; i < output->size(); ++i ) {
+						const JsonValue& item = output->at( i );
+						if( !item.isObject() ) continue;
+						const JsonValue* content = item.find( "content" );
+						if( content ) AppendTextBlocks_( *content, "output_text", text );
+					}
+				}
+			}
+			else if( providerName == "xai" ) {
+				const JsonValue* choices = root.find( "choices" );
+				if( !choices || !choices->isArray() || choices->size() == 0 ) {
+					outError = "the completion response carried no `choices`";
+					return false;
+				}
+				const JsonValue& c0 = choices->at( 0 );
+				const JsonValue* msg = c0.isObject() ? c0.find( "message" ) : nullptr;
+				const JsonValue* content = ( msg && msg->isObject() ) ? msg->find( "content" ) : nullptr;
+				if( content && content->isString() ) text = content->asString();
+				else if( content && content->isArray() ) AppendTextBlocks_( *content, "", text );
+				else {
+					outError = "the completion response's first choice carried no message content";
+					return false;
+				}
+			}
+			else {
+				outError = "provider `" + providerName +
+					"` has no completion-response shape in this build";
+				return false;
+			}
+
+			if( text.empty() ) {
+				// WELL-FORMED BUT EMPTY IS A FAILURE.  A builder that returned
+				// nothing is not a builder that succeeded, and reporting
+				// "0 chunks landed, no rejections" would be a true sentence
+				// that reads as the model's own fault.
+				outError = "the completion response parsed but carried no assistant text";
+				return false;
+			}
+			outText.swap( text );
+			return true;
+		}
+
+		ChatTextCompleter MakeChatTextCompleter( const std::string& providerName,
+		                                          const std::string& apiKey,
+		                                          std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatTextCompleter out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsTextCompletion( providerName );
+			out.modelId      = ChatTextCompletionModelId( providerName );
+			if( !out.supported ) return out;
+
+			// By-value key/model capture and shared_ptr transport lifetime --
+			// identical to MakeChatImageGenerator's, for the identical reason
+			// (see that function's comment).
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.complete =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& prompt ) -> ChatTextCompletionOutcome
+			{
+				ChatTextCompletionOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildTextCompletionRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                 prompt, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for text completion";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the request
+					// and never the key -- ChatHttpTransport.h's contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result the
+					// model reads.
+					result.error = "the completion provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string pterr;
+				if( !ParseTextCompletionResponse( providerCopy, resp.body, result.text, pterr ) ) {
+					result.text.clear();
+					result.error = pterr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
+		}
+
+		//======================================================================
+		// Eval-harness E1: provider-neutral tool-definition fingerprint.
+		//======================================================================
+		std::string ChatToolDefsFingerprint()
+		{
+			std::string out;
+			for( std::size_t i = 0; i < kToolDefCount; ++i ) {
+				out += kToolDefs[i].name;
+				out += '\n';
+				out += kToolDefs[i].description;
+				out += '\n';
+				if( kToolDefs[i].schemaJson ) out += kToolDefs[i].schemaJson;
+				out += '\n';
+			}
+			return out;
+		}
+	}
+}

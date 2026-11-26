@@ -12,7 +12,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "BoxGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -33,10 +35,238 @@ BoxGeometry::~BoxGeometry( )
 {
 }
 
-void BoxGeometry::GenerateMesh( )
+bool BoxGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 1 ) {
+		return false;
+	}
 
+	const Scalar hw = dWidthOV2;
+	const Scalar hh = dHeightOV2;
+	const Scalar hd = dDepthOV2;
+	const Scalar w  = dWidth;
+	const Scalar h  = dHeight;
+	const Scalar d  = dDepth;
+
+	// Per-face (origin, edgeU, edgeV, normal) matching the UV convention in IntersectRay.
+	struct FaceDef {
+		Point3  origin;
+		Vector3 edgeU;
+		Vector3 edgeV;
+		Vector3 normal;
+	};
+	const FaceDef faces[6] = {
+		// 0: -X face; u = (z+d/2)/d, v = 1-(y+h/2)/h
+		{ Point3( -hw,  hh, -hd ), Vector3(  0.0,  0.0,  d   ), Vector3(  0.0, -h,    0.0 ), Vector3( -1.0,  0.0,  0.0 ) },
+		// 1: +X face; u = 1-(z+d/2)/d, v = 1-(y+h/2)/h
+		{ Point3(  hw,  hh,  hd ), Vector3(  0.0,  0.0, -d   ), Vector3(  0.0, -h,    0.0 ), Vector3(  1.0,  0.0,  0.0 ) },
+		// 2: -Y face; u = (x+w/2)/w, v = 1-(z+d/2)/d
+		{ Point3( -hw, -hh,  hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0,  0.0, -d   ), Vector3(  0.0, -1.0,  0.0 ) },
+		// 3: +Y face; u = (x+w/2)/w, v = (z+d/2)/d
+		{ Point3( -hw,  hh, -hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0,  0.0,  d   ), Vector3(  0.0,  1.0,  0.0 ) },
+		// 4: -Z face; u = 1-(x+w/2)/w, v = 1-(y+h/2)/h
+		{ Point3(  hw,  hh, -hd ), Vector3( -w,    0.0,  0.0 ), Vector3(  0.0, -h,    0.0 ), Vector3(  0.0,  0.0, -1.0 ) },
+		// 5: +Z face; u = (x+w/2)/w, v = 1-(y+h/2)/h
+		{ Point3( -hw,  hh,  hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0, -h,    0.0 ), Vector3(  0.0,  0.0,  1.0 ) },
+	};
+
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int rowStride = nU + 1;
+
+	for( int f = 0; f < 6; f++ ) {
+		const FaceDef& face = faces[f];
+		const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+		for( unsigned int j = 0; j <= nV; j++ ) {
+			const Scalar v = Scalar(j) / Scalar(nV);
+			for( unsigned int i = 0; i <= nU; i++ ) {
+				const Scalar u = Scalar(i) / Scalar(nU);
+
+				const Point3 pos(
+					face.origin.x + u * face.edgeU.x + v * face.edgeV.x,
+					face.origin.y + u * face.edgeU.y + v * face.edgeV.y,
+					face.origin.z + u * face.edgeU.z + v * face.edgeV.z );
+
+				vertices.push_back( pos );
+				normals.push_back( face.normal );
+				coords.push_back( Point2( u, v ) );
+			}
+		}
+
+		for( unsigned int j = 0; j < nV; j++ ) {
+			for( unsigned int i = 0; i < nU; i++ ) {
+				const unsigned int a = baseIdx + j     * rowStride + i;
+				const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+				const unsigned int c = baseIdx + (j+1) * rowStride + i;
+				const unsigned int d_idx = baseIdx + (j+1) * rowStride + (i + 1);
+
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+				tris.push_back( MakeIndexedTriangleSameIdx( b, c, d_idx ) );
+			}
+		}
+	}
+
+	return true;
 }
+
+namespace {
+
+// ================================================================
+// Self-hit root suppression -- an origin ON one of the box's own faces.
+//
+// RayBoxIntersection is a slab test: it returns the entry root (tmin)
+// as the primary hit whenever tmin > 0, however small.  A ray whose
+// origin was PUBLISHED from a hit on this box -- Object::IntersectRay
+// backs the hit point off along the incoming ray by
+// SURFACE_INTERSEC_ERROR (1e-12, object-local) -- therefore sits
+// ~1e-12 outside (entry face) or inside (exit face) the plane it just
+// hit, and a continuation / shadow ray leaving that point re-crosses
+// that plane at t = (1e-12 * |d_in.axis|) / |d_out.axis|: a tiny,
+// DIRECTION-DEPENDENT root that straddles NEARZERO.  Downstream, every
+// closed two-root primitive is consumed as "the FIRST root is the hit"
+// (IntersectRay_IntersectionOnly rejects the whole primitive when that
+// root is < NEARZERO), so the straddle produced BOTH failure modes on
+// the same box:
+//   * root < NEARZERO  -> the ENTIRE box was discarded, including the
+//     genuine far face -- a shadow ray from the front face toward a
+//     light behind the box saw no occluder and lit the front face as if
+//     the back face did not exist (PT read a closed thin-transmissive
+//     box 3.5x BRIGHTER than the same six faces as separate planes);
+//   * root >= NEARZERO -> the box occluded its OWN origin face -- a
+//     shadow ray toward a light INSIDE the box was self-shadowed (PT
+//     read 0.44x).
+// BDPT / VCM never saw either because they Advance() every shadow and
+// continuation ray by 1e-6 first, which is why they agreed with each
+// other, with PT-on-six-planes, and not with PT-on-the-box
+// (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 25).
+//
+// RaySphereIntersection already handles this class at the producer:
+// it skips any root <= NEARZERO and returns the NEXT one.  A box can do
+// better than a range threshold, because "the origin is on this face"
+// is a PLANE-DISTANCE fact, independent of the ray's angle to the
+// face: |origin.axis - bound| is at the back-off / round-off floor.
+// So each root is tested against the face it belongs to, and a root
+// on the origin's own face is dropped in favour of the other root --
+// exactly what would have happened had the origin been published a
+// hair further along the ray.  The tolerance is PER AXIS and carries no
+// transverse or half-extent term (debt-25 review round 2, P1): the
+// plane distance |origin.axis - bound| is an exact FP subtraction of
+// two nearby numbers, so its only error is the error in origin.axis
+// itself -- the 1e-12 back-off (always <= 1e-12 in these local units)
+// plus the world<->local transform's rounding, which scales with THAT
+// coordinate, not with the box's other extents or the origin's other
+// components.  Hence
+//   eps(axis) = 4 * NEARZERO + 64 * DBL_EPSILON * |origin.axis|
+// (4x headroom over the back-off; the ulp term is RayCaster::
+// ResolveXrayView_'s representability bound).  A coordinate-summed
+// band (the first cut mirrored RayBilinearPatchIntersection's
+// NEARZERO * (1 + L1 coordinate) floor and added the half-extents)
+// grew with the box's TRANSVERSE size and swallowed the deliberate
+// standoff CSGObject's exit-face probe uses -- see that function's
+// margin derivation for the other half of this contract.
+//
+// Known limit, pre-existing for every primitive: a box translated far
+// from the world origin (|T| >~ 1e4) with non-dyadic face coordinates
+// round-trips its published point to within ~ulp(|T|) of the plane,
+// which can exceed this band; the geometry only ever sees local
+// coordinates and cannot widen for a translation it cannot observe.
+//
+// Returns true when the primary root was replaced by the far root,
+// i.e. the surviving hit is an EXIT face reached from the origin's own
+// entry face -- the caller treats that like an origin that began inside
+// the box for the front/back-face flag rule.
+//
+// Known, accepted limits (debt-25 review round 1, P3-2 / P3-3): the test
+// is on the PLANE, not on provenance, so (a) a ray within ~1e-9 rad of
+// parallel to the origin's face whose genuine entry root lies far along
+// the ray is also dropped (|dir.n| < eps / t -- measure-zero in a
+// render), and (b) a hit point published by an UNRELATED object whose
+// face is exactly coplanar with one of ours reads as our own face
+// (exact-contact stacks: a box resting on another box reports the
+// lower box's far face for a ray leaving the upper box's bottom -- a
+// first-hit shading error, never a shadow leak).  A deliberate standoff
+// that wants to re-hit the face it stands off from -- CSGObject's
+// exit-face payload probe -- must therefore stand off by MORE than
+// `eps` in THIS frame; it derives its margin from the same constants.
+// ================================================================
+inline Scalar FaceBound( const int side, const Point3& ll, const Point3& ur )
+{
+	// RayBoxIntersection side ids: SIDE_X0=0, SIDE_X1=1, SIDE_Y0=2, SIDE_Y1=3, SIDE_Z0=4, SIDE_Z1=5.
+	switch( side ) {
+	case 0: return ll.x;
+	case 1: return ur.x;
+	case 2: return ll.y;
+	case 3: return ur.y;
+	case 4: return ll.z;
+	case 5: return ur.z;
+	default: return ur.z;   // unreachable: RayBoxIntersection writes 0..5 only
+	}
+}
+
+inline Scalar OriginAxis( const int side, const Point3& o )
+{
+	switch( side / 2 ) {
+	case 0: return o.x;
+	case 1: return o.y;
+	default: return o.z;
+	}
+}
+
+inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const Point3& ur )
+{
+	if( !h.bHit ) {
+		return false;
+	}
+
+	const Point3& o = ray.origin;
+	constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16;   // 64 * DBL_EPSILON
+	auto onFace = [&]( const int side ) -> bool
+	{
+		const Scalar oAxis = OriginAxis( side, o );
+		const Scalar eps = Scalar(4) * NEARZERO + kUlpFactor * std::fabs( oAxis );
+		return std::fabs( oAxis - FaceBound( side, ll, ur ) ) <= eps;
+	};
+
+	if( !onFace( h.sideA ) ) {
+		return false;
+	}
+
+	// The primary root is the origin's own face.  The other root is the
+	// hit -- if it is ahead of the origin and not ALSO the origin's own
+	// face (an edge / corner origin leaving the box).
+	// (The 4 * NEARZERO here is the one absolute constant on this side:
+	// it only asks that the OTHER root be ahead of the origin by more
+	// than the back-off, so it binds solely for a box under ~4e-12 thick
+	// along the ray -- sub-picometre geometry -- and needs no ulp term.)
+	if( h.dRange2 <= Scalar(4) * NEARZERO || onFace( h.sideB ) ) {
+		h.bHit = false;
+		h.dRange = RISE_INFINITY;
+		h.dRange2 = RISE_INFINITY;
+		return false;
+	}
+
+	// Publish as RaySphereIntersection does when it skips a root at the
+	// origin: primary = the exit root, dRange2 = 0 -- the "single root,
+	// origin inside" sentinel CSGObject reads (`range2 == 0`) and that
+	// Object::IntersectRay's exit-info block leaves alone.  (Carrying the
+	// ~1e-12 self-root as dRange2 instead would publish an exit BEHIND the
+	// entry, which CSG's range ordering misreads.)  sideB keeps the
+	// origin's own face so bComputeExitInfo still names a face.
+	const int sideSelf = h.sideA;
+	h.dRange = h.dRange2;
+	h.sideA = h.sideB;
+	h.dRange2 = Scalar(0);
+	h.sideB = sideSelf;
+	return true;
+}
+
+} // anonymous namespace
 
 void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
@@ -45,19 +275,61 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 
 	// If the point is inside the box and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
-	bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ri.ray.origin, ptLowerLeft, ptUpperRight );
+	const bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ri.ray.origin, ptLowerLeft, ptUpperRight );
 	if( bHitFrontFaces && !bHitBackFaces && RayBeginsInBox ) {
-		return;
-	}
-
-	// Accordingly, if we are outside the box but we are not supposed to hit front faces and 
-	// only back faces, then we can't hit anything!
-	if( !bHitFrontFaces && bHitBackFaces && !RayBeginsInBox ) {
 		return;
 	}
 
 	BOX_HIT	h;
 	RayBoxIntersection( ri.ray, h, ptLowerLeft, ptUpperRight );
+
+	// An origin on one of our own faces: drop that root (see
+	// DropSelfHitRoot above).  The surviving hit is then an EXIT face,
+	// exactly as for an origin that began strictly inside -- so the
+	// front/back-face rule is decided on that combined predicate rather
+	// than on the strict inside test alone (which calls an on-face origin
+	// "outside" and used to reject the far face under back-faces-only).
+	// Note (false, false) now yields no hit, where the removed early-out
+	// let it through; no caller passes that combination.
+	//
+	// EXACT-BOUNDARY continuation queries (minimumSurfaceRange >= 0 with
+	// bExactBoundaryOrigin: a medium boundary walk re-querying from a
+	// boundary point it computed itself) are not backed-off shading points;
+	// they reject the zero-distance root through minimumSurfaceRange
+	// (Object::IntersectRay promotes the exit root).  The plane-distance
+	// heuristic is not admissible there: a genuinely distinct entry face
+	// lying within its band of the origin (a thin or strongly scaled box,
+	// e.g. 5e-7 world = 5e-13 local under a 1e6 scale) would be dropped and
+	// the walk would see an exit without its entry.  A walk's FIRST query
+	// starts from the caller's (possibly backed-off) point and keeps the
+	// drop, so it does not re-report the face it is standing on.
+	const bool bExactBoundaryQuery = ri.minimumSurfaceRange >= 0 &&
+		ri.bExactBoundaryOrigin;
+	const bool bExitHit = ( !bExactBoundaryQuery &&
+		DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) ) || RayBeginsInBox;
+	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
+		h.bHit = false;
+		h.dRange = RISE_INFINITY;    // publish a consistent miss, as DropSelfHitRoot's own reject does
+		h.dRange2 = RISE_INFINITY;
+	}
+
+	// A strictly interior origin (RayBoxIntersection's tmin < 0 branch)
+	// publishes the same single-root sentinel as an on-face one: range2 = 0
+	// -- what RaySphereIntersection publishes for an origin inside, what
+	// CSGObject reads as "inside this operand", and what Object::
+	// IntersectRay's exit-info block leaves alone.  Carrying the negative
+	// tmin as range2 (which Object then turned into +|tmin|) published an
+	// EXIT BEHIND THE ENTRY, and a CSG_UNION of two overlapping boxes seen
+	// from inside one of them showed a phantom interior wall where two
+	// spheres in the same construction do not (debt-25 review round 3).
+	// sideB is left as RayBoxIntersection set it -- the entry face BEHIND
+	// the origin -- so bComputeExitInfo's vNormal2 names that face, the
+	// box's long-standing interior convention; range2 = 0 is the signal
+	// that there is no second root AHEAD, and every range2 reader keys on
+	// the range, not the normal.
+	if( h.bHit && RayBeginsInBox ) {
+		h.dRange2 = Scalar(0);
+	}
 
 	ri.bHit = h.bHit;
 	ri.range = h.dRange;
@@ -103,6 +375,7 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 			ri.ptCoord = Point2( (it.x+dWidthOV2)*dOVWidth, 1.0 - (it.y+dHeightOV2)*dOVHeight );
 			break;
 		};
+		ri.vGeomNormal = ri.vNormal;	// box face is flat: shading == geometric
 
 		if( bComputeExitInfo )
 		{
@@ -128,6 +401,7 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 				ri.vNormal2 = Vector3( 0.0, 0.0, 1.0 );
 				break;
 			};
+			ri.vGeomNormal2 = ri.vNormal2;	// box face is flat: shading == geometric
 		}
 	}
 }
@@ -139,19 +413,25 @@ bool BoxGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dH
 
 	// If the point is inside the box and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
-	bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ray.origin, ptLowerLeft, ptUpperRight );
+	const bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ray.origin, ptLowerLeft, ptUpperRight );
 	if( bHitFrontFaces && !bHitBackFaces && RayBeginsInBox ) {
-		return false;
-	}
-
-	// Accordingly, if we are outside the box but we are not supposed to hit front faces and 
-	// only back faces, then we can't hit anything!
-	if( !bHitFrontFaces && bHitBackFaces && !RayBeginsInBox ) {
 		return false;
 	}
 
 	BOX_HIT	h;
 	RayBoxIntersection( ray, h, ptLowerLeft, ptUpperRight );
+
+	// An origin on one of our own faces: drop that root rather than
+	// letting a ~1e-12 self-root either occlude the origin's own face or
+	// (when it falls under NEARZERO below) discard the genuine far face
+	// along with it -- see DropSelfHitRoot above.  Same exit-vs-entry
+	// flag rule as IntersectRay.
+	const bool bExitHit = DropSelfHitRoot( ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
+	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
+		h.bHit = false;
+		h.dRange = RISE_INFINITY;
+		h.dRange2 = RISE_INFINITY;
+	}
 
 	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
 		h.bHit = false;
@@ -175,9 +455,27 @@ BoundingBox BoxGeometry::GenerateBoundingBox() const
 
 void BoxGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	int idx = int(floor(prand.z * 6.0));
-	if( idx < 0 ) idx = 0;
-	if( idx > 5 ) idx = 5;
+	// The caller uses GetArea() as the reciprocal position PDF, so face
+	// selection must be proportional to face area, not uniform by face.
+	// Uniform face selection over-samples thin sides and under-samples broad
+	// faces, which biases any area-light estimator that assumes 1/GetArea().
+	const Scalar faceAreas[6] = {
+		dHeight*dDepth, dHeight*dDepth,
+		dWidth*dDepth, dWidth*dDepth,
+		dWidth*dHeight, dWidth*dHeight
+	};
+	const Scalar totalArea = faceAreas[0] + faceAreas[1] + faceAreas[2] +
+		faceAreas[3] + faceAreas[4] + faceAreas[5];
+	const Scalar sample = prand.z * totalArea;
+	Scalar cumulativeArea = 0;
+	int idx = 5;
+	for( int i=0; i<5; ++i ) {
+		cumulativeArea += faceAreas[i];
+		if( sample < cumulativeArea ) {
+			idx = i;
+			break;
+		}
+	}
 
 	Point3 pt;
 	switch( idx ) {
@@ -296,17 +594,18 @@ SurfaceDerivatives BoxGeometry::ComputeSurfaceDerivatives( const Point3& objSpac
 	}
 	else if( ay > az )
 	{
-		// Y face
+		// Y face — swap (u, v) so (dpdu × dpdv, n) is right-handed per
+		// docs/GEOMETRY_DERIVATIVES.md.
 		if( objSpaceNormal.y > 0 ) {
 			// +Y face
-			sd.dpdu = Vector3( 1, 0, 0 );
-			sd.dpdv = Vector3( 0, 0, 1 );
-			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, (objSpacePoint.z + dDepthOV2) * dOVDepth );
+			sd.dpdu = Vector3( 0, 0, 1 );
+			sd.dpdv = Vector3( 1, 0, 0 );
+			sd.uv = Point2( (objSpacePoint.z + dDepthOV2) * dOVDepth, (objSpacePoint.x + dWidthOV2) * dOVWidth );
 		} else {
 			// -Y face
-			sd.dpdu = Vector3( 1, 0, 0 );
-			sd.dpdv = Vector3( 0, 0, -1 );
-			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth );
+			sd.dpdu = Vector3( 0, 0, -1 );
+			sd.dpdv = Vector3( 1, 0, 0 );
+			sd.uv = Point2( 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth, (objSpacePoint.x + dWidthOV2) * dOVWidth );
 		}
 	}
 	else
@@ -362,24 +661,28 @@ IKeyframeParameter* BoxGeometry::KeyframeFromParameters( const String& name, con
 
 void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case WIDTH_ID:
 		{
 			dWidth = *(Scalar*)val.getValue();
 			dWidthOV2 = dWidth * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	case HEIGHT_ID:
 		{
 			dHeight = *(Scalar*)val.getValue();
 			dHeightOV2 = dHeight * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	case DEPTH_ID:
 		{
 			dDepth = *(Scalar*)val.getValue();
 			dDepthOV2 = dDepth * 0.5;
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -387,6 +690,7 @@ void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void BoxGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( dWidth > 0 ) {
 		dOVWidth = 1.0 / dWidth;
 	} else {
@@ -404,6 +708,96 @@ void BoxGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "BoxGeometry:: Depth is 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
 }
 
+//! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.
+//!
+//! The signed FIELD below is exact on both sides; what this method REPORTS
+//! is that field CLAMPED AT ZERO, so interpenetration reads 0 rather than a
+//! depth (design §2, and see the note on the clamp further down).
+//!
+//! The box is axis-aligned and centred at the object-space origin with half
+//! extents (dWidthOV2, dHeightOV2, dDepthOV2), exactly as
+//! GenerateBoundingBox reports.  BOXES GET NO EXEMPTION from the transform
+//! machinery for that reason: the extents are object-space like every other
+//! family's, and a rotated or scaled box is handled by Object's sigma
+//! bounds, not here.
+//!
+//! `q` is the per-axis signed overshoot past the half extent.  Outside the
+//! box at least one component is positive and the exact distance is the
+//! length of the positive part; strictly inside all three are negative and
+//! the exact distance to the nearest FACE is the least-negative one
+//! negated.  Both are exact -- the box signed field is one of the few that
+//! is exact on the inside too -- but this query does not REPORT the inside
+//! one: the signal's contract is that a point inside a neighbour is in
+//! CONTACT with it (distance 0), not that it is some distance from the
+//! nearest face.  So the combined form is clamped at zero rather than
+//! taken in absolute value, and the exact inside term earns its keep as
+//! the free inside TEST.
+bool BoxGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar qx = std::fabs( ptObject.x ) - dWidthOV2;
+	const Scalar qy = std::fabs( ptObject.y ) - dHeightOV2;
+	const Scalar qz = std::fabs( ptObject.z ) - dDepthOV2;
 
+	const Scalar ox = ( qx > Scalar( 0 ) ) ? qx : Scalar( 0 );
+	const Scalar oy = ( qy > Scalar( 0 ) ) ? qy : Scalar( 0 );
+	const Scalar oz = ( qz > Scalar( 0 ) ) ? qz : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy + oz*oz );
+
+	// The inside term is zero whenever any q is positive, so the two never
+	// both contribute -- this is the standard exact box field, written the
+	// way it is so the outside branch stays branch-free.
+	const Scalar qmax = std::max( qx, std::max( qy, qz ) );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	// CLAMPED AT ZERO rather than fabs: a point inside the box reads 0
+	// ("interpenetration IS contact", the signal's own convention), and the
+	// exact inside term is what makes that test free.
+	const Scalar signed_ = outside + inside;
+	const Scalar d = ( signed_ > Scalar( 0 ) ) ? signed_ : Scalar( 0 );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+//! IGeometry::SignedDistanceLower -- the SAME field as above, UNCLAMPED.
+//!
+//! The box's signed field is exact on both sides (the comment on
+//! `DistanceToSurface` says so and then throws the inside term away at its
+//! clamp); here the inside term is the whole point, so the flag is set.
+//! A degenerate extent refuses -- see SphereGeometry's twin for why the
+//! boundary arm cannot accept a lower-dimensional operand.
+bool BoxGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( dWidthOV2 > Scalar( 0 ) ) || !( dHeightOV2 > Scalar( 0 ) ) || !( dDepthOV2 > Scalar( 0 ) ) ) {
+		return false;
+	}
+
+	const Scalar qx = std::fabs( ptObject.x ) - dWidthOV2;
+	const Scalar qy = std::fabs( ptObject.y ) - dHeightOV2;
+	const Scalar qz = std::fabs( ptObject.z ) - dDepthOV2;
+
+	const Scalar ox = ( qx > Scalar( 0 ) ) ? qx : Scalar( 0 );
+	const Scalar oy = ( qy > Scalar( 0 ) ) ? qy : Scalar( 0 );
+	const Scalar oz = ( qz > Scalar( 0 ) ) ? qz : Scalar( 0 );
+	const Scalar outside = std::sqrt( ox*ox + oy*oy + oz*oz );
+
+	const Scalar qmax = std::max( qx, std::max( qy, qz ) );
+	const Scalar inside = ( qmax < Scalar( 0 ) ) ? qmax : Scalar( 0 );
+
+	const Scalar sgn = outside + inside;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
+}

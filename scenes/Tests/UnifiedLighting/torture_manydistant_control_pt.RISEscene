@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   Control scene: same as torture_manydistant but with ONLY the nearby light.                              #
 #   This shows what proper sampling looks like — 100% of NEE budget goes to the                             #
@@ -28,17 +28,170 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 200
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 lambertian_material
 {
@@ -64,6 +217,7 @@ omni_light
 	name				nearby_light
 	power				100000.0
 	color				1.0 0.95 0.8
+	colorspace			sRGB
 	position			278 50 280
 }
 
@@ -178,3 +332,5 @@ standard_object
 	geometry			shortblockgeom
 	material			white
 }
+
+

@@ -24,6 +24,11 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Thread-local fault hook for codec error propagation regressions.
+		// Returns the previous setting so tests can restore it with RAII.
+		bool ForTest_SetPNGWriteFailureAfterHeader( bool enabled );
+		bool ForTest_PNGWriteFailureAfterHeader();
+
 		class PNGWriter : public virtual IRasterImageWriter, public virtual Reference
 		{
 		protected:

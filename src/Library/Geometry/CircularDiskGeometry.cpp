@@ -13,7 +13,9 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CircularDiskGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -41,8 +43,170 @@ CircularDiskGeometry::~CircularDiskGeometry( )
 {
 }
 
-void CircularDiskGeometry::GenerateMesh( )
+void CircularDiskGeometry::DiskUVFromPosition( const Point3& pt, Point2& uv ) const
 {
+	// Inverse of CircularDiskGeometry::TessellateToMesh:
+	//   axis 'x':  pos = (0, r·cos(θ), r·sin(θ))
+	//   axis 'y':  pos = (r·sin(θ), 0,  r·cos(θ))
+	//   axis 'z':  pos = (r·cos(θ), r·sin(θ), 0)
+	// with θ = u·2π in [0, 2π) and r = v·R in [0, R].
+	Scalar a = 0.0;  // the parameter playing the cos role
+	Scalar b = 0.0;  // the parameter playing the sin role
+	switch( chAxis )
+	{
+	case 'x':
+		a = pt.y;  // r·cos(θ)
+		b = pt.z;  // r·sin(θ)
+		break;
+	case 'y':
+		a = pt.z;  // r·cos(θ)
+		b = pt.x;  // r·sin(θ)
+		break;
+	default:
+	case 'z':
+		a = pt.x;  // r·cos(θ)
+		b = pt.y;  // r·sin(θ)
+		break;
+	}
+
+	const Scalar rad = std::sqrt( a * a + b * b );
+	uv.y = rad * OVRadius;
+
+	if( rad < NEARZERO ) {
+		// Disk centre — θ is undefined; canonicalise to u = 0 to match
+		// TessellateToMesh's pole-collapse rule (atCenter ⇒ u = 0).
+		uv.x = 0.0;
+		return;
+	}
+	Scalar theta = std::atan2( b, a );
+	if( theta < 0.0 ) {
+		theta += TWO_PI;
+	}
+	uv.x = theta / TWO_PI;
+}
+
+bool CircularDiskGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
+{
+	if( detail < 3 ) {
+		return false;
+	}
+
+	const unsigned int nU = detail;  // angular sectors
+	const unsigned int nV = detail;  // radial rings
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	Vector3 axisNormal;
+	switch( chAxis ) {
+		case 'x':
+			axisNormal = Vector3( 1.0, 0.0, 0.0 );
+			break;
+		case 'y':
+			axisNormal = Vector3( 0.0, 1.0, 0.0 );
+			break;
+		case 'z':
+		default:
+			axisNormal = Vector3( 0.0, 0.0, 1.0 );
+			break;
+	}
+
+	// DL-116 sibling (sphere pole pattern; see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md):
+	// the center row (j=0, r=0) collapses to a single 3D position with the
+	// SAME axis normal AND the same canonicalized u=0 texcoord for every
+	// column -- bit-identical in every sense a downstream consumer could
+	// read, since theta is forced to 0 below regardless of i.  Emitting
+	// `nU+1` separate coincident indices for that one point turns the
+	// center's triangle fan into `nU` wedges whose two "radiating" edges
+	// are each shared with only ONE neighbouring wedge instead of two under
+	// an index-keyed edge-manifold check.  Weld it to ONE shared index
+	// (below), exactly like SphereGeometry's pole fix, and drop the wedge
+	// triangle that vertex would otherwise make degenerate.
+	unsigned int centerIdx = 0;
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v = Scalar(j) / Scalar(nV);
+		const Scalar r = v * radius;
+
+		// At the center (v=0, r=0) every i-vertex collapses to the origin with the
+		// same axis normal.  If we let u vary across those vertices, a non-constant
+		// displacement function gives each one a different height along the normal
+		// and the center fan opens into a star-shaped crack.  Canonicalise u at the
+		// center so every collapsed vertex gets the same displacement.
+		const bool atCenter = (j == 0);
+
+		if( atCenter ) {
+			// r=0 regardless of chAxis -- the center is the disk's local
+			// origin on every axis.
+			const Scalar u = 0.0;
+			centerIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( Point3( 0.0, 0.0, 0.0 ) );
+			normals.push_back( axisNormal );
+			coords.push_back( Point2( u, v ) );
+			continue;
+		}
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u        = Scalar(i) / Scalar(nU);
+			const Scalar theta    = u * TWO_PI;
+			const Scalar cosTheta = cos(theta);
+			const Scalar sinTheta = sin(theta);
+
+			Point3 pos;
+			switch( chAxis ) {
+				case 'x':
+					pos = Point3( 0.0,          r * cosTheta, r * sinTheta );
+					break;
+				case 'y':
+					pos = Point3( r * sinTheta, 0.0,          r * cosTheta );
+					break;
+				case 'z':
+				default:
+					pos = Point3( r * cosTheta, r * sinTheta, 0.0 );
+					break;
+			}
+
+			vertices.push_back( pos );
+			normals.push_back( axisNormal );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	// Combined index for (row j, column i): row 0 (the center) collapses to
+	// its single shared entry regardless of i; every other row keeps the
+	// ORIGINAL per-column indexing (rowStride wide), offset by row 0 now
+	// contributing one entry instead of rowStride.
+	const auto Index = [&]( unsigned int j, unsigned int i ) -> unsigned int {
+		if( j == 0 ) { return centerIdx; }
+		return baseIdx + 1 + ( j - 1 ) * rowStride + i;
+	};
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = Index( j,   i     );
+			const unsigned int b = Index( j,   i + 1 );
+			const unsigned int c = Index( j+1, i     );
+			const unsigned int d = Index( j+1, i + 1 );
+
+			// At the center row (j==0) a==b (the shared center entry), so the
+			// first triangle (a, c, b) is fully degenerate (two corners at
+			// the identical index) -- it always contributed zero area; skip
+			// it.  Away from the center this is exactly the original
+			// two-triangles-per-wedge assembly.
+			const bool bCenterWedge = ( j == 0 );
+
+			if( !bCenterWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			}
+			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+		}
+	}
+
+	return true;
 }
 
 void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -78,42 +242,59 @@ void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	if( h.bHit )
 	{
 		Point3 intersec = ri.ray.PointAtLength( h.dRange );
-		if( intersec.x*intersec.x+intersec.y*intersec.y <= sqrRadius )
+
+		// Membership test must use the two in-plane axes for the disk's
+		// orientation, not always (x, y).  The pre-fix code always tested
+		// intersec.x² + intersec.y² which silently let X- and Y-axis disks
+		// "hit" points arbitrarily far along their out-of-plane radial
+		// direction.
+		Scalar inPlaneSqr = 0.0;
+		switch( chAxis )
+		{
+		case 'x':
+			inPlaneSqr = intersec.y * intersec.y + intersec.z * intersec.z;
+			break;
+		case 'y':
+			inPlaneSqr = intersec.x * intersec.x + intersec.z * intersec.z;
+			break;
+		default:
+		case 'z':
+			inPlaneSqr = intersec.x * intersec.x + intersec.y * intersec.y;
+			break;
+		}
+
+		if( inPlaneSqr <= sqrRadius )
 		{
 			ri.bHit = h.bHit;
 			ri.range = h.dRange;
 			ri.range2 = h.dRange2;
+			ri.ptIntersection = intersec;
 
 			if( bFrontSideWasHit ) {
 				ri.vNormal = vNormal;
+				ri.vGeomNormal = vNormal;	// flat disk: shading == geometric
 
 				if( bComputeExitInfo ) {
 					ri.vNormal2 = -vNormal;
+					ri.vGeomNormal2 = ri.vNormal2;
 				}
 			} else {
 				ri.vNormal = -vNormal;
+				ri.vGeomNormal = -vNormal;	// flat disk: shading == geometric
 
 				if( bComputeExitInfo ) {
 					ri.vNormal2 = vNormal;
+					ri.vGeomNormal2 = ri.vNormal2;
 				}
 			}
 
-			switch( chAxis )
-			{
-			case 'x':
-				ri.ptCoord.x = intersec.z * OVRadius;
-				ri.ptCoord.y = intersec.y * OVRadius;
-				break;
-			case 'y':
-				ri.ptCoord.x = intersec.x * OVRadius;
-				ri.ptCoord.y = intersec.z * OVRadius;
-				break;
-			default:
-			case 'z':
-				ri.ptCoord.x = intersec.x * OVRadius;
-				ri.ptCoord.y = intersec.y * OVRadius;
-				break;
-			}
+			// Polar (u, v) matching CircularDiskGeometry::TessellateToMesh:
+			//   forward formula:  pos_xaxis = (0, r·cos(θ), r·sin(θ))
+			//                     pos_yaxis = (r·sin(θ), 0, r·cos(θ))
+			//                     pos_zaxis = (r·cos(θ), r·sin(θ), 0)
+			//   with θ = u·2π and r = v·R, so the inverse is
+			//   v = sqrt(inPlaneSqr) / R, u = (θ wrapped to [0, 2π)) / (2π).
+			DiskUVFromPosition( intersec, ri.ptCoord );
 		}
 		else
 			ri.bHit = false;
@@ -153,7 +334,21 @@ bool CircularDiskGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 
 	if( h.bHit ) {
 		Point3 intersec = ray.PointAtLength( h.dRange );
-		if( intersec.x*intersec.x+intersec.y*intersec.y > sqrRadius ) {
+		Scalar inPlaneSqr = 0.0;
+		switch( chAxis )
+		{
+		case 'x':
+			inPlaneSqr = intersec.y * intersec.y + intersec.z * intersec.z;
+			break;
+		case 'y':
+			inPlaneSqr = intersec.x * intersec.x + intersec.z * intersec.z;
+			break;
+		default:
+		case 'z':
+			inPlaneSqr = intersec.x * intersec.x + intersec.y * intersec.y;
+			break;
+		}
+		if( inPlaneSqr > sqrRadius ) {
 			h.bHit = false;
 		}
 	}
@@ -201,21 +396,29 @@ BoundingBox CircularDiskGeometry::GenerateBoundingBox() const
 void CircularDiskGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	Point2 ptOnDisk = GeometricUtilities::PointOnDisk( radius, Point2( prand.x, prand.y ) );
-	
+
+	Point3 pt;
+	switch( chAxis )
+	{
+	case 'x':
+		pt = Point3( 0, ptOnDisk.x, ptOnDisk.y );
+		break;
+	case 'y':
+		// PointOnDisk returns 2D (x, y).  For Y-axis disk the in-plane
+		// axes are (x, z), but TessellateToMesh treats (a=z, b=x) (so
+		// pos = (r·sin(θ), 0, r·cos(θ))).  Map ptOnDisk.y → x and
+		// ptOnDisk.x → z so DiskUVFromPosition produces the same UV
+		// convention regardless of axis.
+		pt = Point3( ptOnDisk.y, 0, ptOnDisk.x );
+		break;
+	default:
+	case 'z':
+		pt = Point3( ptOnDisk.x, ptOnDisk.y, 0 );
+		break;
+	}
+
 	if( point ) {
-		switch( chAxis )
-		{
-		case 'x':
-			*point = Point3( 0, ptOnDisk.x, ptOnDisk.y ); 
-			break;
-		case 'y':
-			*point = Point3( ptOnDisk.x, 0, ptOnDisk.y );
-			break;
-		default:
-		case 'z':
-			*point = Point3( ptOnDisk.x, ptOnDisk.y, 0 );
-			break;
-		};
+		*point = pt;
 	}
 
 	if( normal ) {
@@ -235,8 +438,8 @@ void CircularDiskGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	}
 
 	if( coord ) {
-		coord->x = ptOnDisk.x * OVRadius;
-		coord->y = ptOnDisk.y * OVRadius;
+		// Polar (u, v) ∈ [0, 1]², matching TessellateToMesh.
+		DiskUVFromPosition( pt, *coord );
 	}
 }
 
@@ -247,17 +450,20 @@ SurfaceDerivatives CircularDiskGeometry::ComputeSurfaceDerivatives( const Point3
 	sd.dndv = Vector3( 0, 0, 0 );
 	sd.valid = true;
 
+	// Convention: (dpdu, dpdv, n) right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  X- and Y-axis disks originally
+	// returned left-handed frames; swap the two tangents to fix.
 	switch( chAxis )
 	{
 	case 'x':
-		sd.dpdu = Vector3( 0, 0, 1 );
-		sd.dpdv = Vector3( 0, 1, 0 );
-		sd.uv = Point2( objSpacePoint.z * OVRadius, objSpacePoint.y * OVRadius );
+		sd.dpdu = Vector3( 0, 1, 0 );
+		sd.dpdv = Vector3( 0, 0, 1 );
+		sd.uv = Point2( objSpacePoint.y * OVRadius, objSpacePoint.z * OVRadius );
 		break;
 	case 'y':
-		sd.dpdu = Vector3( 1, 0, 0 );
-		sd.dpdv = Vector3( 0, 0, 1 );
-		sd.uv = Point2( objSpacePoint.x * OVRadius, objSpacePoint.z * OVRadius );
+		sd.dpdu = Vector3( 0, 0, 1 );
+		sd.dpdv = Vector3( 1, 0, 0 );
+		sd.uv = Point2( objSpacePoint.z * OVRadius, objSpacePoint.x * OVRadius );
 		break;
 	default:
 	case 'z':
@@ -294,6 +500,7 @@ IKeyframeParameter* CircularDiskGeometry::KeyframeFromParameters( const String& 
 
 void CircularDiskGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case RADIUS_ID:
@@ -301,6 +508,7 @@ void CircularDiskGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 			radius = *(Scalar*)val.getValue();
 			OVRadius = (radius != 0) ? 1.0/radius : 0;
 			sqrRadius = radius*radius;
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -308,5 +516,42 @@ void CircularDiskGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CircularDiskGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+	BumpShapeRevision();
 }
 
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! The disk is a FLAT TWO-SIDED SHEET of radius `radius`, centred at the
+//! object-space origin and perpendicular to `chAxis` -- it encloses no
+//! volume, so there is no inside case and no sign to worry about.  A point
+//! whose projection lands within the rim is exactly its axial offset away;
+//! one whose projection lands outside is the hypotenuse of the axial offset
+//! and how far past the rim the projection fell, because the nearest
+//! surface point is then on the rim circle.
+bool CircularDiskGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+
+	Scalar axial = 0, r1 = 0, r2 = 0;
+	switch( chAxis )
+	{
+	case 'x': axial = ptObject.x; r1 = ptObject.y; r2 = ptObject.z; break;
+	case 'y': axial = ptObject.y; r1 = ptObject.x; r2 = ptObject.z; break;
+	case 'z': axial = ptObject.z; r1 = ptObject.x; r2 = ptObject.y; break;
+	default:  return false;
+	}
+
+	const Scalar rho = std::sqrt( r1*r1 + r2*r2 );
+	const Scalar over = rho - radius;
+	const Scalar d = ( over <= Scalar( 0 ) )
+		? std::fabs( axial )
+		: std::sqrt( over*over + axial*axial );
+
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

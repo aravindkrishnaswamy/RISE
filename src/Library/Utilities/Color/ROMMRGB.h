@@ -94,6 +94,11 @@ namespace RISE
 			*this = ColorUtils::sRGBtoROMMRGB( rgb );
 		}
 
+		inline ROMMRGBPel( const AP1RGBPel& rgb )
+		{
+			*this = ColorUtils::AP1RGBtoROMMRGB( rgb );
+		}
+
 		// Array style access
 		inline		Scalar&		operator[]( const unsigned int i )
 		{

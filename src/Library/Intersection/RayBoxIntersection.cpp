@@ -24,8 +24,16 @@ namespace RISE
 	//
 	// This replaces the original 18-branch implementation with one that
 	// uses 6 multiplies, 0 divisions, and far fewer branches.
-	// The precomputed invDir handles the dir~=0 case naturally via
-	// IEEE 754 infinities.
+	// The precomputed invDir handles the dir~=0 case via the large FINITE
+	// sentinel +/-1e30 (Ray::RecomputeInvDir) -- deliberately NOT +/-inf.
+	// This is load-bearing and must stay that way: with a real infinity,
+	// (bound - origin) * invDir is 0*inf = NaN for a ray whose origin lies
+	// on a slab plane with a parallel direction, and the rejection below
+	// is `tmin > tymax || tymin > tmax`, BOTH of which are FALSE for NaN --
+	// so a NaN slab would be silently ACCEPTED rather than rejected.
+	// (Since 2026-07-29 macOS no longer builds with -ffinite-math-only, so
+	// 0*inf really does produce a NaN now; that makes real infinities MORE
+	// hazardous here, not less.  Do not "simplify" SAFE_INV to infinity().)
 	//
 
 #define SIDE_X0 0

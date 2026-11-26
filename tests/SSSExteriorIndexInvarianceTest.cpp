@@ -1,0 +1,2106 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SSSExteriorIndexInvarianceTest.cpp - Regression guard for DL-49:
+//    the SSS boundary is an interface between the material and the
+//    medium the ray arrived through, not between the material and air.
+//
+//  THE DEFECT
+//
+//    `SubSurfaceScatteringSPF`'s surface reflection has always priced
+//    its Fresnel against `ior_stack.top()` -- the real exterior -- but
+//    every OTHER boundary quantity of the same SSS event used the
+//    material's absolute index against a hardcoded 1.0 (air): the
+//    diffusion profiles' `FresnelTransmission` and the Sw normalization
+//    built from `GetIOR`, `RandomWalkSSS::SampleExit`'s entry/exit Snell
+//    refraction and exit Fresnel, the PT/BDPT random-walk entry coin,
+//    the `BSSRDFEntryAdapters.h` NEE adapters (also used by BDPT's
+//    zero-exitance sweep, DL-207), `PathVertexEval`'s BSSRDF-entry
+//    re-evaluation, and the rough `SubSurfaceScatteringBSDF`.  An SSS
+//    body immersed in a non-air medium therefore priced two different
+//    interfaces within one boundary event, and a common scaling of the
+//    exterior and interior indices -- which leaves every relative-index
+//    physical quantity unchanged -- changed the image.
+//
+//  THE INVARIANT (reference-free)
+//
+//    Scale every index by the same factor s: exterior 1 -> s, interior
+//    n -> s*n.  Snell directions and the exact dielectric Fresnel law of
+//    the RELATIVE index (the SSS boundary's law on both sides since
+//    DL-306; it was Schlick on the transmission side before) are
+//    unchanged, and the complete
+//    SSS event carries no unmatched eta^2 (DL-04), so every weight, every
+//    sampled direction and every rendered pixel must be unchanged.  This
+//    needs no reference image and no closed form.
+//
+//  WHAT EACH PART PROVES
+//
+//    Part A -- deterministic, function level (exact to rounding):
+//      A1  profile FresnelTransmission is scale invariant; matched index
+//          (relative 1) transmits exactly 1 at normal incidence; a denser
+//          exterior is totally reflected past its critical angle.
+//      A2  Sw normalization integrates to exactly one over the exterior
+//          cosine hemisphere at relative indices below, at, and above 1
+//          (the eta < 1 closed form eta^2 * 20(1-F0)/21 is new in DL-49).
+//      A3  both NEE entry adapters are scale invariant (RGB and NM) and,
+//          under a DENSER exterior (1.33 inside 1.5), transmit nothing past
+//          the critical angle and equal their scaled-down air twin.
+//      A4  the rough SubSurfaceScatteringBSDF is scale invariant and is
+//          exactly zero at a matched index (no interface, no reflection).
+//      A5  BSSRDFSampling::SampleEntryPoint, seeded twins: identical
+//          weights at (1, 1.33) and (1.5, 1.995), RGB and NM.
+//      A6  RandomWalkSSS::SampleExit, seeded twins: identical weights,
+//          exit points and continuation directions, RGB and NM.
+//      A7  RandomWalkSSS::SampleExit at a MATCHED index with a vanishing
+//          medium: the walk goes straight through (no refraction bend,
+//          no exit Fresnel) and exits exactly on the incident ray's
+//          chord through the sphere.
+//      A8  PathVertexEval::EvalBSDFAtVertex{,NM} at a BSSRDF entry vertex
+//          (the BDPT/VCM connection re-evaluation) is scale invariant and
+//          honours `BDPTVertex::mediumIOR` under a denser exterior.
+//    NOTE on A3/A8: for a relative index >= 1 the normalized Sw does not
+//    depend on the index at all ((1-F0) cancels against c), so their
+//    scale-invariance rows are consistency pins that pass before DL-49
+//    too; the denser-exterior rows are the discriminating half.
+//    Part B -- rendered, end to end:
+//      An SSS sphere, a spherical area light and a pinhole camera inside a
+//      black absorbing room, all in air versus all inside an ideal
+//      non-reflecting enclosure of index 1.5 with every interior index
+//      scaled by 1.5 (one relative index, two absolute scales).  PT RGB,
+//      BDPT RGB and PT spectral; smooth diffusion (the subsurface event
+//      alone), rough diffusion (adds the BSDF NEE lobe, whose pre-DL-49
+//      error has the OPPOSITE sign and partially cancels in a mean -- so
+//      it gets its own, tighter band), random walk, and "dense" rows with
+//      the relative index below 1.  The enclosed/air ratio of the image
+//      mean must be 1.  A Lambertian control row (no index anywhere) pins
+//      that the enclosure itself changes nothing else.
+//    Part D (DL-291) -- deterministic: the Donner-Jensen multipole's
+//      boundary term is a function of the RELATIVE layer indices (twins at
+//      a common scale, a matched index and a denser exterior, over the
+//      profile's whole public surface); the point-set octree hands the live
+//      IOR stack and the exterior to every depth; the legacy dipole prices
+//      the relative index and, below relative index 1, matches an
+//      independent quadrature of the Fresnel integral.  Part B carries the
+//      DL-291 render rows (skin multipole PT/BDPT/PT-spectral/eta<1, the
+//      legacy dipole and skin shader-ops under pixelpel_rasterizer).
+//    Part E (DL-315) -- rendered, reference-free, two PT-only defects:
+//      E1  an ideal index-1.0 enclosure (no interface at all) around the
+//          white furnace changes nothing: enclosed/open ratio of the
+//          image mean must be 1.  Pre-fix `RayCaster::CastRay` wrote the
+//          continuation hit's object into the CALLER's const IOR stack, so
+//          once PT's SSS continuation reached the enclosure wall, the same
+//          vertex's `SubSurfaceScatteringSPF::Scatter` saw
+//          `containsCurrent()` and absorbed its surface reflection (an
+//          F0-sized loss).  BDPT and a Lambertian subject are controls.
+//      E2  a close-packed cluster of thirteen conservative random-walk
+//          spheres in the open-air white furnace must read 1 everywhere.
+//          Pre-fix PT's RayCaster was built with a hard-coded recursion
+//          cap of 10 while every SSS event nests its continuation cast at
+//          depth + 2, so paths hopping sphere to sphere were cut off.
+//      E3  the legacy shader-op chain: a distribution-tracing op's image
+//          expectation must not depend on its per-hit sample count.  The
+//          op re-runs the SPF's Scatter for every sample on the stack it
+//          was handed, and pre-fix each earlier sample's continuation
+//          cast had rewritten that stack's current object, so a later
+//          sample's entry push keyed the new stack entry on the WRONG
+//          object and the interior exit read as a second entry.
+//    Part F (DL-370) -- rendered, reference-free, touching SSS objects:
+//      F   a closed room of six conservative random-walk slabs whose
+//          side walls TOUCH the floor, ceiling and each other, camera
+//          inside, white environment: every pixel reads 1.  Pre-fix the
+//          walk exited through a face shared with a neighbour and its
+//          continuation, offset 1e-6 outward, started INSIDE the
+//          neighbour, met its far face from behind and died (the SSS
+//          SPF absorbs back faces): 0.70.  A 5e-7 gap (inside the
+//          offset) reads the same; a 0.02 gap is the control.  The
+//          double-sided indexed-mesh rows are the case review round 1
+//          found a walk-ray probe could not resolve (0.887).
+//      F2  two touching cubes against the same pair 2e-6 apart (wider
+//          than the offset, optically nothing), paired seeds; box and
+//          double-sided mesh, a real 1.5/1.3 interface, the NM walk.  The
+//          diffusion profile row is printed only (DL-408).
+//      F3  a random-walk body coincident with the walker's exit face on
+//          the WALKER's side (an inset, an open sheet): nothing may cross
+//          into it; the sheet row is a DL-409 pin.
+//      F4  a NON-touching random-walk mesh neighbour whose box contains
+//          part of the walker, wound outward or INWARD: no crossing
+//          (round 2 read the inward one inside-out); the certified
+//          inward row is a pin at master's own 0.766.
+//    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
+//
+//  Author: RISE debt-cleanup, slice `debt-dl49`
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
+
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "../src/Library/Utilities/Math3D/Constants.h"
+#include "../src/Library/Utilities/Ray.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/BSSRDFSampling.h"
+#include "../src/Library/Utilities/RandomWalkSSS.h"
+#include "../src/Library/Utilities/SSSCoefficients.h"
+#include "../src/Library/Utilities/PathVertexEval.h"
+#include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Intersection/RayIntersection.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
+#include "../src/Library/Materials/BurleyNormalizedDiffusionProfile.h"
+#include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
+#include "../src/Library/Materials/SubSurfaceScatteringBSDF.h"
+#include "../src/Library/Materials/RandomWalkSSSMaterial.h"
+#include "../src/Library/Materials/DonnerJensenSkinDiffusionProfile.h"
+#include "../src/Library/Materials/MultipoleDiffusion.h"
+#include "../src/Library/Shaders/SSS/PointSetOctree.h"
+#include "../src/Library/Shaders/SSS/DiffusionApproximationExtinction.h"
+#include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
+#include "../src/Library/Shaders/BDPTVertex.h"
+#include "../src/Library/Utilities/Color/Color_Template.h"
+#include "TestTempDir.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
+
+namespace
+{
+	int passCount = 0;
+	int failCount = 0;
+
+	void Check( const bool condition, const std::string& label )
+	{
+		if( condition ) {
+			++passCount;
+		} else {
+			++failCount;
+			std::cout << "  FAILED: " << label << std::endl;
+		}
+	}
+
+	// Air configuration and its uniformly scaled twin (relative 1.33 both).
+	unsigned int g_seedOffset = 0;
+	const Scalar kAirExterior = 1.0;
+	const Scalar kAirInterior = 1.33;
+	const Scalar kScale = 1.5;
+	const Scalar kScaledExterior = kAirExterior * kScale;	// 1.5
+	const Scalar kScaledInterior = kAirInterior * kScale;	// 1.995
+
+	bool RelClose( const Scalar a, const Scalar b, const Scalar tol )
+	{
+		if( !std::isfinite( a ) || !std::isfinite( b ) ) return false;
+		return std::fabs( a - b ) <= tol * std::fmax( Scalar( 1e-300 ), std::fmax( std::fabs( a ), std::fabs( b ) ) )
+			|| std::fabs( a - b ) <= Scalar( 1e-300 );
+	}
+
+	class TestSampler : public ISampler
+	{
+		RandomNumberGenerator rng;
+	public:
+		explicit TestSampler( const unsigned int seed ) : rng( seed ) {}
+		Scalar Get1D() { return rng.CanonicalRandom(); }
+		Point2 Get2D() { return Point2( Get1D(), Get1D() ); }
+	};
+
+	//! A front-face hit at the bottom of the unit sphere, ray travelling +Y.
+	RayIntersectionGeometric MakeSurfaceRI( const Scalar exteriorIOR )
+	{
+		const Point3 point( 0, -1, 0 );
+		const Vector3 normal( 0, -1, 0 );
+		const Vector3 incoming( 0, 1, 0 );
+		RayIntersectionGeometric ri(
+			Ray( Point3Ops::mkPoint3( point, -incoming * 2.0 ), incoming ),
+			nullRasterizerState );
+		ri.bHit = true;
+		ri.ptIntersection = point;
+		ri.vNormal = normal;
+		ri.vGeomNormal = normal;
+		ri.onb.CreateFromW( normal );
+		ri.ambientIOR = exteriorIOR;
+		return ri;
+	}
+
+	//! An exterior-side direction at the given cosine against MakeSurfaceRI's normal.
+	Vector3 DirectionForCosine( const Scalar cosine )
+	{
+		return Vector3( sqrt( 1.0 - cosine * cosine ), -cosine, 0 );
+	}
+
+	Object* MakeUnitSphere()
+	{
+		SphereGeometry* geometry = new SphereGeometry( 1.0 );
+		geometry->addref();
+		Object* object = new Object( geometry );
+		object->addref();
+		geometry->release();
+		return object;
+	}
+
+	struct ProfileBundle
+	{
+		UniformScalarPainter* ior;
+		RGBScalarPainter* absorption;
+		RGBScalarPainter* scattering;
+		BurleyNormalizedDiffusionProfile* profile;
+
+		explicit ProfileBundle( const Scalar n )
+		{
+			ior = new UniformScalarPainter( n ); ior->addref();
+			absorption = new RGBScalarPainter( 0.05, 0.10, 0.20 ); absorption->addref();
+			scattering = new RGBScalarPainter( 1.0, 1.0, 1.0 ); scattering->addref();
+			profile = new BurleyNormalizedDiffusionProfile( *ior, *absorption, *scattering, 0.0 );
+			profile->addref();
+		}
+		~ProfileBundle()
+		{
+			profile->release(); ior->release(); absorption->release(); scattering->release();
+		}
+	};
+
+	//////////////////////////////////////////////////////////////////
+	// A1 -- profile FresnelTransmission
+	//////////////////////////////////////////////////////////////////
+	void TestProfileFresnel()
+	{
+		std::cout << "A1: profile FresnelTransmission is a function of the relative index" << std::endl;
+		ProfileBundle air( kAirInterior ), scaled( kScaledInterior );
+		const RayIntersectionGeometric riAir = MakeSurfaceRI( kAirExterior );
+		const RayIntersectionGeometric riScaled = MakeSurfaceRI( kScaledExterior );
+		const Scalar mus[] = { 1.0, 0.8, 0.5, 0.2, 0.05 };
+		Scalar worst = 0;
+		for( const Scalar mu : mus ) {
+			const Scalar a = air.profile->FresnelTransmission( mu, riAir );
+			const Scalar s = scaled.profile->FresnelTransmission( mu, riScaled );
+			worst = std::fmax( worst, std::fabs( a - s ) / a );
+			Check( RelClose( a, s, 1e-12 ), "A1: Ft(mu) at (1, 1.33) == Ft(mu) at (1.5, 1.995)" );
+		}
+		std::cout << "    worst |Ft_scaled - Ft_air| / Ft_air = " << worst << std::endl;
+
+		// Matched index: no interface.  The exact law transmits exactly 1
+		// (at every cosine since DL-306; DL-49's Schlick law did so only at
+		// normal incidence).  A pre-DL-49 build reads 0.96, the air value.
+		ProfileBundle glass( 1.5 );
+		const RayIntersectionGeometric riGlass = MakeSurfaceRI( 1.5 );
+		const Scalar ftMatched = glass.profile->FresnelTransmission( 1.0, riGlass );
+		std::cout << "    matched index (1.5 in 1.5) Ft(1) = " << std::setprecision( 12 ) << ftMatched << std::endl;
+		Check( ftMatched == 1.0, "A1: matched relative index transmits exactly 1 at normal incidence" );
+
+		// A denser exterior: 1.33 inside 1.5.  Critical exterior cosine is
+		// sqrt(1 - (1.33/1.5)^2) = 0.4623; below it the interface reflects all.
+		ProfileBundle water( 1.33 );
+		const Scalar ftTIR = water.profile->FresnelTransmission( 0.3, riGlass );
+		const Scalar ftIn = water.profile->FresnelTransmission( 0.9, riGlass );
+		std::cout << "    1.33 inside 1.5: Ft(0.3) = " << ftTIR << "  Ft(0.9) = " << ftIn << std::endl;
+		Check( ftTIR == 0.0, "A1: denser exterior totally reflects past the critical angle" );
+		Check( ftIn > 0.9 && ftIn < 1.0, "A1: denser exterior transmits inside the critical cone" );
+
+		// A record that never had an exterior stamped is air (stackless
+		// fallback): identical to the explicit-air record, bit for bit.
+		RayIntersectionGeometric riDefault = MakeSurfaceRI( 1.0 );
+		riDefault.ambientIOR = RayIntersectionGeometric( Ray(), nullRasterizerState ).ambientIOR;
+		Check( air.profile->FresnelTransmission( 0.37, riDefault ) ==
+			air.profile->FresnelTransmission( 0.37, riAir ), "A1: stackless record falls back to air exactly" );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A2 -- Sw normalization at relative index below / at / above 1
+	//////////////////////////////////////////////////////////////////
+	template<typename Evaluate>
+	Scalar IntegrateHemisphere( const Evaluate& evaluate )
+	{
+		// Midpoint rule in cos(theta).  For eta < 1 the integrand has a
+		// square-root edge at the critical cosine; 2^18 bins bound that
+		// quadrature error far below the 1e-5 tolerance used here.
+		const int count = 1 << 18;
+		Scalar sum = 0;
+		for( int i = 0; i < count; ++i ) {
+			const Scalar cosine = ( Scalar( i ) + 0.5 ) / count;
+			sum += TWO_PI * cosine * evaluate( cosine );
+		}
+		return sum / count;
+	}
+
+	void TestSwNormalization()
+	{
+		std::cout << "A2: Sw integrates to one over the exterior hemisphere at every relative index" << std::endl;
+		struct Case { Scalar interior, exterior; };
+		const Case cases[] = { { 1.33, 1.5 }, { 1.5, 1.5 }, { 1.33, 1.0 }, { 1.995, 1.5 }, { 1.2, 2.0 } };
+		for( const Case& c : cases ) {
+			ProfileBundle bundle( c.interior );
+			const RayIntersectionGeometric ri = MakeSurfaceRI( c.exterior );
+			BSSRDFAdapters::BSSRDFEntryBSDF diffusion( bundle.profile, c.interior );
+			BSSRDFAdapters::RandomWalkEntryBSDF walk( c.interior );
+			const Scalar iDiffRGB = IntegrateHemisphere( [&]( Scalar mu ) { return diffusion.value( DirectionForCosine( mu ), ri )[0]; } );
+			const Scalar iDiffNM = IntegrateHemisphere( [&]( Scalar mu ) { return diffusion.valueNM( DirectionForCosine( mu ), ri, 550.0 ); } );
+			const Scalar iWalkRGB = IntegrateHemisphere( [&]( Scalar mu ) { return walk.value( DirectionForCosine( mu ), ri )[0]; } );
+			const Scalar iWalkNM = IntegrateHemisphere( [&]( Scalar mu ) { return walk.valueNM( DirectionForCosine( mu ), ri, 550.0 ); } );
+			std::cout << "    n_s=" << c.interior << " n_e=" << c.exterior << " eta=" << c.interior / c.exterior
+				<< "  diffusion RGB/NM=" << std::setprecision( 9 ) << iDiffRGB << "/" << iDiffNM
+				<< "  walk RGB/NM=" << iWalkRGB << "/" << iWalkNM << std::endl;
+			const std::string tag = " (n_s=" + std::to_string( c.interior ) + ", n_e=" + std::to_string( c.exterior ) + ")";
+			Check( std::fabs( iDiffRGB - 1.0 ) < 1e-5, "A2: BSSRDFEntryBSDF RGB unit integral" + tag );
+			Check( std::fabs( iDiffNM - 1.0 ) < 1e-5, "A2: BSSRDFEntryBSDF NM unit integral" + tag );
+			Check( std::fabs( iWalkRGB - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF RGB unit integral" + tag );
+			Check( std::fabs( iWalkNM - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF NM unit integral" + tag );
+		}
+		// The eta < 1 form agrees with the eta >= 1 one at eta = 1 (checked
+		// through the Sw helper, whose denominator is the normalization, so
+		// the check is independent of the helper's name -- DL-306 renamed it).
+		Check( std::fabs( BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 - 1e-12 ) -
+			BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 ) ) < 1e-10,
+			"A2: normalization is continuous across eta = 1" );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A3 -- NEE entry adapters, scale invariance
+	//////////////////////////////////////////////////////////////////
+	void TestAdapters()
+	{
+		std::cout << "A3: entry adapters are scale invariant" << std::endl;
+		ProfileBundle air( kAirInterior ), scaled( kScaledInterior );
+		const RayIntersectionGeometric riAir = MakeSurfaceRI( kAirExterior );
+		const RayIntersectionGeometric riScaled = MakeSurfaceRI( kScaledExterior );
+		BSSRDFAdapters::BSSRDFEntryBSDF dAir( air.profile, kAirInterior ), dScaled( scaled.profile, kScaledInterior );
+		BSSRDFAdapters::RandomWalkEntryBSDF wAir( kAirInterior ), wScaled( kScaledInterior );
+		Scalar worstD = 0, worstW = 0;
+		for( const Scalar mu : { 0.95, 0.6, 0.3, 0.1 } ) {
+			const Vector3 d = DirectionForCosine( mu );
+			const Scalar a = dAir.value( d, riAir )[0], s = dScaled.value( d, riScaled )[0];
+			const Scalar aNM = dAir.valueNM( d, riAir, 550 ), sNM = dScaled.valueNM( d, riScaled, 550 );
+			const Scalar wa = wAir.value( d, riAir )[0], ws = wScaled.value( d, riScaled )[0];
+			const Scalar waNM = wAir.valueNM( d, riAir, 550 ), wsNM = wScaled.valueNM( d, riScaled, 550 );
+			worstD = std::fmax( worstD, std::fabs( a - s ) / a );
+			worstW = std::fmax( worstW, std::fabs( wa - ws ) / wa );
+			Check( RelClose( a, s, 1e-12 ) && RelClose( aNM, sNM, 1e-12 ), "A3: BSSRDFEntryBSDF RGB/NM scale invariant" );
+			Check( RelClose( wa, ws, 1e-12 ) && RelClose( waNM, wsNM, 1e-12 ), "A3: RandomWalkEntryBSDF RGB/NM scale invariant" );
+		}
+		std::cout << "    worst relative difference: diffusion " << worstD << "  random walk " << worstW << std::endl;
+
+		// For a relative index >= 1 the normalized Sw does not depend on the
+		// index at all ((1-F0) cancels against c), so the checks above are a
+		// CONSISTENCY PIN that passes before DL-49 too.  The discriminating
+		// case is a DENSER exterior: 1.33 inside 1.5 has a critical exterior
+		// cosine of sqrt(1 - (1.33/1.5)^2) = 0.4623, below which no light
+		// crosses, so Sw must vanish there -- and must equal its own
+		// scaled-down air twin (interior 1.33/1.5 in air) everywhere.
+		ProfileBundle dense( 1.33 ), denseAir( 1.33 / 1.5 );
+		const RayIntersectionGeometric riGlass = MakeSurfaceRI( 1.5 );
+		BSSRDFAdapters::BSSRDFEntryBSDF dDense( dense.profile, 1.33 ), dDenseAir( denseAir.profile, 1.33 / 1.5 );
+		BSSRDFAdapters::RandomWalkEntryBSDF wDense( 1.33 ), wDenseAir( 1.33 / 1.5 );
+		const Vector3 grazing = DirectionForCosine( 0.3 );
+		const Vector3 steep = DirectionForCosine( 0.9 );
+		std::cout << "    1.33 inside 1.5: diffusion Sw(0.3)=" << dDense.value( grazing, riGlass )[0]
+			<< " Sw(0.9)=" << dDense.value( steep, riGlass )[0]
+			<< "  walk Sw(0.3)=" << wDense.value( grazing, riGlass )[0] << " Sw(0.9)=" << wDense.value( steep, riGlass )[0] << std::endl;
+		Check( dDense.value( grazing, riGlass )[0] == 0.0 && dDense.valueNM( grazing, riGlass, 550 ) == 0.0,
+			"A3: BSSRDFEntryBSDF RGB/NM: denser exterior, no transmission past the critical angle" );
+		Check( wDense.value( grazing, riGlass )[0] == 0.0 && wDense.valueNM( grazing, riGlass, 550 ) == 0.0,
+			"A3: RandomWalkEntryBSDF RGB/NM: denser exterior, no transmission past the critical angle" );
+		for( const Scalar mu : { 0.95, 0.7, 0.5 } ) {
+			const Vector3 d = DirectionForCosine( mu );
+			Check( RelClose( dDense.value( d, riGlass )[0], dDenseAir.value( d, riAir )[0], 1e-12 ) &&
+				dDense.value( d, riGlass )[0] > 0, "A3: BSSRDFEntryBSDF denser exterior equals its air twin" );
+			Check( RelClose( wDense.value( d, riGlass )[0], wDenseAir.value( d, riAir )[0], 1e-12 ) &&
+				wDense.value( d, riGlass )[0] > 0, "A3: RandomWalkEntryBSDF denser exterior equals its air twin" );
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A4 -- rough SubSurfaceScatteringBSDF
+	//////////////////////////////////////////////////////////////////
+	void TestRoughBSDF()
+	{
+		std::cout << "A4: rough SubSurfaceScatteringBSDF is a relative-index interface" << std::endl;
+		UniformScalarPainter* nAir = new UniformScalarPainter( kAirInterior ); nAir->addref();
+		UniformScalarPainter* nScaled = new UniformScalarPainter( kScaledInterior ); nScaled->addref();
+		UniformScalarPainter* nGlass = new UniformScalarPainter( 1.5 ); nGlass->addref();
+		SubSurfaceScatteringBSDF* bAir = new SubSurfaceScatteringBSDF( *nAir, 0.0, 0.3 ); bAir->addref();
+		SubSurfaceScatteringBSDF* bScaled = new SubSurfaceScatteringBSDF( *nScaled, 0.0, 0.3 ); bScaled->addref();
+		SubSurfaceScatteringBSDF* bGlass = new SubSurfaceScatteringBSDF( *nGlass, 0.0, 0.3 ); bGlass->addref();
+
+		// The viewer ray arrives at 30 degrees; light from several directions.
+		RayIntersectionGeometric riAir = MakeSurfaceRI( kAirExterior );
+		const Vector3 view = Vector3Ops::Normalize( Vector3( -0.5, 0.866025403784, 0 ) );
+		riAir.ray = Ray( Point3Ops::mkPoint3( riAir.ptIntersection, -view * 2.0 ), view );
+		RayIntersectionGeometric riScaled = riAir; riScaled.ambientIOR = kScaledExterior;
+		RayIntersectionGeometric riGlass = riAir; riGlass.ambientIOR = 1.5;
+		Scalar worst = 0, maxGlass = 0, minAir = 1e300;
+		for( const Scalar mu : { 0.9, 0.7, 0.5, 0.3 } ) {
+			const Vector3 light = DirectionForCosine( mu );
+			const Scalar a = bAir->value( light, riAir )[0], s = bScaled->value( light, riScaled )[0];
+			const Scalar aNM = bAir->valueNM( light, riAir, 550 ), sNM = bScaled->valueNM( light, riScaled, 550 );
+			worst = std::fmax( worst, std::fabs( a - s ) / a );
+			minAir = std::fmin( minAir, a );
+			Check( RelClose( a, s, 1e-12 ) && RelClose( aNM, sNM, 1e-12 ), "A4: rough BSDF RGB/NM scale invariant" );
+			const Scalar g = bGlass->value( light, riGlass )[0], gNM = bGlass->valueNM( light, riGlass, 550 );
+			maxGlass = std::fmax( maxGlass, std::fmax( g, gNM ) );
+		}
+		std::cout << "    worst relative difference " << worst << "; matched-index max value " << maxGlass
+			<< " (air control min " << minAir << ")" << std::endl;
+		Check( minAir > 0, "A4: (sanity) the air configuration reflects" );
+		Check( maxGlass == 0.0, "A4: matched index has no interface reflection" );
+		bAir->release(); bScaled->release(); bGlass->release();
+		nAir->release(); nScaled->release(); nGlass->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A5 -- SampleEntryPoint seeded twins
+	//////////////////////////////////////////////////////////////////
+	void TestSampleEntryPointTwins()
+	{
+		std::cout << "A5: BSSRDFSampling::SampleEntryPoint seeded twins agree" << std::endl;
+		Object* sphere = MakeUnitSphere();
+		RGBScalarPainter* absorption = new RGBScalarPainter( 0.05, 0.10, 0.20 ); absorption->addref();
+		RGBScalarPainter* scattering = new RGBScalarPainter( 1.0, 1.0, 1.0 ); scattering->addref();
+		UniformScalarPainter* nAir = new UniformScalarPainter( kAirInterior ); nAir->addref();
+		UniformScalarPainter* nScaled = new UniformScalarPainter( kScaledInterior ); nScaled->addref();
+		SubSurfaceScatteringMaterial* mAir = new SubSurfaceScatteringMaterial( *nAir, *absorption, *scattering, 0.0, 0.0 ); mAir->addref();
+		SubSurfaceScatteringMaterial* mScaled = new SubSurfaceScatteringMaterial( *nScaled, *absorption, *scattering, 0.0, 0.0 ); mScaled->addref();
+
+		for( int spectral = 0; spectral < 2; ++spectral ) {
+			const Scalar nm = spectral ? 550.0 : 0.0;
+			TestSampler sa( 4100 + spectral ), ss( 4100 + spectral );
+			const RayIntersectionGeometric riAir = MakeSurfaceRI( kAirExterior );
+			const RayIntersectionGeometric riScaled = MakeSurfaceRI( kScaledExterior );
+			int active = 0, agree = 0;
+			Scalar worst = 0;
+			for( int i = 0; i < 512; ++i ) {
+				const BSSRDFSampling::SampleResult a = BSSRDFSampling::SampleEntryPoint( riAir, sphere, mAir, sa, nm );
+				const BSSRDFSampling::SampleResult s = BSSRDFSampling::SampleEntryPoint( riScaled, sphere, mScaled, ss, nm );
+				if( a.valid != s.valid ) continue;
+				if( !a.valid ) { ++agree; continue; }
+				++active;
+				bool ok = true;
+				if( spectral ) {
+					ok = RelClose( a.weightNM, s.weightNM, 1e-9 ) && RelClose( a.weightSpatialNM, s.weightSpatialNM, 1e-9 );
+					worst = std::fmax( worst, std::fabs( a.weightNM - s.weightNM ) / std::fmax( 1e-300, std::fabs( a.weightNM ) ) );
+				} else {
+					for( int c = 0; c < 3; ++c ) {
+						ok = ok && RelClose( a.weight[c], s.weight[c], 1e-9 ) && RelClose( a.weightSpatial[c], s.weightSpatial[c], 1e-9 );
+						worst = std::fmax( worst, std::fabs( a.weight[c] - s.weight[c] ) / std::fmax( 1e-300, std::fabs( a.weight[c] ) ) );
+					}
+				}
+				if( ok ) ++agree;
+			}
+			std::cout << "    " << ( spectral ? "NM " : "RGB" ) << " active=" << active << "/512 agree=" << agree
+				<< "/512 worst relative weight difference " << worst << std::endl;
+			Check( active >= 64, std::string( "A5: (sanity) enough valid samples " ) + ( spectral ? "NM" : "RGB" ) );
+			Check( agree == 512, std::string( "A5: every seeded twin agrees " ) + ( spectral ? "NM" : "RGB" ) );
+		}
+		mAir->release(); mScaled->release(); nAir->release(); nScaled->release();
+		absorption->release(); scattering->release(); sphere->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A6 -- RandomWalkSSS::SampleExit seeded twins
+	//////////////////////////////////////////////////////////////////
+	void TestRandomWalkTwins()
+	{
+		std::cout << "A6: RandomWalkSSS::SampleExit seeded twins agree" << std::endl;
+		Object* sphere = MakeUnitSphere();
+		const RISEPel sigmaA( 0.05, 0.1, 0.2 );
+		const RISEPel sigmaS( 2.0, 2.0, 2.0 );
+		RISEPel sigmaT;
+		SSSCoefficients::FromCoefficients( sigmaA, sigmaS, sigmaT );
+		// An oblique arrival, so the entry refraction bends.
+		RayIntersectionGeometric riAir = MakeSurfaceRI( kAirExterior );
+		const Vector3 dir = Vector3Ops::Normalize( Vector3( 0.6, 0.8, 0 ) );
+		riAir.ray = Ray( Point3Ops::mkPoint3( riAir.ptIntersection, -dir * 2.0 ), dir );
+		RayIntersectionGeometric riScaled = riAir; riScaled.ambientIOR = kScaledExterior;
+
+		for( int spectral = 0; spectral < 2; ++spectral ) {
+			const Scalar nm = spectral ? 550.0 : 0.0;
+			TestSampler sa( 5200 + spectral ), ss( 5200 + spectral );
+			int active = 0, agree = 0;
+			Scalar worst = 0;
+			for( int i = 0; i < 512; ++i ) {
+				const BSSRDFSampling::SampleResult a = RandomWalkSSS::SampleExit(
+					riAir, sphere, sigmaA, sigmaS, sigmaT, 0.0, kAirInterior, 256, sa, nm );
+				const BSSRDFSampling::SampleResult s = RandomWalkSSS::SampleExit(
+					riScaled, sphere, sigmaA, sigmaS, sigmaT, 0.0, kScaledInterior, 256, ss, nm );
+				if( a.valid != s.valid ) continue;
+				if( !a.valid ) { ++agree; continue; }
+				++active;
+				bool ok = Vector3Ops::Magnitude( Vector3Ops::mkVector3( a.entryPoint, s.entryPoint ) ) < 1e-7 &&
+					Vector3Ops::Dot( a.scatteredRay.Dir(), s.scatteredRay.Dir() ) > 1.0 - 1e-10;
+				if( spectral ) {
+					ok = ok && RelClose( a.weightNM, s.weightNM, 1e-7 ) && RelClose( a.weightSpatialNM, s.weightSpatialNM, 1e-7 );
+					worst = std::fmax( worst, std::fabs( a.weightNM - s.weightNM ) / std::fmax( 1e-300, std::fabs( a.weightNM ) ) );
+				} else {
+					for( int c = 0; c < 3; ++c ) {
+						ok = ok && RelClose( a.weight[c], s.weight[c], 1e-7 );
+						worst = std::fmax( worst, std::fabs( a.weight[c] - s.weight[c] ) / std::fmax( 1e-300, std::fabs( a.weight[c] ) ) );
+					}
+				}
+				if( ok ) ++agree;
+			}
+			std::cout << "    " << ( spectral ? "NM " : "RGB" ) << " active=" << active << "/512 agree=" << agree
+				<< "/512 worst relative weight difference " << worst << std::endl;
+			Check( active >= 64, std::string( "A6: (sanity) enough valid walks " ) + ( spectral ? "NM" : "RGB" ) );
+			// Walks with hundreds of bounces can amplify last-bit Snell/Fresnel
+			// rounding into a different branch; allow a handful of such
+			// divergences, but a systematic index error diverges almost all.
+			Check( agree >= 500, std::string( "A6: seeded twins agree " ) + ( spectral ? "NM" : "RGB" ) );
+		}
+		sphere->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A7 -- matched-index random walk goes straight through
+	//////////////////////////////////////////////////////////////////
+	void TestRandomWalkMatchedIndex()
+	{
+		std::cout << "A7: matched-index random walk exits on the incident chord" << std::endl;
+		Object* sphere = MakeUnitSphere();
+		// A vanishing medium: the sampled free flight is astronomically longer
+		// than the sphere, so the walk exits at its first boundary hit.
+		const RISEPel sigmaA( 1e-9, 1e-9, 1e-9 );
+		const RISEPel sigmaS( 1e-9, 1e-9, 1e-9 );
+		RISEPel sigmaT;
+		SSSCoefficients::FromCoefficients( sigmaA, sigmaS, sigmaT );
+		const Scalar offsets[] = { 0.0, 0.3, 0.6, 0.85 };
+		for( int spectral = 0; spectral < 2; ++spectral ) {
+			int valid = 0, straight = 0;
+			Scalar worst = 0;
+			TestSampler sampler( 6300 + spectral );
+			for( const Scalar x : offsets ) {
+				// Ray travelling +Y at lateral offset x, entering the sphere's
+				// bottom and leaving at its top.
+				const Point3 entry( x, -sqrt( 1.0 - x * x ), 0 );
+				const Point3 expectedExit( x, sqrt( 1.0 - x * x ), 0 );
+				RayIntersectionGeometric ri( Ray( Point3( x, -3, 0 ), Vector3( 0, 1, 0 ) ), nullRasterizerState );
+				ri.bHit = true;
+				ri.ptIntersection = entry;
+				const Vector3 n( entry.x, entry.y, entry.z );
+				ri.vNormal = n;
+				ri.vGeomNormal = n;
+				ri.onb.CreateFromW( n );
+				ri.ambientIOR = 1.5;
+				for( int i = 0; i < 16; ++i ) {
+					const BSSRDFSampling::SampleResult r = RandomWalkSSS::SampleExit(
+						ri, sphere, sigmaA, sigmaS, sigmaT, 0.0, 1.5, 64, sampler, spectral ? 550.0 : 0.0 );
+					if( !r.valid ) continue;
+					++valid;
+					// SampleExit offsets the exit point outward by BSSRDF_RAY_EPSILON.
+					const Scalar miss = Vector3Ops::Magnitude( Vector3Ops::mkVector3( r.entryPoint, expectedExit ) );
+					worst = std::fmax( worst, miss );
+					if( miss < 1e-5 ) ++straight;
+				}
+			}
+			std::cout << "    " << ( spectral ? "NM " : "RGB" ) << " valid=" << valid << "/64 straight=" << straight
+				<< " worst exit-point miss " << worst << std::endl;
+			Check( valid == 64, std::string( "A7: every matched-index walk exits (no exit Fresnel) " ) + ( spectral ? "NM" : "RGB" ) );
+			Check( straight == valid && valid > 0, std::string( "A7: every walk exits on the incident chord (no refraction bend) " ) + ( spectral ? "NM" : "RGB" ) );
+		}
+		sphere->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// A8 -- PathVertexEval at a BSSRDF entry vertex (BDPT/VCM re-evaluation)
+	//////////////////////////////////////////////////////////////////
+	BDPTVertex MakeEntryVertex( const IMaterial* pMaterial, const Scalar mediumIOR )
+	{
+		BDPTVertex v;
+		v.type = BDPTVertex::SURFACE;
+		v.position = Point3( 0, -1, 0 );
+		v.normal = Vector3( 0, -1, 0 );
+		v.geomNormal = Vector3( 0, -1, 0 );
+		v.onb.CreateFromW( v.normal );
+		v.pMaterial = pMaterial;
+		v.isBSSRDFEntry = true;
+		v.isConnectible = true;
+		v.mediumIOR = mediumIOR;
+		return v;
+	}
+
+	void TestPathVertexEval()
+	{
+		std::cout << "A8: PathVertexEval BSSRDF-entry re-evaluation is scale invariant" << std::endl;
+		RGBScalarPainter* absorption = new RGBScalarPainter( 0.05, 0.10, 0.20 ); absorption->addref();
+		RGBScalarPainter* scattering = new RGBScalarPainter( 1.0, 1.0, 1.0 ); scattering->addref();
+		UniformScalarPainter* nAir = new UniformScalarPainter( kAirInterior ); nAir->addref();
+		UniformScalarPainter* nScaled = new UniformScalarPainter( kScaledInterior ); nScaled->addref();
+		SubSurfaceScatteringMaterial* dAir = new SubSurfaceScatteringMaterial( *nAir, *absorption, *scattering, 0.0, 0.0 ); dAir->addref();
+		SubSurfaceScatteringMaterial* dScaled = new SubSurfaceScatteringMaterial( *nScaled, *absorption, *scattering, 0.0, 0.0 ); dScaled->addref();
+		RandomWalkSSSMaterial* wAir = new RandomWalkSSSMaterial( *nAir, *absorption, *scattering, 0.0, 0.0, 64 ); wAir->addref();
+		RandomWalkSSSMaterial* wScaled = new RandomWalkSSSMaterial( *nScaled, *absorption, *scattering, 0.0, 0.0, 64 ); wScaled->addref();
+
+		const BDPTVertex vdAir = MakeEntryVertex( dAir, kAirExterior ), vdScaled = MakeEntryVertex( dScaled, kScaledExterior );
+		const BDPTVertex vwAir = MakeEntryVertex( wAir, kAirExterior ), vwScaled = MakeEntryVertex( wScaled, kScaledExterior );
+		const Vector3 wo( 0, -1, 0 );
+		Scalar worstD = 0, worstW = 0;
+		for( const Scalar mu : { 0.95, 0.6, 0.3, 0.1 } ) {
+			const Vector3 wi = DirectionForCosine( mu );
+			const Scalar a = PathVertexEval::EvalBSDFAtVertex( vdAir, wi, wo )[0];
+			const Scalar s = PathVertexEval::EvalBSDFAtVertex( vdScaled, wi, wo )[0];
+			const Scalar aNM = PathVertexEval::EvalBSDFAtVertexNM( vdAir, wi, wo, 550.0 );
+			const Scalar sNM = PathVertexEval::EvalBSDFAtVertexNM( vdScaled, wi, wo, 550.0 );
+			const Scalar wa = PathVertexEval::EvalBSDFAtVertex( vwAir, wi, wo )[0];
+			const Scalar ws = PathVertexEval::EvalBSDFAtVertex( vwScaled, wi, wo )[0];
+			const Scalar waNM = PathVertexEval::EvalBSDFAtVertexNM( vwAir, wi, wo, 550.0 );
+			const Scalar wsNM = PathVertexEval::EvalBSDFAtVertexNM( vwScaled, wi, wo, 550.0 );
+			worstD = std::fmax( worstD, std::fabs( a - s ) / a );
+			worstW = std::fmax( worstW, std::fabs( wa - ws ) / wa );
+			Check( a > 0 && wa > 0, "A8: (sanity) entry vertex evaluates a positive Sw" );
+			Check( RelClose( a, s, 1e-12 ) && RelClose( aNM, sNM, 1e-12 ), "A8: diffusion entry vertex RGB/NM scale invariant" );
+			Check( RelClose( wa, ws, 1e-12 ) && RelClose( waNM, wsNM, 1e-12 ), "A8: random-walk entry vertex RGB/NM scale invariant" );
+		}
+		std::cout << "    worst relative difference: diffusion " << worstD << "  random walk " << worstW << std::endl;
+
+		// As in A3, the discriminating case is a denser exterior -- and here
+		// it is what pins `BDPTVertex::mediumIOR` as the exterior source for
+		// the connection re-evaluation (1.33 inside 1.5: nothing crosses
+		// below the critical exterior cosine 0.4623).
+		UniformScalarPainter* nDense = new UniformScalarPainter( 1.33 ); nDense->addref();
+		SubSurfaceScatteringMaterial* dDense = new SubSurfaceScatteringMaterial( *nDense, *absorption, *scattering, 0.0, 0.0 ); dDense->addref();
+		RandomWalkSSSMaterial* wDense = new RandomWalkSSSMaterial( *nDense, *absorption, *scattering, 0.0, 0.0, 64 ); wDense->addref();
+		const BDPTVertex vdDense = MakeEntryVertex( dDense, 1.5 ), vwDense = MakeEntryVertex( wDense, 1.5 );
+		const Vector3 grazing = DirectionForCosine( 0.3 );
+		const Scalar dg = PathVertexEval::EvalBSDFAtVertex( vdDense, grazing, wo )[0];
+		const Scalar dgNM = PathVertexEval::EvalBSDFAtVertexNM( vdDense, grazing, wo, 550.0 );
+		const Scalar wg = PathVertexEval::EvalBSDFAtVertex( vwDense, grazing, wo )[0];
+		const Scalar wgNM = PathVertexEval::EvalBSDFAtVertexNM( vwDense, grazing, wo, 550.0 );
+		const Scalar ds = PathVertexEval::EvalBSDFAtVertex( vdDense, DirectionForCosine( 0.9 ), wo )[0];
+		std::cout << "    1.33 inside 1.5 (mediumIOR): diffusion Sw(0.3) RGB/NM=" << dg << "/" << dgNM
+			<< " Sw(0.9)=" << ds << "  walk Sw(0.3) RGB/NM=" << wg << "/" << wgNM << std::endl;
+		Check( dg == 0.0 && dgNM == 0.0, "A8: diffusion entry vertex honours mediumIOR (no transmission past the critical angle)" );
+		Check( wg == 0.0 && wgNM == 0.0, "A8: random-walk entry vertex honours mediumIOR (no transmission past the critical angle)" );
+		Check( ds > 0, "A8: (sanity) denser exterior still transmits inside the critical cone" );
+		dDense->release(); wDense->release(); nDense->release();
+
+		dAir->release(); dScaled->release(); wAir->release(); wScaled->release();
+		nAir->release(); nScaled->release(); absorption->release(); scattering->release();
+	}
+
+
+	//////////////////////////////////////////////////////////////////
+	// D -- DL-291: precomputed / authored boundary conditions
+	//////////////////////////////////////////////////////////////////
+
+	//! A Donner-Jensen multipole profile with the given layer indices and
+	//! the chunk defaults for every other parameter.
+	struct SkinBundle
+	{
+		UniformScalarPainter* p[9];
+		DonnerJensenSkinDiffusionProfile* profile;
+		SkinBundle( const Scalar iorEpidermis, const Scalar iorDermis )
+		{
+			const Scalar v[9] = { 0.02, 0.5, 0.002, 0.001, 0.005, 0.025, iorEpidermis, iorDermis, 0.7 };
+			for( int i = 0; i < 9; ++i ) { p[i] = new UniformScalarPainter( v[i] ); p[i]->addref(); }
+			profile = new DonnerJensenSkinDiffusionProfile( *p[0], *p[1], *p[2], *p[3], *p[4], *p[5], *p[6], *p[7], *p[8] );
+			profile->addref();
+		}
+		~SkinBundle()
+		{
+			profile->release();
+			for( int i = 0; i < 9; ++i ) p[i]->release();
+		}
+	};
+
+	//! Largest relative difference between two profiles over their whole
+	//! public surface (RGB and NM evaluation, radius sampling, radius pdf).
+	Scalar WorstSkinProfileDifference(
+		const DonnerJensenSkinDiffusionProfile& a, const RayIntersectionGeometric& riA,
+		const DonnerJensenSkinDiffusionProfile& b, const RayIntersectionGeometric& riB )
+	{
+		Scalar worst = 0;
+		auto accumulate = [&worst]( const Scalar x, const Scalar y ) {
+			const Scalar scale = std::fmax( std::fabs( x ), std::fabs( y ) );
+			if( !std::isfinite( x ) || !std::isfinite( y ) ) { worst = INFINITY; return; }
+			if( scale > 0 ) worst = std::fmax( worst, std::fabs( x - y ) / scale );
+		};
+		const Scalar radii[] = { 0.0, 0.002, 0.01, 0.03, 0.08, 0.2 };
+		const Scalar wavelengths[] = { 405.0, 480.0, 555.0, 633.0, 695.0 };
+		const Scalar us[] = { 0.02, 0.3, 0.6, 0.9, 0.995 };
+		for( const Scalar r : radii ) {
+			const RISEPel ea = a.EvaluateProfile( r, riA ), eb = b.EvaluateProfile( r, riB );
+			for( int c = 0; c < 3; ++c ) accumulate( ea[c], eb[c] );
+			for( const Scalar nm : wavelengths ) accumulate( a.EvaluateProfileNM( r, riA, nm ), b.EvaluateProfileNM( r, riB, nm ) );
+			if( r > 0 ) for( int c = 0; c < 3; ++c ) accumulate( a.PdfRadius( r, c, riA ), b.PdfRadius( r, c, riB ) );
+		}
+		for( const Scalar u : us ) for( int c = 0; c < 3; ++c ) accumulate( a.SampleRadius( u, c, riA ), b.SampleRadius( u, c, riB ) );
+		// The sampler's entry-point cutoff follows the fit's active set.
+		accumulate( a.GetMaximumDistanceForErrorAt( 1e-4, riA ), b.GetMaximumDistanceForErrorAt( 1e-4, riB ) );
+		return worst;
+	}
+
+	void TestSkinMultipoleRelativeIndex()
+	{
+		std::cout << "D1: Donner-Jensen multipole Rd is a function of the RELATIVE layer indices" << std::endl;
+		// The multipole's boundary term A = (1+Fdr)/(1-Fdr) of each slab is
+		// evaluated against the medium surrounding the stack; before DL-291
+		// the profile baked it once, at construction, against air.  Each
+		// case compares a body seen through exterior n_e with a SECOND body
+		// whose authored indices are the first one's divided by n_e, seen
+		// in air: one relative problem, two absolute scales.
+		struct Case { const char* what; Scalar epi, derm, ext; Scalar tol; };
+		const Case cases[] = {
+			// Common scaling by 1.5 (the Part B enclosure).  2.1/1.5 is not
+			// exactly 1.4 in binary, so a rounding-level tolerance.
+			{ "scaled (2.1, 2.07) in 1.5 vs (1.4, 1.38) in air", 2.1, 2.07, 1.5, 1e-9 },
+			// Matched epidermis: relative index exactly 1 -- the boundary
+			// constant must be EXACTLY the air value of a relative-1 body.
+			{ "matched (1.4, 1.38) in 1.4 vs (1, 1.38/1.4) in air", 1.4, 1.38, 1.4, 0.0 },
+			// Denser exterior (eta < 1, the Fdr fit's other branch).
+			{ "dense (1.33, 1.31) in 1.5 vs (1.33/1.5, 1.31/1.5) in air", 1.33, 1.31, 1.5, 0.0 },
+		};
+		for( const Case& c : cases ) {
+			SkinBundle immersed( c.epi, c.derm );
+			SkinBundle reference( c.epi / c.ext, c.derm / c.ext );
+			const Scalar worst = WorstSkinProfileDifference(
+				*immersed.profile, MakeSurfaceRI( c.ext ), *reference.profile, MakeSurfaceRI( 1.0 ) );
+			std::cout << "    " << c.what << ": worst relative difference " << std::setprecision( 6 ) << worst << std::endl;
+			Check( worst <= c.tol, std::string( "D1: " ) + c.what );
+		}
+
+		// Discrimination: the SAME body is priced differently by a different
+		// exterior (otherwise the cases above would pass vacuously).
+		SkinBundle skin( 1.4, 1.38 );
+		const Scalar moved = WorstSkinProfileDifference( *skin.profile, MakeSurfaceRI( 1.33 ), *skin.profile, MakeSurfaceRI( 1.0 ) );
+		std::cout << "    same body, water vs air: worst relative difference " << moved << std::endl;
+		Check( moved > 1e-2, "D1: the exterior index changes the multipole profile" );
+
+		// In air the profile is the constructor's table, bit for bit: a
+		// stackless record (default ambientIOR) and an explicit 1.0 agree.
+		RayIntersectionGeometric riDefault = MakeSurfaceRI( 1.0 );
+		riDefault.ambientIOR = RayIntersectionGeometric( Ray(), nullRasterizerState ).ambientIOR;
+		Check( WorstSkinProfileDifference( *skin.profile, riDefault, *skin.profile, MakeSurfaceRI( 1.0 ) ) == 0.0,
+			"D1: stackless record reads the air table exactly" );
+		Check( skin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.0 ) ) == skin.profile->GetMaximumDistanceForError( 1e-4 ),
+			"D1: in air the entry-point cutoff is the constructor's, exactly" );
+
+		// The NNLS fit's active set moves with the exterior, so the cutoff
+		// must too: at the default melanin a 1.2-epidermis body's widest
+		// active Gaussian in water has ~2.8x the variance of its air fit.
+		SkinBundle thin( 1.2, 1.2 * ( 1.38 / 1.4 ) );
+		const Scalar cutAir = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.0 ) );
+		const Scalar cutWater = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.33 ) );
+		std::cout << "    entry-point cutoff (1.2 body, default melanin): air " << cutAir << "  water " << cutWater << std::endl;
+		// DL-313 removes the spurious internal-face exterior dependence.
+		// An active-set cutoff may now stay unchanged; compare the relative-index twin.
+		SkinBundle thinReference( 1.2 / 1.33, 1.2 * ( 1.38 / 1.4 ) / 1.33 );
+		const Scalar cutReference = thinReference.profile->GetMaximumDistanceForError( 1e-4 );
+		Check( std::fabs(cutWater - cutReference) < 1e-10 * cutReference,
+			"D1: the entry-point cutoff matches the exterior's relative-index fit" );
+
+		// A record whose exterior differs only in the last bit is a
+		// different key; a repeat of an exterior already seen is served
+		// from the cache and is identical to its first evaluation.
+		const Scalar first = skin.profile->EvaluateProfile( 0.01, MakeSurfaceRI( 1.33 ) )[1];
+		const Scalar again = skin.profile->EvaluateProfile( 0.01, MakeSurfaceRI( 1.33 ) )[1];
+		Check( first == again, "D1: a repeated exterior evaluates identically" );
+
+		// The Egan-Hilgeman diffuse-Fresnel fit's two branches meet at
+		// eta = 1 (so an exterior crossing the interior index is continuous).
+		Check( std::fabs( ComputeFdr( 1.0 - 1e-12 ) - ComputeFdr( 1.0 ) ) < 1e-9,
+			"D1: diffuse Fresnel fit is continuous across eta = 1" );
+	}
+
+	//! Counts how the octree hands the IOR stack to the BSDF.
+	class StackRecordingBSDF : public virtual IBSDF, public virtual Reference
+	{
+	public:
+		mutable unsigned int withStack = 0, withoutStack = 0;
+		RISEPel value( const Vector3&, const RayIntersectionGeometric& ) const override { ++withoutStack; return RISEPel( 1, 1, 1 ); }
+		Scalar valueNM( const Vector3&, const RayIntersectionGeometric&, const Scalar ) const override { ++withoutStack; return 1; }
+		RISEPel valueStateful( const Vector3&, const RayIntersectionGeometric&, const IORStack* s ) const override
+		{
+			if( s ) ++withStack; else ++withoutStack;
+			return RISEPel( 1, 1, 1 );
+		}
+	protected:
+		virtual ~StackRecordingBSDF() {}
+	};
+
+	class UnitExtinction : public virtual ISubSurfaceExtinctionFunction, public virtual Reference
+	{
+	public:
+		mutable unsigned int exteriorMismatches = 0;
+		Scalar expectedExterior = 1.0;
+		Scalar GetMaximumDistanceForError( const Scalar ) const override { return RISE_INFINITY; }
+		RISEPel ComputeTotalExtinction( const Scalar ) const override { ++exteriorMismatches; return RISEPel( 1, 1, 1 ); }
+		RISEPel ComputeTotalExtinctionForExterior( const Scalar, const Scalar exteriorIOR ) const override
+		{
+			if( exteriorIOR != expectedExterior ) ++exteriorMismatches;
+			return RISEPel( 1, 1, 1 );
+		}
+	protected:
+		virtual ~UnitExtinction() {}
+	};
+
+	void TestPointSetOctreeStackForwarding()
+	{
+		std::cout << "D2: the point-set octree hands the live IOR stack to the BSDF at every depth" << std::endl;
+		// DL-223 plumbed `const IORStack*` through PointSetOctree::Evaluate so
+		// a stateful BSDF (translucent_material, the material both shipped
+		// `multiplybsdf TRUE` scenes use) is priced on the right side; the
+		// recursion into child nodes dropped it, so every node below the
+		// root fell back to the stackless evaluation.
+		PointSetOctree::PointSet points;
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+		RandomNumberGenerator rng( 291 );
+		for( int i = 0; i < 2000; ++i ) {
+			PointSetOctree::SamplePoint sp;
+			sp.ptPosition = Point3( rng.CanonicalRandom(), rng.CanonicalRandom(), rng.CanonicalRandom() );
+			sp.irrad = RISEPel( 1, 1, 1 );
+			points.push_back( sp );
+			bbox.Include( sp.ptPosition );
+		}
+		bbox.EnsureBoxHasVolume();
+		PointSetOctree tree( bbox, 4 );
+		Check( tree.AddElements( points, 8 ), "D2: (setup) octree built" );
+		StackRecordingBSDF* bsdf = new StackRecordingBSDF(); bsdf->addref();
+		UnitExtinction* ext = new UnitExtinction(); ext->addref();
+		IORStack stack( 1.0 );
+		ext->expectedExterior = 1.33;
+		RISEPel c( 0, 0, 0 );
+		tree.Evaluate( c, Point3( 0.5, 0.5, 0.5 ), *ext, 0.001, bsdf, MakeSurfaceRI( 1.33 ), &stack, 1.33 );
+		std::cout << "    BSDF evaluations with stack " << bsdf->withStack << ", without " << bsdf->withoutStack
+			<< "; profile evaluations at the wrong exterior " << ext->exteriorMismatches << std::endl;
+		Check( bsdf->withStack == 2000, "D2: every sample point priced with the live stack" );
+		Check( bsdf->withoutStack == 0, "D2: no evaluation fell back to the stackless value" );
+		Check( ext->exteriorMismatches == 0, "D2: every profile evaluation received the exterior index" );
+		bsdf->release(); ext->release();
+	}
+
+	//! Internal diffuse Fresnel reflectance of a boundary with relative
+	//! index `eta` (inside / outside): 2 * integral F(mu) mu dmu over the
+	//! INSIDE hemisphere, exact unpolarized dielectric Fresnel, total
+	//! internal reflection past the critical angle.  Independent of every
+	//! polynomial fit in the library (the reference the fits approximate).
+	Scalar NumericInternalFdr( const Scalar eta )
+	{
+		const int count = 1 << 16;
+		Scalar sum = 0;
+		for( int i = 0; i < count; ++i ) {
+			const Scalar cosI = ( Scalar( i ) + 0.5 ) / count;
+			const Scalar sinT2 = eta * eta * ( 1.0 - cosI * cosI );
+			Scalar F = 1.0;
+			if( sinT2 < 1.0 ) {
+				const Scalar cosT = std::sqrt( 1.0 - sinT2 );
+				const Scalar rs = ( eta * cosI - cosT ) / ( eta * cosI + cosT );
+				const Scalar rp = ( eta * cosT - cosI ) / ( eta * cosT + cosI );
+				F = 0.5 * ( rs * rs + rp * rp );
+			}
+			sum += 2.0 * F * cosI;
+		}
+		return sum / count;
+	}
+
+	void TestLegacyDipoleRelativeIndex()
+	{
+		std::cout << "D3: legacy dipole (diffusion_approximation_sss_shaderop) prices the relative index" << std::endl;
+		// The chunk's `ior` is the material's index against air; the
+		// dipole's boundary term A = (1+Fdr)/(1-Fdr) is a function of the
+		// index RELATIVE to the medium the body sits in.
+		const RISEPel absorption( 0.05, 0.1, 0.2 ), scattering( 2, 2, 2 );
+		DiffusionApproximationExtinction* body = new DiffusionApproximationExtinction( absorption, scattering, 1.3, 0.0, 0.01 );
+		body->addref();
+		struct Case { const char* what; Scalar exterior; };
+		const Case cases[] = { { "air", 1.0 }, { "water", 1.33 }, { "matched (1.3 in 1.3)", 1.3 }, { "denser glass", 1.5 } };
+		const Scalar distances[] = { 0.0, 0.0005, 0.002, 0.01, 0.05 };
+		for( const Case& c : cases ) {
+			DiffusionApproximationExtinction* twin = new DiffusionApproximationExtinction( absorption, scattering, 1.3 / c.exterior, 0.0, 0.01 );
+			twin->addref();
+			Scalar worst = 0;
+			for( const Scalar d : distances ) {
+				const RISEPel a = body->ComputeTotalExtinctionForExterior( d, c.exterior );
+				const RISEPel b = twin->ComputeTotalExtinction( d );
+				for( int k = 0; k < 3; ++k ) worst = std::fmax( worst, std::fabs( a[k] - b[k] ) / std::fmax( 1e-300, std::fabs( b[k] ) ) );
+			}
+			std::cout << "    " << c.what << ": worst relative difference to the relative-index twin in air " << worst << std::endl;
+			Check( worst == 0.0, std::string( "D3: exterior " ) + c.what + " == relative-index twin in air, exactly" );
+			twin->release();
+		}
+		// The boundary term itself against the Fresnel integral BELOW
+		// relative index 1 (a body less dense than its exterior -- only
+		// reachable since DL-291).  The twins above cannot see a wrong fit:
+		// both sides evaluate the same function.  Egan-Hilgeman's eta >= 1
+		// polynomial goes NEGATIVE here (-0.051 at 1.3 in 1.33, -0.375 at
+		// 1.3 in 1.5); the eta < 1 fit is within ~1e-3 of the integral.
+		const Scalar belowOne[] = { 1.3 / 1.33, 1.3 / 1.5, 0.75 };
+		for( const Scalar nu : belowOne ) {
+			const Scalar Fnum = NumericInternalFdr( nu );
+			const Scalar Anum = ( 1.0 + Fnum ) / ( 1.0 - Fnum );
+			const Scalar Aused = DiffusionApproximationExtinction::BoundaryA( nu );
+			const Scalar Amultipole = ( 1.0 + ComputeFdr( nu ) ) / ( 1.0 - ComputeFdr( nu ) );
+			std::cout << "    relative index " << nu << ": numeric Fdr " << Fnum << "  A numeric " << Anum
+				<< "  legacy dipole A " << Aused << "  multipole A " << Amultipole << std::endl;
+			Check( std::fabs( Aused - Anum ) < 0.01 * Anum, "D3: legacy dipole boundary term below relative index 1 matches the Fresnel integral" );
+			Check( std::fabs( Amultipole - Anum ) < 0.01 * Anum, "D3: multipole boundary term below relative index 1 matches the Fresnel integral" );
+		}
+		// The dipole's two fits meet at relative index 1 (to the fits' own 1e-4).
+		Check( std::fabs( DiffusionApproximationExtinction::BoundaryA( 1.0 - 1e-12 ) - DiffusionApproximationExtinction::BoundaryA( 1.0 ) ) < 1e-3,
+			"D3: legacy dipole boundary term continuous across relative index 1" );
+
+		// In air the exterior-aware entry is the constructor's value, bit for bit.
+		Check( body->ComputeTotalExtinctionForExterior( 0.003, 1.0 )[1] == body->ComputeTotalExtinction( 0.003 )[1],
+			"D3: air reads the constructor's dipole exactly" );
+		// Discrimination: a non-air exterior does move the profile.
+		Check( body->ComputeTotalExtinctionForExterior( 0.003, 1.33 )[1] != body->ComputeTotalExtinction( 0.003 )[1],
+			"D3: the exterior index changes the dipole" );
+		body->release();
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part B -- rendered scale invariance
+	//////////////////////////////////////////////////////////////////
+	class CapturingRasterizerOutput
+		: public virtual IRasterizerOutput
+		, public virtual Reference
+	{
+	public:
+		std::vector<RISEColor> pixels;
+		unsigned int expectedSalt = 0;
+		CapturingRasterizerOutput() {}
+	protected:
+		virtual ~CapturingRasterizerOutput() {}
+	public:
+		virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		virtual void OutputImage( const IRasterImage& image, const Rect*, const unsigned int ) override
+		{
+			if( expectedSalt ) Check( SobolSamplerTestHooks::ValueSalt().load() == expectedSalt, "independent value salt reaches the render" );
+			pixels.resize( size_t( image.GetWidth() ) * image.GetHeight() );
+			for( unsigned int y = 0; y < image.GetHeight(); y++ )
+				for( unsigned int x = 0; x < image.GetWidth(); x++ )
+					pixels[size_t( y ) * image.GetWidth() + x] = image.GetPEL( x, y );
+		}
+	};
+
+	enum class Model { Lambertian, Diffusion, DiffusionRough, RandomWalk, SkinMultipole, LegacyDipole, LegacySkinOp };
+	enum class Integrator { PT, BDPT, PTSpectral, PixelPel };
+
+	const char* ModelName( Model m )
+	{
+		switch( m ) {
+		case Model::Lambertian: return "lambertian_control";
+		case Model::Diffusion: return "diffusion_smooth";
+		case Model::DiffusionRough: return "diffusion_rough";
+		case Model::RandomWalk: return "random_walk";
+		case Model::SkinMultipole: return "skin_multipole";
+		case Model::LegacyDipole: return "legacy_dipole_op";
+		case Model::LegacySkinOp: return "legacy_skin_op";
+		}
+		return "unknown";
+	}
+	const char* IntegratorName( Integrator i )
+	{
+		switch( i ) {
+		case Integrator::PT: return "PT";
+		case Integrator::BDPT: return "BDPT";
+		case Integrator::PTSpectral: return "PT-spectral";
+		case Integrator::PixelPel: return "pixelpel";
+		}
+		return "unknown";
+	}
+
+	//! exterior == 1 builds the air scene; exterior > 1 wraps camera, light
+	//! and subject in an ideal enclosure of that index.
+	std::string BuildScene( Model model, Integrator integrator, Scalar exterior, Scalar interior, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n}\n\n";
+		s << "lambertian_material\n{\n\tname black_base\n\treflectance black\n}\n\n";
+		s << "lambertian_luminaire_material\n{\n\tname lum\n\texitance white\n\tmaterial black_base\n\tscale 6\n}\n\n";
+		const Scalar nS = interior;
+		const bool scaled = exterior != 1.0;
+		switch( model ) {
+		case Model::Lambertian:
+			s << "uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.7 0.6 0.5\n}\n\n"
+			  << "lambertian_material\n{\n\tname subject\n\treflectance albedo\n}\n\n";
+			break;
+		case Model::Diffusion:
+		case Model::DiffusionRough:
+			// Smooth isolates the subsurface event (the only surface term is
+			// the SPF's delta reflection, relative-index-correct before and
+			// after DL-49).  Rough adds the SubSurfaceScatteringBSDF NEE
+			// lobe, whose pre-DL-49 error has the OPPOSITE sign to the
+			// subsurface one (air Fresnel over-reflects in the enclosure while
+			// the air-index profile under-transmits), so the two partially
+			// cancel in a whole-image mean -- which is why each gets a row.
+			s << "subsurfacescattering_material\n{\n\tname subject\n\tior " << nS
+			  << "\n\tabsorption 0.05 0.1 0.2\n\tscattering 2\n\tg 0\n\troughness "
+			  << ( model == Model::DiffusionRough ? "0.3" : "0" ) << "\n}\n\n";
+			break;
+		case Model::RandomWalk:
+			s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << nS
+			  << "\n\tabsorption 0.05 0.1 0.2\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 256\n}\n\n";
+			break;
+		case Model::SkinMultipole:
+			// DL-291: the Donner-Jensen two-layer multipole.  `interior` is the
+			// epidermis index; the dermis keeps the chunk defaults' ratio
+			// (1.38/1.4), so both layers scale with the enclosure.  Smooth,
+			// so the only surface term is the relative-index SPF reflection.
+			s << "donner_jensen_skin_bssrdf_material\n{\n\tname subject\n\tior_epidermis " << nS
+			  << "\n\tior_dermis " << nS * ( 1.38 / 1.4 ) << "\n\troughness 0\n}\n\n";
+			break;
+		case Model::LegacyDipole:
+		case Model::LegacySkinOp:
+			// DL-291: the legacy point-set shader-ops (pixelpel only).  The
+			// subject is a white Lambertian whose shader is the SSS op; the
+			// op's irradiance-capture shader is plain direct lighting, and
+			// the op's authored index is the material's absolute index.
+			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n"
+			  << "standard_shader\n{\n\tname sss_irrad\n\tshaderop DefaultDirectLighting\n}\n\n";
+			if( model == Model::LegacyDipole ) {
+				s << "diffusion_approximation_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1000\n"
+				  << "\tgeometric_scale 0.01\n\tscattering 2 2 2\n\tabsorption 0.05 0.1 0.2\n\tior " << nS
+				  << "\n\tg 0\n\tshader sss_irrad\n}\n\n";
+			} else {
+				s << "donner_jensen_skin_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1\n"
+				  << "\tior_epidermis " << nS << "\n\tior_dermis " << nS * ( 1.38 / 1.4 ) << "\n\tshader sss_irrad\n}\n\n";
+			}
+			s << "standard_shader\n{\n\tname sss_shader\n\tshaderop sss_op\n}\n\n";
+			break;
+		}
+		s << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
+		s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n"
+		  << ( ( model == Model::LegacyDipole || model == Model::LegacySkinOp ) ? "\tshader sss_shader\n" : "" ) << "}\n\n";
+		s << "sphere_geometry\n{\n\tname light_geo\n\tradius 0.4\n}\n\n";
+		s << "standard_object\n{\n\tname light_obj\n\tgeometry light_geo\n\tmaterial lum\n\tposition 2 2.5 2.5\n}\n\n";
+		// A black absorbing room around camera, light and subject, on BOTH
+		// sides of the comparison: every path that leaves the neighbourhood
+		// dies on it.  Without it the enclosure's inner wall totally
+		// internally reflects grazing escapes back in (1.5 -> air), which
+		// adds real indirect light that the air scene does not have -- a
+		// confound the Lambertian control row measured at +46% under PT.
+		// A non-refracting material, so it plays no part in IOR seeding.
+		s << "sphere_geometry\n{\n\tname room_geo\n\tradius 20\n}\n\n";
+		s << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial black_base\n}\n\n";
+		if( scaled ) {
+			// An ideal NON-reflecting index enclosure (the
+			// SSSRadianceScalingTest idiom) outside the black room: no path
+			// ever reaches its wall, so its only effect is the exterior index
+			// the IOR stack is seeded with at the camera and the light.
+			s << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << exterior << "\n\trefractance white\n}\n\n"
+			  << "box_geometry\n{\n\tname enclosure_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
+			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		switch( integrator ) {
+		case Integrator::PT:
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n}\n\n";
+			break;
+		case Integrator::BDPT:
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+			break;
+		case Integrator::PTSpectral:
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+			break;
+		case Integrator::PixelPel:
+			s << "pixelpel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+			break;
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl49_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	std::string WriteScene( const std::string& text, const std::string& tag )
+	{
+		char path[1024];
+		std::snprintf( path, sizeof( path ), "%s/dl49_invariance_%s_%d.RISEscene", RISE::TestSupport::ScratchBaseDir().c_str(), tag.c_str(), static_cast<int>( ::getpid() ) );
+		std::ofstream ofs( path );
+		if( !ofs.is_open() ) return std::string();
+		ofs << text;
+		ofs.close();
+		return std::string( path );
+	}
+
+	//! Renders once; returns the RGB-sum image mean, or a negative value on failure.
+	//! On the first render of each configuration also verifies the camera's
+	//! seeded exterior index (the enclosure really is the exterior).
+	double RenderMean( const std::string& path, unsigned int seed, Scalar expectedExterior, bool checkSeed, const std::string& label )
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
+		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
+		if( checkSeed ) {
+			IORStack stack( 1.0 );
+			IORStackSeeding::SeedFromPoint( stack, Point3( 0, 0, 4.5 ), *job->GetScene() );
+			Check( std::fabs( stack.top() - expectedExterior ) < 1e-12, label + ": camera's seeded exterior index" );
+		}
+		job->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl49 capture" );
+		cap->expectedSalt = SobolSequence::HashCombine( seed, 0x332u );
+		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x332u ) );
+		std::srand( seed );
+		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		double mean = -1;
+		if( rendered && !cap->pixels.empty() ) {
+			double sum = 0;
+			bool finite = true;
+			for( const RISEColor& c : cap->pixels ) {
+				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a;
+				if( !std::isfinite( v ) ) { finite = false; break; }
+				sum += v;
+			}
+			if( finite ) mean = sum / double( cap->pixels.size() );
+		}
+		safe_release( cap );
+		safe_release( job );
+		return mean;
+	}
+
+	struct Stats { double mean, sd; };
+	Stats Summarize( const std::vector<double>& v )
+	{
+		double m = 0;
+		for( double x : v ) m += x;
+		m /= double( v.size() );
+		double ss = 0;
+		for( double x : v ) ss += ( x - m ) * ( x - m );
+		return Stats{ m, v.size() > 1 ? std::sqrt( ss / double( v.size() - 1 ) ) : 0.0 };
+	}
+
+	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
+		// Each row compares an air scene (exterior 1, interior airInterior)
+		// with the same scene enclosed at `exterior` with interior
+		// airInterior * exterior: one relative index, two absolute scales.
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar airInterior; Scalar exterior; };
+		// The "dense" rows put the relative index BELOW 1 (a 1.33 body inside
+		// 1.5 glass, twinned with 1.33/1.5 in air): the boundary law then
+		// totally reflects past the critical angle (exact Fresnel since
+		// DL-306; Schlick at the transmitted cosine under DL-49) -- the
+		// regime where Sw is most strongly index-dependent,
+		// so these rows are what pin BDPTVertex::mediumIOR on the entry
+		// vertices that PathVertexEval re-evaluates.
+		const Scalar kDense = 1.33 / 1.5;
+		// DL-332: deliberately independent Sobol salts for BDPT/spectral pairs.
+		// RGB PT retains common random numbers. Full-suite calibration
+		// exposed more variance than isolated slices: at 2048 spp rough/
+		// dense BDPT ratio SE reached 0.002926/0.002847; at 256 spp
+		// spectral diffusion means differed by 0.0428 across two seeds.
+		// Raise their budgets to 8192/4096/1024 respectively, retaining
+		// bands 0.006/0.008/0.04. Five full salted runs measure the
+		// actual spread of each tested mean (validation record).
+		// Fixed libc seeds alone do not randomize BDPT's Sobol pattern.
+		const Row rows[] = {
+			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PT,         16,  0.03,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.06,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PT,         32,  0.04,  kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       64,  0.08,  kDense,       kScale },
+			{ Model::RandomWalk,     Integrator::PT,         16,  0.05,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::BDPT,       32,  0.14,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 32,  0.10,  kAirInterior, kScale },
+			{ Model::SkinMultipole,  Integrator::PT,         256, 0.04,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::BDPT,       512, 0.06,  1.4,          kScale },
+		};
+		unsigned int seed = 49000 + g_seedOffset;
+		for( const Row& row : rows ) {
+			const std::string label = std::string( "B: " ) + ModelName( row.model ) +
+				( row.airInterior < 1.0 ? "_dense" : "" ) + "/" + IntegratorName( row.integrator );
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.airInterior, row.samples ), "air" );
+			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, row.exterior,
+				row.airInterior * row.exterior, row.samples ), "scaled" );
+			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
+			std::vector<double> air, scaled;
+			bool allValid = true;
+			// Interleave independent randomized-QMC replicates.
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed;
+				seed += 2;
+				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, label + " air" );
+				const double s = RenderMean( scaledPath, row.integrator == Integrator::PT ? pairSeed : pairSeed + 1, row.exterior, t == 0, label + " enclosed" );
+				if( !( a > 0 ) || !( s > 0 ) ) allValid = false;
+				air.push_back( a );
+				scaled.push_back( s );
+			}
+			std::remove( airPath.c_str() );
+			std::remove( scaledPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats sa = Summarize( air ), ss = Summarize( scaled );
+			const double ratio = ss.mean / sa.mean;
+			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
+				( ss.sd / ss.mean ) * ( ss.sd / ss.mean ) / trials );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 )
+				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
+				<< "  enclosed " << ss.mean << " +/- " << ss.sd
+				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
+			if( row.model == Model::SkinMultipole ) {
+				Check( 3.0 * ratioSd <= 0.06, label + ": 3*ratioSd within 0.06 precision cap" );
+			}
+			const double band = row.model == Model::SkinMultipole ? std::fmax( row.band, 3.0 * ratioSd ) : row.band;
+			Check( std::fabs( ratio - 1.0 ) < band, label + ": enclosed/air image mean ratio within band of 1" );
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part C (DL-306) -- rendered R + T white furnace
+	//////////////////////////////////////////////////////////////////
+	//
+	// A conservative SSS sphere (zero absorption) under a uniform white
+	// environment of radiance 1, seen by an orthographic camera whose
+	// viewport exactly frames it.  Every path either reflects off the
+	// sphere (the SPF's exact-Fresnel lobe, weight R(mu)) or enters the
+	// subsurface event (weight T(mu), then an albedo-one random walk that
+	// returns everything through a unit-normalized Sw), so a pixel whose
+	// ray meets the sphere at cosine mu reads R(mu) + T(mu).  Over the
+	// orthographic disk the cosine is cosine-weighted, so
+	//   image mean = 1 - (pi/4) (1 - H),   H = <R> + <T>,
+	// and the row gates the recovered H against 1.  Pre-DL-306 (Schlick T)
+	// H = 0.966 / 0.980 / 1.006 at eta 1.05 / 1.128 / 1.5 and 0.984 for
+	// eta = 1.33/1.5 (a denser exterior; the relative index is all the
+	// boundary sees -- Part B pins that immersed == its air twin -- so the
+	// sphere is simply given that index in air).  The random walk is used
+	// because it is the transport whose albedo is exactly one; the
+	// diffusion row is a consistency check in the same band (Burley
+	// on a finite sphere carries a small energy GAIN of its own: H reads
+	// about 1.003 post-fix, a few sd of the mean above 1, inside the band).
+	double kFurnaceDiffusionScattering = 200;
+	//! `enclosure` > 0 wraps camera and subject in an ideal non-reflecting
+	//! enclosure of that index (DL-315 Part E); `cluster` replaces the one
+	//! sphere by a close-packed cluster of thirteen touching spheres
+	//! (centre + its twelve fcc neighbours) under a viewport it overfills.
+	std::string BuildFurnaceScene( Model model, Integrator integrator, Scalar ior, unsigned int samples,
+		Scalar enclosure = 0, bool cluster = false )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 " << ( cluster ? 8 : 4 ) << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale "
+		  << ( cluster ? "4 4" : "2 2" ) << "\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( model == Model::Lambertian ) {
+			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n";
+		} else if( model == Model::RandomWalk ) {
+			s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << ior
+			  << "\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		} else {
+			s << "subsurfacescattering_material\n{\n\tname subject\n\tior " << ior
+			  << "\n\tabsorption 0\n\tscattering " << kFurnaceDiffusionScattering << "\n\tg 0\n\troughness 0\n}\n\n";
+		}
+		s << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
+		if( cluster ) {
+			// Centre sphere plus its twelve face-centred-cubic neighbours at
+			// centre distance exactly 2 (touching): the gaps between them
+			// return a sampled continuation to another sphere, so a path
+			// can chain many subsurface events.
+			const double c = 2.0 / std::sqrt( 2.0 );
+			const int nb[12][3] = { {1,1,0},{1,-1,0},{-1,1,0},{-1,-1,0},{1,0,1},{1,0,-1},{-1,0,1},{-1,0,-1},{0,1,1},{0,1,-1},{0,-1,1},{0,-1,-1} };
+			s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+			for( int i = 0; i < 12; ++i ) {
+				s << "standard_object\n{\n\tname subject_obj" << i << "\n\tgeometry subject_geo\n\tmaterial subject\n\tposition "
+				  << nb[i][0] * c << " " << nb[i][1] * c << " " << nb[i][2] * c << "\n}\n\n";
+			}
+		} else {
+			s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		}
+		if( enclosure > 0 ) {
+			// Around camera and subject (the camera's IOR stack is seeded
+			// with it); refractance white, so at index 1.0 it is invisible.
+			s << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << enclosure << "\n\trefractance white\n}\n\n"
+			  << "box_geometry\n{\n\tname enclosure_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
+			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		switch( integrator ) {
+		case Integrator::PT:
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+			  << env << "}\n\n";
+			break;
+		case Integrator::BDPT:
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+			break;
+		case Integrator::PTSpectral:
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+			break;
+		case Integrator::PixelPel:
+			// No furnace row uses the legacy chain (its SSS shader-ops do
+			// not bind these materials); kept complete so every Integrator
+			// builds a valid scene.
+			s << "pixelpel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+			break;
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl306_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Renders the furnace once and returns H = <R> + <T> recovered from
+	//! the image, or a negative value on failure.  The environment level B
+	//! is read from the pixels that lie wholly outside the sphere's disk
+	//! (a spectral rasterizer's uplifted "white" is not exactly 1), so
+	//! image mean m = B (1 - f + f H) with f = pi/4 gives
+	//! H = 1 - (1 - m/B) / f.
+	double RenderFurnaceH( const std::string& path, unsigned int seed )
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
+		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
+		job->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl306 capture" );
+		const unsigned int salt = SobolSequence::HashCombine( seed, 0x399u );
+		cap->expectedSalt = salt ? salt : 399u;
+		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( cap->expectedSalt );
+		std::srand( seed );
+		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		double h = -1;
+		const unsigned int side = 16;
+		if( rendered && cap->pixels.size() == size_t( side ) * side ) {
+			double sum = 0, bSum = 0;
+			unsigned int bCount = 0;
+			bool finite = true;
+			for( unsigned int y = 0; y < side; ++y ) {
+				for( unsigned int x = 0; x < side; ++x ) {
+					const RISEColor& c = cap->pixels[size_t( y ) * side + x];
+					const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+					if( !std::isfinite( v ) ) { finite = false; continue; }
+					sum += v;
+					// Pixel centre in viewport units (the 2x2 viewport frames
+					// the unit disk); half a pixel diagonal at 16x16 is 0.0884.
+					const double u = ( x + 0.5 ) * 2.0 / side - 1.0;
+					const double w = ( y + 0.5 ) * 2.0 / side - 1.0;
+					if( std::sqrt( u * u + w * w ) > 1.10 ) { bSum += v; ++bCount; }
+				}
+			}
+			if( finite && bCount > 0 && bSum > 0 ) {
+				const double m = sum / double( side * side );
+				const double b = bSum / double( bCount );
+				h = 1.0 - ( 1.0 - m / b ) / ( PI / 4.0 );
+			}
+		}
+		safe_release( cap );
+		safe_release( job );
+		return h;
+	}
+
+	void TestRenderedPartitionFurnace( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "C: rendered R+T white furnace (DL-306), n=" << trials << std::endl;
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		// Retain historical physics bands, with a per-row check that they
+		// cover at least three measured SDs of the salted mean H.
+		// Pre-DL-306 deviations: docs/DL306_SSS_FRESNEL_PARTITION.md.
+		const Row rows[] = {
+			{ Model::RandomWalk, Integrator::PT,         32,  0.015, 1.05 },
+			{ Model::RandomWalk, Integrator::PT,         32,  0.014, 1.33 / 1.5 },
+			{ Model::RandomWalk, Integrator::PTSpectral, 384, 0.040, 1.128 },
+		};
+		unsigned int rowIndex = 0;
+		for( const Row& row : rows ) {
+			unsigned int seed = 30600 + g_seedOffset + rowIndex++ * trials;
+			std::ostringstream lab;
+			lab << "C: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples ), "furnace" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> h;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double hi = RenderFurnaceH( path, seed++ );
+				if( !( hi > 0 ) ) allValid = false;
+				h.push_back( hi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( h );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
+				<< ": H = <R>+<T> = " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			const double meanSD = st.sd / std::sqrt( double( trials ) );
+			std::cout << "    salted furnace mean SD=" << meanSD
+				<< " band/meanSD=" << ( meanSD > 0 ? row.band / meanSD : 0 ) << std::endl;
+			Check( 3.0 * meanSD < row.band, label + ": band covers three measured SDs of salted mean H" );
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": reflection + transmission partition H within band of 1" );
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part E (DL-315) -- two PT RayCaster defects, reference-free
+	//////////////////////////////////////////////////////////////////
+
+	//! Renders once and returns the RGB image mean (alpha-composited, per
+	//! channel averaged), or a negative value on failure.  Every Part E
+	//! render carries a Sobol value SALT derived from `seed` (DL-315
+	//! review; DL-308's template), so repeats are independent
+	//! randomized-QMC replicates -- unsalted, every render of a scene
+	//! reuses one fixed Sobol' pattern and a pattern offset reads as a
+	//! bias.  Paired rows pass the SAME seed to both sides (common random
+	//! numbers).
+	double RenderFurnaceMean( const std::string& path, unsigned int seed )
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
+		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
+		job->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl315 capture" );
+		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x315u ) );
+		std::srand( seed );
+		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		double mean = -1;
+		if( rendered && !cap->pixels.empty() ) {
+			double sum = 0;
+			bool finite = true;
+			for( const RISEColor& c : cap->pixels ) {
+				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+				if( !std::isfinite( v ) ) { finite = false; break; }
+				sum += v;
+			}
+			if( finite ) mean = sum / double( cap->pixels.size() );
+		}
+		safe_release( cap );
+		safe_release( job );
+		return mean;
+	}
+
+	void TestRayCasterStackAndRecursion( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "E: PT RayCaster caller-stack mutation and recursion cap (DL-315), n=" << trials << std::endl;
+		// E1: enclosed(1.0)/open-air ratio of the white-furnace image mean,
+		// one SSS sphere.  Paired libc seeds (common random numbers): the
+		// index-1.0 enclosure changes no sampled direction, so the two
+		// sides differ only through the defect.  Pre-fix the ratio reads
+		// about 1 - F0 (random walk and diffusion at index 1.5); the
+		// Lambertian subject and BDPT never nest a cast per event and are
+		// controls, green before and after.  Bands from SALTED renders
+		// (salted n = 8, paired per-pair sd: Lambertian 0.0008, random walk
+		// 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004).  The
+		// round-2 review measured the between-run sd of the n = 4 mean over
+		// 15 base seeds: every row's band is >= 6 sd except the Lambertian
+		// control's 0.002, which is ~3.5 sd (sd 0.00057) -- a control, so a
+		// rare false red there says "rerun", not "defect"
+		// (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
+		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		const EncRow encRows[] = {
+			{ Model::RandomWalk, Integrator::PT,         16,  0.010, 1.5 },
+			{ Model::Diffusion,  Integrator::PT,         16,  0.010, 1.5 },
+		};
+		unsigned int seed = 31500 + g_seedOffset;
+		for( const EncRow& row : encRows ) {
+			std::ostringstream lab;
+			lab << "E1: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
+			    << " index-1.0 enclosure";
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string openPath = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples ), "dl315open" );
+			const std::string encPath = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples, 1.0 ), "dl315enc" );
+			Check( !openPath.empty() && !encPath.empty(), label + ": scene files written" );
+			std::vector<double> open, enc;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed++;
+				const double o = RenderFurnaceMean( openPath, pairSeed );
+				const double e = RenderFurnaceMean( encPath, pairSeed );
+				if( !( o > 0 ) || !( e > 0 ) ) allValid = false;
+				open.push_back( o );
+				enc.push_back( e );
+			}
+			std::remove( openPath.c_str() );
+			std::remove( encPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			std::vector<double> ratios;
+			for( size_t i = 0; i < open.size(); ++i ) ratios.push_back( enc[i] / open[i] );
+			const Stats so = Summarize( open ), se = Summarize( enc ), sr = Summarize( ratios );
+			const double ratio = se.mean / so.mean;
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": open " << so.mean << " +/- " << so.sd << "  enclosed " << se.mean << " +/- " << se.sd
+				<< "  ratio " << ratio << " (paired sd " << sr.sd << ", band " << row.band << ")" << std::endl;
+			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/open image mean ratio within band of 1" );
+		}
+
+		// E2: a close-packed cluster of conservative random-walk spheres in
+		// the open-air white furnace (radiance exactly 1 under the RGB
+		// pipe): every pixel reads 1 whatever the geometry.  Pre-fix a
+		// path that chains more than about four sphere-to-sphere subsurface
+		// events hit the RayCaster's recursion cap of 10 and returned zero.
+		struct ClusterRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		const ClusterRow clusterRows[] = {
+			{ Model::RandomWalk, Integrator::PT, 16, 0.015, 1.5 },
+		};
+		for( const ClusterRow& row : clusterRows ) {
+			std::ostringstream lab;
+			lab << "E2: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
+			    << " sphere cluster";
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples, 0, true ), "dl315cluster" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": image mean " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part F (DL-370) -- touching SSS objects, reference-free
+	//////////////////////////////////////////////////////////////////
+
+	//! An axis-aligned w x h x d box centred at the origin as an
+	//! `indexedmesh_geometry` (8 shared corners, 12 outward-wound triangles,
+	//! face normals).  Double-sided is the indexed mesh's default and the
+	//! Blender exporter's; it makes the mesh report every hit's normal
+	//! FACING the ray (DL-70), the case a box primitive never exercises.
+	std::string MeshBox( const std::string& name, double w, double h, double d, bool doubleSided,
+		bool inward = false, bool duplicateFace = false, double ox = 0 )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+		for( int i = 0; i < 8; ++i ) {
+			s << "\tvertex " << ox + ( ( i & 1 ) ? w / 2 : -w / 2 ) << " " << ( ( i & 2 ) ? h / 2 : -h / 2 ) << " "
+			  << ( ( i & 4 ) ? d / 2 : -d / 2 ) << "\n";
+		}
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( const auto& t : tri ) {
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( duplicateFace ) {		// a repeated triangle: DL-143 cannot certify the mesh
+			s << "\ttriangle " << tri[0][0] << " " << ( inward ? tri[0][2] : tri[0][1] ) << " " << ( inward ? tri[0][1] : tri[0][2] ) << "\n";
+		}
+		s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+		return s.str();
+	}
+
+	//! A closed room of six conservative (absorption 0) SSS slabs around a
+	//! pinhole camera at the origin, under the white environment: the only
+	//! way in is THROUGH the walls, every wall conserves energy, so every
+	//! pixel reads exactly 1.  `gap` == 0 makes the slabs TOUCH (each side
+	//! wall's end faces are coincident with the floor/ceiling and the
+	//! front/back walls' faces); `gap` > 0 shrinks the side and front walls
+	//! so every contact becomes an air gap of that width (the room then
+	//! leaks through the gaps, which the white environment also fills at
+	//! 1 -- the gapped room is the control).
+	std::string BuildTouchingRoomScene( Integrator integrator, Scalar gap, unsigned int samples, bool doubleSidedMesh = false )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 -1\n\tup 0 1 0\n\tfov 90.0\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname wall\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		// Interior [-1,1]^3, walls 0.5 thick.  Floor / ceiling span the full
+		// 3 x 3 footprint; the x walls sit between them; the z walls sit
+		// between the x walls and between floor and ceiling.
+		struct Slab { const char* name; double w, h, d, x, y, z; };
+		const double g = gap;
+		const Slab slabs[6] = {
+			{ "floor",   3.0,           0.5,           3.0,           0,     -1.25, 0 },
+			{ "ceiling", 3.0,           0.5,           3.0,           0,      1.25, 0 },
+			{ "xneg",    0.5,           2.0 - 2 * g,   3.0,          -1.25,   0,    0 },
+			{ "xpos",    0.5,           2.0 - 2 * g,   3.0,           1.25,   0,    0 },
+			{ "zneg",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,   -1.25 },
+			{ "zpos",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,    1.25 },
+		};
+		for( const Slab& b : slabs ) {
+			if( doubleSidedMesh ) {
+				s << MeshBox( std::string( b.name ) + "_geo", b.w, b.h, b.d, true );
+			} else {
+				s << "box_geometry\n{\n\tname " << b.name << "_geo\n\twidth " << b.w << "\n\theight " << b.h << "\n\tdepth " << b.d << "\n}\n\n";
+			}
+			s << "standard_object\n{\n\tname " << b.name << "\n\tgeometry " << b.name << "_geo\n\tmaterial wall\n\tposition "
+			  << b.x << " " << b.y << " " << b.z << "\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		if( integrator == Integrator::BDPT ) {
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+			  << env << "}\n\n";
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Two conservative SSS cubes side by side (edge 1, contact plane x = 0
+	//! when `gap` == 0) under the white environment, seen orthographically
+	//! face-on: every pixel reads 1.  Unlike the closed room this works for
+	//! the diffusion profile too (whose transport cannot cross a thick wall).
+	//! `iorRight` != 1.5 gives the right cube another index (the shared face
+	//! is then a real dielectric interface); `spectral` renders with the
+	//! spectral path tracer (the walk's NM branch).
+	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples,
+		Scalar iorRight = 1.5, bool spectral = false, bool doubleSidedMesh = false, int uncertifiedRight = 0 )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 8\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 1\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( model == Model::RandomWalk ) {
+			s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+			s << "randomwalk_sss_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0.3\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		} else {
+			s << "subsurfacescattering_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+			s << "subsurfacescattering_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+		}
+		if( doubleSidedMesh ) {
+			s << MeshBox( "block_geo", 1, 1, 1, true );
+		} else {
+			s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		}
+		// uncertifiedRight 1: the right cube is a double-sided mesh with one
+		// duplicated triangle (DL-143 cannot certify it), wound outward; 2:
+		// the same wound INWARD.
+		s << MeshBox( "right_geo", 1, 1, 1, true, uncertifiedRight == 2, true );
+		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname right\n\tgeometry " << ( uncertifiedRight ? "right_geo" : "block_geo" )
+		  << "\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		if( spectral ) {
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n";
+		}
+		s << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestTouchingSSSPair( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F2: two touching conservative SSS cubes vs a 2e-6 gap (DL-370), n=" << trials << std::endl;
+		// The 2e-6 gap is wider than the 1e-6 outward offset an SSS exit
+		// gives its continuation (BSSRDF_RAY_EPSILON) and optically nothing,
+		// so the pair differs ONLY in whether that offset crosses into the
+		// neighbour.  Paired seeds (common random numbers).  The diffusion
+		// row is printed, not gated here: on a finite cube the profile is not
+		// energy conserving, so its gapped side is heavy-tailed at n = 4.  Its
+		// contact transport (DL-408, the contact launch) is gated with paired
+		// salts at n = 8 by tests/SSSContactContinuationTest.cpp.
+		// The mismatched row gives the right cube index 1.3 and g 0.3 (every
+		// row's right cube has g 0.3, so a crossing must also switch the
+		// phase function): the shared face is then a real 1.5 / 1.3
+		// interface, Fresnel-partitioned and TIR-capable from the left.
+		// The `uncert` rows' right cube is a double-sided mesh with one
+		// duplicated triangle, so it cannot be certified and cannot sign a
+		// distance (the common imported-mesh case): the crossing must come
+		// from its two-way crossing parity, which does not read the winding
+		// (1 outward, 2 INWARD).
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; int uncert; };
+		const Row rows[] = {
+			{ Model::RandomWalk, 2,  16,  0.025, true,  1.3, false, false, 0 },
+			{ Model::RandomWalk, 2,  16,  0.025, true,  1.5, false, false, 2 },
+		};
+		unsigned int seed = 37100;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" )
+			    << ( row.mesh ? " double-sided mesh" : "" ) << ( row.uncert == 1 ? " outward-uncertified right" : row.uncert == 2 ? " inward-uncertified right" : "" ) << " touching pair ior "
+			    << std::setprecision( 3 ) << "1.5|" << row.iorRight;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairG" );
+			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
+			std::vector<double> tm, gm;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed++;
+				const double a = RenderFurnaceMean( tPath, pairSeed );
+				const double b = RenderFurnaceMean( gPath, pairSeed );
+				if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
+				tm.push_back( a );
+				gm.push_back( b );
+			}
+			std::remove( tPath.c_str() );
+			std::remove( gPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( tm ), sg = Summarize( gm );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": touching " << st.mean << " +/- " << st.sd << "  gapped " << sg.mean << " +/- " << sg.sd
+				<< "  ratio " << st.mean / sg.mean;
+			if( row.gated ) {
+				std::cout << " (band " << row.band << ")" << std::endl;
+				Check( std::fabs( st.mean / sg.mean - 1.0 ) < row.band, label + ": touching / gapped image mean within band of 1" );
+			} else {
+				std::cout << " (not gated here: SSSContactContinuationTest)" << std::endl;
+			}
+		}
+	}
+
+	//! A conservative random-walk cube (edge 1, single-sided primitive) with
+	//! a second random-walk body coincident with its TOP face on the
+	//! cube's OWN side, under the white environment, seen from above.
+	//! `kind` 0: a double-sided mesh cube of half size inset flush with the
+	//! top face; 1: the same inset as a box primitive; 2: an open
+	//! double-sided mesh quad lying ON the top face.  A walk in the cube
+	//! that exits its top face is past the inset / sheet, so nothing may
+	//! cross into them (DL-370 review round 1: a whole-scene probe along the
+	//! walk ray did, and read 0.880 / 0.851 on rows 0 / 2).  The insets
+	//! OVERLAP the cube (it still fills their volume), so a walk inside an
+	//! inset leaves it INTO the cube: master read 0.892 on rows 0 and 1, the
+	//! loss DL-370 removes by crossing into the containing body.
+	std::string BuildInsetScene( int kind, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 4 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tviewport_scale 1.4 1.4\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname outer_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "standard_object\n{\n\tname outer\n\tgeometry outer_geo\n\tmaterial block\n}\n\n";
+		if( kind == 0 ) {
+			s << MeshBox( "inset_geo", 0.5, 0.5, 0.5, true );
+		} else if( kind == 1 ) {
+			s << "box_geometry\n{\n\tname inset_geo\n\twidth 0.5\n\theight 0.5\n\tdepth 0.5\n}\n\n";
+		} else {
+			s << "indexedmesh_geometry\n{\n\tname inset_geo\n"
+			  << "\tvertex -0.25 0 -0.25\n\tvertex 0.25 0 -0.25\n\tvertex 0.25 0 0.25\n\tvertex -0.25 0 0.25\n"
+			  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		}
+		s << "standard_object\n{\n\tname inset\n\tgeometry inset_geo\n\tmaterial block\n\tposition 0 "
+		  << ( kind == 2 ? 0.5 : 0.25 ) << " 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestCoincidentOwnSideNeighbour( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F3: random-walk body coincident on the walker's own side (DL-370), n=" << trials << std::endl;
+		unsigned int seed = 37200;
+		const std::string label = "F3: random_walk/PT double-sided mesh inset";
+		if( !only.empty() && label.find( only ) == std::string::npos ) return;
+		const std::string path = WriteScene( BuildInsetScene( 0, 16 ), "dl370inset" );
+		Check( !path.empty(), label + ": scene file written" );
+		std::vector<double> m;
+		bool allValid = true;
+		for( unsigned int t = 0; t < trials; ++t ) {
+			const double mi = RenderFurnaceMean( path, seed++ );
+			if( !( mi > 0 ) ) allValid = false;
+			m.push_back( mi );
+		}
+		std::remove( path.c_str() );
+		Check( allValid, label + ": every render finite and non-black" );
+		if( !allValid ) return;
+		const Stats st = Summarize( m );
+		std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=16: image mean " << st.mean << " +/- " << st.sd
+			<< " (sd of one render; expected 1, band 0.025)" << std::endl;
+		Check( std::fabs( st.mean - 1.0 ) < 0.025, label + ": image mean within band of its expected value" );
+	}
+
+	//! Review round 2 of DL-370 (its fixture, transcribed): a conservative
+	//! random-walk cube A (single-sided mesh) seen orthographically, NOT
+	//! touching a random-walk octahedron B (double-sided indexed mesh) whose
+	//! bounding box contains part of A, white furnace.  `variant` 0: B
+	//! wound OUTWARD (plus one duplicated triangle, so uncertified); 1: B
+	//! wound INWARD, uncertified the same way; 2: B wound inward with no
+	//! duplicate, so certified watertight.  The walk must not cross into
+	//! B from outside it, whatever B's winding: round 2's true-facing test
+	//! read an inward-wound B inside-out (variant 1: master 0.9989 ->
+	//! 0.8225; variant 2: 0.7658 -> 0.6640).  DL-414 removes the certified inward mesh entry loss: every
+	//! variant must conserve energy in the uniform environment.
+	std::string BuildWindingScene( int variant, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation -3 0.55 0.55\n\tlookat 0 0.55 0.55\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		for( const char* m : { "mA", "mB" } ) {
+			s << "randomwalk_sss_material\n{\n\tname " << m
+			  << "\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0.0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		}
+		s << "indexedmesh_geometry\n{\n\tname geoA\n"
+		  << "\tvertex -0.2 -0.2 -0.2\n\tvertex 0.2 -0.2 -0.2\n\tvertex 0.2 0.2 -0.2\n\tvertex -0.2 0.2 -0.2\n"
+		  << "\tvertex -0.2 -0.2 0.2\n\tvertex 0.2 -0.2 0.2\n\tvertex 0.2 0.2 0.2\n\tvertex -0.2 0.2 0.2\n"
+		  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\ttriangle 4 5 6\n\ttriangle 4 6 7\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n"
+		  << "\ttriangle 1 2 6\n\ttriangle 1 6 5\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n\ttriangle 3 7 6\n\ttriangle 3 6 2\n"
+		  << "\tdouble_sided FALSE\n\tface_normals TRUE\n}\n\n";
+		// Octahedron |x| + |y| + |z| <= 1; `out` lists each face wound outward.
+		const int out[8][3] = { {0,2,4},{0,5,2},{0,4,3},{0,3,5},{1,4,2},{1,2,5},{1,3,4},{1,5,3} };
+		s << "indexedmesh_geometry\n{\n\tname geoB\n"
+		  << "\tvertex 1 0 0\n\tvertex -1 0 0\n\tvertex 0 1 0\n\tvertex 0 -1 0\n\tvertex 0 0 1\n\tvertex 0 0 -1\n";
+		const bool inward = variant != 0;
+		for( const auto& t : out ) {
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( variant != 2 ) {
+			s << "\ttriangle 0 " << ( inward ? "4 2" : "2 4" ) << "\n";		// duplicate: uncertified
+		}
+		s << "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname A\n\tgeometry geoA\n\tmaterial mA\n\tposition 0.5 0.55 0.55\n}\n\n";
+		s << "standard_object\n{\n\tname B\n\tgeometry geoB\n\tmaterial mB\n\tposition 1.2 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Two disjoint closed boxes in ONE double-sided, uncertified (a
+	//! duplicated triangle) random-walk mesh, wound INWARD, flanking a
+	//! random-walk cube with a 0.1 gap on each side: every exit of the cube
+	//! through its +x / -x face has an offset point OUTSIDE the mesh but
+	//! with mesh faces along both the probe and its reverse.  A two-way
+	//! FACING test reads both first hits as exits (inward winding) and
+	//! crosses; the two-way crossing PARITY sees two crossings each way and
+	//! does not.  White furnace: must read 1.
+	std::string BuildNotchScene( unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname walker_geo\n\twidth 0.4\n\theight 0.4\n\tdepth 0.4\n}\n\n";
+		// The two arms x in [-0.7,-0.3] and [0.3,0.7], one mesh.
+		s << "indexedmesh_geometry\n{\n\tname arms_geo\n";
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( int arm = 0; arm < 2; ++arm ) {
+			const double cx = arm ? 0.5 : -0.5;
+			for( int i = 0; i < 8; ++i ) {
+				s << "\tvertex " << cx + ( ( i & 1 ) ? 0.2 : -0.2 ) << " " << ( ( i & 2 ) ? 0.3 : -0.3 ) << " "
+				  << ( ( i & 4 ) ? 0.3 : -0.3 ) << "\n";
+			}
+		}
+		for( int arm = 0; arm < 2; ++arm ) {
+			for( const auto& t : tri ) {		// inward: the two last indices swapped
+				s << "\ttriangle " << t[0] + 8 * arm << " " << t[2] + 8 * arm << " " << t[1] + 8 * arm << "\n";
+			}
+		}
+		s << "\ttriangle 0 6 4\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname walker\n\tgeometry walker_geo\n\tmaterial block\n}\n\n";
+		s << "standard_object\n{\n\tname arms\n\tgeometry arms_geo\n\tmaterial block\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestNeighbourWinding( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F4: non-touching random-walk mesh neighbour, both windings (DL-370), n=" << trials << std::endl;
+		const char* names[4] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour",
+			"inward uncertified two-box neighbour, walker between" };
+		const double expected[4] = { 1.0, 1.0, 1.0, 1.0 };
+		unsigned int seed = 37300;
+		for( int v : { 1, 3 } ) {
+			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( v == 3 ? BuildNotchScene( 32 ) : BuildWindingScene( v, 32 ), "dl370wind" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			const double se = st.sd / std::sqrt( double( trials ) );
+			const double band = std::fmax( 0.005, 3.0 * se );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=32: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; se " << se << ", expected " << expected[v] << ", band " << band << ")" << std::endl;
+			Check( 3.0 * se <= 0.06, label + ": 3*se within 0.06 precision cap" );
+			Check( std::fabs( st.mean - expected[v] ) < band, label + ": image mean within band of its expected value" );
+		}
+	}
+
+	// DL-411: sphere AND an enclosing box is exactly the sphere. A mesh
+	// operand supplies only a nearest root; CSG must still recognize an
+	// interior random-walk segment. The clipped case exercises mesh exits.
+	std::string BuildRandomWalkCSGScene( bool mesh, bool clipped, unsigned int samples )
+	{
+		std::string scene = BuildFurnaceScene( Model::RandomWalk, Integrator::PT, 1.5, samples );
+		const std::string original = "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		const auto at = scene.find( original );
+		if( at == std::string::npos ) return "";
+		std::string replacement = "standard_object\n{\n\tname sphere_operand\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		if( mesh ) {
+			replacement += MeshBox( "enclosing_geo", clipped ? 1.4 : 4, clipped ? 1.4 : 4, clipped ? 1.4 : 4, true );
+		} else {
+			replacement += "box_geometry\n{\n\tname enclosing_geo\n\twidth 4\n\theight 4\n\tdepth 4\n}\n\n";
+		}
+		replacement += "standard_object\n{\n\tname box_operand\n\tgeometry enclosing_geo\n\tmaterial subject\n}\n\ncsg_object\n{\n\tname subject_obj\n\tobja sphere_operand\n\tobjb box_operand\n\toperation intersection\n\tmaterial subject\n}\n\n";
+		scene.replace( at, original.size(), replacement );
+		return scene;
+	}
+
+	void TestRandomWalkCSGFurnace( unsigned int trials, const std::string& only )
+	{
+		const std::string label = "F5: random_walk/PT CSG mesh clipping box";
+		if( !only.empty() && label.find( only ) == std::string::npos ) return;
+		const std::string path = WriteScene( BuildRandomWalkCSGScene( true, true, 32 ), "dl411" );
+		Check( !path.empty(), label + ": scene written" );
+		std::vector<double> m;
+		bool valid = true;
+		for( unsigned int t = 0; t < trials; ++t ) {
+			const double value = RenderFurnaceMean( path, 49000 + t );
+			valid = valid && value > 0;
+			m.push_back( value );
+		}
+		std::remove( path.c_str() );
+		Check( valid, label + ": every render finite and non-black" );
+		if( !valid ) return;
+		const Stats st = Summarize( m );
+		const double se = st.sd / std::sqrt( double( trials ) );
+		const double band = std::fmax( 0.005, 3.0 * se );
+		std::cout << label << " spp=32 mean " << st.mean << " +/- " << st.sd << " (se " << se << ") expected 1, band " << band << std::endl;
+		Check( 3.0 * se <= 0.06, label + ": 3*se within 0.06 precision cap" );
+		Check( std::fabs( st.mean - 1 ) < band, label + ": conservative closed body equals white environment" );
+	}
+
+	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
+		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; bool mesh; };
+		const Row rows[] = {
+			{ Model::RandomWalk, Integrator::PT,   0.0,   8, 0.025, false },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,   8, 0.025, true },
+		};
+		unsigned int seed = 37000;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "F: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator )
+			    << ( row.mesh ? " double-sided mesh" : "" ) << " room gap=" << row.gap;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildTouchingRoomScene( row.integrator, row.gap, row.samples, row.mesh ), "dl370room" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
+				<< ": image mean " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
+}
+
+int main( int argc, char** argv )
+{
+	unsigned int trials = 4;
+	bool unitOnly = false;
+	std::string only;
+	for( int i = 1; i < argc; ++i ) {
+		const std::string a( argv[i] );
+		if( a == "--unit-only" ) unitOnly = true;
+		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
+		else if( a == "--diffusion-scattering" && i + 1 < argc ) kFurnaceDiffusionScattering = std::atof( argv[++i] );
+		else if( a == "--seed" && i + 1 < argc ) g_seedOffset = static_cast<unsigned int>( std::strtoul( argv[++i], nullptr, 10 ) );
+		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
+	}
+	if( trials < 4 ) trials = 4;
+
+	std::cout << "=== DL-49 SSS exterior-index invariance ===" << std::endl;
+	TestProfileFresnel();
+	TestSwNormalization();
+	TestAdapters();
+	TestRoughBSDF();
+	TestSampleEntryPointTwins();
+	TestRandomWalkTwins();
+	TestRandomWalkMatchedIndex();
+	TestPathVertexEval();
+	TestSkinMultipoleRelativeIndex();
+	TestPointSetOctreeStackForwarding();
+	TestLegacyDipoleRelativeIndex();
+	if( !unitOnly ) {
+		TestRenderedInvariance( trials, only );
+		TestRenderedPartitionFurnace( trials, only );
+		TestRayCasterStackAndRecursion( trials, only );
+		TestTouchingSSSRoom( trials, only );
+		TestTouchingSSSPair( trials, only );
+		TestCoincidentOwnSideNeighbour( trials, only );
+		TestNeighbourWinding( trials, only );
+		TestRandomWalkCSGFurnace( trials, only );
+	}
+	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
+	return failCount == 0 ? 0 : 1;
+}

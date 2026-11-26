@@ -1,0 +1,2094 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CsgMeshOperandTest.cpp - DL-621 review round (findings 10-13).
+//
+//  CSG over mesh / displaced operands after DL-621 (d47c91cac):
+//
+//   A. exit completion (`RecoverContainedOperand`) re-casts only an
+//      operand that publishes no exit of its own (mesh, displaced, patch
+//      set); an analytic leaf is cast exactly once per query and keeps
+//      the exit it published (finding 10);
+//   B. `AdvanceOperandPast` is not called for a single-lobe (convex
+//      analytic) operand, so the common "intervals in sequence" miss
+//      costs no extra re-cast, in the radiance and the shadow query
+//      (finding 11);
+//   C. a mesh takes a SHEET role only when its free boundary is
+//      substantial: a closed mesh left open by a pinhole or an unwelded
+//      T-junction is UNDECIDED, so intersection( near-closed mesh, ball )
+//      is the solid lens, not a capless skin (finding 12);
+//   D. two open sheets welded into a zero-volume "pillow" are not a
+//      closed solid (the DL-197 coplanar-opposed guard), while a closed
+//      cube with a flat pleat stays closed (finding 13);
+//   E. a first openness query from many threads at once builds the
+//      topology once (finding 13).
+//
+//  Red-proof: against d47c91cac 34 passed, 12 failed (sections B-E).
+//  Section A is a PIN, green on d47c91cac too: an analytic leaf
+//  publishes its exit, `Object::IntersectRay` sets `hasBoundaryRange2`,
+//  and `RecoverContainedOperand` returns before any completion -- the
+//  explicit gate makes that structural.  B's last row pins the one
+//  rendered difference DL-621 makes on the shipped CSG scenes.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "SMSDomainReplayFixture.h"
+
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "../src/Library/Polygon.h"
+#include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+//////////////////////////////////////////////////////////////////////
+// Helpers
+//////////////////////////////////////////////////////////////////////
+
+//! A sphere that counts how often it is intersected.
+class CountingSphere : public SphereGeometry
+{
+public:
+	mutable std::atomic<unsigned int> casts{ 0 };
+	explicit CountingSphere( Scalar r ) : SphereGeometry( r ) {}
+	void IntersectRay( RayIntersectionGeometric& ri, const bool f, const bool b, const bool e ) const override
+	{
+		casts.fetch_add( 1, std::memory_order_relaxed );
+		SphereGeometry::IntersectRay( ri, f, b, e );
+	}
+protected:
+	virtual ~CountingSphere() {}
+};
+
+struct CountedCsg
+{
+	CountingSphere* gA = nullptr;
+	CountingSphere* gB = nullptr;
+	CSGObject* csg = nullptr;
+	void Reset() { gA->casts = 0; gB->casts = 0; }
+	~CountedCsg() { safe_release( csg ); }
+};
+
+static void MakeCountedCsg( CountedCsg& c, const CSG_OP op, const Point3& pA, const Point3& pB, Scalar rA = 1, Scalar rB = 1 )
+{
+	c.gA = new CountingSphere( rA );
+	c.gB = new CountingSphere( rB );
+	Object* oA = new Object( c.gA );
+	Object* oB = new Object( c.gB );
+	oA->SetPosition( pA );
+	oB->SetPosition( pB );
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+	c.csg = new CSGObject( op );
+	Check( c.csg->AssignObjects( oA, oB ), "fixture: composite takes its operands" );
+	c.csg->FinalizeTransformations();
+	safe_release( oA );
+	safe_release( oB );
+	// c.gA / c.gB stay alive through the operands' references.
+	c.gA->release();
+	c.gB->release();
+}
+
+static RayIntersection CastObj( const IObject& o, const Point3& origin, const Vector3& dir )
+{
+	RayIntersection hit( Ray( origin, dir ), nullRasterizerState );
+	o.IntersectRay( hit, RISE_INFINITY, true, true, false );
+	return hit;
+}
+
+//! Lat-long triangle sphere, outward wound, single pole vertices.
+//! `skipTri` >= 0 drops that one triangle (a pinhole).
+static std::vector<Point3> LatLongSphereCorners( int rings, int segs, Scalar r, int skipTri,
+	std::vector<Point3>* outVerts = nullptr, std::vector<int>* outTris = nullptr )
+{
+	std::vector<Point3> v;
+	v.push_back( Point3( 0, 0, r ) );
+	for( int i = 1; i < rings; ++i ) {
+		const Scalar th = PI * Scalar( i ) / Scalar( rings );
+		for( int j = 0; j < segs; ++j ) {
+			const Scalar ph = TWO_PI * Scalar( j ) / Scalar( segs );
+			v.push_back( Point3( r * std::sin( th ) * std::cos( ph ), r * std::sin( th ) * std::sin( ph ), r * std::cos( th ) ) );
+		}
+	}
+	v.push_back( Point3( 0, 0, -r ) );
+	const int south = static_cast<int>( v.size() ) - 1;
+	auto ring = [&]( int i, int j ) { return 1 + ( i - 1 ) * segs + ( ( j % segs ) + segs ) % segs; };
+	std::vector<int> t;
+	for( int j = 0; j < segs; ++j ) {
+		t.insert( t.end(), { 0, ring( 1, j ), ring( 1, j + 1 ) } );
+	}
+	for( int i = 1; i < rings - 1; ++i ) {
+		for( int j = 0; j < segs; ++j ) {
+			t.insert( t.end(), { ring( i, j ), ring( i + 1, j ), ring( i + 1, j + 1 ) } );
+			t.insert( t.end(), { ring( i, j ), ring( i + 1, j + 1 ), ring( i, j + 1 ) } );
+		}
+	}
+	for( int j = 0; j < segs; ++j ) {
+		t.insert( t.end(), { south, ring( rings - 1, j + 1 ), ring( rings - 1, j ) } );
+	}
+	std::vector<int> kept;
+	for( std::size_t k = 0; k < t.size() / 3; ++k ) {
+		if( static_cast<int>( k ) == skipTri ) {
+			continue;
+		}
+		kept.insert( kept.end(), { t[3 * k], t[3 * k + 1], t[3 * k + 2] } );
+	}
+	std::vector<Point3> corners;
+	for( int idx : kept ) {
+		corners.push_back( v[idx] );
+	}
+	if( outVerts ) *outVerts = v;
+	if( outTris ) *outTris = kept;
+	return corners;
+}
+
+static std::string IndexedMeshText( const std::string& name, const std::vector<Point3>& v, const std::vector<int>& t )
+{
+	std::ostringstream s;
+	s.precision( 17 );
+	s << "indexedmesh_geometry\n{\n name " << name << "\n double_sided TRUE\n face_normals TRUE\n";
+	for( const Point3& p : v ) {
+		s << " vertex " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+	}
+	for( std::size_t i = 0; i < v.size(); ++i ) {
+		s << " uv 0 0\n";
+	}
+	for( std::size_t k = 0; k < t.size() / 3; ++k ) {
+		s << " triangle " << t[3 * k] << ' ' << t[3 * k + 1] << ' ' << t[3 * k + 2] << '\n';
+	}
+	return s.str() + "}\n";
+}
+
+static void PushTri( std::vector<Point3>& c, const Point3& a, const Point3& b, const Point3& d )
+{
+	c.push_back( a ); c.push_back( b ); c.push_back( d );
+}
+
+//! Unit cube [-1,1]^3, outward wound, as 12 corner triangles; when
+//! `tJunction`, the +X face's top edge carries a midpoint vertex the +Z
+//! face does not share (an unwelded T-junction: three free edges that
+//! run back along each other).
+static std::vector<Point3> CubeCorners( bool tJunction )
+{
+	const Point3 v[8] = { Point3(-1,-1,-1), Point3(1,-1,-1), Point3(1,1,-1), Point3(-1,1,-1),
+		Point3(-1,-1,1), Point3(1,-1,1), Point3(1,1,1), Point3(-1,1,1) };
+	const int tris[12][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},
+		{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
+	std::vector<Point3> c;
+	for( int k = 0; k < 12; ++k ) {
+		if( tJunction && ( k == 10 || k == 11 ) ) {
+			continue;
+		}
+		PushTri( c, v[tris[k][0]], v[tris[k][1]], v[tris[k][2]] );
+	}
+	if( tJunction ) {
+		// +X face (1,2,6,5) re-triangulated around M, the midpoint of the
+		// top edge 5-6 that the +Z face (4,5,6,7) keeps whole.
+		const Point3 m( 1, 0, 1 );
+		PushTri( c, v[1], v[2], m );
+		PushTri( c, v[2], v[6], m );
+		PushTri( c, v[1], m, v[5] );
+	}
+	return c;
+}
+
+//////////////////////////////////////////////////////////////////////
+// A. exit completion only for operands that publish no exit
+//////////////////////////////////////////////////////////////////////
+
+static void TestAnalyticOperandsCastOnce()
+{
+	std::cout << "A. analytic operands: no exit-completion re-cast" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	// Overlapping spheres: the ray crosses both, the composite hits.
+	for( const CSG_OP op : { CSG_UNION, CSG_INTERSECTION, CSG_SUBTRACTION } ) {
+		CountedCsg c;
+		MakeCountedCsg( c, op, Point3( 0, 0, 0.5 ), Point3( 0, 0, -0.5 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, Point3( 0.1, 0.05, 5 ), down );
+		Check( h.geometric.bHit, "A: overlapping-sphere composite is hit" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"A: each analytic operand is intersected exactly once per radiance query (op " +
+			std::to_string( int( op ) ) + ": " + std::to_string( c.gA->casts ) + "/" + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( Point3( 0.1, 0.05, 5 ), down ), RISE_INFINITY, true, true );
+		Check( occ, "A: overlapping-sphere composite occludes" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"A: each analytic operand is intersected exactly once per shadow query" );
+		// The exit published by the composite is the sphere's own.
+		if( op == CSG_UNION ) {
+			Check( std::fabs( h.geometric.range2 - ( 5 + 0.5 + std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+				"A: union exit is the lower sphere's published exit" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// B. no AdvanceOperandPast re-cast past a single-lobe operand
+//////////////////////////////////////////////////////////////////////
+
+static void TestNoAdvancePastSingleLobe()
+{
+	std::cout << "B. single-lobe operands: no advance re-cast on the sequential miss" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	const Point3 o( 0.1, 0.05, 10 );
+
+	// Intersection, A's interval [7.x, 9.x] wholly before B's [11.x, 13.x].
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_INTERSECTION, Point3( 0, 0, 2 ), Point3( 0, 0, -2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( !h.geometric.bHit, "B: disjoint-in-sequence intersection misses" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"B: intersection miss costs one cast per operand (A " + std::to_string( c.gA->casts ) +
+			", B " + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true );
+		Check( !occ, "B: disjoint-in-sequence intersection does not occlude" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1, "B: intersection shadow miss costs one cast per operand" );
+	}
+	// Same with the operands swapped (B's interval first).
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_INTERSECTION, Point3( 0, 0, -2 ), Point3( 0, 0, 2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( !h.geometric.bHit && c.gA->casts == 1 && c.gB->casts == 1,
+			"B: swapped intersection miss costs one cast per operand" );
+	}
+	// Subtraction, the subtracted B's interval wholly before A's: the
+	// composite is A, unchanged.
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_SUBTRACTION, Point3( 0, 0, -2 ), Point3( 0, 0, 2 ) );
+		c.Reset();
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - ( 12 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+			"B: subtraction with B before A is A" );
+		Check( c.gA->casts == 1 && c.gB->casts == 1,
+			"B: subtraction pre-pass costs no re-cast of a single-lobe B (B " + std::to_string( c.gB->casts ) + ")" );
+		c.Reset();
+		const bool occ = c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true );
+		Check( occ && c.gA->casts == 1 && c.gB->casts == 1, "B: subtraction shadow pre-pass costs no re-cast" );
+	}
+	// The one place the shipped CSG scenes render differently from
+	// pre-DL-621 master (irradiance_cache_torture, csg_comprehensive): a
+	// ray that STARTS inside the subtracted B, leaves B, and only then
+	// meets A.  The composite there is A alone; the pre-DL-621 algebra
+	// reported a miss (a hole through A wherever B protrudes from it).
+	{
+		CountedCsg c;
+		MakeCountedCsg( c, CSG_SUBTRACTION, Point3( 0, 0, -2 ), Point3( 0, 0, 10 ) );
+		const RayIntersection h = CastObj( *c.csg, o, down );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - ( 12 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+			"B: a ray leaving the subtracted B before it meets A hits A" );
+		Check( c.csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"B: ... and is occluded by A" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// C. a near-closed mesh is not a sheet
+//////////////////////////////////////////////////////////////////////
+
+static void TestNearClosedMeshRole()
+{
+	std::cout << "C. near-closed meshes: pinhole / T-junction are undecided, real sheets stay sheets" << std::endl;
+	// Classification.
+	{
+		const std::vector<Point3> closed = LatLongSphereCorners( 16, 32, 1, -1 );
+		Check( GeometricUtilities::TriangleMeshOpenness( closed ) == 0, "C: closed lat-long sphere is closed (control)" );
+		// Drop one quad-half on ring 7 (near the equator): a pinhole of
+		// ~1/1000 of the area.
+		const std::vector<Point3> pinhole = LatLongSphereCorners( 16, 32, 1, 32 + 2 * 32 * 6 + 3 );
+		Check( GeometricUtilities::TriangleMeshOpenness( pinhole ) == -1,
+			"C: sphere with a one-triangle pinhole is undecided (-1), not a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( pinhole ) ) + ")" );
+		const std::vector<Point3> tj = CubeCorners( true );
+		Check( GeometricUtilities::TriangleMeshOpenness( tj ) == -1,
+			"C: cube with an unwelded T-junction is undecided (-1), not a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( tj ) ) + ")" );
+		Check( GeometricUtilities::TriangleMeshOpenness( CubeCorners( false ) ) == 0, "C: closed cube is closed (control)" );
+
+		// Controls that ARE sheets: a hemispherical bowl, a cube missing
+		// one face, a flat quad.
+		std::vector<Point3> bowl;
+		{
+			const std::vector<Point3> all = LatLongSphereCorners( 16, 32, 1, -1 );
+			for( std::size_t k = 0; k < all.size(); k += 3 ) {
+				if( all[k].z + all[k + 1].z + all[k + 2].z > 0 ) {
+					PushTri( bowl, all[k], all[k + 1], all[k + 2] );
+				}
+			}
+		}
+		Check( GeometricUtilities::TriangleMeshOpenness( bowl ) == 1, "C: hemispherical bowl is a sheet (control)" );
+		std::vector<Point3> openBox = CubeCorners( false );
+		openBox.erase( openBox.begin() + 6, openBox.begin() + 12 );	// drop the +Z face (triangles 2, 3)
+		Check( GeometricUtilities::TriangleMeshOpenness( openBox ) == 1, "C: cube missing a face is a sheet (control)" );
+		std::vector<Point3> quad;
+		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, -1, 0 ), Point3( 1, 1, 0 ) );
+		PushTri( quad, Point3( -1, -1, 0 ), Point3( 1, 1, 0 ), Point3( -1, 1, 0 ) );
+		Check( GeometricUtilities::TriangleMeshOpenness( quad ) == 1, "C: flat quad is a sheet (control)" );
+		// Two flat quads touching at ONE vertex and wound against each
+		// other: each is a sheet, and their boundary loops must not cancel
+		// just because they meet at a vertex.
+		std::vector<Point3> bow;
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 1, 1, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 1, 1, 0 ), Point3( 0, 1, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( -1, -1, 0 ), Point3( -1, 0, 0 ) );
+		PushTri( bow, Point3( 0, 0, 0 ), Point3( 0, -1, 0 ), Point3( -1, -1, 0 ) );
+		Check( GeometricUtilities::TriangleMeshOpenness( bow ) == 1,
+			"C: two opposite-wound quads touching at a vertex are a sheet (got " +
+			std::to_string( GeometricUtilities::TriangleMeshOpenness( bow ) ) + ")" );
+	}
+
+	// Composite: intersection( pinhole sphere mesh, ball centred on its
+	// surface ).  The lens they share is solid; trimmed as a sheet, the
+	// ray at x = 0.8 would see no surface of the mesh inside the ball and
+	// miss outright.
+	{
+		std::vector<Point3> v;
+		std::vector<int> t;
+		LatLongSphereCorners( 16, 32, 1, 32 + 2 * 32 * 6 + 3, &v, &t );
+		std::string scene = Materials( false ) + IndexedMeshText( "pinsphere", v, t ) +
+			"sphere_geometry\n{\n name ball\n radius 0.5\n}\n"
+			"standard_object\n{\n name o_pin\n geometry pinsphere\n material glass\n}\n"
+			"standard_object\n{\n name o_ball\n geometry ball\n material glass\n position 1 0 0\n}\n"
+			"csg_object\n{\n name lens\n obja o_pin\n objb o_ball\n operation intersection\n material glass\n}\n";
+		LoadedScene loaded( scene );
+		const CSGObject* lens = dynamic_cast<const CSGObject*>( loaded.Object( "lens" ) );
+		Check( lens != nullptr, "C: near-closed lens fixture loads" );
+		if( lens ) {
+			Check( !lens->TrimsSheet(), "C: intersection( pinhole sphere, ball ) does not trim the mesh as a sheet" );
+			const RayIntersection h = CastObj( *lens, Point3( 0.8, 0, 5 ), Vector3( 0, 0, -1 ) );
+			const Scalar expect = 5 - std::sqrt( 0.25 - 0.04 );
+			Check( h.geometric.bHit && std::fabs( h.geometric.range - expect ) < 1e-6,
+				"C: the ray through the lens enters it at the ball's surface (got hit=" +
+				std::to_string( h.geometric.bHit ) + " range=" + std::to_string( h.geometric.range ) + ")" );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// D. zero-volume pillow is not closed
+//////////////////////////////////////////////////////////////////////
+
+static void TestPillowRole()
+{
+	std::cout << "D. pillow of two coincident sheets is not a closed solid" << std::endl;
+	// Two unit quads 1e-12 apart (inside the weld epsilon), split on
+	// DIFFERENT diagonals and wound oppositely, so after the weld every
+	// edge is shared by exactly two triangles and no two triangles share
+	// all three corners -- the 2-triangle pillow test cannot see it.
+	const Scalar g = 1e-12;
+	std::vector<Point3> pillow;
+	PushTri( pillow, Point3( 0, 0, 0 ), Point3( 1, 0, 0 ), Point3( 1, 1, 0 ) );
+	PushTri( pillow, Point3( 0, 0, 0 ), Point3( 1, 1, 0 ), Point3( 0, 1, 0 ) );
+	PushTri( pillow, Point3( 0, 0, g ), Point3( 0, 1, g ), Point3( 1, 0, g ) );
+	PushTri( pillow, Point3( 1, 0, g ), Point3( 0, 1, g ), Point3( 1, 1, g ) );
+	Check( GeometricUtilities::TriangleMeshOpenness( pillow ) == -1,
+		"D: welded zero-volume pillow is undecided (-1), not closed (got " +
+		std::to_string( GeometricUtilities::TriangleMeshOpenness( pillow ) ) + ")" );
+
+	// Control: a closed cube whose bottom face carries a flat pleat (a
+	// coplanar fold inside a face) encloses volume and stays closed.
+	std::vector<Point3> pleat = CubeCorners( false );
+	pleat.erase( pleat.begin(), pleat.begin() + 6 );	// drop the -Z face
+	const Point3 a( -1, -1, -1 ), b( 1, -1, -1 ), c( 1, 1, -1 ), d( -1, 1, -1 );
+	const Point3 p8( 0, -0.90, -1 ), p9( 0, -0.95, -1 );
+	PushTri( pleat, a, p8, b );
+	PushTri( pleat, a, p9, p8 );
+	PushTri( pleat, p8, p9, b );
+	PushTri( pleat, a, c, p9 );
+	PushTri( pleat, p9, c, b );
+	PushTri( pleat, a, d, c );
+	Check( GeometricUtilities::TriangleMeshOpenness( pleat ) == 0, "D: pleated closed cube stays closed (control)" );
+
+	// Composite: the pillow is no longer a closed operand, so a sheet
+	// unioned with it is not given the sheet-union-solid path.
+	TriangleMeshGeometry* gp = new TriangleMeshGeometry( true );
+	gp->BeginTriangles();
+	for( std::size_t k = 0; k < pillow.size(); k += 3 ) {
+		Triangle tri;
+		for( int m = 0; m < 3; ++m ) {
+			tri.vertices[m] = pillow[k + m];
+			tri.normals[m] = Vector3( 0, 0, 1 );
+			tri.coords[m] = Point2( 0, 0 );
+		}
+		gp->AddTriangle( tri );
+	}
+	gp->DoneTriangles();
+	Check( gp->TopologicalOpenness() == -1, "D: TriangleMeshGeometry pillow reports TopologicalOpenness -1" );
+	safe_release( gp );
+}
+
+//////////////////////////////////////////////////////////////////////
+// E. concurrent first query builds once
+//////////////////////////////////////////////////////////////////////
+
+static TriangleMeshGeometry* MakeGridSheet( int n )
+{
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	g->BeginTriangles();
+	for( int i = 0; i < n; ++i ) {
+		for( int j = 0; j < n; ++j ) {
+			const Point3 p00( i, j, 0 ), p10( i + 1, j, 0 ), p11( i + 1, j + 1, 0 ), p01( i, j + 1, 0 );
+			const Point3 q[2][3] = { { p00, p10, p11 }, { p00, p11, p01 } };
+			for( int s = 0; s < 2; ++s ) {
+				Triangle tri;
+				for( int m = 0; m < 3; ++m ) {
+					tri.vertices[m] = q[s][m];
+					tri.normals[m] = Vector3( 0, 0, 1 );
+					tri.coords[m] = Point2( 0, 0 );
+				}
+				g->AddTriangle( tri );
+			}
+		}
+	}
+	g->DoneTriangles();
+	return g;
+}
+
+static void TestConcurrentFirstQuery()
+{
+	std::cout << "E. concurrent first openness query builds the topology once" << std::endl;
+	const int n = 100;	// 20000 triangles
+	TriangleMeshGeometry* single = MakeGridSheet( n );
+	const int r0 = single->TopologicalOpenness();
+	safe_release( single );
+
+	TriangleMeshGeometry* shared = MakeGridSheet( n );
+	const unsigned int nThreads = 8;
+	std::atomic<unsigned int> ready{ 0 };
+	std::atomic<bool> go{ false };
+	std::vector<int> results( nThreads, -3 );
+	std::vector<std::thread> threads;
+	for( unsigned int k = 0; k < nThreads; ++k ) {
+		threads.emplace_back( [&, k]() {
+			ready.fetch_add( 1 );
+			while( !go.load() ) {
+				std::this_thread::yield();
+			}
+			results[k] = shared->TopologicalOpenness();
+		} );
+	}
+	while( ready.load() < nThreads ) {
+		std::this_thread::yield();
+	}
+	go.store( true );
+	for( std::thread& t : threads ) {
+		t.join();
+	}
+	safe_release( shared );
+	bool agree = ( r0 == 1 );
+	for( const int r : results ) {
+		agree = agree && ( r == r0 );
+	}
+	Check( agree, "E: every thread reads the same openness (+1 sheet)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// F. subtraction from inside B through all of A
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeSphereObject( Scalar r, const Point3& p )
+{
+	SphereGeometry* g = new SphereGeometry( r );
+	Object* o = new Object( g );
+	safe_release( g );
+	o->SetPosition( p );
+	o->FinalizeTransformations();
+	return o;
+}
+
+static void TestInsideBThroughA()
+{
+	std::cout << "F. subtraction: a ray inside B that crosses all of A before leaving B" << std::endl;
+	const Vector3 down( 0, 0, -1 );
+	const Point3 o( 0.1, 0.05, 4 );
+	const Scalar h = std::sqrt( 1 - 0.0125 );
+	// A: unit sphere at the origin (z in [-1, 1]); B: radius 4 at z = 2,
+	// containing the ray origin and all of A along the ray.  A - B is
+	// empty along the ray.
+	{
+		Object* oA = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( oA, oB );
+		csg->FinalizeTransformations();
+		safe_release( oA );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		Check( !hit.geometric.bHit, "F: A wholly inside B along the ray: A - B is missed (got range " +
+			std::to_string( hit.geometric.range ) + ")" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: ... and does not occlude" );
+		// Control: B ends inside A (B radius 2.5 -> exit at z = -0.5).
+		safe_release( csg );
+	}
+	{
+		Object* oA = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* oB = MakeSphereObject( 2.5, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( oA, oB );
+		csg->FinalizeTransformations();
+		safe_release( oA );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		const Scalar bExit = 2 + std::sqrt( 6.25 - 0.0125 );
+		Check( hit.geometric.bHit && std::fabs( hit.geometric.range - bExit ) < 1e-6,
+			"F: B exits inside A: the composite starts at B's exit (control)" );
+		Check( csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: ... and occludes (control)" );
+		safe_release( csg );
+	}
+	// A two-lobe A (a union: lobes z in [-1,1] and [-9,-7]); the second
+	// lobe lies past B's exit, so it is the composite's surface.
+	{
+		Object* l0 = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+		Object* l1 = MakeSphereObject( 1, Point3( 0, 0, -8 ) );
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( l0, l1 );
+		uni->FinalizeTransformations();
+		safe_release( l0 );
+		safe_release( l1 );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( uni, oB );
+		csg->FinalizeTransformations();
+		safe_release( uni );
+		safe_release( oB );
+		const RayIntersection hit = CastObj( *csg, o, down );
+		const Scalar expect = 4 + 8 - h;
+		Check( hit.geometric.bHit && std::fabs( hit.geometric.range - expect ) < 1e-6,
+			"F: two-lobe A: the lobe past B's exit is hit (got hit=" + std::to_string( hit.geometric.bHit ) +
+			" range " + std::to_string( hit.geometric.range ) + ")" );
+		Check( csg->IntersectRay_IntersectionOnly( Ray( o, down ), RISE_INFINITY, true, true ),
+			"F: two-lobe A: the lobe past B's exit occludes" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, down ), Scalar( 10 ), true, true ),
+			"F: two-lobe A: ... but not before it" );
+		safe_release( csg );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// G. a mesh edit re-derives the parent composite's cached roles
+//////////////////////////////////////////////////////////////////////
+
+static void FillMesh( TriangleMeshGeometry* g, const std::vector<Point3>& corners )
+{
+	g->BeginTriangles();
+	for( std::size_t k = 0; k < corners.size(); k += 3 ) {
+		Triangle tri;
+		const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( corners[k + 1], corners[k] ), Vector3Ops::mkVector3( corners[k + 2], corners[k] ) ) );
+		for( int m = 0; m < 3; ++m ) {
+			tri.vertices[m] = corners[k + m];
+			tri.normals[m] = n;
+			tri.coords[m] = Point2( 0, 0 );
+		}
+		g->AddTriangle( tri );
+	}
+	g->DoneTriangles();
+}
+
+static void TestMeshEditRefreshesComposite()
+{
+	std::cout << "G. a mesh edit re-derives the composite's cached operand roles" << std::endl;
+	// Start as the cube [-1,1]^3 without its +Z face (an open box: a
+	// sheet), intersected with a ball; then append the two +Z triangles
+	// (`FillMesh` appends -- BeginTriangles does not clear) so the same
+	// geometry becomes the closed cube.
+	const std::vector<Point3> cube = CubeCorners( false );
+	std::vector<Point3> openBox( cube.begin(), cube.begin() + 6 );
+	openBox.insert( openBox.end(), cube.begin() + 12, cube.end() );
+	const std::vector<Point3> lid( cube.begin() + 6, cube.begin() + 12 );
+	TriangleMeshGeometry* g = new TriangleMeshGeometry( true );
+	FillMesh( g, openBox );
+	Object* oMesh = new Object( g );
+	oMesh->FinalizeTransformations();
+	Object* oBall = MakeSphereObject( 1, Point3( 0, 0, 0 ) );
+	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
+	csg->AssignObjects( oMesh, oBall );
+	csg->FinalizeTransformations();
+	safe_release( oMesh );
+	safe_release( oBall );
+	csg->Realize();
+	Check( csg->TrimsSheet(), "G: open box ∩ ball trims the sheet" );
+	// Edit: close the box (no Realize).
+	FillMesh( g, lid );
+	Check( !csg->TrimsSheet() && csg->IsTopologicallyClosed(),
+		"G: after the mesh becomes closed, the composite re-derives its roles without a Realize" );
+	const RayIntersection hit = CastObj( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ) );
+	Check( hit.geometric.bHit && std::fabs( hit.geometric.range - ( 5 - std::sqrt( 1 - 0.0125 ) ) ) < 1e-6,
+		"G: ... and renders the cube ∩ ball solid (enters at the ball)" );
+	safe_release( g );
+	safe_release( csg );
+}
+
+//////////////////////////////////////////////////////////////////////
+// H. shadow rays respect their length from inside a composite
+//////////////////////////////////////////////////////////////////////
+
+//! The shadow query must agree with the radiance query: it occludes
+//! exactly when the composite's first boundary lies before `far`.
+static void CheckShadowAgreesWithHit( const CSGObject& csg, const Point3& o, const Vector3& d,
+	const std::string& label, Scalar expectRange )
+{
+	const RayIntersection hit = CastObj( csg, o, d );
+	Check( hit.geometric.bHit && std::fabs( hit.geometric.range - expectRange ) < 1e-6,
+		"H: " + label + ": radiance first boundary at the closed form (got " + std::to_string( hit.geometric.range ) + ")" );
+	for( const Scalar f : { Scalar( 0.25 ) * expectRange, Scalar( 0.75 ) * expectRange,
+			Scalar( 1.25 ) * expectRange, Scalar( 3 ) * expectRange } ) {
+		const bool occ = csg.IntersectRay_IntersectionOnly( Ray( o, d ), f, true, true );
+		Check( occ == ( f > expectRange ),
+			"H: " + label + ": shadow ray of length " + std::to_string( f ) + ( occ ? " occluded" : " not occluded" ) +
+			" (boundary at " + std::to_string( expectRange ) + ")" );
+	}
+}
+
+static CSGObject* MakeTwoSphereCsg( const CSG_OP op, Scalar rA, const Point3& pA, Scalar rB, const Point3& pB )
+{
+	Object* oA = MakeSphereObject( rA, pA );
+	Object* oB = MakeSphereObject( rB, pB );
+	CSGObject* csg = new CSGObject( op );
+	csg->AssignObjects( oA, oB );
+	csg->FinalizeTransformations();
+	safe_release( oA );
+	safe_release( oB );
+	return csg;
+}
+
+static void TestShadowLengthFromInside()
+{
+	std::cout << "H. shadow rays from inside a composite respect their length" << std::endl;
+	const Scalar r2 = 0.0125;	// (0.1, 0.05) offset squared
+	// Subtraction, origin inside A (r 3), outside the small cavity B
+	// (r 0.5 at z = -2).  Down: first boundary is the cavity's entry.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 3, Point3( 0, 0, 0 ), 0.5, Point3( 0, 0, -2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 1 ), Vector3( 0, 0, -1 ),
+			"A - B from inside A toward B", 3 - std::sqrt( 0.25 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 1 ), Vector3( 0, 0, 1 ),
+			"A - B from inside A away from B", std::sqrt( 9 - r2 ) - 1 );
+		safe_release( csg );
+	}
+	// Union of overlapping unit spheres at z = 0 and z = -1.5.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -1.5 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B from inside A only", 1.5 + std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, -0.75 ), Vector3( 0, 0, -1 ),
+			"A u B from inside both", 0.75 + std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A u B from outside (control)", 5 - std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	// Union coverage: inside A with B past a gap; inside B only; a ray
+	// that meets only one operand.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -3 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B from inside A, B past a gap", std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, -1.5 ), 1, Point3( 0, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0.5 ), Vector3( 0, 0, -1 ),
+			"A u B from inside B only", 2 + std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_UNION, 1, Point3( 0, 0, 0 ), 1, Point3( 5, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A u B, the ray meets A only", 5 - std::sqrt( 1 - r2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 0 ), Vector3( 0, 0, -1 ),
+			"A u B, from inside A, the ray meets A only", std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+	// Subtraction from inside B: B (r 2.5 at z = 2) ends inside A.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 1, Point3( 0, 0, 0 ), 2.5, Point3( 0, 0, 2 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+			"A - B from inside B", 2 + std::sqrt( 6.25 - r2 ) );
+		safe_release( csg );
+	}
+	// Multi-lobe A (a union composite, so the advance paths run):
+	// lobes r 0.5 at the origin and r 1 at z = zLobe; B r 4 at z = 2
+	// contains the ray origin and all of the first lobe.
+	for( const Scalar zLobe : { Scalar( -2.5 ), Scalar( -8 ) } ) {
+		Object* l0 = MakeSphereObject( 0.5, Point3( 0, 0, 0 ) );
+		Object* l1 = MakeSphereObject( 1, Point3( 0, 0, zLobe ) );
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( l0, l1 );
+		uni->FinalizeTransformations();
+		safe_release( l0 );
+		safe_release( l1 );
+		Object* oB = MakeSphereObject( 4, Point3( 0, 0, 2 ) );
+		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+		csg->AssignObjects( uni, oB );
+		csg->FinalizeTransformations();
+		safe_release( uni );
+		safe_release( oB );
+		const Scalar bExit = 2 + std::sqrt( 16 - r2 );
+		if( zLobe > -4 ) {
+			// The second lobe [5.5, 7.5] straddles B's exit (~6): the
+			// surface is B's exit, closed by the lobe's exit.
+			CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+				"multi-lobe A - B, second lobe straddles B's exit", bExit );
+			const RayIntersection h = CastObj( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ) );
+			Check( h.geometric.bHit && std::fabs( h.geometric.range2 - ( 4 - zLobe + std::sqrt( 1 - r2 ) ) ) < 1e-6,
+				"H: multi-lobe A - B, straddling lobe: the interval closes at the lobe's exit (got " +
+				std::to_string( h.geometric.range2 ) + ")" );
+			Check( h.geometric.bHit && h.geometric.vNormal.z > 0,
+				"H: multi-lobe A - B, straddling lobe: B's exit normal faces back into the cavity" );
+		} else {
+			CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 4 ), Vector3( 0, 0, -1 ),
+				"multi-lobe A - B, second lobe past B's exit", 4 - zLobe - std::sqrt( 1 - r2 ) );
+		}
+		safe_release( csg );
+	}
+	// Intersection and subtraction from outside (controls).
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_INTERSECTION, 1, Point3( 0, 0, 0 ), 1, Point3( 0, 0, -1.5 ) );
+		CheckShadowAgreesWithHit( *csg, Point3( 0.1, 0.05, 5 ), Vector3( 0, 0, -1 ),
+			"A n B from outside (control)", 5 + 1.5 - std::sqrt( 1 - r2 ) );
+		safe_release( csg );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// I. subtraction from inside a multi-lobe B (a torus)
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Geometry/TorusGeometry.h"
+
+//! A = union of two spheres on the x axis, given as ray-parameter
+//! intervals [lo, hi] along the ray from (-3.5, 0, 0) toward +x.
+static CSGObject* MakeTorusSubtraction( Scalar lo0, Scalar hi0, Scalar lo1, Scalar hi1 )
+{
+	const Scalar ox = -3.5;
+	Object* l0 = MakeSphereObject( 0.5 * ( hi0 - lo0 ), Point3( ox + 0.5 * ( lo0 + hi0 ), 0, 0 ) );
+	Object* l1 = MakeSphereObject( 0.5 * ( hi1 - lo1 ), Point3( ox + 0.5 * ( lo1 + hi1 ), 0, 0 ) );
+	CSGObject* uni = new CSGObject( CSG_UNION );
+	uni->AssignObjects( l0, l1 );
+	uni->FinalizeTransformations();
+	safe_release( l0 );
+	safe_release( l1 );
+	TorusGeometry* gt = new TorusGeometry( 3, 1 );
+	Object* oB = new Object( gt );
+	safe_release( gt );
+	oB->FinalizeTransformations();
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	csg->AssignObjects( uni, oB );
+	csg->FinalizeTransformations();
+	safe_release( uni );
+	safe_release( oB );
+	return csg;
+}
+
+static void TestSubtractionInsideMultiLobeB()
+{
+	std::cout << "I. subtraction from inside a torus B (B exits 1.5, re-enters 5.5, exits 7.5)" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// Precondition: the torus intervals along this ray.
+	{
+		TorusGeometry* gt = new TorusGeometry( 3, 1 );
+		Object* oB = new Object( gt );
+		safe_release( gt );
+		oB->FinalizeTransformations();
+		const RayIntersection h0 = CastObj( *oB, o, dx );
+		const RayIntersection h1 = CastObj( *oB, Point3( -1, 0, 0 ), dx );
+		Check( h0.geometric.bHit && std::fabs( h0.geometric.range - 1.5 ) < 1e-6 &&
+			h1.geometric.bHit && std::fabs( h1.geometric.range - 3.0 ) < 1e-6,
+			"I: (precondition) torus R 3 r 1 is crossed at 1.5 and re-entered at 5.5 along the ray" );
+		safe_release( oB );
+	}
+	// Phantom: A's lobes [0.7, 1.1] and [5.7, 6.3] both lie inside B.
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( !h.geometric.bHit, "I: A - torus with every A lobe inside B is missed (got range " +
+			std::to_string( h.geometric.range ) + ")" );
+		Check( !csg->IntersectRay_IntersectionOnly( Ray( o, dx ), 20, true, true ),
+			"I: ... and does not occlude" );
+		safe_release( csg );
+	}
+	// Straddle: lobe [1.3, 6.0] straddles B's exit (1.5) and B re-enters
+	// (5.5) inside it -- the interval is [1.5, 5.5].
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, straddling lobe", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"I: A - torus, straddling lobe: the interval closes at B's re-entry (got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		Check( h.geometric.bHit && h.geometric.vNormal2.x > 0,
+			"I: A - torus, straddling lobe: the closing normal points along the ray" );
+		safe_release( csg );
+	}
+	// A entry outside B, B covering its tail: lobe [2.0, 6.0] -> [2.0, 5.5].
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 2.0, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, lobe entered after B's exit", 2.0 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"I: A - torus, lobe after B's exit: the interval closes at B's re-entry (got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	// A lobe past B's second lobe: [7.8, 8.4] is the surface.
+	{
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A - torus, lobe past B's second lobe", 7.8 );
+		safe_release( csg );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// J. subtraction from inside both; budget exhaustion; touching lobes
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeTorusObject()
+{
+	TorusGeometry* gt = new TorusGeometry( 3, 1 );
+	Object* o = new Object( gt );
+	safe_release( gt );
+	o->FinalizeTransformations();
+	return o;
+}
+
+static CSGObject* Subtract( IObjectPriv* a, IObjectPriv* b )
+{
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	csg->AssignObjects( a, b );
+	csg->FinalizeTransformations();
+	safe_release( a );
+	safe_release( b );
+	return csg;
+}
+
+static void CheckMiss( const CSGObject& csg, const Point3& o, const Vector3& d, const std::string& label )
+{
+	const RayIntersection h = CastObj( csg, o, d );
+	Check( !h.geometric.bHit, "J: " + label + ": no hit (got range " + std::to_string( h.geometric.range ) + ")" );
+	Check( !csg.IntersectRay_IntersectionOnly( Ray( o, d ), 20, true, true ), "J: " + label + ": no occlusion" );
+}
+
+static void TestSubtractionInsideBoth()
+{
+	std::cout << "J. subtraction from inside both / budget / touching lobes" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// P2: inside both, multi-lobe A (lobes [-1, 1.0] and [1.3, 6.0]) and
+	// torus B (exits 1.5, re-enters 5.5): A's first lobe ends inside B,
+	// its second straddles B's exit -> surface at 1.5, closed at 5.5.
+	{
+		CSGObject* csg = MakeTorusSubtraction( -1, 1.0, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both, A's second lobe straddles B's exit", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"J: inside both, straddle: interval closes at B's re-entry (got " + std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	// P3-1: inside both, B exits first (1.5) and re-enters (5.5) before
+	// A's exit (6.0): interval [1.5, 5.5].
+	{
+		CSGObject* csg = Subtract( MakeSphereObject( 3.5, Point3( -1, 0, 0 ) ), MakeTorusObject() );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both, B exits first", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"J: inside both, B exits first: interval closes at B's re-entry (got " + std::to_string( h.geometric.range2 ) + ")" );
+		Check( h.geometric.bHit && h.geometric.vNormal2.x > 0,
+			"J: inside both, B exits first: the closing normal points along the ray" );
+		safe_release( csg );
+	}
+	// P3-2: the re-cast allowance runs out after A's advance; B's second
+	// lobe (which hides A's second lobe) is never visited -> conservative miss.
+	{
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 );
+		CheckMiss( *csg, o, dx, "budget exhausted after A's advance" );
+		safe_release( csg );
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		CSGObject* full = MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 );
+		CheckShadowAgreesWithHit( *full, o, dx, "full budget restored (control)", 7.8 );
+		safe_release( full );
+	}
+	// P3-3: B is two spheres touching on the ray at t = 1 (a union, so
+	// the ray starting inside the first reports its exit at the seam).
+	// A (t in [-1.5, 2]) lies wholly inside B -> nothing.
+	{
+		Object* b0 = MakeSphereObject( 1, Point3( -3.5, 0, 0 ) );
+		Object* b1 = MakeSphereObject( 1, Point3( -1.5, 0, 0 ) );
+		CSGObject* uniB = new CSGObject( CSG_UNION );
+		uniB->AssignObjects( b0, b1 );
+		uniB->FinalizeTransformations();
+		safe_release( b0 );
+		safe_release( b1 );
+		CSGObject* csg = Subtract( MakeSphereObject( 1.75, Point3( -3.25, 0, 0 ) ), uniB );
+		CheckMiss( *csg, o, dx, "B continues through a touching lobe past A" );
+		safe_release( csg );
+	}
+	// P3-4 pins: single-lobe operands through the new top logic.
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 1, Point3( -3.5, 0, 0 ), 2, Point3( -3.5, 0, 0 ) );
+		CheckMiss( *csg, o, dx, "inside both single-lobe, A left first" );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = Subtract( MakeSphereObject( 0.2, Point3( -2.6, 0, 0 ) ), MakeTorusObject() );
+		CheckMiss( *csg, o, dx, "single-lobe A inside torus B" );
+		safe_release( csg );
+	}
+	{
+		CSGObject* csg = MakeTwoSphereCsg( CSG_SUBTRACTION, 2, Point3( -3.5, 0, 0 ), 1, Point3( -3.5, 0, 0 ) );
+		CheckShadowAgreesWithHit( *csg, o, dx, "inside both single-lobe, B left first", 1.0 );
+		safe_release( csg );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// K. ties, and small re-cast allowances (radiance == shadow)
+//////////////////////////////////////////////////////////////////////
+
+static CSGObject* UnionOf( Object* a, Object* b )
+{
+	CSGObject* u = new CSGObject( CSG_UNION );
+	u->AssignObjects( a, b );
+	u->FinalizeTransformations();
+	safe_release( a );
+	safe_release( b );
+	return u;
+}
+
+//! A and B share their first lobe exactly (the same sphere), so the ray
+//! that starts inside it leaves A and B at the SAME distance (1.5).  A's
+//! second lobe [2, 3] is outside B; B's second lobe is far ([8, 9]).
+static CSGObject* MakeTieSubtraction( bool multiLobeA )
+{
+	CSGObject* uniB = UnionOf( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 0.5, Point3( 5, 0, 0 ) ) );
+	IObjectPriv* a = multiLobeA ?
+		static_cast<IObjectPriv*>( UnionOf( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 0.5, Point3( -1.0, 0, 0 ) ) ) ) :
+		static_cast<IObjectPriv*>( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ) );
+	return Subtract( a, uniB );
+}
+
+//! Radiance and shadow agree: the shadow ray occludes exactly when the
+//! radiance hit lies within it.
+static void CheckAgreement( const CSGObject& csg, const Point3& o, const Vector3& d, const std::string& label )
+{
+	const RayIntersection h = CastObj( csg, o, d );
+	bool ok = ( csg.IntersectRay_IntersectionOnly( Ray( o, d ), 20, true, true ) == ( h.geometric.bHit && h.geometric.range < 20 ) );
+	if( h.geometric.bHit && h.geometric.range < 20 ) {
+		ok = ok && !csg.IntersectRay_IntersectionOnly( Ray( o, d ), Scalar( 0.99 ) * h.geometric.range, true, true ) &&
+			csg.IntersectRay_IntersectionOnly( Ray( o, d ), Scalar( 1.01 ) * h.geometric.range, true, true );
+	}
+	Check( ok, "K: " + label + ": shadow and radiance agree (radiance " +
+		( h.geometric.bHit ? "hit at " + std::to_string( h.geometric.range ) : std::string( "miss" ) ) + ")" );
+}
+
+static void TestTiesAndSmallBudgets()
+{
+	std::cout << "K. tied exits; small re-cast allowances" << std::endl;
+	const Point3 o( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+	// P3-e: tie, multi-lobe A -> A's second lobe [2, 3] is the surface.
+	{
+		CSGObject* csg = MakeTieSubtraction( true );
+		CheckShadowAgreesWithHit( *csg, o, dx, "A and B exit together, A's later lobe outside B", 2.0 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 3.0 ) < 1e-6,
+			"K: tie: the later lobe's interval is [2, 3] (got range2 " + std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+	{
+		// Single-lobe A against the same sphere as B (both plain leaves,
+		// so the two exits are bit-identical): A - B is empty.
+		CSGObject* csg = Subtract( MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ), MakeSphereObject( 1.5, Point3( -3.5, 0, 0 ) ) );
+		CheckMiss( *csg, o, dx, "A and B exit together, single-lobe A and B" );
+		safe_release( csg );
+	}
+	// P3-b: the straddle fixture (A lobes [0.7, 1.1], [1.3, 6.0]; torus B)
+	// needs exactly two re-casts (B's exit probe, A's advance).  A walk
+	// that finishes on its last unit has NOT run out.
+	{
+		CSGObject::SetAdvanceBudgetForTesting( 2 );
+		CSGObject* csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckShadowAgreesWithHit( *csg, o, dx, "allowance 2 finishes the straddle walk on its last unit", 1.5 );
+		const RayIntersection h = CastObj( *csg, o, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"K: allowance 2: the clamp reuses B's exit probe (interval closes at 5.5, got " +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+		// P3-c: one unit runs out before A's advance: the real surface at
+		// 1.5 is dropped, by radiance and shadow alike.
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		csg = MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 );
+		CheckMiss( *csg, o, dx, "allowance 1 runs out before A's advance (surface dropped, consistently)" );
+		safe_release( csg );
+	}
+	// P3-c: agreement at every small allowance over the fixtures.
+	for( unsigned int budget = 1; budget <= 6; ++budget ) {
+		CSGObject::SetAdvanceBudgetForTesting( budget );
+		const std::string b = " @ allowance " + std::to_string( budget );
+		CSGObject* f[] = {
+			MakeTorusSubtraction( 0.7, 1.1, 1.3, 6.0 ),
+			MakeTorusSubtraction( 0.7, 1.1, 5.7, 6.3 ),
+			MakeTorusSubtraction( 0.7, 1.1, 2.0, 6.0 ),
+			MakeTorusSubtraction( 0.7, 1.1, 7.8, 8.4 ),
+			MakeTorusSubtraction( -1, 1.0, 1.3, 6.0 ),
+			MakeTieSubtraction( true )
+		};
+		const char* names[] = { "straddle", "phantom", "after B exit", "past B's second lobe", "inside both straddle", "tie" };
+		for( int k = 0; k < 6; ++k ) {
+			CheckAgreement( *f[k], o, dx, std::string( names[k] ) + b );
+			safe_release( f[k] );
+		}
+	}
+	CSGObject::SetAdvanceBudgetForTesting( 0 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// L. DL-627: outside-both covered-A advance, third-B range2 clamp,
+//    coincident surfaces across nesting depths, and small budgets
+//////////////////////////////////////////////////////////////////////
+
+static Object* MakeIntervalSphereX( Scalar ox, Scalar lo, Scalar hi )
+{
+	return MakeSphereObject( Scalar( 0.5 ) * ( hi - lo ), Point3( ox + Scalar( 0.5 ) * ( lo + hi ), 0, 0 ) );
+}
+
+static void TestSubtractionMultiLobeResidualsDL627()
+{
+	std::cout << "L. DL-627: outside-both covered-A, third-B clamp, and cross-depth coincidence" << std::endl;
+	const int failsBefore = failCount;
+	const Point3 oOut( -6.0, 0, 0 );
+	const Point3 oIn( -3.5, 0, 0 );
+	const Vector3 dx( 1, 0, 0 );
+
+	// L1a: outside-both, B = [1.5, 3.0] covers A's first lobe [2.0, 2.6];
+	// A's second lobe [4.5, 5.5] survives, and single-lobe B is cast once.
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 4.5, 5.5 ) );
+		CountingSphere* gB = new CountingSphere( 0.75 );
+		Object* oB = new Object( gB );
+		gB->release();
+		oB->SetPosition( Point3( oOut.x + 2.25, 0, 0 ) );
+		oB->FinalizeTransformations();
+		CSGObject* csg = Subtract( uniA, oB );
+		gB->casts = 0;
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range - 4.5 ) < 1e-6 &&
+			std::fabs( h.geometric.range2 - 5.5 ) < 1e-6,
+			"L: covered first A lobe advances to free second A lobe [4.5, 5.5] (got hit=" +
+			std::to_string( h.geometric.bHit ) + " [" + std::to_string( h.geometric.range ) +
+			", " + std::to_string( h.geometric.range2 ) + "])" );
+		Check( gB->casts == 1,
+			"L: single-lobe B covering first A lobe is still cast once (got " + std::to_string( gB->casts ) + ")" );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: covered first A lobe, free second lobe", 4.5 );
+		safe_release( csg );
+	}
+
+	// L1b: outside-both, B = [1.5, 3.5] covers A's first lobe [2.0, 2.6]
+	// and carves the front of A's straddling second lobe [2.8, 5.0] -> [3.5, 5.0].
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 2.8, 5.0 ) );
+		CSGObject* csg = Subtract( uniA, MakeIntervalSphereX( oOut.x, 1.5, 3.5 ) );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: covered first A lobe, straddling second A lobe", 3.5 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.0 ) < 1e-6 && h.geometric.vNormal.x < 0,
+			"L: straddling second A lobe closes at 5.0 with cavity normal -x" );
+		safe_release( csg );
+	}
+
+	// L1c: multi-lobe A ([2.3, 3.7] U [7.0, 9.0]) minus torus B ([2.0, 4.0] U [8.0, 10.0] from x=-6):
+	// torus lobe 1 covers A lobe 1, torus lobe 2 clamps A lobe 2 to [7.0, 8.0].
+	{
+		CSGObject* uniA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.3, 3.7 ),
+			MakeIntervalSphereX( oOut.x, 7.0, 9.0 ) );
+		CSGObject* csg = Subtract( uniA, MakeTorusObject() );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: multi-lobe A minus torus B from outside", 7.0 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 8.0 ) < 1e-6 && h.geometric.vNormal2.x > 0,
+			"L: torus second lobe clamps A's second lobe to [7.0, 8.0] (got range2=" +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+
+	// L2a: three-lobe B ([0.5, 1.0] U [2.0, 4.0] U [6.0, 7.0]) minus-carving A = [2.5, 8.0]:
+	// B lobe 1 passed, B lobe 2 carves A's front to 4.0, third B lobe shortens range2 to 6.0.
+	{
+		CSGObject* b23 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 6.0, 7.0 ) );
+		CSGObject* b123 = new CSGObject( CSG_UNION );
+		Object* b1 = MakeIntervalSphereX( oOut.x, 0.5, 1.0 );
+		b123->AssignObjects( b1, b23 );
+		b123->FinalizeTransformations();
+		safe_release( b1 );
+		safe_release( b23 );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), b123 );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: three-lobe B shortens carved interval", 4.0 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 6.0 ) < 1e-6 && h.geometric.vNormal2.x > 0,
+			"L: third B lobe shortens range2 from 8.0 to 6.0 with +x exit normal (got range2=" +
+			std::to_string( h.geometric.range2 ) + ")" );
+		safe_release( csg );
+	}
+
+	// L2b: nested union B where an inner union reports [2.1, 2.3] first while
+	// an outer sibling [2.0, 4.0] overlaps [3.8, 8.5] inside the inner union:
+	// B continuously covers [2.0, 8.5], so A = [2.5, 8.0] is completely hidden.
+	{
+		CSGObject* innerB = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.1, 2.3 ),
+			MakeIntervalSphereX( oOut.x, 3.8, 8.5 ) );
+		CSGObject* outerB = new CSGObject( CSG_UNION );
+		Object* bFront = MakeIntervalSphereX( oOut.x, 2.0, 4.0 );
+		outerB->AssignObjects( bFront, innerB );
+		outerB->FinalizeTransformations();
+		safe_release( bFront );
+		safe_release( innerB );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), outerB );
+		CheckMiss( *csg, oOut, dx, "L: overlapping nested-union B lobes hide all of A" );
+		safe_release( csg );
+	}
+
+	// L3a: inside-both coincidence across different CSG nesting depths
+	// (`MakeTieSubtraction(false)`: leaf A at depth 1 vs union B at depth 2).
+	{
+		CSGObject* csg = MakeTieSubtraction( false );
+		CheckMiss( *csg, oIn, dx, "L: MakeTieSubtraction(false) cross-depth coincident inside exit" );
+		safe_release( csg );
+	}
+
+	// L3b: outside-both front-face coincidence across nesting depths:
+	// depth-2 A ([2.0, 5.0] U [12.0, 13.0]) minus depth-1 B ([2.0, 3.5]) -> [3.5, 5.0]
+	// (no phantom cap at 2.0 from A's 2x SURFACE_INTERSEC_ERROR front backoff).
+	{
+		CSGObject* deepA = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 5.0 ),
+			MakeIntervalSphereX( oOut.x, 12.0, 13.0 ) );
+		CSGObject* csg = Subtract( deepA, MakeIntervalSphereX( oOut.x, 2.0, 3.5 ) );
+		CheckShadowAgreesWithHit( *csg, oOut, dx, "L: cross-depth coincident front face carves to 3.5", 3.5 );
+		const RayIntersection h = CastObj( *csg, oOut, dx );
+		Check( h.geometric.bHit && std::fabs( h.geometric.range2 - 5.0 ) < 1e-6 && h.geometric.vNormal.x < 0,
+			"L: cross-depth front carve reports [3.5, 5.0] with -x cavity normal (got [" +
+			std::to_string( h.geometric.range ) + ", " + std::to_string( h.geometric.range2 ) + "])" );
+		safe_release( csg );
+	}
+
+	// L3c: outside-both full and back-face coincidence across 3 nesting levels:
+	// (i) single-interval depth-3 A ([2,4] n [1,5] n [0.5,6]) minus depth-1 B [2,4] -> miss;
+	// (ii) depth-1 A [2,4] minus depth-3 B ([1,4] n [0.5,5] n [0.2,6]) -> miss;
+	// (iii) multi-lobe depth-2 A ([2,4] U [12,13]) minus depth-1 B [2,4] skips [2,4] with no sliver and hits 12.0.
+	{
+		auto IntersectOf = []( IObjectPriv* a, IObjectPriv* b ) -> CSGObject* {
+			CSGObject* c = new CSGObject( CSG_INTERSECTION );
+			c->AssignObjects( a, b );
+			c->FinalizeTransformations();
+			safe_release( a );
+			safe_release( b );
+			return c;
+		};
+		CSGObject* deepA = IntersectOf(
+			IntersectOf( MakeIntervalSphereX( oOut.x, 2.0, 4.0 ), MakeIntervalSphereX( oOut.x, 1.0, 5.0 ) ),
+			MakeIntervalSphereX( oOut.x, 0.5, 6.0 ) );
+		CSGObject* csgSame = Subtract( deepA, MakeIntervalSphereX( oOut.x, 2.0, 4.0 ) );
+		CheckMiss( *csgSame, oOut, dx, "L: depth-3 A [2,4] minus depth-1 B [2,4] has no sliver" );
+		safe_release( csgSame );
+
+		CSGObject* deepB = IntersectOf(
+			IntersectOf( MakeIntervalSphereX( oOut.x, 1.0, 4.0 ), MakeIntervalSphereX( oOut.x, 0.5, 5.0 ) ),
+			MakeIntervalSphereX( oOut.x, 0.2, 6.0 ) );
+		CSGObject* csgBack = Subtract( MakeIntervalSphereX( oOut.x, 2.0, 4.0 ), deepB );
+		CheckMiss( *csgBack, oOut, dx, "L: depth-1 A [2,4] minus depth-3 B [1,4] has no back sliver" );
+		safe_release( csgBack );
+
+		CSGObject* u2 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 12.0, 13.0 ) );
+		CSGObject* csgAdvance = Subtract( u2, MakeIntervalSphereX( oOut.x, 2.0, 4.0 ) );
+		CheckShadowAgreesWithHit( *csgAdvance, oOut, dx, "L: depth-2 ([2,4] U [12,13]) minus [2,4] skips first lobe cleanly", 12.0 );
+		safe_release( csgAdvance );
+	}
+
+	// L4: radiance and shadow agree at every small allowance 1..8 on the new fixtures.
+	for( unsigned int budget = 1; budget <= 8; ++budget ) {
+		CSGObject::SetAdvanceBudgetForTesting( budget );
+		const std::string tag = " @ L allowance " + std::to_string( budget );
+		CSGObject* uniA1 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 2.6 ),
+			MakeIntervalSphereX( oOut.x, 2.8, 5.0 ) );
+		CSGObject* f1 = Subtract( uniA1, MakeIntervalSphereX( oOut.x, 1.5, 3.5 ) );
+		CheckAgreement( *f1, oOut, dx, "covered+straddle" + tag );
+		safe_release( f1 );
+
+		CSGObject* uniA2 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.3, 3.7 ),
+			MakeIntervalSphereX( oOut.x, 7.0, 9.0 ) );
+		CSGObject* f2 = Subtract( uniA2, MakeTorusObject() );
+		CheckAgreement( *f2, oOut, dx, "outside torus clamp" + tag );
+		safe_release( f2 );
+
+		CSGObject* b23 = UnionOf(
+			MakeIntervalSphereX( oOut.x, 2.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 6.0, 7.0 ) );
+		CSGObject* b123 = new CSGObject( CSG_UNION );
+		Object* b1 = MakeIntervalSphereX( oOut.x, 0.5, 1.0 );
+		b123->AssignObjects( b1, b23 );
+		b123->FinalizeTransformations();
+		safe_release( b1 );
+		safe_release( b23 );
+		CSGObject* f3 = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 8.0 ), b123 );
+		CheckAgreement( *f3, oOut, dx, "three-lobe B clamp" + tag );
+		safe_release( f3 );
+
+		CSGObject* f4 = MakeTieSubtraction( false );
+		CheckAgreement( *f4, oIn, dx, "cross-depth tie" + tag );
+		safe_release( f4 );
+	}
+	CSGObject::SetAdvanceBudgetForTesting( 0 );
+
+	// L5: exhaustion rule on multi-lobe B continuation probe (`SetAdvanceBudgetForTesting(1)`):
+	// `A = [2.5, 5.5]`, `B = [2.0, 3.5] U ([3.4, 4.6] U [4.5, 6.0])` covers all of A
+	// (`A \ B == empty`).  At `budget = 1`, one step extends B across `[3.4, 4.6]` to `4.6`,
+	// exhausting `advanceBudget == 0` before `[4.5, 6.0]` can be probed; both `IntersectRay`
+	// and `IntersectRay_IntersectionOnly` must drop the unconfirmed candidate at `4.6`
+	// (`miss` / `false`) rather than inventing a non-existent surface inside empty `A \ B`.
+	{
+		CSGObject* bTail = UnionOf(
+			MakeIntervalSphereX( oOut.x, 3.4, 4.6 ),
+			MakeIntervalSphereX( oOut.x, 4.5, 6.0 ) );
+		CSGObject* bAll = new CSGObject( CSG_UNION );
+		Object* bHead = MakeIntervalSphereX( oOut.x, 2.0, 3.5 );
+		bAll->AssignObjects( bHead, bTail );
+		bAll->FinalizeTransformations();
+		safe_release( bHead );
+		safe_release( bTail );
+		CSGObject* csgEmpty = Subtract( MakeIntervalSphereX( oOut.x, 2.5, 5.5 ), bAll );
+		CSGObject::SetAdvanceBudgetForTesting( 1 );
+		CheckMiss( *csgEmpty, oOut, dx, "L5: budget=1 exhaustion drops unconfirmed B exit on empty A \\ B" );
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		CheckMiss( *csgEmpty, oOut, dx, "L5: full budget confirms A \\ B is empty" );
+		safe_release( csgEmpty );
+	}
+
+	// L6: per-operand material binding & exit-face payload hygiene when B = B1 U B2
+	// has distinct materials on B1 and B2:
+	//  (a) origin inside B1 (`[-0.5, 0.5]`), A = `[2.5, 6.0]`, B2 = `[2.0, 4.0]`:
+	//      `nextB.ApplyToOperandHit` + `AdoptCsgExitFacePayloadViaProbe` must report
+	//      `B2`'s material (`matB2`), never `B1`'s (`matB1`) or `A`'s (`matA`), and
+	//      stamp `ptIntersection` at `x = oIn.x + 4.0`;
+	//  (b) origin outside both (`oOut`), A = `[2.5, 6.0]`, B = `[2.0, 4.0]` (`matB2`):
+	//      `AdoptCsgExitFacePayloadViaProbe` adopts `B2`'s material on the carved cavity wall.
+	{
+		class TagMaterial : public virtual IMaterial, public virtual Reference
+		{
+		public:
+			IBSDF* GetBSDF() const override { return 0; }
+			ISPF* GetSPF() const override { return 0; }
+			IEmitter* GetEmitter() const override { return 0; }
+		protected:
+			virtual ~TagMaterial() {}
+		};
+		TagMaterial* matA = new TagMaterial();
+		TagMaterial* matB1 = new TagMaterial();
+		TagMaterial* matB2 = new TagMaterial();
+		Object* objA = MakeIntervalSphereX( oIn.x, 2.5, 6.0 );
+		objA->AssignMaterial( *matA );
+		Object* objB1 = MakeIntervalSphereX( oIn.x, -0.5, 0.5 );
+		objB1->AssignMaterial( *matB1 );
+		Object* objB2 = MakeIntervalSphereX( oIn.x, 2.0, 4.0 );
+		objB2->AssignMaterial( *matB2 );
+		CSGObject* bUnion = new CSGObject( CSG_UNION );
+		bUnion->AssignObjects( objB1, objB2 );
+		bUnion->FinalizeTransformations();
+		safe_release( objB1 );
+		safe_release( objB2 );
+		CSGObject* csgMat = Subtract( objA, bUnion );
+		const RayIntersection hitFromB1 = CastObj( *csgMat, oIn, dx );
+		Check( hitFromB1.geometric.bHit &&
+			std::fabs( hitFromB1.geometric.range - 4.0 ) < 1e-6 &&
+			hitFromB1.pMaterial == matB2 &&
+			std::fabs( hitFromB1.geometric.ptIntersection.x - ( oIn.x + 4.0 ) ) < 1e-5,
+			"L6a: inside-B1 -> outside-B2 subtraction exit adopts B2 material and exact ptIntersection" );
+		const RayIntersection hitOutside = CastObj( *csgMat, Point3( oIn.x - 2.0, 0, 0 ), dx );
+		Check( hitOutside.geometric.bHit &&
+			std::fabs( hitOutside.geometric.range - 6.0 ) < 1e-6 &&
+			hitOutside.pMaterial == matB2,
+			"L6b: outside subtraction exit adopts B2 material via AdoptCsgExitFacePayloadViaProbe" );
+		safe_release( csgMat );
+		safe_release( matA );
+		safe_release( matB1 );
+		safe_release( matB2 );
+	}
+
+	// L7: nested CSG trees share one top-level `ScopedCsgQueryBudget` rather than
+	// compounding `O(budget^depth)` re-casts across recursive CSG frames.
+	{
+		CountingSphere* gCount = new CountingSphere( 0.15 );
+		auto makeCountedAt = [&]( double cx ) -> Object* {
+			Object* o = new Object( gCount );
+			o->SetPosition( Point3( oOut.x + cx, 0, 0 ) );
+			o->FinalizeTransformations();
+			return o;
+		};
+		// Chain 8 disjoint small spheres along +x before A = [20, 22] in a right-leaning CSG_UNION tree.
+		IObjectPriv* chain = makeCountedAt( 1.0 );
+		for( int i = 2; i <= 8; ++i ) {
+			CSGObject* u = new CSGObject( CSG_UNION );
+			Object* next = makeCountedAt( double( i ) );
+			u->AssignObjects( chain, next );
+			u->FinalizeTransformations();
+			safe_release( chain );
+			safe_release( next );
+			chain = u;
+		}
+		gCount->release();
+		CSGObject* top = new CSGObject( CSG_SUBTRACTION );
+		Object* targetA = MakeIntervalSphereX( oOut.x, 20.0, 22.0 );
+		top->AssignObjects( targetA, chain );
+		top->FinalizeTransformations();
+		safe_release( targetA );
+		safe_release( chain );
+
+		gCount->casts = 0;
+		CSGObject::SetAdvanceBudgetForTesting( 2 );
+		const RayIntersection hCapped = CastObj( *top, oOut, dx );
+		const unsigned int castsAt2 = gCount->casts.load();
+		CSGObject::SetAdvanceBudgetForTesting( 0 );
+		// Initial traversal casts the 8 leaves once (8), plus at most `budget = 2` shared
+		// re-cast evaluations across the nested union (2 * 8 = 16) = <= 24 leaf casts total
+		// (vs > 60 without shared ScopedCsgQueryBudget).
+		Check( !hCapped.geometric.bHit && castsAt2 <= 24,
+			"L7: nested CSG shares top-level advanceBudget (casts=" + std::to_string( castsAt2 ) + " <= 24)" );
+		safe_release( top );
+	}
+
+	// L8: finite `dHowFar` strictly inside `(b1Exit, b1Exit + OpenSheetRecastStep)` on
+	// empty `A \ B = empty` must still probe touching continuation lobes of B rather
+	// than fabricating a phantom hit/occlusion at `b1Exit` (both outside-origin and
+	// inside-origin rays).
+	{
+		CSGObject* touchB = UnionOf(
+			MakeIntervalSphereX( oOut.x, 1.0, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 4.0, 7.0 ) );
+		CSGObject* csgEmpty = Subtract( MakeIntervalSphereX( oOut.x, 2.0, 6.0 ), touchB );
+
+		// Outside ray from oOut: b1Exit = 4.0; choose dHowFar = 4.0 + 2e-5 (< recast step ~1e-4).
+		const Scalar tightFarOut = Scalar( 4.00002 );
+		RayIntersection hOut( Ray( oOut, dx ), nullRasterizerState );
+		csgEmpty->IntersectRay( hOut, tightFarOut, true, true, true );
+		const bool occOut = csgEmpty->IntersectRay_IntersectionOnly( Ray( oOut, dx ), tightFarOut, true, true );
+		Check( !hOut.geometric.bHit && !occOut,
+			"L8a: outside ray with dHowFar inside recast step of touching B seam reports miss (no phantom hit at 4.0)" );
+
+		// Inside-both ray from oOut.x + 2.5: b1Exit = 1.5; choose dHowFar = 1.5 + 2e-5.
+		const Point3 oInSeam( oOut.x + 2.5, 0, 0 );
+		const Scalar tightFarIn = Scalar( 1.50002 );
+		RayIntersection hIn( Ray( oInSeam, dx ), nullRasterizerState );
+		csgEmpty->IntersectRay( hIn, tightFarIn, true, true, true );
+		const bool occIn = csgEmpty->IntersectRay_IntersectionOnly( Ray( oInSeam, dx ), tightFarIn, true, true );
+		Check( !hIn.geometric.bHit && !occIn,
+			"L8b: inside-both ray with dHowFar inside recast step of touching B seam reports miss (no phantom hit at 1.5)" );
+		safe_release( csgEmpty );
+	}
+
+	// L9: multi-lobe B with a degenerate zero-thickness pinch (`[3, 3] = [1, 3] n [3, 5]`)
+	// ahead of a positive-thickness cavity `[5, 7]` in `A \ B` (`A = [1, 9]`):
+	//  - Quadrant 2 (inside A at x = oOut.x + 2): skips `[3, 3]` and hits cavity at range 3.0 (`x = 5`);
+	//  - Quadrant 4 (outside A at oOut): skips `[3, 3]` and reports `[1, 5]` (not `[1, 3]`);
+	//  - `clampB` (inside B0 `[0.5, 2]`): skips `[4, 4]` and clamps `range2` at `[6, 8]` -> `[2, 6]`.
+	{
+		auto Intersect2 = []( IObjectPriv* a, IObjectPriv* b ) -> CSGObject* {
+			CSGObject* c = new CSGObject( CSG_INTERSECTION );
+			c->AssignObjects( a, b );
+			c->FinalizeTransformations();
+			safe_release( a );
+			safe_release( b );
+			return c;
+		};
+		CSGObject* pinchAt3 = Intersect2(
+			MakeIntervalSphereX( oOut.x, 1.0, 3.0 ),
+			MakeIntervalSphereX( oOut.x, 3.0, 5.0 ) );
+		CSGObject* bPinchThenCavity = UnionOf(
+			pinchAt3,
+			MakeIntervalSphereX( oOut.x, 5.0, 7.0 ) );
+		CSGObject* csg = Subtract( MakeIntervalSphereX( oOut.x, 1.0, 9.0 ), bPinchThenCavity );
+
+		// Quadrant 2: origin inside A at oOut.x + 2.0 -> pinch is at range 1.0, cavity at range 3.0, A exit at 7.0.
+		// Exiting solid A \ B into the carved cavity at x = oOut.x + 5.0 yields outward normal +x (range2 == 0).
+		const Point3 oInsideA( oOut.x + 2.0, 0, 0 );
+		const RayIntersection hQ2 = CastObj( *csg, oInsideA, dx );
+		const bool occBeforeCavity = csg->IntersectRay_IntersectionOnly( Ray( oInsideA, dx ), Scalar( 2.0 ), true, true );
+		const bool occQ2 = csg->IntersectRay_IntersectionOnly( Ray( oInsideA, dx ), Scalar( 4.0 ), true, true );
+		Check( hQ2.geometric.bHit &&
+			std::fabs( hQ2.geometric.range - 3.0 ) < 1e-5 &&
+			hQ2.geometric.range2 == 0 &&
+			std::fabs( hQ2.geometric.vNormal.x - 1.0 ) < 1e-5 &&
+			!occBeforeCavity && occQ2,
+			"L9a: Quadrant 2 skips zero-thickness B pinch at +1.0 and hits cavity wall at +3.0 in radiance & shadow (got range=" +
+			std::to_string( hQ2.geometric.range ) + ")" );
+
+		// Quadrant 4: origin outside A at oOut -> entry at 1.0, exit clamped at cavity 5.0 (NOT pinch 3.0!).
+		const RayIntersection hQ4 = CastObj( *csg, oOut, dx );
+		Check( hQ4.geometric.bHit &&
+			std::fabs( hQ4.geometric.range - 1.0 ) < 1e-5 &&
+			std::fabs( hQ4.geometric.range2 - 5.0 ) < 1e-5,
+			"L9b: Quadrant 4 skips zero-thickness B pinch at 3.0 and clamps range2 at cavity 5.0 (got [" +
+			std::to_string( hQ4.geometric.range ) + ", " + std::to_string( hQ4.geometric.range2 ) + "])" );
+		safe_release( csg );
+
+		// clampB: B = [0.5, 2.0] U ([2.5, 4.0] n [4.0, 5.5]) U [6.0, 8.0] carving A = [1.0, 9.0] -> [2.0, 6.0].
+		CSGObject* pinchAt4 = Intersect2(
+			MakeIntervalSphereX( oOut.x, 2.5, 4.0 ),
+			MakeIntervalSphereX( oOut.x, 4.0, 5.5 ) );
+		CSGObject* bTail = UnionOf( pinchAt4, MakeIntervalSphereX( oOut.x, 6.0, 8.0 ) );
+		CSGObject* bAll = new CSGObject( CSG_UNION );
+		Object* bHead = MakeIntervalSphereX( oOut.x, 0.5, 2.0 );
+		bAll->AssignObjects( bHead, bTail );
+		bAll->FinalizeTransformations();
+		safe_release( bHead );
+		safe_release( bTail );
+		CSGObject* csgClamp = Subtract( MakeIntervalSphereX( oOut.x, 1.0, 9.0 ), bAll );
+		const Point3 oInsideBoth( oOut.x + 1.5, 0, 0 );
+		const RayIntersection hClamp1 = CastObj( *csgClamp, oInsideBoth, dx );
+		const RayIntersection hClamp4 = CastObj( *csgClamp, oOut, dx );
+		Check( hClamp1.geometric.bHit && std::fabs( hClamp1.geometric.range - 0.5 ) < 1e-5 &&
+			std::fabs( hClamp1.geometric.range2 - 4.5 ) < 1e-5 &&
+			hClamp4.geometric.bHit && std::fabs( hClamp4.geometric.range - 2.0 ) < 1e-5 &&
+			std::fabs( hClamp4.geometric.range2 - 6.0 ) < 1e-5,
+			"L9c: clampB / clampNextB skip zero-thickness B pinch at 4.0 and clamp at cavity 6.0" );
+		safe_release( csgClamp );
+	}
+
+	if( failCount == failsBefore ) {
+		std::cout << "  PASS: [DL-627-SUMMARY] subtraction multi-lobe residuals" << std::endl;
+	} else {
+		std::cout << "  FAIL: [DL-627-SUMMARY] " << ( failCount - failsBefore ) << " assertion(s) failed" << std::endl;
+	}
+}
+
+//! Depth-30 shared-operand CSG DAG (`2^30` paths over 31 nodes): verifies
+//! `CSGObject::ShapeRevision()` runs in O(|V|) / O(1) via epoch + per-call
+//! memoization and invalidates on both leaf transform edits and leaf
+//! `SetIntermediateValue` geometry edits (`BoxGeometry::SetIntermediateValue`).
+static void TestSharedCsgDagShapeRevisionComplexity()
+{
+	std::cout << "[M] Shared-operand depth-30 CSG DAG ShapeRevision complexity & invalidation" << std::endl;
+	BoxGeometry* gBox = new BoxGeometry( 2.0, 2.0, 2.0 );
+	Object* leaf = new Object( gBox );
+	gBox->release();
+	leaf->SetPosition( Point3( 0.0, 0.0, 0.0 ) );
+	leaf->FinalizeTransformations();
+
+	IObjectPriv* cur = leaf;
+	cur->addref();
+	for( int d = 0; d < 30; ++d ) {
+		CSGObject* node = new CSGObject( ( d & 1 ) ? CSG_INTERSECTION : CSG_UNION );
+		cur->addref();
+		cur->addref();
+		const bool ok = node->AssignObjects( cur, cur );
+		cur->release();
+		cur->release();
+		node->FinalizeTransformations();
+		cur->release();
+		cur = node;
+		if( !ok ) {
+			Check( false, "M0: depth-30 shared-operand CSG DAG construction" );
+			break;
+		}
+	}
+
+	const auto t0 = std::chrono::steady_clock::now();
+	const uint64_t rev0 = cur->ShapeRevision();
+	bool same1000 = ( rev0 != 0 );
+	for( int q = 0; q < 1000; ++q ) {
+		if( cur->ShapeRevision() != rev0 ) {
+			same1000 = false;
+			break;
+		}
+	}
+	const double elapsedMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - t0 ).count();
+	Check( same1000 && elapsedMs < 5000.0,
+		"M1: 1,001 ShapeRevision() queries on depth-30 shared-operand CSG DAG complete deterministically in < 5000 ms (got " +
+		std::to_string( elapsedMs ) + " ms)" );
+
+	// Mutating the shared leaf's transform must invalidate and change root->ShapeRevision().
+	leaf->SetPosition( Point3( 0.25, -0.5, 0.75 ) );
+	leaf->FinalizeTransformations();
+	const uint64_t revAfterPose = cur->ShapeRevision();
+	Check( revAfterPose != rev0 && cur->ShapeRevision() == revAfterPose,
+		"M2: leaf transform mutation updates depth-30 CSG root ShapeRevision()" );
+
+	// Mutating the shared leaf's BoxGeometry via SetIntermediateValue must also bump ShapeRevision().
+	IKeyframeParameter* kpW = gBox->KeyframeFromParameters( "width", "3.5" );
+	Check( kpW != nullptr, "M3a: BoxGeometry width keyframe parameter created" );
+	if( kpW ) {
+		gBox->SetIntermediateValue( *kpW );
+		kpW->release();
+		gBox->RegenerateData();
+		const uint64_t revAfterGeom = cur->ShapeRevision();
+		Check( revAfterGeom != revAfterPose && revAfterGeom != rev0 && cur->ShapeRevision() == revAfterGeom,
+			"M3b: BoxGeometry::SetIntermediateValue bumps ShapeRevision() through depth-30 CSG root" );
+	}
+
+	safe_release( cur );
+	safe_release( leaf );
+}
+
+//! Round 7: verifies `CSGObject::CertificateBits()` invalidates on all three
+//! monotonic epochs (`PatchCertificateEpoch`, `GlobalGeometryShapeEpoch`,
+//! `GlobalTransformPoseEpoch`) across child `CSGObject::SetOperation`, leaf
+//! `Object::AssignGeometry` / `ClearGeometry`, and `ClippedPlaneGeometry::SetIntermediateValue`.
+static void TestCsgCertificateBitsEpochInvalidation()
+{
+	std::cout << "[N] CSGObject::CertificateBits() invalidation on SetOperation / AssignGeometry / ClearGeometry / SetIntermediateValue" << std::endl;
+
+	Point3 quadPts[4] = {
+		Point3( -1.0, -1.0, 0.0 ),
+		Point3(  1.0, -1.0, 0.0 ),
+		Point3(  1.0,  1.0, 0.0 ),
+		Point3( -1.0,  1.0, 0.0 )
+	};
+	ClippedPlaneGeometry* gQuad = new ClippedPlaneGeometry( quadPts, true );
+	BoxGeometry* gBoxA = new BoxGeometry( 4.0, 4.0, 4.0 );
+	BoxGeometry* gBoxB = new BoxGeometry( 3.0, 3.0, 3.0 );
+
+	// N1: Child CSGObject::SetOperation invalidates outer parent CSGObject::m_certBits.
+	{
+		Object* oSheet = new Object( gQuad );
+		Object* oBoxA = new Object( gBoxA );
+		Object* oBoxB = new Object( gBoxB );
+		oSheet->FinalizeTransformations();
+		oBoxA->FinalizeTransformations();
+		oBoxB->FinalizeTransformations();
+
+		CSGObject* inner = new CSGObject( CSG_INTERSECTION );
+		inner->AssignObjects( oSheet, oBoxA );
+		inner->FinalizeTransformations();
+
+		CSGObject* outer = new CSGObject( CSG_INTERSECTION );
+		outer->AssignObjects( inner, oBoxB );
+		outer->FinalizeTransformations();
+
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1a: outer CSG_INTERSECTION( CSG_INTERSECTION(sheet, boxA), boxB ) certifies open sheet" );
+
+		inner->SetOperation( CSG_UNION );
+		Check( !outer->IsProvablyOpenSheet( true ),
+			"N1b: child inner->SetOperation(CSG_UNION) invalidates outer CSGObject::CertificateBits() -> false" );
+
+		inner->SetOperation( CSG_INTERSECTION );
+		Check( outer->IsProvablyOpenSheet( true ),
+			"N1c: child inner->SetOperation(CSG_INTERSECTION) restores outer IsProvablyOpenSheet() -> true" );
+
+		safe_release( outer );
+		safe_release( inner );
+		safe_release( oBoxB );
+		safe_release( oBoxA );
+		safe_release( oSheet );
+	}
+
+	// N2: Leaf Object::AssignGeometry and Object::ClearGeometry invalidate parent CSGObject::m_certBits.
+	{
+		Object* leafA = new Object( gBoxA );
+		Object* leafB = new Object( gBoxB );
+		leafA->FinalizeTransformations();
+		leafB->FinalizeTransformations();
+
+		CSGObject* uni = new CSGObject( CSG_UNION );
+		uni->AssignObjects( leafA, leafB );
+		uni->FinalizeTransformations();
+
+		Check( uni->IsCertifiedWatertight(),
+			"N2a: CSG_UNION( boxA, boxB ) initially certifies watertight" );
+
+		leafA->AssignGeometry( *gQuad );
+		Check( !uni->IsCertifiedWatertight(),
+			"N2b: leafA->AssignGeometry( planarSheet ) invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		leafA->AssignGeometry( *gBoxA );
+		Check( uni->IsCertifiedWatertight(),
+			"N2c: leafA->AssignGeometry( boxA ) restores parent CSG IsCertifiedWatertight() -> true" );
+
+		leafA->ClearGeometry();
+		Check( !uni->IsCertifiedWatertight(),
+			"N2d: leafA->ClearGeometry() invalidates parent CSG IsCertifiedWatertight() -> false" );
+
+		safe_release( uni );
+		safe_release( leafB );
+		safe_release( leafA );
+	}
+
+	// N3: ClippedPlaneGeometry::SetIntermediateValue warping a planar convex quad into a
+	// non-planar saddle invalidates parent CSGObject::m_certBits (`IsPlanarConvexQuad` -> false).
+	{
+		Object* oPlane = new Object( gQuad );
+		Object* oBox = new Object( gBoxA );
+		oPlane->FinalizeTransformations();
+		oBox->FinalizeTransformations();
+
+		CSGObject* trim = new CSGObject( CSG_INTERSECTION );
+		trim->AssignObjects( oPlane, oBox );
+		trim->FinalizeTransformations();
+
+		Check( trim->IsProvablyOpenSheet( true ),
+			"N3a: CSG_INTERSECTION( planar ClippedPlaneGeometry, box ) initially certifies open sheet" );
+
+		IKeyframeParameter* kpC = gQuad->KeyframeFromParameters( "ptc", "1.0 1.0 0.75" );
+		Check( kpC != nullptr, "N3b: ClippedPlaneGeometry ptc keyframe parameter created" );
+		if( kpC ) {
+			gQuad->SetIntermediateValue( *kpC );
+			kpC->release();
+			gQuad->RegenerateData();
+			Check( !gQuad->IsPlanarConvexQuad() && !trim->IsProvablyOpenSheet( true ),
+				"N3c: warping ClippedPlaneGeometry out of plane via SetIntermediateValue invalidates parent CSG open-sheet certificate" );
+		}
+
+		safe_release( trim );
+		safe_release( oBox );
+		safe_release( oPlane );
+	}
+
+	// N4: Round 8: With `TimeIndexed::tlsSlots != nullptr` (active across the entire pass on any
+	// motion-blurred frame where a camera or light moves), a depth-30 shared-operand CSG DAG
+	// (`2^30` paths, 31 unique nodes) must stay O(|V|) cold / O(1) hot on `CertificateBits()`,
+	// `Realize()`, `ShapeRevision()`, and `EnumerateEffectiveMaterials()`.
+	{
+		IPainter* pGrey = nullptr;
+		RISE_API_CreateUniformColorPainter( &pGrey, RISEPel( 0.5, 0.5, 0.5 ) );
+		IMaterial* pMatte = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte, *pGrey );
+
+		Object* leafDag = new Object( gBoxA );
+		leafDag->AssignMaterial( *pMatte );
+		leafDag->FinalizeTransformations();
+		IObjectPriv* cur = leafDag;
+		cur->addref();
+		for( int d = 0; d < 30; ++d ) {
+			CSGObject* node = new CSGObject( CSG_UNION );
+			node->AssignObjects( cur, cur );
+			node->FinalizeTransformations();
+			cur->release();
+			cur = node;
+		}
+		CSGObject* rootDag = dynamic_cast<CSGObject*>( cur );
+
+		struct CountMats : public IEnumCallback<IMaterial>
+		{
+			int count = 0;
+			bool operator()( const IMaterial& ) override { ++count; return true; }
+		};
+
+		const TimeIndexed::ThreadSlots activeFrameSlots = { nullptr, 0, nullptr };
+		const TimeIndexed::ThreadSlots* prevSlots = TimeIndexed::tlsSlots;
+		TimeIndexed::tlsSlots = &activeFrameSlots;
+
+		const auto t0 = std::chrono::steady_clock::now();
+		CountMats cm;
+		const bool enumOk = rootDag && rootDag->EnumerateEffectiveMaterials( cm );
+		rootDag->Realize();
+		rootDag->ResetRuntimeData();
+		const BoundingBox bbDag = rootDag->getBoundingBox();
+		Object* snapDag = rootDag->CloneSnapshot();
+		const BoundingBox bbSnap = snapDag ? snapDag->getBoundingBox() : BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
+		safe_release( snapDag );
+
+		// Also register the 31-node depth-30 shared DAG in an `ObjectManager` + `Scene`
+		// and run `PrepareForRendering()` + `IORStackSeeding::SeedFromPoint()`!
+		ObjectManager* pMgr = new ObjectManager( true, false, 100, 24 );
+		char nameBuf[32];
+		pMgr->AddItem( leafDag, "dag_leaf" );
+		// Walk down `pObjectA` spine to register every unique CSG node just as `Job` does:
+		{
+			const CSGObject* walk = rootDag;
+			int idx = 0;
+			while( walk ) {
+				std::snprintf( nameBuf, sizeof(nameBuf), "dag_node_%d", idx++ );
+				pMgr->AddItem( const_cast<CSGObject*>( walk ), nameBuf );
+				walk = dynamic_cast<const CSGObject*>( walk->GetOperandA() );
+			}
+		}
+		pMgr->PrepareForRendering();
+		IScenePriv* pScene = nullptr;
+		RISE_API_CreateScene( &pScene );
+		pMgr->addref();
+		pScene->SetObjectManager( pMgr );
+		IORStack seededDag( 1.0 );
+		IORStackSeeding::SeedFromPoint( seededDag, Point3( 0, 0, -5 ), *pScene );
+
+		const uint64_t revSlot = rootDag ? rootDag->ShapeRevision() : 0;
+		bool certOk = ( rootDag && revSlot != 0 && rootDag->IsCertifiedWatertight() && !rootDag->IsProvablyOpenSheet( true ) );
+		for( int q = 0; q < 200; ++q ) {
+			if( !rootDag->IsCertifiedWatertight() || rootDag->IsProvablyOpenSheet( true ) ||
+				rootDag->ShapeRevision() != revSlot ||
+				std::fabs( rootDag->getBoundingBox().ur.x - bbDag.ur.x ) > 1e-12 ) {
+				certOk = false;
+				break;
+			}
+		}
+		const double ms = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		TimeIndexed::tlsSlots = prevSlots;
+
+		Check( enumOk && cm.count == 1 && certOk &&
+			std::fabs( bbDag.ur.x - 2.0 ) < 1e-9 &&
+			std::fabs( bbSnap.ur.x - 2.0 ) < 1e-9 &&
+			seededDag.Depth() == 1 && ms < 5000.0,
+			"N4: depth-30 shared-operand CSG DAG in ObjectManager/Scene under TimeIndexed::tlsSlots != nullptr completes PrepareForRendering + SeedFromPoint + CloneSnapshot + ResetRuntimeData + getBoundingBox + CertificateBits/ShapeRevision in < 5000 ms (got " +
+			std::to_string( ms ) + " ms, matCount=" + std::to_string( cm.count ) + ")" );
+
+		safe_release( pScene );
+		safe_release( pMgr );
+		safe_release( cur );
+		safe_release( leafDag );
+		safe_release( pMatte );
+		safe_release( pGrey );
+	}
+
+	// N5: Round 9: `CSGObject::EnumerateEffectiveMaterials` skips non-surface-contributing
+	// solid trim operands on `kTrimSheetA` / `kTrimSheetB` composites and is safe under
+	// re-entrant nested calls inside a callback.
+	{
+		IPainter* pWhite = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15, 1.5 );
+		IScalarPainter* pIor18 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor18, 1.8 );
+		IMaterial* pGlass15 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass15, *pWhite, *pIor15 );
+		IMaterial* pGlass18 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass18, *pWhite, *pIor18 );
+		IMaterial* pMatte2 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pMatte2, *pWhite );
+
+		Point3 flatPts[4] = {
+			Point3( -2.0, -2.0, 0.0 ),
+			Point3(  2.0, -2.0, 0.0 ),
+			Point3(  2.0,  2.0, 0.0 ),
+			Point3( -2.0,  2.0, 0.0 )
+		};
+		ClippedPlaneGeometry* gFlat = new ClippedPlaneGeometry( flatPts, true );
+
+		Object* oSheetGlass = new Object( gFlat );
+		oSheetGlass->AssignMaterial( *pGlass15 );
+		oSheetGlass->FinalizeTransformations();
+
+		Object* oSheetMatte = new Object( gFlat );
+		oSheetMatte->AssignMaterial( *pMatte2 );
+		oSheetMatte->FinalizeTransformations();
+
+		Object* oSolidGlass = new Object( gBoxA );
+		oSolidGlass->AssignMaterial( *pGlass18 );
+		oSolidGlass->FinalizeTransformations();
+
+		// kTrimSheetA: CSG_SUBTRACTION(sheet_glass15, solid_glass18) -> only pGlass15!
+		CSGObject* trimGlassA = new CSGObject( CSG_SUBTRACTION );
+		trimGlassA->AssignObjects( oSheetGlass, oSolidGlass );
+		trimGlassA->FinalizeTransformations();
+
+		// kTrimSheetB: CSG_INTERSECTION(solid_glass18, sheet_matte) -> only pMatte2!
+		CSGObject* trimMatteB = new CSGObject( CSG_INTERSECTION );
+		trimMatteB->AssignObjects( oSolidGlass, oSheetMatte );
+		trimMatteB->FinalizeTransformations();
+
+		struct ReentrantCheck : public IEnumCallback<IMaterial>
+		{
+			const CSGObject* innerTarget = nullptr;
+			std::vector<const IMaterial*> outerSeen;
+			int innerCount = 0;
+			const IMaterial* innerFirst = nullptr;
+			bool operator()( const IMaterial& m ) override
+			{
+				outerSeen.push_back( &m );
+				if( innerTarget ) {
+					struct InnerCb : public IEnumCallback<IMaterial>
+					{
+						int& cnt;
+						const IMaterial*& first;
+						InnerCb( int& c_, const IMaterial*& f_ ) : cnt( c_ ), first( f_ ) {}
+						bool operator()( const IMaterial& im ) override
+						{
+							if( cnt == 0 ) first = &im;
+							++cnt;
+							return true;
+						}
+					} icb( innerCount, innerFirst );
+					innerTarget->EnumerateEffectiveMaterials( icb );
+				}
+				return true;
+			}
+		} rc;
+		rc.innerTarget = trimMatteB;
+		trimGlassA->EnumerateEffectiveMaterials( rc );
+
+		Check( rc.outerSeen.size() == 1 && rc.outerSeen[0] == pGlass15 &&
+			rc.innerCount == 1 && rc.innerFirst == pMatte2 &&
+			IORStackSeeding::SingleRefractiveObjectMaterial( trimGlassA ) == pGlass15 &&
+			!IORStackSeeding::ObjectMayBeTrackable( *trimMatteB ) &&
+			!IORStackSeeding::ObjectMayRefract( *trimMatteB ),
+			"N5: CSGObject::EnumerateEffectiveMaterials skips solid trim masks on kTrimSheetA/kTrimSheetB and supports re-entrant nested calls" );
+
+		safe_release( trimMatteB );
+		safe_release( trimGlassA );
+		safe_release( oSolidGlass );
+		safe_release( oSheetMatte );
+		safe_release( oSheetGlass );
+		safe_release( gFlat );
+		safe_release( pMatte2 );
+		safe_release( pGlass18 );
+		safe_release( pGlass15 );
+		safe_release( pIor18 );
+		safe_release( pIor15 );
+		safe_release( pWhite );
+	}
+
+	// N6: Round 10: General diamond CSG DAG (`pObjectA != pObjectB` at every node:
+	// `D_{k+1} = Union(Union(D_k, sideA), Union(D_k, sideB))`, depth 26 => >6.7e7 paths!)
+	// with refractive `pGlass15`, registered in `ObjectManager` / `Scene`:
+	//   1. `PrepareForRendering()` runs in O(|V|).
+	//   2. Under active `TimeIndexed::tlsSlots != nullptr` AND per-sample posing of a
+	//      standalone moving opaque `Object` (`FinalizeTransformations()` + `BumpThreadTransformPoseEpoch()`),
+	//      `SeedFromPoint` + `getBoundingBox` + `CertificateBits` + `ShapeRevision` stay O(1) hot!
+	//   3. Real `IntersectRay` (both with and without ray differentials), `IntersectRay_IntersectionOnly`,
+	//      `OperandContainsPoint`, `SelfHitRootFloor`, `SignedDistanceLower`, and `DistanceToSurface`
+	//      all evaluate in O(|V|) (< 250 ms total instead of hanging on 6.7e7 paths).
+	{
+		IPainter* pWhite6 = nullptr;
+		RISE_API_CreateUniformColorPainter( &pWhite6, RISEPel( 1.0, 1.0, 1.0 ) );
+		IScalarPainter* pIor15_6 = nullptr;
+		RISE_API_CreateUniformScalarPainter( &pIor15_6, 1.5 );
+		IMaterial* pGlass6 = nullptr;
+		RISE_API_CreatePerfectRefractorMaterial( &pGlass6, *pWhite6, *pIor15_6 );
+		IMaterial* pOpaque6 = nullptr;
+		RISE_API_CreateLambertianMaterial( &pOpaque6, *pWhite6 );
+
+		SphereGeometry* gSphCenter = new SphereGeometry( 1.0 );
+		SphereGeometry* gSphSideA  = new SphereGeometry( 0.25 );
+		SphereGeometry* gSphSideB  = new SphereGeometry( 0.25 );
+
+		Object* oCenter = new Object( gSphCenter );
+		oCenter->AssignMaterial( *pGlass6 );
+		oCenter->FinalizeTransformations();
+
+		Object* oSideA = new Object( gSphSideA );
+		oSideA->AssignMaterial( *pGlass6 );
+		oSideA->SetPosition( Point3( 3.0, 0.0, 0.0 ) );
+		oSideA->FinalizeTransformations();
+
+		Object* oSideB = new Object( gSphSideB );
+		oSideB->AssignMaterial( *pGlass6 );
+		oSideB->SetPosition( Point3( -3.0, 0.0, 0.0 ) );
+		oSideB->FinalizeTransformations();
+
+		Object* oMovingOpaque = new Object( gBoxA );
+		oMovingOpaque->AssignMaterial( *pOpaque6 );
+		oMovingOpaque->SetPosition( Point3( 0.0, 10.0, 0.0 ) );
+		oMovingOpaque->FinalizeTransformations();
+
+		ObjectManager* pMgr6 = new ObjectManager( true, false, 100, 24 );
+		pMgr6->AddItem( oCenter, "dag6_center" );
+		pMgr6->AddItem( oSideA, "dag6_sideA" );
+		pMgr6->AddItem( oSideB, "dag6_sideB" );
+		pMgr6->AddItem( oMovingOpaque, "dag6_moving_opaque" );
+
+		std::vector<CSGObject*> dagNodes;
+		IObjectPriv* curD = oCenter;
+		for( int k = 0; k < 26; ++k ) {
+			CSGObject* left = new CSGObject( CSG_UNION );
+			left->AssignObjects( curD, oSideA );
+			left->FinalizeTransformations();
+			pMgr6->AddItem( left, ( "dag6_L_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( left );
+
+			CSGObject* right = new CSGObject( CSG_UNION );
+			right->AssignObjects( curD, oSideB );
+			right->FinalizeTransformations();
+			pMgr6->AddItem( right, ( "dag6_R_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( right );
+
+			CSGObject* join = new CSGObject( CSG_UNION );
+			join->AssignObjects( left, right );
+			join->FinalizeTransformations();
+			pMgr6->AddItem( join, ( "dag6_J_" + std::to_string( k ) ).c_str() );
+			dagNodes.push_back( join );
+
+			curD = join;
+		}
+		CSGObject* rootDiamond = dagNodes.back();
+
+		IScenePriv* pScene6 = nullptr;
+		RISE_API_CreateScene( &pScene6 );
+		pMgr6->addref();
+		pScene6->SetObjectManager( pMgr6 );
+
+		const auto t0 = std::chrono::steady_clock::now();
+		pMgr6->PrepareForRendering();
+
+		const void* dummyPtr = nullptr;
+		const TimeIndexed::ThreadSlots fakeSlots = { &dummyPtr, 0u, nullptr };
+		struct TlsGuard6
+		{
+			const TimeIndexed::ThreadSlots* prev;
+			explicit TlsGuard6( const TimeIndexed::ThreadSlots* s ) : prev( TimeIndexed::tlsSlots )
+			{
+				TimeIndexed::tlsSlots = s;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+			~TlsGuard6()
+			{
+				TimeIndexed::tlsSlots = prev;
+				Transformable::BumpThreadTransformPoseEpoch();
+				Transformable::BumpThreadCsgPoseEpoch();
+				Transformable::BumpThreadTrackablePoseEpoch();
+			}
+		} tlsGuard6( &fakeSlots );
+
+		// Simulate 64 motion-blurred pixel samples posing a moving light + moving opaque Object:
+		IORStack seedInside( 1.0 );
+		for( int s = 0; s < 64; ++s ) {
+			Transformable::BumpThreadTransformPoseEpoch(); // simulated animated light FinalizeTransformations
+			oMovingOpaque->SetPosition( Point3( Scalar( s ) * 0.01, 10.0, 0.0 ) );
+			oMovingOpaque->FinalizeTransformations();      // simulated animated opaque clone FinalizeTransformations
+			seedInside = IORStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( seedInside, Point3( 0.0, 0.0, 0.0 ), *pScene6, 0 );
+			(void)rootDiamond->getBoundingBox();
+			(void)rootDiamond->ShapeRevision();
+		}
+
+		// Real ray + containment + floor + signed/unsigned proximity queries on the depth-26 diamond DAG:
+		Ray camRay( Point3( 0.0, 0.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) );
+		RayIntersection riNoDiff( camRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riNoDiff, RISE_INFINITY, true, true, true );
+
+		Ray diffRay = camRay;
+		diffRay.hasDifferentials = true;
+		diffRay.diffs.rxOrigin = Vector3( 0.01, 0.0, 0.0 );
+		diffRay.diffs.ryOrigin = Vector3( 0.0, 0.01, 0.0 );
+		diffRay.diffs.rxDir = Vector3( 0.0, 0.0, 0.0 );
+		diffRay.diffs.ryDir = Vector3( 0.0, 0.0, 0.0 );
+		RayIntersection riWithDiff( diffRay, nullRasterizerState );
+		rootDiamond->IntersectRay( riWithDiff, RISE_INFINITY, true, true, true );
+
+		const bool occHit = rootDiamond->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const bool occMiss = rootDiamond->IntersectRay_IntersectionOnly(
+			Ray( Point3( 0.0, 5.0, -5.0 ), Vector3( 0.0, 0.0, 1.0 ) ), 10.0, true, true );
+		const int inCenter = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const int outFar   = CSGObject::OperandContainsPoint( rootDiamond, Point3( 0.0, 5.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+		const Scalar floorVal = rootDiamond->SelfHitRootFloor( Point3( 0.0, 0.0, -1.0 ), Vector3( 0.0, 0.0, 1.0 ), Vector3( 0.0, 0.0, -1.0 ) );
+		Scalar sDist = 0.0, uDist = 0.0;
+		bool sExact = false;
+		const bool sOk = rootDiamond->SignedDistanceLower( Point3( 0.0, 3.0, 0.0 ), 10.0, sDist, sExact );
+		const bool uOk = rootDiamond->DistanceToSurface( Point3( 0.0, 3.0, 0.0 ), 10.0, uDist );
+
+		// Also verify non-shared internal CSG node (`nConsumedBy == 1` -> `!IsSharedConsumerTarget()`)
+		// vs shared diamond node (`nConsumedBy == 2` -> `IsSharedConsumerTarget()`), and `X \ X == empty`:
+		CSGObject* nonSharedInner = new CSGObject( CSG_UNION );
+		nonSharedInner->AssignObjects( oCenter, oSideA );
+		nonSharedInner->FinalizeTransformations();
+		CSGObject* nonSharedOuter = new CSGObject( CSG_UNION );
+		nonSharedOuter->AssignObjects( nonSharedInner, oSideB );
+		nonSharedOuter->FinalizeTransformations();
+		const bool nonSharedGateOk = nonSharedInner->IsConsumed() && !nonSharedInner->IsSharedConsumerTarget() &&
+			!dagNodes[0]->IsSharedConsumerTarget() && dagNodes[2]->IsSharedConsumerTarget();
+
+		CSGObject* selfSub = new CSGObject( CSG_SUBTRACTION );
+		selfSub->AssignObjects( rootDiamond, rootDiamond );
+		selfSub->FinalizeTransformations();
+		RayIntersection riSelfSub( camRay, nullRasterizerState );
+		selfSub->IntersectRay( riSelfSub, RISE_INFINITY, true, true, true );
+		const bool selfSubOcc = selfSub->IntersectRay_IntersectionOnly( camRay, 10.0, true, true );
+		const int selfSubContains = CSGObject::OperandContainsPoint( selfSub, Point3( 0.0, 0.0, 0.0 ), Vector3( 0.0, 0.0, 1.0 ), 2.0 );
+
+		const double ms6 = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - t0 ).count();
+
+		Check( nonSharedGateOk &&
+			seedInside.Depth() == 2 && std::fabs( seedInside.top() - 1.5 ) < 1e-6 &&
+			riNoDiff.geometric.bHit && std::fabs( riNoDiff.geometric.range - 4.0 ) < 1e-5 &&
+			riWithDiff.geometric.bHit && std::fabs( riWithDiff.geometric.range - 4.0 ) < 1e-5 &&
+			occHit && !occMiss &&
+			inCenter > 0 && outFar < 0 &&
+			std::isfinite( floorVal ) && floorVal > 0.0 &&
+			sOk && std::fabs( sDist - 2.0 ) < 1e-4 &&
+			uOk && std::fabs( uDist - 2.0 ) < 1e-4 &&
+			!riSelfSub.geometric.bHit && !selfSubOcc && selfSubContains < 0 &&
+			ms6 < 5000.0,
+			"N6: depth-26 refractive diamond CSG DAG (IsSharedConsumerTarget + CsgFlatGenMap) + 64 TimeIndexed pose samples + ray/shadow/contains/floor/SDF queries complete in < 5000 ms (got " +
+			std::to_string( ms6 ) + " ms, range=" + std::to_string( riNoDiff.geometric.range ) + ")" );
+
+		safe_release( nonSharedOuter );
+		safe_release( nonSharedInner );
+		safe_release( selfSub );
+		for( CSGObject* n : dagNodes ) safe_release( n );
+		safe_release( pScene6 );
+		safe_release( pMgr6 );
+		safe_release( oMovingOpaque );
+		safe_release( oSideB );
+		safe_release( oSideA );
+		safe_release( oCenter );
+		safe_release( gSphSideB );
+		safe_release( gSphSideA );
+		safe_release( gSphCenter );
+		safe_release( pOpaque6 );
+		safe_release( pGlass6 );
+		safe_release( pIor15_6 );
+		safe_release( pWhite6 );
+	}
+
+	safe_release( gBoxB );
+	safe_release( gBoxA );
+	safe_release( gQuad );
+}
+
+int main()
+{
+	std::cout << "=== CsgMeshOperandTest (DL-621 review findings 10-13 + DL-627) ===" << std::endl;
+	TestAnalyticOperandsCastOnce();
+	TestNoAdvancePastSingleLobe();
+	TestNearClosedMeshRole();
+	TestPillowRole();
+	TestConcurrentFirstQuery();
+	TestInsideBThroughA();
+	TestMeshEditRefreshesComposite();
+	TestShadowLengthFromInside();
+	TestSubtractionInsideMultiLobeB();
+	TestSubtractionInsideBoth();
+	TestTiesAndSmallBudgets();
+	TestSubtractionMultiLobeResidualsDL627();
+	TestSharedCsgDagShapeRevisionComplexity();
+	TestCsgCertificateBitsEpochInvalidation();
+	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+	return failCount ? 1 : 0;
+}

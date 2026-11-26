@@ -13,6 +13,13 @@
 
 #include "KeyframableHelper.h"
 
+// ParseStrictScalar and ParseStrictVec3 live in their own TU
+// (KeyframableStrictParse.cpp) — see that file's header comment for
+// the Windows/Mac split-TU rationale.  This file is re-included into
+// every Library TU on Windows via INLINE_TEMPLATE_SPECIALIZATIONS to
+// COMDAT-fold the explicit Parameter<Vector3> / Parameter<Point3>
+// specialisations below.
+
 namespace RISE
 {
 	namespace Implementation

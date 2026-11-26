@@ -1,0 +1,38 @@
+{
+  "input": "/Volumes/SSD/Working/RISE/docs/data/fire_r270/tier8_retained_statistics.txt",
+  "input_sha256": "a33779359e8e7d7bd15bc5c9999bc66c25aa158ca567236e5425a958c742a690",
+  "checkpoint_sha256": "cbeadefb54805f30f09c2fe38d2b290ce2b6324f9ebd1f6fed58d69953c3b18d",
+  "duration_s": 14.62500000011342,
+  "cell_width_m": 0.030593116067411014,
+  "station_count": 106,
+  "selected_count": 76,
+  "flame_tip_1percent_peak_plane_m": 0.7189382275841588,
+  "selection_lower_exclusive_m": 0.8099077814591382,
+  "selection_upper_inclusive_m": 3.1204978388759237,
+  "characteristic_diameter_m": 0.2447449285392881,
+  "authored_heat_release_kW": 33,
+  "max_temperature_error_station": {
+    "station": 28,
+    "height_m": 0.8719038079212139,
+    "selected": true,
+    "temperature_rise_K": 505.0834997473746,
+    "mccaffrey_temperature_rise_K": 301.24343443905803,
+    "temperature_relative_error": 0.6766622671391489,
+    "velocity_m_per_s": 4.633849275752164,
+    "mccaffrey_velocity_m_per_s": 3.793967141921611,
+    "velocity_relative_error": 0.22137306476649132,
+    "mean_plane_heat_W": 50.23817077659057
+  },
+  "max_velocity_error_station": {
+    "station": 26,
+    "height_m": 0.8107175757863919,
+    "selected": true,
+    "temperature_rise_K": 570.0279647344975,
+    "mccaffrey_temperature_rise_K": 340.08115511577654,
+    "temperature_relative_error": 0.6761527540108427,
+    "velocity_m_per_s": 4.74994076195909,
+    "mccaffrey_velocity_m_per_s": 3.887107582617906,
+    "velocity_relative_error": 0.2219730637761459,
+    "mean_plane_heat_W": 69.527017357164
+  }
+}

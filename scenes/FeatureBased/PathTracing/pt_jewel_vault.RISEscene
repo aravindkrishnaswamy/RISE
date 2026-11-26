@@ -1,8 +1,8 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           pt_jewel_vault_guided.RISEscene                                                              #
+#   File:           pt_jewel_vault.RISEscene                                                              #
 #   Description:    Path guiding benchmark: "The Jewel Vault" — an enclosed gallery lit only                #
 #                   through a narrow horizontal slot window in the back wall.  Light enters                 #
 #                   as a thin band and must bounce multiple times off walls and objects to                  #
@@ -74,13 +74,17 @@ file_rasterizeroutput
 # with dramatic light spilling across the scene.
 ##################################################
 
+film
+{
+	width			512
+	height			384
+}
+
 pinhole_camera
 {
 	location			2.0 3.8 11.5
 	lookat				-1.0 2.0 3.5
 	up					0 1 0
-	width				512
-	height				384
 	fov					52.0
 }
 
@@ -88,7 +92,146 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # ---- Floor ----
 uniformcolor_painter
@@ -224,26 +367,8 @@ uniformcolor_painter
 }
 
 # ---- Glass ----
-uniformcolor_painter
-{
-	name				pnt_clear_tau
-	color				0.998 0.998 0.998
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_amber_tau
-	color				0.998 0.72 0.32
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_sapphire_tau
-	color				0.35 0.55 0.998
-	colorspace			RISERGB
-}
 
 # ---- Light emitter (warm daylight through slot) ----
 uniformcolor_painter
@@ -257,12 +382,15 @@ uniformcolor_painter
 ##################################################
 
 # Floor: glossy dark polished stone
-ward_isotropic_material
+# Legacy phase 2 slice C: was ward_isotropic_material; ward_isotropic alpha 0.07 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				floor_mat
 	rd					pnt_floor_checker
 	rs					pnt_floor_spec
-	alpha				0.07
+	alphax				0.07
+	alphay				0.07
+	fresnel_mode		schlick_f0
 }
 
 # Room surfaces
@@ -328,39 +456,47 @@ lambertian_material
 	reflectance			pnt_pedestal_dark
 }
 
-# Copper: Ward isotropic, tight glossy
-ward_isotropic_material
+# Copper: tight glossy GGX (was Ward isotropic)
+# Legacy phase 2 slice C: was ward_isotropic_material; ward_isotropic alpha 0.05 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				copper_mat
 	rd					pnt_copper_diff
 	rs					pnt_copper_spec
-	alpha				0.05
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode		schlick_f0
 }
 
-# Gold: Ashikmin-Shirley anisotropic (stretched highlights)
-ashikminshirley_anisotropicphong_material
+# Gold: anisotropic GGX, stretched highlights (was Ashikhmin-Shirley)
+# Legacy phase 2 slice C: was ashikminshirley_anisotropicphong_material; ashikmin-shirley nu 250 nv 60 -> alphax 0.08909 alphay 0.1796 (sqrt(2/(n+2))), rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				gold_mat
 	rd					pnt_gold_diff
 	rs					pnt_gold_spec
-	nu					250
-	nv					60
+	alphax				0.089087
+	alphay				0.17961
+	fresnel_mode		schlick_f0
 }
 
-# Bronze: Ward isotropic, slightly rougher
-ward_isotropic_material
+# Bronze: GGX, slightly rougher (was Ward isotropic)
+# Legacy phase 2 slice C: was ward_isotropic_material; ward_isotropic alpha 0.1 -> alphax = alphay, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				bronze_mat
 	rd					pnt_bronze_diff
 	rs					pnt_bronze_spec
-	alpha				0.10
+	alphax				0.1
+	alphay				0.1
+	fresnel_mode		schlick_f0
 }
 
 # Clear glass
 dielectric_material
 {
 	name				clear_glass_mat
-	tau					pnt_clear_tau
+	tau			0.998
 	ior					1.52
 	scattering			100000.0
 }
@@ -369,7 +505,7 @@ dielectric_material
 dielectric_material
 {
 	name				amber_glass_mat
-	tau					pnt_amber_tau
+	tau			0.998 0.72 0.32
 	ior					1.58
 	scattering			100000.0
 }
@@ -378,7 +514,7 @@ dielectric_material
 dielectric_material
 {
 	name				sapphire_glass_mat
-	tau					pnt_sapphire_tau
+	tau			0.35 0.55 0.998
 	ior					1.77
 	scattering			100000.0
 }
@@ -542,7 +678,7 @@ torus_geometry
 ellipsoid_geometry
 {
 	name				gold_ellipsoid_geom
-	radii				0.45 0.85 0.35
+	radii				0.225 0.425 0.175
 }
 
 sphere_geometry
@@ -889,6 +1025,7 @@ csg_object
 	operation			intersection
 	position			-2.5 1.0 2.5
 	orientation			15 0 10
+	allow_transformed_operands			TRUE
 }
 
 # Small sapphire sphere directly on the floor (accent piece)
@@ -949,3 +1086,5 @@ standard_object
 	position			4.0 1.65 7.5
 	material			bronze_mat
 }
+
+

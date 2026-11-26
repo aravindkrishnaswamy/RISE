@@ -1,8 +1,8 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           arealight_shaderop.RISEScene                                                            #
+#   File:           arealight_shaderop.RISEscene                                                            #
 #   Description:    Demonstrates using the area light shaderop                                              #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      February 28, 2005                                                                       #
@@ -19,30 +19,29 @@ uniformcolor_painter
 	color			1 1 1
 }
 
-arealight_shaderop
+# Converted from arealight_shaderop `arealight` (frozen) by tools/migrate_scenes_legacy_rasterizer.py --mode full:
+#   exitance = power (at N 1 the op is a Lambertian panel of radiance power/pi).
+rect_light
 {
-	name			arealight
-	emission		color_emm
-	location		-5 5 2
-	make_dir		0 0 0
-	samples			64
-	width			3.0
-	height			3.0
-	power			50
-	cache			false
+	name		arealight
+	center		-5 5 2
+	size		3 3
+	facing		5 -5 -2
+	exitance	50
+	color		1 1 1
 }
 
 standard_shader
 {
 	name			global
-	shaderop		arealight
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				256
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -57,13 +56,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			400
+	height			300
+}
+
 pinhole_camera
 {
 	location			0.25 0 3.5
 	lookat				0.25 0 0
 	up					0 1 0
-	width				400
-	height				300
 	fov					20.0
 	theta				30
 }
@@ -72,7 +75,146 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##################################################
 # Materials
@@ -121,3 +263,5 @@ standard_object
 	position			0 0.0 0.0
 	material			white
 }
+
+

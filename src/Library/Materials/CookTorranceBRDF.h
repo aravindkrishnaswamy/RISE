@@ -16,39 +16,77 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class CookTorranceBRDF : 
-			public virtual IBSDF, 
+		class CookTorranceBRDF :
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~CookTorranceBRDF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pMasking;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pMasking;		// roughness (physical scalar)
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
+
+		private:
+			bool SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const;
+			bool SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const;
 
 		public:
-			CookTorranceBRDF( 
-				const IPainter& diffuse, 
-				const IPainter& specular, 
-				const IPainter& masking,
-				const IPainter& ior,
-				const IPainter& ext
+			CookTorranceBRDF(
+				const IPainter& diffuse,
+				const IPainter& specular,
+				const IScalarPainter& masking,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext
 				);
 
 			template< class T >
 			static T ComputeFactor( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& m );
 
+			//! DL-290: the incident (exterior) index of this hit's
+			//! interface -- `ri.ambientIOR`, which every integrator stamps
+			//! from the IOR-stack top (the G6 plumbing GGX's conductor
+			//! Fresnel reads).  An unstamped record carries the default 1.0
+			//! (air); a non-positive or non-finite value also reads as air.
+			//! The conductor Fresnel is a function of the RELATIVE complex
+			//! index (n/n_e, k/n_e), so every Fresnel term of this model --
+			//! value, valueNM, albedo, the SPF kray and the Kulla-Conty
+			//! F_avg -- passes this as its incident index.
+			static inline Scalar AmbientIOR( const RayIntersectionGeometric& ri )
+			{
+				const Scalar n = ri.ambientIOR;
+				return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
+			}
+
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): reflection = single-scatter specular, diffuse = Rd/pi + multiscatter (CookTorranceSPF's labels).
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
+			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()    const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()   const { return *pSpecular; }
+			inline const IScalarPainter& GetMasking()    const { return *pMasking; }
+			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetMasking( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
 		};
 	}
 }

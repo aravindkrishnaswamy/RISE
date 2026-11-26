@@ -16,32 +16,70 @@
 #include "LambertianEmitter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
-#include "../Utilities/RandomNumbers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
-LambertianEmitter::LambertianEmitter( const IPainter& radEx, const Scalar scale_ ) : 
-  radExPainter( radEx ),
+LambertianEmitter::LambertianEmitter( const IPainter& radEx, const Scalar scale_ ) :
+  pRadEx( &radEx ),
   scale( scale_ )
 {
-	radExPainter.addref();
+	pRadEx->addref();
+	RefreshAverages();
+}
+
+LambertianEmitter::~LambertianEmitter( )
+{
+	safe_release( pRadEx );
+}
+
+void LambertianEmitter::RefreshAverages()
+{
+	// Re-initialise then accumulate — important on Set so we don't add
+	// on top of the previous painter's contribution.
+	averageRadEx = RISEPel( 0, 0, 0 );
+	averageSpectrum = VisibleSpectralPacket();
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-	for( int i=0; i<100; i++ ) {
-		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
-		averageRadEx = averageRadEx + radEx.GetColor(rig);
-		averageSpectrum = averageSpectrum + radEx.GetSpectrum(rig);
+	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
+	// consumes no render-RNG at parse (this runs at emitter construction).  averageRadEx/averageSpectrum feed
+	// light-importance weights (LightSampler) + photon power/budget (PhotonTracer / SpectralPhotonTracer /
+	// SMSPhotonMap), NOT the emitted radiance (emittedRadiance reads the painter at the hit point) -- so this
+	// is not a DIRECT emitted-radiance change.  For a UNIFORM emissive painter the grid mean is bit-identical
+	// to the old RNG mean; for a NON-uniform (textured) painter it is a different deterministic estimate of
+	// the same integral, so a FINITE photon-map / SMS render of a textured emitter can differ slightly
+	// (converging to the same result), and a regular grid can alias a painter whose period resonates with
+	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
+	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
+		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
+		averageRadEx = averageRadEx + pRadEx->GetRadianceColor(rig);
+		// Sampled through GetRadianceNM, NOT GetSpectrum (Stage C slice 2).
+		// `averageSpectrum` is the per-wavelength EMITTED power that
+		// SpectralPhotonTracer turns into photon energy; it has to carry the
+		// same illuminant shape `emittedRadianceNM` now does, or a spectral
+		// photon render would light the scene with a reflectance-shaped
+		// spectrum while direct NEE used a D65-shaped one.
+		// VisibleSpectralPacket is <Scalar, 380, 780, 40> with an INTEGER
+		// delta of (780-380)/(40-1) == 10, so bin i sits at 380 + 10*i --
+		// the same indexing CompositeEmitter's constructor uses.
+		VisibleSpectralPacket radSp;
+		for( unsigned int i = 0; i < 40; i++ ) {
+			radSp.SetIndex( i, pRadEx->GetRadianceNM( rig, Scalar(380 + i * 10) ) );
+		}
+		averageSpectrum = averageSpectrum + radSp;
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
 	averageSpectrum = averageSpectrum * (scale/Scalar(100.0));
 }
 
-LambertianEmitter::~LambertianEmitter( )
+void LambertianEmitter::SetRadEx( const IPainter& v )
 {
-	radExPainter.release();
+	v.addref();
+	safe_release( pRadEx );
+	pRadEx = &v;
+	RefreshAverages();
 }
 
 RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const
@@ -51,7 +89,7 @@ RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, 
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return RISEPel( 0, 0, 0 );
 	}
-	return (radExPainter.GetColor( ri ) * INV_PI * scale);
+	return (pRadEx->GetRadianceColor( ri ) * INV_PI * scale);
 }
 
 Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const
@@ -59,7 +97,13 @@ Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri,
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return 0;
 	}
-	return (radExPainter.GetColorNM( ri, nm ) * INV_PI * scale);
+	// SOURCE term -> GetRadianceNM, not GetColorNM (Stage C slice 2).  The
+	// exitance painter is authored as "the colour this panel glows", which
+	// under the Stage C convention means reflectance-under-D65 TIMES D65 --
+	// so a white panel radiates D65 and resolves through the film to the
+	// authored white, instead of a flat spectrum landing on a reddish
+	// (1.20, 0.95, 0.91).  docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
+	return (pRadEx->GetRadianceNM( ri, nm ) * INV_PI * scale);
 }
 
 RISEPel LambertianEmitter::averageRadiantExitance() const
@@ -70,6 +114,16 @@ RISEPel LambertianEmitter::averageRadiantExitance() const
 Scalar LambertianEmitter::averageRadiantExitanceNM( const Scalar nm ) const 
 {
 	return averageSpectrum.ValueAtNM( int(nm) );
+}
+
+RISEPel LambertianEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
+{
+	return pRadEx->GetRadianceColor( ri ) * scale;
+}
+
+Scalar LambertianEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	return pRadEx->GetRadianceNM( ri, nm ) * scale;
 }
 
 Vector3 LambertianEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const

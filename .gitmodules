@@ -1,0 +1,3 @@
+[submodule "extlib/oidn/source"]
+	path = extlib/oidn/source
+	url = https://github.com/RenderKit/oidn.git

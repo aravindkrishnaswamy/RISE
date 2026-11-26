@@ -8,8 +8,10 @@
 //    carries all such controls through the rendering pipeline,
 //    shared by both the unidirectional PT and BDPT integrators.
 //
-//    All controls are disabled by default so that existing scenes
+//    Most controls are disabled by default so that existing scenes
 //    produce identical output unless a control is explicitly set.
+//    Exceptions: `maxVolumeBounce` defaults to 64 (not unlimited) and
+//    `useLightBVH` defaults to true.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 30, 2026
@@ -57,7 +59,17 @@ namespace RISE
 		unsigned int	maxGlossyBounce;		///< Maximum glossy/reflection bounces (UINT_MAX = unlimited)
 		unsigned int	maxTransmissionBounce;	///< Maximum refraction/transmission bounces (UINT_MAX = unlimited)
 		unsigned int	maxTranslucentBounce;	///< Maximum translucent bounces (UINT_MAX = unlimited)
-		unsigned int	maxVolumeBounce;		///< Maximum volume scatter bounces (64 default, matches PT)
+		/// Maximum medium-scatter vertices per full camera-to-light path
+		/// (64 default).  DL-247: the SAME truncation in every integrator --
+		/// the medium's Neumann series is cut at this order, every medium
+		/// segment on a surviving path carrying its true transmittance.  PT
+		/// and the BDPT/VCM subpath generators stop sampling scatter at the
+		/// cap (the segment then carries deterministic Beer-Lambert Tr);
+		/// BDPT/VCM additionally drop any (s,t) strategy whose light- plus
+		/// eye-prefix scatter count exceeds it (BDPTVertex::volumeBounces).
+		/// In a dense medium whose expected scatter count approaches the
+		/// cap, every integrator reads the same TRUNCATED (darker) answer.
+		unsigned int	maxVolumeBounce;
 
 		//
 		// Light sampling
@@ -78,6 +90,25 @@ namespace RISE
 		unsigned int	optimalMISTrainingIterations;	///< Number of training passes (default 4)
 		unsigned int	optimalMISTileSize;		///< Tile size for spatial binning (default 16)
 
+		//
+		// Transparent (Fresnel-attenuated) shadow rays
+		//
+		// When enabled, NEE shadow rays pass STRAIGHT through perfect-
+		// specular transmissive dielectric interfaces (glass / sapphire /
+		// water), multiplying the per-interface Fresnel TRANSMITTANCE
+		// (1 - F) into the light contribution instead of being fully
+		// occluded.  Any non-dielectric (opaque, rough, diffuse, mirror)
+		// hit still fully blocks.  This is an APPROXIMATION: it ignores
+		// refractive bending and internal multi-bounce, but recovers
+		// direct lighting on surfaces under a thin transparent shell at a
+		// fraction of the brute-force refracted-BSDF noise.  Honoured by
+		// the unidirectional path tracers ONLY (PT pel + PT spectral);
+		// BDPT / VCM / MLT shadow tests stay binary.
+		// Field appended at the END of the struct to preserve the
+		// pass-by-const-ref layout for existing callers.
+		//
+		bool			transparentShadows;	///< Fresnel-transmittance shadow rays through specular dielectrics (false = binary occlusion)
+
 		StabilityConfig() :
 		  directClamp( 0 ),
 		  indirectClamp( 0 ),
@@ -92,7 +123,8 @@ namespace RISE
 		  useLightBVH( true ),
 		  optimalMIS( false ),
 		  optimalMISTrainingIterations( 4 ),
-		  optimalMISTileSize( 16 )
+		  optimalMISTileSize( 16 ),
+		  transparentShadows( false )
 		{
 		}
 	};

@@ -1,0 +1,24 @@
+{
+  "schema": "rise.fire.r246.complete-recovery-evidence-gate.v1",
+  "recovery_accepted": false,
+  "status": "pending_fresh_reviews",
+  "original_exit_code": 98,
+  "script_sha256": "9a0564701f0467f67870b6f5e7f91e40f1d44c7a9b1b6a9ffd3df2596ac72cdf",
+  "catalog_sha256": "e5ad468897af2b4d948f969ed91fb77eaab2cf4eef0c93c4445dd61a97c368e6",
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovery_evidence.v1",
+  "receipt_sha256": "2e2e9fe96a5deec29b6a88b234aaaa14e670f5b7d8a191f7130f05cd246a424c",
+  "seal_sha256": "99fe35128f145f2a01c79d82c4b65964e177c20ce9c8ed4e7613d021fd251b59",
+  "controls": {
+    "captured_green": 1,
+    "targeted_reds": 7,
+    "empirical": false
+  },
+  "modern_seal_independently_verified": true,
+  "evidence_records": 50,
+  "completed_utc": "2026-10-04T11:48:42.081447+00:00",
+  "limitations": [
+    "Evidence consolidation only; no repeated native/capsule/ledger scans.",
+    "Separate fresh-review acceptance attestation still required.",
+    "Budget arithmetic, actual preview/spectrum and physics pending; original failure unchanged."
+  ]
+}

@@ -1,0 +1,2 @@
+MERKLE_V2_PYTHON_RED_PASS version format shape length order bit_mutations historical_v1
+MERKLE_V2_BRIDGE_RED_PASS committed_mutation committed_deletion pinned_inventory

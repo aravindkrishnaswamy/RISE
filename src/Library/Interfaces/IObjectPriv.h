@@ -52,6 +52,16 @@ namespace RISE
 			const IMaterial& pMat									///< [in] The material to assign
 			) = 0;
 
+		//! Assigns a geometry to the object at runtime (geometry swap).
+		//! Mirrors AssignMaterial; the interactive editor's `geometry`
+		//! row routes here via SceneEdit::SetObjectGeometry.  The object's
+		//! bounding box is derived from the geometry, so the caller must
+		//! invalidate the top-level acceleration afterward (next render
+		//! rebuilds the TLAS against the new extents).
+		virtual bool AssignGeometry(
+			const IGeometry& pGeom									///< [in] The geometry to assign
+			) = 0;
+
 		//! Assigns a shader to the object
 		virtual bool AssignShader( 
 			const IShader& pShader									///< [in] The shader to assign
@@ -72,6 +82,16 @@ namespace RISE
 		virtual bool AssignInteriorMedium(
 			const IMedium& medium									///< [in] The medium to assign
 			) = 0;
+
+		//! Clears any previously-assigned interior medium so the
+		//! object has no participating-medium interior (equivalent to
+		//! the scene-file state where `interior_medium` is absent or
+		//! set to `"none"`).  Used by the interactive editor's
+		//! `interior_medium` row when the user selects the `(none)`
+		//! preset — the AssignInteriorMedium reference signature has
+		//! no null-sentinel, so we need a separate clear path for
+		//! parser-parity round-trip.
+		virtual void ClearInteriorMedium() = 0;
 
 		//! Sets the epsilon error threshold to use when computing intersections
 		virtual void SetSurfaceIntersecError(
@@ -96,6 +116,84 @@ namespace RISE
 
 		//! Tells the object to reset its runtime data
 		virtual void ResetRuntimeData() const = 0;
+
+		//! Clear an OPTIONAL object slot back to "unset" -- the state a freshly created
+		//! object has, and the state a full derive produces when the chunk omits the slot
+		//! or sets it to "none".  The CST incremental apply (stable-object re-point) uses
+		//! these when an edit REMOVES a slot the object previously held: an in-place
+		//! re-point re-binds the slots the chunk specifies but cannot clear one it omits,
+		//! and the AssignX reference signatures have no null-sentinel.  Added at the END of
+		//! this interface (after ResetRuntimeData) so EXISTING method vtable offsets are
+		//! unchanged -- the mid-vtable insertion the ClearShader/ClearMaterial P1-#9 note
+		//! avoided does not apply to end-insertion (out-of-tree CALLERS keep their offsets).
+		virtual void ClearMaterial() = 0;
+		virtual void ClearModifier() = 0;
+		virtual void ClearShader() = 0;
+		virtual void ClearRadianceMap() = 0;
+
+		//! Drop the object's geometry entirely, turning it into a CONTAINER
+		//! node -- a pure transform in the authored scene graph
+		//! (docs/agentic-redesign/87-recursive-scene-graph.md).  Same reason
+		//! the four Clear* above exist: the CST incremental apply re-points a
+		//! STABLE object in place, and an edit that removes the chunk's
+		//! `geometry` cannot be expressed through AssignGeometry's reference
+		//! signature.  Appended at this interface's TAIL, so no existing slot
+		//! shifts.
+		//!
+		//! Callers must also hide the object (SetWorldVisible(false)) -- this
+		//! method only owns the geometry slot.  Every consumer that walks the
+		//! world-visible list assumes a real intersectable.
+		virtual void ClearGeometry() = 0;
+
+		//! CONSUMPTION, which is a different thing from visibility and needs its own
+		//! state.  A `csg_object` CONSUMES its two operands: the composite owns them
+		//! and they have no existence as standalone shapes, which is expressed by
+		//! keeping them out of every world-visible enumeration.
+		//!
+		//! WHY A COUNT AND NOT THE `bIsWorldVisible` FLAG.  Since 87 step 3b an operand
+		//! is routinely consumed by MORE THAN ONE composite -- `source` on a subtree
+		//! containing a `csg_object` re-Finalizes that chunk with `obja` / `objb`
+		//! UNCHANGED, so N clones share one operand by pointer (which is correct: an
+		//! operand's matrix is CSG-local, read relative to whichever composite is
+		//! asking).  With a flag, the FIRST composite torn down or re-assigned
+		//! unconditionally re-showed the operand while the others were still consuming
+		//! it, and it then rendered as a standalone shape -- and, being visible, also
+		//! stopped looking like an operand to `ObjectManager::SetObjectParent`, which
+		//! identifies one as "hidden and has geometry".
+		//!
+		//! Balanced by the composite: `CSGObject::AssignObjects` adds, its destructor
+		//! and its re-assign path remove.  Never copied by a clone -- a clone's own
+		//! `AssignObjects` re-establishes it -- so a snapshot operand starts at zero
+		//! consumers and is immediately claimed by the composite that owns it.
+		//! Appended at this interface's TAIL, so no existing slot shifts.
+		//!
+		//! ⚠ THE COST OF SPLITTING ONE BIT INTO TWO PIECES OF STATE, and it came due
+		//! immediately: `IsWorldVisible()` is now a COMPOSED read (`bIsWorldVisible &&
+		//! nConsumedBy == 0`) while `SetWorldVisible` still owns only the base flag, so
+		//! THE GETTER NO LONGER ROUND-TRIPS THROUGH THE SETTER.  Any code that captured
+		//! `IsWorldVisible()` and later wrote it back through `SetWorldVisible` was
+		//! silently correct before the split and silently corrupting after it -- it
+		//! zeroes a consumed operand's base flag, which stays invisible behind the count
+		//! until the count drops and then never comes back.  The agent's isolate
+		//! save/restore (`AgentSession.cpp`, `ObjectSoloRestoreGuard`) was exactly that
+		//! shape and shipped broken; it now records only the objects it actually hid and
+		//! restores them to `true`, which has no round-trip obligation.  If a THIRD
+		//! piece of state ever joins this composition, that is the pattern to grep for
+		//! -- capture-then-write-back of a composed getter -- not the setter.
+		virtual void AddConsumer() = 0;
+		//! Releasing a claim that was never taken is logged, not silently absorbed --
+		//! see `Object::RemoveConsumer` for why an under-count is the failure this
+		//! count exists to prevent, one composite later.
+		virtual void RemoveConsumer() = 0;
+		//! True while at least one composite is consuming this object.
+		virtual bool IsConsumed() const = 0;
+
+		//! Per-object / per-instance Cycles Object Info attributes (color,
+		//! alpha, object pass index, random).  Appended at the tail of
+		//! IObjectPriv so existing vtable slots are unchanged.  The getter
+		//! lives on IObject::GetObjectInfo() so const IObject* consumers
+		//! (LightSampler, BDPT/VCM) can read it without downcasting.
+		virtual void SetObjectInfo( const ObjectInfoData& /*info*/ ) {}
 	};
 }
 

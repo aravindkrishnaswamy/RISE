@@ -1,0 +1,50 @@
+# RISE thin-film heat-tint calibration (tools/thermal_oxide_sim.py)
+# Titanium dial, oxide thickness -> colour via Phase-1 thin-film oracle
+# (Ti/TiO2, normal incidence, D65 white-normalised colorimetry).
+#
+# COLOUR ANCHORS (read from the Phase-1 Ti/TiO2 swatch ladder):
+#   d_center = 20.0 nm  ->  yellow/gold  (dominant 579.8 nm, C*=36.9)  [dial CENTRE]
+#   d_rim    = 33.0 nm  ->  blue  (dominant 460.4 nm, C*=70.6)  [dial RIM]
+#
+# On-dial sweep centre->rim: gold/amber -> magenta/purple -> blue
+# (thickness INCREASES outward; rim ran hotter -> thicker oxide).
+#
+# NORMALISED MAP RANGE (oxide_thickness.png 0..1 maps to):
+#   d_min (pixel 0)   = 20.0 nm
+#   d_max (pixel 1)   = 33.0 nm
+#
+# SCENE RECIPE - recover nanometres from the normalised texture with a
+# tunable affine map (colour range dialable WITHOUT re-baking):
+#
+#   scalar_painter { texture "scenes/FeatureBased/GuillocheWatch/oxide_thickness.png" scale 13.0000 bias 20.0000 }
+#
+# i.e.  thickness_nm = pixel01 * scale + bias
+#   scale = d_max - d_min = 13.0000
+#   bias  = d_min         = 20.0000
+#
+# To shift the whole heat-tint warmer/cooler from the scene: lower 'bias'
+# for a thinner (warmer/goldier) overall film, raise it for thicker (bluer);
+# widen 'scale' for a longer gold->blue sweep, narrow it to compress.
+#
+# NOTE on the thickness RANGE (20-33 nm): these are the FIRST-order
+# titanium temper colours (straw/gold ~20 nm, purple ~30 nm, blue ~33 nm).
+# We deliberately use first order so the centre->rim sweep is a SINGLE
+# clean gold->purple->blue (the reference look).  A 'couple hundred nm'
+# blue exists too (2nd-order blue ~140 nm, 3rd ~250 nm) but reaching it
+# from a 20 nm gold centre would wrap the dial through the full spectrum
+# twice (gold->blue->green->gold->purple->blue), not the reference's
+# monotone gold->magenta->blue.  To use a wider/2nd-order range instead,
+# re-bake with e.g. --d-center-nm 20 --d-rim-nm 140 (purple~125, blue~140),
+# or override scale/bias here in the scene (no re-bake needed).
+#
+# Bake parameters:
+#   falloff    = quadratic
+#   resolution = 2048 x 1024  (W=angle theta in [0,2pi), H=radius, row0=centre)
+#   coupling   = 0.0000  (no height map)
+
+d_center_nm = 20.0000
+d_rim_nm = 33.0000
+d_min_nm = 20.0000
+d_max_nm = 33.0000
+scale = 13.000000
+bias = 20.000000

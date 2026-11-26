@@ -1,0 +1,57 @@
+schema rise.fire.production.metal_host_manifest.v1
+artifact_fidelity execution_manifest
+authored_utc 2026-08-31
+authored_parent_commit ae8b1bd0
+required_host Apple_M4_with_working_Metal_device
+current_host_has_required_device 0
+run_stages_executed_on_current_host 0
+golden_checkpoint_mutation_allowed 0
+render_concurrency 1
+track_a_precedes_track_b_metal 1
+
+global_preflight
+  build the exact reviewed commit and record its full git commit, executable SHA-256,
+  Metal device name, OS build, compiler build, and canonical checkpoint SHA-256;
+  refuse any run whose executable identity or input digest is stale
+global_preflight_end
+
+stage 1 track_a_tier8_full_window_and_movie
+  purpose deliver the preview hedge before Track B consumes the Metal host
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 8 0.0625 rendered/fire_production_calibration/r189_tier8_temporal
+  acceptance reach the complete 5*t_ft discard plus statistics window; retain monitored diagnostics and every 0.0625 s VDB frame
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r189_tier8_temporal rendered/fire_production_calibration/r189_tier8_temporal/preview
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum rendered/fire_production_calibration/r189_tier8_temporal/production_final.checkpoint rendered/fire_production_calibration/r189_tier8_temporal rendered/fire_production_calibration/r189_tier8_temporal/preview rendered/fire_production_calibration/r189_tier8_temporal/spectrum
+  label tier-8_preview_rows_not_claimed_r57_tier10_pin
+  spectrum publish full centerline and lit-area spectra, including the 2.7 Hz component and slow-domain-mode 6-to-8 trend
+  animation encode preview_primary temporal EXRs sequentially at 16 fps as HDR10 ProRes 4444 and retain the existing preview GIF
+  animation_verify require container colr atom nclc pri_9 trc_16 matrix_9 and verify first/middle/last frame digests differ
+  delivery send tier8_temporal_fire_preview.mov plus its preview_primary provenance sidecars to the owner immediately after verification
+stage_end
+
+stage 2 track_b_device_kernel_comparison
+  prerequisite CPU fp64 oracle bit-comparison harness green at the exact reviewed commit
+  command ./bin/tests/FireSequenceTest --fire-production-scalar-fct-metal-stages
+  acceptance compare donor, MC-MUSCL, shared-alpha acceptance, boundary-aware interpolation, compatible momentum, base/corrected target, and projection-consumer outputs kernel-by-kernel against the CPU fp64 mirror on matched input bytes
+  refusal any stale identity, non-bit-exact contractual field, tolerance-exceeding fp32 field, extra command commit, or host substitution
+stage_end
+
+stage 3 track_b_tier10_onset
+  command ./bin/tests/FireSequenceTest --fire-production-onset 10 rendered/fire_production_calibration/r189_tier10_onset
+  acceptance matched-state aligned advection is in the oracle approximately-63-per-second class at 2.10798 s; maximum velocity remains plume-scale through the old failure time and at least through 2.2 s
+  evidence retain 15, 30, and 60 m/s threshold budgets, periodic checkpoints, maximum-velocity trajectory, Vreman values, projection validation, and monitored-manifold trajectories
+  controls rerun tier 6 and tier 8 onset diagnostics sequentially and require material agreement with their healthy baselines
+stage_end
+
+stage 4 regression_rederivation
+  acceptance r170 104-step shadow and all sealed readmission slices re-derive within their existing contract tolerances; commuting identity and old-operator REDs remain green
+stage_end
+
+stage 5 tier10_queue
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 10 0.0625 rendered/fire_production_calibration/r189_tier10_temporal
+  command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r189_tier10_temporal rendered/fire_production_calibration/r189_tier10_temporal/preview
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum rendered/fire_production_calibration/r189_tier10_temporal/production_final.checkpoint rendered/fire_production_calibration/r189_tier10_temporal rendered/fire_production_calibration/r189_tier10_temporal/preview rendered/fire_production_calibration/r189_tier10_temporal/spectrum
+  verdict publish the full spectrum first; if the slow domain mode dominates and the 2.7 Hz component is absent, stop for the pre-registered r54 domain audit
+  claims only after a passing spectrum: puffing, McCaffrey centerline, HRR-versus-consumption, integrated chi_r, tier-10 temporal HDR animation, capstone report, fresh zero-P1 review, and owner design-revision digest
+stage_end
+
+ordering_note Stage 1 is binding and runs before every Track B Metal stage. All simulation and rendering processes run sequentially. CPU-only authority construction, mirrors, REDs, and oracle comparison continue before this manifest is dispatched.

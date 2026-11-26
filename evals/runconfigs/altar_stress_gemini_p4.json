@@ -1,0 +1,11 @@
+{
+  "//": "Altar stress-test rerun #4 (2026-08-31, post condition-N DESIGN_DIM_HERO_LIGHT db37dcdb..30c4137b). Identical instrument/provider/N to p1-p3. Question: when a run's light_scene solo audit measures an authored-bright light at <2% share (the live GUI run's 1%-luma candle pattern), does condition N ride the subsequent render/validate notes, and does the agent then TUNE the light (raise power / enlarge / unblock, re-run light_scene) instead of reading past the audit? Prior scoreboard: lantern architecture 2/2 real since p3, but the GUI run shipped a ~1%-contribution candle plus a 0% duplicate with an 'illuminated' overclaim. Post-hoc: N firings per trajectory, agent response (light edits after N; re-measure), final light-audit shares, closing-summary honesty.",
+  "scenarios": [
+    "evals/scenarios/altar_stress.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.7-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 2,
+  "runDir": "evals/runs/altar_stress_p4"
+}

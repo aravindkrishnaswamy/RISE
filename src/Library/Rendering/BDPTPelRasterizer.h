@@ -22,6 +22,8 @@
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedPelRasterizer.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
 #include <stdint.h>
 
 namespace RISE
@@ -37,12 +39,30 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Rasterizing: "; }
 
+			// Diamond-inheritance disambiguation for PreRenderSetup.
+			// BDPTRasterizerBase and PixelBasedPelRasterizer both override
+			// it; BDPT wants ONLY its own per-render setup (light sampler,
+			// splat film -- DL-458), not PixelBasedPelRasterizer's PT
+			// guiding/optimal-MIS setup.  Without an explicit override here
+			// the final overrider is ambiguous (MSVC C2250).
+			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+			{
+				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
+			}
+
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
 			/// the default-constructed PixelBasedPelRasterizer copy.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 
 			/// Override to use this BDPT rasterizer's adaptive sampling config.
 			unsigned int GetProgressiveTotalSPP() const;
+
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -67,21 +87,27 @@ namespace RISE
 				const ICamera& camera,
 				uint32_t sampleIndex,
 				uint32_t pixelSeed,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			AdaptiveSamplingConfig		adaptiveConfig;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the inherited
+			// PixelBasedPelRasterizer::true).
+			bool ConsumesScenePhotonMaps() const { return false; }
+
 			BDPTPelRasterizer(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
 				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
-				bool useZSobol_
+				bool useZSobol_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

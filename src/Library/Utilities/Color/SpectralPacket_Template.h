@@ -17,11 +17,18 @@
 
 #include <memory.h>
 #include "../../Interfaces/IFunction1D.h"
-#include "ColorUtils.h"
 
 namespace RISE
 {
 	struct XYZPel;
+
+	// DL-80: forward-declare rather than #include "ColorUtils.h" -- see
+	// SpectralPacket.h's own DL-80 comment for the full cycle
+	// derivation.  Same rule, same one symbol.
+	namespace ColorUtils
+	{
+		bool XYZFromNM( XYZPel& p, const Scalar nm );
+	}
 
 	////////////////////////////////////
 	//
@@ -33,13 +40,16 @@ namespace RISE
 	template< class T, int lambda_begin, int lambda_end, int I >
 	class SpectralPacket_Template
 	{
+		static_assert( I > 0, "A fixed spectral packet needs at least one bin" );
+		static constexpr int kDelta = I > 1 ? (lambda_end-lambda_begin) / (I-1) : 0;
+
 	protected:
 		T			amplitudes[I];
 		int			delta;
 
 	public:
 		SpectralPacket_Template( ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			for( int i=0; i<I; i++ ) {
 				amplitudes[i] = 0;
@@ -47,7 +57,7 @@ namespace RISE
 		}
 
 		SpectralPacket_Template( const T d ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			for( int i=0; i<I; i++ ) {
 				amplitudes[i] = d;
@@ -55,7 +65,7 @@ namespace RISE
 		}
 
 		SpectralPacket_Template( const IFunction1D& pFunc ) :
-		delta( (lambda_end-lambda_begin) / (I-1) )
+		delta( kDelta )
 		{
 			// Pull the values from the function
 			for( int i=0; i<I; i++ ) {
@@ -93,10 +103,12 @@ namespace RISE
 		//
 
 		// Assignment
-		inline		SpectralPacket_Template<T, lambda_begin, lambda_end, I>	operator=(
+		inline		SpectralPacket_Template<T, lambda_begin, lambda_end, I>&	operator=(
 			const SpectralPacket_Template<T, lambda_begin, lambda_end, I>& s )
 		{
-			memcpy( amplitudes, s.amplitudes, sizeof( T ) * I );
+			if( this != &s ) {
+				memcpy( amplitudes, s.amplitudes, sizeof( T ) * I );
+			}
 
 			// Return the left hand side
 			return *this;
@@ -241,9 +253,12 @@ namespace RISE
 				return 0;
 			}
 
-			// Find the rigt frequency
-			int idx = (nm-lambda_begin)/delta;
-			return amplitudes[idx];
+			// The upper endpoint belongs to the last bin.
+			if( nm == lambda_end || delta == 0 ) {
+				return amplitudes[I-1];
+			}
+			const int idx = (nm-lambda_begin)/delta;
+			return amplitudes[idx < I ? idx : I-1];
 		}
 	};
 

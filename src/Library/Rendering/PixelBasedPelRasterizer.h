@@ -22,6 +22,7 @@
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "PixelBasedRasterizerHelper.h"
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -45,7 +46,20 @@ namespace RISE
 				RISEPel& c
 				) const
 			{
-				return pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+				// Seed from the camera-ray origin: if the camera sits
+				// inside a dielectric (submerged camera, camera inside a
+				// medium volume), the first boundary crossing must see
+				// bFromInside==true or the DielectricSPF wrong-side test
+				// drops the transmission lobe entirely.  Free-space
+				// cameras: the probe finds no enclosing objects, no-op.
+				// Only caller is PredictTimeToRasterizeScene, which
+				// AttachScene()s the same scene just before sampling.
+				IORStack iorStack( 1.0 );
+				const IScene* pAttachedScene = pCaster->GetAttachedScene();
+				if( pAttachedScene ) {
+					IORStackSeeding::SeedFromPoint( iorStack, ray.origin, *pAttachedScene );
+				}
+				return pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack );
 			}
 
 			void IntegratePixel(
@@ -62,6 +76,13 @@ namespace RISE
 
 			unsigned int GetProgressiveTotalSPP() const;
 
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
+
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;
 			mutable Scalar				guidingAlphaScale;
@@ -77,11 +98,18 @@ namespace RISE
 				const PathGuidingConfig& guidingCfg,
 				const AdaptiveSamplingConfig& adaptiveCfg,
 				const StabilityConfig& stabilityCfg,
-				bool useZSobol_
+				bool useZSobol_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 			void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+
+			// Deferred photon-map gate (IRasterizer): this is the shaderop-graph
+			// runner, whose shader may contain photon-map shaderops that consume the
+			// scene's photon maps, so the deferred shoot must fire.  Integrator
+			// subclasses (BDPTPel/VCMPel/PathTracingPel) override back to false.
+			bool ConsumesScenePhotonMaps() const { return true; }
 			void PostRenderCleanup() const;
 		};
 	}

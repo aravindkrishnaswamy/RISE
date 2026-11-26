@@ -1,4 +1,8 @@
 ##################################################################################################
+#  FROZEN (legacy, unsupported) since 2026-10-09 -- owner ruling #15 in
+#  docs/LEGACY_DEPRECATION_ASSESSMENT.md section 13.  Nobody builds RISE for this platform;
+#  the file is kept (removal on hold) but receives no maintenance and is not expected to work.
+##################################################################################################
 #
 #  Config for Realistic Image Synthesis Engine (R.I.S.E) for SGI MIPSPro CC compiler on Irix
 #  Author: Aravind Krishnaswamy
@@ -18,6 +22,11 @@ CPPFLAGS = -I$(PATHLIBRARY)
 
 # This set of flags works on Irix 6.5 SGI MIPSPro CC 7.3.1.3m
 CXXFLAGS = -O3 -LANG:std -inline -OPT:Olimit=0 -mips4 -64 -r14k
+
+# MIPSPro CC does not understand the GCC -MMD / -MP flags (it has its own
+# -M flag that writes deps to stdout). Disable automatic header dependency
+# tracking on this platform; run `make clean` after header edits.
+CXXFLAGS_DEPS =
 
 # Turn this on, if you don't have a proper libpng library installed
 DEF_PNG = -DNO_PNG_SUPPORT

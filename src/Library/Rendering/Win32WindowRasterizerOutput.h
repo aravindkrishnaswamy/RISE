@@ -20,8 +20,7 @@
 #include "../Interfaces/IRasterizerOutput.h"
 #include "../Utilities/Reference.h"
 
-#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
-#define _WIN32_WINNT 0x0400		// require NT4 or greater for TryEnterCriticalSection
+// WIN32_LEAN_AND_MEAN and _WIN32_WINNT come from pch.h (Win7+ baseline).
 #include <windows.h>
 #include <windowsx.h>
 
@@ -29,7 +28,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class Win32WindowRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
+		class Win32WindowRasterizerOutput : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		protected:
 			virtual ~Win32WindowRasterizerOutput( );
@@ -48,6 +48,8 @@ namespace RISE
 			HANDLE				hThread;			// Handle to the message pump thread
 
 		public:
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::DisplayOnly; }
 
 			HBITMAP				hBitmap;
 			HANDLE				hStop;				// Stop event for the message pump thread
@@ -62,8 +64,8 @@ namespace RISE
 
 			// IRasterizerOutput requirements
 
-			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion );
-			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
+			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;
 
 
 			//

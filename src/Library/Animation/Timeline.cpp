@@ -16,9 +16,79 @@
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
+#include <typeinfo>
+#include "KeyframableHelper.h"
+#include "../Objects/Object.h"
+#include "../Cameras/PinholeCamera.h"
+#include "../Cameras/ThinLensCamera.h"
+#include "../Cameras/FisheyeCamera.h"
+#include "../Cameras/OrthographicCamera.h"
+#include "../Lights/PointLight.h"
+#include "../Lights/SpotLight.h"
+#include "../Lights/DirectionalLight.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+    bool CopiesFinalParameter(const IKeyframable& target)
+    {
+        // Exact native types only: a subclass may override the setter and retain
+        // its parameter. Audited setters synchronously copy every numeric value.
+        const std::type_info& type = typeid(target);
+        return type == typeid(Object) || type == typeid(PinholeCamera) ||
+               type == typeid(ThinLensCamera) || type == typeid(FisheyeCamera) ||
+               type == typeid(OrthographicCamera) || type == typeid(PointLight) ||
+               type == typeid(SpotLight) || type == typeid(DirectionalLight);
+    }
+
+    // Borrowed scratch: final results reach only exact audited copying targets.
+    // Parameter's arithmetic writes via setValue; it needs no refcount/mutex.
+    template<class T>
+    class ArithmeticScratch final : public IKeyframeParameter {
+        T value;
+    public:
+        explicit ArithmeticScratch(const T& v,unsigned id=0) : value(v) { paramid=id; }
+        void* getValue() const override { return const_cast<T*>(&value); }
+        void setValue(void* v) override { value=*static_cast<T*>(v); }
+        void Add(IKeyframeParameter&,const IKeyframeParameter&,const IKeyframeParameter&) override { std::abort(); }
+        void Subtract(IKeyframeParameter&,const IKeyframeParameter&,const IKeyframeParameter&) override { std::abort(); }
+        void ScalarMult(IKeyframeParameter&,const IKeyframeParameter&,const Scalar&) override { std::abort(); }
+        IKeyframeParameter* Clone() const override { std::abort(); }
+        void addref() const override { std::abort(); }
+        bool release() const override { std::abort(); }
+        unsigned int refcount() const override { return 1; }
+    };
+
+    template<class T>
+    bool LinearScratch(const IKeyframeParameter& a, const IKeyframeParameter& b,
+                       Scalar d, IKeyframable& target)
+    {
+        if (typeid(a) != typeid(Parameter<T>) || typeid(b) != typeid(Parameter<T>)) return false;
+        if (CopiesFinalParameter(target)) {
+            // Subclasses/custom targets retain the owned protocol below.
+            ArithmeticScratch<T> left(*static_cast<T*>(a.getValue()),a.getID());
+            ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
+            auto& op=const_cast<IKeyframeParameter&>(a);
+            op.ScalarMult(left,a,1.0-d);
+            op.ScalarMult(right,b,d);
+            op.Add(left,left,right);
+            target.SetIntermediateValue(left);return true;
+        }
+        // Keep an owned final parameter: targets may retain it with addref.
+        // This clone and its mutex remain for unknown or retaining consumers.
+        KeyframeParameterDispatch result(*a.Clone(), true);
+        auto& left=result.GetParam();
+        ArithmeticScratch<T> right(*static_cast<T*>(b.getValue()));
+        auto& op = const_cast<IKeyframeParameter&>(a);
+        op.ScalarMult(left, a, 1.0-d);
+        op.ScalarMult(right, b, d);
+        op.Add(left, left, right);
+        target.SetIntermediateValue(left);
+        return true;
+    }
+}
 
 Timeline::Timeline( 
 	IKeyframable* pElem,			///< [in] Element we are keyframing
@@ -109,30 +179,35 @@ void Timeline::GetTimeRange( Scalar& begin, Scalar& end )
 
 void Timeline::EvaluateAtTime( const Scalar time )
 {
+	EvaluateInto( time, *pElement );
+}
+
+void Timeline::EvaluateInto( const Scalar time, IKeyframable& target ) const
+{
 	// Use an interpolator and evaluate at the current time
 	// There is only one keyframe, which means we are asymptotic...
 	// We only render the one frame we are to render
 	if( start == end ) {
 		if( time == start ) {
-			pElement->SetIntermediateValue( (*keyframes.begin())->param );
+			target.SetIntermediateValue( (*keyframes.begin())->param );
 			return;
 		}
 	}
 
 	if( time <= start ) {
-		pElement->SetIntermediateValue( (*keyframes.begin())->param );
+		target.SetIntermediateValue( (*keyframes.begin())->param );
 		return;
 	}
 
 	if( time >= end ) {
-		pElement->SetIntermediateValue( (*(keyframes.end()-1))->param );
+		target.SetIntermediateValue( (*(keyframes.end()-1))->param );
 		return;
 	}
 
 	// Otherwise we need to find the two keyframes we are to interpolate
 	// and call the interpolator to interpolate them
-	KeyframesList::iterator	i, e;
-	RuntimeKeyframesList::iterator m=runtimekeyframes.begin();
+	KeyframesList::const_iterator	i, e;
+	RuntimeKeyframesList::const_iterator m=runtimekeyframes.begin();
 
 	for( i=keyframes.begin(), e=keyframes.end()-1; i!=e; i++, m++ )
 	{
@@ -148,15 +223,25 @@ void Timeline::EvaluateAtTime( const Scalar time )
 
 			const Scalar d = (time - before->time) / (after->time - before->time);
 
+			// Preserve the built-in linear expression a*(1-d) + b*d.
+            // Unknown parameter/interpolator subclasses retain their virtual path.
+            if (!before->pInterp || typeid(*before->pInterp) == typeid(LinearInterpolator<KeyframeParameterDispatch>)) {
+                const auto& a = before->param;
+                const auto& b = after->param;
+                if (LinearScratch<Point3>(a,b,d,target) || LinearScratch<Vector3>(a,b,d,target) ||
+                    LinearScratch<Scalar>(a,b,d,target) || LinearScratch<RISEPel>(a,b,d,target) ||
+                    LinearScratch<Vector2>(a,b,d,target)) return;
+            }
+
 			RuntimeKeyframesList::const_iterator s = m;
 			RuntimeKeyframesList::const_iterator t = (m+1);
 
 			if( before->pInterp ) {
 				KeyframeParameterDispatch result = before->pInterp->Interpolate2Values( runtimekeyframes, s, t, d );
-				pElement->SetIntermediateValue( result.GetParam() );
+				target.SetIntermediateValue( result.GetParam() );
 			} else {
 				KeyframeParameterDispatch result = pInterp->Interpolate2Values( runtimekeyframes, s, t, d );
-				pElement->SetIntermediateValue( result.GetParam() );
+				target.SetIntermediateValue( result.GetParam() );
 			}
 			return;
 		}

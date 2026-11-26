@@ -18,30 +18,69 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-PhongEmitter::PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IPainter& N ) :
-  radEx( radEx_ ),
+PhongEmitter::PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IScalarPainter& N ) :
+  pRadEx( &radEx_ ),
   scale( scale_ ),
-  phongN( N )
+  pPhongN( &N )
 {
-	radEx.addref();
-	phongN.addref();
+	pRadEx->addref();
+	pPhongN->addref();
+	RefreshAverages();
+}
+
+PhongEmitter::~PhongEmitter( )
+{
+	safe_release( pRadEx );
+	safe_release( pPhongN );
+}
+
+void PhongEmitter::RefreshAverages()
+{
+	averageRadEx = RISEPel( 0, 0, 0 );
+	averageSpectrum = VisibleSpectralPacket();
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
-	for( int i=0; i<100; i++ ) {
-		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
-		averageRadEx = averageRadEx + radEx.GetColor(rig);
-		averageSpectrum = averageSpectrum + radEx.GetSpectrum(rig);
+	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
+	// consumes no render-RNG at parse (this runs at emitter construction).  averageRadEx/averageSpectrum feed
+	// light-importance weights (LightSampler) + photon power/budget (PhotonTracer / SpectralPhotonTracer /
+	// SMSPhotonMap), NOT the emitted radiance (emittedRadiance reads the painter at the hit point) -- so this
+	// is not a DIRECT emitted-radiance change.  For a UNIFORM emissive painter the grid mean is bit-identical
+	// to the old RNG mean; for a NON-uniform (textured) painter it is a different deterministic estimate of
+	// the same integral, so a FINITE photon-map / SMS render of a textured emitter can differ slightly
+	// (converging to the same result), and a regular grid can alias a painter whose period resonates with
+	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
+	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
+		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
+		averageRadEx = averageRadEx + pRadEx->GetRadianceColor(rig);
+		// GetRadianceNM per bin, not GetSpectrum -- see the twin comment in
+		// LambertianEmitter::RefreshAverages (Stage C slice 2).
+		VisibleSpectralPacket radSp;
+		for( unsigned int i = 0; i < 40; i++ ) {
+			radSp.SetIndex( i, pRadEx->GetRadianceNM( rig, Scalar(380 + i * 10) ) );
+		}
+		averageSpectrum = averageSpectrum + radSp;
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
 	averageSpectrum = averageSpectrum * (scale/Scalar(100.0));
 }
 
-PhongEmitter::~PhongEmitter( )
+void PhongEmitter::SetRadEx( const IPainter& v )
 {
-	radEx.release();
-	phongN.release();
+	v.addref();
+	safe_release( pRadEx );
+	pRadEx = &v;
+	RefreshAverages();
+}
+
+void PhongEmitter::SetN( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pPhongN );
+	pPhongN = &v;
+	// No average refresh needed — phongN affects the per-direction
+	// emission shape but not the per-area average colour.
 }
 
 RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const
@@ -53,9 +92,10 @@ RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const RISEPel	pN = phongN.GetColor( ri );
+	const ScalarTriple pN_t = pPhongN->GetValuesAt( ri );
+	const RISEPel	pN( pN_t.v[0], pN_t.v[1], pN_t.v[2] );
 	const RISEPel	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (radEx.GetColor(ri) * k * scale);
+	return (pRadEx->GetRadianceColor(ri) * k * scale);
 }
 
 Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm) const
@@ -67,9 +107,11 @@ Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, cons
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const Scalar	pN = phongN.GetColorNM( ri, nm );
+	const Scalar	pN = pPhongN->GetValueAtNM( ri, nm );
 	const Scalar	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (radEx.GetColorNM( ri, nm ) * k * scale);
+	// SOURCE term -> GetRadianceNM (Stage C slice 2); see the twin comment
+	// in LambertianEmitter::emittedRadianceNM.
+	return (pRadEx->GetRadianceNM( ri, nm ) * k * scale);
 }
 
 RISEPel PhongEmitter::averageRadiantExitance() const
@@ -82,12 +124,22 @@ Scalar PhongEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 	return averageSpectrum.ValueAtNM( int(nm) );
 }
 
+RISEPel PhongEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
+{
+	return pRadEx->GetRadianceColor( ri ) * scale;
+}
+
+Scalar PhongEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	return pRadEx->GetRadianceNM( ri, nm ) * scale;
+}
+
 Vector3 PhongEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const
 {
-	const RISEPel N = phongN.GetColor(ri);
-	if( N[0] == N[1] && N[1] == N[2] ) {
-		return GeometricUtilities::CreatePhongVector( ri.onb, random, N[0] );
+	const ScalarTriple N_t = pPhongN->GetValuesAt(ri);
+	if( N_t.IsUniform() ) {
+		return GeometricUtilities::CreatePhongVector( ri.onb, random, N_t.v[0] );
 	} else {
-		return GeometricUtilities::CreatePhongVector( ri.onb, random, N[int(floor(random.x*3))] );
+		return GeometricUtilities::CreatePhongVector( ri.onb, random, N_t.v[int(floor(random.x*3))] );
 	}
 }

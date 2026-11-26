@@ -1,0 +1,211 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  VCMLightVertexStore.h - Persistent, KD-tree-indexed store of
+//    light-subpath vertices used by VCM's photon merging pass.
+//
+//    The store is the product of one full light pass inside a VCM
+//    iteration: every non-delta surface vertex from every light
+//    subpath is appended, then the whole array is balanced into a
+//    left-balanced KD-tree, then the eye pass fires fixed-radius
+//    queries against it.
+//
+//    Thread-safety model:
+//      - Append-phase writes go to per-thread local buffers owned
+//        by the rasterizer (not the store), then the rasterizer
+//        calls Concat() in deterministic thread-index order after
+//        the light pass barriers.  The store itself exposes no
+//        mutex; Concat is the single writer.
+//      - After BuildKDTree() the store is read-only for the rest
+//        of the iteration and Query() is safe from any thread.
+//
+//    The cloned KD-tree template VCMLightVertexKDTree<T> is a
+//    fixed-radius-only copy of PhotonMapping/PhotonMap.h's
+//    PhotonMapCore<T>, stripped of the IPhotonMap virtual
+//    interface and protected constructor that require a tracer
+//    pointer.  The balance and query algorithms are unchanged.
+//
+//    Step 0 ships an empty store with no-op methods so the build
+//    wiring compiles; Step 3 populates the KD-tree template and
+//    adds a unit test.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 14, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef VCM_LIGHT_VERTEX_STORE_
+#define VCM_LIGHT_VERTEX_STORE_
+
+#include "VCMLightVertex.h"
+#include <vector>
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		class LightVertexStore
+		{
+		public:
+			LightVertexStore();
+			~LightVertexStore();
+
+			/// Drop all vertices and reset the tree to "not built".
+			/// Called once at the start of each VCM iteration.
+			void Clear();
+
+			/// Pre-reserve capacity so Append / Concat avoid
+			/// reallocation during the light pass.
+			void Reserve( const std::size_t capacity );
+
+			/// Append a single vertex.  NOT thread-safe; the
+			/// rasterizer writes to per-thread buffers and then
+			/// calls Concat from a single thread after the barrier.
+			void Append( const LightVertex& v );
+
+			/// Move-concatenate a whole per-thread buffer.  Caller
+			/// is responsible for ordering across threads.
+			void Concat( std::vector<LightVertex>&& localBuffer );
+
+			/// DL-470: as above, together with the buffer's light-subpath
+			/// step records (ConvertLightSubpath's `outSteps`) in blocks;
+			/// each vertex's (stepChunk, stepBase) indexes `localBlocks`.
+			/// The blocks are ADOPTED as chunks of the step pool (never
+			/// copied into one shared array -- that doubled the light
+			/// pass's peak memory) and stepChunk is rebased onto them.
+			void Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks );
+
+			/// DL-470: record 0 of `v`'s light subpath in the step pool, or
+			/// 0 when its records were not kept.  Read-only once the store
+			/// is built, like the vertices.
+			const VCMStep* StepsOf( const LightVertex& v ) const
+			{
+				if( v.stepBase == kLightVertexNoSteps || v.stepChunk >= mStepChunks.size() ) {
+					return 0;
+				}
+				return &mStepChunks[v.stepChunk][0] + v.stepBase;
+			}
+
+			/// DL-470: total step records kept (all chunks).
+			std::size_t StepCount() const
+			{
+				std::size_t n = 0;
+				for( std::size_t c = 0; c < mStepChunks.size(); c++ ) n += mStepChunks[c].size();
+				return n;
+			}
+
+			/// Build a left-balanced KD-tree over the current
+			/// contents.  After this call the store is read-only;
+			/// Query() is safe from any thread.  Step 3 fills this
+			/// in; Step 0 is a no-op so the stubs compile.
+			void BuildKDTree();
+
+			/// Parallel variant — splits the recursion across the
+			/// global thread pool.  Produces a byte-identical tree
+			/// to BuildKDTree (unit-tested).  Falls back to serial
+			/// below numWorkers*8 vertices so task overhead never
+			/// dominates.
+			void BuildKDTreeParallel();
+
+			/// Fixed-radius query.  Appends all vertices within
+			/// radiusSq of center to 'out'.  Step 3 fills this in;
+			/// Step 0 returns nothing.
+			void Query(
+				const Point3& center,
+				const Scalar radiusSq,
+				std::vector<LightVertex>& out
+				) const;
+
+			/// Return the number of vertices currently stored.
+			std::size_t Size() const { return mVertices.size(); }
+
+			/// Read-only access to a stored vertex by index.
+			const LightVertex& Get( std::size_t idx ) const { return mVertices[idx]; }
+
+			/// Mutable access to a stored vertex by index.
+			/// Only valid BEFORE BuildKDTree (the tree reorders
+			/// the array; accessing by pre-balance index after
+			/// the tree is built will give the wrong vertex).
+			LightVertex& GetMutable( std::size_t idx ) { return mVertices[idx]; }
+
+			/// Has BuildKDTree() been called since the last
+			/// Clear/Append sequence?
+			bool IsBuilt() const { return mBuilt; }
+
+			/// Diagonal length of the axis-aligned bounding box of
+			/// currently stored vertices, used as a robust proxy for
+			/// scene extent when auto-resolving the VCM merge radius.
+			/// Returns 0 when the store is empty.
+			Scalar ComputeBBoxDiagonal() const;
+
+			/// Surface area of the axis-aligned bounding box of
+			/// currently stored vertices.  Used to estimate photon
+			/// density (stored-count / area) for the adaptive radius
+			/// floor.  Returns 0 when the store is empty.  Slight
+			/// over-estimate for very flat photon distributions (e.g.
+			/// all photons on one plane) because the two degenerate
+			/// side faces still contribute; this is a conservative
+			/// (radius-shrinks-further) bias that matches our intent
+			/// (use area, underestimate density, keep larger radius).
+			/// DL-380: computed over the ORDINARY vertices only -- those
+			/// NOT flagged `kLVF_JumpCover` (stored past an
+			/// eye-coverable light-side subsurface jump, merged only
+			/// where the eye walk's depth caps leave the eye family
+			/// without a strategy), i.e. exactly the store the
+			/// pre-DL-380 partition kept, so the adaptive radius floor
+			/// is unchanged.  Pair it with CountOrdinaryVertices().
+			Scalar ComputeBBoxSurfaceArea() const;
+
+			/// DL-380: number of stored vertices NOT flagged
+			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea), nor
+			/// `kLVF_IsMedium` (DL-469's volume-merge vertices).
+			std::size_t CountOrdinaryVertices() const;
+
+			/// Clamp outlier throughputs to suppress photon-mapping
+			/// fireflies caused by rare bright photons (notably SSS
+			/// vertices where Rd/pdfSurface fluctuates).  Computes
+			/// the `percentile`-th percentile of per-vertex Rec.709
+			/// luminance, sets `threshold = multiplier * percentile`,
+			/// and rescales any vertex with luminance > threshold by
+			/// `threshold / luminance` (preserves color, caps power).
+			///
+			/// Biased: bias decreases with smaller merge radius and
+			/// more iterations, matching production photon-mapping
+			/// practice (PBRT, Mitsuba, SmallVCM stability mode).
+			/// No-op when the store is empty, when `multiplier <= 0`,
+			/// or when the percentile value is sub-numerical.
+			/// DL-380: the percentile is taken over the ORDINARY
+			/// vertices only (see ComputeBBoxSurfaceArea), so the
+			/// threshold is the pre-DL-380 one; every vertex, flagged
+			/// or not, is clamped against it.
+			///
+			/// MUST be called after Concat and before BuildKDTree —
+			/// modifying throughputs after the tree balance does not
+			/// invalidate the spatial index, but doing it before is
+			/// simpler and avoids re-linearizing the array.
+			///
+			/// DL-469: a volume-merge vertex (kLVF_IsMedium) is stored
+			/// with probability q and carries throughput / q; it is
+			/// compared and capped on its PHYSICAL (un-thinned)
+			/// throughput, q * stored, so the clamp means the same thing
+			/// at every q (comparing the stored value would cap a medium
+			/// vertex at threshold * q -- a bias growing as q falls).
+			/// `mediumStoreProbability` is that q.
+			void ClampOutlierThroughputs(
+				const Scalar percentile,
+				const Scalar multiplier,
+				const Scalar mediumStoreProbability = 1
+				);
+
+		private:
+			std::vector<LightVertex>	mVertices;
+			std::vector< std::vector<VCMStep> >	mStepChunks;	///< DL-470 step pool, one chunk per Concat
+			bool						mBuilt;
+		};
+	}
+}
+
+#endif

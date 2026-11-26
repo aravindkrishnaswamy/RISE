@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430">
+  <rect width="800" height="430" fill="white"/>
+  <text x="400" y="24" text-anchor="middle" font-family="sans-serif" font-size="17">r178 checkpoint replay: restoration velocity versus represented dt</text>
+  <line x1="80" y1="340" x2="730" y2="340" stroke="#222"/>
+  <line x1="80" y1="60" x2="80" y2="340" stroke="#222"/>
+  <text x="405" y="394" text-anchor="middle" font-family="sans-serif" font-size="14">represented dt (microseconds)</text>
+  <text x="18" y="200" transform="rotate(-90 18 200)" text-anchor="middle" font-family="sans-serif" font-size="14">velocity magnitude (m/s)</text>
+  <g font-family="sans-serif" font-size="11" fill="#222">
+    <text x="80" y="358" text-anchor="middle">47.5</text><text x="321" y="358" text-anchor="middle">52.5</text>
+    <text x="562" y="358" text-anchor="middle">57.5</text><text x="730" y="358" text-anchor="middle">61</text>
+    <text x="70" y="344" text-anchor="end">0</text><text x="70" y="264" text-anchor="end">10</text>
+    <text x="70" y="184" text-anchor="end">20</text><text x="70" y="104" text-anchor="end">30</text>
+  </g>
+  <g stroke="#ddd"><line x1="80" y1="260" x2="730" y2="260"/><line x1="80" y1="180" x2="730" y2="180"/><line x1="80" y1="100" x2="730" y2="100"/></g>
+  <polyline fill="none" stroke="#c43b31" stroke-width="2.5" points="98,291 183,267 194,282 434,262 612,244 641,252 653,245 722,241"/>
+  <polyline fill="none" stroke="#3569b7" stroke-width="2" stroke-dasharray="6 4" points="98,91 183,85 194,122 434,134 612,130 641,133 653,135 722,127"/>
+  <g fill="#c43b31"><circle cx="98" cy="291" r="4"/><circle cx="183" cy="267" r="4"/><circle cx="194" cy="282" r="4"/><circle cx="434" cy="262" r="4"/><circle cx="612" cy="244" r="4"/><circle cx="641" cy="252" r="4"/><circle cx="653" cy="245" r="4"/><circle cx="722" cy="241" r="4"/></g>
+  <line x1="500" y1="376" x2="530" y2="376" stroke="#c43b31" stroke-width="3"/><text x="537" y="380" font-family="sans-serif" font-size="12">measured |u_terminal-u_physical|</text>
+  <line x1="500" y1="411" x2="530" y2="411" stroke="#3569b7" stroke-width="2" stroke-dasharray="6 4"/><text x="537" y="415" font-family="sans-serif" font-size="12">2^-3 x max |u_physical| cap</text>
+</svg>

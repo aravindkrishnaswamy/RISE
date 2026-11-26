@@ -1,0 +1,83 @@
+# RISE Android NDK build notes
+
+This directory contains the CMake build config used by the Android Gradle
+project at `../../../android/`. Nothing under `src/Library/**` is modified by
+this build — all Android-specific adaptation is here or in the JNI bridge
+under `android/app/src/main/cpp/`.
+
+## Prerequisites
+
+- **Android Studio** Narwhal 3 Feature Drop (2025.1.3) or a newer release
+  compatible with the pinned AGP 8.13.
+- **NDK version**: exactly `27.0.12077973`, as pinned by
+  `android/app/build.gradle.kts`. CMake 3.22.1+.
+- **ABI**: `arm64-v8a` only. Emulator: use an ARM64 Android 14 (API 34) system
+  image. On an Intel host, enable hardware-accelerated ARM translation in AVD
+  Manager — Android Studio will warn if unavailable.
+
+## Standalone library smoke test
+
+Before running anything through Gradle, you can validate that `librise.a`
+compiles cleanly under the NDK toolchain by itself. This is step 1 of the
+implementation plan and has no dependencies on the Kotlin layer.
+
+From this directory:
+
+```sh
+export RISE_ANDROID_NDK="${ANDROID_SDK_ROOT}/ndk/27.0.12077973"
+cmake -B _out \
+  -DCMAKE_TOOLCHAIN_FILE="$RISE_ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a \
+  -DANDROID_PLATFORM=android-29 \
+  -DANDROID_STL=c++_shared \
+  -DRISE_JNI_SOURCES_DIR="$(cd ../../../android/app/src/main/cpp && pwd)"
+cmake --build _out --target rise -j8
+```
+
+(`-DRISE_JNI_SOURCES_DIR=...` wires the `rise_jni` shared-library target as
+`app/build.gradle.kts` does; omitting it still lets `--target rise` build
+`librise.a` on its own.)
+
+Expected output: a `librise.a` archive under `_out/` containing about 380
+object files (377 library TUs plus vendored zlib/libpng), with no compiler
+warnings or errors. A warning or error means the source list in
+`rise_sources.cmake`, the compile flags in `CMakeLists.txt`, or the affected
+source needs correction.
+
+## Source list synchronization
+
+`rise_sources.cmake` is a hand-transcribed copy of the `SRCLIB` assembly in
+`../../make/rise/Filelist`. If upstream ever adds or removes a `.cpp` file
+there, this copy must be updated manually. Do NOT switch to `file(GLOB)` —
+doing so would silently pick up Windows-only files (`ThreadsWin32.cpp`,
+`Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`),
+the C++/CLI `ManagedJob.cpp`, and the DRISE socket stack, none of which
+belong in the NDK build.
+
+## Excluded from the build
+
+- **OpenEXR** (`extlib/openexr`): pre-C++17 vintage — uses `register` and
+  dynamic exception specs. Incompatible with NDK clang + `-std=c++17`.
+  Compiled out via `-DNO_EXR_SUPPORT`, matching how `Config.OSX` handles the
+  "no EXR installed" case.
+- **libtiff** (`extlib/libtiff`): similar vintage issues. Compiled out via
+  `-DNO_TIFF_SUPPORT`.
+- **OIDN** (Intel Open Image Denoise): not vendored; defer to a follow-up.
+- **OpenPGL** (Intel Open Path Guiding): same.
+- **libpng x86 asm files** (`pnggccrd.c`, `pngvcrd.c`): excluded in
+  `extlib_png.cmake` — they don't compile for arm64 and the reference C
+  fallback is used instead.
+
+## Troubleshooting
+
+- **`png.h: No such file`** — the Gradle build didn't pick up this CMake file.
+  Check `app/build.gradle.kts` has
+  `externalNativeBuild.cmake.path = ../../build/cmake/rise-android/CMakeLists.txt`
+  relative to the android module root.
+- **`undefined reference to pthread_create`** — the NDK toolchain provides
+  libpthread implicitly for API 21+, so this shouldn't happen. If it does,
+  you're probably on a non-Android toolchain; re-check `CMAKE_TOOLCHAIN_FILE`.
+- **`cannot find -lOpenImageDenoise`** — the library source includes
+  `OIDNDenoiser.cpp` but the real OIDN dep is guarded by
+  `#ifdef RISE_ENABLE_OIDN`. As long as you do NOT define `RISE_ENABLE_OIDN`
+  (and we don't here), the TU compiles to an empty no-op.

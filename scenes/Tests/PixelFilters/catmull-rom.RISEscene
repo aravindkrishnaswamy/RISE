@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -16,18 +16,29 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	DefaultEmission
-	shaderop	DefaultReflection
-	shaderop	DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
 {
-	max_recursion		10
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
+{
 	samples				256
-	lum_samples			1
 	pixel_filter		catmull-rom
+	max_diffuse_bounce		0
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.999493
+	radiance_background		FALSE
 }
 
 /*
@@ -43,13 +54,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			600
+	height			300
+}
+
 pinhole_camera
 {
 	location			0 0.4 3.5
 	lookat				0 0 0
 	up				0 1 0
-	width				600
-	height				300
 	fov				14.0
 }
 
@@ -57,7 +72,146 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 png_painter
 {
@@ -152,9 +306,4 @@ standard_object
 # Lights
 ##################################################
 
-ambient_light
-{
-	name				ambientlight
-	color				1 1 1
-	power				3.14
-}
+

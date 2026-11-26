@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -32,14 +32,12 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-mlt_rasterizer
+# Legacy phase 2 slice B2: was mlt_rasterizer (frozen) -> vcm_pel_rasterizer; mutations_per_pixel -> samples, dropped bootstrap_samples 100000, chains 64, large_step_prob 0.25.
+vcm_pel_rasterizer
 {
 	max_eye_depth		12
 	max_light_depth		12
-	bootstrap_samples	100000
-	chains				64
-	mutations_per_pixel	200
-	large_step_prob		0.25
+	samples				200
 }
 
 /*
@@ -68,20 +66,173 @@ file_rasterizeroutput
 # Camera - looking down at the floor from the front
 ##################################################
 
+film
+{
+	width			400
+	height			400
+}
+
 pinhole_camera
 {
 	location			278 500 -600
 	lookat				278 200 300
 	up					0 1 0
-	width				400
-	height				400
 	fov					40.0
 }
 
 ##################################################
 # Painters & Materials
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -279,3 +430,5 @@ standard_object
 	material			glass
 	position			278 60 460
 }
+
+

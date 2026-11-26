@@ -1,0 +1,209 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  VCMLightVertex.h - Compact persistent light-subpath vertex used
+//    as the spatial query target of VCM's photon merging pass.
+//
+//    SmallVCM's "light vertex" is a PathVertex restricted to the
+//    minimum state needed to:
+//      (a) be located by a fixed-radius KD-tree query at an eye
+//          vertex, and
+//      (b) re-evaluate the BSDF and its forward/reverse solid-angle
+//          PDFs at merge time using the stored incoming direction.
+//
+//    The full BDPTVertex carries orthonormal bases, path-guiding
+//    training metadata, medium pointers, texture coordinates, and
+//    BSSRDF flags that merging never reads; at 1920x1080 x ~10
+//    bounces those dominate the memory budget.  LightVertex is a
+//    lean copy that reconstructs OrthonormalBasis3D on demand from
+//    the normal at merge time.
+//
+//    THE STORE CARRIES NO SIGNAL / DERIVATIVE / FOOTPRINT FIELDS, BY
+//    DESIGN.  Merging evaluates the BSDF and both its PDFs at the EYE
+//    `BDPTVertex` only -- `EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye,
+//    tag )` and the two `EvalPdfAtVertex<Tag>( v, ... )` beside it in
+//    VCMIntegrator's `EvaluateMergesImpl` merge loop -- and all this
+//    stored vertex contributes is `wi`, the throughput and the MIS
+//    running quantities.  So the painter-input state that
+//    docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3 added to
+//    `BDPTVertex` (derivatives / signals / txFootprint) is already live
+//    at the only vertex a merge reads a material at; widening this
+//    store would cost the per-photon memory budget above and buy
+//    nothing (design §2 row 4).  Note the CONNECTIONS path is
+//    different and needs no exception: `EvaluateConnections` walks the
+//    light `BDPTVertex` array, not this store, so both of its ends are
+//    already widened.
+//
+//    The first two fields (ptPosition and plane) must match the
+//    layout expected by the VCMLightVertexKDTree<T> template so the
+//    balance/query algorithms can be instantiated on this type.
+//
+//    Step 0 ships the declarations only; Step 3 populates the store
+//    and Step 4 begins writing to LightVertex during the light-pass
+//    post-walk.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 14, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef VCM_LIGHT_VERTEX_
+#define VCM_LIGHT_VERTEX_
+
+#include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"		// RGBIlluminantSpectrum cache for the NM merge path (LightVertex::throughputSpectrum)
+#include "VCMRecurrence.h"
+
+namespace RISE
+{
+	class IMaterial;
+	class IObject;
+
+	namespace Implementation
+	{
+		/// Flags packed into LightVertex::flags.
+		enum LightVertexFlags
+		{
+			kLVF_IsDelta		= 1 << 0,	///< Sampled interaction at this vertex is a delta (specular) BSDF lobe
+			kLVF_IsConnectible	= 1 << 1,	///< Material has at least one non-delta BxDF component
+			kLVF_IsBSSRDFEntry	= 1 << 2,	///< Skip: non-analytic PDF, recurrence terminates here
+			kLVF_JumpCover		= 1 << 4,	///< DL-380: a light-side subsurface jump before this vertex has an eye-family witness (jumpCover* below)
+			kLVF_JumpCoverEscape	= 1 << 5,	///< DL-380: that witness is the eye escaping to an environment root (one extra eye-walk iteration)
+			kLVF_IsMedium		= 1 << 6,	///< DL-469: a MEDIUM scatter vertex, stored for the volume merge only
+			kLVF_TypeSplitPrefix	= 1 << 7,	///< DL-471: a vertex at light-subpath position 2 .. pathLength-1 has a connectible material with no declared lobe type (BDPTUtilities::LightPrefixNeedsTypeSplit)
+										///< (VCMIntegrator.cpp, "volume merging"); surface merges skip it.
+			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
+		};
+
+		/// DL-470: LightVertex::stepBase when no step records were kept.
+		static const unsigned int kLightVertexNoSteps = 0xFFFFFFFFu;
+
+		/// Compact per-vertex record stored in the VCM light vertex
+		/// KD-tree.  The first two fields must match the layout the
+		/// cloned KD-tree template expects.
+		struct LightVertex
+		{
+			Point3				ptPosition;		///< REQUIRED FIRST: KD-tree builder reads [axis]
+			unsigned char		plane;			///< REQUIRED SECOND: KD-tree builder writes this
+			unsigned char		flags;			///< LightVertexFlags bitmask
+			unsigned short		pathLength;		///< Light-subpath bounces to reach this vertex
+			unsigned int		volumeBounces;	///< Light-subpath volume bounces to reach this vertex
+			unsigned short		jumpCoverSurface;	///< DL-380 (when kLVF_JumpCover): eye-walk surface hits a covering eye
+													///< walk needs BEYOND the merging eye subpath's own, i.e.
+													///< L(k-1) - L(w-1) (+1 for an area-root witness) -- see
+													///< BDPTUtilities::LightJumpPartition
+			unsigned short		jumpCoverVolume;	///< DL-380 (when kLVF_JumpCover): medium vertices of this light
+													///< prefix past the witness split, volumeBounces - VL(w-1)
+			unsigned short		lightSurface;		///< DL-467: light-walk surface count of the light subpath up to and
+													///< including this vertex (BDPTUtilities::CountsAsSurfaceHit), for
+													///< the merge's depth-cap window
+			unsigned short		stepChunk;			///< DL-470: which chunk of the store's step pool
+													///< (LightVertexStore::StepsOf) holds this vertex's
+													///< light-subpath records (fits the padding above)
+			unsigned int		stepBase;			///< DL-470: index, within that chunk, of record 0 of
+													///< this vertex's light subpath; its own record is
+													///< stepBase + pathLength.  kLightVertexNoSteps when
+													///< the subpath's records were not kept (the merge
+													///< then uses `mis` unwindowed)
+			unsigned char		capCounts[4];		///< DL-471: per-type bounce counts the light walk took at
+													///< verts[1 .. pathLength-1] (diffuse, glossy, transmission,
+													///< translucent; saturating), for the merge's per-path
+													///< per-type cap check (BDPTUtilities::MergeTypeCapStatus);
+													///< fits the padding before `normal`
+
+			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
+			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
+												///< Used for the merge-time geometry-term cosines (the
+												///< solid-angle <-> area Jacobian at the connection
+												///< segment between eye and light vertices).  On
+												///< analytical primitives equals `normal` by construction.
+			Vector3				wi;				///< Direction from previous vertex to this one
+			const IMaterial*	pMaterial;		///< For merge-time BSDF evaluation
+			const IObject*		pObject;		///< For merge-time BSDF evaluation
+
+			RISEPel				throughput;		///< Cumulative alpha_i from light origin
+
+			///< Cached illuminant uplift of `throughput`
+			///< (`VCMIntegrator::LightThroughputSpectrum`), Stage C
+			///< slice 2 perf follow-up.  `throughput` is fixed once a
+			///< vertex is deposited (ConvertLightSubpath) or rescaled
+			///< (LightVertexStore::ClampOutlierThroughputs) -- both
+			///< sites rebuild this field there -- so the NM merge
+			///< estimator's per-CANDIDATE read in EvaluateMerges is a
+			///< plain `.Eval(nm)` instead of a fresh JH LUT lookup per
+			///< candidate.  Bit-identical to evaluating
+			///< LightThroughputRadianceNM(throughput, nm) fresh; this
+			///< only moves WHEN the lookup happens, not what it
+			///< computes.  Whoever writes `throughput` outside those
+			///< two sites in the future MUST rebuild this alongside it.
+			RGBIlluminantSpectrum throughputSpectrum;
+
+			VCMMisCore			mis;			///< dVCM/dVC/dVM at this vertex after the geometric update (the subpath's
+												///< DL-467 steps live in the store's step pool, DL-470: stepBase)
+
+			//! Per-vertex color interpolated by the geometry at hit time
+			//! (linear Rec.709 RGB; see RISEPel).  Written once, at store
+			//! time (VCMIntegrator::ConvertLightSubpath), and has no
+			//! reader: `EvaluateMergesImpl` evaluates the BSDF and both
+			//! its PDFs at the EYE `BDPTVertex` only (see the file
+			//! header), so the light side's material response is already
+			//! folded into `throughput` by the time it reaches this
+			//! struct.  Not replayed into any reconstructed
+			//! RayIntersectionGeometric -- no merge path builds one from
+			//! a LightVertex.  Kept for the KD-tree layout and any
+			//! future consumer that needs the light-side color directly;
+			//! bHasVertexColor (kLVF_HasVertexColor on `flags`, chosen to
+			//! avoid a per-vertex padding hole) mirrors the intersection
+			//! field of the same name for the same reason.
+			RISEPel				vColor;
+
+			LightVertex() :
+				ptPosition( 0, 0, 0 ),
+				plane( 0 ),
+				flags( 0 ),
+				pathLength( 0 ),
+				volumeBounces( 0 ),
+				jumpCoverSurface( 0 ),
+				jumpCoverVolume( 0 ),
+				lightSurface( 0 ),
+				stepChunk( 0 ),
+				stepBase( kLightVertexNoSteps ),
+				capCounts{ 0, 0, 0, 0 },
+				normal( 0, 0, 1 ),
+				geomNormal( 0, 0, 1 ),
+				wi( 0, 0, 0 ),
+				pMaterial( 0 ),
+				pObject( 0 ),
+				throughput( 0, 0, 0 ),
+				// Match zero throughput: RGBIlluminantSpectrum's own
+				// default ctor is a UNIT-scale spectrum (see its
+				// comment), not a zero one -- FromRGB(0,0,0) is the
+				// zero-radiance spectrum consistent with `throughput`
+				// above (both real write sites overwrite this anyway).
+				throughputSpectrum( RGBIlluminantSpectrum::FromRGB( RISEPel( 0, 0, 0 ) ) ),
+				vColor( 0, 0, 0 )
+			{}
+		};
+
+		/// Spectral (NM) variant stores single-wavelength throughput
+		/// and the wavelength itself so Step 10 can re-evaluate
+		/// companion wavelengths against the hero-traced path.
+		struct LightVertexNM : public LightVertex
+		{
+			Scalar				throughputNM;
+			Scalar				nm;
+
+			LightVertexNM() :
+				LightVertex(),
+				throughputNM( 0 ),
+				nm( 0 )
+			{}
+		};
+	}
+}
+
+#endif

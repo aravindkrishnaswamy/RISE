@@ -284,7 +284,17 @@ namespace RISE
 			IntPtr intptr = Marshal::StringToHGlobalAnsi(&szPattern);
 			const char* pattern = (const char*)(intptr).ToPointer();
 
-			bool ret = pBackObj->AddFileRasterizerOutput( pattern, bMultiple, type, bpp, color_space );
+			// Managed wrapper does not yet expose the new HDR
+			// pipeline parameters (Landing 1).  Use sane defaults:
+			// no exposure, ACES tone curve (the new platform-wide
+			// default), PIZ compression with alpha.  Add managed-side
+			// surface in a follow-up if the .NET binding is consumed.
+			bool ret = pBackObj->AddFileRasterizerOutput(
+				pattern, bMultiple, type, bpp, color_space,
+				/*exposureEV*/      0.0,
+				/*display_transform*/ 2,    // 2 = ACES
+				/*exr_compression*/   2,    // 2 = PIZ
+				/*exr_with_alpha*/    true );
 
 			Marshal::FreeCoTaskMem( intptr );
 
@@ -303,8 +313,8 @@ namespace RISE
 			const char* sztitle = (const char*)(intptr).ToPointer();
 
 			IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
-						pBackObj->GetScene()->GetCamera()->GetWidth(),
-						pBackObj->GetScene()->GetCamera()->GetHeight(),
+						pBackObj->GetScene()->GetFilm()->GetWidth(),
+						pBackObj->GetScene()->GetFilm()->GetHeight(),
 						xpos, ypos, sztitle );
 
 			pBackObj->GetRasterizer()->AddRasterizerOutput( pWinRO );
@@ -412,16 +422,19 @@ namespace RISE
 			return pBackObj->ClearAll();
 		}
 
-		//! Loading an ascii scene description
+		//! P5 (Model-B, Slice 6c-2): default scene-load entry -- routes a native-v7 scene to the CST
+		//! path (retains the Document for edit/save/variant).  As of Slice 6c-3a an un-migrated scene
+		//! HARD-FAILS (returns false + a migrator pointer in the log); there is NO legacy fallback.
+		//! Slice 6c-3c deleted the legacy LoadAsciiScene passthrough -- this is the only managed load entry.
 		/// \return TRUE if successful, FALSE otherwise
-		bool LoadAsciiScene(
+		bool LoadAsciiSceneAuto(
 			System::String& filename							///< [in] Name of the file containing the scene
 			)
 		{
 			IntPtr intptr = Marshal::StringToHGlobalAnsi(&filename);
 			const char* szfilename = (const char*)(intptr).ToPointer();
-			
-			bool ret = pBackObj->LoadAsciiScene( szfilename );
+
+			bool ret = pBackObj->LoadAsciiSceneAuto( szfilename );
 
 			Marshal::FreeCoTaskMem( intptr );
 			return ret;

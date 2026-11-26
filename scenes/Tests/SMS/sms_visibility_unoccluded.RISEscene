@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   SMS Visibility Test: Glass sphere on floor with area light — NO occluder.
 #   Reference scene: caustic should appear normally beneath the sphere.
@@ -21,6 +21,7 @@ pathtracing_pel_rasterizer
 	sms_threshold                 1e-5
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
+	pixel_filter                  box
 }
 
 file_rasterizeroutput
@@ -31,13 +32,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			200
+	height			200
+}
+
 pinhole_camera
 {
 	location			0 4 8
 	lookat				0 0.5 0
 	up					0 1 0
-	width				200
-	height				200
 	fov					45.0
 }
 
@@ -84,9 +89,9 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass_mat
-	tau					pnt_glass_tau
+	tau			0.999
 	ior					1.5
-	scattering			pnt_scatter
+	scattering			100000
 }
 
 # Geometry

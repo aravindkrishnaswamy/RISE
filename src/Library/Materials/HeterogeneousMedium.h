@@ -51,14 +51,27 @@
 #define HETEROGENEOUS_MEDIUM_
 
 #include "../Interfaces/IMedium.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IFunction1D.h"
 #include "../Interfaces/IVolumeAccessor.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/MajorantGrid.h"
+#include <string>
+#include <functional>
+#include "../Utilities/AliasTable.h"
+#include "../Utilities/FireOptics.h"
+#include <vector>
 
 namespace RISE
 {
+	class Job;
+	namespace Implementation {
+		struct FireSequencePreparedFrame;
+		class FireSequencePreparationController;
+	}
 	/// \brief Heterogeneous participating medium driven by a volume dataset
 	///
 	/// Density is looked up from an IVolumeAccessor and scaled by
@@ -73,6 +86,16 @@ namespace RISE
 		RISEPel m_max_sigma_s;				///< Max scattering coefficient [1/m]
 		RISEPel m_max_sigma_t;				///< Max extinction = max_sigma_a + max_sigma_s
 		RISEPel m_emission;					///< Volumetric emission (constant, not density-modulated)
+		/// `m_emission` uplifted as the reference ILLUMINANT (Stage C
+		/// slice 2), built at construction -- `m_emission` has no
+		/// mutator on this class.  Volume emission is a SOURCE term, so
+		/// on the NM path it must carry the D65 shape every other source
+		/// in the engine now carries; it used to be projected with
+		/// `ColorMath::Luminance`, one flat scalar at every wavelength,
+		/// which resolves to (1.205, 0.948, 0.909) on this film and
+		/// rendered a coloured emissive volume GREY.  Cached because
+		/// `GetCoefficientsNM` runs per delta-tracking step.
+		RGBIlluminantSpectrum m_emissionSpectrum;
 		Scalar m_sigma_t_majorant;			///< Max channel of max_sigma_t (for delta tracking)
 
 		const IPhaseFunction* m_pPhase;		///< Phase function (ref-counted)
@@ -105,20 +128,120 @@ namespace RISE
 		/// accessor knot planes (integer coordinates in the centered
 		/// accessor coordinate system).  This ensures each GL panel
 		/// stays within one interpolation stencil region regardless
-		/// of volume dimension parity.  5-point Gauss-Legendre
-		/// quadrature is exact for polynomials up to degree 9,
+		/// of volume dimension parity.  7-point Gauss-Legendre
+		/// quadrature is exact for polynomials up to degree 13,
 		/// covering all supported accessor types: nearest-neighbor
 		/// (degree 0), trilinear (degree 3 along ray), and
-		/// Catmull-Rom tricubic (degree 9 along ray).
+		/// Catmull-Rom tricubic (degree 9 along ray).  Fire media also
+		/// split panels at the roots of T(t)-700/900, so each panel's
+		/// carbon*phi(T) integrand is polynomial through degree 12.
 		///
 		/// This is used by EvalDistancePdf to provide a deterministic
 		/// technique density for MIS, avoiding the stochastic ratio
 		/// tracking path through EvalTransmittance.
+		/// The chromatic fire overload evaluates sigma_t(nm) at the same
+		/// nodes and medium-specific root-split panels.
 		Scalar EvalDeterministicOpticalDepth(
 			const Ray& ray,
 			const Scalar targetDist,
 			const Scalar sigma_t_eff
 			) const;
+
+		Scalar EvalDeterministicOpticalDepthNM(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm
+			) const;
+
+		Scalar EvalDeterministicOpticalDepthPelChannel(
+			const Ray& ray,
+			const Scalar targetDist,
+			const unsigned int channel
+			) const;
+
+		Scalar EvalDeterministicOpticalDepthImpl(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar sigma_t_eff,
+			const bool spectral,
+			const Scalar nm,
+			const int pelChannel
+			) const;
+
+		/// Accessor-coordinate offset used by the deterministic knot walk.
+		/// The legacy volume mapping uses dim/2; painter-baked fire channels
+		/// override this because their integer samples denote voxel centres.
+		virtual Scalar InterpolationAccessorOffset(
+			const unsigned int dimension
+			) const;
+
+		/// Optional exact fast path for the spectral deterministic optical
+		/// depth (EvalDeterministicOpticalDepthNM).  Returns false when the
+		/// medium has none, in which case the generic quadrature runs.
+		virtual bool EvalDeterministicOpticalDepthNMFast(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm,
+			Scalar& tau
+			) const
+		{
+			return false;
+		}
+
+		/// Generic 7-point Gauss-Legendre quadrature of one knot-cell piece,
+		/// split at AppendOpticalDepthBreakpoints roots.
+		Scalar IntegrateOpticalDepthCellGL(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			const bool spectral,
+			const Scalar nm,
+			const int pelChannel
+			) const;
+
+		/// Add medium-specific, strictly interior quadrature breakpoints for
+		/// one interpolation cell.  Ordinary heterogeneous media have none.
+		virtual void AppendOpticalDepthBreakpoints(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			std::vector<Scalar>& breakpoints
+			) const;
+
+		/// Scalar majorant used by the NM tracker.  Fire overrides this with
+		/// the locked conservative max over the visible wavelength interval.
+		virtual Scalar SpectralTrackingMajorant( const Scalar nm ) const;
+
+		/// Scalar majorant used by the RGB tracker.  Ordinary media retain the
+		/// historical max-channel coefficient; fire uses a conservative visible-
+		/// band bound for its projected coefficients.
+		virtual Scalar PelTrackingMajorant() const;
+
+		/// Construct the tracking substrate without an accessor.  Used by
+		/// derived baked media that must create their channel accessors after
+		/// base construction, then install a derived extinction accessor.
+		HeterogeneousMedium(
+			const Scalar trackingSigmaT,
+			const IPhaseFunction& phase,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax
+			);
+
+		/// Install the accessor used by the shared delta/ratio-tracking code
+		/// and build its immutable per-cell majorant grid.
+		void InitializeTrackingAccessor( IVolumeAccessor& accessor );
+
+		/// Variant for derived media whose tracking field is nonlinear in
+		/// multiple channels.  The separate majorant accessor supplies a
+		/// conservative phi-sup field while `accessor` remains the exact
+		/// local extinction queried by tracking and quadrature.
+		void InitializeTrackingAccessor(
+			IVolumeAccessor& accessor,
+			IVolumeAccessor& majorantAccessor
+			);
 
 		virtual ~HeterogeneousMedium();
 
@@ -160,21 +283,33 @@ namespace RISE
 
 		MediumCoefficients GetCoefficients(
 			const Point3& pt
-			) const;
+			) const override;
 
 		MediumCoefficientsNM GetCoefficientsNM(
 			const Point3& pt,
 			const Scalar nm
-			) const;
+			) const override;
 
-		const IPhaseFunction* GetPhaseFunction() const;
+		const IPhaseFunction* GetPhaseFunction() const override;
+		const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
+		const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt, const Scalar nm ) const override
+		{
+			if( m_pPhase ) m_pPhase->addref();
+			return m_pPhase;
+		}
 
 		Scalar SampleDistance(
 			const Ray& ray,
 			const Scalar maxDist,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		Scalar SampleDistanceNM(
 			const Ray& ray,
@@ -182,45 +317,64 @@ namespace RISE
 			const Scalar nm,
 			ISampler& sampler,
 			bool& scattered
-			) const;
+			) const override;
 
 		RISEPel EvalTransmittance(
 			const Ray& ray,
 			const Scalar dist
+			) const override;
+		RISEPel ForTest_EvalTransmittanceWithFixedRandom(
+			const Ray& ray,
+			const Scalar dist,
+			const Scalar fixedRandom,
+			unsigned long long& candidateSteps
 			) const;
+
+		RISEPel EvalDeterministicTransmittancePel(
+			const Ray& ray,
+			const Scalar dist
+			) const override;
 
 		Scalar EvalTransmittanceNM(
 			const Ray& ray,
 			const Scalar dist,
 			const Scalar nm
+			) const override;
+
+		Scalar ForTest_EvalTransmittanceNMWithFixedRandom(
+			const Ray& ray,
+			const Scalar dist,
+			const Scalar nm,
+			const Scalar fixedRandom,
+			unsigned long long& candidateSteps
 			) const;
 
-		bool IsHomogeneous() const;
+		bool IsHomogeneous() const override;
 
 		Scalar ClipDistanceToBounds(
 			const Ray& ray,
 			const Scalar dist
-			) const;
+			) const override;
 
 		DistanceSample SampleDistanceWithPdf(
 			const Ray& ray,
 			const Scalar maxDist,
 			ISampler& sampler
-			) const;
+			) const override;
 
 		DistanceSample SampleDistanceWithPdfNM(
 			const Ray& ray,
 			const Scalar maxDist,
 			const Scalar nm,
 			ISampler& sampler
-			) const;
+			) const override;
 
 		Scalar EvalDistancePdf(
 			const Ray& ray,
 			const Scalar t,
 			const bool scattered,
 			const Scalar maxDist
-			) const;
+			) const override;
 
 		Scalar EvalDistancePdfNM(
 			const Ray& ray,
@@ -228,11 +382,530 @@ namespace RISE
 			const bool scattered,
 			const Scalar maxDist,
 			const Scalar nm
-			) const;
+			) const override;
+
+		Scalar EvalLogDistancePdfNM(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist,
+			const Scalar nm
+			) const override;
 
 		bool GetBoundingBox(
 			Point3& bbMin,
 			Point3& bbMax
+			) const override;
+	};
+
+	/// Painter-baked Phase-A fire/smoke medium carrying carbon and optional
+	/// condensed-organic concentrations [g/m^3], plus temperature [K], on one
+	/// shared trilinear lattice.
+	///
+	/// The NM path uses the wavelength-dependent §4.1/§4.3 laws.  Pel is the
+	/// signed-response projection specified for the approximate Phase-A preview.
+	class MultichannelHeterogeneousMedium :
+		public HeterogeneousMedium
+	{
+	public:
+		enum EffectiveAbsorptionAblation
+		{
+			NoEffectiveAbsorptionAblation = 0,
+			FixtureMagnitudeBaseline,
+			PresetMagnitudeOnly,
+			PresetTiltOnly
+		};
+
+	protected:
+		IVolumeAccessor* m_pCarbonAccessor;
+		IVolumeAccessor* m_pTemperatureAccessor;
+		IVolumeAccessor* m_pCondensedAccessor;
+		IVolumeAccessor* m_pChemAccessor[3];
+		const IFunction1D* m_pChemSPD[3];
+		Scalar m_chemIntervalMin[3];
+		Scalar m_chemIntervalMax[3];
+		Scalar m_chemSPDArea[3];
+		FireOpticsPreset m_optics;
+		FireFidelityEvaluation m_previewFidelity;
+		FireFidelityEvaluation m_predictiveFidelity;
+		bool m_hasNonzeroCondensedInventory;
+		Scalar m_sceneUnitMeters;
+		Scalar m_sootEm;
+		Scalar m_sootDensity;
+		Scalar m_sootAlbedoHot;
+		Scalar m_sootGHot;
+		Scalar m_smokeKmCarbon;
+		Scalar m_smokeNCarbon;
+		Scalar m_smokeAlbedoCarbon;
+		Scalar m_smokeGCarbon;
+		Scalar m_smokeKmCond;
+		Scalar m_smokeNCond;
+		Scalar m_smokeAlbedoCond;
+		Scalar m_smokeGCond;
+		Scalar m_hotAbsorptionMass633;
+		Scalar m_hotExtinctionMass633;
+		Scalar m_coolExtinctionMass633;
+		Scalar m_condExtinctionMass633;
+		RISEPel m_pelResponseMass;
+		RISEPel m_pelHotMean;
+		RISEPel m_pelCoolMean;
+		RISEPel m_pelCondMean;
+		Scalar m_samplingHotMass;
+		Scalar m_samplingCoolMass;
+		Scalar m_samplingCondMass;
+		EffectiveAbsorptionAblation m_effectiveAbsorptionAblation;
+
+		struct EmissionCell
+		{
+			AliasTable binAlias;
+			std::vector<unsigned int> binIndices;
+		};
+		AliasTable m_emissionCellAlias;
+		std::vector<EmissionCell> m_emissionCells;
+		std::vector<double> m_emissionBinWeights;
+		std::vector<double> m_emissionBinProbabilities;
+		Vector3 m_emissionBinSize;
+		Scalar m_thermalEmissionImportance;
+		Scalar m_minPositiveThermalEmissionPdf;
+		unsigned long long m_fireMajorantGeneration;
+		unsigned long long m_fireEmissionGeneration;
+
+		/// Per-frame flat copy of the baked channels for the render hot path.
+		/// One padded voxel record holds every channel the extinction and
+		/// emission laws read, so a lookup does a single cell-index/weight
+		/// computation and one contiguous 8-corner fetch.  Values are copied
+		/// from the accessors at integer coordinates (double precision), so
+		/// the trilinear result is the accessor result.  The padding ring is
+		/// zero, matching the accessors' out-of-range value.
+		struct FlatVoxel
+		{
+			Scalar carbon;
+			Scalar temperature;
+			Scalar condensed;
+			Scalar pad;
+		};
+		struct FlatChemVoxel
+		{
+			Scalar band[3];
+			Scalar pad;
+		};
+		std::vector<FlatVoxel> m_flat;
+		std::vector<FlatChemVoxel> m_flatChem;
+		std::vector<unsigned char> m_flatCellOccupied;	///< carbon/condensed nonzero at any of a cell's 8 corners
+		std::vector<unsigned char> m_flatCellChemOccupied;
+		bool m_flatCurrent;
+		/// Unique id naming the current optics/ablation state, used to key
+		/// the per-thread wavelength-constant cache.
+		unsigned long long m_opticsEpoch;
+
+		struct NMOptics
+		{
+			Scalar hotAbsorptionMass;
+			Scalar oneMinusHotAlbedo;
+			Scalar coolExtinctionMass;
+			Scalar coolAlbedo;
+			Scalar condExtinctionMass;
+			Scalar condAlbedo;
+			bool supported;
+		};
+		NMOptics OpticsAtNM( const Scalar nm ) const;
+		void BuildFlatGrids();
+		bool FetchFlat(
+			const Point3& worldPt,
+			Scalar& carbon,
+			Scalar& temperature,
+			Scalar& condensed
+			) const;
+		void FetchCarbonTemperatureCondensed(
+			const Point3& worldPt,
+			Scalar& carbon,
+			Scalar& temperature,
+			Scalar& condensed
+			) const;
+		bool FetchFlatChem(
+			const Point3& worldPt,
+			Scalar (&bands)[3]
+			) const;
+		Scalar ThermalEmissionFromState(
+			const Scalar carbon,
+			const Scalar temperature,
+			const Scalar condensed,
+			const Scalar nm
+			) const;
+		bool m_fireDerivedStructuresCurrent;
+		bool m_forTestBlockFireDerivedRebuild;
+		bool m_valid;
+		bool m_sequenceBacked;
+
+		virtual ~MultichannelHeterogeneousMedium();
+		Scalar SpectralTrackingMajorant( const Scalar nm ) const override;
+		Scalar PelTrackingMajorant() const override;
+		Scalar InterpolationAccessorOffset(
+			const unsigned int dimension
+			) const override;
+		void AppendOpticalDepthBreakpoints(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			std::vector<Scalar>& breakpoints
+			) const override;
+
+		Scalar LookupChannel(
+			const IVolumeAccessor& accessor,
+			const Point3& worldPt
+			) const;
+
+		static Scalar ComputeHotAbsorptionMass633(
+			Scalar sootEm,
+			Scalar sootDensity
+			);
+		Scalar AblatedHotAbsorptionMass( const Scalar nm ) const;
+
+		bool BuildThermalEmissionImportance();
+		unsigned int EmissionBinIndex(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
+			) const;
+		bool EmissionBinAtPoint(
+			const Point3& point,
+			unsigned int& x,
+			unsigned int& y,
+			unsigned int& z
+			) const;
+		Scalar EmissionBinUpperBound(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
+			) const;
+		Scalar LookupChemBand(
+			const unsigned int band,
+			const Point3& worldPt
+			) const;
+		Scalar NormalizedChemSPD(
+			const unsigned int band,
+			const Scalar nm
+			) const;
+		void AppendChemPanelBreakpoints(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			std::vector<Scalar>& breakpoints
+			) const;
+		Scalar ChemPanelSupport(
+			const Ray& ray,
+			const Scalar panelStart,
+			const Scalar panelEnd
+			) const;
+		static Scalar NormalizeChemSPD(
+			const IFunction1D& curve,
+			const Scalar intervalMin,
+			const Scalar intervalMax
+			);
+		struct FrameStorage;
+		bool InstallPreparedFireSequenceFrame(
+			const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback = nullptr );
+		void InvalidateFireDerivedStructures()
+		{
+			m_fireDerivedStructuresCurrent = false;
+		}
+		bool RebuildFireDerivedStructuresForRender();
+		bool FlatCellEmpty(
+			const int cx,
+			const int cy,
+			const int cz
+			) const;
+		/// Wavelength-independent integrals over [tBegin,tEnd] of one knot
+		/// cell: carbon*(1-phi), carbon*phi and condensed.  sigma_t(nm) is a
+		/// fixed linear combination of them, so they are cached per ray and
+		/// shared by every wavelength.
+		void CellMassIntegrals(
+			const Ray& ray,
+			const Scalar tBegin,
+			const Scalar tEnd,
+			const int cx,
+			const int cy,
+			const int cz,
+			Scalar (&integrals)[3]
+			) const;
+		bool EvalDeterministicOpticalDepthNMFast(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar nm,
+			Scalar& tau
+			) const override;
+		friend class Job;
+
+	public:
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const Implementation::FireSequencePreparedFrame& frame,
+			const std::array<std::array<double,2>,3>& chemNormalizationIntervalsNM,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const FireOpticsPreset& optics,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const IScalarPainter* chemCHPainter,
+			const IScalarPainter* chemC2Painter,
+			const IScalarPainter* chemCO2Painter,
+			const IFunction1D* chemCHSPD,
+			const IFunction1D* chemC2SPD,
+			const IFunction1D* chemCO2SPD,
+			const Scalar chemCHIntervalMin,
+			const Scalar chemCHIntervalMax,
+			const Scalar chemC2IntervalMin,
+			const Scalar chemC2IntervalMax,
+			const Scalar chemCO2IntervalMin,
+			const Scalar chemCO2IntervalMax,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const FireOpticsPreset& optics,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const IScalarPainter* chemCHPainter,
+			const IScalarPainter* chemC2Painter,
+			const IScalarPainter* chemCO2Painter,
+			const IFunction1D* chemCHSPD,
+			const IFunction1D* chemC2SPD,
+			const IFunction1D* chemCO2SPD,
+			const Scalar chemCHIntervalMin,
+			const Scalar chemCHIntervalMax,
+			const Scalar chemC2IntervalMin,
+			const Scalar chemC2IntervalMax,
+			const Scalar chemCO2IntervalMin,
+			const Scalar chemCO2IntervalMax,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const Scalar smokeKmCond,
+			const Scalar smokeNCond,
+			const Scalar smokeAlbedoCond,
+			const Scalar smokeGCond,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IScalarPainter* condensedPainter,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const Scalar sootEm,
+			const Scalar sootDensity,
+			const Scalar sootAlbedoHot,
+			const Scalar sootGHot,
+			const Scalar smokeKmCarbon,
+			const Scalar smokeNCarbon,
+			const Scalar smokeAlbedoCarbon,
+			const Scalar smokeGCarbon,
+			const Scalar smokeKmCond,
+			const Scalar smokeNCond,
+			const Scalar smokeAlbedoCond,
+			const Scalar smokeGCond,
+			const IPhaseFunction& phase
+			);
+
+		bool IsValid() const { return m_valid; }
+		bool IsTimeVaryingMedium() const override { return m_sequenceBacked; }
+		bool FireDerivedStructuresCurrent() const
+		{
+			return m_fireDerivedStructuresCurrent;
+		}
+		bool BindSequencePreparationController(
+			Implementation::FireSequencePreparationController& controller,
+			const std::string& installerIdentity,
+			std::string& error );
+		unsigned long long ForTest_FireMajorantGeneration() const
+		{
+			return m_fireMajorantGeneration;
+		}
+		unsigned long long ForTest_FireEmissionGeneration() const
+		{
+			return m_fireEmissionGeneration;
+		}
+		void ForTest_SetBlockFireDerivedRebuild( const bool block )
+		{
+			m_forTestBlockFireDerivedRebuild = block;
+			if( block ) InvalidateFireDerivedStructures();
+		}
+		/// Test-only: switch the render-time flat grids and per-ray optical-depth
+		/// cache off (accessor path, the reference implementation) or back on.
+		void ForTest_SetFlatGridsEnabled( const bool enabled );
+		bool BuildBakedChannelRecord( std::vector<unsigned char>& record ) const;
+		// Test-only controlled ablation; set before Rasterize launches workers.
+		bool ForTest_SetEffectiveAbsorptionAblation(
+			const EffectiveAbsorptionAblation ablation );
+		const FireOpticsPreset& GetFireOpticsPreset() const { return m_optics; }
+		bool FirePredictiveAllowed() const override
+		{
+			return m_predictiveFidelity.predictiveAllowed;
+		}
+		const char* GetFireOpticsRecordId() const override
+		{
+			return m_optics.RecordId().c_str();
+		}
+		const char* GetFireRenderFidelityStatus(
+			const bool predictiveRequested ) const override;
+		unsigned int GetFireRenderReasonCodeCount(
+			const bool predictiveRequested ) const override;
+		const char* GetFireRenderReasonCode(
+			const bool predictiveRequested,
+			const unsigned int index ) const override;
+		bool FireOpticsSupportsWavelengthRange(
+			const Scalar minimumNM,
+			const Scalar maximumNM ) const override
+		{
+			return m_optics.SupportsWavelengthRange(minimumNM,maximumNM);
+		}
+
+		Scalar LookupCarbon( const Point3& worldPt ) const;
+		Scalar LookupTemperature( const Point3& worldPt ) const;
+		Scalar LookupCondensed( const Point3& worldPt ) const;
+		Scalar HotOpticsFraction( const Point3& worldPt ) const;
+		Scalar HotSootVolumeFraction( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAt( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAtPel( const Point3& worldPt ) const;
+		Scalar TrackingMajorantAtNM(
+			const Point3& worldPt,
+			const Scalar nm
+			) const;
+
+		MediumCoefficients GetCoefficients( const Point3& pt ) const override;
+		MediumCoefficientsNM GetCoefficientsNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
+
+		bool IsFireMedium() const override { return true; }
+		/// Fire scattering is wavelength/local-mixture bound.  Returning no
+		/// legacy phase makes an accidental GetPhaseFunction fallback fail
+		/// closed instead of silently using the constructor's base-class phase.
+		const IPhaseFunction* GetPhaseFunction() const override { return 0; }
+		const IPhaseFunction* MakePhaseClosure(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
+		const IPhaseFunction* MakePhaseClosurePel(
+			const Point3& pt
+			) const override;
+		const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt ) const override
+		{
+			return MakePhaseClosurePel(pt);
+		}
+		const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override
+		{
+			return MakePhaseClosure(pt,nm);
+		}
+		Scalar GetThermalEmissionNM(
+			const Point3& pt,
+			const Scalar nm
+			) const override;
+		RISEPel GetThermalEmissionPel(
+			const Point3& pt
+			) const override;
+		Scalar GetChemEmissionNM(
+			const Point3& pt,
+			const Scalar nm
+			) const;
+		Scalar GetChemSPDAuthoredArea(
+			const unsigned int band
+			) const
+		{
+			return band < 3u ? m_chemSPDArea[band] : 0.0;
+		}
+		Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar nm,
+			ISampler& sampler
+			) const override;
+		Scalar GetThermalEmissionImportance() const override
+		{
+			return m_thermalEmissionImportance;
+		}
+		Scalar GetThermalEmissionPowerProxy() const override;
+		bool SampleThermalEmission(
+			ISampler& sampler,
+			Point3& point,
+			Scalar& pdf
+			) const override;
+		Scalar ThermalEmissionPdf( const Point3& point ) const override;
+		Scalar GetMinimumPositiveThermalEmissionPdf() const override
+		{
+			return m_minPositiveThermalEmissionPdf;
+		}
+
+		/// Structural gate accessors for the exact emission-bin partition.
+		void GetThermalEmissionBinDimensions(
+			unsigned int& x,
+			unsigned int& y,
+			unsigned int& z
+			) const
+		{
+			x = m_volWidth; y = m_volHeight; z = m_volDepth;
+		}
+		Scalar GetThermalEmissionBinProbability(
+			const unsigned int x,
+			const unsigned int y,
+			const unsigned int z
 			) const;
 	};
 }

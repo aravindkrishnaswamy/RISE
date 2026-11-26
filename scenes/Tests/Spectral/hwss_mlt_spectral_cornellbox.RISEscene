@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   File:           hwss_mlt_spectral_cornellbox.RISEscene                                                  #
 #   Description:    Cornell box rendered spectrally with HWSS MLT                                           #
@@ -12,18 +12,16 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-mlt_spectral_rasterizer
+# Legacy phase 2 slice B2: was mlt_spectral_rasterizer (frozen) -> bdpt_spectral_rasterizer; mutations_per_pixel -> samples, dropped bootstrap_samples 10000, chains 64, large_step_prob 0.3.
+bdpt_spectral_rasterizer
 {
-	max_eye_depth			5
-	max_light_depth			5
-	bootstrap_samples		10000
-	chains					64
-	mutations_per_pixel		50
-	large_step_prob			0.3
-	nmbegin					405
-	nmend					705
-	spectral_samples		1
-	hwss					true
+	max_eye_depth		5
+	max_light_depth		5
+	samples				256
+	nmbegin				405
+	nmend				705
+	spectral_samples	1
+	hwss				true
 }
 
 file_rasterizeroutput
@@ -34,13 +32,17 @@ file_rasterizeroutput
 	color_space			ProPhotoRGB
 }
 
+film
+{
+	width			256
+	height			256
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 0
 	up					0 1 0
-	width				256
-	height				256
 	fov					37.0
 }
 
@@ -50,7 +52,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -59,7 +60,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -68,7 +68,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -77,7 +76,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				3.2
 }
 
 lambertian_material

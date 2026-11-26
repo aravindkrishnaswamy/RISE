@@ -262,16 +262,27 @@ namespace RISE
 		public:
 			PiecewiseLinearFunction2D( ) : 
 			dBegin( 0 ),
-			dEnd( 0 )
+			dEnd( 0 ),
+			dRange( 0 ),
+			dOVRange( 1 )
 			{
 			};
 
+			PiecewiseLinearFunction2D( const PiecewiseLinearFunction2D& other ) :
+				Reference( other ), controlPoints( other.controlPoints ), dBegin( other.dBegin ),
+				dEnd( other.dEnd ), dRange( other.dRange ), dOVRange( other.dOVRange )
+			{
+				for( const auto& row : controlPoints ) row.second->addref();
+			}
+
 			virtual ~PiecewiseLinearFunction2D( )
 			{
+				clearControlPoints();
 			}
 
 			void clearControlPoints( )
 			{
+				for( const auto& row : controlPoints ) row.second->release();
 				controlPoints.clear();
 			}
 
@@ -281,10 +292,9 @@ namespace RISE
 					return false;
 				}
 
-				pFunction->addref();
-
 				// Adds the given control point to this function
 				controlPoints.push_back( std::make_pair( value, pFunction ) );
+				pFunction->addref();
 
 				// Sort the list
 				std::sort( controlPoints.begin(), controlPoints.end(), ControlPointCompare );

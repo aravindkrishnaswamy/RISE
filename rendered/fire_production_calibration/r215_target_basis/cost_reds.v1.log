@@ -1,0 +1,19 @@
+..E..
+======================================================================
+ERROR: test_independent_clock_evidence (__main__.TargetCostEvidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/test_fire_r215_target_cost.py", line 63, in test_independent_clock_evidence
+    distinct_repeats(directory, self.repeats(directory, "distinct"))
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/seal_fire_payload_placement.py", line 163, in distinct_repeats
+    commands = [fields(line) for line in (directory / (name + ".log")).read_bytes().decode().splitlines()
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/seal_fire_payload_placement.py", line 163, in <listcomp>
+    commands = [fields(line) for line in (directory / (name + ".log")).read_bytes().decode().splitlines()
+  File "/Users/aravind/Working/RISE/worktrees/r214-target-basis/tools/analyze_fire_producer_kernels.py", line 31, in fields
+    raise ValueError("missing or unknown counters: " + words[0])
+ValueError: missing or unknown counters: PRODUCER_COMMAND_V1
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.005s
+
+FAILED (errors=1)

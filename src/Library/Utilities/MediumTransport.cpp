@@ -15,9 +15,84 @@
 #include "MediumTransport.h"
 #include "../Lights/LightSampler.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Materials/HeterogeneousMedium.h"
+#include "../Materials/HomogeneousMedium.h"
+#include "../Materials/HenyeyGreensteinPhaseFunction.h"
+#include "../Materials/IsotropicPhaseFunction.h"
+#include "FiniteMath.h"
+#include <typeinfo>
 
 using namespace RISE;
 using namespace RISE::MediumTransport;
+
+
+CollisionPhaseClosure::CollisionPhaseClosure(
+	const IMedium& medium,
+	const Point3& scatterPoint,
+	const Scalar nm,
+	const bool spectral,
+	const bool requireContinuationCapability
+	) :
+  m_pPhase( 0 ),
+  m_owned( false )
+{
+	if( requireContinuationCapability )
+	{
+		if( spectral && IsContinuationPhaseClosureNMPreflightAllowlisted(medium) ) {
+			m_pPhase = medium.MakeContinuationPhaseClosureNM(scatterPoint,nm);
+			m_owned = m_pPhase != 0;
+		} else if( !spectral ) {
+			m_pPhase = medium.MakeContinuationPhaseClosurePel(scatterPoint);
+			m_owned = m_pPhase != 0;
+		}
+		return;
+	}
+
+	if( medium.IsFireMedium() )
+	{
+		if( spectral ) {
+			m_pPhase = medium.MakePhaseClosure( scatterPoint, nm );
+		} else {
+			m_pPhase = medium.MakePhaseClosurePel( scatterPoint );
+		}
+		m_owned = m_pPhase != 0;
+		return;
+	}
+
+	m_pPhase = medium.GetPhaseFunction();
+}
+
+CollisionPhaseClosure::~CollisionPhaseClosure()
+{
+	if( m_owned && m_pPhase ) {
+		m_pPhase->release();
+	}
+	m_pPhase = 0;
+}
+
+bool MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+	const IMedium& medium
+	)
+{
+	if( typeid( medium ) == typeid( MultichannelHeterogeneousMedium ) ) {
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( &medium );
+		return fire && fire->IsValid();
+	}
+	if( typeid( medium ) != typeid( HomogeneousMedium ) &&
+		typeid( medium ) != typeid( HeterogeneousMedium ) ) {
+		return false;
+	}
+
+	const IPhaseFunction* phase = medium.GetPhaseFunction();
+	if( !phase ) return false;
+	if( typeid( *phase ) == typeid( IsotropicPhaseFunction ) ) return true;
+	if( typeid( *phase ) == typeid( HenyeyGreensteinPhaseFunction ) ) {
+		const Scalar g = phase->GetMeanCosine();
+		return RISE::IsFiniteDouble( g ) && g > -1.0 && g < 1.0;
+	}
+	return false;
+}
 
 
 //
@@ -41,8 +116,7 @@ RISEPel MediumScatterBSDF::value(
 	// Phase function is isotropic w.r.t. the surface normal —
 	// it depends only on the angle between incoming and outgoing
 	// directions.  No cosine-weighted hemisphere clamping.
-	const Scalar p = m_pPhase->Evaluate( vLightIn, m_wo );
-	return RISEPel( p, p, p );
+	return m_pPhase->EvaluatePel( vLightIn, m_wo );
 }
 
 Scalar MediumScatterBSDF::valueNM(
@@ -74,7 +148,21 @@ Scalar MediumScatterMaterial::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	return m_pPhase->Pdf( vToLight, m_wo );
+	// DL-73 (ruled not a debt, see docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+	// "DL-73 RULED NOT A DEBT"): this is the RAW, un-guided phase pdf --
+	// deliberately NOT combined with any OpenPGL volume-guiding mixture.
+	// RayCaster.cpp's volume phase-scatter continuation records this SAME
+	// raw value as its MIS-PARTNER density -- `rs2.bsdfMisPdf = phasePdf`
+	// since DL-74 split the two roles apart (`rs2.bsdfPdf` now carries the
+	// guided mixture the direction was really drawn from, which the
+	// optimal-MIS moment estimator needs).  So the two sides of the
+	// env-NEE/env-escape MIS pair, and of the area-NEE/emitter-hit pair,
+	// feed PowerHeuristic the identical (phasePdf, p_light) pair and sum to
+	// exactly 1.  Combining this with the guide pdf would break that
+	// partition -- do not do it.  Fire: `PdfProposal` is that same raw
+	// (un-guided) density of the retained collision closure's own
+	// sampling proposal; for every non-fire phase function it IS `Pdf`.
+	return m_pPhase->PdfProposal( vToLight, m_wo );
 }
 
 Scalar MediumScatterMaterial::PdfNM(
@@ -96,11 +184,15 @@ RISEPel MediumTransport::EvaluateInScattering(
 	const Point3& scatterPoint,
 	const Vector3& wo,
 	const IMedium* pMedium,
+	const IPhaseFunction* pPhase,
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
 	const RasterizerState& rast,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack,
+	const IORStack* pMediumStack
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -108,7 +200,6 @@ RISEPel MediumTransport::EvaluateInScattering(
 		return RISEPel( 0, 0, 0 );
 	}
 
-	const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 	if( !pPhase )
 	{
 		return RISEPel( 0, 0, 0 );
@@ -131,21 +222,32 @@ RISEPel MediumTransport::EvaluateInScattering(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185: `neeTrainingScale` forwards CastRay's LOCAL cast-level RR
+	// compensation for THIS call (default 1 for every other caller) --
+	// scales the optimal-MIS training integrand only, never the returned
+	// in-scattered radiance itself.
 	return pLightSampler->EvaluateDirectLighting(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		caster, sampler, 0, pMedium, true, pMediumObject );
+		caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack,
+		/*bSMSCoversDeltaLights*/ false, pMediumStack );
 }
 
 Scalar MediumTransport::EvaluateInScatteringNM(
 	const Point3& scatterPoint,
 	const Vector3& wo,
 	const IMedium* pMedium,
+	const IPhaseFunction* pPhase,
 	const Scalar nm,
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
 	const RasterizerState& rast,
-	const IObject* pMediumObject
+	const IObject* pMediumObject,
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack,
+	const IORStack* pMediumStack
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -153,7 +255,6 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 		return 0;
 	}
 
-	const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 	if( !pPhase )
 	{
 		return 0;
@@ -168,7 +269,11 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	scatterRI.vNormal = wo;
 	scatterRI.onb.CreateFromW( wo );
 
+	// DL-185 -- see the RGB twin above.
 	return pLightSampler->EvaluateDirectLightingNM(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		nm, caster, sampler, 0, pMedium, true, pMediumObject );
+		nm, caster, sampler, 0, pMedium, true, pMediumObject,
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack,
+		/*bSMSCoversDeltaLights*/ false, pMediumStack );
 }

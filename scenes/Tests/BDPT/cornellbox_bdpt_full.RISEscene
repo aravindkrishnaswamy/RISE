@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -38,20 +38,173 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 300
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -77,19 +230,7 @@ uniformcolor_painter
 	color				0.95 0.95 0.95
 }
 
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.98 0.98 0.98
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-	color				1.5 1.5 1.5
-	colorspace			RISERGB
-}
 
 ##################################################
 # Materials
@@ -122,12 +263,15 @@ lambertian_luminaire_material
 }
 
 # Glossy gold material
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 80 -> alpha 1/sqrt(2N+1) = 0.07881, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				glossy_gold
 	rd					pnt_glossy_diff
 	rs					pnt_glossy_spec
-	N			80.0
+	alphax				0.078811
+	alphay				0.078811
+	fresnel_mode		schlick_f0
 }
 
 # Perfect mirror
@@ -141,8 +285,8 @@ perfectreflector_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau			0.98
+	ior			1.5
 }
 
 ##################################################
@@ -155,6 +299,7 @@ omni_light
 	name				filllight
 	power		    150000
 	color				1.0 0.9 0.7
+	colorspace			sRGB
 
 	position			100 400 100
 }
@@ -302,3 +447,5 @@ standard_object
 	material			mirror
 	position			420 80 350
 }
+
+

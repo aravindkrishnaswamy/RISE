@@ -1,0 +1,7 @@
+# vcpkg applies these patches via `git apply` during the x265 build.  Keep
+# them LF regardless of core.autocrlf so a checkout doesn't rewrite them to
+# CRLF (which makes `git apply` fail with whitespace / "patch does not
+# apply" errors).
+*.patch text eol=lf
+*.diff  text eol=lf
+portfile.cmake text eol=lf

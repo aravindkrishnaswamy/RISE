@@ -20,8 +20,7 @@
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "ProgressiveFilm.h"
-#include "../Interfaces/IBSDF.h"
-#include "../Interfaces/IMaterial.h"
+#include "../Cameras/CameraUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -37,15 +36,16 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
-	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityCfg,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityCfg ),
-  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityCfg , frameStore),
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false , frameStore),
   adaptiveConfig( adaptiveCfg )
 {
 	useZSobol = useZSobol_;
@@ -88,117 +88,99 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	const ICamera& camera,
 	uint32_t sampleIndex,
 	uint32_t pixelSeed,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	Ray cameraRay;
 	if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
 		return RISEPel( 0, 0, 0 );
 	}
 
+	// Hot-path Film cache.  Hoisted out of the per-splat loop so the
+	// rasterPos→film flip and the SplatContributionToFilm call below
+	// see plain unsigned ints instead of paying 3 virtual calls
+	// (GetFilm + GetWidth + GetHeight) per splat.  IntegratePixelRGB
+	// runs per pixel; the film never changes mid-render so caching at
+	// function entry is safe.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int filmW = pFilm->GetWidth();
+	const unsigned int filmH = pFilm->GetHeight();
+
 	SobolSampler sampler( sampleIndex, pixelSeed );
 
-	std::vector<BDPTVertex> lightVerts;
-	std::vector<BDPTVertex> eyeVerts;
+	// Per-thread scratch — eliminates per-sample allocator traffic
+	// in the BDPT hot path.
+	static thread_local std::vector<BDPTVertex> lightVerts;
+	static thread_local std::vector<BDPTVertex> eyeVerts;
+	static thread_local std::vector<uint32_t> lightSubpathStarts;
+	static thread_local std::vector<uint32_t> eyeSubpathStarts;
+	lightVerts.clear();
+	eyeVerts.clear();
 
-	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, rc.random );
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
-
-	// Extract first-hit AOV data for the denoiser
-	if( pAOV ) {
-		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
-			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
-				pAOV->albedo = RISEPel( 0, 0, 0 );
-				if( v.pMaterial->GetBSDF() ) {
-					// Construct a synthetic intersection for BSDF evaluation
-					// at normal incidence to approximate material albedo.
-					Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-					RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
-					pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
-				}
-				pAOV->valid = true;
-				break;
-			}
-		}
+	// Single-subpath generation (no per-vertex branching at multi-lobe
+	// delta vertices).  Branching was excised in 2026-05; the
+	// `subpathStarts` outparam is retained for Phase-2 integrator
+	// cleanup but always contains exactly one [0, size) range.
+	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster,
+		sampler, eyeVerts, eyeSubpathStarts, pAOV );
+	if( pPrimaryHit ) {
+		*pPrimaryHit = ( eyeVerts.size() >= 2 && !eyeVerts[1].IsInfiniteLight() );
 	}
 
-	std::vector<BDPTIntegrator::ConnectionResult> results =
-		pIntegrator->EvaluateAllStrategies(
-			lightVerts,
-			eyeVerts,
-			pScene,
-			*pCaster,
-			camera,
-			&sampler );
+	// GenerateEyeSubpath captures Fast guides at the raw primary hit and
+	// Accurate guides at the first selected non-delta surface while the real
+	// trace-time intersection and incoming ray are still available.
+
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Its own sampler stream
+	// so it stays stratified across pixels.  A camera whose aperture
+	// is a point (pinhole / fisheye / orthographic) consumes NOTHING
+	// here -- see DrawApertureSample -- so those renders draw the same
+	// dimensions they did before debt 28.  For a thin lens this is
+	// what gives the splat layer the depth of field the eye layer has.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_DEDICATED_STREAM );
 
 	RISEPel sampleColor( 0, 0, 0 );
 
-	for( unsigned int r=0; r<results.size(); r++ )
+	// Single-subpath EvaluateAllStrategies call.  No per-branch loop —
+	// the integrator emits one eye and (at most) one light subpath
+	// since path-tree branching at multi-lobe delta vertices was
+	// excised in 2026-05.  Each strategy's MIS weights sum to 1 over
+	// the (s,t) pairs for the pair of subpaths.
+	if( !eyeVerts.empty() )
 	{
-		const BDPTIntegrator::ConnectionResult& cr = results[r];
-		if( !cr.valid ) {
-			continue;
-		}
+		std::vector<BDPTIntegrator::ConnectionResult> results =
+			pIntegrator->EvaluateAllStrategies(
+				lightVerts,
+				eyeVerts,
+				pScene,
+				*pCaster,
+				camera,
+				cameraLensSample,
+				&sampler );
 
-		RISEPel weighted = cr.contribution * cr.misWeight;
-
-		// Clamp per-strategy contribution.  Use directClamp for s==1
-		// (direct lighting connections) and indirectClamp for all
-		// other strategies.  A value of 0 means disabled (no clamping).
+		for( unsigned int r=0; r<results.size(); r++ )
 		{
-			const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
-			const Scalar clampVal = (cr.s == 1)
-				? sc.directClamp
-				: sc.indirectClamp;
-			if( clampVal > 0 ) {
-				const Scalar maxVal = ColorMath::MaxValue( weighted );
-				if( maxVal > clampVal ) {
-					weighted = weighted * (clampVal / maxVal);
-				}
+			const BDPTIntegrator::ConnectionResult& cr = results[r];
+			if( !cr.valid ) {
+				continue;
 			}
-		}
-
-		if( cr.needsSplat && pSplatFilm )
-		{
-			// Rasterize returns screen coordinates where y=0 is the
-			// image bottom (matching ptOnScreen = Point2(x, height-y)).
-			// Convert to image buffer coordinates where y=0 is the top.
-			const int sx = static_cast<int>( cr.rasterPos.x );
-			const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
-
-			if( sx >= 0 && sy >= 0 &&
-				static_cast<unsigned int>(sx) < camera.GetWidth() &&
-				static_cast<unsigned int>(sy) < camera.GetHeight() )
-			{
-				pSplatFilm->Splat( sx, sy, weighted );
-			}
-		}
-		else
-		{
-			sampleColor = sampleColor + weighted;
-		}
-	}
-
-	// SMS contributions for specular caustic chains
-	if( pIntegrator ) {
-		sampler.StartStream( 31 );
-		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
-			pIntegrator->EvaluateSMSStrategies(
-				eyeVerts, pScene, *pCaster, camera, sampler );
-
-		for( unsigned int r=0; r<smsResults.size(); r++ ) {
-			const BDPTIntegrator::ConnectionResult& cr = smsResults[r];
-			if( !cr.valid ) continue;
 
 			RISEPel weighted = cr.contribution * cr.misWeight;
+
+			// Clamp per-strategy contribution.  Use directClamp for s==1
+			// (direct lighting connections) and indirectClamp for all
+			// other strategies.  A value of 0 means disabled.
 			{
 				const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
-				const Scalar clampVal = sc.directClamp;
+				const Scalar clampVal = (cr.s == 1)
+					? sc.directClamp
+					: sc.indirectClamp;
 				if( clampVal > 0 ) {
 					const Scalar maxVal = ColorMath::MaxValue( weighted );
 					if( maxVal > clampVal ) {
@@ -206,7 +188,17 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 					}
 				}
 			}
-			sampleColor = sampleColor + weighted;
+
+			if( cr.needsSplat && pSplatFilm )
+			{
+				const Scalar fx = cr.rasterPos.x;
+				const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
+				SplatContributionToFilm( fx, fy, weighted, filmW, filmH );
+			}
+			else
+			{
+				sampleColor = sampleColor + weighted;
+			}
 		}
 	}
 
@@ -230,24 +222,36 @@ void BDPTPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
 	}
+
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	// Progressive rendering: check if this pixel has already converged
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				// Heatmap mode: a converged pixel's sample count is
+				// authoritative — render its position on the
+				// max-samples ramp rather than the beauty estimate.
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
 	}
-
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	// ZSobol (blue-noise): seed from Morton index for spatially
@@ -255,10 +259,6 @@ void BDPTPelRasterizer::IntegratePixel(
 	uint32_t pixelSeed;
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
-
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	// For ZSobol, compute log2SPP from the full progressive SPP budget
 	const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
@@ -285,6 +285,10 @@ void BDPTPelRasterizer::IntegratePixel(
 	}
 
 	// In progressive mode, restore persistent state from the film.
+	// Accumulate ONLY this pass's RGB samples into `colAccrued` and add the
+	// pass delta once into `px.colorSum` (XYZPel) at pass end so prior-pass
+	// totals never undergo repeated XYZ->RGB->XYZ round-trips or intermediate
+	// gamut clipping across progressive passes.
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
@@ -296,7 +300,7 @@ void BDPTPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
+		colAccrued = px.LoadPelPassInit();
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -319,7 +323,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -330,15 +334,27 @@ void BDPTPelRasterizer::IntegratePixel(
 			Point2 ptOnScreen;
 			Scalar weight = 1.0;
 
+			// Uniform sub-pixel jitter for eye-subpath samples.  We
+			// deliberately do NOT call pPixelFilter->warpOnScreen here:
+			// that was the pre-existing behaviour but it aims rays at
+			// screen positions dictated by the filter's importance
+			// density (e.g. GaussianPixelFilter::warp lands samples
+			// outside the pixel), which then get accumulated into this
+			// pixel's bucket — a double-filtering that produces severe
+			// blur with wide-support kernels.  Uniform jitter gives the
+			// correct Monte-Carlo estimate of the per-pixel integral;
+			// light-subpath splats go through SplatContributionToFilm
+			// → SplatFilm::SplatFiltered which still uses the filter's
+			// EvaluateFilter for cross-pixel reconstruction.
 			if( bMultiSample ) {
-				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height-y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weights += weight;
 
-			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// For ZSobol, remap the sample index via Morton code so that
@@ -348,24 +364,55 @@ void BDPTPelRasterizer::IntegratePixel(
 				? ((mortonIndex << log2SPP) | globalSampleIndex)
 				: globalSampleIndex;
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
-			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+			bool primaryHit = false;
+			const bool transparentBg = GetTransparentBackground();
+			RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0,
+				transparentBg ? &primaryHit : nullptr );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleColor = RISEPel( 0, 0, 0 );
 			}
-#else
-			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				effectiveIndex, pixelSeed, 0 );
-#endif
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+			}
+
+			// Approach C: cross-pixel filter-weighted splat.  With a
+			// wide-support filter, this spreads every eye-subpath
+			// sample across the neighbouring pixels using the filter's
+			// EvaluateFilter weights — mirroring PathTracingPelRasterizer.
+			// When pFilteredFilm is null (narrow filter or filter off)
+			// we fall through to per-pixel box accumulation below.
+			if( pFilteredFilm ) {
+				pFilteredFilm->Splat(
+					ptOnScreen.x,
+					static_cast<Scalar>(height) - ptOnScreen.y,
+					sampleColor,
+					*pPixelFilter,
+					sampleAlpha );
+			}
 
 			colAccrued = colAccrued + sampleColor * weight;
-			alphas += weight;
+			alphas += sampleAlpha * weight;
 
-			// Welford update on luminance of non-splat contribution
-			if( adaptive || pProgFilm ) {
+			// Welford update on luminance of non-splat contribution.
+			// Gated on `adaptive` only: progressive multi-pass mode
+			// MUST NOT fire convergence-based termination, otherwise
+			// pixels whose 32-sample empirical variance/mean falls
+			// below threshold get frozen at "lucky-low" realizations,
+			// while pixels that hit a firefly continue and regress to
+			// truth — a selection bias that darkens the image by
+			// ~1% per pass on hard scenes.  See bdpt_jewel_vault
+			// 1024 SPP unguided test: bias ~5.4% at 32 passes.
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -376,7 +423,7 @@ void BDPTPelRasterizer::IntegratePixel(
 		}
 
 		// Check convergence after enough cumulative samples
-		if( (adaptive || pProgFilm) && wN >= 32 )
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -404,7 +451,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	// Write back persistent state for progressive rendering
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -414,18 +461,17 @@ void BDPTPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total adaptive samples for splat film normalization.
-	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.
-	if( adaptive || pProgFilm ) {
-		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
-	}
+	// Track total completed samples for splat film (`t == 1`) normalization.
+	// Use the delta (samples rendered THIS pass) unconditionally across
+	// both adaptive and non-adaptive passes so intermediate progressive
+	// previews, regional renders, and mid-render cancellations divide
+	// `pSplatFilm` by the exact completed sample count rather than the
+	// full-render target SPP.
+	AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
@@ -433,5 +479,7 @@ void BDPTPelRasterizer::IntegratePixel(
 	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
+	} else {
+		cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 	}
 }

@@ -42,6 +42,7 @@
 
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -53,10 +54,17 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			const IPainter&		ior;			///< Index of refraction at the boundary
-			const IPainter&		absorption;		///< Absorption coefficient sigma_a
-			const IPainter&		scattering;		///< Scattering coefficient sigma_s
-			const Scalar		g;				///< HG asymmetry parameter
+			//! Pointer storage so the interactive editor can rebind via
+			//! SetIOR (called by SubSurfaceScatteringMaterial.SetIOR to
+			//! keep the profile coherent with the BSDF/SPF after a live
+			//! IOR edit).  Absorption/scattering stay reference-style
+			//! because we don't expose Set* for them — they parameterise
+			//! the diffusion model and changing them requires a profile
+			//! reconstruction (out of scope).
+			const IScalarPainter*	pIOR;			///< Index of refraction at the boundary (physical scalar)
+			const IScalarPainter&	absorption;		///< Absorption coefficient sigma_a (physical scalar)
+			const IScalarPainter&	scattering;		///< Scattering coefficient sigma_s (physical scalar)
+			const Scalar			g;				///< HG asymmetry parameter
 
 			virtual ~BurleyNormalizedDiffusionProfile();
 
@@ -66,14 +74,12 @@ namespace RISE
 			/// Higher albedo yields a wider profile (more scattering).
 			static Scalar ComputeScalingFactor( const Scalar A );
 
-			/// Schlick Fresnel reflectance from cosine and IOR
-			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 		public:
 			BurleyNormalizedDiffusionProfile(
-				const IPainter& ior_,
-				const IPainter& absorption_,
-				const IPainter& scattering_,
+				const IScalarPainter& ior_,
+				const IScalarPainter& absorption_,
+				const IScalarPainter& scattering_,
 				const Scalar g_
 				);
 
@@ -84,34 +90,44 @@ namespace RISE
 			RISEPel EvaluateProfile(
 				const Scalar r,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar EvaluateProfileNM(
 				const Scalar r,
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
-				) const;
+				) const override;
 
 			Scalar SampleRadius(
 				const Scalar u,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar PdfRadius(
 				const Scalar r,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar FresnelTransmission(
 				const Scalar cosTheta,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
+
+            Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const override;
+            Scalar FresnelTransmissionNM(const Scalar cosTheta,
+                const RayIntersectionGeometric& ri, const Scalar nm) const override;
 
 			Scalar GetIOR(
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
+
+			//! Live-rebind the IOR painter for the interactive editor.
+			//! Must be called in lockstep with the BSDF/SPF SetIOR by
+			//! SubSurfaceScatteringMaterial so the BSSRDF Fresnel and
+			//! the surface boundary stay coherent.
+			void SetIOR( const IScalarPainter& v );
 
 			//
 			// ISubSurfaceExtinctionFunction interface
@@ -123,7 +139,7 @@ namespace RISE
 			/// (the exp(-s*r/(3*d)) term) to determine the cutoff.
 			Scalar GetMaximumDistanceForError(
 				const Scalar error
-				) const;
+				) const override;
 
 			/// Evaluates the profile as a "total extinction" for
 			/// compatibility with the existing ISubSurfaceExtinctionFunction
@@ -131,7 +147,7 @@ namespace RISE
 			/// each channel.
 			RISEPel ComputeTotalExtinction(
 				const Scalar distance
-				) const;
+				) const override;
 		};
 	}
 }

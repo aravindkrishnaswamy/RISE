@@ -28,8 +28,10 @@ namespace RISE
 		{
 		protected:
 			IReadBuffer&		pReadBuffer;
+			std::uint64_t		buffer_start_pos;
 			unsigned char*		pBuffer;
 			unsigned int		bufW;
+			unsigned int		bufH;
 			bool				bAlphaInfo;
 			unsigned char		bpp;
 

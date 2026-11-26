@@ -1,0 +1,27 @@
+diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
+index a3f2a1999..9a21b432c 100644
+--- a/src/Library/Utilities/FireProductionAdvectionMac.mm
++++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
+@@ -647,13 +647,20 @@ bool PackMetalResidentTransport(
+ 			}
+ 			parameters.turbulentPrandtl=static_cast<float>(transport.TurbulentPrandtl());
+ 			parameters.turbulentSchmidt=static_cast<float>(transport.TurbulentSchmidt());
+-			parameters.vremanCoefficient=static_cast<float>(transport.VremanCv());
++			// r271 diagnostic (opt-in RISE_FIRE_SCALAR_VREMAN_CV=<C_v>=0): overrides the scalar (heat/species)
++			// Vreman coefficient, 0 switching scalar SGS diffusion off. Unset keeps the transport record's C_v.
++			static const float scalarVremanOverride=[](){const char* value=std::getenv("RISE_FIRE_SCALAR_VREMAN_CV");
++				if(!value||!*value)return -1.0f;char* end=nullptr;const float parsed=std::strtof(value,&end);
++				return end&&*end=='\0'&&std::isfinite(parsed)&&parsed>=0.0f?parsed:-1.0f;}();
++			parameters.vremanCoefficient=scalarVremanOverride>=0.0f?scalarVremanOverride:
++				static_cast<float>(transport.VremanCv());
+ 			parameters.thermochemistryIdentity=ResidentRecordIdentity(thermochemistry.RecordId());
+ 			parameters.transportIdentity=ResidentRecordIdentity(transport.RecordId());
+ 			return std::isfinite(parameters.turbulentPrandtl)&&
+ 				std::isfinite(parameters.turbulentSchmidt)&&
+ 				std::isfinite(parameters.vremanCoefficient)&&parameters.turbulentPrandtl>0.0f&&
+-				parameters.turbulentSchmidt>0.0f&&parameters.vremanCoefficient>0.0f;
++				parameters.turbulentSchmidt>0.0f&&(parameters.vremanCoefficient>0.0f||
++				(scalarVremanOverride==0.0f&&parameters.vremanCoefficient==0.0f));
+ 		}
+ 
+ 		bool PackMetalSingleStageFCTCertificate(

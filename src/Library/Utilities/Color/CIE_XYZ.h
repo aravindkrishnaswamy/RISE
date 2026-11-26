@@ -67,8 +67,13 @@ namespace RISE
 		{
 			*this = ColorUtils::ROMMRGBtoXYZ( rgb );
 		}
-	
-		inline XYZPel& operator=( const XYZPel& v )  
+
+		inline XYZPel( const AP1RGBPel& rgb )
+		{
+			*this = ColorUtils::AP1RGBtoXYZ( rgb );
+		}
+
+		inline XYZPel& operator=( const XYZPel& v )
 		{
 			X = v.X;
 			Y = v.Y;

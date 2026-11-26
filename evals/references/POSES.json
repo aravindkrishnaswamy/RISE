@@ -1,0 +1,35 @@
+{
+  "_comment": "The four reference camera poses for the RISE image->scene-reconstruction eval (Wave 3). Machine-readable; consumed by Wave-5 checkpoints. Keep in sync with generate_references.sh and sdf_reconstruct_truth.RISEscene (view1 == the ground-truth scene camera). All cameras are pinhole; film is 256x256; fov is the RISE horizontal-ish full field-of-view in degrees; up is world +Y.",
+  "film": { "width": 256, "height": 256 },
+  "reference_samples": 256,
+  "views": {
+    "view1": {
+      "role": "primary front-3/4 (identical to the ground-truth scene camera)",
+      "location": [2.6, 1.8, 3.2],
+      "lookat":   [0.0, 0.8, 0.0],
+      "up":       [0.0, 1.0, 0.0],
+      "fov":      40.0
+    },
+    "view2": {
+      "role": "right side (+X), notch face-on",
+      "location": [4.0, 1.5, 0.2],
+      "lookat":   [0.0, 0.9, 0.0],
+      "up":       [0.0, 1.0, 0.0],
+      "fov":      40.0
+    },
+    "view3": {
+      "role": "back-3/4 (+X,-Z; leans toward the notch side -- a pure -X,-Z back-left view self-occludes the +X notch entirely, see CALIBRATION.md)",
+      "location": [2.0, 1.8, -3.2],
+      "lookat":   [0.0, 0.8, 0.0],
+      "up":       [0.0, 1.0, 0.0],
+      "fov":      40.0
+    },
+    "view4": {
+      "role": "elevated top-down-ish (~60 deg elevation)",
+      "location": [1.4, 4.6, 1.7],
+      "lookat":   [0.0, 0.7, 0.0],
+      "up":       [0.0, 1.0, 0.0],
+      "fov":      45.0
+    }
+  }
+}

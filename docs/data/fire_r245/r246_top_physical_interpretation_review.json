@@ -1,0 +1,37 @@
+{
+  "schema": "rise.fire.r246.top-sensitivity-physical-review.v1",
+  "status": "descriptive_sensitivity_reviewed_puffing_unresolved",
+  "reviewer": "r246_gif_publication_contract_r4",
+  "scope": "Independent new physical interpretation task, unrelated to earlier fixed first-light publication finding",
+  "p1": 0,
+  "p2": 0,
+  "comparison_sha256": "dd2e4327ca129f6659e762b08239120e08ec39b5b1d69f8f3144b458a472929d",
+  "spectrum_acceptance": "0784ad91e",
+  "reaction_support": "Central2x2 station columns, four-column averaged cell-volume integral; not whole-plume heat release",
+  "common_mean_reaction_W": {
+    "baseline": 1350.052557862451,
+    "wide": 1331.1200706222255,
+    "taller": 1311.636735725308
+  },
+  "native_and_common_taller_equal_in_retained_central_columns": true,
+  "net_top_species_mass_out_kg": {
+    "wide": 8.203123888653522,
+    "taller": 25.870078523994277
+  },
+  "net_top_sensible_enthalpy_out_J": {
+    "wide": 215190.85531125648,
+    "taller": 219564.1036525246
+  },
+  "interpretation": [
+    "The top-only matched cold-start sensitivity changes original-region station observations but does not recover expected puffing dominance.",
+    "Zero upper central-column reaction does not establish zero whole-upper-volume reaction.",
+    "Large pointwise differences between nonlinear trajectories do not establish a systematic boundary mechanism.",
+    "Native top/lateral exchange reorganization involves different height and lateral area, not a measured original80-layer cumulative control-volume budget.",
+    "Equal render profiles preserve comparison but do not remove changed emission/extinction along rays."
+  ],
+  "baseline_signed_budgets": "unavailable",
+  "canonical_taller_qualification": false,
+  "causal_localization": false,
+  "remedy_supported": false,
+  "next_diagnostic": "Numbered original-region localization: reaction distribution/centroid/support and matched-height temperature/velocity; available235 sampled control-volume upper-plane/lateral transfers and stress/buoyancy/advection/combined projection. Full common80 cumulative budget and unavailable pressure/restoration/donor-state history must not be invented; assess retained operand coverage before any new full instrumented run."
+}

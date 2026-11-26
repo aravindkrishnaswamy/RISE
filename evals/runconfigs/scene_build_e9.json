@@ -1,0 +1,15 @@
+{
+  "//": "epoch-9: batch insert_chunks + RESTORED regular render cadence. gpt (does lighting recover while batch cost win holds?) + gemini-3.5-flash + gemini-3.6-flash (same-epoch chattiness comparison: does 3.6 adopt batch and shed its over-iteration like 3.5?). Family x3.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra",    "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.6-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_e9"
+}

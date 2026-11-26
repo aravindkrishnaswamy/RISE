@@ -234,7 +234,7 @@ namespace RISETest
 				System.Windows.Forms.Cursor.Current = System.Windows.Forms.Cursors.WaitCursor;
 
 				job.ClearAll();
-				if( !job.LoadAsciiScene( openFileDialog1.FileName ) ) 
+				if( !job.LoadAsciiSceneAuto( openFileDialog1.FileName ) )   // Slice 6c-2: via Auto (ClearAll above resets the retained Document -> load-once guard satisfied; non-native falls back to legacy)
 				{
 					MessageBox.Show( "Failed to load scene `" + openFileDialog1.FileName + "`", "R.I.S.E.", MessageBoxButtons.OK, MessageBoxIcon.Error );
 				} 

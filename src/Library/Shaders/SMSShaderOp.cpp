@@ -66,15 +66,20 @@ void SMSShaderOp::PerformOperation(
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+	// Dedicated SMSShaderOp has no PT suppression partner and stays legacy.
+	// SMS receiver normal: pass BOTH the geometric and shading normals
+	// so the solver can use shading for BSDF eval / cosine factor and
+	// geometric for probe-direction fallback / chain-topology decisions.
 	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 		ri.geometric.ptIntersection,
+		ri.geometric.vGeomNormal,
 		ri.geometric.vNormal,
 		ri.geometric.onb,
 		ri.pMaterial,
 		woOutgoing,
 		*pScene,
 		caster,
-		smsSampler );
+		smsSampler, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{
@@ -116,8 +121,10 @@ Scalar SMSShaderOp::PerformOperationNM(
 	IndependentSampler fallbackSamplerNM( rc.random );
 	ISampler& smsSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
 
+	// Pass both geometric and shading — see RGB SMSShaderOp.
 	ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 		ri.geometric.ptIntersection,
+		ri.geometric.vGeomNormal,
 		ri.geometric.vNormal,
 		ri.geometric.onb,
 		ri.pMaterial,
@@ -125,7 +132,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 		*pScene,
 		caster,
 		smsSamplerNM,
-		nm );
+		nm, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{

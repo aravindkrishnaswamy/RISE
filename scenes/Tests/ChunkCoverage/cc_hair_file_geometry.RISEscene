@@ -1,0 +1,35 @@
+RISE ASCII SCENE 7
+# Coverage: hair_geometry in `file` mode (a groom IMPORTED from a tiny
+# 4-strand Cem Yuksel .hair asset), plus the hair_material it is shaded
+# with.  The grow mode of the same chunk is covered by scenes/Tests/Hair.
+#
+# width_root / width_tip are MULTIPLIERS on the file's own thickness in
+# file mode (1.0 = verbatim); 2.0 here reads the asset at double gauge so
+# the parameter is exercised rather than merely defaulted.
+
+film
+{
+	width		64
+	height		64
+}
+
+hair_geometry
+{
+	name		cc_hair_file
+	file		scenes/Tests/ChunkCoverage/assets/tiny.hair
+	width_root	2.0
+	width_tip	2.0
+}
+
+hair_material
+{
+	name		cc_hair_file_mat
+	eumelanin	1.3
+}
+
+standard_object
+{
+	name		cc_hair_file_obj
+	geometry	cc_hair_file
+	material	cc_hair_file_mat
+}

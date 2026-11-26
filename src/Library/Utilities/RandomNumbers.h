@@ -19,27 +19,113 @@
 
 namespace RISE
 {
+	//! libc rand(), serialized (DL-625 review).  A default-constructed
+	//! RandomNumberGenerator seeds from libc rand(), and render workers
+	//! construct generators concurrently (thread_local generators in media
+	//! and AOV passes; formerly per-call fallback samplers in the
+	//! integrators, now FallbackSampler / ThreadLocalSeed): calls to rand()
+	//! from several threads at once race on its hidden state (undefined
+	//! behaviour).  The default seed and the render-time seeding sites read
+	//! the libc stream through this one mutex, so it stays the stream
+	//! std::srand controls while concurrent readers no longer race.  (Code
+	//! outside the render path -- detector-sphere tools, AutoRasterizer's
+	//! fixed-probe test hook, the Win32 UI -- still calls rand() / srand()
+	//! directly.)  Which concurrent reader gets which value still depends on
+	//! scheduling: sites whose result must be reproducible read once on the
+	//! constructing thread and derive per-tile / per-row seeds
+	//! (RasterizeBlockDispatcher, the VCM light pass, AOV passes).
+	extern unsigned int LockedLibcRand();
+
+	//! A cheap, race-free seed for a generator constructed on a render
+	//! worker (per-call fallback samplers in hot integrator code, the
+	//! media's thread_local generators): a thread_local splitmix64 stream
+	//! started from a process-wide atomic counter.  It never reads libc --
+	//! the number of workers that make a first call is scheduling-
+	//! dependent, so a libc read here would move the libc stream the
+	//! reproducible seeding sites read next -- and takes no lock (the
+	//! default constructor's LockedLibcRand() seed, a global mutex per
+	//! construction, cost +34 % user CPU on an SMS scene).  Like the racy
+	//! rand() it replaces, which counter value a thread gets depends on
+	//! scheduling, so results drawn from it are not reproducible run to
+	//! run.
+	extern unsigned int ThreadLocalSeed();
+
+	//! Restarts ThreadLocalSeed's per-thread tickets from a base read ONCE
+	//! from libc on the calling thread (so std::srand pins it).  A thread
+	//! whose FIRST ThreadLocalSeed() call -- e.g. its first heterogeneous-
+	//! medium transmittance estimate -- comes after this call, as the
+	//! k-th such thread, gets a stream that is a pure function of
+	//! (std::srand state at the call, k).  Threads already seeded keep
+	//! their streams.  Production never calls it (a libc read there would
+	//! move the stream the render's own seeding sites read); a test that
+	//! drives a walk on one fresh thread after std::srand calls it to make
+	//! that walk's medium generator a property of the seed.  TEST-ONLY.
+	//! Call it only while no other thread can make its first
+	//! ThreadLocalSeed() call: the base and the ticket counter are separate
+	//! atomics, so a concurrent first draw could pair an old base with a
+	//! reset ticket and duplicate another thread's stream.
+	extern void ReseedThreadLocalSeedEpochForTesting();
+
+	//! A seed derived from (base, key) by the splitmix64 finalizer: distinct
+	//! keys (tiles, rows, workers) of one base get decorrelated seeds, and
+	//! the result is a pure function of its arguments.
+	inline unsigned int DeriveSeed( const unsigned int base, const unsigned long long key )
+	{
+		unsigned long long z = ( static_cast<unsigned long long>( base ) << 32 ) ^ ( ( key + 1ULL ) * 0x9E3779B97F4A7C15ULL );
+		z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+		z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+		z ^= z >> 31;
+		return static_cast<unsigned int>( z ^ ( z >> 32 ) );
+	}
+
 	class RandomNumberGenerator
 	{
 	protected:
 	#if ((defined MERSENNE53) || (defined MERSENNE))
 		mutable MersenneTwister mt;
+	#elif !(defined DRAND48)
+		mutable unsigned long long fallbackState;
+
+		static inline unsigned long long SeedFallbackState( const unsigned int seed )
+		{
+			return ( static_cast<unsigned long long>( seed ) & 0xFFFFFFFFULL ) ^ 0x9E3779B97F4A7C15ULL;
+		}
 	#endif
 
 	public:
 
 	#if ((defined MERSENNE53) || (defined MERSENNE))
-		RandomNumberGenerator( unsigned int seed = rand() ) : 
+		RandomNumberGenerator( unsigned int seed = LockedLibcRand() ) : 
 		mt( seed )
 		{
 		};
+	#elif defined DRAND48
+		RandomNumberGenerator( unsigned int seed = LockedLibcRand() )
+		{
+			srand48( seed );
+		};
 	#else
-		RandomNumberGenerator( ){};
+		RandomNumberGenerator( unsigned int seed = LockedLibcRand() ) :
+		fallbackState( SeedFallbackState( seed ) )
+		{
+		};
 	#endif
 
 		virtual ~RandomNumberGenerator( )
 		{
 		};
+
+        // Reset the existing generator in place; retain its object identity.
+        inline void Reseed( unsigned int seed )
+        {
+#if defined DRAND48
+            srand48(seed);
+#elif defined MERSENNE53 || defined MERSENNE
+            mt.init_genrand(seed);
+#else
+            fallbackState = SeedFallbackState( seed );
+#endif
+        }
 
 		inline double CanonicalRandom() const
 		{
@@ -50,7 +136,15 @@ namespace RISE
 			#elif defined MERSENNE
 				return mt.genrand_real2();
 			#else
-				return rand() * (0.9999999 / double(RAND_MAX));  
+				// Fallback build only (neither MERSENNE53 nor MERSENNE; the
+				// shipped Config.common defines MERSENNE53): per-instance
+				// SplitMix64 state so independent generators stay isolated and
+				// thread-safe without contending on libc rand().
+				unsigned long long z = ( fallbackState += 0x9E3779B97F4A7C15ULL );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+				z ^= z >> 31;
+				return static_cast<double>( z >> 11 ) * ( 1.0 / 9007199254740992.0 );
 			#endif
 		}
 
@@ -71,6 +165,33 @@ namespace RISE
 	};
 
 	extern RandomNumberGenerator& GlobalRNG();
+
+	//! DL-628: per-tile / per-row / per-sample medium RNG scope.  Binds
+	//! `ActiveMediumRNG()` and `ActiveMediumRNG_NM()` on the calling worker
+	//! thread to deterministic streams derived from `tileSeed`, so ratio
+	//! tracking in `HeterogeneousMedium::EvalTransmittance{,NM}` depends on
+	//! the tile/row/sample rather than which worker thread claimed it.
+	//! Outside any active scope (e.g. standalone unit tests calling medium
+	//! methods directly), `ActiveMediumRNG{,_NM}()` falls back to a
+	//! per-thread `ThreadLocalSeed()`-initialized generator with zero libc
+	//! draws.  Generators are reseeded lazily on first medium draw inside a
+	//! scope, so tiles without heterogeneous media pay only a POD save/restore.
+	class ScopedMediumTileSeed
+	{
+	public:
+		explicit ScopedMediumTileSeed( unsigned int tileSeed, bool enable = true ) noexcept;
+		~ScopedMediumTileSeed() noexcept;
+		ScopedMediumTileSeed( const ScopedMediumTileSeed& ) = delete;
+		ScopedMediumTileSeed& operator=( const ScopedMediumTileSeed& ) = delete;
+
+	private:
+		unsigned int prevSeed;
+		unsigned int prevDepth;
+		bool enabled;
+	};
+
+	extern RandomNumberGenerator& ActiveMediumRNG();
+	extern RandomNumberGenerator& ActiveMediumRNG_NM();
 }
 
 #endif

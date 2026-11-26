@@ -77,18 +77,21 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
-#include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/CompletePathGuide.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/BSSRDFSampling.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 #include "BDPTVertex.h"
 #include "../Utilities/RandomNumbers.h"
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 namespace RISE
 {
+	struct PixelAOV;
+
 	namespace Implementation
 	{
 		/// Encapsulates the full BDPT algorithm: subpath generation,
@@ -101,7 +104,6 @@ namespace RISE
 			unsigned int		maxEyeDepth;
 			unsigned int		maxLightDepth;
 			const LightSampler*	pLightSampler;
-			ManifoldSolver*		pManifoldSolver;
 			StabilityConfig		stabilityConfig;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -139,7 +141,20 @@ namespace RISE
 			};
 
 		protected:
+			// Training-pass diagnostic accumulator.  Updated from
+			// RecordGuidingTrainingPath(), which is called from the
+			// per-pixel BDPT worker loop — so every one of the three
+			// Scalar accumulators and two size_t counters below is
+			// reached by N render threads concurrently.  Plain
+			// `+=` / `++` on those is a data race (torn writes for
+			// doubles, lost updates for size_t), so the struct is
+			// guarded by `guidingTrainingStatsMutex`.  Contention is
+			// low — RecordGuidingTrainingPath fires once per path,
+			// not per ray — so the mutex is cheaper than promoting
+			// each field to std::atomic (especially the doubles,
+			// which would need C++20 `fetch_add` or a CAS loop).
 			mutable GuidingTrainingStats guidingTrainingStats;
+			mutable std::mutex guidingTrainingStatsMutex;
 #endif
 
 			virtual ~BDPTIntegrator();
@@ -152,7 +167,6 @@ namespace RISE
 				);
 
 			void SetLightSampler( const LightSampler* pSampler );
-			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 #ifdef RISE_ENABLE_OPENPGL
 			void SetGuidingField( PathGuidingField* pField, PathGuidingField* pLightField, Scalar alpha, unsigned int maxDepth, unsigned int maxLightDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
@@ -161,7 +175,11 @@ namespace RISE
 				bool enableStrategySelection = false,
 				unsigned int strategySamples = 0 );
 			void ResetGuidingTrainingStats() const;
-			const GuidingTrainingStats& GetGuidingTrainingStats() const;
+			/// Returns a locked snapshot of the training stats.
+			/// Returned by value (not reference) so callers hold a
+			/// stable copy even if a new training iteration begins
+			/// writing after the call returns.
+			GuidingTrainingStats GetGuidingTrainingStats() const;
 			void ResetStrategySelectionStats() const;
 			void GetStrategySelectionStats(
 				unsigned long long& pathCount,
@@ -172,6 +190,7 @@ namespace RISE
 
 			unsigned int GetMaxEyeDepth() const { return maxEyeDepth; }
 			unsigned int GetMaxLightDepth() const { return maxLightDepth; }
+			const StabilityConfig& GetStabilityConfig() const { return stabilityConfig; }
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult
@@ -206,16 +225,25 @@ namespace RISE
 
 			/// Generates a light subpath starting from a sampled light source.
 			/// \return Number of vertices stored
+			///
+			/// `subpathStarts` is retained for legacy compatibility with
+			/// the pre-2026-05 branching infrastructure; it always
+			/// contains exactly one [0, N) range now (single subpath).
 			unsigned int GenerateLightSubpath(
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
+				std::vector<uint32_t>& subpathStarts,
 				const RandomNumberGenerator& random
 				) const;
 
 			/// Generates an eye subpath from a camera ray.
 			/// \return Number of vertices stored
+			///
+			/// `subpathStarts` is retained for compatibility with the
+			/// pre-2026-05 branching infrastructure; it always contains
+			/// exactly one [0, N) range now (single branch).
 			unsigned int GenerateEyeSubpath(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -223,10 +251,41 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				std::vector<BDPTVertex>& vertices
+				std::vector<BDPTVertex>& vertices,
+				std::vector<uint32_t>& subpathStarts,
+				PixelAOV* pPrimaryAOV = 0
 				) const;
 
 			/// Connects and evaluates a single (s,t) strategy.
+			///
+			/// THREAD-SAFETY CONTRACT: although this method is `const`,
+			/// it transiently mutates `pdfRev` on up to four endpoint
+			/// vertices in `lightVerts`/`eyeVerts` via `const_cast` (and
+			/// restores them before returning) so MISWeight can read the
+			/// connection-aware reverse PDFs.  CALLERS MUST OWN their
+			/// own subpath vectors per thread — sharing the same
+			/// `lightVerts`/`eyeVerts` across concurrent threads is a
+			/// data race.  All in-tree callers (BDPTRasterizerBase,
+			/// MLTRasterizer, MLTSpectralRasterizer) build the vectors
+			/// per worker thread on the stack, so the
+			/// contract holds; the `const` qualifier is preserved
+			/// because the BDPTIntegrator instance itself has no
+			/// observable state mutation.
+			/// `cameraLensSample` is two canonical randoms used by the
+			/// t==1 strategy to pick the point on the camera's entrance
+			/// APERTURE that the light vertex connects to (debt 28).
+			/// It is consumed only by cameras with a finite aperture
+			/// (`thinlens_camera`); point-aperture cameras (`pinhole_camera`,
+			/// `fisheye_camera`) ignore it and connect to `camera.GetLocation()`,
+			/// while delta-direction cameras (`orthographic_camera`) skip the
+			/// `t == 1` light-to-camera splat strategy altogether.  There is
+			/// deliberately no default: a fixed value would silently
+			/// give a thin lens the right splat ENERGY with no depth of
+			/// field, i.e. a sharp light-traced layer over a defocused
+			/// eye-traced one, which is exactly the failure mode this
+			/// parameter exists to prevent.  Callers should draw it
+			/// from a dedicated sampler stream so a PSSMLT mutation
+			/// moves the aperture point continuously.
 			ConnectionResult ConnectAndEvaluate(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
@@ -234,25 +293,46 @@ namespace RISE
 				unsigned int t,		///< Number of eye subpath vertices used
 				const IScene& scene,
 				const IRayCaster& caster,
-				const ICamera& camera
+				const ICamera& camera,
+				const Point2& cameraLensSample, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Evaluates all valid (s,t) strategies and returns results.
+			/// `cameraLensSample`: see ConnectAndEvaluate above.
 			std::vector<ConnectionResult> EvaluateAllStrategies(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Point2& cameraLensSample,
 				ISampler* pSampler
 				) const;
 
-			/// Computes MIS weight using the balance heuristic (power=1).
+			/// DL-424/425: the see-through s = 1 connection (DL-330) as an
+			/// MIS strategy.  `live`: the scene's delta pass-through shadow
+			/// walk is active (RayCaster::DeltaPassThroughShadowsActive), so
+			/// a light-tracing strategy whose light prefix is a delta root
+			/// followed by a straight chain of gap draws counts the
+			/// see-through connection that could generate its path.
+			/// `gaps` > 0: THIS call weights the see-through connection
+			/// itself (s == 1), whose eye endpoint's pdfRev already carries
+			/// the gap pseudo-probability product; the light-tracing terms
+			/// beyond the light walk's depth caps are then left out.
+			struct SeeThroughMIS
+			{
+				bool			live;
+				unsigned int	gaps;
+				SeeThroughMIS() : live( false ), gaps( 0 ) {}
+			};
+
+			/// Computes the MIS weight (power heuristic, exponent 2).
 			Scalar MISWeight(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
 				unsigned int s,
-				unsigned int t
+				unsigned int t,
+				const SeeThroughMIS* pSeeThrough = 0
 				) const;
 
 			//////////////////////////////////////////////////////////////////
@@ -280,15 +360,29 @@ namespace RISE
 				}
 			};
 
+			/// NM light subpath.  `subpathStarts` is retained for
+			/// compatibility with the pre-2026-05 branching
+			/// infrastructure; it always contains exactly one [0, N)
+			/// range now (single branch).  `pSwlHWSS`: when non-null,
+			/// Russian Roulette survival probability is computed from
+			/// the MAX throughput across all non-terminated wavelengths
+			/// in the bundle — prevents hero-driven RR from amplifying
+			/// companion wavelengths on rare survivors (the firefly
+			/// failure mode).  Pass nullptr for non-HWSS callers
+			/// (single-wavelength NM).
 			unsigned int GenerateLightSubpathNM(
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
+				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
-				const RandomNumberGenerator& random
+				const RandomNumberGenerator& random,
+				const SampledWavelengths* pSwlHWSS
 				) const;
 
+			/// NM eye subpath.  See GenerateLightSubpathNM for the
+			/// pSwlHWSS semantics.
 			unsigned int GenerateEyeSubpathNM(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -297,7 +391,10 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
-				const Scalar nm
+				std::vector<uint32_t>& subpathStarts,
+				const Scalar nm,
+				const SampledWavelengths* pSwlHWSS,
+				PixelAOV* pPrimaryAOV = 0
 				) const;
 
 			ConnectionResultNM ConnectAndEvaluateNM(
@@ -308,7 +405,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const Scalar nm
+				const Point2& cameraLensSample,
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
 			std::vector<ConnectionResultNM> EvaluateAllStrategiesNM(
@@ -317,77 +415,11 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const Scalar nm
+				const Point2& cameraLensSample,
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
-			/// Evaluates SMS strategies for specular caustic paths (RGB).
-			/// For each non-delta eye vertex, traces toward emitters to find
-			/// specular object chains, then uses ManifoldSolver to find valid
-			/// specular paths.
-			std::vector<ConnectionResult> EvaluateSMSStrategies(
-				const std::vector<BDPTVertex>& eyeVerts,
-				const IScene& scene,
-				const IRayCaster& caster,
-				const ICamera& camera,
-				ISampler& sampler
-				) const;
-
-			/// Spectral variant of EvaluateSMSStrategies.
-			std::vector<ConnectionResultNM> EvaluateSMSStrategiesNM(
-				const std::vector<BDPTVertex>& eyeVerts,
-				const IScene& scene,
-				const IRayCaster& caster,
-				const ICamera& camera,
-				ISampler& sampler,
-				const Scalar nm
-				) const;
-
-		protected:
-			/// Helper: evaluates the BSDF at a surface vertex for given
-			/// incoming and outgoing directions.
-			RISEPel EvalBSDFAtVertex(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo
-				) const;
-
-			/// Helper: evaluates the SPF PDF at a surface vertex
-			Scalar EvalPdfAtVertex(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo
-				) const;
-
-			/// Helper: checks if a connection between two points is unoccluded.
-			bool IsVisible(
-				const IRayCaster& caster,
-				const Point3& p1,
-				const Point3& p2
-				) const;
-
-			/// NM helper: evaluates the BSDF at a surface vertex for a single wavelength
-			Scalar EvalBSDFAtVertexNM(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo,
-				const Scalar nm
-				) const;
-
-			/// NM helper: evaluates the SPF PDF at a vertex for a single wavelength
-			Scalar EvalPdfAtVertexNM(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo,
-				const Scalar nm
-				) const;
-
-			/// NM helper: evaluates emitter radiance for a specific wavelength
-			Scalar EvalEmitterRadianceNM(
-				const BDPTVertex& vertex,
-				const Vector3& outDir,
-				const Scalar nm
-				) const;
-
+		public:
 			/// Helper: evaluate transmittance along a connection edge
 			/// between two points, accounting for participating media.
 			///
@@ -398,13 +430,35 @@ namespace RISE
 			/// This Tr multiplies the connection contribution but is NOT
 			/// included in MIS PDFs (see note on transmittance cancellation
 			/// in the MISWeight documentation).
+			///
+			/// Public so VCMIntegrator can reuse the boundary-walking
+			/// shadow at its NEE / interior-connection / splat-to-camera
+			/// sites without duplicating the medium-stack logic.
 			RISEPel EvalConnectionTransmittance(
 				const Point3& p1,
 				const Point3& p2,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
+				) const;
+
+			/// Ray+distance overload — needed by env NEE so the walk
+			/// can extend to RISE_INFINITY (matching PT) without
+			/// constructing a "point at infinity" that overflows the
+			/// p2 - p1 distance calculation.  When `maxDist` is
+			/// RISE_INFINITY, the global-medium fast path and the
+			/// final "remaining" segment evaluate transmittance over
+			/// the full ray to infinity, which converges correctly
+			/// for any extinction > 0 (Beer-Lambert exp(-σ·∞) → 0)
+			/// and harmlessly returns 1 for vacuum (σ = 0).
+			RISEPel EvalConnectionTransmittance(
+				const Ray& connectionRay,
+				const Scalar maxDist,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
 			/// Spectral variant of EvalConnectionTransmittance
@@ -415,9 +469,21 @@ namespace RISE
 				const IRayCaster& caster,
 				const Scalar nm,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
+			/// Ray+distance NM overload — see RGB twin.
+			Scalar EvalConnectionTransmittanceNM(
+				const Ray& connectionRay,
+				const Scalar maxDist,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const Scalar nm,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
+				) const;
+
+		protected:
 			// BSSRDF sampling is provided by the shared utility
 			// BSSRDFSampling::SampleEntryPoint() in
 			// ../Utilities/BSSRDFSampling.h
@@ -451,6 +517,8 @@ namespace RISE
 			/// Checks whether any delta vertex in the given subpath has
 			/// wavelength-dependent IOR (dispersion).  If so, returns
 			/// true — the caller should terminate companion wavelengths.
+			/// Also returns true at any rough dielectric interface: the current
+			/// HWSS replay shares a hero IOR stack and radiance eta scale.
 			///
 			/// Walks the stored vertices, reconstructs a minimal
 			/// RayIntersectionGeometric from vertex geometry, and
@@ -459,6 +527,41 @@ namespace RISE
 				const std::vector<BDPTVertex>& verts,
 				Scalar heroNM,
 				Scalar companionNM
+				);
+
+			/// DL-126 P1.  Checks whether the given subpath scatters off
+			/// any non-delta SURFACE vertex whose material has no
+			/// aggregate BSDF (`GetBSDF() == 0`, e.g. `biospec_skin_material`
+			/// / `generic_human_tissue_material`) at an INTERIOR position
+			/// (not the last vertex).  `RecomputeSubpathThroughputNM` has
+			/// no way to form a companion/hero ratio at such a vertex (no
+			/// BSDF to evaluate, and neither shipped SPF overrides
+			/// `EvaluateKrayNM`), so it zeroes the companion's contribution
+			/// from that point on -- wavelength-independent of which
+			/// companion, unlike dispersion, so this is a single
+			/// path-wide check, not a per-companion-pair one like
+			/// `HasDispersiveDeltaVertex`.  The caller must terminate
+			/// secondary wavelengths on a true return, exactly as it
+			/// already does for a dispersive delta vertex, so the
+			/// resulting always-zero companions are EXCLUDED from the
+			/// sample-count denominator instead of silently diluting the
+			/// bundle mean (the same bias `HasDispersiveDeltaVertex`'s own
+			/// termination protocol exists to avoid).
+			static bool HasNullBSDFContinuationVertex(
+				const std::vector<BDPTVertex>& verts
+				);
+
+			/// DL-357.  True if the subpath crosses a RANDOM-WALK subsurface
+			/// jump (a BSSRDF entry vertex whose material has no diffusion
+			/// profile).  The walk was sampled from the hero wavelength's
+			/// coefficients and its segments are not recorded, so
+			/// `RecomputeSubpathThroughputNM` cannot re-price it and zeroes
+			/// every companion from that vertex on; the caller must
+			/// terminate secondary wavelengths on a true return, exactly as
+			/// for `HasNullBSDFContinuationVertex`.  (A diffusion-profile
+			/// jump IS re-priced there, Phase 1b.)
+			static bool HasRandomWalkSSSEntryVertex(
+				const std::vector<BDPTVertex>& verts
 				);
 		};
 	}

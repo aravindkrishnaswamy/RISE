@@ -23,15 +23,11 @@
 #ifndef BDPT_RASTERIZER_BASE_
 #define BDPT_RASTERIZER_BASE_
 
-#include "PixelBasedRasterizerHelper.h"
+#include "BidirectionalRasterizerBase.h"
 #include "AOVBuffers.h"
-#include "SplatFilm.h"
 #include "../Shaders/BDPTIntegrator.h"
-#include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/CompletePathGuide.h"
-#include "../Utilities/StabilityConfig.h"
-#include <atomic>
 
 namespace RISE
 {
@@ -39,17 +35,19 @@ namespace RISE
 	{
 		class AOVBuffers;
 
-		class BDPTRasterizerBase : public virtual PixelBasedRasterizerHelper
+		class BDPTRasterizerBase : public BidirectionalRasterizerBase
 		{
 		protected:
-			BDPTIntegrator*			pIntegrator;
-			ManifoldSolver*			pManifoldSolver;
-			mutable SplatFilm*		pSplatFilm;
-			mutable IRasterImage*	pScratchImage;		///< Scratch buffer for progressive output with splats
-			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
-			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels (adaptive)
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const { return true; }
 
-			// pAOVBuffers is inherited from PixelBasedRasterizerHelper
+			BDPTIntegrator*			pIntegrator;
+
+			// pAOVBuffers is inherited from PixelBasedRasterizerHelper.
+			// pSplatFilm, pScratchImage, mSplatTotalSamples,
+			// mTotalAdaptiveSamples, stabilityConfig, and the
+			// splat-film helpers all live in BidirectionalRasterizerBase.
 
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for eye subpath guided sampling
@@ -58,37 +56,31 @@ namespace RISE
 			mutable Scalar				guidingAlphaScale;
 #endif
 			PathGuidingConfig		guidingConfig;		///< Path guiding configuration
-			StabilityConfig			stabilityConfig;	///< Production stability controls
 
 			virtual ~BDPTRasterizerBase();
 
-			/// Returns a scaling factor for splat film resolution.
-			/// Pel returns 1; Spectral returns nSpectralSamples.
-			virtual Scalar GetSplatSampleScale() const { return 1.0; }
-
-			/// Returns the progress title string for this rasterizer variant.
-			virtual const char* GetProgressTitle() const = 0;
-
-			/// Returns a scratch image with resolved splats composited
-			/// on top of the current primary, for progressive display.
-			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+			/// Per-render setup (DL-458): hand the integrator the
+			/// RayCaster's prepared LightSampler, (re)create the t==1
+			/// SplatFilm, configure the splat region, reset the adaptive
+			/// sample counter and the splat sample divisor.  Runs from
+			/// RasterizeScene AND, per frame, from
+			/// PixelBasedRasterizerHelper::RenderFrameOfAnimation -- an
+			/// animation frame used to skip all of it, so BDPT animation
+			/// frames carried no NEE, no light subpaths and no splats.
+			/// Requires pCaster->AttachScene to have run.  The Pel /
+			/// Spectral subclasses' diamond disambiguators forward here.
+			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+			virtual bool ValidateSceneForRasterizer( const IScene& pScene ) const;
 
 		public:
 			BDPTRasterizerBase(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingCfg,
-				const StabilityConfig& stabilityCfg
+				const StabilityConfig& stabilityCfg,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
-
-			/// Thread-safe: adds to the total adaptive sample counter
-			void AddAdaptiveSamples( uint64_t count ) const;
-
-			/// Returns the effective SPP for splat film resolution,
-			/// accounting for adaptive sampling if active
-			Scalar GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const;
 
 			void RasterizeScene(
 				const IScene& pScene,

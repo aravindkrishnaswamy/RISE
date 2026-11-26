@@ -36,7 +36,6 @@ namespace RISE
 				Scalar	value;
 			};
 
-			mutable std::vector<SPECTRAL_SAMPLE>	vecSpectralSamples;
 			const Scalar							lambda_begin;
 			const Scalar							lambda_end;
 			const Scalar							lambda_diff;
@@ -81,6 +80,13 @@ namespace RISE
 				) const;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): spectral shader-graph runner
+			// whose shaderop graph may contain spectral photon-map shaderops -> it
+			// consumes the scene's photon maps, so the deferred shoot must fire
+			// (the spectral twin of PixelBasedPelRasterizer).  Dedicated-integrator
+			// subclasses override back to false.
+			bool ConsumesScenePhotonMaps() const { return true; }
+
 			PixelBasedSpectralIntegratingRasterizerRGB( 
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin_,
@@ -91,7 +97,8 @@ namespace RISE
 				const IFunction1D& spd_g_,
 				const IFunction1D& spd_b_,
 				const bool bSpectralHalton_,
-				const bool bTimeHalton_
+				const bool bTimeHalton_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

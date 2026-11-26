@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -13,27 +13,17 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-finalgather_shaderop
-{
-	name			fg
-	cachegradients TRUE
-	min_effective_contributors 2
-	high_variation_reuse_scale 0.25
-	samples 1024
-}
-
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	fg
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		3
-	samples				10
-	lum_samples			16
+	samples				64
+	show_luminaires		FALSE
 }
 
 file_rasterizeroutput
@@ -48,13 +38,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 200
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 
@@ -62,7 +56,171 @@ pinhole_camera
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+uniformcolor_painter
+{
+	name		color_dullyellow
+	color		0.8 0.8 0.184314
+}
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_slateblue
+	color		0.0 0.498039 1.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -111,7 +269,7 @@ translucent_material
 	name				transyellow
 	ref					color_black
 	tau					color_dullyellow
-	ext					color_black
+	ext			0
 	N					1.0
 }
 
@@ -120,7 +278,7 @@ translucent_material
 	name				transblue
 	ref					color_black
 	tau					color_slateblue
-	ext					color_black
+	ext			0
 	N					1.0
 }
 
@@ -268,27 +426,4 @@ standard_object
 	material			white
 }
 
-global_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.01
-	branch				FALSE
-}
 
-global_pel_gather
-{
-	max_photons			100
-	radius				10
-	ellipse_ratio		0.05
-}
-
-irradiance_cache
-{
-	size				2000
-	tolerance			0.08
-	min_spacing		3
-	max_spacing    100
-	query_threshold_scale 0.5
-	neighbor_spacing_scale 2.0
-}

@@ -75,6 +75,11 @@ namespace RISE
 			*this = ColorUtils::ProPhotoRGBtoRec709RGB( rgb );
 		}
 
+		inline Rec709RGBPel( const AP1RGBPel& rgb )
+		{
+			*this = ColorUtils::AP1RGBtoRec709RGB( rgb );
+		}
+
 		// Array style access
 		inline		Scalar&		operator[]( const unsigned int i )
 		{

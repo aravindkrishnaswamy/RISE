@@ -1,0 +1,22 @@
+{
+  "scope": "separate common layers0..79 signal and station extraction from retained histories",
+  "status": "passed_pending_fresh_review",
+  "checkpoint_wire_changed": false,
+  "native_signal_replaced": false,
+  "launch_permitted": false,
+  "optical_render_control_completed": false,
+  "controls": [
+    "single nonzero layer79 exact volume units at two accepted timestamps",
+    "upper-only temperature reaction velocity changes keep lower signal/station CSV exact",
+    "foreign timestamp RED even above common support",
+    "station-height relabel RED",
+    "full160 native station histories required",
+    "old r244 identities unchanged"
+  ],
+  "log_sha256": {
+    "r246_common_height_build.v1.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_common_height_build.v2.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_common_height_gate.v1.log": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f",
+    "r246_common_height_legacy_gate.v1.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+  }
+}

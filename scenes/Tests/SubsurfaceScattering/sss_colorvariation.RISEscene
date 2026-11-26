@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -15,37 +15,14 @@ RISE ASCII SCENE 5
 
 standard_shader
 {
-	name		sss_irrad
-	shaderop	DefaultDirectLighting
-}
-
-simple_sss_shaderop
-{
-	name				sss
-	numpoints			10000
-	irrad_scale			1000
-	geometric_scale			1
-	multiplybsdf		true
-
-	extinction			0.005 0.005 0.005
-
-	shader				sss_irrad
-
-	cache				true
-}
-
-standard_shader
-{
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	sss
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				4
-	lum_samples			1
+	samples				64
 
 }
 
@@ -61,13 +38,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			500
+	height			375
+}
+
 pinhole_camera
 {
 	location			0 0 10
 	lookat				0 0 0
 	up					0 1 0
-	width				500
-	height				375
 	fov					25.0
 	theta				25.0
 }
@@ -76,7 +57,151 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+uniformcolor_painter
+{
+	name		color_red
+	color		1.0 0.0 0.0
+}
+
+
+uniformcolor_painter
+{
+	name		color_blue
+	color		0.0 0.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 checker_painter
 {
@@ -95,7 +220,7 @@ translucent_material
 	name				trans
 	ref					pnt_cnt
 	tau					pnt_cnt
-	ext					color_black
+	ext			0
 	N					1.0
 	scattering			0.8
 }
@@ -129,5 +254,7 @@ omni_light
 	color		1.0 1.0 1.0
 	position	0 0 0
 }
+
+
 
 

@@ -1,0 +1,107 @@
+{
+  "identity_requirement": "waived by owner; no timestep or state equality tests",
+  "statistics_start_s": 15.018720638239756,
+  "statistics_end_s": 19.018720638239756,
+  "duration_s": 4.0,
+  "accepted_steps": 2432,
+  "alpha_mask": "r<0.8m and adjacent accepted T mean>301K; axes separate and combined",
+  "vertical_binning": "z faces assigned to slab immediately above, top face folded into final slab",
+  "momentum_alpha_interpretation": "shared primal scalar-carrier alpha; no independent velocity alpha or average of alpha on dual faces",
+  "selected_alpha": [
+    {
+      "axis": -1,
+      "z": 32,
+      "slab_center_height_m": 0.9942762646824121,
+      "face_seconds": 3887.809410842601,
+      "scalar_limited_fraction": 0.0,
+      "shared_momentum_carrier_limited_fraction": 0.0,
+      "mean_scalar_alpha": 1.0,
+      "mean_momentum_carrier_source_alpha": 1.0,
+      "independent_momentum_alpha": "not defined; centered velocity factor",
+      "note": "both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha"
+    },
+    {
+      "axis": -1,
+      "z": 49,
+      "slab_center_height_m": 1.5143592339009047,
+      "face_seconds": 5179.4658061080845,
+      "scalar_limited_fraction": 0.0,
+      "shared_momentum_carrier_limited_fraction": 0.0,
+      "mean_scalar_alpha": 1.0,
+      "mean_momentum_carrier_source_alpha": 1.0,
+      "independent_momentum_alpha": "not defined; centered velocity factor",
+      "note": "both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha"
+    },
+    {
+      "axis": -1,
+      "z": 65,
+      "slab_center_height_m": 2.0038490872830153,
+      "face_seconds": 6201.382679314702,
+      "scalar_limited_fraction": 0.0,
+      "shared_momentum_carrier_limited_fraction": 0.0,
+      "mean_scalar_alpha": 1.0,
+      "mean_momentum_carrier_source_alpha": 1.0,
+      "independent_momentum_alpha": "not defined; centered velocity factor",
+      "note": "both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha"
+    },
+    {
+      "axis": -1,
+      "z": 81,
+      "slab_center_height_m": 2.493338940665126,
+      "face_seconds": 7163.826183310361,
+      "scalar_limited_fraction": 0.0,
+      "shared_momentum_carrier_limited_fraction": 0.0,
+      "mean_scalar_alpha": 1.0,
+      "mean_momentum_carrier_source_alpha": 1.0,
+      "independent_momentum_alpha": "not defined; centered velocity factor",
+      "note": "both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha"
+    },
+    {
+      "axis": -1,
+      "z": 98,
+      "slab_center_height_m": 3.0134219098836184,
+      "face_seconds": 8620.90318989649,
+      "scalar_limited_fraction": 0.0,
+      "shared_momentum_carrier_limited_fraction": 0.0,
+      "mean_scalar_alpha": 1.0,
+      "mean_momentum_carrier_source_alpha": 1.0,
+      "independent_momentum_alpha": "not defined; centered velocity factor",
+      "note": "both numeric alpha columns are the same shared primal field; not an averaged dual-face alpha"
+    }
+  ],
+  "entrainment": [
+    {
+      "z": 32,
+      "height_m": 0.994276272190858,
+      "diagnostic_mass_kg_s": 0.2431580354062642,
+      "independent_trapezoid_kg_s": 0.2431580354062643,
+      "r251_same_window_kg_s": 0.24267745984142547,
+      "relative_difference_from_r251_window": 0.001980305732360854,
+      "r251_full_window_kg_s": 0.24148412963394678,
+      "heskestad_26p4kW_kg_s": 0.2483292160456868
+    },
+    {
+      "z": 65,
+      "height_m": 2.0038491024154212,
+      "diagnostic_mass_kg_s": 0.4788319307027358,
+      "independent_trapezoid_kg_s": 0.4788319307027343,
+      "r251_same_window_kg_s": 0.4787670843370961,
+      "relative_difference_from_r251_window": 0.00013544449432956185,
+      "r251_full_window_kg_s": 0.48618267153618944,
+      "heskestad_26p4kW_kg_s": 0.7059553164496003
+    },
+    {
+      "z": 98,
+      "height_m": 3.013421932639985,
+      "diagnostic_mass_kg_s": 0.7184583248787364,
+      "independent_trapezoid_kg_s": 0.7184583248787348,
+      "r251_same_window_kg_s": 0.7185656748382101,
+      "relative_difference_from_r251_window": -0.00014939477800390843,
+      "r251_full_window_kg_s": 0.7423568321264503,
+      "heskestad_26p4kW_kg_s": 1.3564384572531747
+    }
+  ],
+  "decision": "pending interpretation; no A/B or production change selected by reducer",
+  "experiment_valid_for_CHARM_sensitivity": false,
+  "invalid_reason": "Changed inactive fct reconstruction; resident path used unchanged pf_mc. See r258."
+}

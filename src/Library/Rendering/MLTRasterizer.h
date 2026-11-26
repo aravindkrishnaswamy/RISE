@@ -82,16 +82,158 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Utilities/PSSMLTSampler.h"
 
+#include <climits>
+#include <cstdint>
+
 namespace RISE
 {
 	namespace Implementation
 	{
+		//! Mutation budget split shared by MLTRasterizer and
+		//! MLTSpectralRasterizer.  All counts are 64-bit: the budget
+		//! mutations/pixel * width * height exceeds 2^32 for ordinary
+		//! production settings (3840x2160 at 518 mutations/pixel).
+		//!
+		//! Every chain always runs at least one mutation, so for a budget
+		//! smaller than the chain count (or not divisible by it) the work
+		//! actually PERFORMED is perChain * effectiveChains, which differs
+		//! from the requested budget: it is below it by fewer than
+		//! effectiveChains mutations (truncation), or above it by fewer than
+		//! effectiveChains mutations when budget < chains.  Splats are
+		//! therefore normalized by `performed`, never by `budget`, so the
+		//! resolved image is correctly exposed for every accepted budget.
+		struct MLTMutationSchedule
+		{
+			unsigned int	effectiveChains;	///< max(1, nChains)
+			std::uint64_t	budget;				///< mutations/pixel * width * height (saturating)
+			std::uint64_t	perChain;			///< max(1, budget / effectiveChains)
+			std::uint64_t	performed;			///< perChain * effectiveChains
+		};
+
+		//! Saturating 64-bit product (saturates at UINT64_MAX; unreachable
+		//! for 32-bit width/height/mutations unless all three are huge).
+		inline std::uint64_t MLTSaturatingMul( const std::uint64_t a, const std::uint64_t b )
+		{
+			if( a != 0 && b > UINT64_MAX / a ) {
+				return UINT64_MAX;
+			}
+			return a * b;
+		}
+
+		inline MLTMutationSchedule ComputeMLTMutationSchedule(
+			const unsigned int mutationsPerPixel,
+			const unsigned int width,
+			const unsigned int height,
+			const unsigned int nChains
+			)
+		{
+			MLTMutationSchedule s;
+			s.effectiveChains = nChains > 0 ? nChains : 1;
+			s.budget = MLTSaturatingMul(
+				MLTSaturatingMul( mutationsPerPixel, width ), height );
+			const std::uint64_t q = s.budget / s.effectiveChains;
+			s.perChain = q > 0 ? q : 1;
+			// perChain <= UINT64_MAX / effectiveChains whenever q > 0, and
+			// equals 1 otherwise, so this product cannot wrap.
+			s.performed = s.perChain * s.effectiveChains;
+			return s;
+		}
+
+		//! Clamp a desired round count to [1, perChain] so every round has
+		//! at least one mutation per chain.
+		inline std::uint64_t ClampMLTRoundCount( const std::uint64_t desired, const std::uint64_t perChain )
+		{
+			const std::uint64_t pc = perChain > 0 ? perChain : 1;
+			const std::uint64_t r = desired > 0 ? desired : 1;
+			return r < pc ? r : pc;
+		}
+
+		//! Convert a (possibly huge, non-finite or negative) floating-point
+		//! round estimate to a round count without an out-of-range
+		//! float->integer conversion, then clamp to [lo, perChain].
+		inline std::uint64_t MLTRoundCountFromEstimate( const double estimate, const std::uint64_t lo, const std::uint64_t perChain )
+		{
+			std::uint64_t desired = lo;
+			if( estimate >= 18446744073709549568.0 ) {	// largest double below 2^64
+				desired = UINT64_MAX;
+			} else if( estimate > static_cast<double>( lo ) ) {
+				desired = static_cast<std::uint64_t>( estimate );
+			}
+			return ClampMLTRoundCount( desired, perChain );
+		}
+
+		//! Per-chain mutations per round: max(1, perChain / numRounds),
+		//! clamped to UINT_MAX (the chain-segment count is unsigned int).
+		inline unsigned int MLTMutationsPerRound( const std::uint64_t perChain, const std::uint64_t numRounds )
+		{
+			const std::uint64_t q = perChain / ( numRounds > 0 ? numRounds : 1 );
+			if( q == 0 ) {
+				return 1;
+			}
+			return q > UINT_MAX ? UINT_MAX : static_cast<unsigned int>( q );
+		}
+
+		//! Mutations to run this round.  The round loop is driven by the
+		//! remaining per-chain work, so this never exceeds `remaining` and
+		//! never underflows.  The planned last round takes the whole
+		//! remainder (preserving the original cadence, where the final
+		//! round absorbs the perChain % numRounds leftover); any other round
+		//! takes min(perRound, remaining).  Both are clamped to UINT_MAX; a
+		//! clamped round simply leaves work for further rounds.
+		inline unsigned int MLTMutationsThisRound(
+			const std::uint64_t remaining,
+			const unsigned int perRound,
+			const bool plannedLastRound
+			)
+		{
+			std::uint64_t m = plannedLastRound ? remaining
+				: ( remaining < perRound ? remaining : static_cast<std::uint64_t>( perRound ) );
+			return m > UINT_MAX ? UINT_MAX : static_cast<unsigned int>( m );
+		}
+
+		//! Adaptive round resize after round 0: from a desired per-round
+		//! count (floating point, any value) and the remaining per-chain
+		//! work, produce the new per-round count (>= 1, <= UINT_MAX) and
+		//! the new total round count (1 already done + ceil(remaining /
+		//! newPerRound)), computed without overflow.
+		inline void MLTAdaptiveRoundResize(
+			const double desiredMutPerRound,
+			const std::uint64_t remaining,
+			unsigned int& newPerRound,
+			std::uint64_t& newNumRounds
+			)
+		{
+			if( !( desiredMutPerRound >= 1.0 ) ) {
+				newPerRound = 1;
+			} else if( desiredMutPerRound >= static_cast<double>( UINT_MAX ) ) {
+				newPerRound = UINT_MAX;
+			} else {
+				newPerRound = static_cast<unsigned int>( desiredMutPerRound );
+			}
+			const std::uint64_t remainingRounds = remaining / newPerRound +
+				( remaining % newPerRound != 0 ? 1 : 0 );
+			newNumRounds = 1 + remainingRounds;
+		}
+
 		class MLTRasterizer : public virtual Rasterizer
 		{
 		protected:
+			virtual bool SupportsFireMediaTransport() const { return false; }
 
 			IRayCaster*				pCaster;
 			BDPTIntegrator*			pIntegrator;
+
+			// Pixel reconstruction kernel (Mitchell-Netravali, Lanczos,
+			// box, …).  MLT does not use a conventional pixel sampler
+			// — the Markov chain generates film samples directly — so
+			// pSampling is stored for API symmetry but never consumed.
+			// pPixelFilter IS consumed: every splat is distributed
+			// across the filter's footprint at a fractional raster
+			// position so the output has proper sub-pixel
+			// reconstruction instead of the hard edges that came from
+			// truncating to an integer pixel.
+			ISampling2D*			pSampling;
+			IPixelFilter*			pPixelFilter;
 
 			// MLT-specific parameters
 			unsigned int			nBootstrap;			///< Number of bootstrap samples (default 100000)
@@ -183,6 +325,28 @@ namespace RISE
 
 			virtual ~MLTRasterizer();
 
+			/// Generate a camera ray using the PSSMLT lens sample when
+			/// the camera supports it (currently only ThinLensCamera);
+			/// otherwise fall back to the standard ICamera::GenerateRay
+			/// path which pulls lens samples from rc.random.
+			///
+			/// Implemented as a plain static method that dynamic_casts
+			/// to the concrete ThinLensCamera rather than a virtual
+			/// method on ICamera — adding a virtual to the camera
+			/// interface (even appended) would break out-of-tree
+			/// camera implementations compiled against the old vtable
+			/// the moment this new caller dispatched past the end of
+			/// their table.  dynamic_cast is a single pointer check
+			/// per pixel sample and cost is negligible next to the
+			/// path evaluation that follows.
+			static bool GenerateCameraRayWithLensSample(
+				const ICamera& camera,
+				const RuntimeContext& rc,
+				Ray& ray,
+				const Point2& ptOnScreen,
+				const Point2& lensSample
+				);
+
 			/// Evaluate a single BDPT path using the given sampler.
 			/// This is the bridge between MLT and BDPT: it uses the
 			/// sampler to pick a film position, generates light and eye
@@ -200,13 +364,58 @@ namespace RISE
 			/// a bootstrap seed and evaluate the initial path.  If the
 			/// initial path has zero luminance, try additional large steps
 			/// to find a valid starting point.
+			///
+			/// chainIndex is mixed into the RNG seeds so that two chains
+			/// selecting the same bootstrap sample do not become identical
+			/// Markov trajectories (which would concentrate splats and
+			/// create fireflies).  See the implementation for details.
 			void InitChain(
 				ChainState& state,
 				const IScene& scene,
 				const ICamera& camera,
 				const BootstrapSample& seed,
+				const unsigned int chainIndex,
 				const unsigned int width,
 				const unsigned int height
+				) const;
+
+			/// Render a single MLT frame end-to-end: bootstrap → CDF →
+			/// chain init → round-based mutations → final resolve.
+			/// Shared between still-image RasterizeScene and per-frame
+			/// RasterizeSceneAnimation so both observe identical chain
+			/// semantics ("independent chains" — every call allocates
+			/// fresh PSSMLTSampler state and re-bootstraps against the
+			/// current scene).
+			///
+			/// Returns true if all rounds completed.  Returns false if
+			/// the user cancelled mid-render OR the bootstrap found no
+			/// luminance (degenerate scene).  In either case `pImageOut`
+			/// may be NULL or hold the last partially-resolved snapshot
+			/// — callers in animation context discard it; the still
+			/// image caller flushes it (cancel-still-denoises).
+			///
+			/// On success, `pImageOut` is a refcount-1 image owned by
+			/// the caller; the caller must safe_release it after flush.
+			/// AttachScene + LightSampler setup must be done by the
+			/// caller before invoking — they are scene-wide, not per-
+			/// frame.
+			bool RenderFrameOfMLT(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut
+				) const;
+
+			/// Explicit per-call progress sink; animation supplies a stack
+			/// frame-slot adapter without changing the authored callback.
+			bool RenderFrameOfMLT(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut,
+				IProgressCallback* progress
 				) const;
 
 			/// Run a segment of mutations on an existing chain.  This is
@@ -232,6 +441,9 @@ namespace RISE
 				) const;
 
 		public:
+#ifdef RISE_ENABLE_OIDN
+			double EstimateDenoiseWorkPerMegapixel() const { return nMutationsPerPixel * 0.4; }
+#endif
 			MLTRasterizer(
 				IRayCaster* pCaster_,
 				const unsigned int maxEyeDepth,
@@ -239,8 +451,19 @@ namespace RISE
 				const unsigned int nBootstrap_,
 				const unsigned int nChains_,
 				const unsigned int nMutationsPerPixel_,
-				const Scalar largeStepProb_
+				const Scalar largeStepProb_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
+
+			//////////////////////////////////////////////////////////////
+			// MLT does not inherit from PixelBasedRasterizerHelper so it
+			// defines its own SubSampleRays.  MLT ignores the sampler
+			// (the Markov chain generates film samples itself) but DOES
+			// consume the pixel filter — without this hook the filter
+			// would never reach the splat path and the output would
+			// have visible pixel-aligned hard edges.
+			//////////////////////////////////////////////////////////////
+			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
 
 			//////////////////////////////////////////////////////////////
 			// IRasterizer interface
@@ -248,6 +471,25 @@ namespace RISE
 
 			void AttachToScene( const IScene* ){};
 			void DetachFromScene( const IScene* ){};
+
+			// L6d-2b — MLT now opts BACK INTO the FrameStore push.
+			// L6d-2b copies each per-round local image into
+			// `mFrameStore` before flushing (see
+			// `MLTRasterizer::Flush*` implementations) so direct
+			// FrameStore observers receive `OnFrameComplete` /
+			// `OnPreDenoiseComplete` / `OnDenoiseComplete` reading
+			// the up-to-date splatted final.
+			//
+			// Pre-L6d-2b: `AcceptsFrameStorePush` returned `false`
+			// (L6e-1.1 string-match-replacement) so Job never
+			// pushed a FrameStore to MLT and MLT's per-round Resolve
+			// allocated a fresh local `RISERasterImage` per round
+			// without ever reaching the canonical store.  Bound-VFS
+			// observers attached to MLT's `mFrameStore` would have
+			// stayed perpetually empty.
+			//
+			// Inheriting the default `true` from `Rasterizer` —
+			// override removed entirely.
 
 			unsigned int PredictTimeToRasterizeScene(
 				const IScene& pScene,
@@ -261,6 +503,27 @@ namespace RISE
 				IRasterizeSequence* pRasterSequence
 				) const;
 
+			//! MLT's splat film is global — pRect is accepted but not
+			//! honored (see RasterizeScene's "Fields and pRect are not
+			//! yet honored" note).  Report that honestly so region-render
+			//! UIs can label the state instead of pretending.
+			bool HonorsRegion() const { return false; }
+
+			//! Render an animation by re-running the full MLT pipeline
+			//! per frame: bootstrap → CDF → chain init → round-based
+			//! mutations.  Markov chains do NOT carry across frames
+			//! ("independent chains per frame" / Strategy A — see
+			//! docs/OIDN.md decision log "2026-04-29 MLT animation").
+			//! Each frame's bootstrap re-estimates the normalization
+			//! constant against the current scene state, so changes in
+			//! camera, transforms, or lights do not poison chains
+			//! warmed up against a previous frame's geometry.  Per-frame
+			//! OIDN denoise mirrors PixelBasedRasterizerHelper::
+			//! RasterizeSceneAnimation: BeginRenderTimer + AOV reset +
+			//! cancel-guarded ApplyDenoise + FlushPreDenoised /
+			//! FlushDenoised at the actual frameIdx.  Cancel mid-frame
+			//! abandons the frame entirely (no flush, no denoise) so
+			//! the MOV writer's tail stays clean.
 			void RasterizeSceneAnimation(
 				const IScene& pScene,
 				const Scalar time_start,
@@ -271,10 +534,31 @@ namespace RISE
 				const Rect* pRect,
 				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
-				) const {};
+				) const;
 
 			/// Thread procedure for parallel round-based chain execution
 			static void* RoundThread_ThreadProc( void* lpParameter );
+
+		protected:
+			// Dispatch helpers mirroring the pattern used by other
+			// rasterizers.  File-based outputs write pattern.ext via the
+			// first two and pattern_denoised.ext via the third; non-file
+			// outputs observe a single OutputImage call with the denoised
+			// final (preserving pre-change behavior).
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+
+			// L6d-2b — Copy a fully-rendered local image into the
+			// rasterizer's canonical `mFrameStore` (per-tile,
+			// bracketed via `FrameStore::CopyTileFromRasterImage`).
+			// Returns true on a SUCCESSFUL copy (mFrameStore present
+			// + dims match); false when no copy happened (mFrameStore
+			// null or dim-mismatch).  Callers gate Mark* fires on
+			// the return value — firing MarkFrameComplete on a
+			// stale-content store would mislead observers.
+			// See impl in MLTRasterizer.cpp for the contract.
+			bool CopyToFrameStore_( const IRasterImage& src ) const;
 		};
 	}
 }

@@ -15,15 +15,21 @@
 #include "TriangleMeshLoaderRAW2.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
+#include "../Interfaces/ITriangleMeshGeometry.h"
 #include "../Utilities/MediaPathLocator.h"
-#include <stdio.h>
+#include "../Utilities/FiniteMath.h"
+#include <charconv>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 TriangleMeshLoaderRAW2::TriangleMeshLoaderRAW2( const char * szFile )
 {
-	strncpy( szFilename, GlobalMediaPathLocator().Find(szFile).c_str(), 256 );
+	if( szFile ) filename = GlobalMediaPathLocator().Find( szFile ).c_str();
 }
 
 TriangleMeshLoaderRAW2::~TriangleMeshLoaderRAW2( )
@@ -32,73 +38,115 @@ TriangleMeshLoaderRAW2::~TriangleMeshLoaderRAW2( )
 
 bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGeom )
 {
-	FILE* inputFile = fopen( szFilename, "r" );
-
-	if( !inputFile || !pGeom ) {
-		GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Failed to open file or bad geometry object" );
+	std::ifstream input( LongAwareFsPath( filename.c_str() ) );
+	if( !input || !pGeom ) {
+		GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Failed to open file or bad geometry object" );
 		return false;
 	}
 
-	pGeom->BeginIndexedTriangles();
-
-	char line[4096];
-
-	// First read how many vertices we have and how many polygons we have
-	fgets( (char*)&line, 4096, inputFile );
-
+	const auto readCount = []( std::istringstream& row, unsigned int& count ) {
+		std::string token;
+		if( !(row >> token) ) return false;
+		const char* begin = token.data();
+		const char* end = begin + token.size();
+		if( *begin == '+' ) ++begin;
+		const auto parsed = std::from_chars( begin, end, count );
+		return parsed.ec == std::errc{} && parsed.ptr == end;
+	};
+	const auto finishedRow = []( std::istringstream& row ) {
+		std::string extra;
+		return !(row >> extra) || extra[0] == '#';
+	};
+	std::string line;
+	if( !std::getline( input, line ) ) {
+		return false;
+	}
+	std::istringstream header( line );
 	unsigned int numVerts, numTris;
-	sscanf( line, "%u %u", &numVerts, &numTris );
-
-	unsigned int i=0;
-	// Read through all the vertices
-	for( i=0; i<numVerts; i++ ) {
-		if( !fgets( (char*)&line, 4096, inputFile ) ) {
-			GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Failed to read a line from the file" );
-			return false;
-		}
-
-		char type;
-		double vX, vY, vZ, nX, nY, nZ, cX, cY;
-		sscanf( line, "%c %lf %lf %lf %lf %lf %lf %lf %lf", &type, &vX, &vY, &vZ, &nX, &nY, &nZ, &cX, &cY );
-
-		if( type != 'v' ) {
-			GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Expected a vertex but didn't get one" );
-			return false;
-		}
-
-		pGeom->AddVertex( Vertex( vX, vY, vZ ) );
-		pGeom->AddNormal( Normal( nX, nY, nZ ) );
-		pGeom->AddTexCoord( TexCoord( cX, cY ) );
+	if( !readCount( header, numVerts ) || !readCount( header, numTris ) || !finishedRow( header ) ) {
+		GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Invalid vertex and triangle counts" );
+		return false;
 	}
 
-	// Read the triangles
-	for( i=0; i<numTris; i++ ){
-		if( !fgets( (char*)&line, 4096, inputFile ) ) {
-			GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Failed to read a line from the file" );
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coordinates;
+	std::vector<RISEPel> colors;
+	IndexTriangleListType triangles;
+
+	for( unsigned int i=0; i<numVerts; ++i ) {
+		if( !std::getline( input, line ) ) return false;
+		std::istringstream row( line );
+		std::string kind, token;
+		double values[11];
+		size_t count = 0;
+		if( !(row >> kind) || kind != "v" ) return false;
+		while( row >> token && token[0] != '#' ) {
+			if( count == 11 ) return false;
+			char* end = nullptr;
+			const double value = std::strtod( token.c_str(), &end );
+			if( end != token.data() + token.size() || !IsFiniteDouble( value ) ) return false;
+			values[count++] = value;
+		}
+		if( count != 8 && count != 11 ) {
+			GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Invalid vertex record" );
 			return false;
 		}
-
-		char type;
-		unsigned int a, b, c;
-		sscanf( line, "%c %u %u %u", &type, &a, &b, &c );
-
-		if( type != 't' ) {
-			GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Expected a triangle but didn't get one" );
-			return false;
+		vertices.emplace_back( values[0], values[1], values[2] );
+		normals.emplace_back( values[3], values[4], values[5] );
+		coordinates.emplace_back( values[6], values[7] );
+		if( count == 11 ) {
+			colors.emplace_back( sRGBPel( values[8], values[9], values[10] ) );
 		}
-
-		IndexedTriangle tri;
-		tri.iVertices[0] = tri.iNormals[0] = tri.iCoords[0] = a;
-		tri.iVertices[1] = tri.iNormals[1] = tri.iCoords[1] = b;
-		tri.iVertices[2] = tri.iNormals[2] = tri.iCoords[2] = c;
-
-		pGeom->AddIndexedTriangle( tri );
 	}
 
+	for( unsigned int i=0; i<numTris; ++i ) {
+		if( !std::getline( input, line ) ) return false;
+		std::istringstream row( line );
+		std::string kind;
+		IndexedTriangle triangle;
+		if( !(row >> kind) || kind != "t" ) return false;
+		for( unsigned int corner=0; corner<3; ++corner ) {
+			unsigned int index;
+			if( !readCount( row, index ) || index >= numVerts ) {
+				GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Invalid triangle index" );
+				return false;
+			}
+			triangle.iVertices[corner] = triangle.iNormals[corner] = triangle.iCoords[corner] = index;
+		}
+		if( !finishedRow( row ) ) return false;
+		triangles.push_back( triangle );
+	}
+
+	while( std::getline( input, line ) ) {
+		const auto first = line.find_first_not_of( " \t\r\f\v" );
+		if( first != std::string::npos && line[first] != '#' ) {
+			GlobalLog()->PrintEasyError( "TriangleMeshLoaderRAW2:: Extra records after declared triangles" );
+			return false;
+		}
+	}
+	if( input.bad() ) return false;
+
+	pGeom->BeginIndexedTriangles();
+	pGeom->AddVertices( vertices );
+	pGeom->AddNormals( normals );
+	pGeom->AddTexCoords( coordinates );
+	if( !colors.empty() ) {
+		auto* colored = dynamic_cast<ITriangleMeshGeometryIndexed2*>( pGeom );
+		if( colors.size() != numVerts ) {
+			GlobalLog()->PrintEasyWarning( "TriangleMeshLoaderRAW2:: file mixes colored and uncolored vertex lines — colors dropped" );
+		} else if( colored ) {
+			colored->AddColors( colors );
+		} else {
+			GlobalLog()->PrintEasyWarning( "TriangleMeshLoaderRAW2:: target geometry does not implement ITriangleMeshGeometryIndexed2 — colors dropped" );
+		}
+	}
+	pGeom->AddIndexedTriangles( triangles );
+	VerticesListType().swap( vertices );
+	NormalsListType().swap( normals );
+	TexCoordsListType().swap( coordinates );
+	std::vector<RISEPel>().swap( colors );
+	IndexTriangleListType().swap( triangles );
 	pGeom->DoneIndexedTriangles();
-
-	fclose( inputFile );
-
 	return true;
 }
-

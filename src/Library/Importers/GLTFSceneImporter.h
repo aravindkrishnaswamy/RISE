@@ -1,0 +1,247 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  GLTFSceneImporter.h - Bulk glTF 2.0 scene importer.
+//  Walks a .glb / .gltf file's scene tree and populates an IJob
+//  with one geometry per primitive, one PBR material per glTF
+//  material, painters per texture (.glb embedded images go straight
+//  through Job::AddInMemoryPNG/JPEGTexturePainter -- no disk
+//  round-trip), one light per KHR_lights_punctual, and one camera
+//  (first only -- RISE has a single active camera).
+//
+//  See docs/GLTF_IMPORT.md §7 (phased plan), §13 (delivered vs
+//  deferred), and §15 (Phase 4 status) for the full picture.  Phase 4
+//  added: KHR_materials_emissive_strength, KHR_materials_unlit, per-
+//  pixel alpha (straight, via IPainter::GetAlpha), alphaMode = BLEND
+//  via transparency_shaderop, the standalone Charlie sheen
+//  BRDF, and the scalar subset of KHR_materials_transmission + volume
+//  + ior.  Out-of-scope features (animation, skinning, morph targets,
+//  KHR_materials_clearcoat/sheen as a layer over PBR,
+//  transmission_texture, other KHR_materials_* extensions beyond the
+//  core PBR shape and the scalar transmission triplet) emit a one-time
+//  warning per file or per material.  Phase 3 retired the lossy Euler-
+//  decomposition transform path: node-world matrices now flow through
+//  Job::AddObjectMatrix verbatim.
+//
+//  Lifecycle (since 2026-05-01): the constructor runs cgltf_parse_file
+//  + cgltf_load_buffers + cgltf_validate ONCE for the file.  The
+//  destructor runs cgltf_free.  ImportScene (bulk) and ImportPrimitive
+//  (single primitive — the path used by `gltf_geometry` chunks via
+//  Job::AddGLTFTriangleMeshGeometry) BOTH consume that single parse.
+//  Pre-2026-05-01 the bulk path called Job::AddGLTFTriangleMeshGeometry
+//  per primitive, which constructed a fresh TriangleMeshLoaderGLTF that
+//  re-parsed the .gltf and re-read the .bin from disk for every primitive
+//  — quadratic-or-worse on heavyweight assets like NewSponza (a 1.5 GB
+//  .bin reread ~200 times).  TriangleMeshLoaderGLTF and the matching
+//  RISE_API_CreateGLTFTriangleMeshLoader were retired in the same
+//  cleanup; this importer is the sole glTF entry point.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 30, 2026
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef GLTF_SCENE_IMPORTER_
+#define GLTF_SCENE_IMPORTER_
+
+#include "../Interfaces/IJob.h"
+#include <climits>
+#include <set>
+#include <string>
+
+namespace RISE
+{
+	// Forward declarations — these flow through the importer's public
+	// surface but pulling them in via header would drag the geometry
+	// interface chain into every translation unit that just needs to
+	// kick off an import.
+	class ITriangleMeshGeometryIndexed;
+
+	namespace Implementation
+	{
+		struct GLTFImportOptions
+		{
+			std::string namePrefix;					///< Prefix for all created object names (avoids manager-level collisions)
+			unsigned int sceneIndex;				///< glTF scene index, or `kSceneIndexDefault` to import the file's default scene
+			bool importMeshes;						///< Create per-primitive standard_objects
+			bool importMaterials;					///< Create one pbr_metallic_roughness_material per glTF material; else use a default
+			bool importLights;						///< Create lights from KHR_lights_punctual
+			bool importCameras;						///< Create cameras (first only; subsequent ones warn)
+			bool importNormalMaps;					///< Attach normal_map_modifier when a material has normalTexture
+			bool lowmemTextures;					///< Defer texture color-space conversion to per-sample access.  Trades ~25% per-sample render cost for a ~4x peak texture-memory reduction and a 5-10x faster scene load.  Default false (final-render workflow); flip to true for iteration on heavy-PBR scenes (NewSponza class).  See SCENE_CONVENTIONS.md / the sponza_new.RISEscene file header for the trade-off.
+			double lightsIntensityOverride;			///< Landing 4 deprecated: unit-blind override that replaces zero authored intensities for ALL light types uniformly.  glTF assigns DIFFERENT physical units per light type (lux for directional, candela for point/spot — see KHR_lights_punctual), so a single number is physically meaningless across types.  Kept for one release for back-compat: when > 0, applies to every light type.  Prefer the per-type overrides below.  Default 0 (no override).
+			double directionalIntensityOverride;	///< Landing 4: per-type intensity override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights the author set non-zero stay untouched.  Default 0 (no override).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight.  Stacks with `lightsIntensityOverride` (per-type wins when both set on a directional light).
+			double pointIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical values: ~100 for a bare 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.  Stacks with `lightsIntensityOverride` (per-type wins).
+			double spotIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).  Stacks with `lightsIntensityOverride` (per-type wins).
+			bool respectBakedOcclusion;				///< Landing 13: when TRUE (default), honour glTF `occlusionTexture` by multiplying the baseColor (diffuse path) by the texture's R channel times the material's `occlusionStrength`.  This is the pragmatic glTF-faithful import — a path tracer computes real occlusion via shadow rays so applying baked AO double-counts direct lighting somewhat, but assets bake AO at frequencies geometry can't recover (column flutes, brick mortar, fabric folds), so dropping it loses information the artist deliberately encoded.  Set FALSE for strict-PB workflows where you want the integrator's own occlusion.  Note: Phase-1 implementation modulates ALL bounces uniformly (direct + indirect); a future refinement could gate on bounce count to apply only to indirect-diffuse.
+			double emissiveIntensityScale;			///< Multiplier applied AFTER the asset's per-material `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use this to brighten emissive surfaces uniformly across an import without editing the asset — e.g. a deep-dusk candle scene whose flame meshes are authored at a daytime-balanced strength can multiply by 50–200 to make the candles dominate.  Unlike `lightsIntensityOverride` this is a SCALE (composes with authored values), not a zero-replacement, because emissive materials typically ship with meaningful chromatic/relative values the renderer should preserve the ratios of.  Negative or zero values are treated as 0 (kills all emissive in the import) — use that to mute decorative emissives without other edits.  Affects every material's `emissiveScale` once at import time, so render-time cost is unchanged.
+			double emissiveTint[3];					///< Per-channel RGB multiplier applied to every material's `emissiveFactor` BEFORE any texture multiply.  Default (1,1,1) — no tint.  Use to recolour emissive surfaces uniformly across an import without editing the asset — e.g. a candle pack whose `Flame_MAT` is authored at pure yellow `(1,1,0)` can be tinted to warm orange via `emissiveTint = (1.0, 0.5, 0.1)`, giving final emissive colour `(1, 0.5, 0)` (componentwise product; the asset's blue channel is 0 so the tint's blue can't add any).  Composes with `emissiveIntensityScale`: the brightness scale and the chromatic tint are independent knobs.  Folded in once at import time, no per-sample cost.  Note: this multiplies the FACTOR not the painted texture, so if a material has an emissive texture the tint multiplies its global modulator (per glTF spec §3.9.4 the texture is itself multiplied by emissiveFactor) — visually equivalent to tinting the texture for solid-coloured emissives, slightly different for textured ones (the tint affects the spatially-uniform factor, not the per-pixel texture values).
+
+			//! Sentinel for "use the file's default scene" (i.e., the scene
+			//! the glTF JSON's top-level `"scene"` field points at, falling
+			//! back to scenes[0] when no default is set).  Distinct from
+			//! `sceneIndex = 0` which now means "explicitly select the first
+			//! scene in the array" -- the two semantics diverge for files
+			//! whose default is not the first.
+			static const unsigned int kSceneIndexDefault = UINT_MAX;
+
+			GLTFImportOptions() :
+			  namePrefix( "gltf" ),
+			  sceneIndex( kSceneIndexDefault ),
+			  importMeshes( true ),
+			  importMaterials( true ),
+			  importLights( true ),
+			  importCameras( true ),
+			  importNormalMaps( true ),
+			  lowmemTextures( false ),
+			  lightsIntensityOverride( 0.0 ),
+			  directionalIntensityOverride( 0.0 ),
+			  pointIntensityOverride( 0.0 ),
+			  spotIntensityOverride( 0.0 ),
+			  respectBakedOcclusion( true ),
+			  emissiveIntensityScale( 1.0 )
+			{ emissiveTint[0] = 1.0; emissiveTint[1] = 1.0; emissiveTint[2] = 1.0; }
+		};
+
+		//! GLTFSceneImporter does NOT inherit from Reference; it's a one-shot
+		//! local stack object used inside Job::ImportGLTFScene and
+		//! Job::AddGLTFTriangleMeshGeometry.  All persistent state ends up in
+		//! the IJob's managers (geometries, painters, materials, modifiers,
+		//! lights, cameras, objects).
+		//!
+		//! The cgltf parse runs in the constructor and lives as long as the
+		//! importer.  Callers MUST check IsValid() before invoking ImportScene
+		//! or ImportPrimitive — when the parse, buffer load, or validate step
+		//! fails, IsValid() returns false and the import methods are no-ops
+		//! that return false.
+		//!
+		//! Single-call contract: call ImportScene AT MOST ONCE per importer
+		//! instance.  ImportPrimitive may be called any number of times so
+		//! long as each call uses a unique geomName.  The reason: the bulk
+		//! Walker memoizes per-(meshIdx,primIdx) registration in a function-
+		//! local set so multi-node instancing of a shared mesh registers the
+		//! geometry once and binds N objects (NewSponza columns, Khronos
+		//! OrientationTest, instanced foliage etc.).  That set is fresh per
+		//! ImportScene call; a second ImportScene on the same importer would
+		//! see an empty set, attempt to re-register every geomName, hit
+		//! pGeomManager's duplicate-name reject, and silently drop every
+		//! object on the second pass.  Today every call site constructs a
+		//! fresh importer per import so this is latent; if you ever need to
+		//! re-walk a parsed file, construct a new GLTFSceneImporter.
+		class GLTFSceneImporter
+		{
+		public:
+			//! Resolve the path through GlobalMediaPathLocator, then run the
+			//! full cgltf_parse_file → cgltf_load_buffers → cgltf_validate
+			//! sequence.  Stores the parsed cgltf_data internally; freed in
+			//! the destructor.  On failure logs the cause; IsValid() then
+			//! returns false and other methods do nothing.
+			explicit GLTFSceneImporter( const char* glbPath );
+			~GLTFSceneImporter();
+
+			//! True iff cgltf parsing + buffer load + validation all succeeded.
+			bool IsValid() const;
+
+			//! Bulk import: walks the requested (or default) scene tree and
+			//! emits per-primitive geometries, per-material PBR materials +
+			//! optional normal_map_modifier, per-image painters, lights, and
+			//! every camera-bearing node (one named camera per node, with
+			//! the first DFS-encountered camera designated active when no
+			//! pre-existing user camera was set).  Note: this method is
+			//! NOT all-or-nothing.  Materials are created up front before
+			//! the scene walk; if the file parses + validates but has a
+			//! malformed scene reference, the materials and their texture
+			//! painters will still be in the manager.  Callers that need
+			//! atomic import should check the return value AND call
+			//! `Job::Reset` on failure to clean up.
+			//!
+			//! Concurrency: ImportScene is a structural mutation — like
+			//! the upstream multi-camera CL's AddCamera contract, callers
+			//! MUST NOT run ImportScene concurrently with rendering.  A
+			//! scene-editor-driven re-import should follow the cancel-
+			//! and-park pattern (cancel any in-flight pass, cv-wait until
+			//! rendering goes false, then call ImportScene).  The per-
+			//! camera snapshot/restore around the walk assumes a serial
+			//! caller — an interleaving SetActiveCamera between snapshot
+			//! and restore would silently revert.
+			bool ImportScene( IJob& job, const GLTFImportOptions& opts );
+
+			//! Single-primitive import: build geometry for `meshIdx.primIdx`
+			//! and register it with `job` under `geomName`.  This is the
+			//! entry point used by `Job::AddGLTFTriangleMeshGeometry` (the
+			//! `gltf_geometry` chunk parser's target) — a chunk that imports
+			//! one named primitive without the full scene walk.
+			//!
+			//! `outRegistrationFailed` (optional, default NULL — existing
+			//! callers are unaffected): when non-NULL, set to TRUE iff the
+			//! geometry built successfully but `job.AddPrebuiltTriangleMeshGeometry`
+			//! (the GenericManager::AddItem registration step) is what failed
+			//! — i.e. an entity-NAME COLLISION, not a structural/malformed-
+			//! primitive failure.  ImportScene's scene walk uses this to fail
+			//! the whole import loudly on a genuine collision while still
+			//! warn-and-skipping a merely malformed primitive (unsupported
+			//! topology, Draco, etc. — BuildGeometryFromPrimitive's existing
+			//! tolerant behaviour, unchanged).
+			bool ImportPrimitive(
+				IJob& job,
+				const char* geomName,
+				unsigned int meshIdx,
+				unsigned int primIdx,
+				bool doubleSided,
+				bool faceNormals,
+				bool flipV,
+				bool* outRegistrationFailed = nullptr );
+
+			//! Lower-level building block: fill the caller-owned geometry
+			//! with the named primitive's vertex / index data.  Does NOT
+			//! register the geometry with any manager and does NOT take
+			//! ownership of `pGeom`.  Public so unit tests (and future
+			//! consumers) can exercise the primitive-extraction logic in
+			//! isolation; the importer's internal Walker and ImportPrimitive
+			//! both delegate here.
+			//!
+			//! Returns false (and logs) on out-of-range indices,
+			//! unsupported topology, Draco/meshopt compression, missing
+			//! POSITION attribute, or accessor-count mismatches.
+			bool BuildGeometryFromPrimitive(
+				ITriangleMeshGeometryIndexed* pGeom,
+				unsigned int meshIdx,
+				unsigned int primIdx,
+				bool flipV );
+
+		private:
+			std::string		szFilename;				///< Resolved on-disk path to the .glb / .gltf
+			void*			cgltfData;				///< Opaque cgltf_data*; NULL when parse / load / validate failed.
+													///  Ownership: this object owns the parse and frees it in the
+													///  destructor.  Kept opaque to avoid leaking cgltf into IJob
+													///  consumers.
+
+			// PreDecodeTextures (called from ImportScene before the materials
+			// loop) walks every material's textureslots, collects unique
+			// (image, role) tuples, and submits the whole batch to
+			// Job::AddTexturePaintersBatch — which decodes in parallel via
+			// the global ThreadPool, then registers the painters serially.
+			// On NewSponza-class assets (137 PNGs) this collapses tens of
+			// seconds of single-threaded libpng decode to single-digit
+			// seconds across the worker pool.  After PreDecodeTextures
+			// returns, every texture painter the materials need is already
+			// in pPntManager — and CreateTexturePainter's fast path returns
+			// the painter name immediately on lookup hit.  See
+			// `mRegisteredTextures` below.
+			void PreDecodeTextures( IJob& job, const GLTFImportOptions& opts );
+
+			// Painter names that PreDecodeTextures successfully registered.
+			// CreateTexturePainter checks this first; on hit it skips its
+			// own (now-redundant) decode + AddItem and just returns the
+			// name.  On miss (a request that PreDecodeTextures didn't see
+			// or that failed to decode), CreateTexturePainter falls through
+			// to its per-call decode path, preserving the pre-2026-05-01
+			// behaviour as a safety net.
+			std::set<std::string>	mRegisteredTextures;
+		};
+	}
+}
+
+#endif

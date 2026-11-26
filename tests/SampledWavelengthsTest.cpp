@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <vector>
 
 #include "../src/Library/Utilities/Color/SampledWavelengths.h"
 
@@ -382,6 +383,30 @@ static void TestStratification()
 	std::cout << "  Passed!\n";
 }
 
+// DL-391: a constant spectrum must have the SAME discrete quadrature in
+// every lane, including grid sizes that are not multiples of four.
+static void TestRasterizerGridMarginals()
+{
+    for(unsigned n : {1u,3u,7u,160u}) {
+        std::vector<unsigned> counts(4*n,0);
+        for(unsigned j=0;j<4*n;++j) {
+            const auto swl=SampledWavelengths::SampleEquidistant((j+.5)/(4*n),450,650,n);
+            for(unsigned w=0;w<4;++w) {
+                const double cell=(swl.lambda[w]-450)*n/200;
+                const unsigned bin=static_cast<unsigned>(std::lround(cell));
+                if(bin>=n || std::fabs(cell-bin)>1e-10 || swl.pdf[w]!=1./200) {
+                    std::cerr << "FAIL: DL-391 discrete wavelength support/density\n"; std::exit(1);
+                }
+                ++counts[w*n+bin];
+            }
+        }
+        for(unsigned c:counts) if(c!=4) {
+            std::cerr << "FAIL: DL-391 nonuniform lane quadrature\n"; std::exit(1);
+        }
+    }
+    std::cout << "DL-391 grid marginals passed (1,3,7,160 wavelengths)\n";
+}
+
 // ================================================================
 // main
 // ================================================================
@@ -398,6 +423,7 @@ int main( int argc, char** argv )
 	TestNumActive();
 	TestEdgeCases();
 	TestStratification();
+    TestRasterizerGridMarginals();
 
 	std::cout << "\nAll SampledWavelengths tests passed!" << std::endl;
 

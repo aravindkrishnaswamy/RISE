@@ -4,15 +4,17 @@ This document catalogs the most impactful rendering improvements for RISE, infor
 
 This document covers material models, samplers, volume formulations, transport algorithms, and other systems. It supersedes the earlier `PATH_TRANSPORT_ROADMAP.md`.
 
+For the cross-cutting end-to-end pipeline plan that closes the gap between the integrator and a defensibly physically based renderer (HDR output, ray differentials, spectral upsampling, physical camera, layered-material energy audit, glTF importer fidelity), see [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md).  That plan depends on item #11 (Jakob-Hanika spectral uplifting) below.
+
 ## Current RISE Baseline
 
 RISE already has significant infrastructure in place:
 
 - Full bidirectional path tracing with explicit light and eye subpaths
 - Spectral rendering (sampled spectrum, per-wavelength PT/BDPT)
-- SMS / manifold solving (Zeltner et al. 2020)
+- SMS / manifold solving (Zeltner et al. 2020), with uniform seeding and the `sms_extended` two-stage solver shipped.  See [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md) for the two-stage extension scope, [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) for the Mitsuba-faithful uniform-seeding refactor, and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) for the post-2020 literature catalogue (PMS / SMBS / MPG / Specular Polynomials / PSMS-ReSTIR / Bernstein Bounds).
 - OpenPGL path guiding with RIS and variance-aware adaptive alpha (PT and BDPT eye subpaths)
-- BSSRDF-aware transport (Donner-Jensen, BioSpec, Burley diffusion profiles) in both PT and BDPT
+- BSSRDF-aware transport (Donner-Jensen, Burley diffusion profiles) in both PT and BDPT
 - Owen-scrambled Sobol samplers
 - PSSMLT via BDPT
 - Caustic, global, and spectral photon mapping
@@ -39,9 +41,9 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | 6 | ~~Blue-noise screen-space error distribution (ZSobol)~~ **DONE** | Sampling | Small | None |
 | 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
 | 8 | ~~Optimal MIS weights~~ **DONE** | Transport | Medium | None |
-| 9 | VCM (Vertex Connection and Merging) | Transport | Medium-Large | None |
-| 10 | Hair/fiber BSDF (Chiang et al. 2016) | Materials | Medium | ~~1 (GGX foundation)~~ None |
-| 11 | Jakob-Hanika sigmoid spectral uplifting | Spectral | Small | 5 (HWSS) |
+| 9 | ~~VCM (Vertex Connection and Merging)~~ **DONE** (v1: VC+VM, surface-only, fixed radius, balance heuristic, Pel + Spectral/HWSS — see [docs/VCM.md](VCM.md)) | Transport | Medium-Large | None |
+| 10 | ~~Hair/fiber BSDF (Chiang et al. 2016)~~ **DONE** | Materials | Medium | ~~1 (GGX foundation)~~ None |
+| 11 | ~~Jakob-Hanika sigmoid spectral uplifting~~ **DONE** | Spectral | Small | 5 (HWSS) |
 
 ---
 
@@ -73,7 +75,7 @@ New:
 Modified:
 - `src/Library/RISE_API.h` / `.cpp` — Public construction API
 - `src/Library/Interfaces/IJob.h`, `src/Library/Job.h` / `.cpp` — Material creation
-- `src/Library/Parsers/AsciiSceneParser.cpp` — `ggx_material` parser chunk
+- `src/Library/Parsers/ChunkParserRegistry.cpp` — `ggx_material` parser chunk
 - `build/make/rise/Filelist` — Build system
 - `tests/SPFBSDFConsistencyTest.cpp`, `tests/SPFPdfConsistencyTest.cpp` — GGX entries added
 
@@ -99,7 +101,7 @@ ggx_material
 - `scenes/Tests/Materials/ggx_roughness_sweep_bdpt.RISEscene` — BDPT variant
 - `scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene` — 3x3 aluminum grid, alpha_x vs alpha_y (PT)
 - `scenes/Tests/Materials/ggx_anisotropy_sweep_bdpt.RISEscene` — BDPT variant
-- `scenes/Tests/Materials/ggx_vs_cooktorrance.RISEscene` — Side-by-side comparison, 4 roughness levels
+- `scenes/Tests/Legacy/ggx_vs_cooktorrance.RISEscene` — Side-by-side comparison, 4 roughness levels
 - `scenes/FeatureBased/Materials/ggx_showcase.RISEscene` — Gold roughness sweep, brushed aluminum, copper/chromium accents
 
 ### Validation results
@@ -165,7 +167,7 @@ Light subpath training data is collected via `RecordGuidingTrainingLightPath()`,
 | `src/Library/Shaders/BDPTVertex.h` | Added `guidingReversePdfDirectionIn` and `guidingReverseScatteringWeight` for reversed training segments |
 | `src/Library/Rendering/BDPTRasterizerBase.h` | Added `pLightGuidingField` member |
 | `src/Library/Rendering/BDPTRasterizerBase.cpp` | Creates separate `pLightGuidingField` when `maxLightGuidingDepth > 0`; trains both fields in parallel; passes both to `SetGuidingField()` at all call sites; releases light field in destructor and cleanup |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | Parse `pathguiding_light_max_depth` in both BDPT chunks (Pel and Spectral) |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | Parse `pathguiding_light_max_depth` in both BDPT chunks (Pel and Spectral) |
 
 **Files unchanged (by design):** `PathTransportUtilities.h` (utilities reused as-is), `MISWeight()` (auto-correct via PDF chain), `PathTracingShaderOp.cpp` (untouched — no PT risk), `RuntimeContext.h` (`maxLightGuidingDepth` lives in integrator only).
 
@@ -202,7 +204,7 @@ Light guiding adds ~12% on top of eye-only guiding, from the additional field qu
 
 ### Future Work
 
-If convergence is poor on highly asymmetric (non-reciprocal) scenes, Option B (separate light-specific OpenPGL field) can be added without changing the sampling code — only the field pointer passed to `GenerateLightSubpath` changes.
+Option B (a dedicated `pLightGuidingField` OpenPGL field for light subpaths) shipped as the baseline implementation above after Option A (shared field) showed destructive interference. Potential follow-ups include extending light-subpath guiding to VCM's photon/light pass and investigating OpenPGL parallax-compensated / directional-product refinements on highly glossy chains.
 
 ---
 
@@ -242,7 +244,7 @@ Modified:
 - `src/Library/Utilities/PathVertexEval.h` — Sw evaluation for random-walk entry vertices
 - `src/Library/RISE_API.h` / `.cpp` — Public construction API
 - `src/Library/Interfaces/IJob.h`, `src/Library/Job.h` / `.cpp` — Material creation
-- `src/Library/Parsers/AsciiSceneParser.cpp` — `randomwalk_sss_material` parser chunk
+- `src/Library/Parsers/ChunkParserRegistry.cpp` — `randomwalk_sss_material` parser chunk
 - `build/make/rise/Filelist` — Build system
 
 ### Scene syntax
@@ -262,7 +264,7 @@ randomwalk_sss_material
 
 ---
 
-## 4. Light BVH For Many-Light Sampling
+## 4. Light BVH For Many-Light Sampling — DONE
 
 ### Why This Is Fourth
 
@@ -334,11 +336,11 @@ The light BVH selection PDF replaces the alias-table PDF in the existing MIS fra
 | `src/Library/Interfaces/IRayCaster.h` | `SetUseLightBVH()` pure virtual |
 | `src/Library/Utilities/StabilityConfig.h` | `useLightBVH` field |
 | `src/Library/Interfaces/IJob.h` | `StabilityConfig` parameter added to `SetMLTRasterizer` |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | `light_bvh` in `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer` |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | `light_bvh` in `pathtracing_*`, `bdpt_*`, `vcm_*`, `auto_*`, `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `mlt_*` |
 | `src/Library/Job.cpp` | Wire `stabilityConfig.useLightBVH` to `pCaster->SetUseLightBVH()` |
 | `build/make/rise/Filelist` | Add `LightBVH.cpp` |
 
-**Scene syntax**: Add `light_bvh true` to any `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, or `mlt_rasterizer` chunk.
+**Scene syntax**: Add `light_bvh true` to any `pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`, `vcm_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` (or legacy `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `mlt_rasterizer`, `mlt_spectral_rasterizer`) chunk.
 
 **Quantitative results** (100-light corridor, 64 SPP, 512x512):
 
@@ -430,7 +432,7 @@ Each rasterizer (`PixelBasedSpectralIntegratingRasterizer`, `BDPTSpectralRasteri
 | `src/Library/Rendering/BDPTSpectralRasterizer.h/.cpp` | HWSS mode for BDPT spectral rasterizer |
 | `src/Library/Shaders/BDPTIntegrator.h/.cpp` | `RecomputeSubpathThroughputNM`, `HasDispersiveDeltaVertex` |
 | `src/Library/Rendering/MLTSpectralRasterizer.h/.cpp` | Spectral MLT rasterizer (new) |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | `hwss` parameter + `mlt_spectral_rasterizer` chunk |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | `hwss` parameter + `mlt_spectral_rasterizer` chunk |
 | `src/Library/RISE_API.h/.cpp` | HWSS params threaded through API |
 | `src/Library/Job.h/.cpp`, `src/Library/Interfaces/IJob.h` | HWSS params threaded through job |
 
@@ -488,7 +490,7 @@ Implemented Morton-indexed Sobol (ZSobol) sampling following Ahmed & Wonka (SIGG
 Modified 14 files to thread `useZSobol` from parser through Job/API to rasterizer constructors:
 - Rasterizers: `PixelBasedPelRasterizer`, `BDPTPelRasterizer`, `PixelBasedSpectralIntegratingRasterizer`, `BDPTSpectralRasterizer` (`.h` and `.cpp`)
 - `PixelBasedRasterizerHelper.h/.cpp` (added `bool useZSobol` member)
-- `RISE_API.h/.cpp`, `IJob.h`, `Job.h/.cpp`, `AsciiSceneParser.cpp`
+- `RISE_API.h/.cpp`, `IJob.h`, `Job.h/.cpp`, `ChunkParserRegistry.cpp`
 
 #### Scene Syntax
 
@@ -597,6 +599,8 @@ Implement Kulla and Fajardo (EGSR 2012) equiangular sampling: distribute samples
 **Modified interfaces:** `IMedium.h` (DistanceSample, SampleDistanceWithPdf, EvalDistancePdf, GetBoundingBox), `ILight.h` (IsPositionalLight)
 **Test scenes:** `pt_equiangular_fog`, `pt_equiangular_hetero`, `pt_chromatic_fog`, `pt_thick_fog_corridor`
 
+**Eye-walk escape segment Tr — FIXED (2026-05-31, coordinated PT + BDPT + VCM).**  Previously, in all 3 RISE PT integrator variants (RGB / NM / HWSS), both at the first-bounce entry (`IntegrateRay*`) and inside the iterative loop (`IntegrateFromHit*`), when the eye ray escaped the scene through a participating medium (no surface hit, no volume scatter event), the environment radiance was multiplied into the path throughput WITHOUT first applying the medium transmittance along the escape segment.  PBRT-v4's `VolPathIntegrator::Li()` applies `T_maj` to `beta` before reading `beta * Le` at `if (!si)`; RISE skipped this step.  BDPT's `GenerateEyeSubpath` + `GenerateEyeSubpathNM` shared the same gap (`vEnv.throughput = beta` at the synthetic env-light vertex push); VCM inherited it via the shared eye-subpath generator.  **The fix applies the escape-segment Tr at all 9 PT sub-sites + 2 BDPT sites (using `maxDist = 1e10` to match PT's existing escape constant, so a global medium evaporates `exp(-σ_t·∞) → 0` and a bounded AABB medium clips to a finite Tr); VCM's s=0 env-escape inherits it transitively with no VCM code change.**  Validated by a new **bounded-medium** regression fixture ([scenes/Tests/Volumes/env_bounded_fog_{pt,bdpt,vcm}.RISEscene](../scenes/Tests/Volumes/) — a diffuse sphere in an AABB-clipped global medium under uniform env-IBL), on which PT / BDPT / VCM agree to within ±5 % (VCM +0.1 % of PT, BDPT +4.5 %) — the cross-integrator-consistency property the global-medium scenes (which evaporate to 0) could not test.  On the global `*_env_through_fog` scenes, PT now gives ~0.0002 (effectively black) vs the pre-fix over-bright ~0.38.  Tr is applied to throughput only (MIS-orthogonal); the fix also removes a pre-existing PT MIS *mismatch* (env-NEE already applied shadow-segment Tr while env-BSDF did not).  Full site enumeration, gate table, adversarial-review ledger in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) "Coordinated escape-Tr fix (PT + BDPT + VCM)".  **Residual (separate workstream, NOT the escape-Tr fix):** with in-scattering (σ_s > 0) on env-IBL bounded fog, VCM under-counts single-scatter of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS issue in the §12 SA-MIS / medium-vertex-connection domain; the pure-absorption fixture isolates and validates the escape-Tr fix independently of it.
+
 ---
 
 ## 8. Optimal MIS Weights — **DONE** (8A complete; 8B and 8C deferred)
@@ -638,11 +642,11 @@ Similarly, scaling each strategy's denominator contribution by an absolute cost 
 
 ### Configuration (Scene File Parameters)
 
-All controls are in the rasterizer block and disabled by default:
+All controls live in the rasterizer block and are disabled by default.  They are accepted only on `pixelpel_rasterizer` and `pathtracing_pel_rasterizer`; BDPT (pel + spectral), VCM, MLT, PT-spectral, and pixelintegratingspectral hard-fail at parse time on these lines (see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10):
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `optimal_mis` | bool | FALSE | Enable optimal MIS weight training for PT |
+| `optimal_mis` | bool | FALSE | Enable optimal MIS weight training for PT (pixelpel + pathtracing_pel only) |
 | `optimal_mis_training_iterations` | uint | 4 | Number of 1-SPP training passes |
 | `optimal_mis_tile_size` | uint | 16 | Tile size for spatial binning |
 
@@ -706,7 +710,7 @@ Two new rasterizers bypass the shader-op pipeline entirely, calling `PathTracing
 | `PathTracingPelRasterizer` | `PixelBasedPelRasterizer` | `pathtracing_pel_rasterizer` |
 | `PathTracingSpectralRasterizer` | `PixelBasedSpectralIntegratingRasterizer` | `pathtracing_spectral_rasterizer` |
 
-Both inherit the standard pixel-based sample loop (Sobol/ZSobol, adaptive sampling, path guiding training, optimal MIS training) from their base classes. The Pel variant supports per-sample AOV accumulation for OIDN. The spectral variant supports both per-wavelength (NM) and hero wavelength (HWSS) modes.
+Both inherit the standard pixel-based sample loop (Sobol/ZSobol, adaptive sampling, path guiding training) from their base classes; `pathtracing_pel_rasterizer` also inherits optimal MIS training (`optimal_mis`, which `pathtracing_spectral_rasterizer` omits because `AddOptimalMISParams` is Pel-only) and per-sample AOV accumulation for OIDN. The spectral variant supports both per-wavelength (NM) and hero wavelength (`hwss`) modes.
 
 **Scene syntax** (same parameters as existing rasterizers plus SMS controls):
 ```
@@ -714,6 +718,7 @@ pathtracing_pel_rasterizer
 {
     samples                 64
     oidn_denoise            TRUE
+    optimal_mis             TRUE
     pathguiding             true
     pathguiding_sampling_type RIS
     sms_enabled             true
@@ -726,9 +731,9 @@ pathtracing_spectral_rasterizer
 {
     samples                 64
     spectral_samples        16
-    use_hwss                TRUE
+    hwss                    TRUE
     sms_enabled             true
-    # all stability controls
+    # all stability controls (note: optimal_mis is Pel-only and omitted here)
 }
 ```
 
@@ -745,7 +750,7 @@ pathtracing_spectral_rasterizer
 `AOVBuffers` (`Rendering/AOVBuffers.h/.cpp`) stores first-hit albedo and normal data for the OIDN denoiser. Previously only BDPT populated AOVs per-sample during rendering. Now:
 
 - `PixelAOV` struct (defined in `AOVBuffers.h`) is shared between PT and BDPT
-- `PathTracingIntegrator::IntegrateRay()` accepts an optional `PixelAOV*` parameter and populates first-hit albedo (via `BSDF::value() * PI`) and normal after the camera ray intersection
+- `PathTracingIntegrator::IntegrateRay()` accepts an optional `PixelAOV*` parameter and populates first-hit albedo (via `BSDF::albedo(rig)`) and normal after the camera ray intersection
 - `PathTracingPelRasterizer::IntegratePixel()` accumulates per-sample AOVs into `pAOVBuffers` with proper weight normalization
 - `pAOVBuffers` member is owned by `PixelBasedRasterizerHelper` (was previously only in BDPT base)
 - `AOVBuffers::HasData()` tracks whether any per-sample data was accumulated; if false after the render pass, `OIDNDenoiser::CollectFirstHitAOVs()` fires a separate retrace pass as fallback
@@ -766,19 +771,25 @@ pathtracing_spectral_rasterizer
 | `src/Library/Shaders/PathTracingShaderOp.h/.cpp` | Now delegates to PathTracingIntegrator via IntegrateFromHit (modified) |
 | `src/Library/Shaders/BSSRDFEntryAdapters.h` | Shared BSSRDF entry-point adapters (new) |
 | `src/Library/Job.cpp` | Rasterizer construction (modified) |
-| `src/Library/Parsers/AsciiSceneParser.cpp` | New chunk parsers (modified) |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | New chunk parsers (modified) |
 | `src/Library/RISE_API.h/.cpp` | Public construction API (modified) |
 | `build/make/rise/Filelist` | Build file list (modified) |
 
 ---
 
-## 9. VCM (Vertex Connection And Merging)
+## 9. VCM (Vertex Connection And Merging) — DONE
 
-### Why This Is Ninth
+Landed as `VCMIntegrator` + `VCMPelRasterizer` (RGB) + `VCMSpectralRasterizer` (HWSS), reusing BDPT's subpath generators via a single-pass post-walk that produces the SmallVCM `(dVCM, dVC, dVM)` quantities.  Balance-heuristic MIS; SPPM-style progressive radius shrinkage with adaptive density floor; parallel light pass via tile-based dispatcher.  Full implementation notes, MIS formulas, regression scenes, and known limitations live in [docs/VCM.md](VCM.md).
+
+### Original specification
+
+The original specification is preserved below for reference.
+
+---
+
+### Why This Was Ninth
 
 RISE already has both BDPT and photon mapping. VCM (Georgiev et al., SIGGRAPH Asia 2012) unifies them under MIS, subsuming PT, LT, BDPT, and photon mapping as special cases. The marginal implementation effort is lower than for most renderers since both halves already exist. VCM provides robust caustic rendering without relying solely on SMS.
-
-This is listed as a non-goal in the current roadmap, but it is worth reconsidering once the higher-priority items are complete.
 
 ### What To Implement
 
@@ -815,11 +826,23 @@ SmallVCM (smallvcm.com) is a ~2000-line C++ educational implementation covering 
 
 ---
 
-## 10. Hair/Fiber BSDF (Chiang Et Al. 2016)
+## 10. Hair/Fiber BSDF (Chiang Et Al. 2016) — DONE
 
-### Why This Is Tenth
+**Implemented Summer–Autumn 2026.**
 
-RISE has no dedicated hair or fiber BSDF. The Chiang et al. model (Disney/Hyperion, also used in pbrt-v4 and Cycles) is the production standard. It builds on Marschner et al. (2003) with near-field formulation, a single residual lobe for all higher-order internal reflections, and logistic distributions for azimuthal roughness with closed-form CDF. This is a self-contained material addition.
+### Implementation Summary
+
+Full hair, fur, and fiber subsystem built around Chiang et al. (2016) with d'Eon energy-conserving longitudinal `Mp` lobes, trimmed-logistic azimuthal lobes, melanin/dye/direct parameterization, optional scattering medulla profile, dedicated curve geometry, procedural fur grooming, and shared fiber primitives reused by cloth:
+
+- **BSDF & Material**: `src/Library/Materials/HairBSDF.{h,cpp}`, `src/Library/Materials/HairMaterial.h`, `src/Library/Materials/HairMedullaProfile.{h,cpp}`, and shared fiber lobe math in `src/Library/Materials/FibreLobeMath.h` (implementing `IBSDF` and `ISPF` in both RGB and native per-wavelength `NM` forms).
+- **Geometry, Guides & Grooming**: `src/Library/Geometry/HairGeometry.{h,cpp}`, `hair_geometry` and `hair_guides` scene chunks in `src/Library/Parsers/ChunkParserRegistry.cpp`, CyHair `.hair` binary/ASCII strand loader, procedural guide interpolation (`density`, `comb`, `clump`, `length_painter`, `guides`, `base_detail`), and the `add_fuzz` agent grooming verb. Full design in [docs/HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md).
+- **Cloth & Fiber Extension**: `fabric_material` (energy-compensated Charlie sheen over allowed bases) and `weave_material` (two-thread-family Sadeghi/d'Eon microcylinder cloth BSDF sharing `FibreLobeMath.h`, with `transmission thin` support). Full design in [docs/CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md).
+
+### Original Specification
+
+### Why This Was Tenth
+
+RISE previously had no dedicated hair or fiber BSDF. The Chiang et al. model (Disney/Hyperion, also used in pbrt-v4 and Cycles) is the production standard. It builds on Marschner et al. (2003) with near-field formulation, a single residual lobe for all higher-order internal reflections, and logistic distributions for azimuthal roughness with closed-form CDF. This is a self-contained material addition.
 
 ### What To Implement
 
@@ -842,8 +865,8 @@ Sample the combined longitudinal x azimuthal distribution. The logistic CDF enab
 ### Current RISE Files
 
 - `src/Library/Interfaces/ISPF.h` (interface to implement)
-- `src/Library/Interfaces/IBRDF.h`
-- `src/Library/Materials/` (add new files here)
+- `src/Library/Interfaces/IBSDF.h`
+- `src/Library/Materials/` (`HairBSDF.{h,cpp}`, `HairMaterial.h`, `HairMedullaProfile.{h,cpp}`, `FibreLobeMath.h`)
 
 ### Deliverables
 
@@ -860,9 +883,22 @@ Sample the combined longitudinal x azimuthal distribution. The logistic CDF enab
 
 ---
 
-## 11. Jakob-Hanika Sigmoid Spectral Uplifting
+## 11. Jakob-Hanika Sigmoid Spectral Uplifting — DONE
 
-### Why This Is Eleventh
+**Implemented Summer–September 2026.**
+
+### Implementation Summary
+
+End-to-end Jakob & Hanika (CGF/EG 2019) sigmoid polynomial spectral uplifting across textures and RGB painters, paired with the Rec.709 linear working-space migration and D65 reference-illuminant spectral convention:
+
+- **Core Polynomial & LUT Runtime**: `src/Library/Utilities/Color/RGBSigmoidPolynomial.h`, `src/Library/Utilities/Color/RGBToSpectrumTable.{h,cpp}`, and `src/Library/Utilities/Color/RGBSpectra.{h,cpp}`.
+- **Offline Table Generator**: `tools/JakobHanikaLUTGen.cpp` (~1 s build-time generation for Rec.709 / sRGB with D65 whitepoint).
+- **Painters & Raster Images**: integrated into `src/Library/Painters/` and `src/Library/RasterImages/` so `GetColorNM(ri, nm)` evaluates smooth bounded `[0, 1]` reflectance spectra (and D65-weighted illuminant uplift for emitters/lights).
+- **Design & Gamut Audits**: see [docs/COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md), [docs/JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), and [docs/SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md).
+
+### Original Specification
+
+### Why This Was Eleventh
 
 The mapping from RGB to spectral reflectance is underdetermined. The Jakob and Hanika (CGF/Eurographics 2019) sigmoid method parameterizes spectra as S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2), intrinsically bounded in [0,1] and smooth. A precomputed 3D lookup table maps RGB to three coefficients. Evaluation costs ~6 FLOPs per wavelength. Zero round-trip error on the full sRGB gamut. This is the standard used by both pbrt-v4 and Mitsuba 3.
 
@@ -884,8 +920,8 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 
 ### Current RISE Files
 
-- `src/Library/Utilities/Color/SpectralPacket.h` (spectral evaluation infrastructure)
-- `src/Library/Texturing/` (texture loading and evaluation)
+- `src/Library/Utilities/Color/SpectralPacket.h`, `RGBSigmoidPolynomial.h`, `RGBToSpectrumTable.{h,cpp}`, `RGBSpectra.{h,cpp}` (spectral evaluation & uplifting infrastructure)
+- `src/Library/Painters/` and `src/Library/RasterImages/` (painter evaluation and texture loading/storage)
 
 ### Deliverables
 
@@ -898,6 +934,509 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 - Round-trip error: RGB -> sigmoid -> spectrum -> RGB produces the original RGB within floating-point tolerance.
 - No visible artifacts under non-D65 illumination.
 - Overhead vs direct RGB evaluation is negligible.
+
+---
+
+## 12. Solid-Angle MIS For Infinite-Area Light Vertices (BDPT/VCM Env-IBL)
+
+### Status
+
+**Phase 1.A foundation landed; mixed-scene env-NEE companion limitation
+CLOSED by the continuous-PMF architectural fix (2026-05-29, Session 9);
+SA-MIS migration itself DEFERRED — the architectural fix obviates most
+of its catastrophe modes, so the remaining 5–10% residual is now in
+"acceptable, optional follow-up" status.**  Timeline:
+
+- **2026-05-25**: first-pass Path A + Path B disc-area fix landed in
+  [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) and
+  [VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp) —
+  closed most of the gap (BDPT/VCM rose from 0–5% of PT to 78–95% of
+  PT on env-IBL scenes).  Documented 15–22% residual at the disc-area
+  vs SA-measure boundary.
+- **2026-05-27 (a4a24b85)**: Piece 1.A landed — purely additive
+  `BDPTVertex::IsInfiniteLight()` accessor + `BDPTUtilities::ConvertDensity`
+  helper.  No call sites migrate; behaviour-preserving foundation for
+  a future SA-MIS migration.
+- **2026-05-27 (PM, reverted)**: Piece 1.B–1.E SA-MIS migration
+  attempt — catastrophic regression on EnvLightBalanceTest (11
+  sub-checks fail at lax, including BDPT collapse to 6–9% of PT on
+  env+omni / env+mesh and BDPT/VCM collapse to ~36% on env-only
+  spectral HWSS=true).  Reverted.
+- **2026-05-27 / 2026-05-28 (Sessions 2-8)**: design-driven re-attempts
+  per [docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md)
+  — group decomposition (s=0 group, light-subpath group, VCM group)
+  with delta-aware `remap0` precondition.  Sessions 5+7+8 landed the
+  s=0 group partially.  Empirically the §0.4 magnitude prediction
+  failed (env-only Lambertian over-counted to 139% vs predicted 95-
+  110%).  Three rounds of adversarial review converged on a root cause
+  *upstream of the SA-MIS work*: RISE's binary `EnvSelectProbability()`
+  (returns 0-or-1) was the architectural mismatch driving the
+  catastrophes, not the disc-area-vs-SA convention per se.
+- **2026-05-29 (Session 9, continuous-PMF landing)**: implemented the
+  continuous-PMF architectural fix recommended by the adversarial-
+  review round 1 §A.5 finding.  `EnvSelectProbability()` now returns
+  env's share of total selection power (env totalLuminance × disc area
+  vs alias-table total weight) — fractional in mixed scenes, 1.0 in
+  env-only.  Plumbed via wrapper in `LightSampler::SampleLight()` that
+  consumes a single Get1D() at the top, re-maps it into either the
+  env-direction sub-interval or the alias-table-selection sub-interval
+  — net Sobol/QMC dimension consumption per call is IDENTICAL to the
+  prior binary-PMF flow, avoiding the 2026-05-26 dimension-shift
+  regression.  Result: env+omni 85% → 109%, env+mesh 86% → 92%, all
+  topologies pass at lax `{0.35, 0.35, 2.00}` and the strict
+  `{0.10, 0.30, 1.00}` failure count drops from 11 (Session 8) to 3
+  (Session 9 — residual disc-area-vs-SA discrepancies on VCM env+mesh
+  +28% over and BDPT spectral env-only ±7-9%).  Reverted Sessions
+  5/7/8 BDPTIntegrator.cpp changes back to pristine master before
+  landing the continuous-PMF fix in isolation.  Implementation in
+  [src/Library/Lights/LightSampler.cpp](../src/Library/Lights/LightSampler.cpp)
+  (`RecomputeEnvSelectProbability` + `SampleLight` env-vs-alias roll)
+  + [src/Library/Lights/LightSampler.h](../src/Library/Lights/LightSampler.h)
+  + [src/Library/Rendering/EnvironmentSampler.h](../src/Library/Rendering/EnvironmentSampler.h)
+  `TotalLuminance()` accessor.
+
+This item is **substantively closed** at lax tolerances.  The Piece-1.A
+`ConvertDensity` helper remains in place as foundation for a future
+strict-tolerance closure (would require SA-measure pdfFwd/pdfRev at
+env vertices to remove the ±5-30% residual visible at strict 10/30/1
+tolerances).  See PRE_PHASE1_STATUS.md Session 9 outcome for the
+per-topology delta table and recommended next-session paths if a
+production team wants to push for strict closure.
+
+**2026-05-30 update (Session 11)** — The strict-tolerance residual was
+characterised in detail.  The VCM env+mesh 22 % over and env-only
+Lambertian 9 % over both have a single source: a **partition-of-unity
+violation between the env-S0 strategy and the env-NEE strategy**
+(empirically pinned by exhaustive A/B disable bisect: disabling both
+drops baseline by 0.738; disabling each alone drops by only 0.193 and
+0.228 — single-disable sum = 0.421 ≠ both-disable drop = 0.738, a 1.75×
+linear-MIS violation).  None of the Session 10 micro-changes (BDPTVertex
+pdfSelect field, InitLight dVC × pdfSelect, the 3 wCamera consumer-site
+divides, env-NEE invLightSelect rescale) are the over-count source; each
+tests as no-op or < 0.001 linR in env-dominant scenes.  Mesh-side
+strategies, splats, and interior connections are all empirically
+innocent (≤ 0.005 linR contribution each).  The fix is the monolithic
+SA-MIS migration originally specced in
+[docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md), but
+now with significantly reduced scope and risk per the Session-9
+continuous-PMF fix:
+
+- **VCM-side scope**: 2 functions (env-branch of `EvaluateS0Impl` and
+  `EvaluateNEEImpl`) — mesh-side strategies don't need migration.
+- **BDPT-side scope**: 6 sites per the v2 design's "Group 2" rows,
+  using the Phase-1.A `IsInfiniteLight()` + `ConvertDensity` helpers.
+- **OpenPGL guiding**: env-pdf consumers in `src/Library/Utilities/PathGuidingField.{h,cpp}`.
+- **Catastrophe modes defused**: prior v2 attempts catastrophically
+  collapsed BDPT to 6–36 % of PT because the binary `envSelectProb`
+  interacted with partial SA landings.  Session 9's continuous-PMF
+  fix removes that interaction, so partial SA landings should now be
+  testable incrementally (one BDPT row at a time, measure on
+  EnvLightBalanceTest).
+- **Estimated budget**: ~1 week of focused work (was 3 weeks pre-
+  Session-9 + pre-Session-11).
+
+Full investigation evidence and refined attack plan for a supervisor
+agent to stage the migration:
+**[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)**.
+
+**2026-05-31 update (coordinated escape-Tr fix — media-aware env-IBL
+now consistent across PT / BDPT / VCM).**  Pre-Phase-1 Piece 2 ported
+BDPT's media-aware *connection* transmittance (NEE / interior / splat)
+into VCM, but the companion piece — transmittance along the eye-walk
+*escape* segment when a camera/eye ray exits the scene through a
+medium to env-IBL — was missing in all three integrators (PT, BDPT,
+and VCM-via-shared-generator credited un-attenuated env radiance on
+escape).  That **escape-Tr gap is now closed** (see §7 "Eye-walk escape
+segment Tr — FIXED" and [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)
+"Coordinated escape-Tr fix").  With it, **VCM connection-Tr + escape-Tr
+are both media-aware and consistent with PT/BDPT**, and a new
+bounded-medium env-IBL fixture establishes a *cross-integrator
+agreement* property: on `env_bounded_fog_{pt,bdpt,vcm}` (pure
+absorption) PT ≈ BDPT ≈ VCM to within ±5 % (VCM +0.1 % of PT).  This
+is orthogonal to the SA-MIS partition work above (Tr is a throughput
+multiplier, not a pdf).  **Note** a *distinct* residual the fixture
+surfaced: with in-scattering (σ_s > 0), VCM under-counts single-scatter
+of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS
+gap in this same env-S0 ↔ env-NEE / medium-vertex-connection family,
+to be folded into the SA-MIS migration scope (it is *not* part of the
+escape-Tr fix, which the pure-absorption fixture validates
+independently).
+
+**2026-06-03 update (Session 12) — minimal SA-measure fix FALSIFIED; item
+remains OPEN with a corrected root-cause model.**  The Session-11 §6.3
+minimal-scope prescription (SA-measure env density in the env branch of VCM's
+`EvaluateS0Impl` + `EvaluateNEEImpl`) was implemented exactly (verified
+line-for-line against SmallVCM) and **regressed** `EnvLightBalanceTest` from
+80/80 to 78/80 lax — it over-corrects uniform-env VCM from ~+6 % over to ~-18 %
+under and roughly halves hwss=true (0.82 → 0.45).  Reverted per the stop rules.
+Two corrections to the Session-11 model, both backed by direct-render isolation:
+(1) the env light-subpath connection (splat/interior) is innocent as a
+*contribution* (Δ11) but its **MIS denominator term is not** — it is a phantom
+term (`emissionPdfW·dVC` / `wCamera`) that suppresses `w_s0+w_s1` below 1 once
+the disc-area measure that masked it is corrected to SA; (2) "pure SA-measure
+closes the partition" is **false** — no SA variant tested even passes lax (SA +
+phantom-term exclusion still gives 0.894 env-only / 0.49 hwss=true, 78/80).  The
+disc-area baseline (80/80) is empirically closer to PT *despite* being
+"theoretically wrong."  A residual ~5-10 % contribution-level under-estimate
+(possibly partly a test-filter confounder: the test renders PT with Mitchell but
+VCM with `box`) and a severe HWSS-specific breakage remain unexplained.
+**No code landed; working tree at pristine baseline.**  Full evidence, the
+two model corrections, and re-scoped next steps in
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
+"Session 12 outcome".  Net: the env-IBL strict residual is **not** closable by
+the prescribed minimal VCM weight change; a principled fix needs the env
+light-tracing contribution/MIS-term consistency resolved first (a larger,
+VM/caustic-validated effort) — not a 2-function edit.
+
+**2026-06-03 update (Session 13) — gated prerequisite chain executed; SA-MIS
+re-attempt NOT undertaken; recommend STOP and accept the disc-area baseline.**
+This session ran the Session-12 "Recommended next steps" as a gated, fail-fast
+chain.  Findings (full evidence + the corrected models in
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
+"Session 13 outcome"): **(1) Filter confounder ≈ 0 %** of the residual (stronger
+than Session-12's ≤ 3 % guess) — matching `pixel_filter box` across PT/BDPT/VCM
+moves VCM/PT ratios < 0.6 %; all 5 strict failures are on the MEAN, which a
+normalized filter preserves.  **(2) The "phantom s=2 term" root cause is
+(c) — not (a) deficient generation, not (b) a non-existent strategy.** The env
+light-tracing strategy is generated by the *shared* `GenerateLightSubpath`
+(BDPT, which uses the same generator, tracks PT within ~9 % on every env
+topology → generation is healthy, rules out (a)), it *fires* (splat/interior
+connect env-rooted downstream vertices), and it is *correctly MIS-weighted
+near-zero* for a pinhole camera + diffuse surface (matches SmallVCM).  The
+Session-12 over-suppression is a **partial-migration measure inconsistency**:
+the eye-side SA denominators reserve MIS mass for light-tracing, but the
+light-side weights (InitLight env-vertex seeding) were left in disc-area, so
+they still contribute ≈ 0.  The principled fix is therefore **MONOLITHIC**
+(both subpath sides + the shared generator's env-vertex pdf convention + the 6
+BDPT rows + OpenPGL), **not** the 2-function surgical edit the Session-11 §6.2
+scope reduction claimed.  → large/architectural → STOP-report-scope.
+**(3) The HWSS breakage is a PRE-EXISTING spectral-bundle bias** (hwss=true
+env-only is 18 % under PT *at the disc-area baseline already* — 0.820 vs
+hwss=false 1.016; concentrated on uniform env-only; affects BDPT 8 % vs VCM
+18 %), **independent of SA**; SA compounds it to a lax FAILURE (0.45-0.49,
+persists with s2-exclusion).  Fixing HWSS env-IBL is a **separate
+spectral-bundle workstream** that must precede any SA migration (else SA fails
+the non-negotiable lax gate via hwss).  **Recommendation: accept the disc-area
+baseline for Phase 1** — 80/80 lax, production-working, empirically closest to
+PT, bounded ~11-28 % strict-only residual.  The real fix is a multi-week
+monolithic migration gated behind a separate HWSS prerequisite — not justified
+for a bounded strict-only residual given the 4-attempt history.  **No
+integrator code landed (`src/**` byte-identical to HEAD); one
+test-harness improvement** (`pixel_filter box` on the two PT rasterizer strings
+in `tests/EnvLightBalanceTest.cpp`, removing the documented filter confounder;
+80/80 lax, 116/116 suite) committed.
+
+### Background
+
+BDPT and VCM use **area-measure** path PDFs throughout: every vertex stores
+a `pdfFwd` interpreted as a probability density per square metre on the
+vertex's surface.  The MIS weight walks the path comparing strategies via
+ratios of these area densities.  This works cleanly for finite emitters
+(mesh luminaries, point lights) because they have a well-defined surface
+area or position.
+
+**Environment lights don't have a finite surface — they live "at
+infinity".**  To make env lights fit the area-measure framework, RISE
+uses the canonical PBRT-v3 disc parameterization: project the env onto a
+large disc of radius `cachedSceneRadius` placed perpendicular to the
+sampled sky direction `wi`, sample uniform area on the disc, and emit
+perpendicular to it.  Stored PDFs:
+
+```
+pdfPosition_disc = 1 / (π · r_scene²)     ← uniform area on disc
+pdfDirection     = pdf_env_sa(wi)         ← solid-angle on sphere
+joint            = pdfPos × pdfDir = pdf_env_sa / (π · r_scene²)
+```
+
+The `pdfPosition` factor isn't the marginal area density of placing a
+vertex on the disc — it's the **conditional density given the chosen
+direction `wi`**.  Each disc point has multiple pre-image `(wi, offset)`
+pairs (any sky direction whose disc passes through that point), so the
+true marginal area density would be an integral.  The BDPT factorization
+`area × direction` doesn't decompose cleanly here.
+
+The 2026-05-25 first-pass fix (see commit history) works around the
+mismatch:
+
+- **Path A** (s=1 NEE) overrides `pdfLight` to give the unbiased PT-style
+  contribution `T · fEye · Le · cos_eye / pdf_env_sa`.  The MIS weight is
+  still computed in the disc-area convention.
+- **Path B** (s=0 escape) pushes a synthetic env-light vertex with disc
+  position and gates `pdfRev` via `envSelectProbability` to keep MIS from
+  over-weighting the s=1 alt strategy when env isn't in the alias table.
+- **`kEnvZeroSentinel = 1e-30`** is used to signal "this pdf is truly
+  zero, don't trip `MISWeight`'s `remap0` line" — that line maps
+  `pdfRev == 0` to `1.0` for delta-vertex handling, which would
+  otherwise destroy the gate.
+
+Measured impact (`tests/EnvLightBalanceTest.cpp`, 32×32 / 64 spp,
+uniform env Le=1.0, Lambertian quad albedo 0.5):
+
+| Topology | PT mean | BDPT mean (pre-fix) | BDPT mean (post-fix) | VCM (pre) | VCM (post) |
+|----------|---------|---------------------|----------------------|-----------|------------|
+| env-only Lambertian | 0.589 | ~0 | 0.457 | 0.026 | 0.562 |
+| env + omni light    | 0.601 | 0.012 | 0.512 | 0.012 | 0.512 |
+| env + mesh emitter  | 0.608 | 0.029 | 0.520 | 0.029 | 0.520 |
+
+Delivery went from 0-5% of PT to 78-95% of PT.  The residual 15-22% gap
+is the disc-area-vs-true-SA mismatch this item closes.
+
+### Why the gap remains
+
+The MIS weights are still computed assuming both `pdfFwd` and `pdfRev` on
+the env vertex are area densities on the disc.  For env-only Lambertian
+the disc-area `pdfPosition_disc = 1/(πr²)` doesn't capture the env's
+importance-sampling density, so the MIS-walk's pdf-ratio comparison
+between s=0 (eye escape) and s=1 (NEE) is mismatched, leaving variance
+on the table.  Path B's override only covers the *contribution*; the
+*weights* themselves still distribute energy sub-optimally.
+
+For env+omni and env+mesh the gap is dominated by light-subpath
+strategies (s≥2) that traverse the env-vertex's pdfFwd/pdfRev to
+compute MIS for paths the light subpath generates.  Those strategies
+inherit the disc-area pdf mismatch.
+
+### What PBRT-v4 does
+
+PBRT-v4 treats infinite-area lights as a **first-class distinct vertex
+type** in BDPT.  The key changes:
+
+1. **`Vertex::IsInfiniteLight()`** flag on each vertex (RISE already has
+   the equivalent: `pEnvLight != NULL`).  Env vertex's `position` is
+   treated as a direction, not a point in space.
+
+2. **Measure-aware `Vertex::PDF` and `Vertex::PDFLight`** — when the
+   *next* vertex is an infinite light, these return the **solid-angle
+   density** directly, skipping the `cos / r²` area conversion:
+
+   ```cpp
+   // PBRT-v4 vertex.h ConvertDensity (paraphrased)
+   if (next.IsInfiniteLight()) return pdf;        // SA, no conversion
+   else return pdf * absDot(w, next.ng) / dist²;  // area conversion
+   ```
+
+3. **`Vertex::PdfLightOrigin`** for an env vertex returns just the env
+   importance-sampling pdf (no disc-area factor) — this is what the MIS
+   walk uses to compare s=1 NEE against s=0 escape.
+
+4. **The MIS walk in `MISWeight`** propagates the right measure through
+   the env vertex automatically because the conversion helpers do the
+   right thing.
+
+5. **`Vertex::Le()`** for an env vertex queries the infinite light's
+   `Le(ray)` in the direction toward the eye — no disc geometry involved.
+
+Net effect: every strategy that touches an env vertex evaluates its pdf
+in **solid-angle measure** at that vertex, while all surface vertices
+stay in area measure.  The MIS ratios compare like-to-like and the
+weights sum to 1 unbiased — closing the 15-22% gap.
+
+### What the refactor would touch in RISE
+
+- **`BDPTVertex.h`**: `pEnvLight != NULL` already marks env vertices.
+  Document the new semantics: `position` is a **point on the unit
+  sphere at infinity** (the sky direction), `normal` is meaningless,
+  `pdfFwd` is solid-angle measure.
+
+- **`BDPTUtilities::SolidAngleToArea`** / `GeometricTerm`: add overloads
+  that check the destination vertex's env flag and return the SA pdf
+  unmodified when true.  For env destination, `G` reduces to `cos_eye`
+  (no `cos_light / r²`).
+
+- **`MISWeight`** ([BDPTIntegrator.cpp:4677](../src/Library/Shaders/BDPTIntegrator.cpp)):
+  the walk currently uses stored `pdfFwd` / `pdfRev` ratios in area
+  measure.  For paths terminating in an env vertex, the boundary at the
+  env vertex needs to skip the area conversion.  This is the most
+  invasive change — `MISWeight` is the core MIS routine used by every
+  connection strategy.
+
+- **`SampleEnvLightEmission`** ([LightSampler.cpp:1040](../src/Library/Lights/LightSampler.cpp)):
+  store `pdfPosition = pdf_env_sa(wi)` directly (no `1/(πr²)` factor),
+  `pdfDirection = 1.0` (deterministic given wi).  Joint becomes
+  `pdfSelect · pdf_env_sa`, matching the PBRT-v4 convention.
+
+- **`GenerateLightSubpath`** vertex-0 setup: throughput becomes
+  `Le / (pdfSelect · pdf_env_sa)` (no πr² factor).  Conversion to
+  vertex 1 area pdf becomes `pdf_env_sa · cos_v1 / r²_{v0,v1}` — same
+  algebra, different bookkeeping.
+
+- **Drop the Path A / Path B workarounds**:
+  - `pdfLight = pdfSA / dist²` override at the four s=1 NEE sites
+    becomes unnecessary — the natural `T · fEye · Le · G / pdfFwd`
+    formula reduces to the correct PT formula when `pdfFwd` is in SA.
+  - `kEnvZeroSentinel = 1e-30` workaround for `remap0` line becomes
+    unnecessary — once env vertices use SA throughout, zero pdf on
+    NEE-unreachable cases is a natural consequence.
+  - Path B's `EnvSelectProbability()`-gating of `eyePred.pdfRev`
+    becomes unnecessary for the same reason.
+
+- **VCM**: `dVC` / `dVCM` / `dVM` running quantities ([VCMRecurrence.h](../src/Library/Shaders/VCMRecurrence.h))
+  currently assume area-measure throughout.  The Georgiev 2012 recurrence
+  has an env-vertex special case that's exactly the SA-measure analog —
+  parallel handling required there too.
+
+- **Tests**: tighten `EnvLightBalanceTest` tolerances back to the strict
+  `0.10 / 0.30 / 1.00` family (matching `BDPTStrategyBalanceTest`); the
+  renderers should match PT within MC noise after the refactor.  The
+  current tolerances `0.35 / 0.35 / 2.00` accept the 22% residual
+  bias — they should fail after the refactor lands.
+
+### Risk
+
+- **MIS regressions are subtle.**  RISE has hit MIS weight bugs before
+  that produced bright outlier pixels in specific path configurations
+  (see [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)).
+  The disc-area convention is currently *working* for all paths that
+  don't terminate in env vertices; touching `MISWeight`'s core risks
+  breaking those.  Tier-1 risk: re-run the full BDPT/VCM regression
+  suite (`BDPTStrategyBalanceTest`, `VCMStrategyBalanceTest`,
+  `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, the spectral
+  scenes) and visual regression on the canonical sponza / veach-MIS
+  scenes before declaring done.
+
+- **Surface area.**  Touches `MISWeight`, `BDPTUtilities`,
+  `SampleEnvLightEmission`, both RGB and NM code paths in BDPT, plus
+  VCM's recurrence.  ~10 files, ~300 lines of changes if cleanly
+  refactored.
+
+### Validation criteria
+
+- `EnvLightBalanceTest` passes with strict `0.10 / 0.30 / 1.00`
+  tolerances on all topologies and configurations (RGB and spectral variants under both HWSS modes).
+- No regression on any of the 116 existing tests.
+- Visual: render `scenes/FeatureBased/ripple_dreams_fields.RISEscene`
+  with PT, BDPT, VCM (each at matched samples).  All three should
+  produce visually indistinguishable images.
+- HDRVarianceTest comparison (master vs branch) on the same env-IBL
+  scenes: BDPT/VCM RMSE vs PT-reference should drop by ≥15% (the
+  residual gap closed).
+
+### Companion limitation — VCM connection transmittance — CLOSED (COMMITTED 2026-05-31)
+
+**Pre-fix state (retained as historical diagnosis):**
+VCM's NEE (and other connection strategies) previously did not apply
+connection transmittance at all — `VCMIsVisible` was a binary
+occlusion test, not a media-aware shadow walk like BDPT's
+`EvalConnectionTransmittance`.  The 2026-05-26 round 4 fix that
+extended env-NEE transmittance from `2 × cachedSceneRadius` to
+`RISE_INFINITY` applied to BDPT only; VCM env-NEE still had Tr = 1
+in any global / per-object medium.
+
+**Resolution (2026-05-31, committed):**
+BDPT's media-aware `EvalConnectionTransmittance{,NM}` was ported to
+all three VCM connection-strategy sites in `src/Library/Shaders/VCMIntegrator.cpp`
+(NEE / interior / splat-to-camera) and committed alongside the coordinated
+PT + BDPT + VCM eye-walk escape-segment `Tr` fix (see §7 "Eye-walk escape
+segment Tr — FIXED" and the 2026-05-31 status update above).  Prior to the
+escape-Tr fix, applying connection `Tr` alone widened a discrepancy on
+global-medium env-IBL scenes (`vcm_env_through_fog`, `pt_env_through_fog`)
+because `s=0` eye-escape remained un-attenuated while `s=1` env-NEE
+attenuated to 0; once escape-segment `Tr` landed across all integrators,
+connection `Tr` and escape `Tr` became mutually consistent and validated on
+the bounded-medium `env_bounded_fog_{pt,bdpt,vcm}` fixtures (details in
+[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)).
+
+### Companion limitation — env not in alias table for mixed-light scenes — CLOSED 2026-05-29
+
+**Previously**: env-NEE was restricted to env-only scenes because
+`LightSampler::EnvSelectProbability()` returned 0 whenever the alias
+table contained any explicit light.  In mixed env+explicit scenes,
+env contributed solely via eye-subpath escape (BDPT Path B), capping
+mixed-scene env-NEE delivery at the documented ~15% deficit.  A
+2026-05-26 attempt to fix this by appending env as a synthetic alias-
+table entry caused a severe spectral-BDPT regression (env-only
+delivery 76 % → 20 % of PT) suspected to be Sobol-dimension misalignment
+in the spectral integrator's per-wavelength sampling.
+
+**Resolved (Session 9, 2026-05-29)** by the continuous-PMF
+architectural fix described in the Status block above.  Env now
+participates in `SampleLight()` via an env-vs-alias roll that re-maps
+a single `sampler.Get1D()` into either the env-direction's u1 or the
+alias-table's selection u — net Get1D() consumption per call is
+IDENTICAL to the prior binary-PMF flow, sidestepping the 2026-05-26
+dimension-shift trap.  `EnvSelectProbability()` is now a continuous
+fraction = env totalLuminance × disc-area ÷ (env weight + alias-table
+total weight), matching PBRT-v4's `LightSampler::PMF(env)` semantics.
+EnvLightBalanceTest mixed-scene topologies recover from 85% to 109%
+(env+omni) / 92% (env+mesh) without any regression on env-only or
+non-uniform-env topologies, and the prior spectral env-only Sobol
+catastrophe does NOT recur.  See
+[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) Session 9 outcome
+for the per-topology delta and implementation citations.
+
+### References
+
+- PBRT-v4 [`src/pbrt/bdpt.h`](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/bdpt.h) —
+  `Vertex` struct, `IsInfiniteLight()`, `ConvertDensity` measure-aware logic.
+- PBRT-v4 [`src/pbrt/bdpt.cpp`](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/bdpt.cpp) —
+  `MISWeight` walk with env-vertex handling.
+- Georgiev et al. 2012 "Light Transport Simulation with Vertex Connection
+  and Merging" — Appendix A on the dVC/dVCM recurrence in the presence of
+  infinite lights.
+- SmallVCM `vertexcm.hxx` `GetLightRadiance()` — handles infinite-area
+  light as a special path-length=1 case that doesn't fit the area-measure
+  framework.
+
+---
+
+## ~~GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned~~
+
+CLOSED 2026-09-12 — `000df0b4`: reciprocal single-pass diffuse transmission now covers RGB/NM Schlick, conductor and thin-film GGX. `LayeredWhiteFurnaceTest` reports `0 of 57 configurations failed.` The committed unfixed test failed four configurations, including anisotropic and mixed conductor/film siblings.
+
+The former constant deduction did not give up diffuse energy as specular Fresnel rose; conductor/film mixtures had no deduction. The replacement multiplies entry and exit transmissions and deliberately omits diffuse recycling. It is a rough-interface approximation, not a universal exact-energy theorem. See [formulation, curves and validation](DL37_GGX_DIFFUSE_TRANSMISSION.md).
+
+A broader independent BRDF sweep changed from 150 checks/46 failures to 150 checks/3 failures. Those identical specular-only baseline failures were tracked as DL-63. Glossy-filter evaluation mismatch and zero-F0 sampling support were tracked as DL-62/DL-64 and CLOSED 2026-09-13 (`dfdd5ee1`; see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)) — re-verified DL-63's three failures unchanged (bit-for-bit identical against a stashed pre-fix rebuild) in the same pass. **DL-63 itself was subsequently CLOSED 2026-09-14** (`052ec469`, height-correlated-G2 multiscatter-compensation LUT; same doc's "DL-63" section) — the independent sweep is now `150 checks, 0 failures`. The standalone report includes the serial linear before/after images and all gate counters.
+
+---
+
+## ~~Clearcoat over `fabric_material` — not composable, unowned~~
+
+CLOSED 2026-09-27 — commits `84d33974` (glTF importer) and `31cb5be4`
+(Blender native bridge): `GLTFSceneImporter.cpp` now builds a
+`coated_material` wrapping the sheen's `fabric_material` result whenever
+`KHR_materials_clearcoat` and `KHR_materials_sheen` both contribute on
+one material, matching glTF's own base → sheen → clearcoat layer order;
+the clearcoat factor/roughness/tint mapping is shared with the
+clearcoat-only branch via one `BuildClearcoatWrap` lambda so the two
+call sites cannot drift.  `rise_blender_bridge.cpp`'s
+`add_pbr_metallic_roughness_material` carried the identical sheen-wins
+layering decision and was updated the same way, via a shared
+`BuildCoatWrap` lambda.  `tests/GLTFSheenImportTest.cpp`'s
+`TestClearcoatSheenComposesCoatOverFabric` (was `TestClearcoatSheenOrdering`,
+which asserted the OLD sheen-wins behaviour) and
+`tests/BlenderBridgeCoatTest.cpp`'s `TestCoatComposesOverSheen` (was
+`TestCoatAndSheenTogetherKeepsSheenOnly`) are the regressions; both were
+confirmed genuinely red against an isolated pre-fix rebuild (the C++
+importer test: 4 of 47 checks failed; the Blender bridge test: 5 of 60
+checks failed) before the fix landed.  See
+[docs/GLTF_IMPORT.md](GLTF_IMPORT.md) §15's "Clearcoat + sheen on the
+same material" paragraph and
+[docs/BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md)
+"Coat and Subsurface" for the current behaviour, and
+[docs/CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 item 16 for
+the material-composition side this follow-up unblocked.
+
+`coated_material`'s substrate allowlist used to admit `lambertian_material` /
+`orennayar_material` / `ggx_material` only (three of the four scattering
+classes `FabricMaterial::IsSupportedSubstrate` checks — fabric also admits
+`weave_material`) — `fabric_material` was none of those, so
+`coated_material` could not wrap one.  A glTF asset
+combining `KHR_materials_sheen` + `KHR_materials_clearcoat` (lacquered
+fabric, coated upholstery) lost the clearcoat layer on import as a
+result: sheen won the wrap (the registered material was the
+`fabric_material` over the bare PBR base) and the clearcoat layer was
+warn-and-skipped, naming both extensions in the message so the drop was
+said, not silent.
+
+**Blocker REMOVED 2026-09-14 (DL-23, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)):**
+`CoatedMaterial` gained `FabricMaterial` (and `WeaveMaterial`) as a
+substrate, with `CoatedBRDF`/`CoatedSPF` forwarding and modulating a
+`transmission thin` weave's below-horizon transport exactly as
+`FabricBRDF`/`FabricSPF` already did.  `docs/CLOTH_FABRIC_DESIGN.md` §15
+item 16's tail and item 22's "one hop out" prediction were struck
+accordingly at the time.  The importer-side wiring that composition
+unblocked (this item's own remaining scope at the time) is what the
+2026-09-27 closure above delivers.
 
 ---
 
@@ -921,8 +1460,8 @@ Several items here build on transport work already completed or planned before t
 | Item | Prior status |
 |------|-------------|
 | Light BVH (Rank 4) | **Done** (April 2026) — 4A, 4B, 4C implemented; 4.78x variance reduction on 100-light corridor |
-| Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D deferred pending HWSS |
-| Light subpath guiding (Rank 2) | New scope |
+| Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D spectral decomposition tracking deferred (HWSS itself shipped in Rank 5; frozen `MLTSpectralRasterizer` stays single-wavelength NM per wavelength sample without path sharing) |
+| Light subpath guiding (Rank 2) | **Done** (April 2026) — dedicated `pLightGuidingField` (Option B) in BDPT |
 | Random-walk SSS (Rank 3) | **Done** (April 2026) |
 
 The following validation and correctness work from the prior roadmap remains relevant before starting items that depend on light sampling or spectral correctness:

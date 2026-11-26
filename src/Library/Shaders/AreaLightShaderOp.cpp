@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "../RISE_API.h"
 #include "AreaLightShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/GeometricUtilities.h"
 
 using namespace RISE;
@@ -27,7 +28,7 @@ AreaLightShaderOp::AreaLightShaderOp(
 	const unsigned int samples,		///< [in] Number of samples to take
 	const IPainter& emm_,			///< [in] Emission of this light
 	const Scalar power_,			///< [in] Power scale
-	const IPainter& N_,				///< [in] Phong factor for focussing the light on something
+	const IScalarPainter& N_,		///< [in] Phong factor for focussing the light on something (physical scalar)
 	const Scalar hotSpot_,			///< [in] Angle in radians of the light's hot spot
 	const bool cache_				///< [in] Should we use the rasterizer state cache?
 	) : 
@@ -66,10 +67,12 @@ void AreaLightShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
@@ -97,7 +100,7 @@ void AreaLightShaderOp::PerformOperation(
 		}
 	}
 
-	const RISEPel pN = N.GetColor( ri.geometric );
+	const Scalar pN = N.GetValuesAt( ri.geometric ).v[0];
 
 	for( ISampling2D::SamplesList2D::const_iterator it = samples.begin(); it != samples.end(); it++ ) {
 		const Point2& sample = *it;
@@ -127,14 +130,14 @@ void AreaLightShaderOp::PerformOperation(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					continue;
 				}
 			}		
 
-			const RISEPel	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
+			const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 			const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-			c = c + (emm.GetColor(ri.geometric) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->value(vToLight,ri.geometric):RISEPel(1,1,1)));
+			c = c + (emm.GetRadianceColor(ri.geometric) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueStateful(vToLight,ri.geometric,&ior_stack):RISEPel(1,1,1)));
 		}
 	}
 
@@ -155,10 +158,12 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
@@ -178,7 +183,7 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 		}
 	}
 
-	const Scalar pN = N.GetColorNM( ri.geometric, nm );
+	const Scalar pN = N.GetValueAtNM( ri.geometric, nm );
 
 	for( ISampling2D::SamplesList2D::const_iterator it = samples.begin(); it != samples.end(); it++ ) {
 		const Point2& sample = *it;
@@ -208,10 +213,13 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( !caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( !caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 					const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-					c += (emm.GetColorNM(ri.geometric,nm) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueNM(vToLight,ri.geometric,nm):1));
+					// `emm` is the area light's EMISSION slot -> GetRadianceNM
+					// (Stage C slice 2), so an authored-white area light
+					// radiates D65 and resolves to white through the film.
+					c += (emm.GetRadianceNM(ri.geometric,nm) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueStatefulNM(vToLight,ri.geometric,nm,&ior_stack):1));
 				}
 			}
 		}

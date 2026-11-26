@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -9,6 +9,19 @@ RISE ASCII SCENE 5
 #   Birthdate:      March 20, 2026                                                                          #
 #                                                                                                           #
 #############################################################################################################
+
+##################################################
+# Scene-level options.  The canonical Cornell box is ~550 mm wide,
+# and the geometry uses those exact mm coordinates — so this scene
+# is declared mm-scale.  The camera's mm-input lens specs read 1:1
+# against the geometry; focus_distance is also in scene units
+# (mm here, e.g. 490 = 490 mm to the short block).
+##################################################
+
+scene_options
+{
+	scene_unit		0.001
+}
 
 ##################################################
 # Setup a renderer
@@ -44,23 +57,176 @@ file_rasterizeroutput
 # Focus on the short block (~490 units from camera).
 # Very large aperture for dramatic depth-of-field blur.
 
+film
+{
+	width			512
+	height			512
+}
+
 thinlens_camera
 {
 	location			278 200 -350
 	lookat				278 200 280
 	up					0 1 0
-	width				512
-	height				512
-	fov					50.0
-	aperture_size		80.0
-	focal_length		18.0
-	focus_distance		490.0
+	sensor_size			16.79           # mm — matches FOV ~50° with the 18 mm focal
+	focal_length		18.0            # mm
+	fstop				0.225           # wide-open lens preserves the historical strong DoF blur
+	focus_distance		490.0           # mm — focus on the short block
 }
 
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -91,12 +257,15 @@ lambertian_material
 }
 
 # Glossy material on short block to make focus vs blur more visible
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 80 -> alpha 1/sqrt(2N+1) = 0.07881, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				glossy_white
 	rd					color_white
 	rs					color_white
-	N					80.0
+	alphax				0.078811
+	alphay				0.078811
+	fresnel_mode		schlick_f0
 }
 
 lambertian_luminaire_material
@@ -242,3 +411,5 @@ standard_object
 	geometry			shortblockgeom
 	material			glossy_white
 }
+
+

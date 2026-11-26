@@ -17,7 +17,9 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
+#include "PolishedBRDF.h"
 
 namespace RISE
 {
@@ -26,33 +28,56 @@ namespace RISE
 		class PolishedSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				Rd;					// Reflectance of diffuse substrate
-			const IPainter&				tau;				// Transmittance of the dielectric
-			const IPainter&				Nt;					// Index of refraction of dielectric coating
-			const IPainter&				scat;				// Scattering function (either Phong or HG)
-			const bool					bHG;				// Use Henyey-Greenstein phase function scattering
+			//! The ONE reflectance function (DL-285).  The SPF samples it
+			//! lobe by lobe and owns no parameters of its own: every
+			//! painter lives in the BRDF, so `PolishedMaterial::GetBSDF()`
+			//! (which returns this same object) and this sampler cannot
+			//! drift apart.
+			PolishedBRDF*				pBRDF;
 
 			virtual ~PolishedSPF( );
 
-			Scalar GenerateScatteredRayFromPolish(
-				ScatteredRay& dielectric,
-				const Vector3 normal,										///< [in] Normal
-				const Vector3 reflected,									///< [in] Reflected ray
-				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-				const Point2& random,										///< [in] Random numbers
-				const Scalar phongN,
-				const Scalar ior,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+			void ScatterImpl(
+				const RayIntersectionGeometric& ri,
+				ISampler& sampler,
+				const Scalar nm,
+				ScatteredRayContainer& scattered,
+				const IORStack& ior_stack
+				) const;
+
+			Scalar PdfImpl(
+				const RayIntersectionGeometric& ri,
+				const Vector3& wo,
+				const Scalar nm,
+				const IORStack& ior_stack
 				) const;
 
 		public:
 			PolishedSPF(
 				const IPainter& Rd_,
-				const IPainter& tau_,
-				const IPainter& Nt_,
-				const IPainter& s,
+				const IScalarPainter& tau_,
+				const IScalarPainter& Nt_,
+				const IScalarPainter& s,
 				const bool hg
 				);
+
+			//! The shared reflectance function (PolishedMaterial::GetBSDF()).
+			inline PolishedBRDF&         GetBRDF()               const { return *pBRDF; }
+
+			//! Read-back + rebind for the interactive editor (forwarded to
+			//! the shared BRDF, so BSDF and SPF stay one function).
+			inline const IPainter&       GetDiffuseReflectance() const { return pBRDF->GetDiffuseReflectance(); }
+			inline const IScalarPainter& GetTransmittance()      const { return pBRDF->GetTransmittance(); }
+			inline const IScalarPainter& GetIOR()                const { return pBRDF->GetIOR(); }
+			inline const IScalarPainter& GetScattering()         const { return pBRDF->GetScattering(); }
+			//! Read-back of the baked HG-phase flag (no setter — it is
+			//! fixed at construction).  Used by the snapshot clone to
+			//! faithfully reconstruct the material.
+			inline bool                  GetHG()                 const { return pBRDF->GetHG(); }
+			inline void SetDiffuseReflectance( const IPainter& v )       { pBRDF->SetDiffuseReflectance( v ); }
+			inline void SetTransmittance( const IScalarPainter& v )      { pBRDF->SetTransmittance( v ); }
+			inline void SetIOR( const IScalarPainter& v )                { pBRDF->SetIOR( v ); }
+			inline void SetScattering( const IScalarPainter& v )         { pBRDF->SetScattering( v ); }
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -60,10 +85,10 @@ namespace RISE
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetColor( ri )[0];
-				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
+				const Scalar s = pBRDF->GetScattering().GetValuesAt( ri ).v[0];
+				info.isSpecular = pBRDF->GetHG() ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetColor( ri )[0];
+				info.ior = pBRDF->GetIOR().GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -75,10 +100,10 @@ namespace RISE
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetColorNM( ri, nm );
-				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
+				const Scalar s = pBRDF->GetScattering().GetValueAtNM( ri, nm );
+				info.isSpecular = pBRDF->GetHG() ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetColorNM( ri, nm );
+				info.ior = pBRDF->GetIOR().GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}
@@ -89,7 +114,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -100,7 +125,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			Scalar	Pdf(
@@ -116,16 +141,37 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
-			/// HWSS companion evaluation: returns the exact krayNM
-			/// for the coat or diffuse lobe at the given wavelength.
-			/// Both lobes are direction-independent (krayNM depends
-			/// only on Fresnel reflectance and painter values).
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			/// HWSS companion evaluation: the selected lobe's own krayNM
+			/// at @a nm -- `f_I cos / p_I` for the glossy coat and the
+			/// substrate (both direction-dependent since DL-285), and
+			/// `tau F(ci)` for a delta coat.
 			Scalar EvaluateKrayNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& outDir,
 				ScatteredRay::ScatRayType rayType,
 				Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) * cos_o / pdfHero.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 		};
 	}

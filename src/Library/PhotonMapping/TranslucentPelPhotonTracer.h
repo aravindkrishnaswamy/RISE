@@ -43,7 +43,8 @@ namespace RISE
 				const RISEPel& power,
 				const bool bFromTranslucent,
 				TranslucentPelPhotonMap& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,								///< [in] Index of refraction stack
+				const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
@@ -52,10 +53,10 @@ namespace RISE
 				const Ray& ray,
 				const RISEPel& power,
 				TranslucentPelPhotonMap& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const
 			{
-				TracePhoton( ray, power, false, pPhotonMap, ior_stack);
+				TracePhoton( ray, power, false, pPhotonMap, ior_stack, 0 );
 			}
 
 			// Tells the tracer to set the photon map specifically for the scene

@@ -20,12 +20,72 @@
 
 namespace RISE
 {
+	enum AlphaMode { eAlphaOpaque, eAlphaMask, eAlphaBlend };
+	class ISampler;
 	class ISPF;
 	class IBSDF;
 	class IEmitter;
 	class ISubSurfaceDiffusionProfile;
+	class RayIntersection;
 	class RayIntersectionGeometric;
 	class IORStack;
+	class IContinuationClosurePel;
+	class IContinuationClosureNM;
+	struct ContinuationPathState;
+	class IScalarPainter;
+
+	//! Selects which Fresnel model GGX-family materials evaluate internally.
+	//! Visible at the public API level so RISE_API_CreateGGXMaterial /
+	//! Job::AddGGXMaterial / parser layers can pass through the selection
+	//! without dragging in Implementation headers.
+	//!
+	//!   eFresnelConductor (default — preserves existing behaviour):
+	//!     Optics::CalculateConductorReflectance(Ni=1, ior, ext) at the
+	//!     half-vector, multiplied with `specular` painter as a tinting
+	//!     factor.  Use for hand-authored materials with real ior /
+	//!     extinction values.
+	//!
+	//!   eFresnelSchlickF0:
+	//!     Treats `specular` painter as F0 directly; uses Schlick's
+	//!     approximation `F = F0 + (1-F0)(1-cosθ_h)^5`.  Required by
+	//!     glTF metallicRoughness PBR mapping.  In this mode `ior` /
+	//!     `ext` painters are ignored.  GGX applies the reciprocal
+	//!     single-pass diffuse interface transmission `(1-Ai)*(1-Ao)`
+	//!     in evaluation and selected diffuse throughput, with A from
+	//!     the active interface Fresnel model; it does not use the old
+	//!     constant `(1-max(F0))` split or recycle diffuse returns.  The
+	//!     multiscatter lobe uses the closed-form Schlick hemispherical
+	//!     Fresnel average `F_avg = F0 + (1-F0)/21`.
+	//!
+	//!   eFresnelThinFilmConductor:
+	//!     Thin-film interference (heat-tint / anodization color) on the
+	//!     GGX conductor specular lobe — an air / oxide-film / metal stack
+	//!     evaluated by the validated Airy reflectance in
+	//!     Utilities/ThinFilm.h (docs/THIN_FILM_INTERFERENCE.md §4/§7).
+	//!     The existing `ior` / `ext` painters carry the SUBSTRATE (metal)
+	//!     complex index; three additional IScalarPainter slots carry the
+	//!     FILM: `pFilmIOR` (oxide n), `pFilmExtinction` (oxide k),
+	//!     `pFilmThickness` (oxide thickness, nm — may be spatially
+	//!     varying).  The ambient is air (1+0i).  `specular` multiplies the
+	//!     result as a tint exactly as the conductor branch does.  On the
+	//!     SPECTRAL path the per-hero-wavelength reflectance is exact; on
+	//!     the RGB path it is a preview (white-normalized albedo-basis
+	//!     spectral integral, see §8).  The three film slots MUST be
+	//!     non-null when this mode is selected (the GGX-family ctors accept
+	//!     them, the parser/factory enforce presence in P2-C).
+	enum FresnelMode
+	{
+		eFresnelConductor = 0,
+		eFresnelSchlickF0 = 1,
+		eFresnelThinFilmConductor = 2,
+		//! Constant reflectance: the specular colour at every angle, with no
+		//! Fresnel term (Cycles' Glossy BSDF).  `ior`/`extinction` are ignored.
+		//! The model is energy-bounded for specular and diffuse colours at or
+		//! below 1 per channel.  The diffuse lobe gets the reciprocal (1 - A_i)(1 - A_o)
+		//! interface transmission every GGX mode applies; here A is the
+		//! specular colour, so it is (1 - specular) on entry and on exit.
+		eFresnelConstant = 3
+	};
 
 	/// Parameters for random-walk subsurface scattering.
 	/// Stored on the material and queried by the integrators.
@@ -55,8 +115,13 @@ namespace RISE
 	class IMaterial : public virtual IReference
 	{
 	protected:
-		IMaterial(){};
-		virtual ~IMaterial( ){};
+		IMaterial();
+		virtual ~IMaterial();
+		const IScalarPainter* alphaPainter_;
+		AlphaMode alphaMode_;
+		Scalar alphaCutoff_;
+		static void AdjustAlphaMaterialCount( int delta );
+		static void AdjustMixMaterialCount( int delta );
 
 	public:
 
@@ -96,18 +161,16 @@ namespace RISE
 		/// Compute wavelength-dependent random-walk SSS parameters.
 		/// Returns true if this material provides spectral RW SSS.
 		///
-		/// Used by materials whose scattering coefficients vary
-		/// strongly with wavelength (e.g. BioSpec skin), where
-		/// packing 3 wavelengths into RGB channels produces
-		/// intolerable per-channel weight variance.  These
-		/// materials return NULL from GetRandomWalkSSSParams()
-		/// (disabling RGB mode) and implement this method for
-		/// the spectral (NM) rendering path.
-		///
-		/// The output params_out has all 3 RGB channels set to
-		/// the same scalar value for the requested wavelength,
-		/// so the walk's luminance-derived NM path uses the
-		/// correct per-wavelength extinction.
+        /// NM consumers prefer this query even when RGB parameters exist.
+        /// RandomWalkSSSMaterial evaluates its absorption, scattering and
+        /// boundary IOR at nm (same snapshot point as its RGB parameters;
+        /// DL-374). Spectral-only implementations can also supply
+        /// wavelength-dependent coefficients and return no RGB parameters.
+		/// The output params_out MUST have all 3 RGB channels set to
+		/// the same scalar value for the requested wavelength:
+		/// RandomWalkSSS reads a broadcast triple exactly, and
+		/// collapses anything else to a wavelength-independent
+		/// (grey) luminance.
 		///
 		/// \param nm         Wavelength in nm
 		/// \param params_out Filled with coefficients at this wavelength
@@ -130,16 +193,32 @@ namespace RISE
 			return SpecularInfo();
 		}
 
-		/// \return Spectral variant of GetSpecularInfo for wavelength-dependent IOR.
-		/// Default delegates to GetSpecularInfo.  DielectricMaterial overrides
-		/// to use wavelength-specific IOR for dispersion.
+		/// \return Wavelength-specific IOR and attenuationNM (DL-435).
+		/// Default uplifts RGB metadata for RGB-only extensions. Materials with
+		/// authored spectral painters override this to query them directly.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
 			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
-			return GetSpecularInfo( ri, ior_stack );
+			SpecularInfo info = GetSpecularInfo( ri, ior_stack );
+			info.SetSpectralAttenuationFromRGB( nm );
+			return info;
+		}
+
+		/// \return DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the
+		/// `ior` field of the MEDIUM this material encloses, when that field
+		/// is a genuine function of world position
+		/// (`IScalarPainter::IsWorldPositionField()`), else null.  A walk
+		/// travelling inside an object whose material returns non-null pays
+		/// the interior-segment basic-radiance factor `(n_start/n_end)^2`
+		/// along every straight segment (GradedIndexMedium.h).  Default null:
+		/// constant-index media, non-refracting materials, and any `ior`
+		/// form that has no value at an interior point.
+		virtual const IScalarPainter* GetGradedIORField() const
+		{
+			return 0;
 		}
 
 		/// \return The PDF (probability density function) for scattering from
@@ -162,7 +241,191 @@ namespace RISE
 			const Scalar nm,
 			const IORStack& ior_stack
 			) const;
+
+		/// \return TRUE if this material's BSDF has support over the FULL
+		///         SPHERE of directions about the shading normal -- i.e. its
+		///         `value()` / `valueNM()` are legitimately nonzero for
+		///         directions with `dot(wi, N) < 0`, and its `Pdf()` is
+		///         normalized over the sphere rather than the hemisphere.
+		///
+		/// Default FALSE, which is the correct answer for every ordinary
+		/// BRDF (Lambertian, GGX, Cook-Torrance, ...): those return 0 below
+		/// the geometric horizon, so next-event estimation may reject
+		/// below-horizon shadow directions without losing any transport.
+		///
+		/// A material that returns TRUE tells `LightSampler` to evaluate NEE
+		/// on BOTH hemispheres, using `|cos|` in place of the signed surface
+		/// cosine.  This is REQUIRED for correctness on such a material, not
+		/// an optimization: the BSDF-sampling side of the MIS partition
+		/// applies its `w_bsdf < 1` to below-horizon directions whether or
+		/// not NEE reaches them, so a hemisphere-gated NEE leaves the two
+		/// strategies summing to `w_bsdf < 1` there and the estimator reads
+		/// systematically UNDER.  Measured on Chiang hair before the gate was
+		/// made capability-aware: 0.5-1.2 % under on a sigma_a = 0 env
+		/// furnace, 11.7 % under with medulla-scattered lobes, and 4.3x under
+		/// BDPT on a point-lit backlit groom (whose TT transport is entirely
+		/// below-horizon).  See LightSampler.cpp's FULL-SPHERE NEE comments.
+		///
+		/// Overriding this TRUE on a material whose `value()` does NOT
+		/// actually transmit would be a real bias, not just wasted samples:
+		/// NEE would light back-faces at full weight.  Only override it when
+		/// the BSDF genuinely scatters through.
+		virtual bool ScattersFullSphere() const { return false; }
+
+		//! DL-05.  True when this material's SPF can emit a NON-BENDING
+		//! DELTA PASS-THROUGH lobe -- a ray that leaves along exactly the
+		//! incoming direction, carrying `ISPF::DeltaPassThroughTransmittance`
+		//! in expectation (today: a `transmission thin` weave's gap, and the
+		//! wrappers that forward it).  A capability of the MATERIAL, not a
+		//! per-sample flag (the debt-23 lesson): `RayCaster` scans it once
+		//! per attach to decide whether the pass-through shadow walk can
+		//! ever fire, and consults it per shadow-ray hit to decide whether
+		//! to ask the SPF for the transmittance.
+		//!
+		//! Only a DELTA light's NEE shadow ray sees through such a lobe (PT
+		//! NEE, the Step-1 zero-exitance lights, BDPT's zero-exitance
+		//! sweep).  An area or environment light keeps a binary shadow
+		//! here because PT's BSDF-sampled continuation already reaches it
+		//! THROUGH the delta lobe at MIS weight 1 (a delta vertex has no NEE
+		//! partner), so letting that NEE arm see through too would count
+		//! the same path twice.  See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
+		//!
+		//! A wrapper whose `GetSPF()` forwards (or re-prices) a base SPF's
+		//! pass-through lobe MUST forward this too, and its SPF must
+		//! override `DeltaPassThroughTransmittance{,NM}` with the re-priced
+		//! expectation; a wrapper that forwards neither simply keeps the
+		//! pre-DL-05 binary shadow (an under-read, never a double count).
+		virtual bool HasDeltaPassThrough() const { return false; }
+
+		//! DL-471.  The set of scatter types (bit (1 << t) for each
+		//! `ScatteredRay::ScatRayType` t: 1 diffuse, 2 reflection,
+		//! 3 refraction, 4 translucent) of the NON-DELTA lobes this
+		//! material's SPF can emit -- i.e. of the lobes a connection's
+		//! aggregate `IBSDF::value` sums.  Under a per-type bounce cap a
+		//! connection endpoint must count the type of its lobe; that is
+		//! defined from an aggregate value only when the set has one
+		//! member or none of its members is capped, so BDPT/MLT drop (and
+		//! VCM routes to S0 + NEE) a path whose counted endpoint needs a
+		//! split but provides none (EndpointNeedsTypeSplit). The default, every
+		//! type, is always SAFE (conservative); a subclass narrows it only
+		//! to the types it really emits. 0 means no ordinary finite lobe.
+		//! SSS declares surface reflection; its nonlocal jump is counted
+		//! separately (DL-482). A wrapper whose
+		//! `GetBSDF()` / `GetSPF()` forward a base material forwards this.
+		static const unsigned int kAllConnectionScatterTypes = ( 1u << 1 ) | ( 1u << 2 ) | ( 1u << 3 ) | ( 1u << 4 );
+		virtual unsigned int ConnectionScatterTypes() const { return kAllConnectionScatterTypes; }
+
+		//! DL-481.  True when `GetBSDF()->valueByScatterType{,NM}` splits
+		//! the connection value by exactly the labels this material's SPF
+		//! stamps (see IBSDF::valueByScatterType), so a counted connection
+		//! / merge endpoint with several possible lobe types can keep only
+		//! the types a per-type cap allows instead of being excluded.  A
+		//! material declares it only for the BSDF/SPF pair it builds; a
+		//! wrapper whose `GetBSDF()` / `GetSPF()` forward a base material
+		//! forwards this.  Default false: the endpoint stays excluded
+		//! (BDPTUtilities::EndpointNeedsTypeSplit).
+		virtual bool HasConnectionTypeSplit() const { return false; }
+
+		//! Rescales this material's emission.  Default is a no-op that
+		//! REJECTS the change (returns false) so non-emissive materials
+		//! safely decline — only luminaire materials (e.g.
+		//! LambertianLuminaireMaterial) override this to rebuild their
+		//! emitter at the new scale.  Backs the
+		//! `> modify material <name> scale <value>` command via
+		//! Job::SetMaterialEmissionScale; runs before a render while the
+		//! scene is still mutable, so no thread-safety concern.
+		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
+		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
+
+		/// Immutable pre-NEE continuation capability. Unsupported by default;
+		/// Phase-B callers additionally enforce the exact core-type allowlist.
+		virtual const IContinuationClosurePel* MakeContinuationClosurePel(
+			const RayIntersectionGeometric& ri,
+			const IORStack& ior_stack,
+			const ContinuationPathState& path_state
+			) const { return 0; }
+
+		/// Wavelength-bound spectral sibling of MakeContinuationClosurePel.
+		virtual const IContinuationClosureNM* MakeContinuationClosureNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack& ior_stack,
+			Scalar nm,
+			const ContinuationPathState& path_state
+			) const { return 0; }
+
+        //! DL-214: surface coverage, independent of scattering and wavelength.
+        //! Construction-time mutation only. Opaque is the default on every material.
+        void SetAlpha(const IScalarPainter* painter, AlphaMode mode, Scalar cutoff);
+        virtual Scalar AlphaCoverage(const RayIntersectionGeometric& ri) const;
+        virtual bool HasAlphaCoverage() const { return alphaMode_ != eAlphaOpaque; }
+        bool AcceptAlpha(const RayIntersectionGeometric& ri, ISampler& sampler) const;
+        static bool AnyAlphaMaterials();
+        static bool AnyMixMaterials();
+        AlphaMode GetAlphaMode() const { return alphaMode_; }
+        Scalar GetAlphaCutoff() const { return alphaCutoff_; }
+        const IScalarPainter* GetAlphaPainter() const { return alphaPainter_; }
+
+        //! True iff this material is an unresolved `MixMaterial` awaiting
+        //! post-traversal leaf resolution (`ObjectManager::IntersectRay*`).
+        virtual bool IsUnresolvedMix() const { return false; }
+
+        //! True iff this material tracks closed-body interior containment on
+        //! `IORStack` (dielectrics, refractors, translucent, composite, null
+        //! medium boundary, tissue).  Refused as children of `MixMaterial`
+        //! because a ray could enter through one leaf and exit through another.
+        virtual bool TracksInteriorContainment() const { return false; }
+
+        //! True iff this material (or any leaf of a `MixMaterial`) carries
+        //! subsurface scattering (diffusion profile or random-walk SSS).
+        virtual bool HasSubsurfaceLeaf() const
+        {
+            return GetDiffusionProfile() != 0 || GetRandomWalkSSSParams() != 0;
+        }
+
+        //! True iff this material (or any leaf of a `MixMaterial`) uses
+        //! random-walk subsurface scattering (used by DL-409 zero-volume check).
+        virtual bool HasRandomWalkSSSLeaf() const
+        {
+            return GetRandomWalkSSSParams() != 0;
+        }
+
+        //! Post-traversal stochastic leaf resolution on `MixMaterial`.
+        //! No-op on ordinary materials.
+        virtual void ResolveMixHit( RayIntersection& ri, ISampler* pSampler ) const {}
+
+        //! Round 3 P1-6: expected-value denoiser albedo & normal guides over
+        //! mix leaves (each leaf's own modifier applied to pre-modifier N0).
+        //! No-op on ordinary materials.
+        virtual void EvaluateExpectedGuides(
+            const RayIntersection& ri,
+            const bool bClayOverride,
+            const IBSDF* pClayBRDF,
+            RISEPel& outAlbedo,
+            Vector3& outNormal
+            ) const {}
+
+        //! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+        //! of `PathDependence::Flags` when this material (its painters, alpha
+        //! painter, wrapped children, or spatially varying SSS mix weight)
+        //! depends on non-physical path/view state or requires PT-only transport.
+        virtual unsigned int GetPathDependence() const;
+
 	};
+
+	//! Shared denoiser guide helper (Round 3 P1-1 & P1-6):
+	//! - On a hit resolved from a `MixMaterial` (`ri.pUnresolvedMix != 0`),
+	//!   computes noise-free expected albedo and expected normal across all leaves.
+	//! - Otherwise, uses `geom.vNormal` and the resolved material's BSDF albedo,
+	//!   reporting black `(0,0,0)` for an absorber (no BSDF and no SPF) and
+	//!   white `(1,1,1)` only for delta/specular/transparent surfaces (no BSDF, has SPF).
+	void EvaluateMaterialAOVGuides(
+		const RayIntersection& ri,
+		const RayIntersectionGeometric& geom,
+		const bool bClayOverride,
+		const IBSDF* pClayBRDF,
+		RISEPel& outAlbedo,
+		Vector3& outNormal
+		);
 }
 
 #include "IBSDF.h"

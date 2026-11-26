@@ -40,7 +40,7 @@ void TransparencyShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -53,7 +53,31 @@ void TransparencyShaderOp::PerformOperation(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
+			// One-sided culling is a front/back-face decision — use the
+			// GEOMETRIC normal so bumpy alpha cards (foliage, hair)
+			// don't toggle the discard test along the silhouette as
+			// the shading normal swings past the view ray.  PBRT 4e
+			// §10.1.1 (geometric normal for face-orientation queries).
+			//
+			// DL-70: the TRUE, ray-INDEPENDENT one.  The reported
+			// `vGeomNormal` of a double-sided mesh (or of a
+			// `ClippedPlaneGeometry` / `BezierPatchGeometry` back-face
+			// hit) opposes the ray at every hit, so this test was
+			// unconditionally false and `bOneSided` never culled anything
+			// on exactly the geometry classes alpha cards use.
+			// INTENT, since "double-sided geometry + a one-sided shader
+			// op" is a contradiction someone has to resolve: `bOneSided`
+			// is an explicit, per-shader-op author request to discard the
+			// back face, and it is the more specific of the two
+			// statements -- the geometry flag says "both sides are
+			// visible surfaces", which this op then narrows.  Honouring
+			// it is also what makes the op mean the same thing on a
+			// single-sided card, a double-sided card and a Bezier patch,
+			// rather than silently depending on which geometry class
+			// carries the texture.  A RAY-DERIVED normal (HairGeometry)
+			// is the identity under the recovery, so a hair card keeps
+			// exactly its pre-DL-70 behaviour.
+			if( ri.geometric.TrueGeomFacing( ri.geometric.ray.Dir() ) > 0 ) {
 				c = cthis;
 			}
 		}
@@ -73,7 +97,7 @@ Scalar TransparencyShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -87,13 +111,37 @@ Scalar TransparencyShaderOp::PerformOperationNM(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
+			// One-sided culling is a front/back-face decision — use the
+			// GEOMETRIC normal so bumpy alpha cards (foliage, hair)
+			// don't toggle the discard test along the silhouette as
+			// the shading normal swings past the view ray.  PBRT 4e
+			// §10.1.1 (geometric normal for face-orientation queries).
+			//
+			// DL-70: the TRUE, ray-INDEPENDENT one.  The reported
+			// `vGeomNormal` of a double-sided mesh (or of a
+			// `ClippedPlaneGeometry` / `BezierPatchGeometry` back-face
+			// hit) opposes the ray at every hit, so this test was
+			// unconditionally false and `bOneSided` never culled anything
+			// on exactly the geometry classes alpha cards use.
+			// INTENT, since "double-sided geometry + a one-sided shader
+			// op" is a contradiction someone has to resolve: `bOneSided`
+			// is an explicit, per-shader-op author request to discard the
+			// back face, and it is the more specific of the two
+			// statements -- the geometry flag says "both sides are
+			// visible surfaces", which this op then narrows.  Honouring
+			// it is also what makes the op mean the same thing on a
+			// single-sided card, a double-sided card and a Bezier patch,
+			// rather than silently depending on which geometry class
+			// carries the texture.  A RAY-DERIVED normal (HairGeometry)
+			// is the identity under the recovery, so a hair card keeps
+			// exactly its pre-DL-70 behaviour.
+			if( ri.geometric.TrueGeomFacing( ri.geometric.ray.Dir() ) > 0 ) {
 				return c;
 			}
 		}
 
 		// Blend
-		const Scalar trans = transparency.GetColorNM(ri.geometric,nm);
+		const Scalar trans = GuardedGetColorNM( transparency, ri.geometric, nm );
 		c = caccum*(1.0-trans) + c*trans;
 	}
 	

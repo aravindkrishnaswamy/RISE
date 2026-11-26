@@ -18,6 +18,7 @@
 #define WARD_ISOTROPIC_GAUSSIAN_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "WardIsotropicGaussianBRDF.h"
 #include "WardIsotropicGaussianSPF.h"
@@ -41,17 +42,17 @@ namespace RISE
 			}
 
 		public:
-			WardIsotropicGaussianMaterial( 
+			WardIsotropicGaussianMaterial(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alpha
+				const IScalarPainter& alpha
 				)
 			{
 				pBRDF = new WardIsotropicGaussianBRDF( diffuse, specular, alpha );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new WardIsotropicGaussianSPF( diffuse, specular, alpha );
-				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "SPF" );
+				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
@@ -60,8 +61,30 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
 
+			//! DL-471 (IMaterial::ConnectionScatterTypes): diffuse and glossy-reflection lobes only.
+			inline unsigned int ConnectionScatterTypes() const { return ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ); }
+			//! DL-481: its BSDF splits the connection value by its SPF's lobe labels (IBSDF::valueByScatterType).
+			inline bool HasConnectionTypeSplit() const { return true; }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetDiffuse()  const { return pBRDF->GetDiffuse(); }
+			inline const IPainter&       GetSpecular() const { return pBRDF->GetSpecular(); }
+			inline const IScalarPainter& GetAlpha()    const { return pBRDF->GetAlpha(); }
+			inline void SetDiffuse( const IPainter& v )      { pBRDF->SetDiffuse( v );  pSPF->SetDiffuse( v ); }
+			inline void SetSpecular( const IPainter& v )     { pBRDF->SetSpecular( v ); pSPF->SetSpecular( v ); }
+			inline void SetAlpha( const IScalarPainter& v )  { pBRDF->SetAlpha( v );    pSPF->SetAlpha( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetDiffuse().GetPathDependence() |
+					pBRDF->GetSpecular().GetPathDependence() |
+					pBRDF->GetAlpha().GetPathDependence();
+			}
 		};
 	}
 }

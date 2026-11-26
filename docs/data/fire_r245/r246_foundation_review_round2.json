@@ -1,0 +1,37 @@
+{
+  "reviewed_commit": "3af466a9",
+  "scope": "case and clock foundation only; no experiment launch permit",
+  "reviewers": [
+    {
+      "agent": "r246_foundation_final_math",
+      "P1": 0,
+      "P2": 0,
+      "independent_checks": [
+        "FireCaseTest",
+        "both mirror checks",
+        "old case IDs and windows"
+      ]
+    },
+    {
+      "agent": "r246_foundation_final_provenance",
+      "P1": 0,
+      "P2": 0,
+      "independent_checks": [
+        "all eight stage log hashes",
+        "both additional gate hashes",
+        "record reconstruction",
+        "source manifests",
+        "warning exclusions"
+      ]
+    }
+  ],
+  "verdict": "foundation_accepted",
+  "remaining": [
+    "launcher schedule consumers",
+    "preallocation memory admission",
+    "manifest preview spectrum binding",
+    "common-height observations",
+    "RED and observation controls",
+    "fresh complete experiment review before full from-zero run"
+  ]
+}

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -18,7 +18,7 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 standard_shader
@@ -30,16 +30,13 @@ standard_shader
 standard_shader
 {
 	name			glass_shader
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		5
 	samples				64
-	lum_samples			1
 }
 
 file_rasterizeroutput
@@ -54,24 +51,167 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+# Camera 6 m diagonally out, looking at the pavilion's centre column.
+# Distance ≈ √(3.5² + 6²) ≈ 7 m.  85mm wide-open f/1.4 — the central
+# vase + glass sphere are tack-sharp, the floor and outer columns
+# fall off into bokeh.
+
+film
+{
+	width			800
+	height			600
+}
+
 thinlens_camera
 {
 	location			-3.5 2.0 6.0
 	lookat				0 1.5 0
 	up					0 1 0
-	width				800
-	height				600
-	fov					40.0
-	aperture_size		0.5
-	focal_length		3.5
-	focus_distance		6.5
+	sensor_size			36              # mm — full-frame
+	focal_length		85              # mm — short tele
+	fstop				1.4
+	focus_distance		7               # metres — onto the centre column
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -105,12 +245,6 @@ checker_painter
 	size				0.8
 }
 
-uniformcolor_painter
-{
-	name				pnt_glass
-	color				0.95 0.97 0.98
-	colorspace			RISERGB
-}
 
 uniformcolor_painter
 {
@@ -129,13 +263,22 @@ uniformcolor_painter
 ##################################################
 
 # Polished marble floor
-polished_material
+# Legacy phase 2 slice B2: substrate of `polished_floor` (was polished_material reflectance).
+lambertian_material
+{
+	name				polished_floor_base
+	reflectance			pnt_floor_checker
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `polished_floor_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*600+1) = 0.02886 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				polished_floor
-	reflectance			pnt_floor_checker
-	tau					pnt_floor_checker
-	ior					1.5
-	scattering			600.0
+	base				polished_floor_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.02886
 }
 
 # Column marble
@@ -156,18 +299,21 @@ lambertian_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass
+	tau			0.95 0.97 0.98
 	ior					1.52
 	scattering			10000.0
 }
 
 # Bronze material for the vase (Cook-Torrance)
-cooktorrance_material
+# Legacy phase 2 slice B2: was cooktorrance_material; cooktorrance_material -> ggx_material conductor, alpha = facets 0.15 (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				bronze
 	rd					pnt_bronze
 	rs					pnt_bronze_spec
-	facets				0.15
+	alphax				0.15
+	alphay				0.15
+	fresnel_mode		conductor
 	ior					2.5
 	extinction			3.0
 }
@@ -196,13 +342,23 @@ clippedplane_geometry
 	ptd					5.0 0.0 -5.0
 }
 
-# Column cylinder
+# Column cylinder.
+#
+# `capped TRUE` is the parser DEFAULT and is spelled out here as a PIN
+# (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8, Phase 3): the fluted columns are
+# CSG subtractions, and a composite's cross-object distance query composes its
+# operands' SIGNED fields -- which an OPEN cylinder cannot supply, because a
+# tube encloses nothing and has no inside for a sign to be exact about.  Flip
+# this to FALSE and `column2` silently stops answering `proximity()` for every
+# neighbour in the scene.  The digest does not move (it is the default); the
+# line exists so the flip is a visible edit rather than a silent one.
 cylinder_geometry
 {
 	name				colcylgeom
 	axis				y
 	radius				0.25
 	height				5.0
+	capped				TRUE
 }
 
 # Fluting cutout (thin boxes to subtract from cylinder)
@@ -231,15 +387,13 @@ sphere_geometry
 }
 
 # Bezier teapot as a decorative vase
-beziermesh_geometry
+bezierpatch_geometry
 {
 	name				vasegeom
 	file				models/raw/teapot.bezier
-	detail				20
-	maxdepth			16
-	maxpolygons			10
+	maxpatches			2
+	maxdepth			7
 	bsp					TRUE
-	combine_shared		TRUE
 	center_object		TRUE
 }
 
@@ -257,7 +411,7 @@ clippedplane_geometry
 # Objects
 ##################################################
 
-# Floor with polished material and distribution tracing
+# Floor with polished material (path-traced; its shader was the only path-traced chain before Phase 2)
 standard_object
 {
 	name				floor
@@ -491,18 +645,26 @@ standard_object
 # Lights
 ##################################################
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): power x1.682 (5.6 / 9.3 -> 9.42 / 15.6) restores the legacy mean: the frozen cooktorrance_material bronze added its diffuse uncoupled to the conductor lobe (furnace albedo red 1.18) and polished_material kept its full substrate albedo under the coat; the ggx / coated replacements conserve energy.
 omni_light
 {
 	name				ceiling_light
-	power				15.0
+	# Phase 2 slice B1 retune (owner-approved): power 15.0 -> 5.6; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				9.4192
 	color				1.0 0.98 0.92
+	colorspace			sRGB
 	position			0 4.5 0
 }
 
+# Legacy phase 2 slice B2 retune (owner-approved precedent, slice B1): see the first light above.
 omni_light
 {
 	name				fill_light
-	power				25
+	# Phase 2 slice B1 retune (owner-approved): power 25 -> 9.3; the legacy chain shaded the walls with direct light only, and path-traced indirect light brightened the room 2.7x
+	power				15.6426
 	color				0.9 0.92 1.0
+	colorspace			sRGB
 	position			3 3 4
 }
+
+

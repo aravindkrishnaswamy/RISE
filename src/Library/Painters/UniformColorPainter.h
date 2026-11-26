@@ -1,12 +1,15 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  UniformColorPainter.h - Defines a painter that paints some
-//  uniform color
+//  uniform color.  Spectral path eagerly uplifts the RGB to a
+//  Jakob-Hanika sigmoid spectrum at construction (Landing 3) so
+//  GetColorNM / GetSpectrum return a physically-meaningful spectrum
+//  rather than the previous luminance-proxy `MaxValue(C)`.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 19, 2001
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -16,7 +19,10 @@
 #define UNIFORM_COLOR_PAINTER_
 
 #include "Painter.h"
+#include "../Utilities/Transformable.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/Color/RGBSpectra.h"
 
 namespace RISE
 {
@@ -25,36 +31,151 @@ namespace RISE
 		class UniformColorPainter : public Painter
 		{
 		protected:
-			RISEPel	C;
-			Scalar	Cnm;
+			RISEPel                C;
+			RGBAlbedoSpectrum      albedoSpec;       // kind = Albedo
+			RGBUnboundedSpectrum   unboundedSpec;    // kind = Unbounded
+			RGBIlluminantSpectrum  illuminantSpec;   // kind = Illuminant
+			SpectrumKind           kind;
+            TimeIndexed::TimeSlot m_timeSlot;
 			virtual ~UniformColorPainter(){};
 
-		public:
-			UniformColorPainter( const RISEPel& C_ ) : C( C_ ), Cnm( ColorMath::MaxValue(C_)){};
+			void Recompute()
+			{
+				// Unbounded/Illuminant FromRGB derive `scale` from the max
+				// channel OUTSIDE the maxc>1e-9 branch, so a negative C
+				// (a keyframe spline can overshoot past its endpoint values
+				// -- e.g. Catmull-Rom/TCB -- even when every keyframe is
+				// non-negative, and SetIntermediateValue feeds the
+				// interpolated value straight into this function) yields
+				// sigmoid 0.5 times a NEGATIVE scale.  Clamp a local copy
+				// for the uplift; `C` itself is left untouched since
+				// GetColor() returns it verbatim for the RGB path, which
+				// clamps at film resolve like every other painter (Albedo
+				// already clamps internally in RGBToSpectrumTable, so this
+				// is a no-op for that branch).
+				RISEPel Cpos = C;
+				ColorMath::EnsurePositve( Cpos );
 
-			RISEPel			GetColor( const RayIntersectionGeometric& ) const { return C; }
-			Scalar			GetColorNM( const RayIntersectionGeometric&, const Scalar nm ) const { return Cnm; }
+				switch( kind ) {
+					case eSpectrumKind_Unbounded:
+						unboundedSpec = RGBUnboundedSpectrum::FromRGB( Cpos );
+						break;
+					case eSpectrumKind_Illuminant:
+						illuminantSpec = RGBIlluminantSpectrum::FromRGB( Cpos );
+						break;
+					case eSpectrumKind_Albedo:
+					default:
+						albedoSpec = RGBAlbedoSpectrum::FromRGB( C );
+						break;
+				}
+
+				// `illuminantSpec` is ALSO built for the other two kinds,
+				// because GetRadianceNM must answer regardless of how this
+				// painter was constructed: routing is by SLOT (does the
+				// consumer want a reflectance or a radiance source?), not by
+				// construction kind -- a named painter is routinely bound to
+				// both an emissive and a multiplicative slot.  See
+				// IPainter::GetRadianceNM and
+				// docs/SPECTRAL_ILLUMINANT_CONVENTION.md.  Cost is one extra
+				// LUT lookup at construction / keyframe update, never at
+				// sample time.
+				if( kind != eSpectrumKind_Illuminant ) {
+					illuminantSpec = RGBIlluminantSpectrum::FromRGB( Cpos );
+				}
+			}
+
+			Scalar EvalKind( const Scalar nm ) const
+			{
+				switch( kind ) {
+					case eSpectrumKind_Unbounded:   return unboundedSpec.Eval( nm );
+					case eSpectrumKind_Illuminant:  return illuminantSpec.Eval( nm );
+					case eSpectrumKind_Albedo:
+					default:                         return albedoSpec.Eval( nm );
+				}
+			}
+
+		public:
+			UniformColorPainter( const RISEPel& C_, SpectrumKind kind_ = eSpectrumKind_Albedo )
+			  : C( C_ ), kind( kind_ )
+			{
+				Recompute();
+			}
+
+			RISEPel GetColor( const RayIntersectionGeometric& ri ) const {
+                RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetColor(ri)); return C;
+            }
+
+			Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+				RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetColorNM(ri,nm));
+                return EvalKind( nm );
+			}
+
+			//! Source-term sample: always the cached illuminant spectrum,
+			//! whatever this painter's construction kind is.  Overrides the
+			//! IPainter default purely to avoid its per-call LUT lookup --
+			//! the RESULT is identical to the default for a uniform colour.
+			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+                RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetRadianceNM(ri,nm));
+				return illuminantSpec.Eval( nm );
+			}
+
+			// Build a properly-populated SpectralPacket sampled at the
+			// same 5nm spacing as RISE's CIE_DATA tables (380-780nm,
+			// 81 bins).  This is consumed by LambertianEmitter /
+			// PhongEmitter at construction time to cache an
+			// `averageSpectrum`, which SpectralPhotonTracer later
+			// reads for photon power.  Without this populated form,
+			// RGB emissive painters silently emit zero on spectral
+			// photon paths even though direct GetColorNM shading is
+			// correct.  See SpectralPacket::SetAtIndex (added 2026-05).
+			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
+			{
+				RISE_TIME_INDEXED_FORWARD(UniformColorPainter,GetSpectrum(ri));
+                const Scalar lambda_begin = Scalar(380);
+				const Scalar lambda_end   = Scalar(780);
+				const unsigned int nbins  = 81;
+				SpectralPacket sp( lambda_begin, lambda_end, nbins );
+				const Scalar delta = (lambda_end - lambda_begin) / Scalar(nbins);
+				for( unsigned int i = 0; i < nbins; ++i ) {
+					const Scalar lambda = lambda_begin + Scalar(i) * delta;
+					sp.SetAtIndex( i, EvalKind( lambda ) );
+				}
+				return sp;
+			}
+
+            int GetTimeSlot() const { return m_timeSlot.value; }
+            void SetTimeSlot(int slot) { m_timeSlot.value=slot; }
+            UniformColorPainter* CloneForTimeView() const {
+                auto* clone=new UniformColorPainter(C,kind);
+                clone->albedoSpec=albedoSpec;
+                clone->unboundedSpec=unboundedSpec;
+                clone->illuminantSpec=illuminantSpec;
+                return clone; // fresh Reference, Observable and unslotted queries
+            }
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value )
-			{ 
+			{
 				if( name == "risepel" ) {
 					double d[3];
 					if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
 						IKeyframeParameter* p = new Parameter<RISEPel>( RISEPel(d), 100 );
 						GlobalLog()->PrintNew( p, __FILE__, __LINE__, "keyframe parameter" );
 						return p;
-					}					
+					}
 				}
-
-				return 0;		
+				return 0;
 			};
 
 			void SetIntermediateValue( const IKeyframeParameter& val )
 			{
+				Transformable::PreparedExternalMutationScope preparedMutation;
+				if( !preparedMutation.IsValid() ) return;
 				if( val.getID() == 100 ) {
 					C = *(RISEPel*)val.getValue();
-					Cnm = ColorMath::MaxValue(C);
+					Recompute();
 				}
 			}
 
@@ -64,5 +185,3 @@ namespace RISE
 }
 
 #endif
-
-

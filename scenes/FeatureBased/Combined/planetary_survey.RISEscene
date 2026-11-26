@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -26,17 +26,16 @@ uniformcolor_painter
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	DefaultEmission
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		4
 	samples				49
-	lum_samples			1
 	radiance_map		pnt_space
 	radiance_background	TRUE
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -51,13 +50,17 @@ file_rasterizeroutput
 # Cameras - Fisheye for wide panoramic view
 ##################################################
 
+film
+{
+	width			800
+	height			800
+}
+
 fisheye_camera
 {
 	location			0 2 18
 	lookat				0 0 0
 	up					0 1 0
-	width				800
-	height				800
 	scale				1.0
 }
 
@@ -65,14 +68,162 @@ fisheye_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
 
-# Blackbody radiator for the central star (~5800K sun-like)
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Blackbody radiator for the central star (~5800K sun-like).  `normalize`
+# (default TRUE) puts the Planck peak at `scale`; 0.94 makes the RGB
+# source colour's largest channel ~1, which is what this RGB scene's star
+# rendered at before DL-464 (the old RGB view ignored `scale`, whose
+# previous value 0.0005 dimmed only the spectral path).
 blackbody_painter
 {
 	name				pnt_star
 	temperature			5800
-	scale				0.0005
+	scale				0.94
 }
 
 # Color painters for procedural textures
@@ -311,12 +462,15 @@ lambertian_material
 }
 
 # Ice world - slightly glossy
-isotropic_phong_material
+# Legacy phase 2 slice B2: was isotropic_phong_material; isotropic_phong N 32 -> alpha 1/sqrt(2N+1) = 0.124, rs -> F0 (schlick_f0) (SCENE_CONVENTIONS 11.5).
+ggx_material
 {
 	name				ice_mat
 	rd					pnt_ice
 	rs					color_white
-	N					32.0
+	alphax				0.12403
+	alphay				0.12403
+	fresnel_mode		schlick_f0
 }
 
 # Rocky world
@@ -364,7 +518,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				gasgiantgeom
-	radii				1.8 1.5 1.8
+	radii				0.9 0.75 0.9
 }
 
 standard_object
@@ -479,5 +633,8 @@ omni_light
 	name				starlight
 	power				6.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			0 0 0
 }
+
+

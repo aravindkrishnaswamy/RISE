@@ -1,0 +1,40 @@
+{
+  "schema": "rise.fire.r246.capsule-binding-gate.v1",
+  "status": "accepted_full_capsule_binding_prerequisite_only",
+  "recovery_accepted": false,
+  "pid": 22170,
+  "exec_session": 60350,
+  "script_sha256": "455a5452d1ae997db61deea57fd277f5090efa8bce8f2f14dac5fbe062a9abde",
+  "controls": {
+    "byte_only_green": 1,
+    "binding_reds": 8,
+    "resealed_layout_reds": 3,
+    "empirical": false
+  },
+  "source": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+  "ledger_binding": "/Volumes/SSD/RISE/fire_production_calibration/r246_observation_ledger_validation.v7",
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1",
+  "log": "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1.log",
+  "prepared_utc": "2026-10-04T05:01:35.989026+00:00",
+  "scope": "All235 native capsule byte seals, roots, selected ledger and exact original frame event bindings only.",
+  "limitations": [
+    "No signed budget arithmetic or full recovery acceptance.",
+    "No new authentication of originally unsealed measurements.",
+    "Fresh arithmetic/contract and lifecycle/provenance review required after gate completion."
+  ],
+  "frames": 235,
+  "sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/capsule_binding.json": "4774e99c6b273b3530adf262d4072a848288324686e74f29c25103f9ce7055c2",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/completion.json": "e62ac2afab6365926d77da3bf47729bca4e34fc2819967c11e2ba8365d9f0285",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/script.frozen.py": "455a5452d1ae997db61deea57fd277f5090efa8bce8f2f14dac5fbe062a9abde",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/ledger_helper.frozen.py": "8996e94d88ddede087b5d73a75fbbdb29f721803cee46a8f0af14bd566cc70c7",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1/merkle_verifier.frozen.py": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_capsule_binding_validation.v1.log": "d2a87e32cdd6beba2c6e14e4be34612d0cd93feb5ef795db90a561bf7ff40bd9"
+  },
+  "reviewed_implementation": "b8749c139",
+  "reviewed_head": "109ad4e80",
+  "fresh_round1": {
+    "arithmetic_contract": "zero P1/P2",
+    "lifecycle_provenance": "zero P1/P2"
+  }
+}

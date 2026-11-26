@@ -1,0 +1,218 @@
+RISE ASCII SCENE 7
+# Taxonomy: enamel thickness-gradient control.
+
+# ---------------------------------------------------------------------------
+# enamel_dome_dial.RISEscene — M2 of the vitreous-enamel hero modeling.
+#
+# Turns the uniform ruby slab (M1) into the FUME thickness gradient by putting
+# a domed silver substrate under a flat-top enamel disk (docs/VITREOUS_ENAMEL
+# sec 2.1 / sec 4).  The key insight of the burial convention (sec 10.1 A): the
+# enamel's own bottom face is buried in opaque silver and never reached, so the
+# EFFECTIVE enamel thickness at each point is set by where the downward ray
+# hits the SILVER DOME.  Dome high at centre -> thin enamel -> light; dome low
+# at rim -> thick enamel -> dark.  Beer-Lambert alone gradates the colour; no
+# graded concentration, no special term (sec 2.1).
+#
+#   enamel disk (dielectric, tau 1.0, gold-ruby interior_medium)
+#        flat top at z=0  ---------------------------------
+#        thin centre  \___________________________/  thick rim
+#   silver sphere dome (GGX conductor, J&C n,k, diffuse black)
+#        top at z=-0.12 (centre)   ->  z=-1.095 (rim, r=1.6)
+#
+# Geometry (analytic, exact; the SDF domed substrate is the M4 dial upgrade).
+# The dome is SHALLOW (large sphere radius, max surface slope ~9 deg) so it
+# gradates the thickness WITHOUT acting as a lens -- a steep near-hemisphere
+# dome refracts/TIRs into a bright-centre/black-ring caustic, not a fume.
+#   silver sphere  radius 9.0, centre z=-9.08  -> dome top -0.08 (centre)
+#   enamel cyl     radius 1.6, top z=0, bottom z=-1.0 (buried in the sphere)
+#   thickness t(r) = 0 - (-9.08 + sqrt(9^2 - r^2)) = 9.08 - sqrt(81 - r^2)
+#   -> t(0)=0.08, t(1.6)=0.223  (a gentle ~2.8x thickness ramp).
+#
+# Lit by a UNIFORM white environment so the radial gradient is PURE thickness-
+# absorption (isolates the Beer effect from directional lighting; studio /
+# window light is M4/M5).  Rendered spectral (non-HWSS NM).  sigma_a is the
+# unchanged goldruby curve -- the rim reads dark maroon here, not yet near-
+# black; deepening it to the reference is the M5 sigma/dome calibration.
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_black
+	color 0.0 0.0 0.0
+}
+
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Gold-ruby sigma_a(lambda) — the swatch curve SHAPE, scaled x8 in magnitude.
+# A shallow dome (below) gives only a small thickness range, so the colorant
+# must be correspondingly more concentrated to span light->dark over it: this
+# is the physically-correct regime for a thin (sub-mm) concentrated enamel
+# (sec 10.4: uniform scale = colorant concentration).  Only the magnitude
+# scales; the relative spectral shape (plasmon peak ~515nm) is identical.
+# The exact scale is the M5 concentration/dome calibration knob.
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 19.84
+	cp 420 20.88
+	cp 440 22.32
+	cp 460 25.20
+	cp 480 29.52
+	cp 500 33.84
+	cp 515 36.00
+	cp 530 34.96
+	cp 550 30.64
+	cp 570 22.32
+	cp 590 14.40
+	cp 610 8.64
+	cp 630 5.04
+	cp 650 2.88
+	cp 680 1.84
+	cp 700 1.28
+	cp 720 1.12
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 256
+	max_volume_bounce 16
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dome_dial
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_dome_dial_hdr
+	type EXR
+	color_space Rec709RGB_Linear
+}
+
+film
+{
+	width 384
+	height 384
+}
+
+pinhole_camera
+{
+	location 0 0 5
+	lookat 0 0 0
+	up 0 1 0
+	fov 40.0
+}
+
+# Fire-polished top interface: IOR 1.55, tau 1.0 (colour-neutral; sec 10.9).
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Measured-silver GGX conductor substrate (diffuse black sec 10.10; ambient
+# IOR = n_enamel from the IOR stack via G6, nothing to author).
+ggx_material
+{
+	name floor_silver
+	rd pnt_black
+	rs pnt_white
+	alphax 0.03
+	alphay 0.03
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Enamel slab: flat top at z=0 (fire-polished), extends down to z=-1.0 (bottom
+# buried inside the silver sphere).  A BOX is used here for a square patch that
+# shows the radial dome gradient.  (Historically a cylinder could NOT be used:
+# cylinder_geometry was an uncapped tube, so an axial camera ray passed through
+# its open top without crossing a dielectric surface and the interior_medium was
+# never entered.  cylinder_geometry is now a closed solid by default -- `capped
+# TRUE` -- so a capped cylinder would also work; the box stays for the square
+# patch.)  The round dial uses a closed SDF disk at M4.
+box_geometry
+{
+	name enamelgeom
+	width 3.2
+	height 3.2
+	depth 1.0
+}
+
+# Silver dome: shallow sphere radius 9.0, top poking up to z=-0.08 at centre.
+sphere_geometry
+{
+	name domegeom
+	radius 9.0
+}
+
+standard_object
+{
+	name enamel
+	geometry enamelgeom
+	position 0 0 -0.5
+	material enamel_glass
+	interior_medium goldruby
+}
+
+standard_object
+{
+	name dome
+	geometry domegeom
+	position 0 0 -9.08
+	material floor_silver
+}

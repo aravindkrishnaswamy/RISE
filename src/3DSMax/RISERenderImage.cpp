@@ -121,10 +121,14 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 	// See if there is a camera already set
 	RISE::ICamera* pCamera = job.GetScene()->GetCamera();
 	if( !pCamera ) {
-		job.SetPinholeCamera( loc, lookat, up, fov, width, height, 1.0, 0, 0, 0, o, to );
+		// Drive Scene's active Film from the 3DSMax render dims BEFORE
+		// adding the camera.  Job::AddPinholeCamera reads xres/yres/
+		// pixelAR from the active Film at construction.
+		job.SetFilm( width, height, 1.0 );
+		job.AddPinholeCamera( "default", loc, lookat, up, fov, 0, 0, 0, o, to );
 	} else {
 		// Otherwise, modify the existing camera with the MAX camera settings
-        // I know this is a hack, but we can use the IKeyframamble interface to set intermediate values 
+        // I know this is a hack, but we can use the IKeyframamble interface to set intermediate values
 		// to change the existing camera setting's parameters
 		char val[256] = {0};
 
@@ -168,25 +172,13 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 			}
 		}
 
-		// Width
-		{
-			sprintf( val, "%u", width );
-			RISE::IKeyframeParameter* p = pCamera->KeyframeFromParameters( "width", val );
-			if( p ) {
-				pCamera->SetIntermediateValue( *p );
-				p->release();
-			}
-		}
-
-		// Height
-		{
-			sprintf( val, "%u", height );
-			RISE::IKeyframeParameter* p = pCamera->KeyframeFromParameters( "height", val );
-			if( p ) {
-				pCamera->SetIntermediateValue( *p );
-				p->release();
-			}
-		}
+		// Width / height are owned by the scene Film in v6 (Phase B2),
+		// not the camera.  SetFilm replaces the active Film AND resyncs
+		// every registered camera's projection — so a render-size change
+		// between SetupCamera() calls now reaches both the rasterizer
+		// (which reads its grid dims from Scene::GetFilm) and the camera
+		// (whose projection auto-resyncs to the new Film).
+		job.SetFilm( width, height, 1.0 );
 
 		// Tell the camera to get itself ready for rendering
 		pCamera->RegenerateData();
@@ -237,15 +229,23 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 		const char* shaderops = "3DSMAX";
 		pJob->AddStandardShader( "global", 1, &shaderops );
 
-		double or[3] = {0,0,0};
-
+		RISE::PixelFilterConfig pixelFilterConfig;
+		pixelFilterConfig.filter = "none";
+		pixelFilterConfig.paramA = 0.0;
+		pixelFilterConfig.paramB = 0.0;
+		RISE::RadianceMapConfig radianceMapConfig;
 		pJob->SetPixelBasedPelRasterizer(
 			1, 1, 10, 0.01,
-			"global", 0, true, 0, or, 0, 0, 0, 0, 0, 1.0, 1.0, 0.0, 0.0, true, false, false, true,
+			"global", radianceMapConfig, 0, 0, pixelFilterConfig, true, false,
 			RISE::PathGuidingConfig(), RISE::AdaptiveSamplingConfig(), RISE::StabilityConfig() );
 	} else {
 		prog->SetTitle( "Loading renderer settings and materials" );
-		if( !pJob->LoadAsciiScene( szRenderSettingsFile ) ) {
+		// Slice 6c-3a: the .RISEscene settings-file load is STUBBED.  The additive-load LoadAsciiScene path was
+		// retired in the Model-B CST cutover (this VS2005 3DSMax sidecar is legacy + not built here).  Log a
+		// clear reason and let the existing abort branch fire -- author the renderer/materials in a native-v7
+		// scene loaded through the main app.  (git history preserves the old additive-load behavior.)
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Error, "3DSMax settings-file load (%s) is unsupported -- the legacy .RISEscene loader was retired in the Model-B CST cutover; author the renderer/materials in a native-v7 scene loaded through the main app", szRenderSettingsFile );
+		if( true ) {
 			MessageBox( hwnd, "Failed to properly load the renderer/material settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;
@@ -393,8 +393,13 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 			const Matrix3& tm = pInst->objToWorld;
 			Point3 p  = tm.GetTrans();
 
-			double pos[3]={0}, orient[3]={0}, scale[3]={0}, radorient[3]={0};
-			if( pJob->AddObject( pInst->GetName(), geomname, material_name, bModifier?modifier_name.data():0, bShader?shader_name.data():0, bRadianceMap?radiancemap_name.data():0, radiancemap_scale, radorient, pos, orient, scale, !!pInst->GetINode()->CastShadows(), !!pInst->GetINode()->RcvShadows() ) ) {
+			double pos[3]={0}, orient[3]={0}, scale[3]={0};
+			RISE::RadianceMapConfig objectRadianceMap;
+			if( bRadianceMap ) {
+				objectRadianceMap.name = radiancemap_name.data();
+				objectRadianceMap.scale = radiancemap_scale;
+			}
+			if( pJob->AddObject( pInst->GetName(), geomname, material_name, bModifier?modifier_name.data():0, bShader?shader_name.data():0, objectRadianceMap, pos, orient, scale, !!pInst->GetINode()->CastShadows(), !!pInst->GetINode()->RcvShadows() ) ) {
 
 				// Manually set the transformation matrix, since MAX may have done offset transformations
 				RISE::IObjectPriv* pObject = pJob->GetObjects()->GetItem( pInst->GetName() );
@@ -499,7 +504,12 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 	// Load the supplementary file
 	if( _access( this->szSupplementarySettingsFile, 0 ) == 0 ) {
 		prog->SetTitle( "Loading supplementary scene file" );
-		if( !pJob->LoadAsciiScene( this->szSupplementarySettingsFile ) ) {
+		// Slice 6c-3a: the supplementary .RISEscene load is STUBBED (same reason as the render-settings site
+		// above).  The additive-load LoadAsciiScene path was retired in the Model-B CST cutover; this VS2005
+		// 3DSMax sidecar is legacy + not built here.  Log a clear reason and let the existing abort branch fire.
+		// (git history preserves the old additive-load behavior.)
+		RISE::GlobalLog()->PrintEx( RISE::eLog_Error, "3DSMax supplementary settings-file load (%s) is unsupported -- the legacy .RISEscene loader was retired in the Model-B CST cutover; author the renderer/materials in a native-v7 scene loaded through the main app", this->szSupplementarySettingsFile );
+		if( true ) {
 			MessageBox( hwnd, "Failed to properly load the supplementary settings file, aborting render", GetString(IDS_RENDRISETITLE), MB_OK );
 			safe_release( pJob );
 			return 0;

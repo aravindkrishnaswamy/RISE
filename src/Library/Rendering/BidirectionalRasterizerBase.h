@@ -1,0 +1,178 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  BidirectionalRasterizerBase.h - Shared infrastructure for
+//    bidirectional-style pixel rasterizers (BDPT and VCM).
+//
+//    Both BDPTRasterizerBase and VCMRasterizerBase previously
+//    duplicated the same splat-film plumbing: a SplatFilm for
+//    t==1 light-to-camera contributions, a scratch image used to
+//    composite splats for intermediate previews and final output,
+//    a total-sample counter, and the adaptive-sample tracker.
+//
+//    This class owns those fields and the related helpers so the
+//    two algorithm-specific bases can focus on their own concerns
+//    (BDPT: path guiding, SMS, RasterizeScene override; VCM: light
+//    pass, merge radius, LightVertexStore).
+//
+//    Inheritance layout preserves the diamond:
+//
+//        PixelBasedRasterizerHelper   (virtual base)
+//              |
+//        BidirectionalRasterizerBase  (virtual inheritance)
+//              |
+//        BDPTRasterizerBase / VCMRasterizerBase
+//              |
+//        Pel / Spectral subclasses (join via PixelBasedPelRasterizer
+//        or PixelBasedSpectralIntegratingRasterizer, which also
+//        virtually inherit PixelBasedRasterizerHelper).
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 20, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef BIDIRECTIONAL_RASTERIZER_BASE_
+#define BIDIRECTIONAL_RASTERIZER_BASE_
+
+#include "PixelBasedRasterizerHelper.h"
+#include "SplatFilm.h"
+#include "../Utilities/StabilityConfig.h"
+#include <atomic>
+#include <cstdint>
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		class BidirectionalRasterizerBase : public virtual PixelBasedRasterizerHelper
+		{
+		protected:
+#ifdef RISE_ENABLE_OIDN
+			double DenoiseWorkPerMegaSample() const override { return 0.6; }
+#endif
+			mutable SplatFilm*				pSplatFilm;
+			mutable IRasterImage*			pScratchImage;		///< Scratch buffer for splat composition
+			mutable Scalar					mSplatTotalSamples;	///< Cached for progressive resolve
+			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels
+			mutable Rect					mActiveSplatRegion;	///< Inclusive production-region bounds
+			mutable bool					mHasActiveSplatRegion;
+			StabilityConfig					stabilityConfig;	///< Production stability controls
+
+			BidirectionalRasterizerBase(
+				IRayCaster* pCaster_,
+				const StabilityConfig& stabilityCfg,
+				RISE::Implementation::FrameStore* frameStore = nullptr
+				);
+
+			virtual ~BidirectionalRasterizerBase();
+			virtual bool SupportsFireMediaTransport() const override { return false; }
+
+			/// Scaling factor for splat film resolution.  Pel returns 1;
+			/// Spectral returns nSpectralSamples [ * SampledWavelengths::N
+			/// when HWSS is enabled ].
+			virtual Scalar GetSplatSampleScale() const { return 1.0; }
+
+			/// Progress title shown in the CLI during render.
+			virtual const char* GetProgressTitle() const = 0;
+
+			/// Splat a t==1 contribution at a FRACTIONAL raster position,
+			/// spread across the pixel filter's footprint so caustic /
+			/// light-to-camera splats reconstruct with the same
+			/// Mitchell-Netravali / Lanczos / box kernel the rest of
+			/// the integrator uses.  Falls back to a round-to-nearest
+			/// point splat when no filter is configured.
+			///
+			/// `fx`, `fy` are in image-buffer coordinates (y=0 at top)
+			/// — callers convert from `cr.rasterPos` by flipping y with
+			/// `pScene.GetFilm()->GetHeight() - cr.rasterPos.y`.
+			void SplatContributionToFilm(
+				const Scalar fx,
+				const Scalar fy,
+				const RISEPel& contribution,
+				const unsigned int imageWidth,
+				const unsigned int imageHeight
+				) const;
+
+			/// Returns a scratch image with the filtered film and resolved
+			/// splats composited on top of the current primary, for
+			/// progressive display.  Region contract (only the delivered
+			/// region is composed; disjoint regions may compose concurrently;
+			/// the scratch is never allocated here) is documented on
+			/// PixelBasedRasterizerHelper::GetIntermediateOutputImage.
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary, const Rect* region ) const override;
+
+			/// Prepare (or keep, when the dimensions match) the composition
+			/// scratch.  Call single-threaded before any pass whose workers
+			/// can reach GetIntermediateOutputImage: PreRenderSetup (covers
+			/// path-guiding training, the main pass and every animation
+			/// frame) and RasterizeScene.
+			void EnsureCompositionScratch( const unsigned int w, const unsigned int h ) const;
+
+			/// Adds pScratchImage to the render-scoped release (the base
+			/// releases the filtered film).  Reuse across animation frames
+			/// with unchanged dimensions still holds within one render.
+			void ReleaseRenderScopedPreviewResources() const override;
+
+			/// The bidirectional getter composes into pScratchImage, never
+			/// into pFilteredScratch.
+			bool UsesFilteredPreviewScratch() const override { return false; }
+
+			/// Final flush: composite the t==1 splat film onto the
+			/// image before forwarding to the outputs.  Shared by VCM
+			/// and BDPT (DL-458) so still renders and every animation
+			/// frame (PixelBasedRasterizerHelper::RasterizeSceneAnimation)
+			/// compose splats identically.  With OIDN, the pre-denoised
+			/// flush resolves then UN-resolves (OIDN must not see
+			/// splats) and the denoised flush adds them on top.
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const override;
+
+			/// Configure the region used by every splat/filter preview and
+			/// by non-adaptive regional light-path normalization.
+			void ConfigureSplatRegion(
+				const Rect* region,
+				unsigned int width,
+				unsigned int height
+				) const;
+			const Rect* ActiveSplatRegion() const {
+				return mHasActiveSplatRegion ? &mActiveSplatRegion : 0;
+			}
+
+		public:
+			/// Number of film pixels represented by a regional camera pass.
+			/// Invalid/null regions retain the full-frame convention used by
+			/// callers that have no active crop.
+			static uint64_t RegionalPixelCount(
+				unsigned int width,
+				unsigned int height,
+				const Rect* region
+				);
+
+			/// Scale a full-frame light-path sample count to the effective
+			/// per-full-frame-pixel count produced by a regional camera pass.
+			/// Public only to keep the normalization rule directly testable.
+			static Scalar RegionalSplatSPP(
+				Scalar fullFrameSPP,
+				unsigned int width,
+				unsigned int height,
+				const Rect* region
+				);
+
+			/// Thread-safe: accumulates camera-sample count for
+			/// adaptive splat resolution.
+			void AddAdaptiveSamples( uint64_t count ) const;
+
+			/// Effective SPP the splat film should divide by at resolve
+			/// time, honouring adaptive sampling if any samples were
+			/// added via AddAdaptiveSamples.
+			Scalar GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const;
+		};
+	}
+}
+
+#endif

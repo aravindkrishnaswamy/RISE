@@ -24,6 +24,10 @@ namespace RISE
 
 		XYZPel Rec709RGBtoXYZ( const Rec709RGBPel& p );
 		Rec709RGBPel XYZtoRec709RGB( const XYZPel& xyz );
+		/// Linear XYZ(D65) -> Rec.709 matrix only.  Unlike XYZtoRec709RGB,
+		/// this performs no gamut mapping and is therefore suitable for
+		/// constructing signed spectral response functions.
+		Rec709RGBPel XYZtoRec709RGBMatrixOnly( const XYZPel& xyz );
 
 		// sRGB linearization/non-linearization
 		Rec709RGBPel Linearize_sRGB( const sRGBPel& srgb );
@@ -41,6 +45,18 @@ namespace RISE
 
 		Rec709RGBPel ProPhotoRGBtoRec709RGB( const ProPhotoRGBPel& rgb );
 		ROMMRGBPel sRGBtoROMMRGB( const sRGBPel& rgb );
+
+		// ACES AP1 (ACEScg) conversions — pre-staged for a future
+		// internal-working-space migration to AP1.  AP1's whitepoint
+		// is ACES D60-ish (xy 0.32168, 0.33767) so each conversion
+		// here applies the appropriate Bradford chromatic adapt as
+		// needed (D65↔D60 for Rec.709, D50↔D60 for ROMM).
+		AP1RGBPel    XYZtoAP1RGB( const XYZPel& xyz );
+		XYZPel       AP1RGBtoXYZ( const AP1RGBPel& rgb );
+		AP1RGBPel    Rec709RGBtoAP1RGB( const Rec709RGBPel& rgb );
+		Rec709RGBPel AP1RGBtoRec709RGB( const AP1RGBPel& rgb );
+		AP1RGBPel    ROMMRGBtoAP1RGB( const ROMMRGBPel& rgb );
+		ROMMRGBPel   AP1RGBtoROMMRGB( const AP1RGBPel& rgb );
 	}
 }
 

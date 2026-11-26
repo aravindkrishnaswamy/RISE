@@ -18,7 +18,9 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -35,61 +37,179 @@ namespace RISE
 			Scalar		radiantEnergy;
 			RISEPel		cColor;
 
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
+			//! See PointLight::cSpectrum for the convention and for the
+			//! staleness argument (colour is writable only through
+			//! `SetIntermediateValue( kColorID )`).
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum()
+			{
+				// See DirectionalLight::RefreshSpectrum: FromRGB's scale
+				// comes from the max channel outside the maxc>1e-9 guard,
+				// so a keyframe-spline overshoot into negative cColor
+				// would flip the scale's sign.  Clamp a local copy;
+				// cColor is left untouched for emissionColor()/RGB.
+				RISEPel c = cColor;
+				ColorMath::EnsurePositve( c );
+				cSpectrum = RGBIlluminantSpectrum::FromRGB( c );
+			}
+
 			virtual ~AmbientLight( ){};
 
 		public:
-			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c ){};
 
-			inline bool CanGeneratePhotons() const
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			AmbientLight* CloneForTimeView() const { AmbientLight* c = new AmbientLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c )
+			{
+				RefreshSpectrum();
+			}
+
+			inline bool CanGeneratePhotons() const override
 			{
 				return false;
 			}
 
-			inline RISEPel radiantExitance() const
+			inline RISEPel radiantExitance() const override
 			{
 				return RISEPel(0,0,0);
 			}
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
-			{
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, emittedRadiance( vLightOut ) );
 				return (cColor * radiantEnergy);
 			}
 
-			inline Point3 position() const
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2): the
+			//! cached illuminant spectrum at `nm`, times the energy.
+			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
+				return cSpectrum.Eval( nm ) * radiantEnergy;
+			}
+
+			inline Point3 position() const override
 			{
 				return Point3( 0, 0, 0 );
 			}
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( AmbientLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( AmbientLight, emissionEnergy() ); return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Ambient; }
+
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
 			{
 				return Ray();
 			}
 
-			inline Scalar pdfDirection( const Vector3& ) const
+			inline Scalar pdfDirection( const Vector3& ) const override
 			{
 				return 0;
 			}
 
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount ) const
-			{
-				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
+			//! `bFullSphereReceiver` (residual wave 2 item D) is a no-op
+			//! here: ambient light applies no cosine gate at all (it
+			//! evaluates `brdf.value` straight along the normal), so
+			//! there is nothing for the flag to flip.
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md) is likewise a no-op, and
+			//! for the same reason: there is no receiver cosine and no
+			//! hemisphere rejection here to remove.  The math below is
+			//! deliberately UNCHANGED at a medium scatter vertex.  What
+			//! it means there is worth stating plainly, because it is
+			//! odd rather than wrong: at such a vertex
+			//! `MediumTransport::EvaluateInScattering{,NM}` has set
+			//! `ri.vNormal == wo`, so `brdf.value( ri.vNormal, ri )`
+			//! evaluates the PHASE FUNCTION at `p(wo, wo)` -- pure
+			//! back-scatter.  An ambient light is a directionless
+			//! constant with no incident direction of its own, so no
+			//! choice of evaluation direction is more defensible than
+			//! any other; back-scatter is as meaningful as the hack
+			//! admits, and for the isotropic phase (the common case) the
+			//! choice does not matter at all since `p` is constant.
+			//! Anisotropic phase functions will read the wrong lobe --
+			//! an accepted limitation of an ambient light, not a defect
+			//! this parameter can fix.  Part B of the same fix likewise
+			//! skips ambient: it is a constant with no ray to attenuate.
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster& rc_, const IBSDF& brdf, const bool bShadows_, RISEPel& amount, const bool bFull_ = false, const bool bVol_ = false, const IORStack* pIORStack = 0 ) const override
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, ComputeDirectLighting( ri, rc_, brdf, bShadows_, amount, bFull_, bVol_, pIORStack ) );
+				// DL-157 P1: a stateful BSDF prices a hit by which side of
+				// the surface the walk is on; null reproduces `value`.
+				amount = cColor * radiantEnergy * brdf.valueStateful( ri.vNormal, ri, pIORStack );
 			}
 
-			inline void	FinalizeTransformations(){Transformable::FinalizeTransformations();};
+			//! Per-wavelength evaluation: sample the light's own illuminant
+			//! spectrum at `nm` and multiply by the per-NM BSDF.  Matches
+			//! the RGB version but uses brdf.valueNM, preserving the
+			//! surface's spectral character (which the older
+			//! Luminance(amount_RGB) projection collapsed to white because
+			//! amount_RGB had the per-NM BSDF replaced by its RGB
+			//! equivalent).  Stage C slice 2 replaced the remaining
+			//! Rec.709 luma projection of `cColor` with the real spectrum,
+			//! so a coloured ambient is no longer spectrally grey.
+			inline Scalar ComputeDirectLightingNM(
+				const RayIntersectionGeometric& ri,
+				const IRayCaster& rc_,
+				const IBSDF& brdf,
+				const bool bShadows_,
+				const Scalar nm,
+				const bool bFull_ = false,		///< bFullSphereReceiver: no-op, see the RGB override above
+				const bool bVol_ = false,		///< bVolumeReceiver: no-op, see the RGB override above
+				const IORStack* pIORStack = 0	///< DL-157 P1: live stack for a stateful BSDF
+				) const override
+			{ RISE_TIME_INDEXED_FORWARD( AmbientLight, ComputeDirectLightingNM( ri, rc_, brdf, bShadows_, nm, bFull_, bVol_, pIORStack ) );
+				return cSpectrum.Eval( nm ) * radiantEnergy * brdf.valueStatefulNM( ri.vNormal, ri, nm, pIORStack );
+			}
+
+			// No light-specific state to refresh; the base composition is all an
+			// ambient light needs.  Declared explicitly (rather than left to
+			// inheritance) only to keep the parity with the other two lights
+			// obvious to the next reader.
+			inline void	FinalizeTransformations( const Matrix4& parentWorld ) override { Transformable::FinalizeTransformations( parentWorld ); };
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value )
+			// Keyframe parameter IDs.  The IDs MUST match between
+			// `KeyframeFromParameters` (allocator) and
+			// `SetIntermediateValue` (consumer) — historically this
+			// class shipped with the allocator using 1000/1001 and
+			// the consumer using 100/101, so every ambient color /
+			// energy edit silently no-op'd while reporting success
+			// (the keyframe got built, but the consumer's switch
+			// fell through and changed nothing).  Match PointLight's
+			// 100/101 convention now that the divergence is fixed.
+			static const unsigned int kColorID  = 100;
+			static const unsigned int kEnergyID = 101;
+
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override
 			{
 				IKeyframeParameter* p = 0;
 
 				// Check the name and see if its something we recognize
 				if( name == "color" ) {
 					double d[3];
-					if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
-						p = new Parameter<RISEPel>( RISEPel(d), 1000 );
+					if( ParseStrictVec3( value, d ) ) {
+						p = new Parameter<RISEPel>( RISEPel(d), kColorID );
 					}
 				} else if( name == "energy" ) {
-					p = new Parameter<Scalar>( atof(value.c_str()), 1001 );
+					Scalar parsed;
+					if( !ParseStrictScalar( value, parsed ) ) {
+						return 0;
+					}
+					p = new Parameter<Scalar>( parsed, kEnergyID );
 				} else {
 					return Transformable::KeyframeFromParameters( name, value );
 				}
@@ -98,16 +218,19 @@ namespace RISE
 				return p;
 			}
 
-			void SetIntermediateValue( const IKeyframeParameter& val )
+			void SetIntermediateValue( const IKeyframeParameter& val ) override
 			{
+				Transformable::PreparedExternalMutationScope preparedMutation;
+				if( !preparedMutation.IsValid() ) return;
 				switch( val.getID() )
 				{
-				case 100:
+				case kColorID:
 					{
 						cColor = *(RISEPel*)val.getValue();
+						RefreshSpectrum();		// keep the cached illuminant spectrum in step
 					}
 					break;
-				case 101:
+				case kEnergyID:
 					{
 						radiantEnergy = *(Scalar*)val.getValue();
 					}

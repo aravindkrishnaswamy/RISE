@@ -42,7 +42,9 @@ namespace RISE
 		double	sigma_a;		///< Absorption coefficient (cm^-1)
 		double	sigma_sp;		///< Reduced scattering coefficient (cm^-1)
 		double	thickness;		///< Layer thickness (cm)
-		double	ior;			///< Index of refraction
+		double	ior;			///< Index of refraction RELATIVE to the medium surrounding the stack
+								///< (DL-291). Composite evaluation derives each face's boundary
+								///< condition from its adjacent layer, or this exterior.
 
 		// Derived parameters (computed by ComputeLayerDerivedParams)
 		double	sigma_t_prime;	///< sigma_a + sigma_sp
@@ -53,12 +55,22 @@ namespace RISE
 		double	A;				///< Boundary condition = (1+Fdr)/(1-Fdr)
 		double	z_r;			///< Real source depth = 1/sigma_t'
 		double	z_v;			///< Virtual source depth = z_r + 4*A*D
-		double	d_e;			///< Extrapolated boundary = 2*A*D
-		double	slab_period;	///< 2*(thickness + 2*d_e) — multipole spacing
+		double	d_e;			///< Top extrapolated boundary = 2*A*D
+		double	d_e_bottom;	///< Bottom extrapolated boundary (equal for standalone slabs)
+		double	slab_period;	///< 2*(thickness + d_e + d_e_bottom) — multipole spacing
 	};
 
 	/// Compute derived parameters from primary parameters.
 	void ComputeLayerDerivedParams( LayerParams& lp );
+
+	/// DL-291: re-express a stack's layer indices relative to the medium
+	/// that surrounds it (the exterior index `exteriorIOR`, e.g. water
+	/// around skin) and recompute each layer's derived parameters.  The
+	/// multipole's extrapolation term A = (1+Fdr)/(1-Fdr) is a function of
+	/// that RELATIVE index, so a stack built with absolute indices describes
+	/// the body in air only.  Exactly a no-op when `exteriorIOR == 1`, so an
+	/// in-air precompute is bit-identical to one that never called this.
+	void RelativizeLayersToExterior( LayerParams* layers, int N_layers, double exteriorIOR );
 
 	/// Compute diffuse Fresnel reflectance for a given IOR ratio.
 	/// Uses Egan & Hilgeman 1973 polynomial fit (same as Jensen 2001).

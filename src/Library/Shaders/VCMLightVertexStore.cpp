@@ -1,0 +1,734 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  VCMLightVertexStore.cpp - Persistent light-vertex store for VCM.
+//
+//    Holds a flat array of LightVertex objects populated during the
+//    VCM light pass, balanced into a left-balanced KD-tree for
+//    fixed-radius queries during the eye pass.
+//
+//    The KD-tree algorithm is a lightweight clone of
+//    PhotonMapCore<T>'s BalanceSegment + LocateAllPhotons from
+//    src/Library/PhotonMapping/PhotonMap.h.  The clone keeps the
+//    exact same index arithmetic, splitting-axis selection, and
+//    recursive traversal so that a side-by-side comparison against
+//    PhotonMapCore<Photon> on the same input produces identical
+//    tree layout and query results (verified by
+//    tests/VCMLightVertexStoreTest.cpp).
+//
+//    Rationale for the clone: PhotonMapCore inherits from
+//    IPhotonMap + IReference + IPhotonTracer and has a protected
+//    constructor that requires a tracer pointer.  Instantiating it
+//    on a pure data type (LightVertex) would require wrestling
+//    with those virtuals.  The ~150-line clone is cleaner.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 14, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include "VCMLightVertexStore.h"
+#include "VCMIntegrator.h"			// VCMIntegrator::LightThroughputSpectrum -- rebuild the cached throughputSpectrum after a rescale, see ClampOutlierThroughputs
+#include "../Utilities/BoundingBox.h"
+#include "../Utilities/ThreadPool.h"
+
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace
+{
+	// Comparators for std::nth_element — mirror PhotonMapCore's
+	// less_than_X/Y/Z lambdas.  The stored LightVertex type exposes
+	// ptPosition as its first field (required so the balance
+	// algorithm can index by axis).
+	inline bool LessThanX( const LightVertex& a, const LightVertex& b ) { return a.ptPosition.x < b.ptPosition.x; }
+	inline bool LessThanY( const LightVertex& a, const LightVertex& b ) { return a.ptPosition.y < b.ptPosition.y; }
+	inline bool LessThanZ( const LightVertex& a, const LightVertex& b ) { return a.ptPosition.z < b.ptPosition.z; }
+
+	//
+	// Left-balanced KD-tree median computation.
+	// Lifted byte-for-byte from PhotonMapCore::BalanceSegment so
+	// the VCM store builds trees with identical memory layout.
+	//
+	inline int ComputeMedian( const int from, const int to )
+	{
+		int median = 1;
+		while( ( 4 * median ) <= ( to - from + 1 ) ) {
+			median += median;
+		}
+		if( ( 3 * median ) <= ( to - from + 1 ) ) {
+			median += median;
+			median += from - 1;
+		} else {
+			median = to - median + 1;
+		}
+		return median;
+	}
+
+	//
+	// Recursive balance of a [from, to] index range.  BoundingBox
+	// is passed by reference and mutated in place so each split
+	// sees the tightened box extents, matching PhotonMapCore's
+	// tmp-swap pattern.
+	//
+	void BalanceSegment(
+		std::vector<LightVertex>& verts,
+		BoundingBox& bbox,
+		const int from,
+		const int to
+		)
+	{
+		if( to - from <= 0 ) {
+			return;
+		}
+
+		unsigned char axis = 2;
+		const Vector3& extents = bbox.GetExtents();
+		if( extents.x > extents.y && extents.x > extents.z ) {
+			axis = 0;
+		} else if( extents.y > extents.z ) {
+			axis = 1;
+		}
+
+		const int median = ComputeMedian( from, to );
+
+		// Note: this uses the correct end-exclusive iterator
+		// begin()+to+1 so the element at index 'to' is included in
+		// the partition.  PhotonMapCore::BalanceSegment uses
+		// begin()+to (end-exclusive of (to-1)), which silently drops
+		// the last element at each level.  The clone fixes that so
+		// every stored vertex has its splitting plane correctly set
+		// and queries never miss it.  The unit test validates query
+		// correctness against a brute-force ground truth rather than
+		// against PhotonMapCore directly.
+		switch( axis )
+		{
+		case 0:
+			std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanX );
+			break;
+		case 1:
+			std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanY );
+			break;
+		case 2:
+		default:
+			std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanZ );
+			break;
+		}
+
+		verts[median].plane = axis;
+
+		{
+			// Left segment: tighten the upper bound.
+			const Scalar tmp = bbox.ur[axis];
+			bbox.ur[axis] = verts[median].ptPosition[axis];
+			BalanceSegment( verts, bbox, from, median - 1 );
+			bbox.ur[axis] = tmp;
+		}
+
+		{
+			// Right segment: tighten the lower bound.
+			const Scalar tmp = bbox.ll[axis];
+			bbox.ll[axis] = verts[median].ptPosition[axis];
+			BalanceSegment( verts, bbox, median + 1, to );
+			bbox.ll[axis] = tmp;
+		}
+	}
+
+	//
+	// Fixed-radius query.  Straight translation of
+	// PhotonMapCore::LocateAllPhotons.  'maxDist' is a SQUARED
+	// radius (matches the PhotonMap convention).
+	//
+	void LocateAllInRadiusSq(
+		const std::vector<LightVertex>& verts,
+		const Point3& loc,
+		const Scalar maxDistSq,
+		std::vector<LightVertex>& out,
+		const int from,
+		const int to
+		)
+	{
+		if( to - from < 0 ) {
+			return;
+		}
+
+		const int median = ComputeMedian( from, to );
+
+		const Vector3 v = Vector3Ops::mkVector3( loc, verts[median].ptPosition );
+		const Scalar distanceToVertexSq = Vector3Ops::SquaredModulus( v );
+
+		if( distanceToVertexSq < maxDistSq ) {
+			out.push_back( verts[median] );
+		}
+
+		const int axis = verts[median].plane;
+		const Scalar planeDelta = loc[axis] - verts[median].ptPosition[axis];
+		const Scalar planeDeltaSq = planeDelta * planeDelta;
+
+		// Pruning: if the query sphere doesn't cross the splitting
+		// plane, only the nearer subtree can contain hits.
+		// Otherwise we must visit both sides.  The original
+		// PhotonMapCore code uses strict '<' on both comparisons,
+		// which leaves the tangent case (planeDeltaSq == maxDistSq)
+		// visiting NEITHER subtree and losing every vertex behind
+		// the tangent node.  On a regular grid queried at an
+		// integer coordinate this drops exactly those vertices
+		// whose perpendicular distance to a splitting plane
+		// matches the query radius.  The fix is to put '<=' on
+		// the recurse-both-sides branch so tangent fires the
+		// conservative path.
+		if( planeDeltaSq > maxDistSq ) {
+			if( planeDelta <= 0 ) {
+				LocateAllInRadiusSq( verts, loc, maxDistSq, out, from, median - 1 );
+			} else {
+				LocateAllInRadiusSq( verts, loc, maxDistSq, out, median + 1, to );
+			}
+		} else {
+			LocateAllInRadiusSq( verts, loc, maxDistSq, out, from, median - 1 );
+			LocateAllInRadiusSq( verts, loc, maxDistSq, out, median + 1, to );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// LightVertexStore
+//////////////////////////////////////////////////////////////////////
+
+LightVertexStore::LightVertexStore() :
+	mBuilt( false )
+{
+}
+
+LightVertexStore::~LightVertexStore()
+{
+}
+
+void LightVertexStore::Clear()
+{
+	mVertices.clear();
+	mStepChunks.clear();
+	mBuilt = false;
+}
+
+void LightVertexStore::Reserve( const std::size_t capacity )
+{
+	mVertices.reserve( capacity );
+}
+
+void LightVertexStore::Append( const LightVertex& v )
+{
+	mVertices.push_back( v );
+	mBuilt = false;
+}
+
+void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer )
+{
+	// Always insert — never move-assign the whole source over mVertices,
+	// even when mVertices.empty() is true.
+	//
+	// Why: the "empty" fast path historically did
+	//   mVertices = std::move(localBuffer)
+	// which deallocates mVertices' existing capacity buffer (allocated
+	// by the caller via Reserve) and steals localBuffer's buffer.  In
+	// the GUI build that deallocation occasionally crashed inside
+	// libsystem_malloc on the second+ animation frame (PAC-tagged
+	// indirect branch to an invalid address during
+	// xzm_segment_group_free_chunk).  The pattern — deallocate a large
+	// main-thread buffer between frames from code running on a Swift
+	// cooperative-pool thread — seems to hit an allocator edge case.
+	//
+	// insert() preserves the Reserve'd capacity (zero reallocation when
+	// the pre-reserved size is sufficient), does an element-wise move
+	// of the POD-ish LightVertex structs, and — crucially — never
+	// frees the destination's buffer.  That sidesteps the crash.
+	if( localBuffer.empty() ) {
+		mBuilt = false;
+		return;
+	}
+	mVertices.insert(
+		mVertices.end(),
+		std::make_move_iterator( localBuffer.begin() ),
+		std::make_move_iterator( localBuffer.end() ) );
+	localBuffer.clear();
+	mBuilt = false;
+}
+
+void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer, std::vector< std::vector<VCMStep> >&& localBlocks )
+{
+	// DL-470: adopt the blocks as chunks (no copy into a shared array; the
+	// last block is trimmed of its unused reserve).  A chunk index past 16
+	// bits drops the records; those vertices then merge unwindowed
+	// (pre-DL-470 behaviour).
+	const std::size_t base = mStepChunks.size();
+	if( base + localBlocks.size() > 0xFFFFu ) {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			localBuffer[k].stepBase = kLightVertexNoSteps;
+		}
+	} else {
+		for( std::size_t k = 0; k < localBuffer.size(); k++ ) {
+			if( localBuffer[k].stepBase != kLightVertexNoSteps ) {
+				localBuffer[k].stepChunk = static_cast<unsigned short>( localBuffer[k].stepChunk + base );
+			}
+		}
+		for( std::size_t b = 0; b < localBlocks.size(); b++ ) {
+			localBlocks[b].shrink_to_fit();
+			mStepChunks.push_back( std::move( localBlocks[b] ) );
+		}
+	}
+	localBlocks = std::vector< std::vector<VCMStep> >();
+	Concat( std::move( localBuffer ) );
+}
+
+void LightVertexStore::BuildKDTree()
+{
+	if( mVertices.empty() ) {
+		mBuilt = true;
+		return;
+	}
+
+	// Build the enclosing bounding box before we start splitting.
+	BoundingBox bbox(
+		Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+	for( std::vector<LightVertex>::const_iterator i = mVertices.begin(); i != mVertices.end(); ++i ) {
+		bbox.Include( i->ptPosition );
+	}
+
+	BalanceSegment( mVertices, bbox, 0, static_cast<int>( mVertices.size() ) - 1 );
+	mBuilt = true;
+}
+
+void LightVertexStore::Query(
+	const Point3& center,
+	const Scalar radiusSq,
+	std::vector<LightVertex>& out
+	) const
+{
+	if( !mBuilt || mVertices.empty() || radiusSq <= 0 ) {
+		return;
+	}
+	LocateAllInRadiusSq(
+		mVertices,
+		center,
+		radiusSq,
+		out,
+		0,
+		static_cast<int>( mVertices.size() ) - 1 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Parallel KD-tree build.
+//
+// Strategy:
+//   - Compute the root median serially; partition the array around it.
+//   - Recurse on the two disjoint halves in parallel via the thread pool.
+//   - Below a cutoff threshold, drop into the existing serial BalanceSegment.
+//
+// Correctness invariant:
+//   Every recursion operates on a disjoint index range of mVertices
+//   and its own copy of the bbox.  The shared vector is resized once
+//   up front; no thread appends or removes elements after that.  All
+//   writes are to cells owned by the recursing task.  Therefore no
+//   locking on mVertices is needed.
+//
+//   The tree layout (which vertex lives at which array slot) is
+//   determined entirely by:
+//     1) the sequence of median-index computations (deterministic),
+//     2) std::nth_element's output for a given comparator (deterministic
+//        though partition order of non-median elements is
+//        implementation-defined — but LocateAllInRadiusSq only reads
+//        each element via the tree traversal so partition order of
+//        non-medians within a subtree does NOT affect query results).
+//   So BuildKDTreeParallel produces a tree that is functionally
+//   equivalent to BuildKDTree (not byte-identical in non-median slots,
+//   but identical-for-queries).  The unit test asserts query-equivalence
+//   against a brute-force oracle rather than memcmp.
+//
+// Lifetime of sync primitives:
+//   The latch (mutex/cv/outstanding counter) is heap-allocated and
+//   shared via shared_ptr across the driver, every spawned task
+//   lambda, and the entire recursion.  The previous design put these
+//   on the driver's stack and had a use-after-free race: the waiter
+//   could observe `outstanding == 0` and tear down its stack frame
+//   while the last task was still mid-`notify_all` (or even
+//   mid-`lock_guard`) on the now-destroyed mutex.  Anchoring lifetime
+//   to "driver waits done AND every task lambda destroyed" closes
+//   the race.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	// Heap-resident latch state for the kd-tree parallel build.
+	// See file-level comment above for the rationale.
+	struct KDTreeLatchState
+	{
+		std::mutex					mut;
+		std::condition_variable		cv;
+		std::atomic<unsigned int>	outstanding;
+		// Set true by any task whose subtree build threw (e.g. a
+		// std::bad_alloc out of the recursive pool.Submit under memory
+		// pressure), OR when a Submit itself failed to enqueue.  The
+		// driver reads it AFTER the latch drains and, if set, rebuilds
+		// the whole tree serially rather than marking a PARTIAL tree
+		// built.  Stored release / loaded acquire so the driver's
+		// post-barrier read sees every task's write (paired with the
+		// acq_rel fetch_sub release sequence on `outstanding`).
+		std::atomic<bool>			failed;
+		explicit KDTreeLatchState( unsigned int n ) : outstanding( n ), failed( false ) {}
+	};
+
+	// RAII: drains ONE unit from the kd-tree build latch on EVERY exit
+	// from a submitted task -- normal return OR an exception unwinding out
+	// of the task body -- and signals the driver when the count reaches
+	// zero.  This is load-bearing for exception safety: a throw out of
+	// BalanceSegmentParallel would otherwise skip the decrement, so
+	// `outstanding` would never reach 0 and BuildKDTreeParallel's cv.wait
+	// would hang forever.  (Before ThreadPool::WorkerLoop swallowed task
+	// exceptions such a throw std::terminate'd the process; now that the
+	// pool keeps running, draining the latch here is what turns "crash"
+	// into "clean, complete build" instead of "hang".)
+	struct KDTreeLatchDrainGuard
+	{
+		const std::shared_ptr<KDTreeLatchState>& sync;
+		~KDTreeLatchDrainGuard()
+		{
+			if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				{
+					std::lock_guard<std::mutex> lk( sync->mut );
+				}
+				sync->cv.notify_all();
+			}
+		}
+	};
+
+	// Copy of BalanceSegment but queues sub-ranges into the pool
+	// until they fall below the cutoff.  `sync->outstanding` tracks
+	// the number of pending subtree tasks so the driver can wait.
+	void BalanceSegmentParallel(
+		std::vector<LightVertex>& verts,
+		BoundingBox bbox,               // by-value: each task has its own
+		const int from,
+		const int to,
+		const std::size_t cutoff,
+		ThreadPool& pool,
+		const std::shared_ptr<KDTreeLatchState>& sync
+		)
+	{
+		if( to - from <= 0 ) {
+			return;
+		}
+
+		if( static_cast<std::size_t>( to - from + 1 ) <= cutoff ) {
+			// Small enough — drop to the existing serial path.
+			BalanceSegment( verts, bbox, from, to );
+			return;
+		}
+
+		unsigned char axis = 2;
+		const Vector3& extents = bbox.GetExtents();
+		if( extents.x > extents.y && extents.x > extents.z ) {
+			axis = 0;
+		} else if( extents.y > extents.z ) {
+			axis = 1;
+		}
+
+		const int median = ComputeMedian( from, to );
+
+		switch( axis )
+		{
+		case 0: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanX ); break;
+		case 1: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanY ); break;
+		default: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanZ ); break;
+		}
+
+		verts[median].plane = axis;
+
+		// Prepare child bboxes (by value — each task owns its own).
+		BoundingBox leftBox  = bbox;
+		BoundingBox rightBox = bbox;
+		leftBox.ur[axis]  = verts[median].ptPosition[axis];
+		rightBox.ll[axis] = verts[median].ptPosition[axis];
+
+		// Fire off the left subtree as a pool task, recurse on right
+		// in this thread so we always keep one active path of work.
+		// `sync` is captured by value into the lambda so the latch
+		// state lives until every spawned task has destructed.
+		sync->outstanding.fetch_add( 1, std::memory_order_relaxed );
+		try {
+			pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, sync] {
+				// Drain this task's latch unit on EVERY exit (see
+				// KDTreeLatchDrainGuard); catch the body's exception so it
+				// does not propagate to the (now exception-swallowing) pool
+				// worker with the failure unrecorded -- record it instead so
+				// the driver falls back to a serial rebuild.
+				KDTreeLatchDrainGuard drain{ sync };
+				try {
+					BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
+						pool, sync );
+				}
+				catch( ... ) {
+					sync->failed.store( true, std::memory_order_release );
+				}
+			} );
+		}
+		catch( ... ) {
+			// Submit itself failed to enqueue (e.g. bad_alloc building the
+			// std::function / growing the queue): no task exists to drain
+			// the unit we just added, so roll it back to keep the latch
+			// able to reach zero, and record the failure for the serial
+			// rebuild.  No notify needed -- THIS task still holds its own
+			// outstanding unit (drained by its caller's guard), so the
+			// count cannot be at zero here.
+			sync->failed.store( true, std::memory_order_release );
+			sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel );
+		}
+
+		// Right subtree on the current task.
+		BalanceSegmentParallel( verts, rightBox, median + 1, to, cutoff,
+			pool, sync );
+	}
+}
+
+void LightVertexStore::BuildKDTreeParallel()
+{
+	if( mVertices.empty() ) {
+		mBuilt = true;
+		return;
+	}
+
+	// Enclosing bbox — single-threaded (cheap).
+	BoundingBox bbox(
+		Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+	for( std::vector<LightVertex>::const_iterator i = mVertices.begin(); i != mVertices.end(); ++i ) {
+		bbox.Include( i->ptPosition );
+	}
+
+	ThreadPool& pool = GlobalThreadPool();
+	const std::size_t N = mVertices.size();
+
+	// Cutoff: keep ~8 tasks per worker so there's slack for work
+	// stealing while not over-decomposing for tiny inputs.
+	const std::size_t cutoff = std::max<std::size_t>(
+		4096,
+		N / ( pool.NumWorkers() * 8 ) );
+
+	// Small input — skip the pool.
+	if( N <= cutoff ) {
+		BalanceSegment( mVertices, bbox, 0, static_cast<int>( N ) - 1 );
+		mBuilt = true;
+		return;
+	}
+
+	// Initial outstanding = 1 accounts for the root task.  Each
+	// spawned child fetch_add's before Submit and fetch_sub's at the
+	// end of its lambda; the root task itself fetch_sub's at the end
+	// of its own lambda.  Whoever drives the counter to 0 signals.
+	auto sync = std::make_shared<KDTreeLatchState>( 1 );
+
+	bool rootSubmitted = false;
+	try {
+		pool.Submit( [this, bbox, N, cutoff, &pool, sync] {
+			// Same exception-safe shape as the recursive Submit above:
+			// drain-on-every-exit + record-failure-instead-of-escape.
+			KDTreeLatchDrainGuard drain{ sync };
+			try {
+				BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
+					pool, sync );
+			}
+			catch( ... ) {
+				sync->failed.store( true, std::memory_order_release );
+			}
+		} );
+		rootSubmitted = true;
+	}
+	catch( ... ) {
+		// Could not even enqueue the root task.  Bring the initial
+		// outstanding unit to zero (nothing will drain it) and fall
+		// through to the serial rebuild below.
+		sync->failed.store( true, std::memory_order_release );
+		sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel );
+	}
+
+	if( rootSubmitted ) {
+		std::unique_lock<std::mutex> lk( sync->mut );
+		sync->cv.wait( lk, [&sync] {
+			return sync->outstanding.load( std::memory_order_acquire ) == 0;
+		} );
+	}
+
+	// If ANY subtree task threw (or a Submit failed to enqueue), the
+	// parallel build may have left the tree PARTIAL / inconsistent.
+	// Rebuild it deterministically on this thread -- BalanceSegment
+	// re-partitions mVertices from scratch (median / nth_element does
+	// not require ordered input), so it fully corrects any partial
+	// state -- rather than marking a corrupt tree built.  No pool, no
+	// per-node task allocation, so it does not re-trip the
+	// memory-pressure path that failed the parallel build.
+	if( sync->failed.load( std::memory_order_acquire ) ) {
+		BalanceSegment( mVertices, bbox, 0, static_cast<int>( N ) - 1 );
+	}
+
+	mBuilt = true;
+}
+
+Scalar LightVertexStore::ComputeBBoxDiagonal() const
+{
+	if( mVertices.empty() ) {
+		return 0;
+	}
+
+	Point3 mn = mVertices[0].ptPosition;
+	Point3 mx = mn;
+	for( std::size_t i = 1; i < mVertices.size(); i++ ) {
+		const Point3& p = mVertices[i].ptPosition;
+		if( p.x < mn.x ) mn.x = p.x;  if( p.x > mx.x ) mx.x = p.x;
+		if( p.y < mn.y ) mn.y = p.y;  if( p.y > mx.y ) mx.y = p.y;
+		if( p.z < mn.z ) mn.z = p.z;  if( p.z > mx.z ) mx.z = p.z;
+	}
+
+	const Vector3 d = Vector3Ops::mkVector3( mx, mn );
+	return Vector3Ops::Magnitude( d );
+}
+
+std::size_t LightVertexStore::CountOrdinaryVertices() const
+{
+	std::size_t c = 0;
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( !( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) ) {	// DL-469: and the volume-merge vertices
+			c++;
+		}
+	}
+	return c;
+}
+
+Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
+{
+	if( mVertices.empty() ) {
+		return 0;
+	}
+
+	// DL-380: over the ORDINARY vertices only (see the header).
+	bool any = false;
+	Point3 mn( 0, 0, 0 );
+	Point3 mx = mn;
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
+			continue;
+		}
+		const Point3& p = mVertices[i].ptPosition;
+		if( !any ) {
+			mn = mx = p;
+			any = true;
+			continue;
+		}
+		if( p.x < mn.x ) mn.x = p.x;  if( p.x > mx.x ) mx.x = p.x;
+		if( p.y < mn.y ) mn.y = p.y;  if( p.y > mx.y ) mx.y = p.y;
+		if( p.z < mn.z ) mn.z = p.z;  if( p.z > mx.z ) mx.z = p.z;
+	}
+	if( !any ) {
+		return 0;
+	}
+
+	const Scalar dx = mx.x - mn.x;
+	const Scalar dy = mx.y - mn.y;
+	const Scalar dz = mx.z - mn.z;
+	return Scalar( 2 ) * ( dx * dy + dy * dz + dz * dx );
+}
+
+namespace
+{
+	// Rec. 709 luminance — a MAGNITUDE used only to RANK stored
+	// throughputs for outlier clamping, never as a radiance.  (It used
+	// to be documented as matching VCMIntegrator's RISEPelToNMProxy;
+	// that proxy is gone — the spectral merge path now uplifts the
+	// stored throughput as an illuminant, Stage C slice 2 — but a
+	// luma-ordered percentile is still the right ranking here.)
+	inline Scalar LightVertexLuminance( const RISEPel& t )
+	{
+		return Scalar( 0.2126 ) * t[0]
+		     + Scalar( 0.7152 ) * t[1]
+		     + Scalar( 0.0722 ) * t[2];
+	}
+}
+
+void LightVertexStore::ClampOutlierThroughputs(
+	const Scalar percentile,
+	const Scalar multiplier,
+	const Scalar mediumStoreProbability
+	)
+{
+	if( mVertices.empty() ) {
+		return;
+	}
+	if( multiplier <= 0 || percentile <= 0 || percentile >= 1 ) {
+		return;
+	}
+
+	// Build a flat luminance array for std::nth_element.  Using the
+	// store's mVertices directly would let nth_element reorder photons,
+	// breaking later index-based access; the auxiliary copy is the
+	// only correct option.
+	// DL-380: the percentile is taken over the ORDINARY vertices only
+	// (not past an eye-coverable subsurface jump -- see the header), so
+	// the threshold is the pre-DL-380 one; every vertex is clamped
+	// against it.
+	const std::size_t n = mVertices.size();
+	std::vector<Scalar> lums;
+	lums.reserve( n );
+	for( std::size_t i = 0; i < n; i++ ) {
+		if( mVertices[i].flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
+			continue;
+		}
+		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
+	}
+	if( lums.empty() ) {
+		return;
+	}
+
+	// Find the percentile via nth_element (O(n) average).  Clamp the
+	// index to [0, m-1] so percentile=1.0 doesn't run off the end.
+	const std::size_t m = lums.size();
+	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( m ) );
+	if( k >= m ) k = m - 1;
+	std::nth_element( lums.begin(), lums.begin() + k, lums.end() );
+	const Scalar pctValue = lums[k];
+
+	// All photons effectively dark — nothing to clamp.  Skip the
+	// rescale loop to avoid divide-by-near-zero amplification.
+	if( pctValue <= NEARZERO ) {
+		return;
+	}
+
+	const Scalar threshold = multiplier * pctValue;
+
+	// Single pass to rescale outliers.  Color is preserved (uniform
+	// scale) so chromaticity stays the same; only the magnitude is
+	// capped.  Vertices already at or below threshold are untouched.
+	for( std::size_t i = 0; i < n; i++ ) {
+		// DL-469: a thinned medium vertex is judged on its physical
+		// throughput, q * stored (see the header).
+		const Scalar q = ( ( mVertices[i].flags & kLVF_IsMedium ) && mediumStoreProbability > 0 )
+			? mediumStoreProbability : Scalar( 1 );
+		const Scalar lum = q * LightVertexLuminance( mVertices[i].throughput );
+		if( lum > threshold ) {
+			const Scalar scale = threshold / lum;
+			mVertices[i].throughput = mVertices[i].throughput * scale;
+			// Rebuild the cached NM-merge spectrum to match the
+			// rescaled throughput -- see LightVertex::throughputSpectrum's
+			// comment (VCMLightVertex.h).  This is the only other site
+			// that writes `.throughput` after deposit.
+			mVertices[i].throughputSpectrum =
+				VCMIntegrator::LightThroughputSpectrum( mVertices[i].throughput );
+		}
+	}
+}

@@ -13,18 +13,17 @@
 
 #include "pch.h"
 #include "LuminaryManager.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight() capability check below
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/ProbabilityDensityFunction.h"
+#include <atomic>
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
-LuminaryManager::LuminaryManager(
-	const bool randomly_select
-	) : 
-  pLumSampling( 0 ),
-  dOVcSamples( 1 ),
-  bRandomlySelect( randomly_select )
+LuminaryManager::LuminaryManager() :
+  pLumSampling( 0 )
 {
 }
 
@@ -87,6 +86,98 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 	const IMaterial*	pMaterial = pObject.GetMaterial();
 	if( pMaterial && pMaterial->GetEmitter() )
 	{
+		// The light sampler treats a luminary as an area light: it calls
+		// UniformRandomPoint() expecting a uniform sample of the emitting SURFACE
+		// and GetArea() for pdfPosition = 1/area.  A geometry that cannot honour
+		// that contract (CanBeAreaLight() false -- e.g. a field that tessellates to
+		// zero surface area) would feed NEE wrong positions and pdfs.  Refuse it as
+		// a luminary, with a diagnostic, rather than sample a broken light.  The
+		// object still renders and still contributes emission when directly viewed
+		// or reached by a BSDF-sampled ray -- it simply is not importance-sampled
+		// by NEE.
+		//
+		// NULL GEOMETRY (crash fix): pObject.GetGeometry() can legitimately be
+		// null -- a CSGObject has no single owned IGeometry* (its shape is
+		// synthesized on the fly from its two operand objects; see CSGObject.h/
+		// .cpp, which override IntersectRay/getBoundingBox but NOT GetArea() or
+		// UniformRandomPoint(), so those fall through to the base Object's
+		// `pGeometry->...` and null-deref if ever invoked).  The condition below
+		// used to be `pGeom && !pGeom->CanBeAreaLight()`, which short-circuited
+		// to false -- i.e. "acceptable" -- for exactly this null case, so a
+		// csg_object with an emissive material bound was pushed onto the
+		// luminaries list, and LightSampler later called GetArea() on it
+		// (Object::GetArea() -> pGeometry->GetArea() with pGeometry == 0) ->
+		// EXC_BAD_ACCESS.  A null geometry can never honour the
+		// UniformRandomPoint()/GetArea() contract, so it must be refused the
+		// same as CanBeAreaLight() == false.
+		//
+		// TRUTH-DEFECT FIX (2026-07-31 fix round 2, scoped precisely fix round
+		// 3 / P2b): this gate alone does NOT make "the object still glows
+		// when directly viewed" true by itself -- it only keeps the object
+		// OFF the NEE luminaries list (this function's job).  A refused
+		// object's emission is read back on a DIFFERENT code path entirely
+		// (EmissionShaderOp / the integrators' BSDF-hit emission blocks, and
+		// BDPT/VCM's s=0 / path-length-1 strategy), which had the IDENTICAL
+		// null-geometry crash independently (fixed alongside this in round 2:
+		// EmissionShaderOp.cpp, PathTracingIntegrator.cpp, BDPTIntegrator.cpp,
+		// VCMIntegrator.cpp, plus a base-layer null guard on Object::GetArea()/
+		// UniformRandomPoint() in Object.cpp).
+		//
+		// EXACTLY WHAT tests/CSGNullGeometryLuminaireCrashTest.cpp VERIFIES
+		// (P2b: do not overclaim beyond this) --
+		//   DIRECT camera view, non-crashing + non-zero radiance:
+		//     pathtracing_pel_rasterizer, bdpt_pel_rasterizer,
+		//     vcm_pel_rasterizer, AND the legacy EmissionShaderOp
+		//     (DefaultEmission) shaderop chain under pixelpel_rasterizer.
+		//   INDIRECT (BSDF-sampled, bsdfPdf>0) bounce hit, non-crashing +
+		//     non-zero radiance: pathtracing_pel_rasterizer ONLY
+		//     (PathTracingIntegrator.cpp's bsdfPdf>0 block) -- EmissionShaderOp's
+		//     OWN bsdfPdf>0 block is gated identically (code-verified, same
+		//     `pEmitGeom && pEmitGeom->CanBeAreaLight()` fix) but NOT
+		//     independently exercised by an indirect-bounce test.
+		//   NOT tested at all: the spectral/HWSS twins of every path above
+		//     (PathTracingIntegrator's NM loop, BDPT/VCM spectral rasterizers)
+		//     -- code-identical fixes (same file, same pattern) but no
+		//     dedicated spectral render test.
+		//   BDPT NOTE (updated 2026-08-01): BDPT's s=0 strategy USED to hit a
+		//     separate, pre-existing MIS defect -- MISWeight's remap0 promoting
+		//     a non-NEE-sampleable emitter's true pdfRev=0 to 1, manufacturing
+		//     a phantom NEE strategy in the denominator and giving BDPT LESS
+		//     than PT/VCM's full weight here (an energy deficit, not a crash).
+		//     That is now FIXED (BDPTVertex::lightSamplingStrategyAbsent +
+		//     MISWeight's eye-walk gate; see BDPTIntegrator.cpp's s=0 block).
+		//     BDPT now carries FULL weight on such emitters, matching PT and
+		//     VCM -- pinned by tests/BDPTPhantomStrategyWeightTest.cpp, which
+		//     holds BDPT's mean luma to within 5% of PT's on both flavours of
+		//     non-NEE-sampleable emitter (null-geometry CSG and a
+		//     CanBeAreaLight()==false SDF).
+		const IGeometry* pGeom = pObject.GetGeometry();
+		if( !pGeom || !pGeom->CanBeAreaLight() ) {
+			GlobalLog()->PrintSourceError(
+				!pGeom ?
+				"LuminaryManager:: an emissive material is bound to an object with no directly-"
+				"owned geometry (e.g. a csg_object, whose shape comes from its two operand "
+				"objects rather than a single geometry chunk) -- it cannot be uniformly area-"
+				"sampled.  It will NOT act as an area light (no NEE importance sampling); it is "
+				"never selected by light-sampling, but still contributes emission on direct "
+				"camera view (PT/BDPT/VCM pel + the legacy EmissionShaderOp chain, verified by "
+				"tests/CSGNullGeometryLuminaireCrashTest.cpp) or a BSDF-sampled hit (PT pel, "
+				"verified; code-identical elsewhere, untested)." :
+				"LuminaryManager:: an emissive material is bound to a geometry that cannot be "
+				"uniformly area-sampled (CanBeAreaLight() == false, e.g. an infinite plane, which "
+				"has no finite area density; a degenerate zero-area field; or an SDF whose sampling "
+				"mesh provably missed renderable surface -- see the SDFGeometry warning above; raise "
+				"sampling_detail).  It will NOT act as an "
+				"area light (no NEE importance sampling); it is never selected by light-sampling, "
+				"but still contributes emission on direct camera view or a BSDF-sampled hit.",
+				__FILE__, __LINE__ );
+			return;
+		}
+
+		// DL-448: no non-uniform-scale caveat any more -- Object samples a
+		// non-similarity luminary uniformly in WORLD area and GetArea()
+		// returns that world area, for every geometry kind.
+
 		LUM_ELEM elem;
 		elem.pLum = &pObject;
 		pObject.addref();
@@ -94,336 +185,14 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 	}
 }
 
-RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
-			const RayIntersectionGeometric& ri,
-			const IObject& pObject,
-			const Point2& ptLum,
-			const IBSDF& pBRDF,
-			const IMaterial* pMaterial,
-			ISampler& sampler,
-			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-			const bool bShadowRays
-			) const
-{
-	// To compute the direct lighting, get a sample point on the luminary
-	// and use that to compute the amount of direct lighting
-	const Point3	ptRand( ptLum.x, ptLum.y, sampler.Get1D() );
-	Point3	ptLocationOnLuminary;
-	Vector3 lumNormal;
-	Point2	lumCoord;
-	pObject.UniformRandomPoint( &ptLocationOnLuminary, &lumNormal, &lumCoord, ptRand );
-
-	RayIntersectionGeometric lumri = ri;
-	lumri.ptIntersection = ptLocationOnLuminary;
-	lumri.vNormal = lumNormal;
-	lumri.ptCoord = lumCoord;
-	lumri.onb.CreateFromW( lumNormal );
-
-	Vector3	vToLight = Vector3Ops::mkVector3( ptLocationOnLuminary, ri.ptIntersection );
-	const Scalar		fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
-	const Scalar		fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-
-	const Vector3		vFromLight = -vToLight;
-	const Scalar		fDotLight = Vector3Ops::Dot( vFromLight, lumNormal );
-
-	if( fDotLight < 0 ) {
-		return RISEPel( 0, 0, 0 );
-	}
-
-	if( fDot < 0 ) {
-		return RISEPel( 0, 0, 0 );
-	}
-
-	// Check to see if there is a shadow
-	if( pObject.DoesReceiveShadows() && bShadowRays ) {
-		const Ray		rayToLight( ri.ptIntersection, vToLight );
-		if( caster.CastShadowRay( rayToLight, fDistFromLight-0.001 ) ) {
-			return RISEPel(0,0,0);
-		}
-	}
-
-	const Scalar	area = pObject.GetArea();
-	const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-	RISEPel contrib = pObject.GetMaterial()->GetEmitter()->emittedRadiance( lumri, vFromLight, lumNormal ) * fDot * fDotLight * attenuation_size_factor * pBRDF.value(vToLight,ri);
-
-	// MIS weight (power heuristic, exponent = 2)
-	// This weights the NEE contribution against what the BSDF sampling
-	// strategy would have produced.  The complementary weight is applied
-	// in the emission ShaderOp when a BSDF-sampled ray hits an emitter.
-	//
-	// p_light: probability of sampling this point on the luminary (area measure → solid angle)
-	// p_bsdf: probability of the BSDF sampling this direction
-	if( pMaterial && area > 0 && fDotLight > 0 )
-	{
-		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
-		static const IORStack defaultIOR( 1.0 );
-		const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, defaultIOR );
-
-		if( p_bsdf > 0 )
-		{
-			const Scalar w_light = (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
-			contrib = contrib * w_light;
-		}
-		// else p_bsdf=0 → w_light=1.0 (no change needed)
-	}
-
-	return contrib;
-}
-
-RISEPel LuminaryManager::ComputeDirectLighting(
-			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			ISampler& sampler,												///< [in] Low-discrepancy sampler
-			const IRayCaster& caster,
-			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-			) const
-{
-	// This computes the lighting that comes directly from a luminary incident on the
-	RISEPel	pelRet;
-	RandomNumberGenerator rng;  // For ISampling2D::GenerateSamplePoints (interface not yet converted)
-
-	if( bRandomlySelect )
-	{
-		// Just randomly pick a luminaire for each sample!
-		if( pLumSampling )
-		{
-			ISampling2D::SamplesList2D samples;
-			pLumSampling->GenerateSamplePoints(rng,samples);
-
-			ISampling2D::SamplesList2D::const_iterator m, n;
-			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-				const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
-				pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, sampler, caster, true );
-			}
-		}
-		else
-		{
-			const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
-			const Point2	ptRand = sampler.Get2D();
-			pelRet = ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, sampler, caster, true );
-		}
-	}
-	else
-	{
-		LuminariesList::const_iterator	i, e;
-		for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
-		{
-			// Make sure a luminary isn't diffuse reflecting itself!
-			const LUM_ELEM& elem = *i;
-			if( elem.pLum != ri.pObject )
-			{
-				bool bShadowRays = true;
-
-				if( pShadowMap ) {
-					char shadow = 2;
-					pShadowMap->ShadowEstimate( shadow, ri.geometric.ptIntersection );
-
-					switch( shadow )
-					{
-					case 0:
-						// No chance for a shadow
-	//					pelRet = RISEPel(1,1,1);
-	//					continue;
-						bShadowRays = false;
-						break;
-					case 1:
-						// No chance for light
-						continue;
-					case 2:
-	//					pelRet = RISEPel(1,0.0,0.0);
-	//					continue;
-						// Have to do detailed shadow checks
-						bShadowRays = true;
-						break;
-					};
-				}
-
-				if( pLumSampling )
-				{
-					ISampling2D::SamplesList2D samples;
-					pLumSampling->GenerateSamplePoints(rng,samples);
-
-					ISampling2D::SamplesList2D::const_iterator m, n;
-					RISEPel pelThisLum;
-					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						pelThisLum = pelThisLum + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, sampler, caster, bShadowRays );
-					}
-					pelRet = pelRet + (pelThisLum * dOVcSamples);
-				}
-				else
-				{
-					const Point2 ptRand = sampler.Get2D();
-					pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, sampler, caster, bShadowRays );
-				}
-			}
-		}
-	}
-
-	return pelRet;
-}
-
-Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM(
-			const RayIntersectionGeometric& ri,
-			const IObject& pObject,
-			const Point2& ptLum,
-			const IBSDF& pBRDF,
-			const IMaterial* pMaterial,
-			const Scalar nm,
-			ISampler& sampler,
-			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-			const bool bShadowRays
-			) const
-{
-	const Point3	ptRand( ptLum.x, ptLum.y, sampler.Get1D() );
-	Point3	ptLocationOnLuminary;
-	Vector3 lumNormal;
-	Point2	lumCoord;
-	pObject.UniformRandomPoint( &ptLocationOnLuminary, &lumNormal, &lumCoord, ptRand );
-
-	RayIntersectionGeometric lumri = ri;
-	lumri.ptIntersection = ptLocationOnLuminary;
-	lumri.vNormal = lumNormal;
-	lumri.ptCoord = lumCoord;
-	lumri.onb.CreateFromW( lumNormal );
-
-	Vector3	vToLight = Vector3Ops::mkVector3( ptLocationOnLuminary, ri.ptIntersection );
-	const Scalar		fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
-	const Scalar		fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-
-	const Vector3		vFromLight = -vToLight;
-	const Scalar		fDotLight = Vector3Ops::Dot( vFromLight, lumNormal );
-
-	if( fDotLight < 0 ) {
-		return 0;
-	}
-
-	if( fDot < 0 ) {
-		return 0;
-	}
-
-	if( pObject.DoesReceiveShadows() && bShadowRays ) {
-		const Ray		rayToLight( ri.ptIntersection, vToLight );
-		if( caster.CastShadowRay( rayToLight, fDistFromLight-0.001 ) ) {
-			return 0;
-		}
-	}
-
-	const Scalar	area = pObject.GetArea();
-	const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-	Scalar contrib = pObject.GetMaterial()->GetEmitter()->emittedRadianceNM( lumri, vFromLight, lumNormal, nm ) * fDot * fDotLight * attenuation_size_factor * pBRDF.valueNM(vToLight,ri,nm);
-
-	// MIS weight (power heuristic)
-	if( pMaterial && area > 0 && fDotLight > 0 )
-	{
-		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
-		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
-
-		if( p_bsdf > 0 )
-		{
-			const Scalar w_light = (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
-			contrib = contrib * w_light;
-		}
-	}
-
-	return contrib;
-}
-
-Scalar LuminaryManager::ComputeDirectLightingNM(
-			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			const Scalar nm,												///< [in] Wavelength
-			ISampler& sampler,												///< [in] Low-discrepancy sampler
-			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-			) const
-{
-	// This computes the lighting that comes directly from a luminary incident on the
-	Scalar	ret = 0;
-	RandomNumberGenerator rng;  // For ISampling2D::GenerateSamplePoints (interface not yet converted)
-
-	if( bRandomlySelect )
-	{
-		// Just randomly pick a luminaire for each sample
-		if( pLumSampling )
-		{
-			ISampling2D::SamplesList2D samples;
-			pLumSampling->GenerateSamplePoints(rng,samples);
-
-			ISampling2D::SamplesList2D::const_iterator m, n;
-			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-				const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
-				ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, nm, sampler, caster, true );
-			}
-		} else {
-			const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
-			const Point2 ptRand = sampler.Get2D();
-			ret = ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, nm, sampler, caster, true );
-		}
-	}
-	else
-	{
-		LuminariesList::const_iterator	i, e;
-		for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
-		{
-			// Make sure a luminary isn't diffuse reflecting itself!
-			const LUM_ELEM& elem = *i;
-			if( elem.pLum != ri.pObject )
-			{
-				bool bShadowRays = true;
-
-				if( pShadowMap ) {
-					char shadow = 2;
-					pShadowMap->ShadowEstimate( shadow, ri.geometric.ptIntersection );
-
-					switch( shadow )
-					{
-					case 0:
-						// No chance for a shadow
-						bShadowRays = false;
-						break;
-					case 1:
-						// No chance for light
-						continue;
-					case 2:
-						// Have to do detailed shadow checks
-						bShadowRays = true;
-						break;
-					};
-				}
-
-				if( pLumSampling )
-				{
-					ISampling2D::SamplesList2D samples;
-					pLumSampling->GenerateSamplePoints(rng,samples);
-
-					ISampling2D::SamplesList2D::const_iterator m, n;
-					Scalar thisLum = 0;
-					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						thisLum = thisLum + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, nm, sampler, caster, bShadowRays );
-					}
-					ret = (thisLum*dOVcSamples);
-				} else {
-					const Point2 ptRand = sampler.Get2D();
-					ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, nm, sampler, caster, bShadowRays );
-				}
-			}
-		}
-	}
-
-	return ret;
-}
 
 void LuminaryManager::SetLuminaireSampling( ISampling2D* pLumSam )
 {
 	if( pLumSam )
 	{
-		// Free the old sampler if it exists
 		safe_release( pLumSampling );
-
 		pLumSampling = pLumSam;
 		pLumSampling->addref();
-
-		dOVcSamples = 1.0 / Scalar(pLumSampling->GetNumSamples());
 	}
 }
 

@@ -99,20 +99,54 @@ namespace RISE
 
 		/// Computes the Fresnel transmission factor (1 - F) at the
 		/// surface boundary for a given cosine of the incident angle.
+		///
+		/// DL-49: the boundary is an interface between the material and
+		/// the medium the ray arrived through, so the transmission is a
+		/// function of the RELATIVE index GetIOR(ri) / ri.ambientIOR
+		/// (see BSSRDFSampling::RelativeBoundaryIOR).  `cosTheta` is the
+		/// EXTERIOR-side cosine.  A record without a stamped exterior
+		/// index carries the default ambientIOR = 1.0 (air).
 		/// \param cosTheta Cosine of angle between direction and normal
-		/// \param ri Intersection data (for IOR texture lookup)
+		/// \param ri Intersection data (for IOR texture lookup and the
+		///           exterior index `ambientIOR`)
 		/// \return Fresnel transmission factor in [0, 1]
 		virtual Scalar FresnelTransmission(
 			const Scalar cosTheta,
 			const RayIntersectionGeometric& ri
 			) const = 0;
 
-		/// Returns the index of refraction at the given surface point.
+		/// DL-291: the profile's effective radius for the exterior the
+		/// record's ray arrived through (`ri.ambientIOR`).  A profile whose
+		/// shape depends on the exterior (the Donner-Jensen multipole, whose
+		/// boundary term is a function of the relative index) overrides this;
+		/// the default is the exterior-independent
+		/// ISubSurfaceExtinctionFunction::GetMaximumDistanceForError.  In air
+		/// every override must return exactly that value.
+		virtual Scalar GetMaximumDistanceForErrorAt(
+			const Scalar error,
+			const RayIntersectionGeometric& /*ri*/
+			) const
+		{
+			return GetMaximumDistanceForError( error );
+		}
+
+		/// Returns the material's own (ABSOLUTE) index of refraction at
+		/// the given surface point.  A boundary quantity needs the
+		/// RELATIVE index GetIOR(ri) / ri.ambientIOR instead (DL-49) --
+		/// the two coincide only in air.
 		/// \param ri Intersection data (for IOR texture lookup)
-		/// \return Index of refraction (eta_t / eta_i where eta_i = 1 for air)
+		/// \return Absolute index of refraction of the material
 		virtual Scalar GetIOR(
 			const RayIntersectionGeometric& ri
 			) const = 0;
+        /// DL-334: spectral boundary queries. Appended to preserve existing slots.
+        /// Constant-index profiles retain their existing boundary law by default;
+        /// dispersive profiles override BOTH queries at the requested wavelength.
+        virtual Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar /*nm*/) const
+        { return GetIOR(ri); }
+        virtual Scalar FresnelTransmissionNM(const Scalar cosTheta,
+            const RayIntersectionGeometric& ri, const Scalar /*nm*/) const
+        { return FresnelTransmission(cosTheta, ri); }
 	};
 }
 

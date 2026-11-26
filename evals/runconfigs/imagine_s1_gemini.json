@@ -1,0 +1,15 @@
+{
+ "//": "Arc-78 S1 staged-build-protocol evaluation (user 2026-08-11): same figure subject, gemini, with decompose->focus->compose enforced. HEADLINE fingerprint (78 SS4 item 3): SDF part-count / chunk-count per FIGURE element vs the thrice-measured baseline of 1 roundcone -- the focused wizard probe produced 11 parts, so does a per-element attention window move it? Also: elements+pieces declared, chunks attributed per element, cross-element refusals (is the protocol biting), compose-phase edits, give-up rate, turn cost vs arc-77.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s1_gemini"
+}

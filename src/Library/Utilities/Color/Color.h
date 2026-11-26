@@ -38,11 +38,23 @@ namespace RISE
 	struct xyYPel;
 	struct ROMMRGBPel;
 	struct ProPhotoRGBPel;
+	struct AP1RGBPel;
 
 	// Define a particular type as the basic color space that all
-	// processing is done in
-//	typedef Rec709RGBPel			RISEPel;
-	typedef ROMMRGBPel				RISEPel;
+	// processing is done in.
+	//
+	// Since 2026-05-24 (Stage B of colour-space migration):
+	// RISEPel = Rec709RGBPel — sRGB / BT.709 primaries, D65 whitepoint,
+	// linear-light values.  Industry-standard PBR working space.
+	//
+	// Pre-2026-05: RISEPel = ROMMRGBPel (D50 wide gamut, primaries
+	// outside the spectral locus → 22% JH LUT corner failures).
+	//
+	// To migrate to ACES AP1 (ACEScg) in future: bake the JH LUT with
+	// `--target acescg`, extend RGBToSpectrumTable's boundary-
+	// conversion typedef to AP1RGBPel, flip this typedef, and audit
+	// the Stage B sites listed in docs/COLOR_SPACE_MIGRATION.md.
+	typedef Rec709RGBPel			RISEPel;
 }
 
 // Include this first for the conversion functions which are used in the actual classes
@@ -55,6 +67,7 @@ namespace RISE
 #include "CIE_xyY.h"
 #include "ROMMRGB.h"
 #include "ProPhotoRGB.h"
+#include "AP1RGB.h"
 #include "SpectralPacket.h"
 #include "SpectralPacket_Template.h"
 

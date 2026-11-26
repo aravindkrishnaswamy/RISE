@@ -29,9 +29,15 @@ SCENE_BASE="${TMPDIR}/base.RISEscene"
 # Generate a minimal Cornell box scene template
 # -------------------------------------------------------------------
 cat > "${SCENE_BASE}" <<'SCENE'
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 
 > set accelerator B 10 8
+
+film
+{
+	width				128
+	height				128
+}
 
 pathtracing_shaderop
 {
@@ -45,12 +51,9 @@ standard_shader
 	shaderop	pt
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		6
 	samples				64
-	lum_samples			1
-	ior_stack			TRUE
 	pathguiding			true
 	pathguiding_iterations	3
 	pathguiding_spp			2
@@ -72,8 +75,6 @@ pinhole_camera
 	location			278 200 -200
 	lookat				278 200 0
 	up					0 1 0
-	width				128
-	height				128
 	fov					80.0
 }
 

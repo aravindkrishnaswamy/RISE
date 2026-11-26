@@ -1,0 +1,944 @@
+# Legacy deprecation assessment
+
+**Status: PHASE 1 & PHASE 2 EXECUTED (code removal ON HOLD per owner ruling #1).**
+*(Original assessment drafted 2026-10-09 on branch `legacy-assessment` from `master`
+`f849269ef`; Phase 1 freeze and Phase 2 slices A / B1 / B2 / C execution records are
+recorded in §11 and owner rulings in §13.)*
+
+Assessment baseline, 2026-10-09, on branch `legacy-assessment` from `master` `f849269ef`.
+Nothing in `src/`, `scenes/`, `tests/` or the build files was changed when originally drafted. This document
+lists every user-facing feature family, says which parts are legacy, and proposes how
+"deprecated and not supported" should work. The owner makes the final calls; the
+numbered list at the end is set up for item-by-item replies.
+
+**Owner's goal (verbatim):** "RISE today contains state of the art materials and
+rendering modes and also a bunch of legacy stuff. I want to mark the legacy stuff as
+legacy and deprecate and not support them so that we can focus on the state of the art."
+
+## How the numbers were counted
+
+Every count below comes from one of these commands, run in this worktree (clean, so the
+working tree equals the tracked files):
+
+- **Scene usage** (Tests / FB / other): the number of scene files with a chunk-header
+  line, `grep -rlE "^[[:space:]]*KEYWORD([[:space:]]|$)" scenes/<dir> --include='*.RISEscene' | wc -l`,
+  for `scenes/Tests`, `scenes/FeatureBased`, and "other" (`scenes/Benchmarks`,
+  `scenes/Templates`, `scenes/pr.RISEscene`). There are 466 tracked scene files.
+  `scenes/Tests/ChunkCoverage/cc_*` files exist only to cover a parser, so a count of
+  "1 (coverage)" means no real scene uses the chunk.
+- **tests/**: the number of files under `tests/` containing the keyword as a word
+  (`grep -rlw KEYWORD tests | wc -l`). When a row uses a family pattern instead of one
+  keyword, the pattern is named in that row.
+- **Other surfaces**: `git ls-files <surface> | xargs grep -lw KEYWORD | wc -l` over
+  `skills/agent`, `src/Library/Agent`+`SceneEditor*`, `evals/{scenarios,runconfigs,fixtures}`,
+  `src/Blender`, the Mac GUI (`build/XCode/rise`), the Windows GUI
+  (`build/VS2022/RISE-GUI`), Android (`android/app/src`), and `src/Library/Importers`.
+- **Ledger rows**: the "open rows" column lists rows in `docs/DEBT_LEDGER.md` that are
+  not struck through (`grep '^| DL-[0-9]'`, 26 rows today), read one by one.
+  "Historical footprint" counts struck and open rows whose text mentions the family's
+  class or chunk names (`grep -E '^\| (~~)?DL-[0-9]+' | grep -E '<pattern>'`). These
+  mention counts are approximate: a row that names a class in passing still counts.
+- **Code size**: `cat <files> | wc -l`, as a rough measure only.
+
+Class key: **SOTA** = state of the art, keep and support. **LEGACY** = a modern
+replacement exists. **LEGACY-NR** = legacy with no replacement, so removing it loses a
+capability. **INFRA** = infrastructure, not a rendering choice.
+
+Recommendation key: **keep** (SOTA); **deprecate-warn** (parses and renders as before,
+with a warning — the existing DL-323 mechanism); **freeze** (deprecate-warn, plus no
+further debt work: bugs are won't-fix); **remove** (after migrating the scenes);
+**keep-for-now** (needs an owner call, usually because there is no replacement).
+
+## 1. One-page summary
+
+| # | Item | Class | Replacement | Scene usage (Tests/FB/other) | tests/ files | Open ledger rows | Recommendation | Owner call? |
+|---|---|---|---|---|---|---|---|---|
+| R1 | `pixelpel_rasterizer` (shader-op pipeline, RGB) | LEGACY (partly NR) | `pathtracing_pel_rasterizer`; direct-only use needs a decision (D3) | 111/25/1 | 37 | DL-451, DL-465(1) | freeze, then migrate (removal on hold) | **yes** (D1-D3) |
+| R2 | `pixelintegratingspectral_rasterizer` | LEGACY | `pathtracing_spectral_rasterizer` | 20/0/0 | 11 | — | freeze (already "soft-deprecated" in docs) (removal on hold) | light |
+| R3 | Legacy chain ops: `distributiontracing_`, `finalgather_`, `directlighting_`, `arealight_` shaderops and the built-in Default{Reflection,Refraction,Emission,DirectLighting} ops | LEGACY | pure integrators | DT 5/4, FG 1/3, DL 1/2, AL 1/0; 82 scenes are direct-lighting-only chains | 25 (family) | DL-451 | freeze (removal on hold) together with R1 | via D1 |
+| R4 | `pathtracing_shaderop` (+ alias `mis_pathtracing_shaderop`) | INFRA today | — | 28/1 (alias 1 coverage) | 6 | — | keep until PT's SSS continuation stops shading through it; remove the alias | yes (D13) |
+| R5 | Photon maps + gathers (caustic/global/translucent/shadow, Pel/Spectral), `irradiance_cache`, `finalgather_shaderop` | LEGACY | VCM (caustics), PT/BDPT + OIDN (GI) | 26 scenes in total (7 FB showcases) | 29 | none open | freeze → migrate (removal on hold) | **yes** (D4) |
+| R6 | Point-cloud SSS shader ops: `simple_sss_`, `diffusion_approximation_sss_`, `donner_jensen_skin_sss_shaderop` | LEGACY | `subsurfacescattering_material` / `randomwalk_sss_material` under PT | 9 scenes in total (simple 6/3, DA 1/1, DJ 0/0) | 4 | — | freeze (removal on hold) | light |
+| R7 | `ambientocclusion_shaderop` | LEGACY-NR | none as a render mode (draft preview AO; the `occlusion` painter signal) | 2/2 | 2 | — | keep-for-now or freeze | **yes** (D6) |
+| R8 | `alpha_test_shaderop`, `transparency_shaderop` | LEGACY | material `alpha_coverage` (DL-214), honoured by every integrator | 1 (coverage) + 1/0 | 4 | — | **frozen** in Phase 1 (they run only under the frozen pixel rasterizers; removal on hold) | light |
+| R9 | `sms_shaderop` | LEGACY | `pathtracing_*_rasterizer` `sms_*` parameters | 1 (coverage) | 0 | DL-451 (closed won't-fix) | **deprecated** (warn) in Phase 1, per §12 #18 (removal on hold) | no |
+| R10 | `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` (medical volume rendering) | LEGACY-NR | none | 0/1 (`visiblehuman`) | 2 / 1 | — | keep-for-now (freeze) | **yes** (D7) |
+| R11 | `ambient_light` | LEGACY | uniform environment `radiance_map` | 52/2/0 | 10 | none (historical DL-207) | deprecate-warn → migrate (removal on hold) | **yes** (D5, look change) |
+| R12 | `mlt_rasterizer`, `mlt_spectral_rasterizer` | LEGACY (declared so in `UNIFIED_INTEGRATOR_DECISION.md`, not in code) | BDPT / VCM / auto | 15 scenes in total (6/6 + 3/0) | 30 | DL-465, DL-475, DL-481..483 (shared with BDPT) | freeze (removal on hold) | **yes** (D8) |
+| R13 | 7 already-deprecated materials (Cook-Torrance, Phong, Ashikhmin-Shirley, Schlick, Ward ×2, Polished) | LEGACY | `ggx_material` / `coated_material` (§11.5 table) | 35 scenes in total | 53 (family) | DL-481 (shared), DL-339(a) (polished) | move from deprecate-warn to freeze → migrate (removal on hold) | **yes** (D9) |
+| R14 | `iridescent_painter` (view-angle colour lookalike) | LEGACY | `ggx_material` thin-film mode | 4/6/3 | 3 | — | deprecate-warn | yes (look change) |
+| R15 | `composite_material` | SOTA-capable, high debt | `coated_material` covers most layered looks | 1/0/0 | 15 | DL-221, DL-407, DL-472 | keep or freeze | **yes** (D10) |
+| R16 | `translucent_material` | LEGACY-NR (no thin-sheet replacement) | none | 8/4 | 16 | DL-472 (via composite), DL-481 (shared) | keep | yes (D11) |
+| R17 | `phong_luminaire_material` | LEGACY-NR | none (cos^N emission profile) | 1 (coverage) | 7 | — | freeze | light |
+| R18 | `biospec_skin_material`, `generic_human_tissue_material` | specialised research models | none | 2/0, 1 (coverage) | 8 / 5 | none open (historical DL-126, DL-183) | keep-for-now | **yes** (D12) |
+| R19 | `datadriven_material` (MERL) | SOTA-adjacent (measured) | — | 1 (coverage) | 11 | — | keep | no |
+| R20 | `subsurfacescattering_material` (diffusion profile), `donner_jensen_skin_bssrdf_material` | SOTA-adjacent | `randomwalk_sss_material` is the other model, not a superset | 8/1; 0/0 | 25; 2 | DL-408(1), DL-482 | keep both | light |
+| R21 | `rawmesh_geometry` (only producer of the non-indexed `TriangleMeshGeometry`) | INFRA, legacy class | same file format loaded into `TriangleMeshGeometryIndexed` | 37/0/1 | 0 | DL-382(1) | keep the chunk, retire the class | yes (D14) |
+| R22 | `3dsmesh_geometry` | LEGACY | `plymesh_geometry`, `gltf_import` | 1 (coverage) | 0 | — | deprecate-warn (removal on hold) | no |
+| R23 | `bezierpatch_geometry` | SOTA-adjacent (classic teapot) | — | 7/6 | 3 | DL-382(1) | keep | no |
+| R24 | `onb_pinhole_camera` | LEGACY (alternative parametrisation) | `pinhole_camera` | 1 (coverage) | 2 | — | deprecate-warn (removal on hold) | no |
+| R25 | `standard_shader` / `advanced_shader` / `defaultshader` | INFRA | — | 357/66/6 and 10/1 | 145 / 9 | — | keep; becomes vestigial in Phase 3 | via D13 |
+| R26 | Legacy front-ends and build files: `src/3DSMax`, `src/PRISE`, `src/DRISE`, `build/VS2005`, `Config.SGI*`/`Config.Solaris` | INFRA, legacy | — | n/a | n/a | — | freeze in place (removal on hold, owner ruling 2026-10-09); DRISE/PRISE frozen too | **yes** (D15) |
+| R27 | Lights: `omni_light`, `spot_light`, `directional_light` | SOTA (standard delta lights) | — | 65/14/3, 6/10/2, 80/20/3 | 75/16/31 | DL-465(3) | keep | no |
+| R28 | Pure integrators: PT, BDPT, VCM, auto (Pel + Spectral/HWSS), `rect_light`, `shape_light`, `hosek_wilkie_skylight`, media, modern materials, painters | SOTA | — | — | — | the rest of the open rows | keep | no |
+
+"in total" counts are the union of the chunks in that row. Five families together —
+R1/R2 (legacy rasterizers), R5 (photon), R13 (deprecated materials), R11 (ambient), and
+R6 (point-cloud SSS) — appear in **198 of the 466 tracked scenes** (163 Tests,
+34 FeatureBased, 1 `pr.RISEscene`). **154** scenes declare **only** a legacy rasterizer
+and no pure-integrator rasterizer.
+
+## 2. Rasterizers and the shader-op pipeline
+
+### 2.1 What the legacy pipeline is
+
+`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` drive a `RayCaster` that
+runs the hit object's shader (`standard_shader` / `advanced_shader`), which is a chain of
+`IShaderOp`s ([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §1.1). The pure
+integrators (PT/BDPT/VCM/MLT) never call `SelectShader` or `Shade` in their own loops.
+The only `pShader`/`SelectShader` users in `src/Library/Rendering` are `RayCaster.cpp`
+and the interactive viewport's private shaders.
+
+**Coupling that matters for removal (verified by reading the code):**
+
+1. **The PT rasterizers are subclasses of the legacy classes.**
+   `PathTracingPelRasterizer : PixelBasedPelRasterizer`,
+   `PathTracingSpectralRasterizer : PixelBasedSpectralIntegratingRasterizer`, and
+   `InteractivePelRasterizer : PixelBasedPelRasterizer`. Removing the legacy pipeline
+   therefore means removing **chunks and the shader-dispatch branch**, not the
+   `PixelBased*` classes. Those classes stay as PT's base (about 5.5k lines).
+2. **PT still shades through the shader chain in one place.** `Job::SetPathTracingPelRasterizer`
+   builds its `RayCaster` around the scene's `defaultshader`. PT's BSSRDF and random-walk
+   continuations call `caster.CastRay` (`PTCastRay`, `PathTracingIntegrator.cpp` ~1453),
+   and `CastRay` shades the exit hit through `SelectShader`, then
+   `PathTracingShaderOp` → `IntegrateFromHit`. This is why almost every modern scene
+   still declares `standard_shader { name global; shaderop DefaultPathTracing }`
+   (357 Tests / 66 FB declare `standard_shader`). `pathtracing_shaderop` and the
+   shader-dispatch path are load-bearing **infrastructure** until that continuation is
+   moved to call the integrator directly (D13).
+3. Legacy photon maps reach into modern code: DL-05's delta pass-through shadow rays
+   are suppressed "while a radiance photon map exists", and `IScene` carries
+   `IIrradianceCache`. The VCM light-vertex store and `SMSPhotonMap` are **separate
+   clones** of the kd-tree (`VCMLightVertexStore.cpp` header, `SMSPhoton.h`), so removing
+   `src/Library/PhotonMapping/` does not affect VCM or SMS.
+
+### 2.2 How shipped legacy-rasterizer scenes are used
+
+The shader-op sets of the 157 scenes that declare a legacy rasterizer (op chunk types
+plus `Default*` op names in each file):
+
+| Chain | Scenes | What it is | Migration target |
+|---|---|---|---|
+| `DefaultDirectLighting` only | 82 | direct lighting, no GI (mostly `Tests/Geometry`, `Painters`, `Cameras`) | **No exact replacement** (D3): PT with `max_diffuse_bounce 0` adds specular paths and MIS; or keep a direct-only mode |
+| `pathtracing_shaderop` (alone or with others) | 24 + 5 | legacy PT | `pathtracing_*_rasterizer` (set `oidn_denoise FALSE` to keep the look: the PT default is `true`, `RasterizerDefaults.h:108`) |
+| Default{Reflection,Refraction}+DL (± Emission) | 11 | Whitted ray tracing | PT (look change: adds GI) |
+| photon-map / final-gather / irradiance-cache chains | 15 | see §3 | VCM or PT |
+| point-cloud SSS chains | 9 | see §4.4 | PT + SSS material |
+| `distributiontracing_shaderop` chains | 9 | distribution ray tracing | PT |
+| AO / area-light / transparency chains | 5 | see R7/R8 | case by case |
+
+### 2.3 Items
+
+**R1 `pixelpel_rasterizer`.** *Usage:* 111 Tests (33 in `Tests/Geometry`), 25 FB, 1 other;
+37 test files; 3 of the 8 Android-bundled scenes (`Tests/Geometry/shapes`,
+`FeatureBased/Parser/kaleidoscope_atrium`, `FeatureBased/Combined/tidepools`); the
+CLAUDE.md/README quickstart sample render (`scenes/Tests/Geometry/shapes.RISEscene`); the
+Blender add-on enum item `0 "Pixel Rasterizer — Legacy shader-op stack, no PT — fastest
+preview"` (`properties.py`; the default is Auto). The agent leaves it ungated "because it
+is REQUIRED for alpha-mask scenes" (`AgentSession.cpp` ~2086,
+`skills/agent/scene-skeleton-and-conventions.md` ~180). **That reason has been stale
+since DL-214**: material alpha coverage now works in every integrator, and both importers
+now call `SetMaterialAlpha`. *Debt:* open DL-451 (HWSS shader-op path lacks extended SMS)
+and DL-465(1) (motion blur single-threaded "for PT, BDPT, MLT and the legacy
+rasterizers"). Historically, 37 ledger rows mention the pipeline (DL-171/209 legacy-chain
+MIS, DL-26, DL-315, DL-185, ...). Its own docs already say "never use a legacy `pixelpel_*`
+render as a measurement reference" (RENDERING_INTEGRATORS §7). *Removal breaks:* direct-only
+preview renders, custom op-chain composition, the Blender "Pixel Rasterizer" option, the
+quickstart sample, and Android's catalogue. *Migration:* automatic for the PT-chain and
+Whitted scenes (with a look change from GI and OIDN); direct-only scenes depend on D3.
+*Recommendation:* **freeze** in Phase 1, migrate in Phase 2; removing the chunk (Phase 3) is ON HOLD by owner ruling (2026-10-09).
+Keep the `PixelBased*` classes.
+
+**R2 `pixelintegratingspectral_rasterizer`.** Already marked "Soft-deprecated ... no removal
+date" in RENDERING_INTEGRATORS.md §3 and §4 (no guiding, adaptive sampling, optimal MIS
+or inline AOV). 20 Tests scenes (15 in `Tests/Spectral`), 0 FB, 11 test files.
+`Job.cpp` ~9765 also builds `PixelBasedSpectralIntegratingRasterizerRGB` through it.
+*Recommendation:* **freeze (removal on hold)**, moving the 20 scenes to `pathtracing_spectral_rasterizer`.
+
+**R3 legacy chain ops.** `distributiontracing_shaderop` (5/4: `kaleidoscope_atrium`, `pillow`,
+`spotlight_drama`, `showroom`, `blurry_glass`, ...), `finalgather_shaderop` (§3),
+`directlighting_shaderop` (1/2), `arealight_shaderop` (1/0, `Tests/Shaders/arealight_shaderop`;
+replaced by `rect_light` or luminaire NEE), and the always-registered
+`DefaultReflection/Refraction/Emission/DirectLighting` ops (`Job.cpp` 679-689). These have
+no meaning outside R1/R2, so they share R1's fate. About 5.1k lines including the photon
+shader ops. Note the dead helper: `RISE::Utilities::WireAlphaAdvancedShader`
+(`AdvancedShaderWiring.h`) has no remaining caller, since both importers moved to
+`SetMaterialAlpha`.
+
+**R4 `pathtracing_shaderop`.** INFRA until D13 is done (see §2.1 item 2). Remove the
+`mis_pathtracing_shaderop` alias (registered as "Legacy alias", 1 Tests scene) with a
+one-line migrator.
+
+**R25 shaders.** `standard_shader`/`advanced_shader` stay. After Phase 3 plus D13,
+`defaultshader` on the pure rasterizers could become optional, so modern scenes stop
+carrying the vestigial `global` shader.
+
+## 3. Photon mapping, final gather, irradiance cache (R5)
+
+*Chunks:* `caustic_pel_photonmap` (7/4), `caustic_spectral_photonmap` (1/0),
+`global_pel_photonmap` (1/5), `global_spectral_photonmap`, `translucent_pel_photonmap`,
+`shadow_photonmap` (each 1, coverage only), their six `*_gather` chunks, `irradiance_cache`
+(3/5), `finalgather_shaderop` (1/3). 26 scenes in total. The FB showcases that would change
+look: `Caustics/pool_caustics`, `Animation/caustic_animation`, `Parser/photon_cloister`,
+`Combined/crystal_lens`, `Combined/gi_spheres`, `GlobalIllumination/irradiance_cache_torture`,
+`Shaders/SSS/sss_gi_dragon`; `showroom` and `tidepools` use `irradiance_cache` (with AO).
+29 test files use them. IJob: 26 virtuals in `tests/IJobVtableManifest.txt` match
+`PhotonMap|IrradianceCache|Gather`. Code: `src/Library/PhotonMapping/` about 5.5k lines.
+
+*SOTA replacement:* VCM merges photons under one MIS umbrella and is "the only integrator
+reaching SDS / dielectric-caustic transport" (RENDERING_INTEGRATORS §2). PT+SMS covers
+point-light caustics. For GI, PT/BDPT with OIDN replace final gather and the irradiance
+cache. *Debt:* no open rows; historical footprint is 22 rows (DL-39 translucent tracer,
+DL-239 gather, DL-292 graded-index photons, DL-298/431 emitter records, DL-315, DL-320, ...).
+Every recent transport fix has had to touch the photon tracers as a sibling. *Capability
+loss:* biased fast GI previews and a saved photon map (`Save/Load*PhotonMap` in `Job.cpp`).
+Neither is needed for state-of-the-art output.
+
+*Recommendation:* **freeze now**; in Phase 2 convert caustic scenes to `vcm_pel_rasterizer`
+and GI scenes to PT (each FB showcase reviewed by eye); removal (Phase 3) is ON HOLD by owner ruling (2026-10-09). This is the
+largest single cut in maintenance (about 11k lines with R3) and is cleanly separable from
+VCM and SMS.
+
+## 4. Materials
+
+### 4.1 Already deprecated (R13)
+
+DL-323 follow-through (2026-10-02, [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §11.5):
+`cooktorrance_material`, `isotropic_phong_material`,
+`ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`,
+`ward_anisotropic_material` and `polished_material` warn once per type per load and
+render bit-identically (`DeprecatedMaterialRenderIdentityTest`). Scene usage
+(Tests/FB/other): Cook-Torrance 8/3/0, Phong 7/2/0, Ashikhmin 2/2/1, Schlick 3/1/0,
+Ward-iso 3/2/0, Ward-aniso 4/2/0, Polished 4/13/0; 35 scenes in total, matching §11.5.
+53 test files use the family. Agent eval scenarios/fixtures name them (4-5 files each;
+these are hand-written and stay). Their eight IJob virtuals remain; the 3DSMax plugin calls
+them. Code: about 12k lines.
+
+*Debt:* this family generated the most correctness debt of any in the tree. Rows naming
+the classes: Schlick 17, Cook-Torrance 16, Polished 16, Ward 13, Phong/Ashikhmin 13
+(DL-67, 69, 98-103, 125, 127, 170, 176-178, 212, 216, 225, 285, 310, ...). Open: DL-481
+lists them among the endpoint types (shared with GGX and others), and DL-339(a) names
+`polished` (shared with dielectric and random-walk SSS).
+
+*Recommendation:* promote from deprecate-warn to **freeze** (no further fixes, and their
+names stripped from shared rows). Migrate the 35 scenes with the §11.5 table in Phase 2.
+Look changes are expected because "No translation is exact". **Remove** in Phase 3.
+Note that 17 of the 35 are Polished in FB showcases (139 chunks), so this is the biggest
+look change in the programme (D9).
+
+### 4.2 Other legacy or questionable materials
+
+**R14 `iridescent_painter`** (a painter, listed here because it fakes a material effect).
+Its own descriptor says "A cheap look-alike only -- the physical thin-film model is
+ggx_m[aterial]". Used in 4/6/3 scenes (`showroom`, `tidepools`, `teapot`, `aphrodite`,
+`f16`, three dreamscape benchmarks). *Recommendation:* deprecate-warn; migration changes
+the look.
+
+**R15 `composite_material`.** Rebuilt under DL-24/DL-341/DL-297 into a conserving layered
+evaluator, but it is still expensive in debt: three of the 26 open rows (DL-221 HWSS
+companion pricing "ruled UNCLOSABLE", DL-407 stack/seeding, DL-472 walker-only transport)
+and 22 historical rows. Usage: 1 Tests scene (`Materials/composite_material`), 15 test
+files. The glTF importer's sheen-composite path is `#if 0` (dead,
+`GLTFSceneImporter.cpp` 1763-1829). `coated_material` covers coat-over-base, which is the
+common layered look. Composite's unique ability is stacking two **arbitrary** materials.
+*Recommendation:* owner call (D10). Freezing it closes three open rows.
+
+**R16 `translucent_material`.** §11.5 already ruled "NOT deprecated (no real replacement)":
+it is the only two-sided thin-sheet diffuse transmitter (leaf, paper, lampshade). It was
+rebuilt as one consistent sampler/density/evaluator (DL-157/DL-41). 8/4 scenes, 16 test
+files, 27 historical rows. *Recommendation:* **keep** (D11 confirms).
+
+**R17 `phong_luminaire_material`.** A cos^N emission profile with no replacement. Used in
+1 coverage scene only; 7 test files. *Recommendation:* **freeze** (LEGACY-NR, so it
+cannot be removed without losing the feature).
+
+**R18 `biospec_skin_material`, `generic_human_tissue_material`.** These are the owner's
+own published research models (BioSpec: Krishnaswamy & Baranoski). They are spectral,
+SPF-only (`GetBSDF()` is null), and needed special handling in BDPT/VCM/MLT (DL-126,
+DL-183). Usage: 2 Tests (`spectral_skin_fast`, `spectral_skinmodel`, both on
+`pixelintegratingspectral`) and 1 coverage scene; 8 and 5 test files. *Recommendation:*
+**keep-for-now** (D12). Their two scenes must move off R2 in any case.
+
+**R19 `datadriven_material`** (MERL measured data). DL-325 gave it an SPF. Only a coverage
+scene uses it. *Recommendation:* keep; measured BRDFs are legitimate.
+
+**R20 SSS material models.** `subsurfacescattering_material` (diffusion profile, 8/1,
+25 test files), `randomwalk_sss_material` (4/0, 22 test files),
+`donner_jensen_skin_bssrdf_material` (0/0, 2 test files). Diffusion and random walk are
+both current industry models (Cycles and Arnold ship both). Diffusion carries the open
+DL-408(1); both carry DL-482. *Recommendation:* keep both. The Blender bridge exports
+only random walk.
+
+**Keep (SOTA):** `ggx_material`, `pbr_metallic_roughness_material`, `coated_material`,
+`fabric_material`, `weave_material`, `sheen_material`, `hair_material`,
+`lambertian_material`, `orennayar_material`, `dielectric_material`,
+`perfectreflector_material`, `perfectrefractor_material`, `lambertian_luminaire_material`.
+
+## 5. Lights
+
+**R11 `ambient_light`.** It adds `color*power` at every shading point, with no position,
+no direction and no shadow ray ([lighting-recipes.md](../skills/agent/lighting-recipes.md)
+~88). The agent already **refuses** to insert it on every path. Usage: 52 Tests / 2 FB
+(`cloud_showcase`, `Materials/sheer_curtain`); 32 of the 54 also use `pixelpel`. 10 test
+files; 7 agent-source files (refusal logic); eval scenarios 2. The Blender bridge emits
+one when `use_world_ambient` is on (`properties.py`, default `False`;
+`rise_blender_bridge.cpp` ~3215). IJob `AddAmbientLight`. *Replacement:* a uniform
+environment via the rasterizer's `radiance_map` (60 scenes already use `radiance_map`).
+*Look change:* large. The environment is occluded and ambient is not, so migrated scenes
+get darker in creases. This is intended, but it is a look change (D5). Debt: no open rows;
+DL-207 historically. DL-465(3) notes that ambient is not in the light-selection tables.
+*Recommendation:* **deprecate-warn** in Phase 1, migrate with the look reviewed, (removal on hold:)
+in Phase 3. Retire or replace the Blender toggle with a uniform-world radiance map.
+
+**R27 `omni_light`, `spot_light`, `directional_light`.** These are the standard delta
+lights in PBRT, Mitsuba and Cycles. Known gap: VCM cannot sample directional lights (a
+VCM gap, not a light defect). glTF `KHR_lights_punctual` needs them. Keep.
+
+**SOTA:** `rect_light`, `shape_light`, `hosek_wilkie_skylight`, and luminaire materials.
+
+## 6. Integrators
+
+**R12 MLT.** `UNIFIED_INTEGRATOR_DECISION.md` already states "**MLT is deprecated**
+(inherits BDPT, adds maintenance surface for no measured win on the corpus)" and "Retire
+as covered: MLT now". The code still treats it as a first-class choice: no deprecation
+flag; the Blender enum offers `MLT (Pel)`/`MLT (Spectral)`; it is mentioned in one Mac GUI
+file. It has no OIDN, guiding, adaptive sampling or SMS (feature matrix §4). Usage:
+`mlt_rasterizer` 6/6 (5 `FeatureBased/MLT` showcases plus `bdpt_torus_chain_atrium`),
+`mlt_spectral_rasterizer` 3/0; 30 test files; about 3.5k lines plus `PSSMLTSampler.h`.
+*Debt:* open rows DL-465, DL-475, DL-481, DL-482 and DL-483 all say "BDPT/MLT" or
+"BDPT/VCM/MLT". MLT shares BDPT's generator, so most of that cost is BDPT's, and freezing
+MLT removes only the MLT-specific verification burden (DL-08, DL-461 history).
+*Recommendation:* **freeze (removal on hold)** (D8). The FB/MLT showcases move to BDPT or VCM.
+
+**SOTA:** `pathtracing_{pel,spectral}`, `bdpt_{pel,spectral}`, `vcm_{pel,spectral}`,
+`auto_{,spectral_}rasterizer` (the default in Blender), HWSS spectral, extended SMS
+(opt-in), OIDN, guiding.
+
+## 7. SSS shader ops (R6), alpha ops (R8), AO (R7), volume rendering (R10)
+
+**R6 point-cloud SSS** (`Shaders/SSS/`, about 2.7k lines including `PointSetOctree`):
+`simple_sss_shaderop` (6/3: `translucent_bunny`, `sss_gi_dragon`, `spotlight_drama`,
+`Tests/SubsurfaceScattering/sss*`), `diffusion_approximation_sss_shaderop` (1/1),
+`donner_jensen_skin_sss_shaderop` (0/0). These run only under R1. They are replaced by the
+SSS materials under PT, which received the DL-49/DL-291/DL-306/DL-334 corrections; the
+octree path received only DL-291's stack forwarding. *Recommendation:* freeze (removal on hold).
+The look of `translucent_bunny` and `spotlight_drama` changes.
+
+**R8 alpha ops.** `alpha_test_shaderop` (coverage only) and `transparency_shaderop` (1 Tests
+scene) are replaced by `alpha_coverage`/`alpha_mode`/`alpha_cutoff` (DL-214), which works
+in every integrator. Deprecate-warn (removal on hold).
+
+**R7 `ambientocclusion_shaderop`** (2/2: `showroom`, `tidepools`, `ambocc_ibl`, `sss_ibl`).
+No modern render mode produces AO. The draft-quality preview has its own AO
+(`InteractivePelRasterizer.cpp` `CombinedAmbientOcclusion`), and painters can read the
+`occlusion` signal. Removing it loses a stylised/utility pass (D6).
+
+**R10 direct volume rendering.** `directvolumerendering_shader` (FB `Shaders/visiblehuman`
+plus the top-level `volume/` data), `spectraldirectvolumerendering_shader` (0 scenes).
+This is a medical-visualisation transfer-function renderer with no physically based
+equivalent. `Volume/` is about 2k lines. *Recommendation:* keep-for-now and frozen (D7).
+
+## 8. Geometry, cameras, painters, scene format
+
+- **R21 `rawmesh_geometry`** (37 Tests: `Samplers` 9, `Spectral` 10, `UnifiedLighting` 5,
+  ...; 1 `pr.RISEscene`) is the **only** producer of the legacy non-indexed
+  `TriangleMeshGeometry` (`Job::AddRAWTriangleMeshGeometry` calls
+  `RISE_API_CreateTriangleMeshGeometry`; every other loader builds
+  `TriangleMeshGeometryIndexed`). That class has no watertightness certification
+  (DL-96 residual, DL-382(1)). *Recommendation:* keep the chunk and file format, but load
+  into the indexed class and retire the non-indexed class (D14). The look should be
+  unchanged except where certification now applies; this needs a render A/B.
+- **R22 `3dsmesh_geometry`**: coverage scene only → deprecate-warn (removal on hold).
+- `rawmesh2_geometry` (8), `risemesh_geometry` (12/5), `plymesh_geometry` (7/1),
+  `gltf_import`/`gltfmesh_geometry`, `bezierpatch_geometry` (R23, 7/6; carries DL-382(1)
+  and DL-20 history), analytic primitives, SDF, sweep/skeleton/lathe, hair: keep.
+- **R24 `onb_pinhole_camera`**: coverage scene only; same capability as `pinhole_camera` →
+  deprecate-warn (removal on hold). Other cameras: keep.
+- **Painters:** apart from R14, nothing is legacy. `spectral_painter` is legitimate as a
+  colour painter; its old misuse in scalar slots was already migrated
+  (`tools/migrate_scenes_iscalarpainter.py`). `mandelbrot_painter`/`lines_painter` are toy
+  procedurals (2/1, 2/2), and dropping them is optional. Parameter-level deprecation already
+  exists in prose for `ggx_material.tangent_rotation` (DL-16) but has no descriptor flag.
+- **Scene format:** every tracked scene is `RISE ASCII SCENE 7` (467 files with the header;
+  0 at v6). Migrators `tools/migrate_scenes_*.py` (v5→v7, colour space, IScalarPainter,
+  light colorspace, relief) are cheap; keep them as INFRA.
+
+## 9. Front-ends, bridges and build (R26)
+
+- **Blender** (`src/Blender`): exposes Pixel Rasterizer (R1), MLT ×2 (R12), and
+  `use_world_ambient` (R11). Materials: only SOTA kinds. Uses `SetMaterialAlpha`.
+- **glTF importer:** only SOTA kinds; `composite_material` code is `#if 0`;
+  `directional_light` for punctual lights.
+- **Mac / Windows GUIs:** no hard-coded legacy rasterizer pickers. Node palettes already
+  sort and badge any `deprecated` chunk type generically (DL-401:
+  `SceneEditController.cpp` ~15980, `NodeGraphPalette.swift`, `NodeGraphCanvas.cpp` ~794),
+  so new deprecations show up in the GUIs with no GUI code.
+- **Android:** bundles 8 scenes; 3 use `pixelpel` and 3 use deprecated materials
+  (`pt_jewel_vault`, `kaleidoscope_atrium`, `tidepools`). Phase 2 must migrate them or
+  swap them out.
+- **Agent:** refuses `ambient_light`; gates MLT/BDPT/VCM/auto; leaves pixel rasterizers
+  ungated on a stale premise (§2.3 R1). Skills already steer to modern materials.
+- **Legacy front-ends:** `src/3DSMax` (34 files, "not built here" per §11.5, calls the
+  legacy IJob entry points), `src/PRISE` (19 files, only referenced by the `deps` rule),
+  `src/DRISE` (29 files, still built by `build/make/rise/Makefile` as
+  `drise_server`/`drise_client`; it gained `MCPClientConnection` in July 2026, so someone
+  uses it), `build/VS2005` (27 files, last touched 2026-07-01), and
+  `build/make/rise/Config.SGI`, `Config.SGI.MIPSPro`, `Config.Solaris`.
+
+## 10. Policy: what "deprecated and not supported" should mean
+
+### 10.1 Four tiers, one flag on the descriptor
+
+Replace the boolean `ChunkDescriptor::deprecated` with a tier (keeping `deprecated` as
+"tier >= Deprecated" so existing consumers keep working):
+
+| Tier | Parses / renders | Warning | Debt policy | Agent | GUI |
+|---|---|---|---|---|---|
+| **Supported** | yes | none | normal | normal | normal |
+| **Deprecated** | yes, bit-identical | one per type per load (existing DL-323 text) | fixes allowed but not sought | may edit, should not insert (skills steer) | sorted last, badged (DL-401) |
+| **Frozen** | yes, bit-identical | `` `X` is LEGACY and UNSUPPORTED (frozen <date>): it renders as before but receives no fixes. Use Y; migrate with tools/migrate_legacy.py. `` | won't-fix (see 10.2) | **refuse insert** (as `ambient_light` today); editing existing chunks still allowed | sorted last, badged "(legacy, unsupported)"; hidden behind "show legacy" in add-node menus |
+| **Removed** (ON HOLD, owner ruling 2026-10-09) | parse **error** naming the replacement and migrator (the v5-header pattern) | n/a | rows closed | n/a | gone |
+
+Bit-identity covers frozen code itself; a fix in supported code that a frozen render shares (RayCaster, LightSampler, `pathtracing_shaderop`) can still move it, and its pins are then re-pinned (owner ruling #17). Example: DL-633 re-weights emitter hits after a RayCaster volume scatter, which moves a legacy render through a participating medium (no shipped legacy scene has one).
+
+Also needed: a **parameter-level** flag (`ParameterDescriptor::deprecated`) for cases like
+`tangent_rotation` and, after D13, `defaultshader` on pure rasterizers. Non-chunk surfaces
+need their own marking: the Blender enum items (relabel "(legacy)"), `use_world_ambient`,
+and `RISE_API_*` / IJob entry points (log a warning, keep them in the vtable until a
+declared ABI break, because the vtable manifest is append-only).
+
+### 10.2 Ledger policy
+
+- Add a **"Frozen features"** section at the top of `DEBT_LEDGER.md` listing each frozen
+  family, its freeze date, and the commit.
+- An open row whose **only** subject is a frozen feature is closed as
+  **`WON'T-FIX (frozen: <family>)`**: struck, with the reason. Today that is DL-451
+  (if R1/R9 are frozen) and, for composite (if D10 = freeze), DL-221, DL-407 and DL-472.
+- **Shared rows** (DL-465, DL-481, DL-482, DL-483, DL-339, DL-408, DL-382) are
+  **narrowed**: the frozen part is struck in place, and the row stays open for the SOTA part.
+- New findings in frozen code go into a one-line "known issues" list under the frozen
+  family, never into new DL rows. **Exceptions** that are still fixed: crashes, hangs,
+  memory corruption, security, and data loss (D16 confirms the exception list).
+- Sibling audits (the `audit-by-bug-pattern` skill) stop at frozen code. That is where
+  most of the saving comes from: historically every MIS/IOR/emitter fix had to visit the
+  photon tracers, the legacy chain and the seven legacy SPFs as siblings.
+
+### 10.3 Test policy
+
+- For each frozen family keep **one** render-identity hash test (the
+  `DeprecatedMaterialRenderIdentityTest` pattern) plus parser coverage. Freeze the
+  correctness suites for frozen code as they are: they keep running, are never extended,
+  and if a SOTA change turns one red, the frozen-feature check is re-pinned rather than
+  the frozen code fixed (D17).
+- Tests that use a legacy feature **as a reference or harness** for SOTA code (for
+  example a `pixelpel` direct-only render inside a signal or BDPT test) must move off it
+  in Phase 2. There are 37 test files naming `pixelpel_rasterizer`; each needs triage into
+  "tests the legacy feature" versus "uses it as a harness".
+- The ChunkCoverage `cc_*` scenes for frozen chunks stay until removal.
+
+### 10.4 Docs
+
+- One index page (this document, made into `docs/LEGACY.md` when decided) with the tier
+  table. A banner line at the top of each frozen feature's design doc. CLAUDE.md
+  high-value facts that concern only frozen features get condensed to a pointer (several
+  long entries are photon-tracer or legacy-chain material). Fix the stale "pixelpel is
+  required for alpha-mask scenes" claim in `AgentSession.cpp`, `AgentChatCodecs.cpp`,
+  `AgentMcpAdapter.cpp` and `skills/agent/scene-skeleton-and-conventions.md`. Move the
+  quickstart sample render off `shapes.RISEscene`'s `pixelpel`, or migrate that scene.
+
+## 11. Phased plan and order of work
+
+**Phase 0 — decisions** (this document). The owner answers §12.
+
+**Phase 1 — mark and freeze (one slice; zero render change).**
+1. Add the tier and the parameter flag to the descriptor; update the warning text; add the
+   agent refusal for Frozen; add the GUI "show legacy" filter.
+2. Mark the chunks per §12's decisions (R1-R3, R5, R6, R8, R9, R11-R14, R17, R22, R24, and
+   R10/R7/R15 depending on the calls). Relabel the Blender enum items.
+3. Ledger sweep per 10.2. Docs per 10.4.
+4. Gate: one render-identity hash per newly marked family against the parent commit, plus
+   `CstDeriveGoldenTest` with no drift. Because nothing renders differently, this phase is
+   safe to land first.
+
+**Phase 1 as landed (2026-10-09):** the chunk-level FROZEN tier, the agent insert ban, the
+warning text, the schema flag and palette sorting / badging.  **Deferred items landed
+(2026-10-11):** the parameter-level `ParameterDescriptor::deprecated` flag (schema reports
+`"deprecated":true`, agent refuses insert/patch, applied to frozen per-object `radiance_map`)
+and the GUI "show legacy" toggle (Mac SwiftUI and Windows/Qt add-node palettes hide deprecated/frozen
+chunks unless toggled ON).
+
+**Phase 2 — migrate shipped content (several slices; look changes are reviewed).**
+Order by risk, lowest first:
+1. Pure renames with no look change: `mis_pathtracing_shaderop` alias, `onb_pinhole_camera`,
+   `3dsmesh` coverage, alpha ops → `alpha_coverage`.
+2. `pixelpel` + `pathtracing_shaderop` (29) and `pixelintegratingspectral` (20) →
+   `pathtracing_*_rasterizer` with `oidn_denoise FALSE`. Write
+   `tools/migrate_scenes_legacy_rasterizer.py`.
+3. The 82 direct-only scenes per D3.
+4. The 37 test-harness files (10.3).
+5. Look-changing families, each FB scene reviewed by the owner: R13 materials (35 scenes,
+   using the §11.5 table, as a tool), R11 ambient (54), R5 photon/FG (26 → VCM/PT),
+   R6 point-cloud SSS (9), R14 iridescent (13), R12 MLT (15).
+6. Android catalogue, quickstart sample, and Blender defaults last, once the replacement
+   scenes exist.  (Done in slice C, below.)
+
+**Phase 2 slice A as landed (2026-10-10, branch `legacy-phase2a`, steps 1-4):**
+- **Tool:** `tools/migrate_scenes_legacy_rasterizer.py --mode pt|direct|renames [--dry-run]`
+  (idempotent, per-scene report, refuses every family outside this slice by name, never
+  touches `scenes/Tests/Legacy/` or `scenes/Tests/ChunkCoverage/`, holds the Android /
+  quickstart scenes).  Two premises of the plan above were wrong and the tool follows the
+  code instead: the legacy pixel rasterizers **also default to OIDN on** (a default
+  `pixelpel_rasterizer` render logs "OIDN auto" and writes `_denoised`), so the tool
+  carries `oidn_denoise` as authored rather than writing `FALSE` (writing it would have
+  dropped the denoised output the scenes ship today); and their `samples` default is
+  **1** against PT's 32, so `samples` is written explicitly.
+- **Step 1 (renames): no shipped scene outside coverage.**  The alias,
+  `onb_pinhole_camera`, `3dsmesh_geometry` and `alpha_test_shaderop` appear only in their
+  own `cc_*` coverage scenes, which stay (ruling #17).  `--mode renames` is proven
+  look-neutral on synthetic scenes: the alias rename renders bit-identically, and
+  `onb_pinhole_camera` -> `pinhole_camera` renders bit-identically for `components`
+  UV / WU / WV / VU and to within sampling noise for UW (mean 0.348557 vs 0.348566; the
+  rebuilt basis differs in its last bits).  `components VW` is refused (the legacy
+  `CreateFromVW` builds a degenerate basis) and `3dsmesh_geometry` is refused (it needs
+  the mesh converted, not a rename).  The one real alpha-op scene,
+  `Tests/Shaders/transparency_shaderop`, is migrated in step 3 with its op turned into
+  material `alpha_coverage 0.5 / alpha_mode blend` (`one_sided` has no equivalent).
+- **Step 2: 25 scenes** (6 `pixelpel` + 19 `pixelintegratingspectral` with only
+  `pathtracing_shaderop` chains).  Refused: `Tests/Spectral/spectral_dispersive_caustic`
+  (photon map), `FB/Combined/glass_pavilion` and `FB/Parser/kaleidoscope_atrium` (mixed
+  Whitted + PT per-object chains), `Tests/Shaders/dt_with_irrcache` (irradiance cache).
+- **Step 3: 82 scenes** (80 direct-lighting-only + `FB/Combined/planetary_survey`
+  (DL + emission) + `transparency_shaderop`), `max_diffuse_bounce 0`, chains rewritten to
+  `DefaultPathTracing`.  The plan's "82" counted `Tests/Painters/painters`, whose
+  `pixelpel` chunk is commented out (it renders with BDPT); `Tests/Geometry/shapes` is
+  held for step 6.
+- **Step 4 (test harnesses):** moved to PT where the legacy rasterizer was only a harness:
+  `PTGuidingMISPartitionTest` (5 fixtures), `OptimalMISTrainingSitesTest` (4 of 5; the
+  5th is the DL-185 legacy-pixel-rasterizer NEE site, kept), `VCMStrategyBalanceTest`'s
+  PT reference, `ProximityInvalidationTest`, `AgentAddFuzzTest`, `AgentMakeFabricTest`,
+  `SceneEditorAnimationFramesTest`, and `tests/test_ris_regression.sh` (which had been
+  BROKEN on master: its `ior_stack` parameter is accepted by no rasterizer, so both renders
+  failed to load).  Kept, because they test a frozen feature, the shader-dispatch sites PT's
+  SSS continuation still uses (R4/D13), or a rasterizer matrix that includes the legacy
+  family: `RasterizerDefaultsConsistencyTest`, `AgentChunkCrudTest`,
+  `DeprecatedMaterialWarningTest`, `LegacyTierRenderIdentityTest`,
+  `LegacyChainMISPartnerTest`, `PhotonMapDeferralTest`, `FinalGatherSpectralTest`,
+  `CausticPhotonMapNormalizationTest`, `SSSBuildDeterminismTest`,
+  `SSSExteriorIndexInvarianceTest`, `SubsurfaceScatteringSpectralTest`,
+  `RayCasterVolumeAbsorptionTest`, `RayCasterEnvEscapeMISTest`,
+  `GradedIndexInteriorFactorTest` (row M), `RefractiveRadianceScalingTest`,
+  `CSGNullGeometryLuminaireCrashTest`, `BlenderBridgeAlphaTest`,
+  `SceneEditorSuggestionsTest`, `EnvironmentEditTest`, `OIDNAutoDeterminismTest`,
+  `PixelCenterConventionTest`, `ReliefBidirectionalConsistencyTest`,
+  `DoubleSidedEmitterTest`, `AgentFrameStoreIsolationTest`, `SMSLegacyModeTest`.
+  (`BDPTStrategyBalanceTest`, `FabricRenderTest`, `SignalIntegratorConsistencyTest` and
+  `PavilionColonnadeShowcaseTest` only mention it in comments.)
+- **Frozen-feature regression corpus:** `scenes/Tests/Legacy/` holds verbatim copies of
+  the five shipped scenes whose migration would have dropped a frozen chunk's only
+  regression render (`uniform_green_spectral`, `transparency_shaderop`, `gltf_box`,
+  `materials` for `LegacyTierRenderIdentityTest`, hashes unchanged; `fabric_presets` for
+  `OIDNAutoDeterminismTest`'s legacy OIDN policy family).
+- **CstDeriveGoldenTest** is blind to this migration: its `DumpJob` digest covers neither
+  the rasterizer, nor shader chains, nor material alpha, so all 107 migrated scenes keep
+  their digests (0 drift); the golden only gained the five `Legacy/` entries.
+- **Look review:** `docs/legacy_phase2a_review/index.html` (before/after for all 107).
+  Means are of the pre-denoise image composited over black (the legacy rasterizers store
+  surface RGB plus coverage alpha; comparing raw RGB showed spurious 10-33% drops).  The
+  nine FeatureBased showcases move -5.5% .. +5.7%; 102 of 107 scenes move under 10%.  The
+  five over 10% are all `--mode pt` and are explained: `Tests/Materials/spectral_skinmodel`
+  (+961%) and `spectral_skin_fast` (+571%) set `show_luminaires FALSE`, which the legacy
+  shader-dispatch path applied to EVERY ray, so the BSDF-less skin lost the emitter its
+  continuations hit (legacy with `show_luminaires TRUE` reads 1.1507 against PT's 1.1506 with
+  FALSE); `dielectrics_changing_ior` / `_scat` (exactly -50%) stack two path-tracing ops over
+  overlapping `advanced_shader` depth ranges, which the legacy chain summed (a double count;
+  the tool reports it); `gltf_import_damaged_helmet_spectral` (+97%) is firefly-dominated at
+  16 spp (salt sd 23%).  Known issue in frozen code (no fix, per 10.2): the legacy chain's
+  `show_luminaires FALSE` hides emitters from indirect rays.
+- **Left for slice B (step 5):** 46 scenes still on a legacy pixel rasterizer, all refused by the tool by name:
+  photon map / final gather / irradiance cache (19: FB `caustic_animation`, `pool_caustics`,
+  `crystal_lens`, `gi_spheres`, `showroom`, `irradiance_cache_torture`, `photon_cloister`,
+  `sss_gi_dragon`; Tests `motion_blurred_caustic`, `diacaustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `cornellbox_fg`, `sdf_caustic`, `sms_slab_close_photonmap`, `ambocc_ibl`,
+  `dt_with_irrcache`, `spectral_dispersive_caustic`, `caustic_sss`); point-cloud SSS ops (7:
+  FB `translucent_bunny`, `spotlight_drama`; Tests `SubsurfaceScattering/sss`,
+  `sss_colorvariation`, `sss_different_bsdf`, `sss_ibl`, `sss_multiple_lights`); Whitted
+  `DefaultReflection` / `DefaultRefraction` chains (13: FB `glass_pavilion`, `teapot`; Tests
+  `Cameras/fisheye`, `Geometry/teapot_analytic`, `Materials/iorstack`, `texture_dispersion`,
+  the five `PixelFilters/*`, `Shaders/simple_dispersion`, and `scenes/pr.RISEscene`);
+  `distributiontracing_shaderop` chains (5: FB `pillow`; Tests `dielectric_dispersion`,
+  `blurry_floor`, `blurry_glass`, `different_rmaps`); `arealight_shaderop` (1); and
+  `FB/Shaders/visiblehuman` (direct volume rendering, frozen R10, may stay).  Plus the
+  step-5 families inside scenes that already use a supported rasterizer (R13 materials,
+  R11 `ambient_light`, R14 `iridescent_painter`, R12 MLT).
+- **Left for slice C (step 6):** `Tests/Geometry/shapes` (quickstart + Android),
+  `FB/Parser/kaleidoscope_atrium` (Android; also a mixed Whitted/PT chain), and the
+  Android / Blender defaults.  `FB/Combined/tidepools` (Android) already renders with
+  `pathtracing_pel_rasterizer` (its `pixelpel` chunk is commented out).
+
+**Phase 2 slice B1 as landed (2026-10-10, branch `legacy-phase2b`, step 5 for the legacy
+pixel-rasterizer families):**
+- **Slice A review fixes:** the SMS op -> rasterizer translation writes the op's effective
+  values (the op's `sms_max_chain_depth` default is 10, the rasterizer's 30) and refuses
+  disagreeing ops; `lum_samples` / `luminary_sampler` are documented as inert
+  (`LuminaryManager` stores the sampler and never reads it) and dropped; the alpha
+  conversion reports that coverage also makes shadows transmissive; the pixel-rasterizer
+  deprecation hint no longer suggests turning OIDN off; stale comments fixed; every
+  `scenes/Tests/Legacy/` copy writes `rendered/legacy_<name>`.
+- **Tool:** `--mode full [--integrator pt|bdpt|vcm] [--sms] [--sss-albedo R G B |
+  --sss-keep-material | --vcm-drop-unsupported-lights]` (docstring has the rules).  A
+  chain of only direct lighting / emission / Whitted / area-light ops, or distribution
+  tracing with `diffuse false` beside direct lighting (direct + glossy), becomes PT with
+  `max_diffuse_bounce 0` (the ruling #3a rule); any indirect op gets full GI.
+  `samples` = legacy samples x the largest per-op sample count (arealight `samples`,
+  DT / FG hemisphere samples, AO numtheta x numphi -- what set the legacy noise floor),
+  floored 16 (direct) / 64 (indirect), capped 1024.  Not counted: `lum_samples` (inert),
+  a CACHED gather (FG `cache`, default TRUE; DT `irradiance_caching`; AO
+  `irradiance_cache`), which samples only at sparse records, and an op that only feeds a
+  point-cloud SSS op's irradiance shader (it runs per build point, not per pixel).  Every
+  shader becomes one `DefaultPathTracing` op; op chunks, photon maps, gathers,
+  irradiance caches and unreferenced shaders are deleted, with their attached comments
+  and emptied section banners.  `--integrator vcm` refuses a scene with an
+  `ambient_light` / `directional_light` (VCM renders neither) unless
+  `--vcm-drop-unsupported-lights` is given, which writes a NOTE in the scene.  `diffusion_approximation_sss_shaderop` ->
+  `subsurfacescattering_material` with the op's own coefficients (per mm x 1000 x
+  `geometric_scale`); `simple_sss_shaderop` -> a Christensen-Burley
+  `subsurfacescattering_material` whose albedo is the op's colour (the object's base
+  colour only where the legacy op applied it: `multiplybsdf TRUE` or an irradiance shader
+  shading with the object's BSDF -- direct lighting with no or `none` override bsdf, PT /
+  FG / DT / photon-map ops, AO with multiplybrdf; an override bsdf gives its literal
+  colour; otherwise untinted) times the op's 1/extinction^2
+  channel weights and whose profile tail falls off at the op's rate
+  (checked in a white furnace: albedo 0.15/0.25/0.15 reads 0.163/0.261/0.164 including
+  Fresnel); `arealight_shaderop` -> `rect_light` of exitance `power`.  Chosen over
+  `randomwalk_sss_material` because the ops are dipole (diffusion) models.
+- **44 scenes migrated** (gallery: `docs/legacy_phase2b_review/index.html`).
+  Integrators: VCM for the caustic photon-map scenes (`caustic_animation`,
+  `pool_caustics`, `motion_blurred_caustic`, `diacaustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `sdf_caustic`, `sms_slab_close_photonmap`, `caustic_sss` -- with
+  `--vcm-drop-unsupported-lights`: its `ambient_light` is not rendered, measured at 1.2%
+  of the legacy image, and no other integrator reaches its caustic-into-SSS light; spectral
+  `spectral_dispersive_caustic`); PT + SMS for the two env-lit caustic showcases
+  (`crystal_lens`, `photon_cloister`: VCM has a measured env-light bias, and their
+  caustics come from spot lights through smooth glass); BDPT for the two strong-indirect
+  final-gather showcases (`gi_spheres` -- the AutoRasterizer's measured BDPT case --
+  and `irradiance_cache_torture`); PT for everything else.  Point-cloud SSS: the SSS
+  objects of seven scenes converted to `subsurfacescattering_material`; `translucent_bunny`
+  (iridescent) and `sss_colorvariation` (checker) keep their `translucent_material`,
+  because a uniform-coefficient SSS material cannot carry a spatially or angularly
+  varying colour.  As migrated (before the retunes below), 26 scenes changed by under 10% (`blurry_floor` and `pillow`, whose DT ops
+  are glossy-only, reproduce the legacy mean at bounce 0); the 18 larger changes each carry a
+  MEASURED cause in the gallery: fudge factors removed (`irrad_scale`, `power_scale`;
+  doubling a scene's `irrad_scale` moves its legacy mean linearly), indirect light the
+  legacy chain did not have or truncated (checked by PT at `max_diffuse_bounce` 0/1/2 vs
+  the legacy image, e.g. `ambocc_ibl` matches the legacy mean exactly at bounce 0), the dropped AO term (`showroom`), and chains with no direct
+  lighting (`diacaustic`, `motion_blurred_caustic`).
+- **Owner-approved retunes (2026-10-10)** bring twelve scenes back within 1% of their
+  legacy means (each carries a comment naming the retune and why); the six remaining
+  changes over 10% (`diacaustic`, `motion_blurred_caustic`, `rgb_dispersive_caustic`,
+  `triplecaustic`, `cornellbox_fg`, `ambocc_ibl`) are test scenes whose legacy image was
+  biased (no direct light, a truncated or missing indirect bounce) and stay as rendered: `glass_pavilion` omni 15 / 25 -> 5.6 / 9.3,
+  `sss_gi_dragon` light scale 8.2 -> 3.8, `showroom` `radiance_scale` 1.75 (measured),
+  `pool_caustics` spots x0.75, `translucent_bunny` omni 2.0 -> 2.9, `crystal_lens`
+  `radiance_scale` 0.85 (measured), `sss` omni 500000 -> 280, `sss_different_bsdf` omni
+  x11.4, `sss_ibl` `radiance_scale` 0.78, `caustic_sss` spot x18.  `photon_cloister`'s
+  one-sided ceiling disks, which faced the ceiling 8 cm above them, were FLIPPED to emit
+  into the room and their scales set to 5.5 / 4.58 (from 12000 / 10000); re-measured over 12
+  salts it reads 0.2187 against a legacy 0.2438 whose 6-spp photon-map image is
+  firefly-dominated (salt sd 12%, standard error 0.008), so the retune target (a 3-salt 0.2198)
+  is within the legacy noise and was not chased further.
+  `spotlight_drama`'s dragon was re-authored as green jade (Christensen-Burley SSS with the
+  authored jade colour 0.15 0.25 0.15 as albedo, 10-per-unit falloff) and, by owner option (b),
+  given a soft white key (`dragon_key`, spot from the camera side above it, power 900); the red
+  spot now lights the backdrop behind the dragon (power 7100), the blue spot's cone narrows to
+  20/40 on the bunny (power 24800) and the amber spot's to 15/30 on the pedestal (power 6534).
+  Whole image 1.013 vs legacy 1.010; the dragon (masked) reads 0.247 vs legacy 0.087 (2.9x, from
+  6.4x as migrated) with a green-dominant median pixel (0.099 0.159 0.109).
+- **Per-object `radiance_map` FROZEN (owner-approved 2026-10-10):** its subject scene
+  `different_rmaps` moved unmigrated to `scenes/Tests/Legacy/` (output
+  `rendered/legacy_different_rmaps`, render hash pinned in `LegacyTierRenderIdentityTest`),
+  because only the legacy shader-op chain honours an object's own `radiance_map` (the ops
+  forward `RayIntersection::pRadianceMap`; PT, BDPT and VCM read only the rasterizer's map).
+  The tool refuses an object-level `radiance_map`, and `DeriveToJob` logs one warning when a
+  scene sets one under a supported rasterizer (no render change; SCENE_CONVENTIONS 11.4).
+- **Coverage kept (ruling #17):** `scenes/Tests/Legacy/` gains the originals of
+  `arealight_shaderop`, `dielectric_dispersion`, `cornellbox_fg`, `sss_ibl`, `sss`,
+  `rgb_dispersive_caustic`, `showroom`, `translucent_bunny`, `blurry_floor`, `teapot`
+  (the `LegacyTierRenderIdentityTest` cases, parent hashes unchanged),
+  `spectral_dispersive_caustic` and `dt_with_irrcache` (newly pinned, hashes measured on
+  83aa86d2f).  After B1 the only shipped scenes still on a legacy pixel rasterizer are
+  `visiblehuman` (frozen DVR) and `shapes` and `kaleidoscope_atrium` (slice C).
+- **Found, not fixed:** VCM renders neither `ambient_light` nor directional lights (the
+  tool now refuses such a migration unless told to drop them), so `caustic_sss`'s ambient
+  term (1.2% of its legacy image) is gone until B2 moves ambient to a `radiance_map`;
+  `scenes/pr.RISEscene` (the CLI performance-rating scene, `DoPerformanceRating`) moved to
+  PT, so performance ratings from this change on are not comparable with earlier ones (the
+  scene header says so).  `AutoRasterizerTest` is a PRE-EXISTING flaky test: the
+  slice review reproduced 153/4, 155/2 and 150/7 at load ~5 on the slice's base, master
+  and this branch alike (the failures are `ggx_showcase` / `corridor_100lights` probe
+  routing, scenes this slice does not touch); it is filed separately.  Its checks on the
+  migrated `gi_spheres`, `glass_pavilion` and `spectral_dispersive_caustic` pass.
+- **Left for slice B2:** the step-5 families inside scenes on supported rasterizers (R13
+  materials, R11 `ambient_light` -- including the five `PixelFilters` scenes and
+  `caustic_sss` migrated here (whose spot retune assumed the ambient term stays dropped),
+  R14 `iridescent_painter`, R12 MLT).  **Slice C** unchanged.  (Done in slice B2, below.)
+
+**Phase 2 slice B2 as landed (2026-10-10, branch `legacy-phase2b2`, step 5 for the
+families inside scenes already on supported rasterizers):**
+- **Tool:** `tools/migrate_scenes_legacy_families.py --family materials|iridescent|ambient|mlt|all
+  [--mlt-integrator bdpt|vcm] [--ambient-with-sky drop] [--dry-run]` (sibling of the
+  rasterizer tool, reusing its lexer; idempotent; the docstring states every mapping).
+  Materials follow the SCENE_CONVENTIONS 11.5 table (Phong alpha = 1/sqrt(2N+1), the
+  table's 4N rule, not the half-vector sqrt(2/(N+2)); Ashikhmin sqrt(2/(n+2)); Schlick
+  sqrt(r), `isotropy` by a stated heuristic that stretches the lobe along onb.u, where
+  Schlick's A(w) peaks; Ward / Cook-Torrance carried; a per-channel roughness is refused
+  unless `--collapse-per-channel` replaces it by its luminance-weighted mean, because
+  `ggx_material` reads only the first channel of alphax / alphay under RGB), and
+  `polished_material` becomes `coated_material` over a `lambertian_material`
+  (coat_roughness 1/sqrt(2 scattering + 1); an `r g b` tau becomes its luminance as
+  coat_weight; tau 0 is a plain Lambertian; ior above coated's range -- the `ior 10000`
+  mirror coats -- becomes `ggx_material` schlick_f0 with F0 = tau ((n-1)/(n+1))^2; a
+  painter-driven gloss is rewritten in place to 1/sqrt(2n+1) of its expression).
+  `iridescent_painter` becomes a thin-film `ggx_material` (TiO2 over titanium for a
+  mirror, over a 1.5 dielectric -- pearlescent -- for a diffuse body whose rd is the
+  painter's projected-area mean), the film thickness matching the painter's own
+  normal-incidence hue through the renderer's RGB thin-film integral; on
+  `translucent_material` it becomes the mean colour.  `ambient_light` becomes a uniform
+  `radiance_map` of radiance color x power / pi (what lights an unoccluded Lambertian
+  surface as the ambient did), `radiance_background FALSE`; with an existing uniform
+  sky the rasterizer points at a NEW `<sky>_with_ambient` painter (the sky painter may be
+  shared: in `cloud_showcase` it is also a luminaire's exitance); a scene whose `hosek_wilkie_skylight` already installs the environment
+  drops the ambient fill (a radiance_map would replace the sky: measured -97%).  MLT
+  becomes BDPT (`mutations_per_pixel` -> `samples`), VCM for the four SDS-caustic
+  showcases (`mlt_caustic_chain`, `mlt_luminous_orb`, `mlt_reflected_caustic`,
+  `mlt_veach_egg`).
+- **102 scenes migrated:** materials 28 (pillow alone 123 polished chunks;
+  `Tests/Materials/materials` with its five per-channel roughnesses collapsed, noted in the
+  scene), iridescent 11, ambient 54, MLT 12 (overlapping).  Held for slice C:
+  `kaleidoscope_atrium`, `tidepools`, `pt_jewel_vault` (Android catalogue) and `shapes`;
+  held as written: `scenes/Benchmarks/sea_creatures` (no `.RISEscene` extension, a
+  recorded agent-benchmark output with two iridescent painters).
+- **Coverage kept (ruling #17):** `scenes/Tests/Legacy/` gains the three Cook-Torrance
+  SUBJECT scenes, moved unmigrated (`cooktorrance_multiscatter_test`,
+  `cooktorrance_vndf_test`, `ggx_vs_cooktorrance` -- migrating would have made them
+  meaningless), verbatim copies of `cornellbox_mlt_fast`, `mlt_deep_fog` and
+  `mlt_deep_fog_spectral` (MLT is not hash-pinnable), and a copy of
+  `composite_material` (its ambient light moved in `scenes/Tests/Materials/composite_material.RISEscene`,
+  which remains in `scenes/Tests/Materials/` still referencing frozen `composite_material` outside `scenes/Tests/Legacy/`), which `LegacyTierRenderIdentityTest`
+  now renders (hash unchanged, 38/0).  The seven materials, the iridescent painter and
+  the ambient light were already covered there (`materials`, `blurry_floor`, `teapot`,
+  `showroom`, `translucent_bunny`, `gltf_box`, ...).
+- **Look review:** `docs/legacy_phase2b2_review/index.html` (102 rows -- 101
+  migrated scenes and the kept bunny -- 3 salts at long side 160).  86 of them move under
+  10%.  Measured causes of the large ones: the
+  legacy models invent energy (white furnace, uniform radiance 1: Phong 0.5/white/N60
+  reads 1.246; the glass_pavilion Cook-Torrance bronze RGB 1.18/0.86/0.55 against GGX
+  0.66/0.56/0.42; `polished_material` over a 0.5 substrate 0.526 against `coated` 0.327,
+  because it renormalises its substrate by the coat's mean transmittance and never
+  loses the light the coat traps; at `ior 10000` it reflects ~2x), `rs` white becomes
+  F0 = 1 per the table (coloured bodies turn into tinted mirrors: `Tests/Materials/
+  materials`, `cornellbox_bdpt_thinlens`), and the ambient was unoccluded and invisible
+  in reflections (`PixelFilters` +14.7%, `cloud_showcase`).
+- **Owner-precedent retunes applied** (legacy bias / fudge, B1 rule): `cloud_showcase`
+  sun 12 -> 24, `glass_pavilion` omni x1.682 (partly reversing its B1 retune: the bronze
+  and floor were legacy materials then), `pavilion_colonnade` omni x1.146, `pillow`
+  omni x1.273, and the test `caustic_sss` radiance_scale x0.00171 (so the environment
+  adds the 1.2% of the legacy image its ambient added; VCM never rendered the ambient
+  and B1's spot retune assumed it stays out -- kept, effectively zero by design, with a
+  scene comment, so the ambient conversion stays uniform).  All within 0.5% of the legacy mean.
+- **Owner rulings 2026-10-10 on the two authored-intent losses (applied):**
+  `translucent_bunny` KEEPS the deprecated (not frozen) `iridescent_painter`, because
+  `translucent_material` has no thin-film model (its mean colour turned the pearly bunny
+  flat purple, -78%); the scene is the pre-B2 scene plus a comment (legacy look, +0.0%)
+  and the tool's `KEEP` list skips its iridescent family.  Both teapots (`FeatureBased/
+  Geometry/teapot`, `Tests/Geometry/teapot_analytic`, which share the material) use a
+  125 nm titanium film (the tool's `FILM_OVERRIDE`), which keeps the purple look:
+  +25.0% / +55.1%.  No light retune: with the film swapped back for a constant
+  mean-colour mirror the showcase reads -2.1%, so the gain is the film's physical
+  Fresnel rise at grazing incidence, not a legacy energy bias (the B1 precedent's
+  condition).  `wetness_prelude_validation`'s -11.6% (the coat's own darkening now
+  stacks with the Phase-1 `pow(base, k)` recipe) is accepted as is.
+- **Gates:** CstDeriveGoldenTest regenerated (480 MATCH, 0 DRIFT; every changed entry a
+  migrated, moved or new Legacy scene), LegacyTierRenderIdentityTest 38/0,
+  DeprecatedMaterialRenderIdentityTest 3/0, DeprecatedMaterialWarningTest 376/0,
+  ConnectionLegalityTest 319/0, SourceHygieneTest 172/0, AgentEvalCheckTest 2075/0, and
+  every test that loads a changed scene.
+- **Found, not fixed:** `scenes/pr.RISEscene` does not load outside its own working
+  directory (`../models` meshes; pre-existing), so its migration is load-checked but not
+  rendered; `mlt_deep_fog{,_spectral}` render black at reduced resolution.
+- **Left for slice C:** unchanged (`shapes`, `kaleidoscope_atrium`, `tidepools`,
+  `pt_jewel_vault`, Android / quickstart / Blender defaults -- including the Blender
+  `use_world_ambient` toggle and MLT enum items).  `visiblehuman` stays frozen.
+
+**Phase 2 slice C as landed (2026-10-10, branch `legacy-phase2c`, step 6 -- the last
+migration slice):**
+- **Tools:** both tools drop their slice-C `HELD` entries.  Unnamed rasterizer chunks derive
+  LAST-WINS, so the rasterizer tool gains `rasterizer_audit()` / `rasterizer_flag()` and
+  `--audit`: every mode of both tools prints a `FLAG` line for a scene with more than one
+  live rasterizer chunk or a frozen ACTIVE (last-declared) rasterizer, refusals name the
+  active chunk, and `--audit` also lists frozen rasterizers left inside comments.  Sweep of
+  `scenes/`: the only frozen ACTIVE rasterizers are the 21 `scenes/Tests/Legacy/` scenes and
+  `visiblehuman` (frozen DVR); the only live two-rasterizer scene is
+  `FeatureBased/VCM/vcm_sdf_luminaire_jellyfish` (PT then VCM, VCM active, documented on
+  purpose).  The MLT chunks reported in `spectral_skinmodel`, `rwsss_bdpt` and
+  `bdpt_torus_chain_atrium` (and `painters`' pixelpel) were inside `/* */` -- inert; the
+  blocks were removed anyway (zero render change, digests unchanged).
+- **Scenes:** `Tests/Geometry/shapes` (quickstart + Android smoke test) `--mode direct` ->
+  PT `max_diffuse_bounce 0`, 4 spp: -0.12%, CLI render 0.63-0.66 s (legacy 0.60-0.64 s) and
+  no frozen-rasterizer warning.  `FB/Parser/kaleidoscope_atrium` `--mode full` (mixed
+  Whitted / direct / PT chains -> PT full GI, 64 spp) + materials (polished -> coated,
+  Cook-Torrance -> GGX conductor, Ward anisotropic -> GGX): +5.2% as migrated.  Its 14
+  `glossy_shader` objects (floor slab, rings, pillars) already path traced; only the 91
+  default-shader objects (back wall, the 81 floor wave tiles, plinths, jade cores) were
+  direct-lit and the 5 glass objects Whitted.  The rasterizer change alone (legacy
+  materials kept) reads +11.8% (the indirect light those chains never computed), the
+  material change alone -5.5% (invented energy), both legacy biases, so its lights were
+  RETUNED x0.951 (B1/B2 precedent): whole image -0.01%.  The retune restores the mean, not
+  the distribution: against the legacy image the top half (back wall) reads +11.3% and the
+  bottom half (floor) -7.2% (this slice's 3-salt, 160 px measurement; the slice review
+  measured +12.2% / -7.1%).  `FB/Combined/tidepools` (already PT; polished -> coated, iridescent shell ->
+  thin-film GGX, dead commented AO / pixelpel / irradiance-cache blocks removed): -1.3%,
+  not retuned (proposal x1.013).  Its thin-film shell reads `colors/thinfilm/` tables, so
+  the Android dependency walker now also follows `colors/` (`riseMediaPrefixes`); every
+  catalogue scene loads clean against a media tree holding only what the walker bundles.
+  The families tool no longer declares the unused titanium substrate tables (`tf_Ti_n` /
+  `tf_Ti_k`) for a pearlescent (dielectric-substrate) body; they were dropped from
+  tidepools and the five B2 scenes that carried them unbound (`showroom`, `painters`, the
+  three `dreamscape_*` benchmarks).  `FB/PathTracing/pt_jewel_vault` (Ward / Ashikhmin ->
+  GGX): -0.01%.  Gallery: `docs/legacy_phase2c_review/index.html`.
+- **Android:** `SceneCatalog.kt` bundles the in-tree scene files (scraped by
+  `app/build.gradle.kts`), so the migrated scenes ship with no separate copies; the
+  smoke-test comment was updated.  No Android build was run (unverified on device).
+- **Blender:** the defaults were already supported (rasterizer `Auto (Pel)`, Pixel / MLT
+  labelled `[legacy]` and selectable, `use_world_ambient` OFF).  With the toggle OFF a
+  world that does not use nodes used to be DROPPED; it now exports as the same uniform
+  `world_radiance_uniform` radiance map a node-based uniform Background gets.  A `.blend`
+  that enabled `use_world_ambient` is unchanged.  "Pixel Rasterizer [legacy]" could not be
+  reached: the native bridge maps kind 0 + `use_path_tracing` to PT-pel (the ABI-v4
+  behaviour) and that box defaults True and is not drawn.  `bridge.resolve_rasterizer_
+  selection` (called by `export_scene`) now sends `use_path_tracing` False for an explicit
+  kind 0; every other kind passes it through, so a `.blend` that never chose the pixel
+  rasterizer exports exactly as before.  No ABI change.
+- **GUIs:** the Mac and Qt new-scene template (`scenes/Templates/empty_starter`, also the
+  Mac app resource) is already PT; no sample menu or editor template defaults to a frozen
+  chunk.  Nothing changed.
+- **Docs:** SCENE_CONVENTIONS and the parser README now say that a later rasterizer chunk
+  replaces the active one and silently drops the `file_rasterizeroutput`s attached to it.
+- **Left on legacy in the shipped tree:** `scenes/Tests/Legacy/` (the frozen corpus),
+  `scenes/Tests/ChunkCoverage/cc_*` (one-chunk coverage),
+  `scenes/Tests/Materials/composite_material.RISEscene` (ambient light migrated, still
+  references frozen `composite_material` outside `scenes/Tests/Legacy/`),
+  `FB/Shaders/visiblehuman` (frozen DVR), `translucent_bunny`'s owner-kept
+  `iridescent_painter`, and `scenes/Benchmarks/sea_creatures` (recorded agent output).
+  Phase 2 is complete.
+
+**Phase 3 — remove: ON HOLD by owner ruling (2026-10-09); nothing below is scheduled.** (Original plan: several slices; each slice must update all five build projects per
+CLAUDE.md).** Order from least coupled:
+1. Point-cloud SSS ops + `PointSetOctree` (R6).
+2. Photon maps, gathers, irradiance cache, final gather (R5), including the DL-05
+   suppression hook and the `IScene`/IJob photon APIs.
+3. Alpha/transparency/AO/area-light/DT/SMS shader ops (R3, R7?, R8, R9).
+4. D13: route PT's SSS continuation straight to the integrator; then remove the pixel
+   rasterizer **chunks** (R1, R2) and the Default* op registrations; `defaultshader`
+   becomes optional. Keep the `PixelBased*` classes as PT's base.
+5. MLT (R12).
+6. The seven legacy material classes (R13) last, because many MIS/consistency tests
+   instantiate them as multi-lobe fixtures and need replacement fixtures first.
+7. IJob: keep the removed methods as logged no-ops returning `false` until a declared ABI
+   break (the vtable manifest is append-only; the 3DSMax plugin, if kept, links them).
+
+## 12. Decisions needed from the owner
+
+Reply by number. Each has a recommended default in brackets.
+
+1. **Legacy shader-op pipeline (`pixelpel`, chain ops):** freeze now and remove the chunks
+   in Phase 3? [yes]
+2. **Custom shader-op composition as a user feature:** accept losing it (AO + transparency
+   + PT chains and so on), with modern integrators as the only rendering modes? [yes]
+3. **Direct-lighting-only renders (82 scenes):** (a) migrate to PT with
+   `max_diffuse_bounce 0` and accept the look change; (b) add a `direct_only` flag to
+   `pathtracing_pel_rasterizer`; or (c) keep `pixelpel` frozen just for this. [b]
+4. **Photon mapping / final gather / irradiance cache:** freeze and then remove; the FB
+   showcases move to VCM or PT with looks reviewed. [yes]
+5. **`ambient_light`:** deprecate and migrate to a uniform `radiance_map`, accepting
+   occluded (darker) results; retire Blender's `use_world_ambient`. [yes]
+6. **`ambientocclusion_shaderop`:** (a) remove with no replacement; (b) keep frozen;
+   (c) add an AO AOV to the PT rasterizer. [a, unless AO passes are still wanted]
+7. **Direct volume rendering (`visiblehuman`, `Volume/`):** keep frozen or remove? [keep frozen]
+8. **MLT:** freeze and remove, as `UNIFIED_INTEGRATOR_DECISION.md` already decided;
+   drop it from the Blender enum. [yes]
+9. **The seven deprecated materials:** promote to frozen (won't-fix) now; migrate 35 scenes
+   (17 Polished FB showcases change look); remove in Phase 3. [yes]
+10. **`composite_material`:** keep supported (three open rows stay) or freeze in favour of
+    `coated_material` (closes DL-221/407/472). [freeze, unless arbitrary two-material
+    stacking is a product feature]
+11. **`translucent_material`:** confirm it stays supported as the thin-sheet model. [yes]
+12. **BioSpec skin / generic human tissue:** keep supported, keep frozen, or remove?
+    [keep supported; they are the owner's research models]
+13. **PT's SSS continuation shading through the shader chain:** approve rerouting it
+    directly to the integrator, so the shader pipeline can shrink to infrastructure-free.
+    [yes, in Phase 3]
+14. **`rawmesh_geometry`:** load into the indexed mesh class and retire the non-indexed
+    `TriangleMeshGeometry`. [yes, with a render A/B]
+15. **Legacy front-ends and build files:** remove `src/3DSMax`, `build/VS2005`, and the SGI
+    and Solaris configs? Keep or remove `src/DRISE` / `src/PRISE`? [remove the first
+    group; DRISE/PRISE need the owner's knowledge of current use]
+16. **Frozen-code exceptions:** still fix crashes, hangs, memory corruption, security and
+    data loss in frozen code? [yes]
+17. **Frozen-code tests:** keep them running and re-pin instead of fixing when SOTA changes
+    turn them red? [yes]
+18. **Smaller items in one batch:** deprecate `iridescent_painter`, `onb_pinhole_camera`,
+    `3dsmesh_geometry`, the `mis_pathtracing_shaderop` alias, and `sms_shaderop`; freeze
+    `phong_luminaire_material`; keep `datadriven_material`, `bezierpatch_geometry`, both
+    SSS material models, and the delta lights. [yes to all]
+
+## 13. Owner rulings (2026-10-09)
+
+Explicit rulings:
+
+- **#3 Direct-lighting-only renders:** (a) -- migrate the 82 scenes to PT with
+  `max_diffuse_bounce 0` and accept the look change. No `direct_only` flag;
+  `pixelpel` is not kept alive for them.
+- **#5 `ambient_light`:** deprecate and replace with a uniform environment light
+  (`radiance_map`); darker creases accepted; retire Blender's `use_world_ambient`.
+- **#9 The seven deprecated materials:** promote to frozen; migrate the 35 scenes; look
+  changes are acceptable.
+- **#10 `composite_material`:** freeze ("always an unproven test, never seriously used");
+  DL-221, DL-407 and DL-472 close as won't-fix under the frozen-feature ledger policy.
+- **#12 BioSpec skin / generic human tissue:** keep SUPPORTED (research models).
+- **#15 Legacy front-ends and build files:** nobody uses `src/3DSMax`, `build/VS2005` or the
+  SGI / Solaris configs -- remove them (SUPERSEDED the same day: removal on hold, see below;
+  they are frozen in place). `src/DRISE` and `src/PRISE` are KEPT in the tree but
+  frozen (may stop building/working); the owner intends a future state-of-the-art
+  distributed renderer.
+
+- **Removal ON HOLD (2026-10-09, binding for Phase 1 and until revoked):** frozen
+  features stay frozen, but NOTHING is removed -- no chunk, op, rasterizer or class, and
+  the #15 deletions are on hold too: `src/3DSMax`, `build/VS2005` and the SGI / Solaris
+  make configs stay in the tree, marked frozen exactly like `src/DRISE` / `src/PRISE` (a
+  README note / file header).  Every "freeze then remove" default below and in §1 / §11
+  now reads "freeze (removal on hold)", and Phase 3 is not scheduled.
+
+- **Phase 1 scope as landed:** the parameter-level deprecation flag and the GUI "show legacy"
+  filter of §10.1 were initially DEFERRED and landed 2026-10-11 (ParameterDescriptor::deprecated,
+  read_schema reporting, agent refusal for per-object radiance_map, and Mac/Qt add-node "Show legacy"
+  toggle).  The alpha ops (R8) were frozen (they run only under the frozen pixel rasterizers) and
+  `sms_shaderop` (R9) was deprecated, per the brief, not frozen.
+
+Taken at the recommended default (the owner did not object; any can be overridden):
+#1 freeze the shader-op pipeline now (removing its chunks in Phase 3 is on hold); #2 custom shader-op
+composition is given up; #4 photon mapping / final gather / irradiance cache frozen (removal on hold), showcases move to VCM or PT with looks reviewed; #6 `ambientocclusion_shaderop`
+frozen with no replacement (removal on hold); #7 direct volume rendering kept frozen; #8 MLT frozen (removal and dropping it from Blender on hold; Blender labels it legacy); #11 `translucent_material` stays supported; #13 PT's SSS
+continuation rerouted to the integrator in Phase 3; #14 `rawmesh_geometry` loads into the
+indexed mesh class (with a render A/B); #16 frozen code still gets crash / hang / memory /
+security / data-loss fixes; #17 frozen-code tests keep running and are re-pinned rather
+than fixed; #18 the batch of smaller items as recommended.

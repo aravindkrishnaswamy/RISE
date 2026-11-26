@@ -16,10 +16,47 @@
 
 #include "IKeyframable.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include <vector>
 
 namespace RISE
 {
-	//! The ability to have a basic transformation abilities
+		//! Full component-decomposed transform state for capture/restore
+	//! (e.g. editor undo).  Restoring this preserves the position /
+	//! orientation / scale / stretch COMPONENTS instead of collapsing the
+	//! whole transform onto the stack, so a later absolute SetPosition /
+	//! SetOrientation / ... replaces the right component rather than
+	//! composing with a stacked baseline.  `stackProduct` is the transform
+	//! stack pre-collapsed into one matrix (matching the
+	//! FinalizeTransformations fold order).
+	struct TransformState
+	{
+		Matrix4 position;
+		Matrix4 orientation;
+		Matrix4 scale;
+		Matrix4 stretch;
+		Matrix4 stackProduct;
+	};
+
+	//! Additive, versioned transform snapshot used by the in-tree editor.
+	//! TransformState's original layout remains unchanged for binary callers;
+	//! this sibling carries private authoritative-matrix metadata without
+	//! extending the legacy by-value struct.
+	struct TransformStateV2
+	{
+		TransformState transform;
+		bool finalMatrixOnStack = false;
+		Matrix4 finalScaleBase;
+		Vector3 appliedStretch;
+		bool finalScaleBaseValid = false;
+		std::vector<Matrix4> stackEntries;
+		size_t authoritativeStackIndex = 0;
+		//! doc 89 slice C: the authored LOCAL mirror axis (-1 none, 0 = x, 1 = y,
+		//! 2 = z).  Appended at this struct's TAIL, and only to V2 -- the legacy
+		//! `TransformState` above stays byte-identical for its binary callers.
+		int mirrorAxis = -1;
+	};
+
+//! The ability to have a basic transformation abilities
 	class IBasicTransform
 	{
 	protected:
@@ -29,12 +66,62 @@ namespace RISE
 	public:
 		//! Clears all transforms
 		virtual void ClearAllTransforms( ) = 0;
-		//! Finalizes all transformations and computes the final matrix
+		//! Finalizes all transformations and computes the final matrix.
+		//! Re-composes against the parent world transform this node was LAST
+		//! given, so a caller that knows nothing about the scene graph (every
+		//! pre-hierarchy caller) keeps a parented node correctly composed.
 		virtual void FinalizeTransformations( ) = 0;
-		//! Retreives the transformation matrix
+		//! Retreives the transformation matrix.  This is the WORLD transform:
+		//! `parentWorld * local` for a parented node, `local` for a root.
 		virtual Matrix4 const GetFinalTransformMatrix( ) const = 0;
 		//! Retreives the inverse transformation matrix
 		virtual Matrix4 const GetFinalInverseTransformMatrix( ) const = 0;
+
+		// ---- recursive scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
+		// Appended at this interface's TAIL, per the repo's append-only vtable
+		// convention.
+
+		//! Finalize against an EXPLICIT parent world transform:
+		//! `world = parentWorld * local`, where `local` is this node's own
+		//! authored position / orientation / stretch / scale folded with its
+		//! transform stack.
+		//!
+		//! This is the ONLY sanctioned way to compose a hierarchy.  Do NOT push
+		//! a parent's matrix onto the transform stack instead: the stack never
+		//! self-clears, so a second push composes `P * P * local` and every
+		//! subsequent re-apply squares in another factor.  That is the entire
+		//! bug class recorded in docs/agentic-redesign/86-object-grouping.md §3.
+		//! Passing `parentWorld` as an ARGUMENT makes re-composition idempotent
+		//! by construction — calling this twice with the same argument, or with
+		//! a new one, always yields exactly `parentWorld * local`.
+		virtual void FinalizeTransformations( const Matrix4& parentWorld ) = 0;
+
+		//! This node's OWN transform, WITHOUT any parent contribution — i.e.
+		//! exactly what its authoring chunk stores.  Equal to
+		//! GetFinalTransformMatrix() for an unparented node.  Anything that
+		//! persists a transform back to the scene document, or that captures a
+		//! transform to restore later, wants THIS, not the final matrix.
+		virtual Matrix4 const GetLocalTransformMatrix( ) const = 0;
+
+		//! The parent world transform most recently composed into this node
+		//! (identity for a root).  Exposed so a caller holding a WORLD-space
+		//! operation can conjugate it into this node's parent frame.
+		virtual Matrix4 const GetParentWorldTransformMatrix( ) const = 0;
+
+		//! Is the stored parent world transform usable as a change of frame?
+		//! FALSE for a collapsed or rank-deficient ancestor (a zero or
+		//! near-zero `scale` anywhere up the chain), for an anisotropy extreme
+		//! enough that conjugating through it would destroy precision, for a
+		//! non-finite entry, and for a projective row.  When false,
+		//! WorldToLocal() returns its input unchanged and callers must REFUSE
+		//! rather than write a corrupt transform.
+		virtual bool IsParentWorldInvertible( ) const = 0;
+
+		//! Express a WORLD-space matrix in this node's LOCAL frame:
+		//! `parentWorld^-1 * worldMatrix`.  Returns `worldMatrix` unchanged
+		//! when the parent is identity (the common case) or non-invertible —
+		//! check IsParentWorldInvertible() first when correctness matters.
+		virtual Matrix4 const WorldToLocal( const Matrix4& worldMatrix ) const = 0;
 	};
 
 	//! Provides a flexible transformation stack

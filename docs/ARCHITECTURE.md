@@ -21,7 +21,7 @@ Scene construction via `IJob`/`IScenePriv`: objects, lights, materials, cameras,
 
 ### 2. Prepare Phase (build acceleration structures)
 
-`ObjectManager::PrepareForRendering()` is called by each rasterizer after scene attach (and, for animation, after each frame's time evaluation). This eagerly builds BSP trees, octrees, and shadow caches from current world-space bounding boxes. After this call, the spatial structures are immutable for the duration of that render pass.
+`ObjectManager::PrepareForRendering()` is called by each rasterizer after scene attach (and, for animation, after each frame's time evaluation). This eagerly builds the top-level BVH (or octree, for legacy callers) and shadow caches from current world-space bounding boxes. After this call, the spatial structures are immutable for the duration of that render pass.
 
 ### 3. Render Phase (immutable)
 
@@ -38,9 +38,9 @@ Multiple threads rasterize pixels concurrently. All scene access is through `con
 
 `RuntimeContext` (`src/Library/Utilities/RuntimeContext.h`) is allocated per-thread by the rasterizer. Its `mutable` fields are correct because each thread has its own instance. It is not part of the shared scene graph.
 
-### Thread-Local Mailboxing
+### Thread-Local State
 
-Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geometry/TriangleMeshGeometryIndexed.cpp`) to avoid redundant intersection tests during BSP traversal. Each thread maintains its own ray ID counter and stamp vector per geometry, eliminating the data race that would occur with shared mutable mailbox state.
+Triangle-mesh intersection uses `BVH<>` (`pPtrBVH` in `src/Library/Geometry/TriangleMeshGeometryIndexed.cpp`; runtime BSP/octree mesh traversal was retired 2026-04-27). Optional `#ifdef RISE_ENABLE_MAILBOXING` `thread_local` mailbox state (per-thread ray ID counter and stamp vector per geometry) is retained in `TriangleMeshGeometryIndexed.cpp` as a compile-time holdover.
 
 ## Acceptable Mutable Patterns
 
@@ -48,11 +48,13 @@ Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geome
 |---------|----------|-----------|
 | Reference counting | `IReference` / `Reference` | Atomic increment/decrement, thread-safe by design |
 | Per-thread RuntimeContext | `RuntimeContext` | Each thread owns its own instance |
-| Thread-local mailboxes | `TriangleMeshGeometryIndexed` | Per-thread, no sharing |
+| Thread-local mailboxes | `TriangleMeshGeometryIndexed` | Per-thread, no sharing (`#ifdef RISE_ENABLE_MAILBOXING` compile-time holdover; default mesh traversal uses `BVH<>`) |
+| Thread-local expression memo | `ExpressionMemo` (`Utilities/ExpressionMemo.h`) | Per-thread fixed-size tables, no heap and no sharing; caches only pure functions of (program, context) and (provider, hit, query).  Never scene state: the hit record is untouched and no `mutable` is added.  A process-wide generation counter, bumped at every render-pass entry and at each scene-mutation seam (always AFTER the mutation, and before it too wherever the seam itself evaluates painters), drops every thread's tables between passes; within a pass the scene is immutable so nothing invalidates.  Kill switch `expression_memo` in `RISE_OPTIONS_FILE`.  **Sizing (2026-11-25): `kL1Ways` is 8 and the per-thread `Tables` is 4016 bytes (still trivially default-constructible and under the 4096-byte ceiling enforced by `ExpressionMemoTest` (g)): 2976 bytes after DL-25's `PainterSampleHitKey`, +864 bytes for Group 7's `SpaceTransformHitKey` + `ObjectInfo` + `osl_ao`, and +176 bytes for folding the 1-way `AOCacheKey` out of `SurfaceSignalProximity.h` into `Tables` so all memo/AO TLS stays under one tracked roof.**  Four ways exactly equalled the number of signal KINDS once `proximity` shipped, and `interior` made a fifth, so a body querying all five would have evicted round-robin at a ~0 % hit rate; the ceiling was a REGRESSION GUARD rather than a budget and was raised with the reason recorded in the test.  The cliff moved from a fifth distinct (kind, radius) query per hit to a ninth -- it did not disappear.  Measured rather than reasoned, because round-robin replacement is FIFO and FIFO is not a stack algorithm: the L1 hit rate on `plank_closeup` is 0.8967 at four ways and 0.8968 at eight (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8.4) |
 | Path guiding training stats | `PathGuidingField` | Atomic counters, updated between passes (not during) |
 | BDPT integrator atomics | `BDPTIntegrator` | Atomic counters for cross-pass statistics |
 | Irradiance cache | `IrradianceCache` | Mutex-guarded insert/query; cache is populated during a dedicated irradiance pass before the main render pass |
-| FilteredFilm row locks | `FilteredFilm` | Per-scanline mutex; threads lock one row at a time during Splat(). Resolve() runs single-threaded after all render threads complete |
+| Cross-object proximity AABB snapshot | `ObjectManager` (`pBoxes` / `retiredBoxes`, see "Top-Level Acceleration (TLAS)" above and the SSS Pointset lazy-init known exception below for the two patterns this combines) | `mutable std::atomic<const ObjectBoxSnapshot*> pBoxes` published like `pBVH` (`std::atomic`, release/acquire since Phase 2's review; `pOctree` is still a plain pointer with the same double-checked-locking hazard `pBVH` had, out of that fix's scope): built at the end of `PrepareForRendering` (unconditionally with respect to object count -- it extends the "never during a pass" contract to the ≤4-object scenes that were previously exempt because no TLAS is built there at all) or lazily under `treeCreationMutex` from `IntersectRay`/`NearestOtherSurface`, immutable once published (release-store / acquire-load pair), and gated end-to-end on `ProximityDemand::Any()` so a scene with no live `proximity()` consumer builds and checks nothing. A superseded snapshot is RETIRED into `retiredBoxes` rather than freed immediately -- another render thread may be mid-scan of it -- and the retired set is freed only in `InvalidateSpatialStructure()` and `Shutdown()` (both under `treeCreationMutex`, covering the live pointer and the retired set in one critical section) and in the destructor (deliberately unlocked: it runs after every render thread is gone), all covered by the same "never during a pass" contract that makes the free safe (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2) |
+| FilteredFilm row locks | `FilteredFilm` | Per-scanline mutex; threads lock one row at a time during Splat(). Resolve()/Unresolve() also take the row mutex (copy the row, unlock, then write the target), because the tile-preview path calls them while workers are still splatting; `SplatFilm` follows the same rule |
 | AOV buffer accumulation | `AOVBuffers` | Written per-pixel by the owning thread during block rasterization; no cross-thread contention within a block |
 
 ## Known Exceptions
@@ -65,21 +67,140 @@ Two subsurface scattering shader ops lazily build per-object point set octrees o
 
 These use `mutable PointSetMap pointsets` guarded by a mutex with double-checked locking. The lazy pattern is necessary because octree construction requires ray tracing the scene (evaluating irradiance at sample points), making pre-build during the prepare phase impractical. The mutex serialization makes this thread-safe.
 
-### Animation / Temporal Sampling (pre-existing data race)
+### Animation / Temporal Sampling (motion blur)
 
-`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. During temporal sampling with motion blur, rasterizers call `EvaluateAtTime()` per-sample from multiple threads (`PixelBasedPelRasterizer`, `BDPTPelRasterizer`, etc.). This is a **pre-existing data race** that predates the immutability work.
+`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. Under camera exposure (motion blur) the pixel rasterizers call it once per pixel SAMPLE, through `PixelBasedRasterizerHelper::AnimateSceneToSampleTime`, which also re-composes parented objects (`IObjectManager::RecomposeAnimatedHierarchy`) so a child of an animated parent moves with it.
 
-`IScene::GetAnimator()` intentionally returns non-const `IAnimator*` to make this mutation visible rather than hiding it behind `const`. A proper fix would require per-thread interpolated state snapshots, which is a significant architectural change.
+**Per-thread time-indexed state (DL-465).** For the PT, BDPT and VCM rasterizers (`SupportsTimeIndexedMotionBlur`), a motion-blurred frame whose active animation keyframes only object transforms (plain `Object`, not a CSG composite or operand, not one whose shader keeps runtime data), the active camera and point / spot / directional / ambient lights renders MULTI-threaded with the per-sample look unchanged.  `TimeIndexedFrame::TryCreate` (`Rendering/TimeIndexedMotionBlur.h`) slots every moving element -- the animated ones and every node of the per-sample hierarchy re-compose -- before the workers start; each worker's `TimeIndexedThread` clones those elements (geometry, materials, shaders shared by reference) and installs a thread-local slot table (`Animation/TimeIndexedView.h`).  `AnimateSceneToSampleTime` then poses only the calling thread's clones (`IAnimator::EvaluateElementAtTimeInto`, read-only on the animator, then the hierarchy re-compose replayed on the clones), and the shared element forwards every render-time query -- `Object::IntersectRay` (reporting the hit as the SHARED object, so identity-keyed consumers are unchanged), area sampling, area, bounds, proximity, the world-transform accessors, every light query, `Scene::GetCamera` -- to the calling thread's clone.  Per sample: keyframe interpolation and finalize, the work `EvaluateAtTime` always did; per ray: one thread-local load for a moving element, one branch on its slot for a static one.  The TLAS (shutter-swept bounds, DL-457) and the light tables (shutter-swept, DL-463) stay shared and immutable.  With one thread the clones reproduce the shared-scene render bit for bit (`tests/TimeIndexedMotionBlurTest.cpp` section A).  Posing touches no process-wide lock: `Transformable`'s authoritative-matrix metadata lives on the instance (it used to be a locked process-wide registry, which serialised the pass whenever a matrix-authored object existed).  Only one time-indexed pass per scene may be in flight (the slots live on the shared elements; `TryCreate` refuses a still-slotted element).  Per-holder diagnostics: rejection-cap hit counts are folded back into the shared object; a one-shot warning may print once per render thread.  Anything else keyframed keeps the single-threaded path below, logged once per frame; `time_indexed_motion_blur false` in the options file forces it.
 
-**Impact**: In practice, temporal sampling with multi-threaded animation is rarely used in production scenes. When it is used, the race condition typically manifests as minor temporal jitter rather than crashes, because the mutations are simple scalar writes to transform/camera parameters.
+On that single-threaded path it is NOT a data race: `RenderFrameOfAnimationPass` renders such a frame with `exposure > 0` on the calling thread only (its multithreaded branch requires `exposure == 0` or a time-indexed frame), and a still `RasterizeScene` never samples time. (Earlier revisions of this section called it a pre-existing race; checked 2026-10-08, DL-457.) The cost is that such a motion-blurred frame renders single-threaded -- except VCM with vertex merging (DL-463): its light store is shared by every eye sample of a progressive pass, so `RenderFrameOfAnimation` moves the whole scene to ONE stratified-jittered shutter time per pass (`WantsPerPassShutterTime`) and renders the pass with exposure 0, multi-threaded; the store and the eye samples merged against it then share a time.  (Scanning / pixel rates keep the per-sample path.) `IScene::GetAnimator()` still returns non-const `IAnimator*` to keep the mutation visible.
+
+`IAnimator::EvaluateAtTime()` is also called per time stratum by the photon tracers (single-threaded) and per frame by the frame drivers.
 
 ### Spatial Acceleration and Animation
 
-The BSP tree / octree in `ObjectManager` is built from world-space bounding boxes (`Object::getBoundingBox()` applies `m_mxFinalTrans` to geometry bounds). When objects have keyframed transforms, animation evaluation recomputes these transforms via `RegenerateData()` → `FinalizeTransformations()`, which can move objects outside their BSP node placement.
+The top-level BVH / octree in `ObjectManager` is built from world-space bounding boxes (`Object::getBoundingBox()` applies `m_mxFinalTrans` to geometry bounds). When objects have keyframed transforms, animation evaluation recomputes these transforms via `RegenerateData()` → `FinalizeTransformations()`, which can move objects outside their tree node placement.
 
-**Per-frame animation** (`RasterizeAnimation`): The spatial structure is invalidated via `InvalidateSpatialStructure()` and rebuilt via `PrepareForRendering()` after each frame's `EvaluateAtTime()` + `SetSceneTime()`, before multi-threaded rendering begins. This ensures the BSP/octree reflects current transforms for each frame.
+**Per-frame animation** (`RasterizeAnimation`): `PixelBasedRasterizerHelper::PrepareSceneForFrame` evaluates the frame time, invalidates the spatial structure (when anything is keyframed) and rebuilds it with `PrepareForRendering()`, before multi-threaded rendering begins and before `SetSceneTime` regenerates photon maps.
 
-**Per-sample temporal sampling** (motion blur within a single frame): `EvaluateAtTime()` is called per-sample from within threaded pixel rasterizers. Rebuilding the spatial structure per-sample is prohibitively expensive, so the BSP is built once for the frame's base time. This means per-sample object transform variations are not reflected in the spatial structure — a pre-existing limitation. In practice, the motion blur exposure window is typically small enough that objects don't move far outside their base-time bounds.
+**Per-sample temporal sampling** (motion blur within a single frame, DL-457): the structure is still built once per frame, but over the whole SHUTTER. `PrepareSceneForFrame` samples the animator across the frame's interval (`FrameShutterInterval`: exposure plus any scanning / pixel rate, unioned with the photon tracers' `[t - E/2, t + E/2]`) at 65 uniform times plus every keyframe time inside it, calling `IObjectManager::AccumulateMotionBounds()` after each; every build then uses each object's swept box, padded by half the largest change between consecutive samples. That is EXACT for motion linear between keyframes (translation, scale) and an approximation for motion that curves between samples (rotation, non-linear interpolators) -- motion fast enough to alias the samples can still escape. An axis on which an object's box is not finite in some sample (an infinite plane) is not swept: the build uses the full extent on it. `InvalidateSpatialStructure()` drops the swept boxes, so every other rebuild path builds from current boxes. The same sweep records which parented objects moved; if none did, the per-sample `RecomposeAnimatedHierarchy()` is a no-op for that frame, and otherwise it re-composes only the subtrees under those objects' hierarchy roots (DL-463), not every link.  The sweep also feeds the RayCaster's light sampler (`IRayCaster::AccumulateLightMotionSample` / `RefreshLightSamplers`, DL-463): the selection tables are rebuilt every animation frame, in place, weighting each light by its mean power over the shutter samples (kept if it emits at any of them) and giving the light BVH the union of its boxes and orientation cones -- a table built at attach (or at the frame time alone) dropped a light dark then and culled a spot light turned away then. Before DL-457 the structure bounded each object at the frame's nominal time only, and a ray that met an object outside that box never tested it (an occluder moving out of its frame-time box read 1.7 % bright; one growing past it 2 %). The miss needs the ray to avoid the stale LEAF box entirely, which is why scenes whose moving object shares a leaf with a large object (a floor) never showed it.
+
+### Top-Level Acceleration (TLAS) — BVH default since 2026-05
+
+`ObjectManager`'s default top-level structure is the same `BVH<>` template (`src/Library/Acceleration/BVH.h`) that `TriangleMeshGeometry{,Indexed}` uses per-mesh — with `Element = const IObjectPriv*`. Same SAH-binned BVH2 builder, BVH4 SoA collapse, and SIMD ray-vs-AABB kernel. Pre-2026-05 the default was no top-level structure at all (linear loop over every IObject); a `BSPTreeSAH<>` path existed but was never wired in by default. Migrating Sponza-class scenes (155 mesh objects) from no-TLAS through BSP to BVH4 produced a measured 7×+ wall-clock speedup.
+
+`Job::InitializeContainers` constructs `ObjectManager(true, false, 4, 32)` — flag name `bUseBSPtree` is historical; semantically it now means "build a top-level BVH". The leaf cap of 4 (vs the per-mesh 4 used for triangles) is small because each top-level "leaf primitive" is a whole IObject — a leaf hit means descending into a per-mesh sub-BVH, much more expensive than a single triangle test, so the SAH builder is biased toward smaller leaves via `sahIntersectionCost = 8.0`. Tiny scenes (≤4 objects) skip the build via the `items.size() > nMaxObjectsPerNode` gate and use the linear-loop fallback path — overhead amortisation flips at very small N.
+
+**The TLAS also answers a POINT query, not only rays (2026-09-09).** `BVH<Element>::ClosestPointDistance` is a bounded-radius closest-point traversal over the BVH2 `nodes` array: it visits the two children of each node nearest-AABB-first, prunes any node whose point-to-AABB distance is at least the running best, and calls a caller-supplied exact primitive distance at the leaves. Two consumers use it — `TriangleMeshGeometryIndexed::DistanceToSurface` over triangles, and `ObjectManager::NearestOtherSurface` over the TLAS's whole objects, where "the primitive's distance" is the entire per-object proximity query. It deliberately uses `nodes` and NOT the BVH4 `nodes4` SoA: the wide layout exists to batch four ray-vs-AABB *slab* tests in one SIMD op, and a point query has no ray, no slab test and no direction to sort by — its win is a sorted nearest-first descent, which a binary node gives by sorting two. It is exact (identical to a brute-force minimum) because a skipped node's primitives all lie inside a box that is already further than the best, and the `float` node boxes are rounded OUTWARD at build, which can only make the pruning admit a node it could have skipped. **Consequence for staleness:** a proximity query on a TLAS-backed scene is now exactly as stale as the render, since both walk this tree; the `pBoxes` snapshot's add-detecting count check governs only the no-TLAS fallback (four objects or fewer, or `bUseBSPtree` off). Measured on Sponza with the query forced at every hit: 1.273x its control on the previous flat 405-object scan, 1.067x on this traversal (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 8.3).
+
+**A CSG COMPOSITE ANSWERS BOTH CROSS-OBJECT QUERIES SINCE 2026-09-09** (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6).  `CSGObject` implements its own transform layer -- operands live in the COMPOSITE's local frame, not in world space, the same rule `SelfHitRootFloor` states -- and then splits by operation.  A UNION answers `min` over the operands that ANSWER, so it refuses only when both refuse and it accepts a SHEET operand (a mesh, a plane) whose unsigned answer is all the proof that needs.  An INTERSECTION or a SUBTRACTION cannot use `min` (the nearest operand-surface point may not be on the composite's surface at all, which is the forbidden direction), so it composes the operands' SIGNED LOWER BOUNDS into `max(a, b)` / `max(a, -b)` and runs the SDF family's bracket on that field: descend along the central-difference gradient, then probe with a doubling step.  **`f <= 0` is NOT the landing test.**  `{max(f_A, -f_B) <= 0}` is `closure(A) n complement(int B)`, which contains every point where the two operand boundaries merely TOUCH -- a phantom set no ray can hit, and one a real scene contains (`glass_pavilion`'s flute slot is as deep as its column's diameter, so its faces are tangent to the cylinder).  A landing is admitted only when the OPERANDS' OWN SIGNS prove it lies in the closure of the real solid, by a STRICT arm (both signs strict) or a BOUNDARY arm whose `<= 0` side must be the EXACT operand -- with NO TOLERANCE on either side, because the nearby points of one operand's surface may all lie inside the other.  The probe step is `eps = max(1e-6, 5e-5 x the composite's own LOCAL box diagonal)`, computed LAZILY per query and never cached (the operands' boxes move under `FinalizeTransformations`, and the CST re-point path calls `AssignObjects` before `SetOperation`).  NO composite exports the exactness flag to a parent (review round 1 retired the union case: `min(f_A, f_B)` is 0 along a shared face where two solids ABUT, interior to the union, so a flagged union let a parent subtraction's boundary arm land inside the removed solid -- 0.25 reported against a 0.75 truth; CSGObject::ComposedSignedLocal never sets it, and the abutting-union fixture in ProximitySignalTest pins the seam).  **A union's plain `min(f_A, f_B)` can under-read the true interior depth even though `outExact` correctly stays false** -- e.g. two R=2 spheres 1.5 apart queried at (0.4,0,0) have operand depths 1.6/0.9 but the true nearest union boundary (the spheres' intersection circle) is `sqrt(3.56)=1.8868` (DL-34, `cffa254f`, 2026-09-12).  The fix additionally certifies a negative signed lower-bound query at each operand's bounding-box center (an inscribed ball whose union lies inside the true union) and takes `min` of THAT exact field against the original composed field, strengthening the interior bound for sphere operands without changing the conservative contract above -- arbitrary/non-certifiable operand geometries can still under-read.  See [DL34_UNION_INTERIOR_DEPTH.md](DL34_UNION_INTERIOR_DEPTH.md).
+
+`ObjectManager::RayElementIntersection` requires native closest-hit semantics (only commit when the new hit is strictly closer than `ri.range`) because the BVH<> contract calls leaf processors with a shared `ri` and expects each call to be defensive about overwriting it. `BSPTreeSAHNode` had this guard externally (per-element local `myRI` + compare), so the per-prim `RayElementIntersection` could be sloppy; the BVH's per-node SoA SIMD design relies on the processor itself doing the closest-hit check inline. This is the same fix pattern as Tier-A cleanup §2 in the BVH retrospective for `TriangleMeshGeometryIndexed::RayElementIntersection`.
+
+## Camera / Film / Output Separation
+
+Output settings (image width, height, pixel aspect ratio, tone-map, file
+format) are conceptually *not* a property of the camera — the same camera
+should be renderable at multiple resolutions, exposure curves, and file
+formats. Pre-2026-05 RISE bundled all of them onto `ICamera`; the refactor
+splits them into three layers, matching the Blender / PBRT / Mitsuba
+convention:
+
+```
++----------------------------------------+
+|   Output (FileRasterizerOutput)        |   tone-map, color space, file format
++----------------------------------------+
+                ^
+                | rasterized pixels
++----------------------------------------+
+|   Film (IFilm / Implementation::Film)  |   width, height, pixelAR
++----------------------------------------+
+                ^
+                | pixel-grid math, ray-gen
++----------------------------------------+
+|   Camera (ICamera / *Camera)           |   FOV, focal length, aperture,
++----------------------------------------+   exposure (shutter), iso, fstop,
+                                             scanning_rate, pixel_rate
+                                             (sensor read-out — kept on
+                                             camera because rolling-shutter
+                                             timing is a sensor property)
+```
+
+**Single Film per scene.** The Scene owns one active Film; the rasterizer
+queries `pScene->GetFilm()->GetWidth()` etc. for its pixel grid.
+`Job::InitializeContainers` installs a default qHD (960 × 540, square
+pixels) so a scene with no `film` chunk and no explicit `Job::SetFilm`
+still renders at a reasonable test-scene size.
+
+**Three ways to override the default Film:**
+
+1. Author a `film` chunk in the scene file:
+   ```
+   film {
+       width 1920
+       height 1080
+       pixelAR 1.0
+   }
+   ```
+   Camera chunks no longer accept `width`/`height`/`pixelAR` (scene
+   format v6, Phase B2): cameras read those from the active Film at
+   construction.  If a scene declares multiple `film` chunks, the
+   last-declared wins (each one resyncs every previously-added
+   camera's Frame to the new dims).  Old v5 scenes are migrated via
+   `python tools/migrate_scenes_v5_to_v7.py`.
+
+2. CLI override (`bin/RISE-CLI`):
+   ```
+   RISE-CLI --width 480 --height 270 scene.RISEscene
+   ```
+   Partial overrides (only `--width`) preserve the non-overridden axes.
+   This is how agents render test scenes at low resolution without
+   editing the scene file — see [AGENTS.md](../AGENTS.md) "Render test
+   scenes at lower resolution".
+
+3. Programmatic API: `pJob->SetFilm(width, height, pixelAR)` before
+   `pJob->LoadAsciiScene` (then the file's `film` chunk overrides) or
+   after (then the file's value persists; this is the CLI-override
+   pattern). Both `IJob::SetFilm` and `IScenePriv::SetFilm` exist; the
+   Scene-level setter is private API.
+
+### Camera `near_clip` (Option A) & Path-Dependence Containment (Part 0)
+
+- **Camera `near_clip` (Option A, 2026-11):** `CameraCommon::nearClip` (authored via `near_clip` on any camera chunk or `IJob::SetCameraNearClip`) defines a planar near-clip distance along the camera forward axis (0 disables). Primary rays advance their origin by `tNear` onto the near-clip plane. To keep every integrator and AOV consistent without mutating `ICamera`'s vtable: (1) `BDPTIntegrator` stores the unclipped eye/lens position on `eyeVerts[0]` (`cameraRay.PointAtLength(-tNear)`), (2) `BDPT` (`t==0`, `t==1`) and `VCM` (`t==1`) reject light vertices in front of the near plane via `BDPTCameraUtilities::IsPointPastNearClip` and trace shadow visibility against `ApplyNearClipToConnectionEndpoint` while computing `dist`, `We`, and geometry term `G` from the unclipped camera point, and (3) `PathTracingIntegrator`, `BDPTIntegrator`, `RayCaster`, and `AOVBuffers` add `+ tNear` back to primary hit distance so AOV depth reports true unclipped distance from the eye/lens.
+- **Path-Dependence Containment (Part 0, 2026-11):** Non-physical view/ray shading signals (`osl_layer_weight`, `osl_fresnel`, `osl_is_camera_ray`, `osl_backfacing`) and spatially varying SSS `MixMaterial` weights propagate `RISE::PathDependence` bitmasks through `IPainter`, `IScalarPainter`, `IRayIntersectionModifier`, and `IMaterial` (`GetPathDependence()`). `osl_ao` is physically based (`kNone`). `ObjectManager::PrepareForRendering()` logs a one-shot warning and excludes flagged casters from SMS; `AutoRasterizer` routes flagged scenes to PT; `BDPT`, `VCM`, and `MLT` refuse flagged scenes (and `MLT` refuses `MixMaterial`); OpenPGL path guiding skips flagged hits.
+
+**`Scene::SetFilm` re-syncs every camera.** When `SetFilm` installs a new
+Film, it walks the camera manager and updates every camera's `Frame`
+(width, height) and `pixelAR` to match. This is what makes the CLI
+override (`--width / --height` after `LoadAsciiScene`) and the
+`film`-after-camera scene-authoring flow work correctly: the rasterizer
+reads Film for grid dimensions, the camera projects from its own Frame,
+and they always match because SetFilm enforces the invariant. The
+`SceneEditController` preview-scale path now relies on this too — it
+just calls `SetFilm(scaled)` at the start of a reduced-res pass and
+`SetFilm(rest)` at the end; both transitions resync cameras
+automatically.
+
+**Multi-camera with different per-camera dims is not preserved.** Every
+SetFilm call resyncs every camera. If you author two cameras at
+different resolutions and switch between them with `SetActiveCamera`,
+you'll find both cameras at the latest SetFilm dims, not at their
+authored dims. If you genuinely need multi-resolution per-camera, run
+the renderer twice with different `--width / --height` overrides.
+
+**Internals.** `CameraCommon` keeps non-virtual `GetWidth()` / `GetHeight()` /
+`GetPixelAR()` for the camera-utility helpers (`ImportancePinhole`,
+`ComputePixelAreaAndDistance`, etc.) — but the public `ICamera` contract
+no longer exposes them. External callers (rasterizers, CLI binaries,
+tools) MUST query the Film. `SetDimensionsAndPixelAR(w, h, pAR)` on
+`CameraCommon` is the single mutator `Scene::SetFilm` calls per camera
+to update both Frame and pixelAR atomically and rebuild the projection
+matrix once.
+
+**Regression coverage.** [tests/FilmCameraResyncTest.cpp](../tests/FilmCameraResyncTest.cpp) exercises the
+five paths most likely to drift: post-construction `SetFilm`, multi-
+camera resync, repeated SetFilm tracking the latest dims, SetFilm
+before any camera, and parsing `film` chunks AFTER camera chunks.
 
 ## Filtered Film And OIDN Denoiser Interaction
 
@@ -95,25 +216,69 @@ When no pixel filter is specified, the default is **Mitchell-Netravali (1/3, 1/3
 
 This is enforced in `PixelBasedRasterizerHelper::RasterizeScene()`:
 ```cpp
-if( pFilteredFilm ) {
-    if( !bDenoisingEnabled ) {
-        pFilteredFilm->Resolve( *pImage );
-    }
+if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() ) {
+    pFilteredFilm->Resolve( *pImage, pRect );
 }
 // ... then OIDN runs on the (box-filtered) pImage ...
 ```
 
-BDPT is not affected by this because `BDPTRasterizerBase::RasterizeScene()` is a complete override that never uses `pFilteredFilm`.
+`BDPTRasterizerBase::RasterizeScene()` (shared by `BDPTPelRasterizer`, `BDPTSpectralRasterizer`, `VCMPelRasterizer`, and `VCMSpectralRasterizer`) also allocates `pFilteredFilm` when `UseFilteredFilm()` is true and applies the exact same `if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() )` skip gate ([BDPTRasterizerBase.cpp](../src/Library/Rendering/BDPTRasterizerBase.cpp)), denoising the primary non-splat image before resolving/compositing the `t=1` `SplatFilm`.
 
 ### AOV Pipeline
 
-AOV (Arbitrary Output Variable) buffers for OIDN are managed by `AOVBuffers` (`Rendering/AOVBuffers.h`). The base class `PixelBasedRasterizerHelper` owns a `pAOVBuffers` member allocated before the render pass when `bDenoisingEnabled` is true.
+AOV (Arbitrary Output Variable) scratch is managed by `AOVBuffers`
+(`Rendering/AOVBuffers.h`) for both OIDN and agent perception. Allocation is
+channel-planned: `MakeAOVPlan` unions OIDN's albedo/normal requirement with the
+bound FrameStore's requested albedo, normal, and depth channels. If neither
+consumer requests a channel, no AOV scratch is allocated. The full agent plan
+is eight floats, or 32 bytes/pixel: six guide channels plus depth and a
+hit-only depth weight. The separate weight prevents background samples from
+diluting depth at partially covered silhouettes.
 
 Two AOV collection strategies exist:
-1. **Per-sample accumulation** (preferred): Rasterizers that use `PathTracingIntegrator` (e.g., `PathTracingPelRasterizer`) populate a `PixelAOV` struct per sample during integration. The rasterizer accumulates these into `pAOVBuffers` per pixel, weighted by the sample weight, and normalizes after the sample loop. This sets `AOVBuffers::HasData()` to true.
-2. **Post-render retrace** (fallback): If `HasData()` is false after the render pass (e.g., standard shader-dispatch rasterizers), `OIDNDenoiser::CollectFirstHitAOVs()` fires camera rays to collect first-hit albedo and normals in a separate single-threaded pass.
+1. **Per-sample accumulation** (preferred): PT, spectral PT, BDPT, VCM, and
+   path-tracing shader dispatch populate a `PixelAOV` during beauty integration.
+   The owning pixel thread accumulates requested albedo, world normal, and depth
+   with the sample weight, then normalizes after the sample loop. The shared
+   `HasData` flag is atomic because many owning pixel threads publish to it.
+2. **Post-render primary retrace** (fallback): If an estimator cannot attach
+   inline data (notably MLT), the OIDN-independent `CollectFirstHitAOVs` helper
+   traces a bounded set of camera rays in parallel over rows. Fast uses direct
+   first intersections; Accurate routes the bounded retrace through the
+   prepared shader caster so path-tracing-capable shader chains can walk
+   delta and medium continuations. OIDN's historical method delegates to
+   this helper.
 
-The `PixelAOV` struct is shared between PT and BDPT rasterizers, defined in `AOVBuffers.h`.
+`PropagateAOVsToFrameStore` copies only matching allocated planes into the
+canonical typed channels. Agent renders use a private FrameStore, compact those
+channels to a 7-byte/pixel cached observation, and restore the production store.
+Failed renders release all AOV member storage during unwind; only a successful
+OIDN render may retain its documented 24-byte/pixel albedo/normal cache.
+The agent session likewise detaches a newly registered in-memory output on
+failure while preserving the separately owned last-successful observation.
+See [AGENT_PERCEPTION.md](AGENT_PERCEPTION.md) for the API, semantics, and exact
+session-aware peak accounting (84 B/pixel cold and 91 B/pixel for an
+equal-sized animation or replacement render; active read leases are counted).
+
+## SceneEditor Module
+
+`src/Library/SceneEditor/` provides the cross-platform backend for interactive scene editing, CST-backed mutations, node-graph wiring, previews, and persistence (shared across the macOS and Windows/Qt GUIs and the agent surface):
+
+| Component | Role |
+|-----------|------|
+| `SceneEditController` | Primary orchestrator coordinating live scene mutations, undo/redo, CST synchronization, dirty state, and viewport re-render triggers |
+| `SceneEditor` | Core scene-graph selection, gizmo/transform manipulation, and viewport picking helpers |
+| `EditHistory` / `TransformSnapshot` | Command-stack undo/redo history and reversible object/camera transform snapshots |
+| `DirtyTracker` / `SaveEngine` | Document dirty-state tracking and format-preserving CST save/export pipeline |
+| `CancellableProgressCallback` | Cooperative cancellation and progress bridge for background editor renders and previews |
+| `CstIntrospection` (+ `*Introspection`) | CST chunk/parameter readback and typed domain introspection (`Camera`, `Object`, `Light`, `Material`, `Media`, `Painter`, `Rasterizer`, `Film`) |
+| `ChunkDescriptorRegistry` | Runtime lookup over parser `ChunkDescriptor` schemas for UI inspectors, completion, and agent validation |
+| `ReferenceGraph` | Directed chunk-reference dependency graph across named scene entities |
+| `OwnershipClosure` | Transitive exclusive-dependency closure for safe entity duplication, deletion, and subgraph extraction |
+| `ConnectionLegality` | Slot-pipe and category legality checks (including frozen/legacy tier gating) for graph and inspector bindings |
+| `EntityTemplates` | Canonical starter chunk templates for creating new materials, painters, lights, geometries, and objects |
+| `MaterialPreview` / `PainterPreview` | Off-screen swatch renderers for material spheres and 2D/3D painter thumbnails |
+| `GraphLayout` / `GraphLayoutSidecar` | Automatic DAG node positioning and `.layout` sidecar serialization for the shader/material graph editor |
 
 ## Design Decisions
 

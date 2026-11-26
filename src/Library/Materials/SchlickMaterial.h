@@ -15,6 +15,7 @@
 #define SCHLICK_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SchlickBRDF.h"
 #include "SchlickSPF.h"
@@ -39,10 +40,10 @@ namespace RISE
 
 		public:
 			SchlickMaterial(
-				const IPainter& diffuse, 
-				const IPainter& specular, 
-				const IPainter& roughness,
-				const IPainter& isotropy
+				const IPainter& diffuse,
+				const IPainter& specular,
+				const IScalarPainter& roughness,
+				const IScalarPainter& isotropy
 				)
 			{
 				pBRDF = new SchlickBRDF( diffuse, specular, roughness, isotropy );
@@ -58,8 +59,33 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
 
+			//! DL-471 (IMaterial::ConnectionScatterTypes): diffuse and glossy-reflection lobes only (SchlickSPF).
+			inline unsigned int ConnectionScatterTypes() const { return ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ); }
+			//! DL-481: its BSDF splits the connection value by its SPF's lobe labels (IBSDF::valueByScatterType).
+			inline bool HasConnectionTypeSplit() const { return true; }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetDiffuse()   const { return pBRDF->GetDiffuse(); }
+			inline const IPainter&       GetSpecular()  const { return pBRDF->GetSpecular(); }
+			inline const IScalarPainter& GetRoughness() const { return pBRDF->GetRoughness(); }
+			inline const IScalarPainter& GetIsotropy()  const { return pBRDF->GetIsotropy(); }
+			inline void SetDiffuse( const IPainter& v )       { pBRDF->SetDiffuse( v );   pSPF->SetDiffuse( v ); }
+			inline void SetSpecular( const IPainter& v )      { pBRDF->SetSpecular( v );  pSPF->SetSpecular( v ); }
+			inline void SetRoughness( const IScalarPainter& v ){ pBRDF->SetRoughness( v ); pSPF->SetRoughness( v ); }
+			inline void SetIsotropy( const IScalarPainter& v ) { pBRDF->SetIsotropy( v );  pSPF->SetIsotropy( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetDiffuse().GetPathDependence() |
+					pBRDF->GetSpecular().GetPathDependence() |
+					pBRDF->GetRoughness().GetPathDependence() |
+					pBRDF->GetIsotropy().GetPathDependence();
+			}
 		};
 	}
 }

@@ -1,0 +1,134 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           cloth_flag_scene.RISEscene                                                              #
+#   Description:    Simulation M4: a cloth simulation declared in the scene.  `cloth_simulation` names the  #
+#                   solver's parameters (cloth.shell; docs/SIMULATION_M3A_RESULTS.md) and its cache;        #
+#                   `simulated_mesh_geometry { source flag.surface }` shows its `surface` output.  Nothing  #
+#                   runs at load.                                                                           #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake scenes/Tests/Simulation/cloth_flag_scene.RISEscene flag         #
+#                   writes caches/flag beside this file.  The cache writer refuses a directory other users  #
+#                   could modify (a shared volume): set RISE_SIMULATION_TRUSTED_ROOTS, or give `cache` a    #
+#                   private path (e.g. ~/.cache/rise/flag).  bin/tools/rise_sim status <this scene> prints  #
+#                   the state (missing / baking / partial / complete / stale / failed).                     #
+#   Live:           mode interactive: the editor's LiveSimulationAttachSimulation("flag") runs it in the    #
+#                   viewport without a bake.                                                                #
+#   Unbaked:        the scene loads; the flag is an empty, hidden mesh until baked or run live (a warning). #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+}
+
+animation_options
+{
+	time_start		0
+	time_end		3
+	num_frames		91
+}
+
+film
+{
+	width			480
+	height			270
+}
+
+pinhole_camera
+{
+	location		1.6 1.4 2.4
+	lookat			0 0.7 0
+	up				0 1 0
+	fov				40.0
+}
+
+uniformcolor_painter
+{
+	name			pnt_flag
+	color			0.75 0.12 0.1
+}
+
+lambertian_material
+{
+	name			mat_flag
+	reflectance		pnt_flag
+}
+
+# A 1 m cotton sheet pinned along one edge, 3 s at 30 Hz.  Every parameter not
+# named here takes the solver's default (the editor's properties panel lists them).
+cloth_simulation
+{
+	name			flag
+	mode			interactive
+	vertices_u		31
+	vertices_v		31
+	frames			91
+	frame_rate		30
+	origin			-0.5 1.2 0
+	axis_u			1 0 0
+	axis_v			0 -0.2 -1
+	material		cotton-plain-weave
+	pin				v0 follow pole
+	follow_object	pole
+	contact			barrier
+}
+
+simulated_mesh_geometry
+{
+	name			geo_flag
+	source			flag.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			flag_object
+	geometry		geo_flag
+	material		mat_flag
+}
+
+# The pole the pinned edge follows (a scene input: its keyframed transform,
+# sampled through the animator at solver times, enters the cache key).
+cylinder_geometry
+{
+	name			geo_pole
+	axis			y
+	radius			0.02
+	height			1.4
+}
+
+standard_object
+{
+	name			pole
+	geometry		geo_pole
+	position		-0.5 0.6 0
+}
+
+timeline
+{
+	element_type	object
+	element			pole
+	param			position
+
+	time			0.0
+	value			-0.5 0.6 0
+
+	time			3.0
+	value			-0.2 0.6 0
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.4 -1 -0.6
+}

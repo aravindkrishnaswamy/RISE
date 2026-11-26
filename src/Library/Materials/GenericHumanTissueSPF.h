@@ -16,6 +16,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,8 +28,10 @@ namespace RISE
 		protected:
 			virtual ~GenericHumanTissueSPF( );
 
-			const IPainter&				sca;							///< Scattering co-efficient (says how much scattering happens)
-			const IPainter&				g;								///< Henyey-Greenstein phase function g factor
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*		pSca;							///< Scattering co-efficient (physical scalar)
+			const IScalarPainter*		pG;								///< Henyey-Greenstein phase function g factor (physical scalar)
 
 			const Scalar				whole_blood;					///< Amount of tissue composed of whole blood
 			const Scalar				betacarotene_concentration;		///< Concentration of beta-carotene in the dermis
@@ -52,9 +55,9 @@ namespace RISE
 				) const;
 
 		public:
-			GenericHumanTissueSPF( 
-				const IPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
-				const IPainter& g_,										///< Anisotropy factor for the HG phase function
+			GenericHumanTissueSPF(
+				const IScalarPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
+				const IScalarPainter& g_,										///< Anisotropy factor for the HG phase function
 				const Scalar whole_blood_,								///< Amount of tissue composed of whole blood
 				const Scalar betacarotene_concentration,				///< Concentration of beta-carotene in the dermis
 				const Scalar bilirubin_concentration,					///< Concentration of bilirubin in whole blood
@@ -62,13 +65,19 @@ namespace RISE
 				const bool diffuse_										///< Is the scattering just diffuse ?
 				);
 
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetSca() const { return *pSca; }
+			inline const IScalarPainter& GetG()   const { return *pG; }
+			void SetSca( const IScalarPainter& v );
+			void SetG( const IScalarPainter& v );
+
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  
 			void	Scatter( 
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -79,7 +88,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 		};
 	}

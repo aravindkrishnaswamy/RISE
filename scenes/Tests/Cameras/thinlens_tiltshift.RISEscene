@@ -1,0 +1,349 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           thinlens_tiltshift.RISEscene                                                            #
+#   Description:    Tilt-shift regression scene (Scheimpflug demo).  A row of 30 cm spheres sits along a    #
+#                   diagonal in front of the camera.  Camera is at (0,0,4) m looking down −z; the lens      #
+#                   focuses at 5 m on the optical axis.  Without tilt, only the centre of the row sits      #
+#                   close to focus and the extreme spheres render visibly out of DOF (~1.5 px blur).        #
+#                   With `tilt_y 45`, the focal plane rotates in the camera-y axis so it follows the        #
+#                   row's +1 slope (dz_cam/dx = −1 ⇒ 45° tilt), and every sphere lands on the focal         #
+#                   plane — the textbook Scheimpflug result.                                                #
+#                                                                                                           #
+#                   Geometry is in metres (scene_unit defaults to 1.0).  Camera lens specs are mm; the      #
+#                   renderer converts internally.  focus_distance is in scene units (metres here).          #
+#                                                                                                           #
+#   Author:         Generated for Phase 1.1/1.2 testing                                                     #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				0.69207 0.78741 1
+	colorspace			Rec709RGB_Linear
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
+{
+	samples				64
+	max_diffuse_bounce		0
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.095493
+	radiance_background		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/thinlens_tiltshift
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+# 100 mm short-tele wide-open at f/1.4 focused 5 m down the optical
+# axis.  Without tilt, the depth-of-field at f/1.4 spans roughly
+# 4.7–5.4 m at this focus — the spheres at the row's extremes (4.22 m
+# and 5.98 m from the camera) sit clearly outside that band, so they
+# render with ~1.5 px CoC blur.  Enabling `tilt_y 45` rotates the
+# focal plane to match the row's diagonal — every sphere snaps sharp.
+
+film
+{
+	width			512
+	height			256
+}
+
+thinlens_camera
+{
+	location			0 0 4
+	lookat				0 0 0
+	up					0 1 0
+	sensor_size			36              # mm — full-frame
+	focal_length		100             # mm — short telephoto
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		5               # metres — onto the centre of the row
+	tilt_y				45              # degrees — focal-plane rotation around camera-y
+}
+
+##################################################
+# Painters / materials
+##################################################
+
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.85 0.2 0.2
+}
+
+lambertian_material
+{
+	name				mat_red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				mat_white
+	reflectance			color_white
+}
+
+##################################################
+# Geometry: row of 30 cm spheres on a tilted diagonal
+##################################################
+
+sphere_geometry
+{
+	name				ball
+	radius				0.15
+}
+
+# Row marches along the focal plane equation z_cam = focus − x (the
+# tilt_y = 45° tilted plane through (0,0,5) in camera-local coords).
+# In world coords (camera at z = 4, lookat z = 0), the row goes from
+# (−0.9, −0.4, −1.9) (farthest from camera, 5.98 m) to (+0.9, −0.4,
+# −0.1) (closest, 4.22 m).  All six spheres sit on the focal plane,
+# so with `tilt_y 45` every sphere is sharp; with `tilt_y 0` only
+# the central pair sits inside the DOF band.
+
+standard_object
+{
+	name		s_a
+	geometry	ball
+	position	-0.9 -0.4 -1.9
+	material	mat_red
+}
+
+standard_object
+{
+	name		s_b
+	geometry	ball
+	position	-0.54 -0.4 -1.54
+	material	mat_red
+}
+
+standard_object
+{
+	name		s_c
+	geometry	ball
+	position	-0.18 -0.4 -1.18
+	material	mat_red
+}
+
+standard_object
+{
+	name		s_d
+	geometry	ball
+	position	0.18 -0.4 -0.82
+	material	mat_red
+}
+
+standard_object
+{
+	name		s_e
+	geometry	ball
+	position	0.54 -0.4 -0.46
+	material	mat_red
+}
+
+standard_object
+{
+	name		s_f
+	geometry	ball
+	position	0.9 -0.4 -0.1
+	material	mat_red
+}
+
+# Floor for spatial reference
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 -0.55 0
+	orientation			-90.0 0.0 0.0
+	material			mat_white
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name				sun
+	power				4.0
+	color				1.0 0.95 0.85
+	colorspace			sRGB
+	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
+	direction			0.3 1.0 0.4
+}
+
+
+

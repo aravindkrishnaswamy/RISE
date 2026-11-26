@@ -105,9 +105,11 @@
 
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/IFunction1D.h"
 #include "../Utilities/Reference.h"
 #include "MultipoleDiffusion.h"
+#include "../Utilities/ExteriorIndexCache.h"
 
 namespace RISE
 {
@@ -119,15 +121,15 @@ namespace RISE
 		{
 		protected:
 			// Donner 2008 biophysical parameters (IPainter references)
-			const IPainter&		pnt_melanin_fraction;		///< C_m: melanin volume fraction (0-0.5)
-			const IPainter&		pnt_melanin_blend;			///< beta_m: eumelanin vs pheomelanin (0-1)
-			const IPainter&		pnt_hemoglobin_epidermis;	///< C_he: hemoglobin fraction in epidermis (0-0.05)
-			const IPainter&		pnt_carotene_fraction;		///< C_bc: carotene fraction (0-0.05)
-			const IPainter&		pnt_hemoglobin_dermis;		///< C_hd: hemoglobin fraction in dermis (0-0.1)
-			const IPainter&		pnt_epidermis_thickness;	///< Epidermis thickness (cm), default 0.025
-			const IPainter&		pnt_ior_epidermis;			///< IOR of epidermis, default 1.4
-			const IPainter&		pnt_ior_dermis;				///< IOR of dermis, default 1.38
-			const IPainter&		pnt_blood_oxygenation;		///< gamma: blood oxygenation (0-1), default 0.7
+			const IScalarPainter&		pnt_melanin_fraction;		///< C_m: melanin volume fraction (0-0.5)
+			const IScalarPainter&		pnt_melanin_blend;			///< beta_m: eumelanin vs pheomelanin (0-1)
+			const IScalarPainter&		pnt_hemoglobin_epidermis;	///< C_he: hemoglobin fraction in epidermis (0-0.05)
+			const IScalarPainter&		pnt_carotene_fraction;		///< C_bc: carotene fraction (0-0.05)
+			const IScalarPainter&		pnt_hemoglobin_dermis;		///< C_hd: hemoglobin fraction in dermis (0-0.1)
+			const IScalarPainter&		pnt_epidermis_thickness;	///< Epidermis thickness (cm), default 0.025
+			const IScalarPainter&		pnt_ior_epidermis;			///< IOR of epidermis, default 1.4
+			const IScalarPainter&		pnt_ior_dermis;				///< IOR of dermis, default 1.38
+			const IScalarPainter&		pnt_blood_oxygenation;		///< gamma: blood oxygenation (0-1), default 0.7
 
 			// Chromophore extinction lookup tables
 			IFunction1D*		pEumelaninExt;
@@ -163,12 +165,31 @@ namespace RISE
 			static const int NUM_RGB = 3;
 			static const int NUM_SPECTRAL = 31;			///< 400-700 nm at 10 nm spacing
 
-			GaussianTerm		m_rgb_terms[NUM_RGB][K_TERMS];
-			Scalar				m_rgb_total_weight[NUM_RGB];		///< Σ c_k per channel
-			Scalar				m_rgb_cdf[NUM_RGB][K_TERMS];
+			/// The fitted profile for ONE exterior index (DL-291).  The
+			/// multipole's extrapolation term A = (1+Fdr)/(1-Fdr) of each
+			/// slab depends on the layer index RELATIVE to the medium around
+			/// the body, so the fit is a function of the exterior.
+			struct ProfileTables
+			{
+				GaussianTerm		rgb_terms[NUM_RGB][K_TERMS];
+				Scalar				rgb_total_weight[NUM_RGB];		///< Σ c_k per channel
+				Scalar				rgb_cdf[NUM_RGB][K_TERMS];
 
-			GaussianTerm		m_spectral_terms[NUM_SPECTRAL][K_TERMS];
-			Scalar				m_spectral_total_weight[NUM_SPECTRAL];
+				GaussianTerm		spectral_terms[NUM_SPECTRAL][K_TERMS];
+				Scalar				spectral_total_weight[NUM_SPECTRAL];
+
+				/// Largest variance of any term with non-negligible weight
+				/// (the fit's active set moves with the exterior).
+				Scalar				max_variance;
+			};
+
+			/// Built by the constructor for an air exterior (exactly the
+			/// pre-DL-291 tables; the in-air path reads only these).
+			ProfileTables		m_air;
+
+			/// Every other exterior, built on first use (DL-291).
+			static const unsigned int MAX_EXTERIORS = 32;
+			ExteriorIndexCache<ProfileTables, MAX_EXTERIORS>	m_exterior_tables;
 
 			static const Scalar	ms_rgb_wavelengths[NUM_RGB];
 			static const Scalar	ms_spectral_wavelengths[NUM_SPECTRAL];
@@ -183,23 +204,49 @@ namespace RISE
 
 			static Scalar ComputeSkinBaselineAbsorption( const Scalar nm );
 			static Scalar ComputeEpidermisScattering( const Scalar nm );
-			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 			void ComputePerLayerCoefficients(
 				const Scalar nm,
 				const RayIntersectionGeometric& ri,
-				LayerParams layers_out[2]
+				LayerParams layers_out[2],
+                const bool spectral
 				) const;
 
 			void PrecomputeProfiles();
 
+			/// Fits every RGB and spectral profile for one exterior index.
+			/// `max_variance_out` (optional) receives the largest variance
+			/// of any term with non-negligible weight.
+			void PrecomputeTables(
+				const Scalar exteriorIOR,
+				ProfileTables& tables_out,
+				Scalar* max_variance_out
+				) const;
+
 			void PrecomputeProfileAtWavelength(
 				const Scalar nm,
 				const RayIntersectionGeometric& ri,
+				const Scalar exteriorIOR,
 				GaussianTerm terms_out[K_TERMS],
 				Scalar& total_weight_out,
-				Scalar cdf_out[K_TERMS]
-				);
+				Scalar cdf_out[K_TERMS],
+                const bool spectral
+				) const;
+
+			/// The tables for the exterior the record's ray arrived through
+			/// (`ri.ambientIOR`; air for a stackless record).  Inline so the
+			/// in-air path costs one compare.
+			inline const ProfileTables& TablesFor( const RayIntersectionGeometric& ri ) const
+			{
+				const Scalar n = ri.ambientIOR;
+				if( n == 1.0 || !( n > 0 && n < RISE_INFINITY ) ) {
+					return m_air;		// air, or a non-physical value (BSSRDFSampling::ExteriorIOR's air fallback)
+				}
+				return TablesForExterior( n );
+			}
+
+			/// Non-air exteriors: built on first use (DL-291).
+			const ProfileTables& TablesForExterior( const Scalar exteriorIOR ) const;
 
 			/// Evaluate the K-term Sum-of-Gaussians at radius r.
 			static Scalar EvaluateSumOfGaussians(
@@ -209,15 +256,15 @@ namespace RISE
 
 		public:
 			DonnerJensenSkinDiffusionProfile(
-				const IPainter& melanin_fraction_,
-				const IPainter& melanin_blend_,
-				const IPainter& hemoglobin_epidermis_,
-				const IPainter& carotene_fraction_,
-				const IPainter& hemoglobin_dermis_,
-				const IPainter& epidermis_thickness_,
-				const IPainter& ior_epidermis_,
-				const IPainter& ior_dermis_,
-				const IPainter& blood_oxygenation_
+				const IScalarPainter& melanin_fraction_,
+				const IScalarPainter& melanin_blend_,
+				const IScalarPainter& hemoglobin_epidermis_,
+				const IScalarPainter& carotene_fraction_,
+				const IScalarPainter& hemoglobin_dermis_,
+				const IScalarPainter& epidermis_thickness_,
+				const IScalarPainter& ior_epidermis_,
+				const IScalarPainter& ior_dermis_,
+				const IScalarPainter& blood_oxygenation_
 				);
 
 			//
@@ -227,34 +274,38 @@ namespace RISE
 			RISEPel EvaluateProfile(
 				const Scalar r,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar EvaluateProfileNM(
 				const Scalar r,
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
-				) const;
+				) const override;
 
 			Scalar SampleRadius(
 				const Scalar u,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar PdfRadius(
 				const Scalar r,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar FresnelTransmission(
 				const Scalar cosTheta,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
+
+            Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const override;
+            Scalar FresnelTransmissionNM(const Scalar cosTheta,
+                const RayIntersectionGeometric& ri, const Scalar nm) const override;
 
 			Scalar GetIOR(
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			//
 			// ISubSurfaceExtinctionFunction interface
@@ -262,11 +313,19 @@ namespace RISE
 
 			Scalar GetMaximumDistanceForError(
 				const Scalar error
-				) const;
+				) const override;
+
+			/// DL-291: the fit for a non-air exterior can activate a wider
+			/// Gaussian than the air fit, so the cutoff follows the record's
+			/// exterior; in air it is GetMaximumDistanceForError exactly.
+			Scalar GetMaximumDistanceForErrorAt(
+				const Scalar error,
+				const RayIntersectionGeometric& ri
+				) const override;
 
 			RISEPel ComputeTotalExtinction(
 				const Scalar distance
-				) const;
+				) const override;
 		};
 	}
 }

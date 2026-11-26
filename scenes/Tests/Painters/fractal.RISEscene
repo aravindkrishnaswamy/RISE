@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -16,14 +16,28 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name				global
-	shaderop			DefaultDirectLighting
+	shaderop			DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
 {
-	max_recursion		10
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
+{
 	samples				4
-	lum_samples			1
+	max_diffuse_bounce		0
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.999493
+	radiance_background		FALSE
 }
 
 file_rasterizeroutput
@@ -34,13 +48,12 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
-DEFINE FRAMES 300
 
 animation_options
 {
 	time_start			0.0
 	time_end			3.0
-	num_frames			@FRAMES
+	num_frames			300.000000000000
 }
 
 
@@ -48,13 +61,17 @@ animation_options
 # Cameras
 ##################################################
 
+film
+{
+	width			1024
+	height			1024
+}
+
 pinhole_camera
 {
 	location			0 0 0.5
 	lookat				0 0 0
 	up					0 1 0
-	width				1024
-	height				1024
 	fov					30.0
 }
 
@@ -62,7 +79,151 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_orange
+	color		1.0 0.5 0.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 mandelbrot_painter
 {
@@ -103,13 +264,6 @@ standard_object
 	geometry			planegeom
 	position			0.2 0.2 -0.24
 	material			fractal
-}
-
-ambient_light
-{
-	name		amb
-	color		1.0 1.0 1.0
-	power		3.14
 }
 
 
@@ -236,3 +390,5 @@ timeline
 	time		3.0
 	value		-0.2599999
 }
+
+

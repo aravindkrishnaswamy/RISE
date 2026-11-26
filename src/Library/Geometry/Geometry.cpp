@@ -18,14 +18,12 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-Geometry::Geometry( )
+Geometry::Geometry( ) :
+  bOnlyAsMesh( false ),
+  m_shapeRevision( 1 )
 {
 }
 
 Geometry::~Geometry( )
-{
-}
-
-void Geometry::GenerateMesh( )
 {
 }

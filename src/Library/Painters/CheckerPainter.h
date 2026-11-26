@@ -39,10 +39,26 @@ namespace RISE
 			SpectralPacket					GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar							GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 
+			//! SINGLE-SOURCE SELECTOR (Stage C slice 2): `ComputeWhich`
+			//! picks ONE child and this forwards to that child's
+			//! `GetRadianceNM`.  The generic composed-`GetColor` default is
+			//! for painters that BLEND several sources; a selector emits
+			//! exactly one child's spectrum, so forwarding preserves a
+			//! physical SPD bound to an emissive slot (the default would
+			//! re-uplift its RGB projection, a different spectrum).
+			Scalar							GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel							GetRadianceColor( const RayIntersectionGeometric& ri ) const;	//!< DL-396: forwards like GetRadianceNM
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );
 			void RegenerateData( );
+			//! DL-203 (docs/DEBT_LEDGER.md): this class's `a`/`b` operands genuinely combine or select
+			//! among their own TRUE `GetColorNM` (see this class's own GetColorNM),
+			//! so this recurses -- see IPainter::IsSpectrallyDefined's own doc
+			//! comment for the full rationale and which composites do NOT recurse.
+			bool IsSpectrallyDefined() const { return a.IsSpectrallyDefined() || b.IsSpectrallyDefined(); }
+			unsigned int GetPathDependence() const { return a.GetPathDependence() | b.GetPathDependence(); }
 		};
 	}
 }

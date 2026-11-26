@@ -1,0 +1,48 @@
+RISE ASCII SCENE 7
+#############################################################################
+#                          RISE Ascii Scene File                            #
+#                                                                           #
+#   File:           empty_starter.RISEscene                                 #
+#   Description:    The agent-path starter scene.  Loaded (from the app    #
+#                   bundle / build-output copy) when the user creates a    #
+#                   scene from a prompt on the start screen.  Deliberately #
+#                   the STRUCTURAL MINIMUM for a loadable scene: shader,   #
+#                   rasterizer, film, camera -- ZERO objects, lights, or   #
+#                   environment.  It renders black by design (start-screen #
+#                   spec decision 2, 2026-07-15); the agent constructs     #
+#                   everything.  Do NOT add scaffold geometry here -- the  #
+#                   agent harness owns empty-scene competence.             #
+#                                                                           #
+#                   Canonical copy: scenes/Templates/empty_starter         #
+#                   .RISEscene (this file).  The GUI builds copy it into   #
+#                   their resources; a test asserts the copies stay        #
+#                   identical.  See docs/gui/START_SCREEN.md.              #
+#   Author:         Aravind Krishnaswamy                                    #
+#                                                                           #
+#############################################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				16
+	pixel_filter		box
+}
+
+film
+{
+	width				800
+	height				600
+}
+
+pinhole_camera
+{
+	location			0 1 5
+	lookat				0 0 0
+	up					0 1 0
+	fov					45.0
+}

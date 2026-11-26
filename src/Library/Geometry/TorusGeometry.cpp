@@ -12,11 +12,14 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "TorusGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -35,9 +38,66 @@ TorusGeometry::~TorusGeometry( )
 {
 }
 
-void TorusGeometry::GenerateMesh( )
+bool TorusGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	const Scalar R = m_p0;  // ring-center radius
+	const Scalar r = m_p1;  // tube radius
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v     = Scalar(j) / Scalar(nV);
+		const Scalar thetaV = v * TWO_PI;
+		const Scalar cosV  = cos(thetaV);
+		const Scalar sinV  = sin(thetaV);
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u      = Scalar(i) / Scalar(nU);
+			const Scalar thetaU = u * TWO_PI;
+			const Scalar cosU   = cos(thetaU);
+			const Scalar sinU   = sin(thetaU);
+
+			const Point3 pos(
+				(R + r * cosV) * cosU,
+				r * sinV,
+				(R + r * cosV) * sinU );
+
+			const Vector3 nrm = Vector3Ops::Normalize( Vector3(
+				cosV * cosU,
+				sinV,
+				cosV * sinU ) );
+
+			vertices.push_back( pos );
+			normals.push_back( nrm );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = baseIdx + j     * rowStride + i;
+			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+			const unsigned int c = baseIdx + (j+1) * rowStride + i;
+			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+		}
+	}
+
+	return true;
 }
 
 void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHitFrontFaces*/, const bool /*bHitBackFaces*/, const bool bComputeExitInfo ) const
@@ -67,7 +127,8 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 		ri.vNormal.z = ri.ptIntersection.z * f;
 
 		ri.vNormal = Vector3Ops::Normalize(ri.vNormal);
-		
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+
 		if( bComputeExitInfo && ri.range2 != 0 )
 		{
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
@@ -79,15 +140,56 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 			ri.vNormal2.z = ri.ptExit.z * f2;
 
 			ri.vNormal2 = Vector3Ops::Normalize(ri.vNormal2);
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		GeometricUtilities::TorusTextureCoord(
-			Vector3Ops::Normalize( Vector3( 0.0, 1.0/m_dMajorRadius, 0.0 ) ), 
-			Vector3Ops::Normalize( Vector3( -1.0/m_dMajorRadius, 0.0, 0.0 ) ), 
+			Vector3( 0.0, 1.0, 0.0 ),
+			Vector3( -1.0, 0.0, 0.0 ),
 			ri.ptIntersection,
-			ri.vNormal, 
-			ri.ptCoord 
+			ri.vNormal,
+			ri.ptCoord,
+			m_p0,
+			m_p1
 			);
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4) -- see the identical
+		// block in SphereGeometry::IntersectRay for the full rationale:
+		// publish the closed-form Weingarten map this primitive already knows,
+		// ungated (a few trig calls on data the hit produced); gate only
+		// `scaleHint`, which nothing but the expression VM's `curv` reads.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a genuine
+				// surface parameterization with no discontinuous fallback
+				// branch (unlike the mesh sites), so hand it to the shading
+				// ONB unconditionally on sd.valid.
+				ri.bShadingTangentFromGeometry = true;
+				ri.vShadingTangent             = sd.dpdu;	// object space
+				ri.bHasShadingTangent          = true;
+			}
+		}
 	}
 }
 
@@ -127,28 +229,48 @@ void TorusGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* 
 	// Sample u uniformly on [0, 2*PI)
 	const Scalar u = TWO_PI * prand.x;
 
-	// Sample v with probability proportional to (R + r*cos(v)) using rejection sampling
-	// The maximum of (R + r*cos(v)) is (R + r), so we accept with prob (R + r*cos(v)) / (R + r)
+	// Sample v with probability density proportional to the area element
+	// (R + r*cos(v)) by inverting its CDF
+	//     F(v) = (R*v + r*sin(v)) / (2*PI*R)
+	// with a bisection-safeguarded Newton iteration on
+	//     g(v) = R*v + r*sin(v) - 2*PI*R*xi,   g'(v) = R + r*cos(v) >= R - r.
+	//
+	// This replaces a rejection sampler whose retry path re-hashed its
+	// [0,1) float candidates with an INTEGER-hash multiplier (2^-32),
+	// collapsing every rejected first draw — mean rejection rate
+	// r/(R+r), e.g. 27% at minorratio 0.38 — onto the single tube
+	// angle v = 2*PI*0.618..., i.e. a point-mass on one circle of the
+	// tube.  Estimators dividing by the claimed uniform 1/GetArea()
+	// pdf then carried a circle-shaped spatial bias, and integrators
+	// that mix light-sampled strategies with different MIS shares
+	// disagreed on torus-emitter scenes (VCM floor pool ~0.90x of
+	// PT/BDPT, 2026-06-10).  CDF inversion is exact, deterministic
+	// from prand.y alone, and needs no retries.  prand.z is unused.
 	Scalar v;
 	{
-		// Use prand.y and prand.z to drive the rejection sampler deterministically.
-		// If the first attempt is rejected, we iterate using a simple hash to
-		// generate subsequent candidates, preserving the contract that same prand
-		// yields same output.
-		Scalar vy = prand.y;
-		Scalar vz = prand.z;
-		for( ;; )
+		const Scalar xi = prand.y;
+		const Scalar target = TWO_PI * R * xi;
+		Scalar lo = 0;
+		Scalar hi = TWO_PI;
+		v = TWO_PI * xi;	// exact for r == 0; good first guess otherwise
+		for( int i = 0; i < 32; i++ )
 		{
-			v = TWO_PI * vy;
-			const Scalar acceptance = (R + r * cos(v)) / (R + r);
-			if( vz <= acceptance ) {
+			const Scalar g = R * v + r * sin(v) - target;
+			if( g > 0 ) {
+				hi = v;
+			} else {
+				lo = v;
+			}
+			const Scalar gp = R + r * cos(v);
+			Scalar next = ( gp > 0 ) ? ( v - g / gp ) : v;
+			if( !( next > lo && next < hi ) ) {
+				next = 0.5 * ( lo + hi );	// bisection fallback keeps the bracket
+			}
+			if( fabs( next - v ) < 1e-12 ) {
+				v = next;
 				break;
 			}
-			// Generate new candidates by fractional hashing
-			vy = vy * 2.3283064365386963e-10 + 0.61803398875;  // golden ratio offset
-			if( vy >= 1.0 ) vy -= 1.0;
-			vz = vz * 2.3283064365386963e-10 + 0.41421356237;  // sqrt(2)-1 offset
-			if( vz >= 1.0 ) vz -= 1.0;
+			v = next;
 		}
 	}
 
@@ -184,11 +306,13 @@ void TorusGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* 
 		pt.z = (R + r * cosV) * sinU;
 
 		GeometricUtilities::TorusTextureCoord(
-			Vector3Ops::Normalize( Vector3( 0.0, 1.0/m_dMajorRadius, 0.0 ) ),
-			Vector3Ops::Normalize( Vector3( -1.0/m_dMajorRadius, 0.0, 0.0 ) ),
+			Vector3( 0.0, 1.0, 0.0 ),
+			Vector3( -1.0, 0.0, 0.0 ),
 			pt,
 			nrm,
-			*coord
+			*coord,
+			m_p0,
+			m_p1
 			);
 	}
 }
@@ -217,16 +341,41 @@ SurfaceDerivatives TorusGeometry::ComputeSurfaceDerivatives( const Point3& objSp
 	const Scalar sinV = sin(v);
 	const Scalar Rr = R + r * cosV;
 
-	// Position partial derivatives
-	sd.dpdu = Vector3( -Rr * sinU, 0.0, Rr * cosU );
-	sd.dpdv = Vector3( -r * sinV * cosU, r * cosV, -r * sinV * sinU );
+	// Position partial derivatives.
+	//
+	// Convention: (dpdu, dpdv, n) must be right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  At the outer equator (u=0, v=0) the
+	// "natural" ordering (dpdu = tangent-to-ring, dpdv = tangent-to-tube)
+	// produces (dpdu × dpdv) antiparallel to the outward normal — that's
+	// left-handed.  Swap the parametrization (use tube angle as u and
+	// ring angle as v) so the frame is right-handed at every point on
+	// the torus.
+	sd.dpdu = Vector3( -r * sinV * cosU, r * cosV, -r * sinV * sinU );  // tube tangent
+	sd.dpdv = Vector3( -Rr * sinU, 0.0, Rr * cosU );                     // ring tangent
 
-	// Normal partial derivatives
+	// Normal partial derivatives (swap to match position-derivative swap).
 	// Unit normal on torus: N = (cosV*cosU, sinV, cosV*sinU)
-	sd.dndu = Vector3( -cosV * sinU, 0.0, cosV * cosU );
-	sd.dndv = Vector3( -sinV * cosU, cosV, -sinV * sinU );
+	sd.dndu = Vector3( -sinV * cosU, cosV, -sinV * sinU );
+	sd.dndv = Vector3( -cosV * sinU, 0.0, cosV * cosU );
 
-	sd.uv = Point2( u, v );
+	sd.uv = Point2( v, u );  // u,v semantics swapped to match derivative swap
+
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  GeometricUtilities::TorusTextureCoord emits
+	//     s = U_ring / (2*PI),   t = V_tube / (2*PI)
+	// from the same atan2 recoveries used above (its wrap-to-[0, 2*PI)
+	// only shifts by a constant, so the local Jacobian is unaffected),
+	// whereas the right-handedness swap above makes the DERIVATIVE
+	// parameters (u, v) = (V_tube, U_ring).  So the map is the axis
+	// SWAP times 1/(2*PI) -- the off-diagonal terms are the non-zero
+	// ones, which is why a mis-charted torus was the worst of the four
+	// (2.64 LOD levels): it was both mis-scaled and transposed.
+	sd.dsdu = 0.0;
+	sd.dsdv = 1.0 / TWO_PI;
+	sd.dtdu = 1.0 / TWO_PI;
+	sd.dtdv = 0.0;
+	sd.texChartValid = true;
+
 	sd.valid = true;
 
 	return sd;
@@ -259,16 +408,19 @@ IKeyframeParameter* TorusGeometry::KeyframeFromParameters( const String& name, c
 
 void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case MAJORRADIUS_ID:
 		{
 			m_dMajorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case MINORRADIUS_ID:
 		{
 			m_dMinorRadius = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 
@@ -277,8 +429,73 @@ void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void TorusGeometry::RegenerateData( )
 {
-	m_p1 = ((m_dMajorRadius - m_dMinorRadius) / 2);
-	m_p0 = m_p1+m_dMinorRadius;
-	m_sqrP1 = m_p1 * m_p1;
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+	// Standard torus parameterisation matching the scene spec:
+	//   majorradius = ring radius (distance from torus axis to ring centre)
+	//   minorradius = tube radius
+	//   Implicit:  (sqrt(x² + z²) − R)² + y² = r²
+	//
+	// Prior to 2026-04, this code computed m_p0 = (R + r)/2 and
+	// m_p1 = (R − r)/2 — representing a torus whose OUTER boundary sat
+	// at d=R and INNER boundary at d=r, with ring radius (R+r)/2.  That
+	// model is internally consistent (solver + normal use matching m_p0,
+	// m_sqrP1) but it does NOT match either (a) the scene-file intent
+	// stated in the comments ("ring radius 0.3, tube radius 0.075") or
+	// (b) TessellateToMesh, which uses m_p0 as the ring radius and m_p1
+	// as the tube radius when placing vertices.  The disagreement went
+	// unnoticed because both SMS and VCM rendered *some* torus — just
+	// a smaller, fatter one than the user asked for.
+	m_p0 = m_dMajorRadius;
+	m_p1 = m_dMinorRadius;
 	m_sqrP0 = m_p0 * m_p0;
+	m_sqrP1 = m_p1 * m_p1;
+	BumpShapeRevision();
+}
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! The torus RISE models has its ring in the XZ plane and its tube offset
+//! along Y -- read off TessellateToMesh's own parameterisation, whose
+//! position is `((R + r cos v) cos u, r sin v, (R + r cos v) sin u)`, so
+//! that is the axis convention this must match and not some other tool's.
+//! The exact field in that convention is
+//! `| length( length(p.xz) - R, p.y ) - r |`: the inner length is the
+//! distance from the point to the ring circle, and subtracting the tube
+//! radius gives the signed distance to the tube surface, which is exact
+//! inside as well as outside.
+bool TorusGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	// CLAMPED AT ZERO rather than fabs -- a point inside the tube reads 0
+	// ("interpenetration IS contact").
+	const Scalar sgn = q - m_dMinorRadius;
+	const Scalar d   = ( sgn > Scalar( 0 ) ) ? sgn : Scalar( 0 );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+//! IGeometry::SignedDistanceLower -- the SAME field as above, UNCLAMPED.
+//! Exact on both sides; a degenerate major or minor radius refuses.
+bool TorusGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( m_dMinorRadius > Scalar( 0 ) ) || !( m_dMajorRadius > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar rho = std::sqrt( ptObject.x*ptObject.x + ptObject.z*ptObject.z ) - m_dMajorRadius;
+	const Scalar q   = std::sqrt( rho*rho + ptObject.y*ptObject.y );
+	const Scalar sgn = q - m_dMinorRadius;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
 }

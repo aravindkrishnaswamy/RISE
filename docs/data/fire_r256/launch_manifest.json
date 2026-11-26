@@ -1,0 +1,17 @@
+{
+  "launched_utc": "2026-10-20T03:47:09.749024+00:00",
+  "start_step": 9224,
+  "start_time_s": 15.018720638239756,
+  "planned_additional_steps": 2432,
+  "identity_requirement": "waived; no state or timestep tests",
+  "tier6": "cancelled",
+  "production_solver_changes": false,
+  "runtime_directory": "/Volumes/SSD/RISE/fire_production_calibration/r256_limiter_diagnostic",
+  "sha256": {
+    "/Volumes/SSD/Working/RISE/tools/fire/r256_limiter_driver.cpp": "ce319276967312ebf9e6a0a912288a2b5d467f4b2411bd76c9c887825e482ac8",
+    "/Volumes/SSD/Working/RISE/tools/fire/r256_build_limiter_driver.py": "d5d46d8d83f9619433f5095124395410110551ff4ccf671009c4604f51fe6dab",
+    "/Volumes/SSD/Working/RISE/tools/fire/r256_reduce_limiter.py": "3864d4c4b1dd8b1578b53327b226d7fdc57cd899093760dffc88c23f574ffbf8",
+    "/Volumes/SSD/RISE/fire_production_calibration/r256_limiter_driver": "e0d7b9a7fa743b3d0718c72a874650791acc9c521dae296184896e2959622cc3",
+    "/Volumes/SSD/Working/RISE/bin/tests/FireSequenceTest": "d1cebdd779a5d18a9e5b92ec162ddfcfc51aaae1a8963104bcdc633fb7bab033"
+  }
+}

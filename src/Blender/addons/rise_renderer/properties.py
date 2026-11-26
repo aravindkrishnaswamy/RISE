@@ -42,12 +42,97 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     )
     use_path_tracing: bpy.props.BoolProperty(
         name="Path Tracing",
-        description="Use the RISE path tracing shader op for indirect lighting",
+        description="Use the RISE path tracing shader op for indirect lighting (back-compat — use `Rasterizer` enum for v5+)",
         default=True,
     )
+    rasterizer_type: bpy.props.EnumProperty(
+        name="Rasterizer",
+        description=(
+            "Which RISE integrator to use.  Pel = RGB radiance, "
+            "Spectral = wavelength-resolved (slower but correct for "
+            "dispersion / wavelength-dependent IOR).  PT is the most "
+            "robust general-purpose default.  BDPT improves indirect "
+            "lighting through small openings.  VCM adds photon "
+            "merging on top of BDPT — handles caustics and through-"
+            "glass cases (water-with-pebbles, glass spheres) that "
+            "PT/BDPT can't connect.  MLT and the Pixel Rasterizer are "
+            "FROZEN legacy integrators (unsupported since 2026-10-09: "
+            "they still render as before but receive no fixes) -- use "
+            "BDPT / VCM / Auto instead."
+        ),
+        items=(
+            ("1", "Path Tracing (Pel)",      "Pure path tracing, RGB radiance — default"),
+            ("2", "Path Tracing (Spectral)", "Pure path tracing, spectral (HWSS)"),
+            ("3", "BDPT (Pel)",              "Bidirectional path tracing, RGB"),
+            ("4", "BDPT (Spectral)",         "Bidirectional path tracing, spectral"),
+            ("5", "VCM (Pel)",               "Vertex Connection & Merging, RGB — recovers caustics"),
+            ("6", "VCM (Spectral)",          "Vertex Connection & Merging, spectral"),
+            ("7", "MLT (Pel) [legacy]",      "LEGACY, UNSUPPORTED (frozen): Metropolis Light Transport / PSSMLT, RGB -- use BDPT or VCM"),
+            ("8", "MLT (Spectral) [legacy]", "LEGACY, UNSUPPORTED (frozen): Metropolis Light Transport / PSSMLT, spectral -- use BDPT or VCM"),
+            ("9", "Auto (Pel)",              "Auto-routing dispatcher (RGB) - picks PT / BDPT / VCM per scene"),
+            ("10", "Auto (Spectral)",        "Auto-routing dispatcher, spectral"),
+            ("0", "Pixel Rasterizer [legacy]", "LEGACY, UNSUPPORTED (frozen): shader-op stack, no PT -- use Path Tracing"),
+        ),
+        default="9",  # Auto (Pel) — the smart auto-routing dispatcher
+    )
+
+    # Bidirectional / MLT subpath depth.  Default 0 = "fall back to
+    # `max_recursion`" — exposed as separate knobs in case the user
+    # wants to disable light-subpath connections (set max_light=0).
+    bidir_max_eye_depth: bpy.props.IntProperty(
+        name="Bidir Max Eye Depth",
+        description="Maximum eye-subpath length for BDPT / VCM / MLT (0 = fall back to Max Recursion)",
+        default=0, min=0, max=64,
+    )
+    bidir_max_light_depth: bpy.props.IntProperty(
+        name="Bidir Max Light Depth",
+        description="Maximum light-subpath length for BDPT / VCM / MLT (0 = fall back to Max Recursion)",
+        default=0, min=0, max=64,
+    )
+
+    # VCM-specific knobs.
+    vcm_merge_radius: bpy.props.FloatProperty(
+        name="VCM Merge Radius",
+        description="Photon merge radius in world units (0 = auto from scene bounds)",
+        default=0.0, min=0.0, max=10.0,
+    )
+    vcm_enable_vc: bpy.props.BoolProperty(
+        name="VCM Vertex Connection",
+        description="Enable BDPT-style vertex connection strategies",
+        default=True,
+    )
+    vcm_enable_vm: bpy.props.BoolProperty(
+        name="VCM Vertex Merging",
+        description="Enable photon-map merging strategies (caustic recovery)",
+        default=True,
+    )
+
+    # MLT / PSSMLT knobs.  Defaults of 0 are sentinels that the
+    # bridge rewrites to production-tuned values (10000 bootstrap,
+    # 8 chains, mutations = pixel_samples, large step 0.3).
+    mlt_bootstrap: bpy.props.IntProperty(
+        name="MLT Bootstrap",
+        description="MLT bootstrap sample count (0 = bridge default 10000)",
+        default=0, min=0, max=1000000,
+    )
+    mlt_chains: bpy.props.IntProperty(
+        name="MLT Chains",
+        description="MLT Markov-chain count (0 = bridge default 8)",
+        default=0, min=0, max=256,
+    )
+    mlt_mutations_per_pixel: bpy.props.IntProperty(
+        name="MLT Mutations / Pixel",
+        description="MLT mutations per pixel (0 = use Pixel Samples)",
+        default=0, min=0, max=65536,
+    )
+    mlt_large_step_prob: bpy.props.FloatProperty(
+        name="MLT Large-Step Prob",
+        description="MLT large-step probability (0 = bridge default 0.3)",
+        default=0.0, min=0.0, max=1.0,
+    )
     use_world_ambient: bpy.props.BoolProperty(
-        name="Approximate World",
-        description="Approximate the Blender world color as a simple ambient light",
+        name="Approximate World (deprecated)",
+        description="DEPRECATED: approximates the Blender world color as a simple ambient light (ambient_light is deprecated and unshadowed; the replacement is an environment light -- plug an Environment Texture into the world Background for image-based lighting)",
         default=False,
     )
     choose_one_light: bpy.props.BoolProperty(
@@ -61,11 +146,20 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         default=True,
     )
 
-    path_branch: bpy.props.BoolProperty(
-        name="Branch Paths",
-        description="Enable path tracer branching when scattering",
-        default=True,
+    skip_collections_pattern: bpy.props.StringProperty(
+        name="Skip Collections",
+        description=(
+            "Comma-separated list of collection names whose objects RISE "
+            "should NOT export.  Useful for excluding low-poly proxy / "
+            "AO-baking shells that obscure the camera in RISE but are "
+            "filtered out by Cycles' adaptive-sampling heuristics.  "
+            "Example: 'blocks, proxies' would skip every object whose "
+            "containing collection is named 'blocks' or 'proxies'.  "
+            "Empty (default) = no skipping."
+        ),
+        default="",
     )
+
     sms_enabled: bpy.props.BoolProperty(
         name="Specular Manifold Sampling",
         description="Enable RISE specular manifold sampling in the path tracing shader op",
@@ -97,6 +191,65 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         name="Biased SMS",
         description="Use the faster biased SMS mode",
         default=True,
+    )
+    sms_bernoulli_trials: bpy.props.IntProperty(
+        name="Bernoulli Trials",
+        description="Maximum trials per shading point in unbiased SMS mode (ignored when Biased is on)",
+        default=100,
+        min=1,
+        max=10000,
+    )
+    sms_multi_trials: bpy.props.IntProperty(
+        name="Multi Trials",
+        description="Independent Newton solves per evaluation; >1 uncovers separate basins on bumpy surfaces at proportional cost",
+        default=1,
+        min=1,
+        max=64,
+    )
+    sms_photon_count: bpy.props.IntProperty(
+        name="Photon Count",
+        description="Photon-aided seed budget; 0 disables. Use for diacaustic / mirror-chain scenes the deterministic seed misses",
+        default=0,
+        min=0,
+        max=10000000,
+    )
+    sms_max_photon_seeds: bpy.props.IntProperty(
+        name="Max Photon Seeds",
+        description="Cap on photon seeds run through Newton at each shading point; 0 = unlimited",
+        default=16,
+        min=0,
+        max=1024,
+    )
+    sms_two_stage: bpy.props.BoolProperty(
+        name="Two-Stage Solver",
+        description="Two-stage Newton solver (Zeltner 2020 §5). Helps on smooth analytic primitives with normal-map perturbation; regresses on heavily-displaced meshes",
+        default=False,
+    )
+    sms_use_levenberg_marquardt: bpy.props.BoolProperty(
+        name="Levenberg-Marquardt",
+        description="Damp the Newton Jacobian to recover ~5pp Newton-fail rate on heavy-displacement meshes at ~50-100% solver cost",
+        default=False,
+    )
+    sms_seeding_mode: bpy.props.EnumProperty(
+        name="Seeding",
+        description="SMS seeding strategy. Snell suits displaced refractive caustics; Uniform suits smooth analytic primitives",
+        items=(
+            ("0", "Snell", "Deterministic Snell-trace from shading point toward light"),
+            ("1", "Uniform", "Mitsuba-faithful uniform-area sample on cached caustic-caster shapes"),
+        ),
+        default="0",
+    )
+    sms_target_bounces: bpy.props.IntProperty(
+        name="Target Bounces",
+        description="Required specular-vertex count per seed chain (Mitsuba m_config.bounces analogue). 0 = no target. Set to natural caustic K (typically 2 for glass shells)",
+        default=0,
+        min=0,
+        max=16,
+    )
+    sms_extended: bpy.props.BoolProperty(
+        name="Extended SMS",
+        description="Opt-in unbiased reference SMS estimators (point/spot and area lights, per-lane HWSS). Ignores Biased and Seeding; inert with composite materials; roughly 10-17x slower on caustic-heavy scenes",
+        default=False,
     )
 
     adaptive_max_samples: bpy.props.IntProperty(
@@ -139,6 +292,23 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=1,
         max=1024,
     )
+    path_guiding_combine_training: bpy.props.BoolProperty(
+        name="Combine Training",
+        description="Accumulate every training iteration's pixels into the final image weighted by SPP (Müller 2017 §5)",
+        default=True,
+    )
+    path_guiding_online: bpy.props.BoolProperty(
+        name="Online Guiding",
+        description="The training loop IS the entire render — every sample feeds both the field and the image. Best for low-SPP regimes",
+        default=False,
+    )
+    path_guiding_warmup_iterations: bpy.props.IntProperty(
+        name="Warmup Iterations",
+        description="Training iterations rendered with alpha=0 (pure BSDF) before switching to the configured alpha",
+        default=1,
+        min=0,
+        max=64,
+    )
     path_guiding_alpha: bpy.props.FloatProperty(
         name="Guiding Alpha",
         description="Blend probability for sampling from the learned guiding distribution",
@@ -147,10 +317,22 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         max=1.0,
         precision=3,
     )
+    path_guiding_learned_alpha: bpy.props.BoolProperty(
+        name="Learned Alpha",
+        description="Per-cell Adam-learned α (Müller 2017 v2 / Tom94 practical-path-guiding). ~2% mean-σ² reduction at 256 SPP",
+        default=True,
+    )
     path_guiding_max_depth: bpy.props.IntProperty(
         name="Guiding Depth",
         description="Maximum eye-path bounce depth that uses guided sampling",
-        default=3,
+        default=8,
+        min=0,
+        max=256,
+    )
+    path_guiding_max_light_depth: bpy.props.IntProperty(
+        name="Light Guiding Depth",
+        description="Maximum light-subpath bounce depth for guided sampling (0 = disabled). Off by default",
+        default=0,
         min=0,
         max=256,
     )
@@ -245,17 +427,165 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=0,
         max=256,
     )
+    stability_use_light_bvh: bpy.props.BoolProperty(
+        name="Light BVH",
+        description="Use the light BVH for importance-weighted many-light selection",
+        default=True,
+    )
+    stability_optimal_mis: bpy.props.BoolProperty(
+        name="Optimal MIS",
+        description="Variance-minimising MIS weights (Kondapaneni 2019) for direct lighting; trains second-moment statistics over a few iterations",
+        default=False,
+    )
+    stability_optimal_mis_training_iterations: bpy.props.IntProperty(
+        name="Optimal MIS Training",
+        description="Training iterations for optimal MIS",
+        default=4,
+        min=1,
+        max=64,
+    )
+    stability_optimal_mis_tile_size: bpy.props.IntProperty(
+        name="Optimal MIS Tile Size",
+        description="Spatial-binning tile size for optimal MIS",
+        default=16,
+        min=1,
+        max=256,
+    )
 
     oidn_denoise: bpy.props.BoolProperty(
         name="OIDN Denoise",
         description="Run Intel Open Image Denoise after rendering when supported by the bridge build",
-        default=False,
+        default=True,
+    )
+    oidn_quality: bpy.props.EnumProperty(
+        name="OIDN Quality",
+        description="OIDN quality preset. Auto picks Fast/Balanced/High based on a render-time heuristic",
+        items=(
+            ("0", "Auto", "Pick a preset based on render time per megapixel"),
+            ("1", "High", "Highest quality, slowest"),
+            ("2", "Balanced", "Balanced quality and speed"),
+            ("3", "Fast", "Fastest, lower quality"),
+        ),
+        default="0",
+    )
+    oidn_device: bpy.props.EnumProperty(
+        name="OIDN Device",
+        description="OIDN device backend",
+        items=(
+            ("0", "Auto", "Prefer GPU; silently fall back to CPU"),
+            ("1", "CPU", "Force CPU"),
+            ("2", "GPU", "Prefer GPU; warn on fallback to CPU"),
+        ),
+        default="0",
+    )
+    oidn_prefilter: bpy.props.EnumProperty(
+        name="OIDN Aux Source",
+        description="Albedo / normal source mode. Accurate preserves caustic / reflection detail at ~2× warm-cache cost",
+        items=(
+            ("0", "Fast", "First-hit retrace pass (cheap, white at perfect glass / mirror)"),
+            ("1", "Accurate", "Inline first-non-delta accumulation + prefilter"),
+        ),
+        default="1",
+    )
+
+    progressive_enabled: bpy.props.BoolProperty(
+        name="Progressive Rendering",
+        description="Render in multiple progressive passes so the image refines visibly while it accumulates samples",
+        default=True,
+    )
+    progressive_samples_per_pass: bpy.props.IntProperty(
+        name="Samples Per Pass",
+        description="Samples per pixel each progressive pass adds before refreshing the image",
+        default=32,
+        min=1,
+        max=4096,
+    )
+
+    use_zsobol: bpy.props.BoolProperty(
+        name="Z-Sobol Sampler",
+        description="Use Morton-indexed Sobol for blue-noise error distribution",
+        default=True,
+    )
+
+    pixel_filter: bpy.props.EnumProperty(
+        name="Pixel Filter",
+        description="Pixel reconstruction filter (anti-aliasing kernel). Cycles defaults to Blackman-Harris ~1.5 px; we default to Gaussian 1.5 px which is close in look and supported across all RISE integrators",
+        items=(
+            ("0", "None", "No reconstruction — fastest, but aliased"),
+            ("1", "Box", "Constant kernel; fastest filtered option"),
+            ("2", "Tent", "Linear / triangle falloff"),
+            ("3", "Gaussian", "Gaussian falloff (default, closest match to Cycles)"),
+            ("4", "Mitchell-Netravali", "Mitchell B=C=1/3; sharper, slight ringing"),
+            ("5", "Catmull-Rom", "Sharpening cubic"),
+            ("6", "Cubic B-Spline", "Soft cubic"),
+            ("7", "Blackman", "Windowed-sinc, very sharp, more ringing"),
+        ),
+        default="3",
+    )
+    pixel_filter_width: bpy.props.FloatProperty(
+        name="Filter Width",
+        description="Filter kernel width in pixels (for Box/Tent/Gaussian/Blackman). Cycles default is 1.5",
+        default=1.5,
+        min=0.5,
+        max=8.0,
+        precision=2,
+    )
+    pixel_filter_param_a: bpy.props.FloatProperty(
+        name="Filter Param A",
+        description="Filter-specific parameter A: Gaussian alpha decay (default 2.0) or Mitchell B (default 1/3)",
+        default=0.0,
+        min=0.0,
+        max=10.0,
+        precision=3,
+    )
+    pixel_filter_param_b: bpy.props.FloatProperty(
+        name="Filter Param B",
+        description="Filter-specific parameter B: Mitchell C (default 1/3)",
+        default=0.0,
+        min=0.0,
+        max=10.0,
+        precision=3,
+    )
+
+
+class RISECameraSettings(bpy.types.PropertyGroup):
+    """Per-camera RISE-specific properties.
+
+    Surfaces ISO as a first-class authoring control on each camera so
+    the bridge's photographic-EV pipeline (Landing 5 in
+    docs/CAMERAS_ROADMAP.md) has somewhere to read from.  Cycles has
+    no native ISO concept — it uses ``Color Management > Exposure`` in
+    EV — so we keep it scoped to the RISE add-on rather than monkey-
+    patching ``camera.data``.  Default 0 = photographic-EV disabled,
+    preserving pre-Landing-5 behaviour bit-identically.
+
+    All the other photographic camera parameters (focal length,
+    sensor size, f-stop, focus distance, aperture blades / rotation /
+    ratio, shift) are read directly from Blender's stock
+    ``camera.data`` / ``camera.data.dof`` so the existing Cycles UI
+    on the Properties → Camera panel stays the authoring surface.
+    """
+
+    iso: bpy.props.FloatProperty(
+        name="ISO",
+        description=(
+            "Photographic ISO sensitivity for RISE's EV-compensation "
+            "pipeline.  When > 0, requires the camera's f-stop > 0 "
+            "(set under Depth of Field) and computes ISO-12232 EV "
+            "that stacks into LDR outputs.  Cycles has no native ISO; "
+            "leave at 0 (default) to disable physical exposure."
+        ),
+        default=0.0,
+        min=0.0,
+        max=409600.0,
+        soft_max=51200.0,
     )
 
 
 CLASSES = (
     RISEAddonPreferences,
     RISERenderSettings,
+    RISECameraSettings,
 )
 
 
@@ -275,8 +605,15 @@ def register():
         type=RISERenderSettings,
     )
 
+    bpy.types.Camera.rise_camera = bpy.props.PointerProperty(
+        name="RISE Camera",
+        description="RISE-specific photographic settings (ISO)",
+        type=RISECameraSettings,
+    )
+
 
 def unregister():
+    del bpy.types.Camera.rise_camera
     del bpy.types.Scene.rise
 
     for cls in reversed(CLASSES):

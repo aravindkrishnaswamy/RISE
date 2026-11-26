@@ -1,0 +1,25 @@
+# Gold (Au) optical constants -- Johnson & Christy 1972, Phys. Rev. B 6, 4370.
+# Source: refractiveindex.info (CC0 public domain).  Columns: wavelength[nm] n (refractive index).
+# Visible band + margin (340-800 nm); PiecewiseLinearFunction clamps outside range.
+340 1.70
+360 1.68
+380 1.67
+400 1.658
+420 1.636
+440 1.616
+460 1.562
+480 1.426
+500 0.958
+520 0.680
+540 0.433
+560 0.344
+580 0.300
+600 0.279
+620 0.264
+640 0.245
+660 0.225
+680 0.213
+700 0.208
+720 0.207
+760 0.209
+800 0.213

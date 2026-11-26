@@ -1,0 +1,2316 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RISEViewportBridge.h - Pure-Objective-C interface to the C++
+//    SceneEditController for the macOS interactive 3D viewport.
+//
+//  Distinct from RISESceneEditorBridge (which is the text-editor
+//  syntax-highlight / completion bridge).  See
+//  docs/INTERACTIVE_EDITOR_PLAN.md §11.
+//
+//  Lifetime: this bridge borrows an existing RISEBridge's IJobPriv;
+//  the RISEBridge must outlive the viewport bridge.
+//
+//////////////////////////////////////////////////////////////////////
+
+#import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
+
+@class RISEBridge;
+@class RISEViewportProperty;
+@class RISEViewportGizmoHandle;
+@class RISEViewportNavNub;
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// Mirrors RISE::SceneEditController::Tool / RISE::SceneEditTool.
+/// Kept as a Swift-friendly NS_ENUM; values must match the C++ enum
+/// SceneEditTool_* in RISE_API.h.
+typedef NS_ENUM(NSInteger, RISEViewportTool) {
+    RISEViewportToolSelect           = 0,
+    RISEViewportToolTranslateObject  = 1,
+    RISEViewportToolRotateObject     = 2,
+    RISEViewportToolScaleObject      = 3,
+    RISEViewportToolOrbitCamera      = 4,
+    RISEViewportToolPanCamera        = 5,
+    RISEViewportToolZoomCamera       = 6,
+    RISEViewportToolScrubTimeline    = 7,
+    RISEViewportToolRollCamera       = 8
+};
+
+/// Secure-MCP slice 5c: the result of -startAgentHostedServerWithLabel:.
+/// `ok` false means the server did not start (bind failure, or a server
+/// was already running -- see that method's doc for the idempotent-
+/// refusal contract); `port`/`bearerToken` are meaningful only when `ok`
+/// is true.
+@interface RISEAgentHostedServerInfo : NSObject
+@property (nonatomic, readonly) BOOL ok;
+@property (nonatomic, readonly) NSUInteger port;
+/// The per-launch bearer token an external MCP client must present via
+/// `Authorization: Bearer <token>`.  NEVER LOG THIS — the Swift caller
+/// must only ever put it in a copyable text field, never in an
+/// NSLog/print/os_log call.
+@property (nonatomic, readonly, copy) NSString *bearerToken;
+@property (nonatomic, readonly, copy) NSString *message;
+@end
+
+/// Snapshot of the scene's IBL environment (a scene-level singleton: an
+/// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT
+/// an ILight).  See SceneEditController::EnvironmentInfo and
+/// docs/gui/ENVIRONMENT_SECTION.md.  Returned by -[RISEViewportBridge environmentInfo].
+@interface RISEEnvironmentInfo : NSObject
+@property (nonatomic, readonly) BOOL hasEnvironment;   ///< a radiance_map painter is bound
+@property (nonatomic, readonly) BOOL proceduralSky;    ///< a procedural sky / non-painter map is installed (read-only)
+@property (nonatomic, readonly) BOOL editable;         ///< false when the active rasterizer takes no radiance map (MLT / pixel*)
+@property (nonatomic, readonly) NSString *painterName; ///< bound painter name ("" if none)
+@property (nonatomic, readonly) NSString *file;        ///< resolved HDRI path ("" if unresolved / procedural)
+@property (nonatomic, readonly) double scale;          ///< intensity multiplier
+@property (nonatomic, readonly) double orientX;        ///< Euler rotation X in DEGREES
+@property (nonatomic, readonly) double orientY;        ///< Euler rotation Y in DEGREES
+@property (nonatomic, readonly) double orientZ;        ///< Euler rotation Z in DEGREES
+@property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
+@end
+
+/// doc-88 Phase 3 S19 -- why a node-graph rewire was refused.  Mirrors
+/// `RISE::ClosureClassification`'s ordinals 1:1 (the C ABI passes it as a
+/// plain `int`).  NOT the only platform-side mirror (P2-3, S19 review round
+/// 1 -- corrects the earlier "ONE mirror" claim here): build/VS2022/
+/// RISE-GUI/ViewportBridge.h's `RewireClosure` re-declares the same five
+/// values on Windows/Qt.  See the ordinal-pinning `static_assert`s at the
+/// top of tests/RewireConnectionTest.cpp, which check the C++ side; keep
+/// this enum's five values in step with them AND with the Windows mirror
+/// by hand.
+typedef NS_ENUM(NSInteger, RISERewireClosure) {
+    RISERewireClosureClean = 0,
+    RISERewireClosureUnresolvedTarget = 1,
+    RISERewireClosureAmbiguousTargetName = 2,
+    RISERewireClosureExpressionDrivenTarget = 3,
+    RISERewireClosureSharedTarget = 4
+};
+
+/// doc-88 Phase 3 S19 -- the refusal / success detail a canvas needs to
+/// explain a rewire.  Returned by
+/// `-rewireConnectionWithTargetCategory:...` on RISEViewportBridge below;
+/// see that method's own comment and OwnershipClosure.h for the
+/// MATERIAL_EDITOR.md sect. 3.7a rule these fields report on.
+@interface RISERewireOutcome : NSObject
+@property (nonatomic, readonly) BOOL canInsertScalarAdapter;
+@property (nonatomic, readonly, copy) NSString *adapterName;
+/// True only on a clean commit.
+@property (nonatomic, readonly) BOOL applied;
+/// "applied" / "rejected" / "diagnosed" / "conflict".
+@property (nonatomic, readonly, copy) NSString *status;
+/// On a LEGALITY refusal this is the real parser's own diagnostic
+/// verbatim, so a canvas-rejected wire reads exactly like a hand-edited
+/// scene's failure (MATERIAL_EDITOR.md:145).
+@property (nonatomic, readonly, copy) NSString *message;
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The refusal came from the connection-legality validator (S17).
+@property (nonatomic, readonly) BOOL legalityRefused;
+/// The refusal came from the forward-reachability cycle check.
+@property (nonatomic, readonly) BOOL cycleRefused;
+/// sect. 3.7a (a): the chunk(s) this edit does not solely own.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *sharedChunks;
+/// sect. 3.7a (b): the referrers outside the closure.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *outOfClosureReferrers;
+/// The root chunks that own the target (1 on a clean verdict).
+@property (nonatomic, readonly, copy) NSArray<NSString *> *owners;
+/// Chunks left with no reference by this rewire -- BADGE them; this
+/// slice does not delete them (that is S20's reference-safe delete).
+/// Empty whenever `applied` is false -- the controller clears it on
+/// every refusal path, including one that lands after the closure
+/// step already computed a non-empty report, so this never names an
+/// orphan from an edit that never committed.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *nowUnreferenced;
+@end
+
+/// doc-88 Phase 3 S20 -- the reference-safety detail a canvas needs to
+/// explain a refused delete or show what a cascade took.  Returned by
+/// `-deleteGraphNodeWithCategory:name:cascade:` on RISEViewportBridge
+/// below; see docs/gui/ENTITY_CREATION.md sect. 5's block-or-cascade policy
+/// and OwnershipClosure.h's kDelete* refusal formats.
+@interface RISEDeleteOutcome : NSObject
+/// True only on a clean commit.
+@property (nonatomic, readonly) BOOL applied;
+/// "applied" / "rejected" / "diagnosed" / "conflict".
+@property (nonatomic, readonly, copy) NSString *status;
+@property (nonatomic, readonly, copy) NSString *message;
+/// Only `Clean` / `UnresolvedTarget` / `AmbiguousTargetName` are reachable
+/// through this verb -- the ordinals are shared with the rewire verb (see
+/// RISERewireClosure above and its ordinal-pin note).
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The refusal was "still referenced" -- offer "rewire those away first".
+@property (nonatomic, readonly) BOOL referenceRefused;
+/// A CASCADE was refused because its sweep would have reached a chunk
+/// another graph owns -- offer "delete without cascade".
+@property (nonatomic, readonly) BOOL cascadeRefused;
+/// Every referrer that blocked the delete, as `chunk`.`param`.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *referrers;
+/// The chunks removed, in DOCUMENT ORDER.  EMPTY ON EVERY REFUSAL, including
+/// a cascade refusal (corrected -- S20 review round 1 P2-2: an earlier draft
+/// of this comment claimed a cascade refusal leaves a sweep PREVIEW here; it
+/// cannot -- see `SceneEditController::DeleteResult::removed`'s own
+/// corrected comment for why).  Read it as a mutation record only when
+/// `applied` is YES.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *removed;
+@end
+
+/// doc-88 Phase 3 S20 -- the Duplicate-node fork's outcome.  Returned by
+/// `-duplicateGraphNodeWithCategory:name:` below.
+@interface RISEDuplicateOutcome : NSObject
+@property (nonatomic, readonly) BOOL applied;
+@property (nonatomic, readonly, copy) NSString *status;
+@property (nonatomic, readonly, copy) NSString *message;
+@property (nonatomic, readonly) RISERewireClosure closure;
+/// The DEDUPED name the copy actually landed under -- use THIS to select
+/// or rewire to the new node, never the name that was asked for.  Empty
+/// when nothing landed.
+@property (nonatomic, readonly, copy) NSString *newName;
+/// The original's top-level document index at the moment of the fork, for
+/// placing the new node beside it on the canvas; -1 when nothing landed.
+@property (nonatomic, readonly) NSInteger originalIndex;
+@end
+
+/// 87 §5 step 4a/4b: one node of the AUTHORED-graph tree, as read out of
+/// SceneEditController's snapshot in a single pass.  The macOS mirror of
+/// Qt's `SceneTreeNode` (build/VS2022/RISE-GUI/ViewportBridge.h).
+///
+/// `parent` is -1 for a root; otherwise it indexes into the SAME
+/// `RISESceneTree.nodes` array this node came from, as does every entry of
+/// `children`.  Which is why the whole tree is handed over by one
+/// `-categoryTree:` call rather than walked node by node: the controller's
+/// per-node getters take GENERATION-TAGGED handles that are refused once the
+/// snapshot republishes, and a republish can land between any two of them
+/// (each takes the snapshot lock on its own).  See SceneEditController.h's
+/// "HANDLE CHURN" note — dragging a sphere's radius republishes the Geometry
+/// tree on every tick.  NOTHING here is a handle, so nothing here expires;
+/// what a caller must not do is carry these INDICES across a refresh, since
+/// the next `-categoryTree:` is a different array.
+///
+/// `name` is the entity name — what the row displays AND what
+/// `-setSelection:name:` takes.  There is deliberately no second "display
+/// name" field: the flat `-categoryEntities:` path runs its names through the
+/// same `NamedViewDisplayName` decode, which is a UTF-8→NSString conversion
+/// with a Latin-1 fallback for un-decodable bytes, NOT a cosmetic transform —
+/// so display and selection identity are the same string for every name that
+/// can round-trip at all, exactly as on the flat path.
+@interface RISESceneTreeNode : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly) NSInteger parent;                    ///< -1 for a root
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *children; ///< indices into RISESceneTree.nodes
+@end
+
+/// One category's whole authored tree: the node table plus the ROOT list.
+///
+/// The roots are carried EXPLICITLY rather than re-derived by scanning for
+/// `parent == -1`, because sibling order is part of the contract (87 §2,
+/// "child order for display comes from declaration order") and only these two
+/// arrays state it.  A scan happens to agree today — `BuildAuthoredTree`
+/// emits its node table already in presentation order — but that is an
+/// internal detail of the assembler, not something a shell should be built on.
+@interface RISESceneTree : NSObject
+@property (nonatomic, readonly, copy) NSArray<RISESceneTreeNode *> *nodes;
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *roots;    ///< indices into `nodes`, in display order
+@end
+
+/// doc-88 Phase 3 S14 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): one
+/// reference-param SLOT on a `RISEGraphNode`.  Mirrors
+/// `SceneEditController::GraphPort`.
+///
+/// `otherNodeIndex` is -1 for a NODE-LESS port (a dangling reference, or
+/// one pointing outside this graph's modeled categories) -- `otherName`
+/// still carries the target's name either way, never blank for a real
+/// reference. Otherwise it is an INDEX into the SAME
+/// `RISEPainterMaterialGraph.nodes` array this port's owning node came
+/// from -- like `RISESceneTreeNode.children`, NOT a handle: valid only
+/// within the ONE `-painterMaterialGraph` call that produced it (see
+/// `RISESceneTreeNode`'s own "nothing here is a handle, so nothing here
+/// expires" comment -- the same rule applies here for the same reason).
+@interface RISEGraphPort : NSObject
+@property (nonatomic, readonly) NSInteger portPipe;
+@property (nonatomic, readonly) BOOL portColorAlsoAcceptsScalar;
+@property (nonatomic, readonly, copy) NSString *paramName;
+@property (nonatomic, readonly) NSInteger occurrence;
+@property (nonatomic, readonly) NSInteger otherNodeIndex;   ///< -1 for a node-less port
+@property (nonatomic, readonly, copy) NSString *otherName;
+@end
+
+/// One node of the Painter/Material graph, WITH its laid-out position --
+/// mirrors `SceneEditController::GraphNode` + the parallel
+/// `SceneEditController::GraphNodePosition` `ReadPainterMaterialGraphLaidOut`
+/// hands back for it (doc-88 Phase 3 S11/S12/S13/S14).
+///
+/// `handle` is a real `SceneEditController::GraphNodeHandle` (unlike this
+/// array's own INDICES, which a caller must not carry past the next
+/// `-painterMaterialGraph` call) -- it survives being squirreled away
+/// across a refresh of the SAME published generation (`generation` on
+/// `RISEPainterMaterialGraph`), the same "the way back" role
+/// `ResolveGraphNodeHandle` plays on the C++ side.  A shell that wants to
+/// re-find "the node the user last selected" after a re-fetch should hold
+/// this, never `outEdges[i].otherNodeIndex`.
+@interface RISEGraphNode : NSObject
+@property (nonatomic, readonly) NSInteger outputPipe;
+@property (nonatomic, readonly) unsigned long long handle;
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *chunkKeyword;   ///< e.g. "ramp_painter" -- always non-blank for a real node
+/// `RISE::ChunkCategory` cast to int -- the SAME "cast the parser's enum,
+/// no bespoke per-value mirror" convention `RISEViewportProperty.kind`
+/// already uses for `ValueKind` (see `SceneEditController::
+/// PainterGraphNodeCategory`'s own comment). `chunkKeyword` above is
+/// almost always the more useful discriminator for a UI label/icon.
+@property (nonatomic, readonly) NSInteger category;
+@property (nonatomic, readonly) NSInteger defCount;   ///< expression-family def-stage count; 0 otherwise
+/// Object Graph slice: a `standard_object`'s `count_u * count_v` repeat
+/// sugar (87 step 3c) when this chunk carries counts, 0 otherwise -- see
+/// `SceneEditController::GraphNode::repeatCount`'s own header comment for
+/// the full contract, including the accepted `count_u 0` fold. Always 0
+/// for a Painter/Material/Function node (`-painterMaterialGraph`).
+@property (nonatomic, readonly) NSInteger repeatCount;
+@property (nonatomic, readonly) double x;
+@property (nonatomic, readonly) double y;
+@property (nonatomic, readonly, copy) NSArray<RISEGraphPort *> *outEdges;
+@property (nonatomic, readonly, copy) NSArray<RISEGraphPort *> *inEdges;   ///< non-empty here == this node is SHARED (fan-out badge)
+@end
+
+/// The whole Painter/Material graph, positioned -- one `-painterMaterialGraph`
+/// call, the node table plus its generation.  No separate edge array: an
+/// edge is reachable through either endpoint's own `outEdges`/`inEdges`
+/// (`RISEGraphPort` already carries both endpoints + the param label,
+/// everything needed to draw a wire).
+@interface RISEPainterMaterialGraph : NSObject
+@property (nonatomic, readonly) BOOL snapshotFresh;
+@property (nonatomic, readonly, copy) NSArray<RISEGraphNode *> *nodes;
+@property (nonatomic, readonly) unsigned long long generation;
+@end
+
+/// One entry of an `-appearanceClosureForObject:` result -- a node
+/// IDENTITY, not just a display string.  Mirrors
+/// `SceneEditController::AppearanceClosureEntry` field-for-field: a bare
+/// name is NOT enough to address a node in `RISEPainterMaterialGraph.nodes`
+/// (a Painter and a Material chunk may legally share a name), so a caller
+/// matching a returned entry against an already-fetched node list MUST
+/// compare BOTH `category` and `name`, never `name` alone (review-round P1
+/// fix -- an earlier draft of this bridge method returned bare
+/// `NSArray<NSString *> *` and both platform consumers matched by name
+/// only, which could silently spotlight the wrong node on a cross-category
+/// name collision).
+@interface RISEAppearanceClosureEntry : NSObject
+/// `RISE::ChunkCategory` cast to int -- the SAME ordinal `RISEGraphNode.category`
+/// already uses (Painter 0, Function 1, Material 2), so this compares
+/// directly against a `RISEGraphNode`/`RISEPainterMaterialGraph` node's own
+/// `category` field with no remapping.
+@property (nonatomic, readonly) NSInteger category;
+@property (nonatomic, readonly, copy) NSString *name;
+@end
+
+// ---- Simulation M5 (docs/SIMULATION_M5B_RESULTS.md) ----
+// Plain value snapshots of the library's simulation state.  Every field is
+// copied from one C-API read (RISE_API.h "Simulation M3c" / "M4" / "M5");
+// the shell presents them and computes nothing from them.
+
+/// One time-varying asset (GetTimeVaryingAsset): a simulated mesh or a fire
+/// medium, with the range its cache covers.
+@interface RISETimeVaryingAssetInfo : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly) NSInteger kind;     ///< 0 simulated mesh, 1 fire medium
+@property (nonatomic, readonly) NSInteger state;    ///< 0 complete, 1 partial, 2 baking, 3 live
+@property (nonatomic, readonly) BOOL predictive;
+@property (nonatomic, readonly) double start;
+@property (nonatomic, readonly) double end;
+@property (nonatomic, readonly) double availableEnd;
+@property (nonatomic, readonly) double interval;
+@property (nonatomic, readonly) unsigned long long framesAvailable;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@end
+
+/// One declared simulation (GetSimulationDetails).
+@interface RISESimulationInfo : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly, copy) NSString *keyword;        ///< cloth_simulation / fire_simulation / simulation_cache
+@property (nonatomic, readonly, copy) NSString *solverId;       ///< "" for simulation_cache
+@property (nonatomic, readonly, copy) NSString *backend;        ///< "" when not stated
+@property (nonatomic, readonly, copy) NSString *fidelity;       ///< the cache's label, "" without a cache
+@property (nonatomic, readonly, copy) NSString *consumerGeometry; ///< first simulated_mesh_geometry bound by `source`
+/// 0 missing, 1 baking, 2 partial, 3 complete, 4 stale, 5 failed.
+@property (nonatomic, readonly) NSInteger state;
+@property (nonatomic, readonly) BOOL upstreamOutOfDate;
+@property (nonatomic, readonly) BOOL interactive;
+@property (nonatomic, readonly) unsigned long long framesAvailable;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double startTime;
+@property (nonatomic, readonly) double interval;
+@property (nonatomic, readonly, copy) NSString *cacheDirectory;
+@property (nonatomic, readonly, copy) NSString *upstream;       ///< comma-separated
+@property (nonatomic, readonly, copy) NSString *inputs;         ///< comma-separated
+@property (nonatomic, readonly, copy) NSString *errorMessage;
+@end
+
+/// The library playback clock (GetPlaybackStatus).
+@interface RISEPlaybackStatus : NSObject
+@property (nonatomic, readonly) BOOL playing;
+@property (nonatomic, readonly) BOOL live;
+@property (nonatomic, readonly) BOOL waitingForSolver;
+@property (nonatomic, readonly) double time;          ///< the last shown scene time
+@property (nonatomic, readonly) double timeStart;
+@property (nonatomic, readonly) double timeEnd;
+@property (nonatomic, readonly) double fps;
+@property (nonatomic, readonly) unsigned long long framesShown;
+@property (nonatomic, readonly) unsigned long long framesDropped;
+@property (nonatomic, readonly) unsigned long long solverWaits;
+@property (nonatomic, readonly) unsigned long long passesCompleted;
+@property (nonatomic, readonly) double wallSeconds;
+@end
+
+/// One bake job of this document (GetSimulationBakeJob; the library bake
+/// manager, docs/SIMULATION_M5A_RESULTS.md).
+@interface RISESimulationBakeJob : NSObject
+@property (nonatomic, readonly) unsigned long long jobId;
+@property (nonatomic, readonly, copy) NSString *simulation;
+/// 0 queued, 1 waiting for GPU, 2 running, 3 stopping, 4 stopped,
+/// 5 finished, 6 failed, 7 cancelled.
+@property (nonatomic, readonly) NSInteger state;
+@property (nonatomic, readonly) BOOL resumable;
+@property (nonatomic, readonly) BOOL adopted;
+@property (nonatomic, readonly) BOOL interrupted;
+@property (nonatomic, readonly) double simulatedTime;
+@property (nonatomic, readonly) double endTime;
+@property (nonatomic, readonly) unsigned long long framesWritten;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double wallSeconds;
+@property (nonatomic, readonly) double etaSeconds;     ///< -1 unknown
+@property (nonatomic, readonly, copy) NSString *backend;
+@property (nonatomic, readonly, copy) NSString *waitingFor;
+@property (nonatomic, readonly, copy) NSString *detail;
+@property (nonatomic, readonly, copy) NSString *errorMessage;
+@end
+
+/// One live run (GetLiveSimulationStatus), addressed by its geometry.
+@interface RISELiveSimulationStatus : NSObject
+@property (nonatomic, readonly) BOOL playing;
+@property (nonatomic, readonly) BOOL finished;
+@property (nonatomic, readonly) BOOL failed;
+@property (nonatomic, readonly) long long latestFrame;
+@property (nonatomic, readonly) double latestSceneTime;
+@property (nonatomic, readonly) double firstSceneTime;
+@property (nonatomic, readonly) double lastSceneTime;
+@property (nonatomic, readonly) unsigned long long framesPublished;
+@property (nonatomic, readonly) unsigned long long framesTotal;
+@property (nonatomic, readonly) double simulatedTime;
+@end
+
+@interface RISEViewportBridge : NSObject
+
+/// Construct over an existing RISEBridge.  The RISEBridge must have
+/// successfully loaded a scene (-loadAsciiScene:) before the
+/// viewport bridge can do useful work.  Returns nil if the host
+/// bridge has no scene.
+- (nullable instancetype)initWithHostBridge:(RISEBridge *)host;
+
+/// Release the underlying SceneEditController.  Implicit on dealloc.
+- (void)shutdown;
+
+#pragma mark - Lifecycle
+
+/// Spawn the C++ render thread.  Idempotent.
+- (void)start;
+
+/// Spawn the C++ render thread WITHOUT its one-shot initial render
+/// pass.  Call this (instead of `start`) when restarting the viewport
+/// right after a production render: the finished render is already on
+/// screen and the render thread stays parked until the user interacts,
+/// so the production image survives.  Using this avoids the
+/// "render flashes then flips back to the live preview" bug — the
+/// interactive rasterizer never produces the overwriting frame in the
+/// first place, so no display-layer frame-suppression is needed.
+- (void)startSuppressingInitialRender;
+
+/// Stop the interactive render thread and join.  Idempotent.  Does NOT
+/// touch the attached SceneEditController's agent-render worker -- a
+/// production render submitted immediately afterward (via
+/// -[RISEBridge rasterize] et al, which route through
+/// RunProductionRenderComposed) is still served normally.
+///
+/// Model-B F2 slice S4 fix round 4: this used to call the C++
+/// controller's monolithic Stop(), which ALSO permanently retired the
+/// agent-render worker (mAgentRenderStop is a one-shot flag; the worker
+/// thread is spawned only once, in the constructor, and nothing ever
+/// respawns it) -- so RenderViewModel's startRender/startAnimationRender
+/// calling this immediately before a production submit poisoned the
+/// controller for the rest of its lifetime, and the production render
+/// (and every later one, interactive-viewport restart notwithstanding)
+/// was refused with "controller stopped".  Wired to
+/// RISE_API_SceneEditController_StopInteractive instead; see that
+/// function's doc and SceneEditController::StopInteractive's header doc.
+- (void)stop;
+
+/// Commit and close any controller-owned gesture whose platform release
+/// event is about to be suppressed (for example when a render disables
+/// interaction mid-drag).  Safe to call when no gesture is active.
+- (BOOL)finalizeOpenInteractions;
+
+@property (nonatomic, readonly) BOOL isRunning;
+
+/// Shrink the scene Film so the interactive preview renders at a
+/// screen-appropriate resolution rather than blindly inheriting
+/// whatever the .RISEscene file declared.  Wraps the C++
+/// `IJobPriv::SetViewportFit`, which caches the fit params and
+/// applies the fit immediately; the cache lets a subsequent D2 full
+/// re-derive (variant switch / CST edit) re-apply the SAME fit so
+/// the preview stays screen-sized instead of jumping to authored
+/// full-res.  Never upscales, preserves the scene's authored aspect
+/// ratio + pixelAR.  Caller passes the available rendering-surface
+/// dims in pixels; the long edge is also capped at `maxLongEdge`.
+/// Call once after init, before `start`.
+- (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
+                       surfaceH:(NSUInteger)surfaceH
+                    maxLongEdge:(NSUInteger)maxLongEdge;
+
+#pragma mark - Toolbar
+
+@property (nonatomic) RISEViewportTool currentTool;
+
+/// Photoshop-style toolbar category — the "slot" a tool sits in.
+/// Mirrors `RISE::SceneEditController::ToolCategory`; numeric values
+/// are part of the C-API contract.  `select` has a single tool;
+/// `camera` covers Orbit/Pan/Zoom/Roll; `objectTransform` covers
+/// Translate/Rotate/Scale and is the one that surfaces a gizmo
+/// overlay when an object is selected.
+typedef NS_ENUM(NSInteger, RISEViewportToolCategory) {
+    RISEViewportToolCategorySelect          = 0,
+    RISEViewportToolCategoryCamera          = 1,
+    RISEViewportToolCategoryObjectTransform = 2
+};
+
+/// Map a tool to its category.  Pure-function (no bridge state); the
+/// Swift toolbar uses this to compute slot membership for the current
+/// `currentTool`.
++ (RISEViewportToolCategory)categoryForTool:(RISEViewportTool)tool;
+
+/// Default sub-tool the category's slot shows before the user picks
+/// anything from the flyout.  Pure-function.
++ (RISEViewportTool)defaultSubToolForCategory:(RISEViewportToolCategory)category;
+
+/// Photoshop "last-used" memory: returns the sub-tool the user most
+/// recently picked from this category's flyout, or the category
+/// default if nothing's been picked yet.
+- (RISEViewportTool)lastSubToolForCategory:(RISEViewportToolCategory)category
+    NS_SWIFT_NAME(lastSubTool(for:));
+
+#pragma mark - Gizmo overlay
+
+/// Kind of gizmo handle — what UI gesture the platform overlay binds
+/// to it.  Mirrors `RISE::SceneEditController::GizmoHandle::Kind`.
+typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
+    RISEViewportGizmoKindAxisArrow        = 0,  ///< Translate: drag along world axis
+    RISEViewportGizmoKindAxisPlane        = 1,  ///< Translate: drag in plane perpendicular to axis
+    RISEViewportGizmoKindScreenCenter     = 2,  ///< Translate: drag in screen plane (axis = -1)
+    RISEViewportGizmoKindAxisRing         = 3,  ///< Rotate: drag tangent to ring around world axis
+    RISEViewportGizmoKindScreenRing       = 4,  ///< Rotate: view-axis spin (axis = -1)
+    RISEViewportGizmoKindAxisScaleHandle  = 5,  ///< Scale: drag along world axis (cube glyph at tip)
+    RISEViewportGizmoKindUniformScaleCube = 6   ///< Scale: uniform (axis = -1)
+};
+
+/// Recompute the gizmo handle array for the current Object selection
+/// + tool + camera projection.  No-op when:
+///   - the active tool isn't in the ObjectTransform category
+///   - no Object is selected
+///   - the camera projection is degenerate
+/// Caller invokes this once per preview frame before reading
+/// `gizmoHandles`.
+- (void)refreshGizmoHandles;
+
+/// Snapshot of the current gizmo handle array (empty if no gizmo
+/// is currently shown).  Read AFTER `refreshGizmoHandles`.  The
+/// returned NSArray is a fresh copy; values stay valid even if the
+/// controller refreshes its internal array between calls.
+@property (nonatomic, readonly) NSArray<RISEViewportGizmoHandle *> *gizmoHandles;
+
+/// True iff a gizmo handle was hit on the most recent pointer-down
+/// and the drag is still active (no pointer-up yet).  The overlay
+/// uses this to switch the active-handle highlight on / off.
+@property (nonatomic, readonly) BOOL gizmoDragActive;
+
+/// Currently-active drag handle kind / axis, or -1 when no drag is
+/// in progress.  Together with `gizmoDragActive` these drive the
+/// overlay's active-handle styling.
+@property (nonatomic, readonly) RISEViewportGizmoKind activeGizmoKind;
+@property (nonatomic, readonly) NSInteger             activeGizmoAxis;
+
+#pragma mark - Nav gizmo (axis-ball) + view navigation
+
+/// Recompute the six axis-ball nubs (±X/±Y/±Z) for a ball centered at
+/// (centerX, centerY) with `ballRadius`, each nub `nubRadius`, all in widget
+/// points.  Returns NO (empty nub array) when there's no supported (pinhole)
+/// interactive camera.  Call once per preview frame before reading
+/// `navGizmoNubs` — see docs/gui/CAMERAS_AND_VIEWS.md §4.
+- (BOOL)refreshNavGizmoWithCenterX:(CGFloat)centerX centerY:(CGFloat)centerY
+                        ballRadius:(CGFloat)ballRadius nubRadius:(CGFloat)nubRadius
+    NS_SWIFT_NAME(refreshNavGizmo(centerX:centerY:ballRadius:nubRadius:));
+
+/// Snapshot of the current nub array (empty if the gizmo isn't shown).
+/// Read AFTER `refreshNavGizmo…`.
+@property (nonatomic, readonly) NSArray<RISEViewportNavNub *> *navGizmoNubs;
+
+/// Hit-test a widget-space point against the nubs (front-facing win ties).
+/// Returns the nub index or -1.
+- (NSInteger)navGizmoNubAtX:(CGFloat)x y:(CGFloat)y
+    NS_SWIFT_NAME(navGizmoNubAt(x:y:));
+
+/// Non-destructive view navigation: these drive the transient free-fly
+/// ViewportPose (the interactive pass renders through it) and NEVER mutate a
+/// scene camera.  Each returns YES on success / the documented refusal cases.
+- (BOOL)snapViewToAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapView(toAxis:negative:));
+- (BOOL)enterFreeFly;
+- (BOOL)exitFreeFly;
+@property (nonatomic, readonly) BOOL freeFlyActive;
+- (BOOL)setHomeView;
+- (BOOL)goToHomeView;
+@property (nonatomic, readonly) BOOL hasHomeView;
+
+/// B3 fly-then-stamp: promote the current free-fly view into a NEW named
+/// scene camera (named from a CST-safe canonicalization of `proposedName`,
+/// then dedup-suffixed; the new camera becomes active). Returns the created
+/// camera's name, or nil when
+/// there's no free-fly pose to stamp or the edit was refused.
+- (nullable NSString *)stampViewToNewCamera:(NSString *)proposedName
+    NS_SWIFT_NAME(stampViewToNewCamera(_:));
+
+/// user-review P1-1: pane-indexed navigation twins.  The methods above alias
+/// pane 0 (the §7.4 C-ABI contract); the N-up nav overlay is drawn on the
+/// primary pane and calls THESE with its pane index, so it moves the pane it's
+/// actually over.  (paneEnterFreeFly / paneExitFreeFly already exist below.)
+- (BOOL)snapPaneView:(NSUInteger)pane toAxis:(NSInteger)axis negative:(BOOL)negative
+    NS_SWIFT_NAME(snapPaneView(_:toAxis:negative:));
+- (BOOL)isPaneFreeFlyActive:(NSUInteger)pane
+    NS_SWIFT_NAME(isPaneFreeFlyActive(_:));
+- (BOOL)paneSetHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneSetHomeView(_:));
+- (BOOL)paneGoToHomeView:(NSUInteger)pane
+    NS_SWIFT_NAME(paneGoToHomeView(_:));
+- (nullable NSString *)stampPaneViewToNewCamera:(NSUInteger)pane proposedName:(NSString *)proposedName
+    NS_SWIFT_NAME(stampPaneViewToNewCamera(_:proposedName:));
+
+#pragma mark - Named Views (B1)
+
+/// Capture the current view (free-fly pose if active, else the active camera)
+/// as a new named view.  Returns NO when there's no capturable camera.
+- (BOOL)captureNamedView:(NSString *)name NS_SWIFT_NAME(captureNamedView(_:));
+/// The named views, in order (an NSArray of their names).
+@property (nonatomic, readonly) NSArray<NSString *> *namedViewNames;
+/// Restore view `idx` into the transient ViewportPose (non-destructive).
+- (BOOL)restoreNamedView:(NSInteger)idx NS_SWIFT_NAME(restoreNamedView(_:));
+/// Re-capture the current view into slot `idx`.
+- (BOOL)updateNamedView:(NSInteger)idx NS_SWIFT_NAME(updateNamedView(_:));
+/// Remove view `idx`.
+- (BOOL)deleteNamedView:(NSInteger)idx NS_SWIFT_NAME(deleteNamedView(_:));
+/// Promote view `idx` into a NEW scene camera (named from a CST-safe
+/// canonicalization of `proposedName`; becomes active). Returns the created
+/// camera's name, or nil on refusal.
+- (nullable NSString *)promoteNamedView:(NSInteger)idx name:(NSString *)proposedName
+    NS_SWIFT_NAME(promoteNamedView(_:name:));
+
+#pragma mark - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
+
+/// Registry entries with `viewportSelectable == true`, in registry
+/// (UI) order — the set the mode dropdown / View menu offers.  Each
+/// dictionary has string values for keys "name" ("preview", "normals",
+/// ...), "title" ("Shaded Preview", ...), "question" (the tooltip
+/// text), "wantsDenoise" ("1"/"0" — GUI render modes P2a: the registry's
+/// `wantsDenoise` flag, added so the DENOISED-label formatter can key off
+/// it instead of a hardcoded `mode == "preview"` check now that
+/// BeautyVariant modes genuinely denoise too), and "isVariant" ("1"/"0" —
+/// P2a review fix: `RISE::Implementation::IsBeautyVariantMode`, so the
+/// x-ray toggle can disable itself while the active mode is a
+/// BeautyVariant row — see RISE_API_GetViewportRenderModeIsVariant's doc).
+/// Registry-level (not controller-scoped) but still guarded on
+/// `_controller` for consistency with every other bridge accessor — empty
+/// array when no controller is attached.
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)viewportRenderModes;
+
+/// The registry wire name of the CURRENTLY active viewport render mode
+/// ("preview" when no controller is attached, matching the C-ABI's own
+/// null-controller default).
+@property (nonatomic, readonly, copy) NSString *viewportRenderMode;
+
+/// Switch the interactive viewport to render-mode `name` (a wire name
+/// from -viewportRenderModes).  Returns NO on a null controller/name,
+/// an unknown or non-selectable name, or the documented controller-
+/// level refusals (render-owns-scene, skeleton mode) — see
+/// SceneEditController::SetViewportRenderMode.  On success the
+/// controller kicks its own repaint; callers should re-read
+/// -viewportRenderMode afterward rather than assuming `name` stuck.
+- (BOOL)setViewportRenderMode:(NSString *)name
+    NS_SWIFT_NAME(setViewportRenderMode(_:));
+
+#pragma mark - Viewport X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis")
+
+/// Whether the interactive viewport currently resolves the primary hit
+/// THROUGH transmissive surfaces to the first opaque hit.  Applies to
+/// EVERY viewport render mode, INCLUDING the shaded "preview" pipeline
+/// (not just the four data modes) -- resolution lives in the caster
+/// layer, so it is orthogonal to which mode is active. DEFAULT OFF: the
+/// viewport shows the first transmissive surface, and the controller resets
+/// the flag back to OFF on every scene rebind (RebindEditorToJob). NO on a null
+/// controller (matching the C-ABI's own null-controller default), and
+/// also NO while a production/agent render owns the scene
+/// (RISE_API_SceneEditController_GetViewportXray's documented
+/// transient).
+- (BOOL)viewportXray;
+
+/// Set the x-ray flag.  Applies immediately regardless of which mode is
+/// active (including preview).  Returns NO on a null controller or the
+/// documented controller-level refusals (render-owns-scene, skeleton
+/// mode) -- no caster rebuild happens either way, just a flag stamp.
+/// Callers should re-read -viewportXray afterward rather than assuming
+/// `on` stuck.
+- (BOOL)setViewportXray:(BOOL)on
+    NS_SWIFT_NAME(setViewportXray(_:));
+
+#pragma mark - N-up multi-viewport (P3, docs/gui/RENDER_MODES.md §7)
+//
+// Up to four pane slots; the layout selects the visible subset (§7.2).
+// Every setter is fail-closed per the controller contract (§7.4):
+// unknown pane / hidden pane / render-owns-scene => NO, nothing
+// mutated.  Pane 0's DISPLAY keeps using the legacy -setImageBlock: /
+// -pointerDown(x:y:) family unchanged -- see RISEViewportBridge.mm's
+// "N-up pane-0 sink" doc comment for why that's the correct choice
+// rather than migrating pane 0 onto -setPaneImageBlock:forPane:.  The
+// entry points below cover the layout/primary/chrome plumbing that
+// spans all four panes, plus display + input routing for panes 1-3.
+
+/// Mirrors SceneEditController::ViewportLayout.  §7.2: Single = pane 0
+/// only; TwoH = 0|1 side by side; OnePlusTwo = 0 big + 1,2 stacked;
+/// Quad = 0-3 in a 2x2 grid.
+typedef NS_ENUM(NSInteger, RISEViewportLayout) {
+    RISEViewportLayoutSingle     = 0,
+    RISEViewportLayoutTwoH       = 1,
+    RISEViewportLayoutOnePlusTwo = 2,
+    RISEViewportLayoutQuad       = 3,
+};
+
+/// Mirrors SceneEditController::PaneVantageKind.
+typedef NS_ENUM(NSInteger, RISEViewportVantageKind) {
+    RISEViewportVantageSceneCamera      = 0,
+    RISEViewportVantageFreeFly          = 1,
+    RISEViewportVantageNamedView        = 2,
+    RISEViewportVantageSceneCameraNamed = 3,
+};
+
+/// Mirrors SceneEditController::PaneContentSource.
+typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
+    RISEViewportPaneContentInteractive = 0,
+    RISEViewportPaneContentLastRender  = 1,
+};
+
+/// The active N-up layout.  Defaults to Single (matches the
+/// controller's construction default) when no controller is attached.
+/// Mutations are explicitly fallible: a coordinated render may acquire
+/// admission after the toolbar was enabled but before the click reaches
+/// the controller, so callers must update their local UI state only when
+/// this method returns YES.
+@property (nonatomic, readonly) RISEViewportLayout viewportLayout;
+- (BOOL)applyViewportLayout:(RISEViewportLayout)layout
+    NS_SWIFT_NAME(setViewportLayout(_:));
+
+/// The primary pane index (0-3; §7.8 decision 1: a non-navigation
+/// click in any pane promotes it).  0 when no controller is attached.
+@property (nonatomic) NSUInteger primaryPane;
+
+/// Per-pane render mode -- the SAME registry wire names
+/// -viewportRenderModes lists.  Pane 0 forwards to
+/// -setViewportRenderMode: / -viewportRenderMode controller-side
+/// (alias contract, §7.4): calling either surface for pane 0 is
+/// equivalent, so callers may safely treat all four panes uniformly.
+- (NSString *)paneRenderMode:(NSUInteger)pane
+    NS_SWIFT_NAME(paneRenderMode(_:));
+- (BOOL)setPaneRenderMode:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneRenderMode(_:name:));
+
+- (RISEViewportPaneContentSource)paneContentSource:(NSUInteger)pane
+    NS_SWIFT_NAME(paneContentSource(_:));
+- (BOOL)setPaneContentSource:(NSUInteger)pane source:(RISEViewportPaneContentSource)source
+    NS_SWIFT_NAME(setPaneContentSource(_:source:));
+
+/// Per-pane vantage.  Pane 0's free-fly twins alias -enterFreeFly /
+/// -exitFreeFly (§7.4); pane 0's Scene-camera / NamedView setters have
+/// no pre-existing un-indexed equivalent, so calling them on pane 0 is
+/// a new, valid operation. Named scene-camera binding is secondary-pane
+/// only and therefore refuses pane 0.
+- (BOOL)setPaneVantageSceneCamera:(NSUInteger)pane
+    NS_SWIFT_NAME(setPaneVantageSceneCamera(_:));
+- (BOOL)setPaneVantageSceneCameraNamed:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneVantageSceneCameraNamed(_:name:));
+- (BOOL)setPaneVantageNamedView:(NSUInteger)pane name:(NSString *)name
+    NS_SWIFT_NAME(setPaneVantageNamedView(_:name:));
+- (BOOL)paneEnterFreeFly:(NSUInteger)pane
+    NS_SWIFT_NAME(paneEnterFreeFly(_:));
+- (BOOL)paneExitFreeFly:(NSUInteger)pane
+    NS_SWIFT_NAME(paneExitFreeFly(_:));
+
+/// `outKind` receives the vantage kind; `outNamedView` (optional, may
+/// be NULL) receives the referenced name for NamedView or
+/// SceneCameraNamed ("" otherwise).  Returns NO on a null controller / invalid pane
+/// (outputs left untouched in that case).
+- (BOOL)getPaneVantage:(NSUInteger)pane
+                   kind:(RISEViewportVantageKind *)outKind
+              namedView:(NSString * _Nullable * _Nullable)outNamedView
+    NS_SWIFT_NAME(getPaneVantage(_:kind:namedView:));
+
+/// Pane render-surface pixel dims -- the GUI's pane rect, in PIXELS
+/// (backing-scale aware).  0/0 resets to film dims.  Call for every
+/// VISIBLE pane on layout switch and on window/pane resize.
+- (BOOL)setPaneSurfaceDims:(NSUInteger)pane width:(NSUInteger)w height:(NSUInteger)h
+    NS_SWIFT_NAME(setPaneSurfaceDims(_:width:height:));
+
+/// Pane-indexed pointer routing.  Coordinates are in the SAME
+/// full-resolution film-pixel space -cameraSurfaceDimensions
+/// describes: RISE's Film dims are a scene-level singleton (imaging
+/// dims live on the `film` chunk, not per-camera -- see
+/// docs/SCENE_CONVENTIONS.md) shared by every pane regardless of which
+/// camera/vantage that pane shows, so the one existing dims accessor
+/// is correct for all four cells (see RISEViewportBridge.mm's N-up doc
+/// comment for the full reasoning and the C-ABI gap this works
+/// around).  -onPanePointerDown returns NO to mean "drop the gesture"
+/// (hidden pane / render-owns-scene) -- callers MUST swallow the
+/// matching Move/Up sequence for that physical gesture when Down
+/// returns NO, exactly like the single-viewport region-drag's
+/// `suppressPointerUntilUp` pattern.
+- (BOOL)onPanePointerDown:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerDown(_:x:y:));
+- (void)onPanePointerMove:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerMove(_:x:y:));
+- (void)onPanePointerUp:(NSUInteger)pane x:(double)x y:(double)y
+    NS_SWIFT_NAME(onPanePointerUp(_:x:y:));
+
+/// Per-pane refinement status -- same phase/scale contract as
+/// -refinementPhaseWithScaleDivisor:, scoped to `pane`.
+- (int)paneRefinementPhase:(NSUInteger)pane scaleDivisor:(unsigned int *)scaleDivisor
+    NS_SWIFT_NAME(paneRefinementPhase(_:scaleDivisor:));
+
+// -setPaneImageBlock:forPane: (panes 1-3 image stream) is declared
+// below, next to -setImageBlock:, because it takes the
+// RISEViewportImageBlock type typedef'd in that section.
+
+#pragma mark - Pointer events
+//
+// Coordinates are in the viewport surface's pixel space.  Bridge
+// callers (Swift) are responsible for HiDPI / window-point ↔ pixel
+// conversion.
+
+- (void)pointerDownX:(double)x y:(double)y NS_SWIFT_NAME(pointerDown(x:y:));
+- (void)pointerMoveX:(double)x y:(double)y NS_SWIFT_NAME(pointerMove(x:y:));
+- (void)pointerUpX:(double)x y:(double)y   NS_SWIFT_NAME(pointerUp(x:y:));
+
+//! Stable full-resolution camera dimensions for pointer-event coord
+//! conversion in the Swift viewport view.  The rendered image's size
+//! shrinks during a fast drag (preview-scale subsampling); using
+//! image.size as the conversion target makes mLastPx (captured at
+//! one scale level) and the next pointer event (in another) live in
+//! mismatched coord spaces, producing 4×–32× pan/orbit jumps when
+//! the scale state machine steps.  This getter returns the camera's
+//! canonical full-res dims directly from the controller, so the
+//! bridge's surface-point math stays stable across subsampling.
+//! Returns (0,0) when no camera is attached.
+@property (nonatomic, readonly) NSSize cameraSurfaceDimensions;
+
+//! Active animation's scene-time range and frame count, derived from its
+//! `animation_options` chunk (or the core's defaults when none is declared).
+//! Used only to configure the timeline scrubber; animationPresence below
+//! independently controls whether that scrubber is visible.  A temporarily
+//! unavailable controller yields the bridge's existing sentinel values.
+@property (nonatomic, readonly) double animationTimeStart;
+@property (nonatomic, readonly) double animationTimeEnd;
+@property (nonatomic, readonly) NSUInteger animationNumFrames;
+
+//! Coherently snapshot all active animation options under one controller
+//! admission.  Returns NO without touching the outputs while unavailable.
+- (BOOL)getAnimationOptionsTimeStart:(double *)timeStart
+                             timeEnd:(double *)timeEnd
+                           numFrames:(NSUInteger *)numFrames
+    NS_SWIFT_NAME(getAnimationOptions(timeStart:timeEnd:numFrames:));
+
+//! Tri-state live animation-presence snapshot: 1 when the scene currently
+//! has keyframed elements, 0 when it does not, and -1 when the controller is
+//! temporarily unavailable/contended.  Callers retain their last successful
+//! value on -1 so an external agent commit never makes the timeline flicker.
+@property (nonatomic, readonly) NSInteger animationPresence;
+
+//! doc 88 S10 (Tier-2 panel affordances): a small RGBA8 preview patch for
+//! a named painter, or (defIndex >= 0) one of its expression `def`
+//! stages.  Returns nil while unavailable/refused (unknown name, bad
+//! index, a def-stage request on a non-expression painter, a render
+//! owning the scene, etc.) -- see src/Library/SceneEditor/PainterPreview.h
+//! for the domain / display-encode / scalar-normalization contract this
+//! call does not repeat.  The returned NSData is exactly width*height*4
+//! bytes, row-major top-to-bottom RGBA8 -- feed it straight to a
+//! CGImage/NSImage via a data provider.  `wasScalar`/`rangeMin`/
+//! `rangeMax` (all optional -- pass NULL/nil to skip) report the
+//! auto-range normalization actually applied for a scalar-typed stage;
+//! untouched for a colour-typed one.
+- (nullable NSData *)painterPreviewFor:(NSString *)painterName
+                               defIndex:(NSInteger)defIndex
+                                  width:(NSUInteger)width
+                                 height:(NSUInteger)height
+                              wasScalar:(nullable BOOL *)wasScalar
+                               rangeMin:(nullable double *)rangeMin
+                               rangeMax:(nullable double *)rangeMax
+    NS_SWIFT_NAME(painterPreview(for:defIndex:width:height:wasScalar:rangeMin:rangeMax:));
+
+//! doc 88 S10: a ramp_painter's own colour interpolation over its
+//! authored stop domain, as a horizontal gradient strip -- same
+//! NSData/refusal contract as painterPreviewFor: above.  Refuses (nil)
+//! when `painterName` does not resolve to a ramp_painter.
+- (nullable NSData *)rampStripPreviewFor:(NSString *)painterName
+                                    width:(NSUInteger)width
+                                   height:(NSUInteger)height
+    NS_SWIFT_NAME(rampStripPreview(for:width:height:));
+
+//! Material Editor Slice 5 (MATERIAL_EDITOR.md §4): headless 3D shaderball
+//! RGBA8 preview of a named material. Same NSData/refusal contract as
+//! painterPreviewFor: above.
+- (nullable NSData *)materialPreviewFor:(NSString *)materialName
+                                   width:(NSUInteger)width
+                                  height:(NSUInteger)height
+    NS_SWIFT_NAME(materialPreview(for:width:height:));
+
+//! Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4/§5):
+//! spectral differentiator widgets (D1 Blackbody & Sellmeier, D2 Measured
+//! Metals, D3 Thin-Film Iridescence Angle-Sweep Strip).
+- (nullable NSData *)thinFilmAngleStripFor:(NSString *)materialName
+                                      width:(NSUInteger)width
+                                     height:(NSUInteger)height
+                                thicknessNm:(nullable double *)outThicknessNm
+                                    filmIor:(nullable double *)outFilmIor
+    NS_SWIFT_NAME(thinFilmAngleStrip(for:width:height:thicknessNm:filmIor:));
+
+- (nullable NSData *)evaluateThinFilmFor:(NSString *)materialName
+                                angleDeg:(double)angleDeg
+                             thicknessNm:(nullable double *)outThicknessNm
+                                 filmIor:(nullable double *)outFilmIor
+    NS_SWIFT_NAME(evaluateThinFilm(for:angleDeg:thicknessNm:filmIor:));
+
+- (nullable NSData *)blackbodyKelvinStripWithWidth:(NSUInteger)width
+                                             height:(NSUInteger)height
+                                          minKelvin:(double)minKelvin
+                                          maxKelvin:(double)maxKelvin
+    NS_SWIFT_NAME(blackbodyKelvinStrip(width:height:minKelvin:maxKelvin:));
+
+- (nullable NSData *)evaluateBlackbodyKelvin:(double)kelvin
+                                      peakNm:(nullable double *)outPeakNm
+    NS_SWIFT_NAME(evaluateBlackbody(kelvin:peakNm:));
+
+- (BOOL)evaluateSellmeierMetrics:(NSString *)sellmeierParamValue
+                              nd:(nullable double *)outNd
+                          abbeVd:(nullable double *)outAbbeVd
+    NS_SWIFT_NAME(evaluateSellmeierMetrics(_:nd:abbeVd:));
+
+- (nullable NSData *)measuredMetalPresetSwatch:(NSString *)presetId
+    NS_SWIFT_NAME(measuredMetalPresetSwatch(_:));
+
+// Named animations are surfaced as a first-class accordion Category
+// (RISEViewportCategoryAnimation) — the generic categoryEntities: /
+// activeName: / setSelection:name: surface lists + activates them, so there
+// are no bespoke animation accessors here.  animationTime* above already
+// reflect the active animation's options.
+
+#pragma mark - Time scrubber
+
+/// Each operation is fallible because a render may acquire controller
+/// admission after the timeline's enabled-state snapshot.  On a refused
+/// value update, callers must restore their local time from -lastSceneTime.
+- (BOOL)scrubTimeBegin;
+- (BOOL)scrubTime:(double)t;
+- (BOOL)scrubTimeEnd;
+
+#pragma mark - Properties-panel scrub gesture
+//
+// Bracket a click-and-drag scrub on a property's chevron handle.
+// The controller bumps the preview-scale divisor between Begin and
+// End so the rapid-fire SetProperty stream doesn't cancel every
+// in-flight render before the outer tiles get a chance to update.
+
+- (void)beginPropertyScrub;
+- (void)endPropertyScrub;
+
+#pragma mark - Edit commands
+
+- (void)undo;
+- (void)redo;
+
+/// The user-facing notice a REFUSED undo/redo left (e.g. an agent batch
+/// edit whose inverse would leave a document that does not derive -- the
+/// step stays in the history).  Empty string when there is none; cleared
+/// on read, so call it once after each undo/redo.
+- (NSString *)consumeHistoryNotice;
+
+/// Human-readable label of the next undo/redo step ("Translate",
+/// "Agent Edit", ...) for the Edit-menu items.  Empty string when the
+/// corresponding stack is empty.
+- (NSString *)undoActionLabel;
+- (NSString *)redoActionLabel;
+
+#pragma mark - Editor live-sync (UI refinement item 1)
+
+/// The retained CST Document's serialization — the exact bytes a save
+/// would write.  Empty string when no document is retained.  Takes the
+/// controller's commit mutex: DO NOT call while a render owns the scene
+/// (gate on the scene-editable predicate, like the proposals poll).
+- (NSString *)serializedSceneText;
+
+/// Retained CST head version — uuid is fresh per load, revision bumps
+/// iff the document content changed.  Returns NO (and zeros) with no
+/// controller.  Same do-not-call-during-renders caveat as above.
+- (BOOL)getSceneTextVersionUuid:(unsigned long long *)outUuid
+                       revision:(unsigned long long *)outRevision;
+
+#pragma mark - Refinement pause + status (UI redesign, design brief A2)
+
+/// Pause progressive refinement: the interactive render thread is
+/// joined, the on-screen image survives, CPU goes quiet.  Edits made
+/// while paused mutate the scene normally and appear on resume.
+- (void)pauseRefinement;
+/// Resume after pauseRefinement.  No-op when not paused.  Note any
+/// (re)start of the interactive loop — e.g. the post-production-render
+/// restart — also clears the paused state.
+- (void)resumeRefinement;
+- (BOOL)isRefinementPaused;
+
+/// Honest interactive-refinement readout: phase is
+/// 0 Idle / 1 Rendering / 2 Refining / 3 Polishing / 4 Paused
+/// (-1 when no controller).  scaleDivisor (when non-NULL) receives the
+/// preview-resolution divisor, 1..32 powers of two, 1 = full res.
+/// There is NO "pass N of M" in the interactive loop — it refines by a
+/// 6-level resolution ladder + a denoised polish pass; this reports
+/// exactly that.
+- (int)refinementPhaseWithScaleDivisor:(unsigned int *)scaleDivisor;
+
+#pragma mark - Interactive region-of-interest (UI redesign, design brief A4)
+
+/// Restrict full-resolution interactive passes to an INCLUSIVE box in
+/// full-res film pixel coordinates.  Coarse ladder passes still render
+/// full-frame; ordinary production renders ignore and preserve the region.
+- (void)setInteractiveRegionLeft:(unsigned int)left
+                             top:(unsigned int)top
+                           right:(unsigned int)right
+                          bottom:(unsigned int)bottom;
+- (void)clearInteractiveRegion;
+/// TRUE (+ coords) when a region is active.
+- (BOOL)getInteractiveRegionLeft:(unsigned int *)left
+                             top:(unsigned int *)top
+                           right:(unsigned int *)right
+                          bottom:(unsigned int *)bottom;
+/// TRUE when the interactive rasterizer honors regions (honesty query;
+/// the stock interactive rasterizer always does).
+- (BOOL)interactiveRasterizerHonorsRegion;
+
+#pragma mark - Scene-file save (Phase 6.5)
+//
+// Persist transform edits + retained overrides back to a `.RISEscene`
+// file via the SaveEngine round-trip pipeline.  The button driving
+// these is gated on `hasUnsavedSceneChanges`; the dirty-changed
+// block lets SwiftUI track the bool from the C++ edit pipeline
+// without polling.
+
+/// True iff at least one edit since the last load / save would
+/// produce a non-NoOp save.  Drives the Save-button enable state.
+/// Cheap O(1) (asks the controller's dirty trackers).
+- (BOOL)hasUnsavedSceneChanges;
+
+/// Save the in-memory edits to `path`.  Routes through
+/// `SceneEditController::RequestSave` — caller is freed of the
+/// cancel-and-park dance.  Returns status code:
+///   0 = Saved          (bytes written)
+///   1 = NoOp           (no edits to write; file untouched)
+///   2 = Refused        (engine declined; original file untouched)
+///   3 = Failed         (IO error; original file untouched)
+/// `outErrorMessage` is populated on Refused or Failed with the
+/// engine's diagnostic; empty otherwise.  Numeric mirror of
+/// `SaveResult::Status`.
+- (NSInteger)saveSceneTo:(NSString *)path
+              errorMessage:(NSString * _Nullable * _Nullable)outErrorMessage
+    NS_SWIFT_NAME(saveScene(to:errorMessage:));
+
+typedef void (^RISEViewportDirtyChangedBlock)(BOOL hasUnsavedChanges);
+
+/// Install a callback fired once per `hasUnsavedSceneChanges`
+/// TRANSITION (clean→dirty or dirty→clean).  Edits that leave the
+/// scene already-dirty do NOT fire it (steady-state edits are
+/// folded).  Callback runs on the thread that drove the edit
+/// (typically the main thread, which is where Swift drives the
+/// controller from); SwiftUI listeners should still `Task { @MainActor }`
+/// inside if they need to guarantee it.  Pass nil to detach.
+- (void)setDirtyChangedBlock:(nullable RISEViewportDirtyChangedBlock)block;
+
+/// Canonical scene time owned by the underlying SceneEditController.
+/// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
+/// edit; that's why callers should query this just before kicking
+/// the production rasterizer instead of trusting the SwiftUI
+/// timeline-slider state, which goes stale across undo/redo.
+/// Returns 0 when no controller is attached.
+- (double)lastSceneTime;
+
+- (BOOL)requestProductionRender;
+
+#pragma mark - Selection
+
+/// Phase 3 picking is not yet implemented (waits on Phase 5 ray-cast
+/// integration).  This is a test hook for setting selection by name
+/// from the UI when picking lands.
+- (void)setSelectedObjectName:(nullable NSString *)name;
+@property (nonatomic, readonly, nullable) NSString *selectedObjectName;
+
+#pragma mark - Live preview output
+
+/// Block invoked on the main thread with a freshly-rendered preview
+/// image (an NSImage snapshot of the interactive rasterizer's output).
+/// Pass nil to clear.  Throttled to ~30Hz to keep the UI thread free.
+typedef void (^RISEViewportImageBlock)(NSImage *image);
+
+- (void)setImageBlock:(nullable RISEViewportImageBlock)block;
+
+/// N-up (§7): live-preview image stream for panes 1-3 ONLY (pane 0
+/// keeps using -setImageBlock: above -- see RISEViewportBridge.mm's
+/// "N-up pane-0 sink" doc comment for why).  `pane` must be 1, 2, or 3;
+/// a call with pane==0 or an out-of-range pane is a no-op.  Same
+/// ~30Hz-throttled NSImage contract as -setImageBlock:.
+- (void)setPaneImageBlock:(nullable RISEViewportImageBlock)block forPane:(NSUInteger)pane
+    NS_SWIFT_NAME(setPaneImageBlock(_:forPane:));
+
+/// True if the live-preview rasterizer was successfully constructed
+/// against the loaded scene.  False means the controller is still in
+/// skeleton mode (the loaded scene didn't declare a usable shader, or
+/// some other resource was missing).  Edits still mutate the in-memory
+/// scene; the user can click "Render" to see the production result.
+@property (nonatomic, readonly) BOOL hasLivePreview;
+
+#pragma mark - Properties panel (descriptor-driven)
+
+/// Discriminator for what the right-side panel should display.
+/// Mirrors RISE::SceneEditController::PanelMode.  Numeric values are
+/// kept in lockstep with RISEViewportCategory so the ints round-trip
+/// through the C-API surface without translation.
+typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
+    RISEViewportPanelModeNone       = 0,  ///< nothing selected
+    RISEViewportPanelModeCamera     = 1,
+    RISEViewportPanelModeRasterizer = 2,
+    RISEViewportPanelModeObject     = 3,
+    RISEViewportPanelModeLight      = 4,
+    RISEViewportPanelModeFilm       = 5,  ///< Output Settings (single Film per scene)
+    RISEViewportPanelModeMaterial   = 6,  ///< Materials
+    RISEViewportPanelModeMedium     = 7,  ///< Participating media
+};
+
+/// Mirrors RISE::SceneEditController::Category — drives the
+/// accordion's section IDs and the selection round-trip.
+typedef NS_ENUM(NSInteger, RISEViewportCategory) {
+    RISEViewportCategoryNone       = 0,
+    RISEViewportCategoryCamera     = 1,
+    RISEViewportCategoryRasterizer = 2,
+    RISEViewportCategoryObject     = 3,
+    RISEViewportCategoryLight      = 4,
+    RISEViewportCategoryFilm       = 5,   ///< Output Settings (single Film per scene)
+    RISEViewportCategoryMaterial   = 6,   ///< Materials
+    RISEViewportCategoryMedium     = 7,   ///< Participating media
+    RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
+    RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
+    RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
+    RISEViewportCategoryGeometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
+};
+
+/// Current panel mode — lets the SwiftUI parent decide whether to
+/// show the panel at all and what header to draw.  Recompute after
+/// any tool change or pointer-down event (picking).
+@property (nonatomic, readonly) RISEViewportPanelMode panelMode;
+
+/// Header string ("Camera", "Object: <name>", or empty) the platform
+/// can render above the property list.
+@property (nonatomic, readonly, copy) NSString *panelHeader;
+
+/// Force a refresh of the panel snapshot from the live entity.
+/// Called by the Swift panel before it re-reads `propertySnapshot`.
+- (void)refreshProperties;
+
+/// Snapshot of the current entity's properties.  Updated after
+/// `refreshProperties` and after any successful setProperty: call.
+- (NSArray<RISEViewportProperty *> *)propertySnapshot;
+
+/// Jump-to-definition (GUI redesign, 2026-07-22): for the PRIMARY
+/// snapshot's Reference-kind row at `idx`, resolve which category the
+/// row's value names (probing the descriptor's declared target
+/// categories against the live managers, first-wins).  Returns NO for
+/// non-Reference rows / dangling references -- the context-menu item
+/// stays hidden.  On YES the caller navigates via -setSelection:name:.
+- (BOOL)propertyJumpTargetAtIndex:(NSUInteger)idx
+                      outCategory:(RISEViewportCategory *)outCategory
+                          outName:(NSString * _Nullable * _Nonnull)outName
+    NS_SWIFT_NAME(propertyJumpTarget(atIndex:outCategory:outName:));
+
+/// Per-category twin of `-propertyJumpTargetAtIndex:outCategory:outName:`:
+/// resolves the jump target against `category`'s own property snapshot rather
+/// than the primary selection's snapshot.
+- (BOOL)propertyJumpTargetForCategory:(RISEViewportCategory)category
+                              atIndex:(NSUInteger)idx
+                          outCategory:(RISEViewportCategory *)outCategory
+                              outName:(NSString * _Nullable * _Nonnull)outName
+    NS_SWIFT_NAME(propertyJumpTarget(forCategory:atIndex:outCategory:outName:));
+
+/// Apply an edit to a named property.  Returns YES on success.
+- (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;
+
+/// Phase 4b: per-category property snapshot.  Returns the rows
+/// for `category`'s expanded section.  Empty array if the section
+/// has no selection (collapsed).  After `refreshProperties`, every
+/// category with a non-empty selection has a populated snapshot.
+- (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(propertySnapshot(for:));
+
+/// Phase 4b: per-category SetProperty.  Routes the edit through
+/// the per-section selection so the Material section's edits go
+/// to the right material even when Object is the primary
+/// selection (auto-synced multi-section state).
+- (BOOL)setPropertyForCategory:(RISEViewportCategory)category
+                          name:(NSString *)name
+                         value:(NSString *)value
+    NS_SWIFT_NAME(setProperty(for:name:value:));
+
+/// Material Editor Slice 3: edit the constant value (`color` or `value`) of the
+/// CST-authored painter currently bound to `slotParam` on `category`'s active
+/// selection.
+- (BOOL)setReferenceSlotPainterValueForCategory:(RISEViewportCategory)category
+                                      slotParam:(NSString *)slotParam
+                                          value:(NSString *)value
+    NS_SWIFT_NAME(setReferenceSlotPainterValue(for:slotParam:value:));
+
+/// Material Editor Slice 3: fork the CST-authored painter currently bound to
+/// `slotParam` on `category`'s active selection into an owned copy placed
+/// immediately after the original painter, and rebind `slotParam` to the new
+/// copy in one atomic Undo step.  Returns the new painter name on success, or
+/// nil on refusal.
+- (nullable NSString *)forkReferenceSlotPainterForCategory:(RISEViewportCategory)category
+                                                 slotParam:(NSString *)slotParam
+    NS_SWIFT_NAME(forkReferenceSlotPainter(for:slotParam:));
+
+/// Material Editor Slice 6 (SPECTRAL_DIFFERENTIATORS.md §3/§4): apply a
+/// spectral preset (measured metal, Sellmeier glass, or Kelvin temperature)
+/// to the active entity in `category` as a single atomic Undo batch.
+- (BOOL)applySpectralPresetForCategory:(RISEViewportCategory)category
+                              presetId:(NSString *)presetId
+    NS_SWIFT_NAME(applySpectralPreset(forCategory:presetId:));
+
+#pragma mark - Accordion list entries
+
+/// Display names of the entries in `category`.  Pulled by the
+/// accordion's list view; the platform UI caches by sceneEpoch.
+- (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
+
+/// 87 §5 step 4: `category`'s entities as the AUTHORED-graph TREE, which is
+/// what the outliner draws.  Supersedes `-categoryEntities:` for that view;
+/// the flat call stays for the places that genuinely want a list (the
+/// multi-pane camera picker).
+///
+/// A category whose entities have no hierarchy is N ROOTS WITH NO CHILDREN,
+/// so a caller needs no per-category branch — that is 4a's whole design.  For
+/// `RISEViewportCategoryObject` the tree is the AUTHORED graph, not the flat
+/// render list: 87 step 3's instancing expansions are FOLDED INTO the chunk
+/// that produced them, so an 8×8 `count_u`/`count_v` array is one row (with
+/// one chunk to edit), not 64.  The node count therefore need NOT match
+/// `-categoryEntities:`.count for Objects, and that is the point.
+///
+/// TRANSACTIONAL: built from `SceneEditController::ReadTree`, which refreshes
+/// once and then copies the whole published tree under a single lock hold, so
+/// the result can never be a mixture of two trees.  Do NOT reimplement it as a
+/// walk over the per-node getters.
+///
+/// Re-read whenever `sceneEpoch` advances.  NOTE for the drag-to-reparent
+/// work: a re-parent changes the TREE without changing any category's entity
+/// LIST, so that path must bump the scene epoch itself or the outliner keeps
+/// drawing the old shape.
+///
+/// Empty (but non-nil) on a temporarily unavailable controller or an empty
+/// category.
+- (RISESceneTree *)categoryTree:(RISEViewportCategory)category;
+
+/// doc-88 Phase 3 S14: the Painter/Material node graph, positioned --
+/// `{nodes, edges, positions}`. ONE TRANSACTIONAL READ, the SAME
+/// discipline `-categoryTree:` documents just above: built from
+/// `SceneEditController::ReadPainterMaterialGraphLaidOut`, which composes
+/// S11's graph + S13's saved sidecar positions + S12's auto-layout
+/// fill-in under one snapshot-lock hold (plus one small sidecar file
+/// read -- see that method's own header comment) rather than a per-node
+/// ABI walk. Empty (but non-nil) on a temporarily unavailable controller.
+- (RISEPainterMaterialGraph *)painterMaterialGraph;
+
+/// Node-graph "spotlight" query: for `objectName` (an Object-category
+/// chunk name -- pass `selectionRowName`, NOT `selectionName`, for a
+/// viewport/outliner pick, since a synthesized per-repetition/subtree-
+/// member name like `I[1,0]`/`I.child` is never itself an addressable
+/// chunk -- see `-selectionRowName`'s own comment), returns the chunk
+/// (category, name) IDENTITIES to highlight on the node-graph canvas: the
+/// object's bound material first, then the full transitive Painter/
+/// Function/Material closure reachable from it in the SAME published
+/// `PainterMaterialGraph` `-painterMaterialGraph` reads from, in BFS
+/// discovery order -- see `RISEAppearanceClosureEntry`'s own comment on
+/// why a bare name is not enough to match against
+/// `RISEPainterMaterialGraph.nodes`.
+///
+/// NIL VS EMPTY IS LOAD-BEARING (later external review round -- an empty
+/// array used to be overloaded and a Swift consumer polling this could not
+/// tell the two cases apart, which caused BOTH a lost auto-scroll AND,
+/// separately, an unbounded 0.5s retry timer for a genuinely material-less
+/// object): returns **nil** when the underlying
+/// `SceneEditController::AppearanceClosureForObject` call reports
+/// `outDegraded == true` -- the controller could not get a non-blocking
+/// hold of the commit lock right now (a render owns the scene) and so
+/// could not even ATTEMPT a real answer; this is a POLLED query (both
+/// platform canvases call it on every selection-observing pass), so nil
+/// here means "retry your next pass," not "the object has nothing to
+/// show." Returns a real, possibly-**empty** array for every OTHER
+/// outcome -- the object is unknown, has no material bound, or the
+/// resolved material name is AMBIGUOUS in the current graph (more than one
+/// same-category chunk shares it -- refused rather than guessed, see
+/// `SceneEditController::AppearanceClosureForObject`'s own comment) -- all
+/// of which are genuine, resolved answers a caller should accept and NOT
+/// retry. Called directly on the C++ controller
+/// (`SceneEditController::AppearanceClosureForObject`), the same "this
+/// file already calls SceneEditController natively" reasoning
+/// `-painterMaterialGraph` documents above.
+- (nullable NSArray<RISEAppearanceClosureEntry *> *)appearanceClosureForObject:(NSString *)objectName
+    NS_SWIFT_NAME(appearanceClosure(forObject:));
+
+/// User-requested slice: the node-graph canvas's "All" vs "Focused"
+/// view-scope toggle. Focused variant of `-painterMaterialGraph` --
+/// `.nodes` contains ONLY the subgraph rooted at `(category, name)`, laid
+/// out fresh -- see `SceneEditController::ReadPainterMaterialGraphLaidOutFocused`'s
+/// own header comment for the exact subgraph definition:
+///   - `category == 8` (`RISE::ChunkCategory::Object` -- the SAME "cast
+///     the parser's enum" ordinal `RISEGraphNode.category` already uses
+///     for Painter(0)/Function(1)/Material(2), extended here to also
+///     accept Object): the object's APPEARANCE CLOSURE, identical to
+///     `-appearanceClosureForObject:`'s own resolution + walk.
+///   - `category` Painter(0)/Function(1)/Material(2) (a canvas node
+///     itself): that node plus its own transitive closure in the SAME
+///     direction (its "inputs") -- DOWNSTREAM REFERRERS of the selected
+///     node are EXCLUDED, a narrower view than the Object case would ever
+///     produce for the same node, by design.
+/// Empty `.nodes` (never nil) for an unknown `name`, or (Object case) an
+/// unresolved/ambiguous bound material, or (non-Object case) an
+/// ambiguous `(category, name)` -- same refusal convention as every other
+/// `ResolveUniqueGraphNodeIndex`-backed lookup on this surface.
+///
+/// NIL VS EMPTY IS LOAD-BEARING: nil means graph refresh could only
+/// serve cached data under render ownership or scene-mutex contention,
+/// for ANY category. Object focus can also degrade during live material
+/// resolution. Preserve the displayed graph and retry. A genuinely
+/// unknown/ambiguous target returns a real, possibly empty graph.
+///
+/// LAYOUT IS TRANSIENT: this NEVER reads or writes the `.risegraph.json`
+/// sidecar -- see the C++ method's own comment. Toggling back to the
+/// all-view (`-painterMaterialGraph`) is completely unaffected by any
+/// number of prior focused reads.
+- (nullable RISEPainterMaterialGraph *)painterMaterialGraphFocusedForCategory:(NSInteger)category
+                                                                            name:(NSString *)name
+    NS_SWIFT_NAME(painterMaterialGraphFocused(category:name:));
+
+/// S2 Mac shell (Object Graph canvas, sibling of the Painter/Material
+/// canvas above): the object hierarchy graph, positioned -- `{nodes,
+/// edges, positions}`. Reuses `RISEPainterMaterialGraph`/`RISEGraphNode`
+/// verbatim (same shape: a node table + generation, nodes carrying
+/// category/keyword/ports/position) rather than a second wrapper type,
+/// the SAME "reuse the shared model, don't duplicate a structurally
+/// identical twin" call `SceneEditController::SceneGraphModel`'s own
+/// comment makes on the C++ side. ONE TRANSACTIONAL READ, built from
+/// `SceneEditController::ReadObjectGraphLaidOut` -- see that method's own
+/// header comment for the node set (`ChunkCategory::Object` +
+/// `ChunkCategory::Geometry`, plus `rect_light`/`shape_light` by
+/// keyword), the edge taxonomy, and why this NEVER reads or writes the
+/// `.risegraph.json` sidecar (layout is always transient here, even for
+/// the all-view -- unlike `-painterMaterialGraph`). Empty (but non-nil)
+/// on a temporarily unavailable controller.
+- (RISEPainterMaterialGraph *)objectGraph;
+
+/// Object Graph twin of `-painterMaterialGraphFocusedForCategory:name:`
+/// -- "all parents and children of the clicked object" (the user's own
+/// framing). See `SceneEditController::ReadObjectGraphLaidOutFocused`'s
+/// own header comment for the exact four-component subgraph definition
+/// (UP/DOWN/GEO/SOURCE). Unlike the Painter/Material focused read, there
+/// is no `category` parameter -- the object graph only ever focuses on
+/// an Object-category name (which already includes `rect_light`/
+/// `shape_light` nodes, per `-objectGraph`'s own comment).
+///
+/// NIL VS EMPTY IS LOAD-BEARING: nil means a render owns the scene or
+/// graph refresh served cached data under scene-mutex contention. Preserve
+/// the displayed graph and retry. Unknown/ambiguous targets return real,
+/// possibly empty graphs.
+///
+/// LAYOUT IS TRANSIENT -- same as `-objectGraph` itself (this graph has
+/// no sidecar to read OR write at all, focused or not).
+- (nullable RISEPainterMaterialGraph *)objectGraphFocusedForObject:(NSString *)name
+    NS_SWIFT_NAME(objectGraphFocused(forObject:));
+
+/// Phase 4b: per-category panel selection.  Returns the entity
+/// name picked in `category`'s section, or empty when nothing is
+/// picked (section collapsed).  Distinct from `selectionName`
+/// which returns only the PRIMARY (most-recently-set) selection:
+/// after an Object pick, both `selectionName(for: .object)` and
+/// `selectionName(for: .material)` return non-empty (the latter
+/// is the Object's bound material name, auto-filled).
+- (NSString *)selectionNameFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(selectionName(for:));
+
+/// Phase 4b: is `category`'s accordion section expanded?
+/// Tracked SEPARATELY from the per-category selection so a
+/// click on a section header (which sends empty-name SetSelection)
+/// still expands the section in the panel.  Without consulting
+/// this flag, the panel would gate expansion on a non-empty
+/// selection — collapsing every header-only click.
+- (BOOL)isSectionExpandedFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(isSectionExpanded(for:));
+
+/// Phase 4b: collapse `category`'s section.  Clears the
+/// expanded flag AND the per-category selection.  Does NOT
+/// touch other sections — use `setSelection(.none, name:"")`
+/// for the panel-wide collapse.
+- (void)collapseSectionFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(collapseSection(for:));
+
+/// Scene-level active entity name for `category`, independent of
+/// the UI selection.  Camera → active camera; Rasterizer → active
+/// rasterizer chunk name; Film → "default" (a scene has exactly one
+/// Film by construction); Object/Light/None → empty.  Used to
+/// populate the dropdown on first scene load with the scene's
+/// current active entity rather than "(pick one)".
+- (NSString *)activeNameForCategory:(RISEViewportCategory)category
+    NS_SWIFT_NAME(activeName(for:));
+
+/// Current selection's category.  Drives which accordion section is
+/// expanded.  Returns RISEViewportCategoryNone when nothing is
+/// selected.
+@property (nonatomic, readonly) RISEViewportCategory selectionCategory;
+
+/// Current selection's entity name (manager name or rasterizer
+/// chunk-name).  Empty when the section is open with no row picked.
+@property (nonatomic, readonly, copy) NSString *selectionName;
+
+/// The OUTLINER ROW the current selection should highlight -- what an
+/// outliner compares against its row names.  Identical to `selectionName`
+/// for every ordinary entity; differs only when the selection names a
+/// SYNTHESIZED instancing entry (`I[1,0]`, `I.X`), which is what a viewport
+/// pick necessarily produces, where the row is the instancing CHUNK.
+///
+/// ROW HIGHLIGHTING ONLY.  `selectionName` stays the selected ENTITY --
+/// what the property panel inspects, what the gizmo moves, what the
+/// viewport chrome names.  Falls back to `selectionName` when nothing
+/// resolves.
+@property (nonatomic, readonly, copy) NSString *selectionRowName;
+
+/// Apply a (category, name) selection.  Empty `name` opens the
+/// section without picking a row.  Camera / Rasterizer selections
+/// also activate the named entity.  Returns YES on success.
+- (BOOL)setSelectionCategory:(RISEViewportCategory)category name:(nullable NSString *)name
+    NS_SWIFT_NAME(setSelection(_:name:));
+
+/// Monotonic counter — bumped on any structural mutation that could
+/// change a category's entity list.  Bridge callers cache
+/// (epoch, category) → list and re-pull when this advances.
+@property (nonatomic, readonly) NSUInteger sceneEpoch;
+
+/// "Reveal in scene file" (design comp ⌗ affordance): resolve entity
+/// (category, name) to its byte offset + 1-based line number inside
+/// -serializedSceneText.  Returns NO (outputs left untouched) on a null
+/// controller, no retained CST document, an unresolvable/ambiguous name,
+/// or a category with no chunk-name addressing scheme (Rasterizer/Film/
+/// None — see SceneEditController::EntitySourceLocation's doc comment).
+/// Same do-not-call-during-renders caveat as -serializedSceneText /
+/// -getSceneTextVersionUuid:.
+- (BOOL)getEntitySourceLocationForCategory:(RISEViewportCategory)category
+                                       name:(NSString *)name
+                                 byteOffset:(unsigned long long *)outOffset
+                                       line:(unsigned int *)outLine
+    NS_SWIFT_NAME(getEntitySourceLocation(for:name:byteOffset:line:));
+
+#pragma mark - Source traceability (any UI element <-> scene-file span)
+
+/// Resolve a UI element's scene-file span (SceneEditController::ResolveSourceSpan).
+/// `param` empty = the whole chunk (byteLength 0); non-empty = the `occ`-th matching
+/// param's tight `role value` run.  Fills byteOffset/byteLength (UTF-8 bytes into
+/// -serializedSceneText) + 1-based line/column.  Returns NO (outputs untouched) on a
+/// null controller, no retained CST, or an unresolvable ref.  Same
+/// do-not-call-during-renders caveat as -getEntitySourceLocation.
+- (BOOL)resolveSourceSpanForCategory:(RISEViewportCategory)category
+                                name:(NSString *)name
+                               param:(NSString *)param
+                          occurrence:(int)occ
+                          byteOffset:(unsigned long long *)outOffset
+                          byteLength:(unsigned long long *)outLength
+                                line:(unsigned int *)outLine
+                              column:(unsigned int *)outColumn
+    NS_SWIFT_NAME(resolveSourceSpan(for:name:param:occurrence:byteOffset:byteLength:line:column:));
+
+/// Reverse: the UI element whose scene-file source contains UTF-8 byte `offset`
+/// (SceneEditController::SourceRefAtByteOffset).  On success fills `outCategory`
+/// (a RISEViewportCategory raw value), `outName`, `outParam` (empty if not on a
+/// specific param), and `outOccurrence`.  Returns NO when the offset isn't inside an
+/// addressable entity/singleton chunk.
+- (BOOL)sourceRefAtByteOffset:(unsigned long long)offset
+                     category:(RISEViewportCategory *)outCategory
+                         name:(NSString * _Nullable * _Nullable)outName
+                        param:(NSString * _Nullable * _Nullable)outParam
+                   occurrence:(int *)outOccurrence
+    NS_SWIFT_NAME(sourceRef(atByteOffset:category:name:param:occurrence:));
+
+#pragma mark - Entity creation + painter CRUD (entity-creation slice)
+//
+// Mirrors RISE_API_SceneEditController_{EntityTemplateCount,
+// EntityTemplateLabel,InstantiateEntityTemplate,DuplicateEntity,
+// RemoveEntity}.  The three mutating calls (instantiate/duplicate/
+// remove) take the controller's commit mutex -- same do-not-call-
+// during-renders caveat as -serializedSceneText / -saveSceneTo:
+// errorMessage: (gate on the scene-editable predicate before calling).
+
+/// Number of "Add Entity" templates registered for `category` (0 for
+/// categories with none -- Camera/Rasterizer/Film/Animation/
+/// SceneVariant/None).
+- (NSUInteger)entityTemplateCountForCategory:(RISEViewportCategory)category
+    NS_SWIFT_NAME(entityTemplateCount(for:));
+
+/// Display label for the template at `idx` within `category` (e.g.
+/// "Sphere", "Omni Light").  Empty string for a null controller or an
+/// out-of-range idx.
+- (NSString *)entityTemplateLabelForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+    NS_SWIFT_NAME(entityTemplateLabel(for:index:));
+
+/// Instantiate the template at `idx` within `category`.  Returns the
+/// AgentCommitResult's `applied` flag; `outName` (optional, may be
+/// NULL) receives the deduped instance name on success (nil on
+/// failure), `outMessage` (optional, may be NULL) receives a human-
+/// readable message on failure (nil on success with nothing to say).
+/// A multi-chunk template undoes as several separate steps -- see the
+/// C++ method's header doc.
+- (BOOL)instantiateEntityTemplateForCategory:(RISEViewportCategory)category
+                                        index:(NSUInteger)idx
+                                      outName:(NSString * _Nullable * _Nullable)outName
+                                   outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(instantiateEntityTemplate(for:index:outName:outMessage:));
+
+/// Duplicate the named entity in `category` under a freshly-deduped
+/// name.  Returns `applied`; `outName` / `outMessage` as above (each
+/// optional, may be NULL).
+- (BOOL)duplicateEntityForCategory:(RISEViewportCategory)category
+                               name:(NSString *)name
+                            outName:(NSString * _Nullable * _Nullable)outName
+                         outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(duplicateEntity(for:name:outName:outMessage:));
+
+/// Remove the named entity in `category` -- refused with a non-nil
+/// `outMessage` if it is still referenced (e.g. a material a
+/// standard_object still binds) or not found.  Returns `applied`;
+/// `outMessage` as above (optional, may be NULL).
+- (BOOL)removeEntityForCategory:(RISEViewportCategory)category
+                            name:(NSString *)name
+                      outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(removeEntity(for:name:outMessage:));
+
+#pragma mark - Node-graph canvas: create node (S18)
+//
+// Mirrors RISE_API_SceneEditController_{ChunkNodeRequiredArgCount,
+// ChunkNodeRequiredArg,CreateChunkNode}.  Unlike the fixed template
+// picker above, this creates a node for ANY painter/material KEYWORD --
+// the open set the S21 canvas's search palette offers.  The create call
+// takes the controller's commit mutex (same do-not-call-during-renders
+// caveat as the entity CRUD above); the two requirement queries are
+// pure descriptor reads and are safe at any time.
+
+/// The arguments the caller must supply to create a node of type
+/// `keyword` -- one dictionary per requirement with keys "param"
+/// (NSString), "description" (NSString), and "isReference" (NSNumber
+/// BOOL: YES = the value must name another chunk, so resolve it from
+/// the drag context / a candidate picker rather than a text field).
+/// Empty for a keyword that needs nothing, for a non-painter/material
+/// keyword, and for an unknown keyword.
+- (NSArray<NSDictionary<NSString *, id> *> *)chunkNodeRequirementsForKeyword:(NSString *)keyword
+    NS_SWIFT_NAME(chunkNodeRequirements(forKeyword:));
+
+/// Create one painter/material node of type `keyword`, named from
+/// `baseName` (deduped on collision -- READ `outName`, do not assume
+/// the base was granted; a nil/empty base falls back to the keyword).
+/// `argParams` / `argValues` are ORDERED PARALLEL arrays (must be the
+/// same length; a nil/mismatched pair is treated as no args) mirroring
+/// the C ABI beneath -- NOT a dictionary: a keyed map can neither
+/// repeat a param (e.g. voronoi's repeatable `gen`) nor guarantee the
+/// composed chunk body's line order matches what the caller wrote, and
+/// dictionary enumeration order is unspecified besides.  Every
+/// `argParams[i]` must cover a requirement above.  Returns `applied`;
+/// `outName` / `outMessage` as the entity CRUD calls above (each
+/// optional, may be NULL).
+///
+/// On a REJECTED refusal the scene is left byte-identical.  A
+/// DIAGNOSED refusal is different: the node WAS created and the live
+/// managers WERE rebuilt, but the full re-derive also emitted
+/// diagnostics -- `applied` is still NO, but the mutation is real (and
+/// undoable) and `outName` is filled with the name that landed.
+- (BOOL)createChunkNodeWithKeyword:(NSString *)keyword
+                          baseName:(nullable NSString *)baseName
+                         argParams:(nullable NSArray<NSString *> *)argParams
+                         argValues:(nullable NSArray<NSString *> *)argValues
+                           outName:(NSString * _Nullable * _Nullable)outName
+                        outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(createChunkNode(keyword:baseName:argParams:argValues:outName:outMessage:));
+
+#pragma mark - Node-graph canvas: rewire a connection (S19)
+//
+// Mirrors RISE_API_SceneEditController_RewireConnection -- the
+// ownership-closure REWIRE verb (docs/gui/NODE_GRAPH_CANVAS.md sect. 6
+// S19, implementing docs/gui/MATERIAL_EDITOR.md sect. 3.7a).  Takes the
+// controller's commit mutex, same do-not-call-during-renders caveat as
+// the create/CRUD calls above.
+
+// The `RISERewireClosure` enum and the `RISERewireOutcome` value object
+// this call returns are declared at FILE SCOPE above (beside
+// RISEEnvironmentInfo), since an @interface cannot nest inside another.
+
+/// Insert an R-channel scalar_painter and bind the target in one undo step.
+/// A diagnosed result can change the document despite reporting failure;
+/// the inserted name is still returned, and Undo remains available.
+- (nullable RISERewireOutcome *)insertScalarAdapterAndRewireWithTargetCategory:(NSInteger)targetCategory
+    targetName:(NSString *)targetName param:(NSString *)param occurrence:(NSInteger)occurrence
+    sourceCategory:(NSInteger)sourceCategory sourceName:(NSString *)sourceName
+    NS_SWIFT_NAME(insertScalarAdapterAndRewire(targetCategory:targetName:param:occurrence:sourceCategory:sourceName:));
+
+/// Re-point `targetName`.`param` (occurrence `occurrence`, 0 for the
+/// only occurrence) at `newRefName`, as ONE undoable commit.  The
+/// category arguments are `RISE::ChunkCategory` ordinals -- the SAME
+/// convention the graph-snapshot node category uses, NOT
+/// RISEViewportCategory.
+///
+/// On ANY refusal the scene is left byte-identical; read the returned
+/// outcome's `closure` to decide what to offer (a `SharedTarget`
+/// refusal is the one the Duplicate-node escape hatch unblocks).
+/// Returns nil only on a missing controller / nil arguments.
+
+
+- (nullable RISERewireOutcome *)rewireConnectionWithTargetCategory:(NSInteger)targetCategory
+                                                        targetName:(NSString *)targetName
+                                                             param:(NSString *)param
+                                                        occurrence:(NSInteger)occurrence
+                                                    newRefCategory:(NSInteger)newRefCategory
+                                                        newRefName:(NSString *)newRefName
+    NS_SWIFT_NAME(rewireConnection(targetCategory:targetName:param:occurrence:newRefCategory:newRefName:));
+
+// doc-88 Phase 3 S20.  The `RISEDeleteOutcome` / `RISEDuplicateOutcome`
+// value objects these two return are declared at FILE SCOPE above, for the
+// same reason RISERewireOutcome is.
+
+/// Delete the graph node `(category, name)` REFERENCE-SAFELY: a node that
+/// anything still references is REFUSED, with every referrer named, in
+/// BOTH modes.  `category` is a `RISE::ChunkCategory` ordinal (the same
+/// convention the rewire verb and the graph snapshot use, NOT
+/// RISEViewportCategory).  `cascade` YES also removes the chunks BELOW the
+/// target that nothing else uses, as ONE undoable composite -- a chunk
+/// shared with another graph is never swept, and a cascade that would
+/// reach one is refused whole.
+///
+/// On ANY refusal the scene is left byte-identical.  Returns nil only on a
+/// missing controller / nil name.
+- (nullable RISEDeleteOutcome *)deleteGraphNodeWithCategory:(NSInteger)category
+                                                       name:(NSString *)name
+                                                    cascade:(BOOL)cascade
+    NS_SWIFT_NAME(deleteGraphNode(category:name:cascade:));
+
+/// Fork `(category, name)` into an owned copy placed IMMEDIATELY AFTER the
+/// original in declaration order -- MATERIAL_EDITOR.md sect. 3.7a's escape
+/// hatch: the copy can legally be referenced by every consumer the original
+/// had, so a shared-closure rewire refusal is unblocked by duplicating,
+/// then rewiring the requesting consumer at the outcome's `newName`.
+///
+/// SHALLOW: the copy shares everything the original referenced.  That is
+/// the point -- the fork unshares exactly ONE level.
+///
+/// Returns nil only on a missing controller / nil name.
+- (nullable RISEDuplicateOutcome *)duplicateGraphNodeWithCategory:(NSInteger)category
+                                                             name:(NSString *)name
+    NS_SWIFT_NAME(duplicateGraphNode(category:name:));
+
+#pragma mark - Node-graph canvas: drag-to-wire pre-checks + drag-to-reposition (S21)
+//
+// Mirrors RISE_API_SceneEditController_{CheckConnection,WouldCycle,
+// WriteGraphNodeLayoutPosition}. Pure reads (checkConnection/wouldCycle)
+// are safe at any time; the position write takes no scene-mutation lock
+// (it only touches the layout SIDECAR file, never the CST document) but
+// still refuses while a render owns the scene -- see the C++ method's
+// own doc.
+
+/// Connection-legality pre-check (S17 passthrough) for the canvas's
+/// live drag-to-wire preview: may `candidateName` legally be bound at
+/// `targetName`.`param`? Categories are `RISE::ChunkCategory` ordinals,
+/// the SAME convention `rewireConnection`/`duplicateGraphNode` use, NOT
+/// RISEViewportCategory. `outDiagnostic` (optional) receives the real
+/// parser's own diagnostic text on a refusal (nil on a legal verdict) --
+/// show it as the drag's status line / tooltip. Returns NO on a missing
+/// controller or nil argument, with no diagnostic written.
+- (BOOL)checkConnectionWithTargetCategory:(NSInteger)targetCategory
+                                targetName:(NSString *)targetName
+                                     param:(NSString *)param
+                         candidateCategory:(NSInteger)candidateCategory
+                             candidateName:(NSString *)candidateName
+                            outDiagnostic:(NSString * _Nullable * _Nullable)outDiagnostic
+    NS_SWIFT_NAME(checkConnection(targetCategory:targetName:param:candidateCategory:candidateName:outDiagnostic:));
+
+/// Forward-reachability cycle check (S17 `WouldCycle` passthrough):
+/// would wiring `fromName` to reference `toName` create a cycle?
+/// Categories as above. Returns NO (never a crash) on a missing
+/// controller or either name failing to resolve -- treat an unresolved
+/// name as "cannot commit this wire" via `checkConnection` first, not as
+/// proof of safety.
+- (BOOL)wouldCycleFromCategory:(NSInteger)fromCategory
+                       fromName:(NSString *)fromName
+                     toCategory:(NSInteger)toCategory
+                         toName:(NSString *)toName
+    NS_SWIFT_NAME(wouldCycle(fromCategory:fromName:toCategory:toName:));
+
+/// Pure-descriptor connection-legality check (`ConnectionLegality::
+/// CheckConnectionByKeyword` passthrough): may a chunk of
+/// `candidateKeyword`/`candidateCategory` legally be bound at
+/// `targetKeyword`.`param` -- for the "add node" palette's required-
+/// reference candidate picker, BEFORE the new node exists to address by
+/// name (unlike `checkConnection` above, which needs a real target
+/// chunk in the document). No document, no locking, safe at any time
+/// including before any scene is loaded -- does NOT require `bridge`'s
+/// controller to be non-null. `outDiagnostic` (optional) receives the
+/// diagnostic on a refusal.
+- (BOOL)checkConnectionByKeywordTargetKeyword:(NSString *)targetKeyword
+                                         param:(NSString *)param
+                              candidateKeyword:(NSString *)candidateKeyword
+                             candidateCategory:(NSInteger)candidateCategory
+                                outDiagnostic:(NSString * _Nullable * _Nullable)outDiagnostic
+    NS_SWIFT_NAME(checkConnectionByKeyword(targetKeyword:param:candidateKeyword:candidateCategory:outDiagnostic:));
+
+/// Persist ONE node's canvas position into the layout sidecar -- the
+/// drag-to-reposition commit path (`WriteGraphLayoutPositions` with a
+/// single-element update, the shape a canvas drag commits: call ONCE on
+/// drag release, never mid-drag). `x`/`y` are the node's TOP-LEFT anchor
+/// in the same graph-space units `-painterMaterialGraph`'s
+/// `RISEGraphNode.x`/`.y` report. Returns YES on success, INCLUDING the
+/// two documented no-op cases (position unchanged on disk; scene never
+/// saved yet) -- see the C++ method's own comment. Returns NO on a null
+/// controller / empty name / an actual I/O failure / a render owning
+/// the scene; `outError` (optional) receives a message on NO.
+- (BOOL)writeGraphNodeLayoutPositionWithName:(NSString *)name
+                                            x:(double)x
+                                            y:(double)y
+                                     outError:(NSString * _Nullable * _Nullable)outError
+    NS_SWIFT_NAME(writeGraphNodeLayoutPosition(name:x:y:outError:));
+
+#pragma mark - Node-graph canvas: add-node search palette (S21)
+
+/// Every registered Painter/Function/Material keyword whose descriptor
+/// category is `category` (a `RISE::ChunkCategory` ordinal), sorted
+/// lexicographically -- exactly the open keyword set `createChunkNode`
+/// can create. Pure descriptor read: no scene state, safe at any time.
+/// Empty for an unmodeled category or a null controller.
+- (NSArray<NSString *> *)paletteKeywordsForCategory:(NSInteger)category
+    NS_SWIFT_NAME(paletteKeywords(forCategory:));
+
+/// DL-401: the replacement hint (modern keyword first, then the parameter
+/// translation) when `keyword` is a DEPRECATED chunk type, else nil.
+/// `-paletteKeywordsForCategory:` already sorts deprecated keywords after
+/// the modern ones; the palette badges them with this. Pure descriptor read.
+- (nullable NSString *)paletteDeprecationReplacementForKeyword:(NSString *)keyword
+    NS_SWIFT_NAME(paletteDeprecationReplacement(forKeyword:));
+
+/// Legacy-deprecation Phase 1 (2026-10-09): YES when `keyword` is a FROZEN
+/// chunk type (legacy and UNSUPPORTED -- still loads and renders, receives no
+/// fixes). A frozen type is also deprecated, so
+/// `-paletteDeprecationReplacementForKeyword:` returns its hint too; the
+/// palette badges it "legacy, unsupported" instead of "deprecated".
+- (BOOL)paletteKeywordIsFrozen:(NSString *)keyword
+    NS_SWIFT_NAME(paletteKeywordIsFrozen(_:));
+
+#pragma mark - Environment / IBL section
+
+/// Read the current environment binding.  Returns nil only when there is
+/// no scene / no active rasterizer; otherwise a fully-populated snapshot
+/// (with `hasEnvironment == NO` when unbound).
+- (nullable RISEEnvironmentInfo *)environmentInfo;
+
+/// Set the environment intensity / background-visibility / rotation
+/// (degrees).  Each applies live (viewport re-renders) AND persists (CST
+/// mirror).  Returns NO when no editable bound environment exists.
+- (BOOL)setEnvironmentScale:(double)scale;
+- (BOOL)setEnvironmentBackground:(BOOL)background;
+- (BOOL)setEnvironmentOrientX:(double)x y:(double)y z:(double)z
+    NS_SWIFT_NAME(setEnvironmentOrient(x:y:z:));
+
+/// Swap the bound environment painter's HDRI file (an existing path; the
+/// file picker is the guard).  Returns NO when none is bound.
+- (BOOL)setEnvironmentFile:(NSString *)absPath;
+
+/// Create an environment from an HDRI file when none exists (inserts an
+/// hdr/exr painter chosen from the extension + binds radiance_map).
+/// Returns `applied`; `outName` / `outMessage` optional (may be NULL).
+- (BOOL)addEnvironment:(NSString *)hdriPath
+               outName:(NSString * _Nullable * _Nullable)outName
+            outMessage:(NSString * _Nullable * _Nullable)outMessage
+    NS_SWIFT_NAME(addEnvironment(_:outName:outMessage:));
+
+/// Remove the environment (unbinds radiance_map, live + CST).  Returns
+/// NO when no editable environment exists.
+- (BOOL)removeEnvironment;
+
+#pragma mark - Multi-camera
+
+/// Clone the currently-active camera under a new name and switch
+/// the scene to it. `proposedName` is canonicalized to a CST-safe identifier,
+/// then deduplicated with a numeric suffix.
+/// Returns the actual name registered, or `nil` on no-active-
+/// camera / unclonable type.  Caller passes a non-empty NSString
+/// (an empty string falls back to "camera_copy").
+///
+/// Persistence caveat: the clone lives only in the in-memory
+/// Scene/Job.  Reloading the .RISEscene file via the editor
+/// drops it (scene-text round-trip is still pending Phase 6
+/// work).  The Swift caller should surface a one-shot warning
+/// the first time per session.
+- (nullable NSString *)addCameraFromActive:(NSString *)proposedName
+    NS_SWIFT_NAME(addCameraFromActive(proposedName:));
+
+#pragma mark - Agent surface (Facet 5 slice 1c-1: live in-app injection)
+
+/// Facet 5 slice 1c-1: hand one JSON-RPC 2.0 request LINE to the live
+/// ADMINISTRATIVE agent dispatcher (`_agentDispatcher`) and return the
+/// JSON-RPC response line.  This is the
+/// "agent + user co-edit" entry point: the same
+/// `AgentRpcDispatcher::HandleLine` the CLI's `--agent-stdio` loop drives,
+/// but here it runs IN-PROCESS over the SAME live Job + SceneEditController
+/// this viewport bridge owns — so a typed `propose_patch` edits the running
+/// scene and the viewport reflects it.
+///
+/// Runs SYNCHRONOUSLY on the calling thread.  The caller is Swift's
+/// @MainActor, i.e. the main thread — exactly where the GUI's own
+/// SetProperty drives its cancel-and-park edit, so no extra marshalling is
+/// needed for this slice (a background thread / socket is 1c-2+).  The
+/// dispatcher's commit routes through `SceneEditController::ApplyAgentParamEdit`
+/// (attached at init), which cancel-and-parks the render thread and marks the
+/// editor dirty, so the viewport re-render + the Save-button enable happen
+/// automatically via the controller's existing kick + dirty-changed block —
+/// the caller need NOT refresh the viewport or the Save state by hand.
+///
+/// Never returns nil: if the dispatcher is unavailable (init failed / the
+/// bridge was shut down), a well-formed JSON-RPC -32603 error string is
+/// returned so the Swift caller always parses a valid response.
+///
+/// Agent-autonomy-selector note (2026-07): this entry point ALWAYS runs at
+/// Owner authority + Commit autonomy, regardless of `agentAutonomyLevel`
+/// below.  It is the "administrative" path — `list_proposals`,
+/// `resolve_proposal`, and the one-time `read_skill` index fetch all go
+/// through it — and MUST stay that way: `resolve_proposal` is refused
+/// outright under Propose/Read autonomy (see AgentRpc.h), so if this method
+/// tracked the composer's level, setting the composer to Read/Propose would
+/// silently disable the Owner's own "Approve"/"Reject" buttons on already-
+/// staged proposals, which has nothing to do with what the CHAT AGENT is
+/// permitted to do.  The chat driver's own tool calls go through
+/// `-agentHandleToolCall:` instead — see that method's doc.
+///
+/// `read_image` TYPED BY HAND HERE DOES SEE THE CHAT AGENT'S LAST FRAME
+/// (2026-07 shared image cache).  This session and the two tool-call
+/// sessions are handed the SAME AgentImageCache at construction, so a
+/// `read_image` sent through the Agent (JSON-RPC) debug panel returns
+/// whatever was rendered most recently through ANY of the three — the chat
+/// agent's frame included.  (An intermediate revision of this doc said the
+/// opposite, correctly for the per-session cache that preceded the shared
+/// one.)  The hosted loopback server's External session is NOT in that
+/// group and still sees nothing.
+- (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
+    NS_SWIFT_NAME(agentHandleLine(_:));
+
+/// Durable document snapshots (see AgentChatLoop::SetDocumentSnapshotProvider):
+/// the retained CST head's REVISION alone, read with the SAME coherence
+/// discipline as `-agentReadDocumentSnapshotTextWithUuid:revision:` below, via
+/// the administrative dispatcher's session (`_agentDispatcher` -- Owner
+/// authority, WrapJob's the SAME Job and AttachController's the SAME
+/// `_controller` as every other in-app session, so any of the three would
+/// answer identically -- see the ivar block's doc).  -1 when the
+/// dispatcher/session is unavailable, mirroring
+/// TrajectorySessionRecord::sceneHeadVersion's documented "-1 = unknown"
+/// sentinel.  CHEAP: no document copy -- safe to call at trajectory-start
+/// time (closes the "no cheap accessor" gap `ChatViewModel.startTrajectory()`
+/// used to note) -- though it takes the controller mutex like every
+/// coherent read (`SceneEditController::ReadAgentHeadVersion`), so it can
+/// briefly block if the render thread currently holds it.
+- (int64_t)agentHeadVersionRevision
+    NS_SWIFT_NAME(agentHeadVersionRevision());
+
+/// Durable document snapshots: ONE coherent read of the full CST document
+/// text plus the head-version identity those exact bytes ARE, for
+/// `RISEAgentChatBridge`'s `-setDocumentSnapshotProvider:` to wrap.
+/// Delegates to `AgentSession::ReadDocumentSnapshot` on the SAME
+/// administrative session `-agentHeadVersionRevision` reads (see that
+/// method's doc for why any of the three in-app sessions would answer
+/// identically).  CONTROLLER-MEDIATED: this call can BLOCK while a render
+/// owns the scene (see `SceneEditController::ReadAgentSceneSnapshot`'s
+/// doc) -- call only from the agent RPC thread, matching
+/// `AgentChatLoop::SetDocumentSnapshotProvider`'s documented discipline.
+/// Returns `nil` (with `outUuid`/`outRevision` left untouched) when there
+/// is no retained document (never CST-loaded, or after ClearAll, or the
+/// dispatcher/session is unavailable) or nil out-pointers are passed --
+/// and ALSO when the captured document bytes fail UTF-8 conversion
+/// (`+[NSString stringWithUTF8String:]` returns nil): the out-params are
+/// left untouched in that case too, matching the `-propertySnapshot`
+/// convention.  Invalid UTF-8 must read as "no document to save," never
+/// as a valid empty snapshot a recovery path would trust.
+- (nullable NSString *)agentReadDocumentSnapshotTextWithUuid:(uint64_t *)outUuid
+                                                     revision:(uint64_t *)outRevision
+    NS_SWIFT_NAME(agentReadDocumentSnapshotText(uuid:revision:));
+
+#pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
+
+/// Mirrors RISE::Agent::AgentAutonomy (AgentRpc.h) plus the routing choice
+/// RISEViewportBridge itself makes for `Propose` (see `agentAutonomyLevel`
+/// below) — NOT a 1:1 re-export, since the C++ enum alone cannot express
+/// "and which AgentSession authority backs it."
+typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
+    RISEAgentAutonomyRead    = 0,   ///< read-safe verbs only; render allowed; every edit verb refused (kAutonomyRefused).
+    RISEAgentAutonomyPropose = 1,   ///< edit verbs STAGE a proposal (External authority) instead of committing; the Owner reviews via the existing proposals panel (list_proposals/resolve_proposal, both still through `agentHandleLine:`).
+    RISEAgentAutonomyApply   = 2,   ///< today's unrestricted behaviour: edit verbs commit directly (Owner authority, Commit autonomy). The default.
+};
+
+/// The chat composer's current autonomy level for its OWN tool calls (the
+/// LLM-issued mutating verbs and reads driven by
+/// `-agentHandleToolCall:`, NOT the administrative calls `-agentHandleLine:`
+/// makes on its own — see that method's note).  Defaults to
+/// `RISEAgentAutonomyApply` at bridge-attach time, matching every
+/// pre-existing construction site's behaviour byte-for-byte until the
+/// Swift composer explicitly sets a persisted choice (see ChatViewModel's
+/// UserDefaults-backed `agentAutonomyLevel` — this property does NOT read
+/// UserDefaults itself; the Swift layer applies the persisted value on
+/// attach).  Setting an out-of-range value is a no-op (keeps the previous
+/// level) rather than undefined behaviour.
+@property (nonatomic) RISEAgentAutonomyLevel agentAutonomyLevel;
+
+/// Hand one JSON-RPC 2.0 request line to whichever internal dispatcher
+/// matches `agentAutonomyLevel` right now, and return the response line.
+/// This is the entry point the chat driver's OWN tool-call execution uses
+/// (ChatViewModel's `driveTurn`, for every non-`render` tool call) — the
+/// verb-by-verb behaviour per level:
+///   * Read    -> the read-safe allowlist (IsReadSafeVerb in AgentRpc.cpp,
+///                which IS the membership list — no count or copy of it
+///                here) dispatches; the 6 mutating verbs and any other verb
+///                are REFUSED
+///                (kAutonomyRefused, -32011) — this is Owner authority
+///                under Read autonomy, so even the refusal path never
+///                reaches ProposePatch/InsertChunk/RemoveChunk.
+///   * Propose -> the read-safe allowlist dispatches AS BEFORE, but this
+///                level runs over a SEPARATE, External-authority
+///                AgentSession sharing the SAME live SceneEditController
+///                `-agentHandleLine:`'s administrative session is
+///                attached to — so the 6 mutating verbs (IsProposeSafeVerb)
+///                STAGE a
+///                real proposal onto that controller's ONE queue (the
+///                exact queue the existing proposals panel already reads
+///                via `-agentHandleLine:`'s `list_proposals`/
+///                `resolve_proposal`), rather than committing.
+///                `resolve_proposal` itself is refused at THIS level (by
+///                design — see AgentRpc.h's IsProposeSafeVerb doc); the
+///                chat driver never calls it, only the Owner-authority
+///                proposals-panel code path does, via `-agentHandleLine:`.
+///   * Apply   -> byte-for-byte today's behaviour: routes to the SAME
+///                Owner-authority, Commit-autonomy posture `-agentHandleLine:`
+///                uses (a separate dispatcher INSTANCE over a separate
+///                AgentSession, but identical authority+autonomy, so
+///                observably indistinguishable).
+///
+/// `render` GOES THROUGH THIS SELECTOR TOO (2026-07 image-cache fix).  It
+/// used to be routed to `-agentHandleLine:`'s administrative session
+/// instead, on the reasoning that a render's submit/poll/cancel sequence
+/// spans several calls against ONE session's per-job result cache and the
+/// user can flip `agentAutonomyLevel` mid-render.  That reasoning was right
+/// about the job-id problem and wrong about the fix: it split `render` away
+/// from `read_image`, and the LAST-RENDER PNG cache was PER-SESSION at the
+/// time.  With the two verbs on different sessions, the agent's
+/// `read_image` read a cache its own render never wrote — returning zero
+/// bytes, or the stale objectmap PNG left behind by `query_object_at`'s
+/// internal render.  (The stale-objectmap half has since been fixed at its
+/// own source as well — `query_object_at`'s internal render is
+/// stash/restore-guarded and no longer clobbers the cache; see
+/// AgentSession.cpp's EphemeralRenderCacheGuard.)
+///
+/// THE CACHE IS NO LONGER WHY.  All three in-app sessions now share ONE
+/// AgentImageCache (see -initWithHostBridge:), so `read_image` finds the
+/// render whichever in-app session ran it — including across the
+/// autonomy-chip flip that co-routing could never cover.  What still binds
+/// `render` to this selector is the PER-SESSION half that was deliberately
+/// NOT shared: render_status / render_wait answer out of this session's own
+/// async-result record, so a poll on a sibling gets completed:true with no
+/// `result`.
+///
+/// The mid-render level flip is handled by PINNING instead: the caller
+/// captures the level ONCE at submit time and passes it to the
+/// `autonomy:` variant below for every subsequent poll / status / cancel /
+/// final-result call for that job, so a whole render job's calls stay on
+/// ONE session no matter what the composer chip does meanwhile.  What the
+/// pin actually fixes — and what it deliberately does NOT freeze — is
+/// spelled out on that variant; read it before building on this.
+/// Routing `render` here does not change what is PERMITTED: `render`,
+/// `render_status`, `render_wait`, `render_cancel`, and `read_image` are
+/// all on `IsReadSafeVerb`'s allowlist (AgentRpc.cpp), so every one of
+/// them dispatches under Read, Propose, and Apply alike.
+///
+/// Same nil-safety contract as `-agentHandleLine:`: never returns nil.
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+    NS_SWIFT_NAME(agentHandleToolCall(_:));
+
+/// Level-EXPLICIT variant of the above: dispatch to the session `level`
+/// selects, IGNORING the live `agentAutonomyLevel` property.  `-agentHandleToolCall:`
+/// is exactly this method called with the current property value.
+///
+/// This exists for ONE reason: a chat-driven async render is a MULTI-CALL
+/// job (submit → render_wait poll ×N → possibly render_cancel), and PARTS
+/// OF THAT JOB'S STATE LIVE ON THE SESSION THAT RAN IT.  So the render
+/// driver captures the level ONCE at submit time and pins it here for that
+/// job's whole lifecycle.
+///
+/// WHICH PARTS — be precise here, because an earlier version of this doc
+/// was NOT.  The renderJobId itself is **not** session-scoped: ids are
+/// minted by the CONTROLLER (`SceneEditController::SubmitAgentRenderAsync`),
+/// and `AgentSession::RenderStatus` / `RenderWait` / `CancelAsyncRender`
+/// each delegate straight through to that controller — so ANY session
+/// attached to the same controller resolves ANY of its job ids.  Do not
+/// build on "another session cannot see this job"; it can.  What IS
+/// session-scoped, and is the real reason for the pin:
+///
+///   1. `render_wait`'s OPTIONAL `result` payload.  AgentRpc.cpp's
+///      `render_wait` handler attaches `result` only when
+///      `AgentSession::LastAsyncRenderResult` finds a cache entry whose
+///      `mLastAsyncRenderResultJobId` matches — and only the session that
+///      RAN the render ever writes that cell.  Poll a sibling session
+///      mid-render and the reply is `completed:true` with NO `result`, at
+///      which point the driver can only degrade to "render completed but
+///      no cached result was found" (see `executeRenderToolCallAsync`).
+///      The render really did succeed; the agent just never sees its stats.
+///   2. The last-render PNG cache (`mLastPng` / `mLastSink`) that
+///      `ReadImage()` and the `read_image` verb serve — the whole reason
+///      `render` was moved onto this selector in the first place.
+///
+/// WHAT IS PINNED IS THE **SESSION SELECTION**, NOT THE AUTONOMY POSTURE.
+/// `level` chooses WHICH dispatcher/session handles the call; it does not
+/// freeze what that session is allowed to do.  `-setAgentAutonomyLevel:`
+/// mutates the TOOL-CALL OWNER session's autonomy IN PLACE
+/// (`_agentToolDispatcherOwner`), so a poll issued with
+/// a pinned level of Apply *after* the user has dropped the chip to Read
+/// genuinely executes under Read.  That is the CORRECT safety behaviour and
+/// is deliberately kept — the pin does not defeat a mid-render drop to
+/// Read.  (Nothing in a render job's poll/cancel sequence is an edit verb,
+/// so the live posture never changes the outcome here anyway; the property
+/// matters because it is what makes the pin safe to have at all.)
+///
+/// The pin is likewise SCOPED TO ONE RENDER JOB, never to a chat turn.
+/// Autonomy is a SAFETY control: a user who drops to Read mid-turn to stop
+/// the agent editing must have that take effect on the agent's very NEXT
+/// tool call.  Pinning a whole turn would defer a safety decision to the
+/// turn boundary; pinning a render job only works around the two
+/// mechanical session-scoping constraints listed above.
+///
+/// THE AUTONOMY-FLIP RESIDUAL THIS DOC USED TO CARRY IS CLOSED (2026-07).
+/// It read: a flip TO or FROM **Propose** between a completed `render` and
+/// the `read_image` that follows lands that read on the other session,
+/// which returns ITS empty or stale PNG cache.  The three in-app sessions
+/// now share one `AgentImageCache` (see -initWithHostBridge:), so the read
+/// finds the render whichever of them ran it.  (A Read↔Apply flip never
+/// changed session in the first place — both select the SAME
+/// `_agentToolDispatcherOwner`, differing only in the autonomy set on it.)
+/// Library-level coverage: AgentRenderAsyncTest's "(shared-img-cache)".
+///
+/// WHAT A FLIP STILL COSTS: a poll or wait issued on the other session gets
+/// completed:true with no `result` payload, per constraint 1 above — which
+/// is why the render JOB is still pinned.  Sharing the cache bought back
+/// the pixels, not the per-session job bookkeeping, and that bookkeeping is
+/// deliberately NOT shared: a session must not report on another session's
+/// jobs.
+///
+/// Same nil-safety contract: never returns nil.
+- (NSString *)agentHandleToolCall:(NSString *)jsonRpcRequest
+                         autonomy:(RISEAgentAutonomyLevel)level
+    NS_SWIFT_NAME(agentHandleToolCall(_:autonomy:));
+
+#pragma mark - Agent image generation (Arc 77 Phase 2: imagine_scene GUI wiring)
+
+/// Install (or replace) the HOST half of `imagine_scene` on EVERY in-app
+/// tool-call session this bridge owns -- `_agentDispatcher`,
+/// `_agentToolDispatcherOwner`, and `_agentToolDispatcherPropose` (see
+/// AgentSession::SetImageGenerator's doc for why this is host-installed-
+/// only: no wire verb can reach it). Before this method existed, none of
+/// the three ever got a generator, so in-app `imagine_scene` honestly
+/// reported no capability and the build-plan gate's imagine half never
+/// armed -- this is the fix.
+///
+/// `providerName` is the SAME lowercase spelling ChatViewModel's
+/// `AgentChatProviderChoice.rawValue` already uses ("anthropic" /
+/// "gemini" / "openai" / "xai" / "local") -- capability is PER PROVIDER
+/// (gemini and openai only; the rest answer `imagine_scene` with an
+/// honest "not available" instead of an image, exactly like every other
+/// provider/tool combination). `apiKey` rides in the SAME per-provider
+/// auth header the chat codec for that provider already uses (never a
+/// query string, never logged) -- pass "" for a keyless/no-key-yet
+/// posture; a provider that needs one then answers with a factual HTTP
+/// error the model can read, not a silent failure.
+///
+/// Performs the actual POST through the platform system transport
+/// (`RISE::Agent::CreateSystemChatHttpTransport()` -- the SAME
+/// synchronous NSURLSession-backed transport the live eval runner uses),
+/// because `imagine_scene`'s dispatch is a synchronous call on the
+/// calling thread (the 1c-1 contract every other verb here already
+/// follows) and cannot await the chat panel's own async URLSession loop.
+///
+/// CALL AGAIN on every provider or key change -- a generator captured
+/// against a stale key keeps authenticating as the OLD credential.
+/// ChatViewModel calls this once per turn, at the exact point it already
+/// resolves that turn's own API key (`driveTurn`), so the in-app
+/// generator is always installed with the SAME key value that turn's
+/// chat request uses -- no extra Keychain read, and never stale.
+- (void)agentSetImageGeneratorProvider:(NSString *)providerName
+                                 apiKey:(NSString *)apiKey
+    NS_SWIFT_NAME(agentSetImageGenerator(provider:apiKey:));
+
+#pragma mark - Agent session mode (Arc 83 §4.1: the build/refine transition)
+
+/// Tell EVERY in-app session this bridge owns that the agent's turn just
+/// ended with its own prose rather than a tool call — the ONE structural
+/// signal that ends the staged build protocol's COMPULSION (see
+/// `AgentSession::NoteFinalAnswer` and the block above
+/// `AgentSession::SessionMode`).  After it, no construction gate fires
+/// again on these sessions: no phase refusals, no compose-phase delete
+/// ban, no forced clean rooms, no populate-before-render, no build-plan
+/// gate.  Every verb stays available; nothing is compelled.
+///
+/// Call it from the chat driver's FinalText arm (ChatViewModel's
+/// `.finalText` case), unconditionally and on EVERY final turn:
+/// `NoteFinalAnswer` is idempotent and one-way, so only the first one on a
+/// session that started from an EMPTY scene changes anything at all.  A
+/// session that opened a scene already carrying geometry is in "refining"
+/// from construction and was never gated in the first place.
+///
+/// Hits the same three in-app sessions `-agentSetImageGeneratorProvider:
+/// apiKey:` installs onto — the administrative one plus both tool-call
+/// ones — because they all serve the SAME document and the turn that just
+/// ended is the same turn for all of them.  It deliberately does NOT reach
+/// the hosted loopback server's External session: there the EXTERNAL MCP
+/// client owns the model loop and no turn-end signal crosses the wire.
+- (void)agentNoteFinalAnswer
+    NS_SWIFT_NAME(agentNoteFinalAnswer());
+
+#pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
+
+/// Start a LOOPBACK-ONLY MCP HTTP server (the same
+/// RISE::Agent::AgentLoopbackHttpServer the headless `rise --agent-http`
+/// CLI transport hosts) bound to THIS bridge's LIVE Job + live
+/// SceneEditController, so a real external MCP client (Claude Code, or
+/// any other MCP host) can connect and PROPOSE edits into the scene
+/// that's actually open in this window -- the counterpart to the
+/// in-process administrative dispatcher (`_agentDispatcher`)
+/// `agentHandleLine` already drives.
+///
+/// AUTHORITY / AUTONOMY: constructs a NEW, SEPARATE AgentSession over
+/// the SAME Job this bridge wraps (WrapJob), AttachController's it to
+/// this bridge's live `_controller` (so a staged proposal lands on the
+/// SAME queue the administrative dispatcher's ListProposals/
+/// ResolveProposal verbs read), sets its authority to External
+/// (mutating verbs STAGE,
+/// never commit), labels it via SetSessionLabel (see `sessionLabel`
+/// below), and wraps it in an AgentMcpAdapter constructed with
+/// AgentAutonomy::Propose (the wire-layer posture that pairs with
+/// External authority -- see AgentRpc.h's file header). This is a
+/// SEPARATE AgentRpcDispatcher instance from the administrative one
+/// -agentHandleLine drives (`_agentDispatcher`, which is Owner-authority
+/// + Commit-autonomy, constructed at init time over its OWN
+/// AgentSession) -- see the .mm's
+/// "two-dispatcher-one-controller" doc comment for the full threading
+/// argument for why two independent dispatcher instances sharing one
+/// controller is safe.
+///
+/// THREADING: the server's serial accept-handle loop runs on a
+/// dedicated background thread this method spawns (std::thread,
+/// detached-by-ownership -- joined by -stopAgentHostedServer or
+/// -shutdown, never detached-and-abandoned). Every request that
+/// thread handles calls HandleLine on the EXTERNAL dispatcher, which
+/// (for a mutating verb) calls SceneEditController::StageProposal --
+/// guarded by the controller's OWN mMutex, the SAME lock the render
+/// thread and every OTHER controller entry point (SetProperty,
+/// ApplyAgentParamEdit, the administrative dispatcher's own calls)
+/// already serialize on. list_proposals / resolve_proposal called from
+/// the GUI's administrative dispatcher (via -agentHandleLine, always the main
+/// thread) and a concurrent external stage are therefore safe by the
+/// SAME pre-existing mutex discipline 5a/5b already proved -- nothing
+/// new is introduced here beyond a second caller thread.
+///
+/// IDEMPOTENT: calling this while a server is already running returns
+/// `ok=false` with an explanatory message and does NOT start a second
+/// server (a fresh call after -stopAgentHostedServer starts a new one
+/// with a FRESH per-launch token, per AgentLoopbackHttpServer's own
+/// per-construction-token contract).
+///
+/// `sessionLabel` is stamped onto the External AgentSession via
+/// SetSessionLabel BEFORE Bind() -- so every proposal any external
+/// client stages through this server carries it (see
+/// SceneEditController::AgentProposal::sessionLabel's doc). Pass ""
+/// for the generic default; the Swift caller passes a fixed
+/// "external-mcp" label today (see StartAgentHostedServer's Swift-side
+/// caller for why a per-connection id isn't threaded further: the
+/// server is single-adapter-instance, not per-connection-session).
+///
+/// Returns immediately (Bind() is synchronous and fast; Serve() runs
+/// on the spawned thread) -- never blocks for a client connection.
+- (RISEAgentHostedServerInfo *)startAgentHostedServerWithLabel:(NSString *)sessionLabel
+    NS_SWIFT_NAME(startAgentHostedServer(sessionLabel:));
+
+/// Stop the hosted server started by -startAgentHostedServerWithLabel:
+/// (a no-op, not an error, if none is running). Signals the server's
+/// Stop() (unblocks the accept-loop thread's accept() call) and JOINS
+/// that thread before returning -- so by the time this method returns,
+/// no external-dispatcher HandleLine call can still be in flight and
+/// it is safe to proceed to tear down the controller/Job (see -shutdown,
+/// which calls this FIRST, before the agent dispatcher / controller
+/// teardown, for exactly that reason).
+- (void)stopAgentHostedServer;
+
+/// True iff a hosted server is currently running (bound + serving).
+@property (nonatomic, readonly) BOOL isAgentHostedServerRunning;
+
+/// The bound port / bearer token of the CURRENTLY RUNNING hosted
+/// server (0 / "" when not running) -- lets the Swift settings panel
+/// re-display these after e.g. a view re-render without re-starting
+/// the server.
+@property (nonatomic, readonly) NSUInteger agentHostedServerPort;
+@property (nonatomic, readonly, copy) NSString *agentHostedServerToken;
+
+#pragma mark - Simulation M5 (playback clock, baked ranges, simulations, live runs)
+//
+// Thin forwards to the RISE_API Simulation M3c/M4/M5 functions.  Status reads
+// are non-blocking and return nil while the scene is busy (keep the last
+// value and poll again).  The live-run calls that configure a solver
+// (attach, reset, record, resync) block for up to about a second: call them
+// off the main thread.  They are serialized against -shutdown, so a
+// background call never reaches a destroyed controller.
+
+/// Registers the library's built-in solvers once per process (idempotent).
++ (BOOL)registerBuiltinSolvers:(NSString * _Nullable * _Nullable)error;
+
+/// Library playback clock.  `fps` <= 0 plays at the timeline's frame spacing.
+- (BOOL)playbackPlayFps:(double)fps loop:(BOOL)loop NS_SWIFT_NAME(playbackPlay(fps:loop:));
+- (BOOL)playbackPause;
+- (BOOL)playbackSeek:(double)time;
+- (nullable RISEPlaybackStatus *)playbackStatus;
+
+/// Baked ranges for the timeline; nil while contended.
+- (nullable NSArray<RISETimeVaryingAssetInfo *> *)timeVaryingAssets;
+
+/// The scene's declared simulations; nil while the scene is busy.  An empty
+/// array means the scene declares none.
+- (nullable NSArray<RISESimulationInfo *> *)simulations;
+
+/// Live runs.  `simulation` names a scene simulation; the others address the
+/// run by its consumer geometry (RISESimulationInfo.consumerGeometry).
+- (BOOL)liveAttachSimulation:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveDetachGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveResetGeometry:(NSString *)geometry error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveRecordGeometry:(NSString *)geometry directory:(NSString *)directory
+                     error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)liveResync:(NSString * _Nullable * _Nullable)error;
+- (nullable RISELiveSimulationStatus *)liveStatusForGeometry:(NSString *)geometry;
+@property (nonatomic, readonly) NSUInteger liveSimulationCount;
+
+/// Bakes through the library bake manager (a rise-sim worker process per
+/// bake; the scene file on disk is what bakes).  Queue / resume / stop return
+/// NO with the library's reason (for example "save first").
+- (BOOL)simulationBake:(NSString *)simulation force:(BOOL)force
+                 error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)simulationBakeResume:(NSString *)simulation error:(NSString * _Nullable * _Nullable)error;
+- (BOOL)simulationBakeStop:(NSString *)simulation kill:(BOOL)kill
+                     error:(NSString * _Nullable * _Nullable)error;
+/// This document's bake jobs, oldest first; nil while contended.
+- (nullable NSArray<RISESimulationBakeJob *> *)simulationBakeJobs;
+/// Process-wide counter bumped on every bake change (poll ~2 Hz).
++ (unsigned long long)simulationBakeChangeCounter;
+/// Installs newly baked frames (rebinding consumers whose cache appeared);
+/// returns YES when something was refreshed.
+- (BOOL)refreshSimulationFrames;
+
+/// Cache location policy (process-wide).  -checkCacheLocation returns YES when
+/// the writer would accept the directory; otherwise `error` holds the reason
+/// and `suggestedRoot` the narrowest root the user could choose to trust.
++ (BOOL)addTrustedCacheRoot:(NSString *)root error:(NSString * _Nullable * _Nullable)error;
++ (BOOL)checkCacheLocation:(NSString *)directory
+             suggestedRoot:(NSString * _Nullable * _Nullable)suggestedRoot
+                     error:(NSString * _Nullable * _Nullable)error;
++ (NSArray<NSString *> *)trustedCacheRoots;
+
+@end
+
+/// One gizmo handle from the controller's screen-space layout.
+/// Positions are in the camera's CURRENT image-pixel space — the same
+/// space `cameraSurfaceDimensions` describes; the overlay applies the
+/// view's `fullW`/`fullH` normalisation to map to widget points.
+@interface RISEViewportGizmoHandle : NSObject
+@property (nonatomic, readonly) RISEViewportGizmoKind kind;
+@property (nonatomic, readonly) NSInteger axis;          ///< 0=X, 1=Y, 2=Z; -1 for screen-aligned
+@property (nonatomic, readonly) CGFloat screenX;
+@property (nonatomic, readonly) CGFloat screenY;
+@property (nonatomic, readonly) CGFloat screenRadius;
+@end
+
+/// One navigation axis-ball nub from the controller's layout.  Positions are
+/// in the widget space the overlay passed to `refreshNavGizmo…` (and the same
+/// space it feeds `navGizmoNubAt…`).
+@interface RISEViewportNavNub : NSObject
+@property (nonatomic, readonly) NSInteger axis;       ///< 0=X, 1=Y, 2=Z
+@property (nonatomic, readonly) BOOL negative;        ///< NO=+axis, YES=−axis
+@property (nonatomic, readonly) CGFloat screenX;
+@property (nonatomic, readonly) CGFloat screenY;
+@property (nonatomic, readonly) CGFloat screenRadius;
+@property (nonatomic, readonly) BOOL facing;          ///< YES=toward viewer (bright)
+@end
+
+/// Single quick-pick preset, surfaced from the descriptor's
+/// ParameterPreset list.  `value` is the parser-acceptable literal
+/// the panel writes back when the user picks; `label` is the
+/// human-readable name shown in the combo box.
+@interface RISEViewportPropertyPreset : NSObject
+@property (nonatomic, readonly) NSString *label;
+@property (nonatomic, readonly) NSString *value;
+@end
+
+/// One row of the properties panel.  Field names mirror the C++
+/// CameraProperty struct.  `kind` is the parser's ValueKind enum
+/// cast to int.  `presets` is empty when the parameter has no
+/// quick-pick combo entries; the panel falls back to a plain line
+/// edit in that case.
+@interface RISEViewportProperty : NSObject
+@property (nonatomic, readonly) NSString *name;
+@property (nonatomic, readonly) NSString *value;
+@property (nonatomic, readonly) NSString *describing;
+@property (nonatomic, readonly) NSInteger kind;
+@property (nonatomic, readonly) BOOL editable;
+@property (nonatomic, readonly) NSArray<RISEViewportPropertyPreset *> *presets;
+/// Short unit suffix shown next to the editor field — "mm" for
+/// camera sensor / focal / shift, "°" for angles, "scene units" for
+/// focus_distance.  Empty when the descriptor declared no unit.
+@property (nonatomic, readonly) NSString *unitLabel;
+/// doc 88 S4b (Tier-1 param sliders): the row's authored numeric range.
+/// `hasRange` is YES only when BOTH bounds are known — the panel draws a
+/// slider then, and keeps the text field either way (the range is a
+/// presentation hint, not a validation rule: the scene language still
+/// accepts values outside it, and the row still round-trips as text).
+/// `rangeStep` is 0 when the author declared none ("continuous").
+/// Populated today only for an expression painter's `param[i]` rows,
+/// from the `min` / `max` / `step` metadata on the scene text's `param`
+/// line.
+@property (nonatomic, readonly) BOOL hasRange;
+@property (nonatomic, readonly) double rangeMin;
+@property (nonatomic, readonly) double rangeMax;
+@property (nonatomic, readonly) double rangeStep;
+@property (nonatomic, readonly) BOOL targetsPainter;
+@property (nonatomic, readonly) NSInteger inlinePainterKind;
+@property (nonatomic, readonly) NSString *inlinePainterValue;
+@property (nonatomic, readonly) NSUInteger inlinePainterRefCount;
+@end
+
+NS_ASSUME_NONNULL_END

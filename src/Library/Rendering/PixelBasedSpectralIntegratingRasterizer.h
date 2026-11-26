@@ -3,10 +3,21 @@
 //  PixelBasedSpectralIntegratingRasterizer.h - A rasterizer that
 //  performs monte carlo sampling over the spectrum
 //
+//  Soft-deprecated as of 2026-05-07: this is the legacy
+//  shader-dispatch spectral integrator (chunk
+//  `pixelintegratingspectral_rasterizer`).  Modern features (path
+//  guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
+//  are not wired into the shader-dispatch pipeline and will not be.
+//  Prefer `PathTracingSpectralRasterizer` (chunk
+//  `pathtracing_spectral_rasterizer`) for new work.  Retained for
+//  custom spectral shader-op chains; no removal date.  See
+//  docs/SPECTRAL_PARITY_AUDIT.md §2.1–§2.5 and
+//  docs/RENDERING_INTEGRATORS.md §3 catalogue note for context.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 19, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -36,7 +47,6 @@ namespace RISE
 				Scalar	value;
 			};
 
-			mutable std::vector<SPECTRAL_SAMPLE>	vecSpectralSamples;
 			const Scalar							lambda_begin;
 			const Scalar							lambda_end;
 			const Scalar							lambda_diff;
@@ -44,6 +54,16 @@ namespace RISE
 			const Scalar							wavelength_steps;
 			const unsigned int						nSpectralSamples;
 			const bool								bUseHWSS;
+
+			// Per-sample MC luminance normalization scale.  Equals
+			// (lambda_diff / k_y) where k_y = ∫Ȳ(λ)dλ over the
+			// integration range, scaling the MC estimator so a perfect-
+			// white reflector under flat illuminant integrates to Y = 1
+			// (matching the RGB rasterizer's white = 1 convention).
+			// Cached at construction; uniform scale, preserves
+			// chromaticity (per-sample gamut clipping operates on
+			// chromaticity only, luminance Y is invariant to this scale).
+			Scalar									mYNormalization;
 
 			StabilityConfig				stabilityConfig;
 
@@ -89,6 +109,13 @@ namespace RISE
 				) const;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): spectral shader-graph runner
+			// whose shaderop graph may contain spectral photon-map shaderops -> it
+			// consumes the scene's photon maps, so the deferred shoot must fire
+			// (the spectral twin of PixelBasedPelRasterizer).  Dedicated-integrator
+			// subclasses override back to false.
+			bool ConsumesScenePhotonMaps() const { return true; }
+
 			PixelBasedSpectralIntegratingRasterizer(
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin_,
@@ -97,7 +124,8 @@ namespace RISE
 				const unsigned int specsamp,
 				const StabilityConfig& stabilityCfg,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

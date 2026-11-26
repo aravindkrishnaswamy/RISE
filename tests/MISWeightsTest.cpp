@@ -203,7 +203,325 @@ static void TestExtremeRatios()
 
 	// Verify no NaN or Inf
 	w = MISWeights::BalanceHeuristic( 1e300, 1e-300 );
-	Check( w == w && w != 1.0 / 0.0, "extreme values: no NaN/Inf" );
+	Check( std::isfinite( w ), "extreme values: no NaN/Inf" );
+}
+
+static void TestNMNoEventSurvivalWeight()
+{
+	std::cout << "Test 7: NM no-event survival cancellation" << std::endl;
+	using namespace PathTransportUtilities;
+	Check(NMNoEventSurvivalWeight(1.0)==1.0,
+		"pure delta tracking has exact unit no-event weight");
+	Check(NMNoEventSurvivalWeight(0.5)==2.0,
+		"the delta-tracking half of the mixture has exact weight two");
+	Check(NMNoEventSurvivalWeight(0.0)==0.0 &&
+		NMNoEventSurvivalWeight(-0.5)==0.0,
+		"nonpositive technique mass fails closed");
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 7: one-sample guiding mixture support and null-sample semantics
+//////////////////////////////////////////////////////////////////////
+static void TestGuidingSelectedMixturePdf()
+{
+	std::cout << "Test 8: GuidingSelectedMixturePdf" << std::endl;
+
+	using PathTransportUtilities::GuidingSelectedMixturePdf;
+
+	Check( ApproxEqual(
+		GuidingSelectedMixturePdf( 0.25, 0.0, 0.2, false ), 0.15, TOL ),
+		"phase-selected direction retains phase support when guide PDF is zero" );
+	Check( GuidingSelectedMixturePdf( 0.25, 0.0, 0.2, true ) == 0,
+		"guide-selected zero-density result is an explicit null sample" );
+	Check( ApproxEqual(
+		GuidingSelectedMixturePdf( 0.25, 0.4, 0.2, true ), 0.25, TOL ),
+		"guide-selected valid result uses the actual mixture density" );
+	Check( GuidingSelectedMixturePdf( 0.25, -0.1, 0.2, false ) == 0,
+		"negative guide density fails closed" );
+
+	const Scalar tinyDensity = GuidingSelectedMixturePdf(
+		1.0 - 5.0e-12, 0.0, 0.1, false );
+	Check( tinyDensity > 0 && tinyDensity < NEARZERO,
+		"near-unit guide mixture produces legal sub-NEARZERO phase support" );
+	Check( PathTransportUtilities::IsPositiveFiniteDensity( tinyDensity ),
+		"every finite positive density remains in estimator support" );
+	Check( !PathTransportUtilities::IsPositiveFiniteDensity( 0.0 ),
+		"exact zero density is outside support" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 8: RIS selection preserves exact finite-positive support
+//////////////////////////////////////////////////////////////////////
+static void TestGuidingRISTinyPositiveSupport()
+{
+	std::cout << "Test 9: GuidingRIS tiny-positive support" << std::endl;
+
+	PathTransportUtilities::GuidingRISCandidate<Scalar> candidates[2] = {};
+	candidates[0].risTarget = 2.0e-20;
+	candidates[0].risWeight = 2.0e-20;
+	candidates[1].risTarget = 1.0e-20;
+	candidates[1].risWeight = 1.0e-20;
+	Scalar effectivePdf = 0;
+	const unsigned int selected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.9,effectivePdf);
+	Check( selected==1,
+		"sub-NEARZERO RIS weights retain their relative selection mass" );
+	Check( PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf),
+		"sub-NEARZERO RIS weights produce a positive finite density" );
+	Check( ApproxEqual(effectivePdf,2.0/3.0,TOL),
+		"scaled RIS selection preserves the exact effective density ratio" );
+
+	candidates[0].risTarget = 2.0e300;
+	candidates[0].risWeight = 2.0e300;
+	candidates[1].risTarget = 1.0e300;
+	candidates[1].risWeight = 1.0e300;
+	effectivePdf = 0;
+	const unsigned int largeSelected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.9,effectivePdf);
+	Check( largeSelected==1 &&
+		PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf) &&
+		ApproxEqual(effectivePdf,2.0/3.0,TOL),
+		"scaled RIS selection avoids overflow without changing the density" );
+
+	candidates[0].risTarget = 0.0;
+	candidates[0].risWeight = 0.0;
+	candidates[1].risTarget = 0.25;
+	candidates[1].risWeight = 0.5;
+	effectivePdf = 0.0;
+	const unsigned int zeroBoundarySelected =
+		PathTransportUtilities::GuidingRISSelectCandidate(
+			candidates,2,0.0,effectivePdf);
+	Check(zeroBoundarySelected==1 &&
+		PathTransportUtilities::IsPositiveFiniteDensity(effectivePdf),
+		"xi zero skips a leading zero-weight RIS atom and selects supported mass");
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 9: Phase-B thermal-volume NEE/march family partition
+//////////////////////////////////////////////////////////////////////
+static void TestVolumeEmissionFamilyPartition()
+{
+	std::cout << "Test 10: VolumeEmission family partition" << std::endl;
+
+	const Scalar pV = 3.0;
+	const Scalar pMarch = 4.0;
+	const Scalar wNee = MISWeights::VolumeEmissionNEEFamilyWeight(pV,pMarch);
+	const Scalar wMarch = MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,true,false);
+	Check(ApproxEqual(wNee,9.0/25.0,TOL),
+		"NEE family gets pV^2/(pV^2+pMarch^2)");
+	Check(ApproxEqual(wMarch,16.0/25.0,TOL),
+		"march family gets pMarch^2/(pMarch^2+pV^2)");
+	Check(ApproxEqual(wNee+wMarch,1.0,TOL),
+		"competing NEE and march family weights sum to one");
+
+	Check(MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,false,false)==1.0,
+		"camera or NEE-disabled march keeps weight one");
+	Check(MISWeights::VolumeEmissionMarchFamilyWeight(
+		pMarch,pV,true,true)==1.0,
+		"sampled singular continuation keeps march weight one");
+	Check(MISWeights::VolumeEmissionNEEFamilyWeight(pV,0.0)==1.0,
+		"structurally absent march gives NEE weight one");
+
+	const Scalar density = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,2.0,0.125);
+	Check(ApproxEqual(density,0.00390625,TOL),
+		"march density includes direction, p_t, inverse-square, and chain survival");
+	Check(MISWeights::VolumeEmissionMarchDensity(0.25,0.5,2.0,0.0)==0.0,
+		"zero boundary survival removes march support");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		0.25,1.0e200,1.0e200,1.0),2.5e-201,2.5e-211),
+		"march density preserves a representable result when distance squared overflows");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		1.0e200,1.0e200,1.0e200,1.0),1.0,1e-12),
+		"march density cancels overflowing numerator and denominator scales");
+	Check(ApproxEqual(MISWeights::VolumeEmissionMarchDensity(
+		1.0e-200,1.0e-200,1.0e-200,1.0),1.0,1e-12),
+		"march density cancels underflowing numerator and denominator scales");
+
+	const Scalar extremeNee = MISWeights::VolumeEmissionNEEFamilyWeight(
+		1.0e300,1.0e-300);
+	const Scalar extremeMarch = MISWeights::VolumeEmissionMarchFamilyWeight(
+		1.0e-300,1.0e300,true,false);
+	Check(std::isfinite(extremeNee) && extremeNee==1.0,
+		"NEE family weight stays finite for extreme density ratios");
+	Check(std::isfinite(extremeMarch) && extremeMarch==0.0,
+		"march family weight stays finite for extreme density ratios");
+
+	// Pinned layout: master's current RAY_STATE (152 bytes on LP64; it grew from the
+	// fire branch's pre-merge 88 with bsdfMisPdf, chain flags and contact fields, and
+	// from 144 with DL-633's pNEESelfObject).
+	// The fire side adds no RAY_STATE members: volume MIS state must stay out of it.
+	const size_t legacyRayStateSize = 152;
+	Check(sizeof(IRayCaster::RAY_STATE)==legacyRayStateSize,
+		"volume MIS state does not alter the public RAY_STATE ABI");
+	const VolumeEmissionSegmentState defaultState =
+		CurrentVolumeEmissionSegmentState();
+	Check(!defaultState.competitionAvailable && !defaultState.continuationSingular,
+		"unscoped camera or unsupported segment gets weight-one state");
+	const VolumeEmissionSegmentState outerState(true,false);
+	{
+		const VolumeEmissionSegmentStateScope outerScope(outerState);
+		const VolumeEmissionSegmentState currentOuter =
+			CurrentVolumeEmissionSegmentState();
+		Check(currentOuter.competitionAvailable && !currentOuter.continuationSingular,
+			"request-local scope propagates the two-bit segment state");
+		const VolumeEmissionSegmentState innerState(false,true);
+		{
+			const VolumeEmissionSegmentStateScope innerScope(innerState);
+			const VolumeEmissionSegmentState currentInner =
+				CurrentVolumeEmissionSegmentState();
+			Check(!currentInner.competitionAvailable && currentInner.continuationSingular,
+				"nested recursive segment scope overrides its parent");
+		}
+		const VolumeEmissionSegmentState restoredOuter =
+			CurrentVolumeEmissionSegmentState();
+		Check(restoredOuter.competitionAvailable && !restoredOuter.continuationSingular,
+			"nested recursive segment scope restores its parent exactly");
+	}
+	const VolumeEmissionSegmentState restoredDefault =
+		CurrentVolumeEmissionSegmentState();
+	Check(!restoredDefault.competitionAvailable && !restoredDefault.continuationSingular,
+		"completed request-local scope restores camera defaults");
+	const VolumeEmissionSegmentState proposalState(true,false,0,0.25,0.0);
+	const VolumeEmissionSegmentState oneBoundary =
+		AdvanceVolumeEmissionSegmentState(proposalState,0.5,1.25);
+	const VolumeEmissionSegmentState twoBoundaries =
+		AdvanceVolumeEmissionSegmentState(oneBoundary,0.5,2.75);
+	Check(ApproxEqual(twoBoundaries.directionPdf,0.25,TOL) &&
+		ApproxEqual(exp(twoBoundaries.logBoundarySurvival),0.25,TOL) &&
+		ApproxEqual(twoBoundaries.distanceOffset,4.0,TOL),
+		"null-boundary advancement preserves p_omega and accumulates no-event atoms and distance");
+	const Scalar logDensity = MISWeights::VolumeEmissionMarchDensityFromLogSurvival(
+		twoBoundaries.directionPdf,0.5,2.0,twoBoundaries.logBoundarySurvival);
+	const Scalar productDensity = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,2.0,0.25);
+	Check(ApproxEqual(logDensity,productDensity,TOL),
+		"log-space boundary survival gives the pinned p_omega p_t product over r squared");
+	const Scalar collisionDensity =
+		MISWeights::VolumeEmissionMarchDensityAtCollision(
+			twoBoundaries,0.5,2.0);
+	const Scalar expectedCollisionDensity = MISWeights::VolumeEmissionMarchDensity(
+		0.25,0.5,6.0,0.25);
+	Check(ApproxEqual(collisionDensity,expectedCollisionDensity,TOL),
+		"collision density uses distance from the originating vertex across all boundaries");
+	const MISWeights::LogDensity logCollisionDensity =
+		MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+			twoBoundaries,log(0.5),2.0);
+	Check(logCollisionDensity.hasSupport &&
+		ApproxEqual(exp(logCollisionDensity.value),expectedCollisionDensity,TOL),
+		"log-distance collision density equals the ordinary representable formulation");
+	const Scalar pVAtCollision = 0.125;
+	const Scalar weightedMarch =
+		MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+			logCollisionDensity,MISWeights::MakeLogDensity(pVAtCollision),true,false);
+	const Scalar weightedNee = MISWeights::VolumeEmissionFamilyWeightFromLogDensities(
+		MISWeights::MakeLogDensity(pVAtCollision),logCollisionDensity);
+	Check(ApproxEqual(weightedMarch+weightedNee,1.0,TOL),
+		"collision-consumed march density is complementary to the labeled NEE density");
+	const Scalar commonTinyMarch =
+		MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+			MISWeights::LogDensity(true,-1400.0),
+			MISWeights::LogDensity(true,-1400.0),true,false);
+	Check(ApproxEqual(commonTinyMarch,0.5,TOL),
+		"common-scale densities remain balanced after both ordinary values underflow");
+	const MISWeights::LogDensity tinyMixture =
+		MISWeights::EqualMixtureLogDensity(
+			MISWeights::LogDensity(true,-1400.0),
+			MISWeights::LogDensity(true,-1401.0));
+	const Scalar expectedTinyMixture = -1400.0 + log1p(exp(-1.0)) - log(2.0);
+	Check(tinyMixture.hasSupport &&
+		ApproxEqual(tinyMixture.value,expectedTinyMixture,1e-13),
+		"equal distance mixture retains its log density after both terms underflow");
+	VolumeEmissionSegmentState deepChain = proposalState;
+	for(unsigned int i=0;i<2000;++i) {
+		deepChain = AdvanceVolumeEmissionSegmentState(deepChain,0.5,1.0);
+	}
+	Check(std::isfinite(deepChain.logBoundarySurvival) &&
+		ApproxEqual(deepChain.logBoundarySurvival,2000.0*log(0.5),1e-9) &&
+		deepChain.distanceOffset==2000.0,
+		"long null-boundary chains retain every no-event atom and complete path length");
+	const VolumeEmissionSegmentState impossibleBoundary =
+		AdvanceVolumeEmissionSegmentState(proposalState,0.0,1.0);
+	Check(MISWeights::VolumeEmissionMarchDensityFromLogSurvival(
+		impossibleBoundary.directionPdf,0.5,2.0,
+		impossibleBoundary.logBoundarySurvival)==0.0,
+		"zero-probability boundary survival removes march support");
+	Check(!MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+		impossibleBoundary,log(0.5),1.0).hasSupport,
+		"zero-probability boundary survival has no log-domain march support");
+	{
+		const VolumeEmissionSegmentStateScope temporaryScope(
+			VolumeEmissionSegmentState(true,true) );
+		const VolumeEmissionSegmentState copiedTemporary =
+			CurrentVolumeEmissionSegmentState();
+		Check(copiedTemporary.competitionAvailable &&
+			copiedTemporary.continuationSingular,
+			"scope owns an immutable copy when constructed from a temporary");
+	}
+}
+
+// DL-03 boundary checks complement the real trained-integrator red proof.
+static void TestGuidedContinuationStack()
+{
+	using PathTransportUtilities::GuidedContinuationIORStack;
+	IORStack before(1.33), after(1.0);
+	// Scratch for the no-selected-stack path.  Only the last row reaches
+	// it, and with no material on `rig` it returns the input stack
+	// without writing this.
+	IORStack generated(1.0);
+	ScatteredRay selected;
+	selected.ior_stack = &after;
+	selected.delete_stack = false;
+	selected.ray.Set(Point3(0,0,0), Vector3(0,0,1));
+	const RasterizerState rast{};
+	RayIntersectionGeometric rig(Ray(Point3(0,0,-1),Vector3(0,0,1)),rast);
+	rig.vGeomNormal = Vector3(0,0,1);
+	rig.onb.CreateFromW(Vector3(1,0,0));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &after,
+		"DL-03 outward replacement preserves selected transition");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8),generated) == &before,
+		"DL-03 inward replacement preserves current medium");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(1,0,0),generated) == &before,
+		"DL-03 tangent replacement has no established crossing");
+	rig.vGeomNormal = Vector3(0,0,-1);
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &after,
+		"DL-03 geometric normal orientation does not change side matching");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8),generated) == &before,
+		"DL-03 reversed geometric normal preserves inward state");
+	rig.vGeomNormal = Vector3(0,0,0);
+	rig.onb.CreateFromW(Vector3(0,0,1));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &after,
+		"DL-03 missing geometric normal falls back to sampling frame");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8),generated) == &before,
+		"DL-03 fallback frame also preserves inward state");
+	rig.onb.CreateFromW(Vector3(1,0,0));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &before,
+		"DL-03 tangent selected direction has no inferred transition");
+	Check(GuidedContinuationIORStack(selected,before,rig,selected.ray.Dir(),generated) == &after,
+		"DL-03 unchanged RIS candidate preserves existing SPF state");
+	rig.vGeomNormal = Vector3(0,0,1);
+	rig.ray.Set(Point3(0,0,1),Vector3(0,0,-1));
+	selected.ray.Set(Point3(0,0,0),Vector3(0,0,-1));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8),generated) == &after,
+		"DL-03 same-side transition works for negative selected hemisphere");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &before,
+		"DL-03 opposite positive hemisphere retains input state");
+	rig.ray.Set(Point3(0,0,-1),Vector3(0,0,1));
+	rig.onb.CreateFromW(Vector3(std::sqrt(3.0)/2,0,.5));
+	selected.ray.Set(Point3(0,0,0),Vector3(std::sqrt(3.0)/2,0,-.5));
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(-.6,0,-.8),generated) == &before,
+		"DL-03 tilted inward SPF sample must not pop a distinct inward guide");
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,.8),generated) == &after,
+		"DL-03 outward guide crosses despite tilted inward SPF sample");
+	Check(GuidedContinuationIORStack(selected,before,rig,selected.ray.Dir(),generated) == &after,
+		"DL-03 exact unchanged tilted SPF sample retains legacy state");
+	selected.ior_stack = 0;
+	Check(GuidedContinuationIORStack(selected,before,rig,Vector3(.6,0,-.8),generated) == &before,
+		"DL-03 absent selected transition retains input state");
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -219,6 +537,11 @@ int main()
 	TestWeightSum();
 	TestPowerHeuristic();
 	TestExtremeRatios();
+	TestNMNoEventSurvivalWeight();
+	TestGuidingSelectedMixturePdf();
+	TestGuidingRISTinyPositiveSupport();
+	TestVolumeEmissionFamilyPartition();
+	TestGuidedContinuationStack();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

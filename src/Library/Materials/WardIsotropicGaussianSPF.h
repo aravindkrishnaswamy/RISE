@@ -20,6 +20,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -33,16 +34,26 @@ namespace RISE
 		protected:
 			virtual ~WardIsotropicGaussianSPF( );
 
-			const IPainter&	diffuse;			// diffuse reflectance
-			const IPainter&	specular;			// specular reflectance
-			const IPainter&	alpha;				// phong exponent
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;			// diffuse reflectance
+			const IPainter*			pSpecular;			// specular reflectance
+			const IScalarPainter*	pAlpha;				// surface slope RMS (physical scalar)
 
 		public:
 			WardIsotropicGaussianSPF(
 				const IPainter& diffuse_,
 				const IPainter& specular_,
-				const IPainter& alpha_
+				const IScalarPainter& alpha_
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()  const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular() const { return *pSpecular; }
+			inline const IScalarPainter& GetAlpha()    const { return *pAlpha; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlpha( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
@@ -50,7 +61,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -61,7 +72,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			Scalar	Pdf(
@@ -75,6 +86,39 @@ namespace RISE
 				const Vector3& wo,
 				const Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			//! DL-125.  The SELECTED lobe's own `f_I cos / p_I` at a
+			//! COMPANION wavelength, for the HWSS companion ladder.
+			//! Required because this SPF stores a PER-LOBE conditional
+			//! density on each emitted ray.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) * cos_o / pdfHero.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 		};
 	}

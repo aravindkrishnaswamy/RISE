@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   CSG all-operations dielectric test for BDPT                                                             #
 #   Tests union, intersection, and subtraction with glass materials.                                        #
@@ -21,7 +21,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		10
 	max_light_depth		10
 	samples				64
-	sms_enabled			TRUE
 }
 
 file_rasterizeroutput
@@ -36,13 +35,17 @@ file_rasterizeroutput
 # Camera
 ##################################################
 
+film
+{
+	width			640
+	height			320
+}
+
 pinhole_camera
 {
 	location			0 3.5 7.5
 	lookat				0 1.0 0
 	up					0 1 0
-	width				640
-	height				320
 	fov					58.0
 }
 
@@ -121,7 +124,7 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				clear_glass
-	tau					pnt_glass_tau
+	tau			0.997
 	ior					1.5
 	scattering			100000.0
 }
@@ -129,7 +132,7 @@ dielectric_material
 dielectric_material
 {
 	name				tinted_glass
-	tau					pnt_tinted_tau
+	tau			0.95 0.98 0.95
 	ior					1.5
 	scattering			100000.0
 }
@@ -268,6 +271,7 @@ csg_object
 	objb				union_sphere_b
 	operation			union
 	position			-4.0 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################
@@ -297,6 +301,7 @@ csg_object
 	objb				isect_sphere_b
 	operation			intersection
 	position			-1.3 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################
@@ -327,6 +332,7 @@ csg_object
 	objb				sub_sphere_b
 	operation			subtraction
 	position			1.3 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################

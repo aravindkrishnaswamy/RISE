@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "CookTorranceBRDF.h"
 
@@ -32,20 +33,34 @@ namespace RISE
 		protected:
 			virtual ~CookTorranceSPF( );
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pMasking;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pMasking;		// roughness (physical scalar)
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
 
 		public:
 			CookTorranceSPF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& masking,
-				const IPainter& ior,
-				const IPainter& ext
+				const IScalarPainter& masking,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()    const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()   const { return *pSpecular; }
+			inline const IScalarPainter& GetMasking()    const { return *pMasking; }
+			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetMasking( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
@@ -53,7 +68,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -64,7 +79,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Evaluates the PDF for scattering in direction wo

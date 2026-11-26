@@ -1,0 +1,20 @@
+{
+  "//": "Epoch-13 re-measurement of the Gemini board on build_ambiguous_scene. repeats=10 (not 5) deliberately: the epoch-12 arc showed two N=5 runs of the IDENTICAL cell scoring 40% and 80%, so N=5 cannot carry a pass@1 claim on this scenario -- see RESULTS.md section 2d and its methodology finding. One N=10 sample is the smallest honest reading.",
+  "scenarios": [
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash",
+      "keyEnvVar": "GEMINI_API_KEY"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "keyEnvVar": "GEMINI_API_KEY"
+    }
+  ],
+  "repeats": 10,
+  "runDir": "evals/runs/gemini_board_e13"
+}

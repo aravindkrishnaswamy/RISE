@@ -7,7 +7,7 @@
 //  reflection for BDPT connection strategies:
 //
 //  Both outside (front/front): GGX microfacet reflection BRDF
-//    (rough surfaces) or diffuse Fresnel approximation (smooth).
+//    (rough surfaces); smooth reflection is delta, with zero finite value.
 //  All other cases: return 0.  The subsurface transport between
 //    surface points is handled by the diffusion profile in the
 //    integrator, not by the BSDF.
@@ -25,6 +25,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -38,24 +39,42 @@ namespace RISE
 		protected:
 			virtual ~SubSurfaceScatteringBSDF();
 
-			const IPainter&		ior;
-			const IPainter&		absorption;
-			const IPainter&		scattering;
-			const Scalar		g;
-			const Scalar		roughness;
-			const Scalar		alpha;		// GGX alpha = roughness^2
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*	pIOR;
+			const Scalar			g;
+			const Scalar			roughness;
+			const Scalar			alpha;		// GGX alpha = roughness^2
 
 		public:
 			SubSurfaceScatteringBSDF(
-				const IPainter& ior_,
-				const IPainter& absorption_,
-				const IPainter& scattering_,
+				const IScalarPainter& ior_,
 				const Scalar g_,
 				const Scalar roughness_
 				);
 
-			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
-			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const override;
+			Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const override;
+			RISEPel albedo( const RayIntersectionGeometric& ri ) const override;
+			//! The SPF labels every ordinary finite term as reflection. Jump
+			//! transport is absent from this BSDF and must not enter the split.
+			bool valueByScatterType(const Vector3& w, const RayIntersectionGeometric& ri,
+				const IORStack*, RISEPel out[5]) const override {
+				for(unsigned t=0;t<5;++t) out[t]=RISEPel(0,0,0);
+				out[ScatteredRay::eRayReflection]=value(w,ri);
+				return true;
+			}
+			bool valueByScatterTypeNM(const Vector3& w, const RayIntersectionGeometric& ri,
+				Scalar nm, const IORStack*, Scalar out[5]) const override {
+				for(unsigned t=0;t<5;++t) out[t]=0;
+				out[ScatteredRay::eRayReflection]=valueNM(w,ri,nm);
+				return true;
+			}
+
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetIOR() const { return *pIOR; }
+			void SetIOR( const IScalarPainter& v );
 		};
 	}
 }

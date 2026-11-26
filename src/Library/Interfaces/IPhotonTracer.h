@@ -37,7 +37,7 @@ namespace RISE
 		//! Traces photons
 		/// \return TRUE if photons were traced, FALSE otherwise
 		virtual bool TracePhotons( 
-			const unsigned int numPhotons,		///< [in] Number of photons to acquire in the photon map
+			const unsigned int numPhotons,		///< [in] Attempted emission budget and maximum stored packet count; may publish fewer packets
 			const Scalar time,					///< [in] The time to trace these photons at
 			const bool bAtTime,					///< [in] Should we be tracing photons at a particular time?
 			IProgressCallback* pFunc			///< [in] Callback functor for reporting progress

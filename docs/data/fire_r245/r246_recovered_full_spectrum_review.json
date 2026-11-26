@@ -1,0 +1,28 @@
+{
+  "schema": "rise.fire.r246.recovered-full-spectrum-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "4e463fed5",
+  "round": 1,
+  "accepted_scope": "Complete captured-input full native/common/display spectrum arithmetic and provenance only",
+  "completion_receipt_sha256": "71be8c323def568194c51e82326aaa95dc12c76c54cf90d1dbc4a2e13428c357",
+  "reviewers": [
+    {
+      "agent": "r246_spectrum_completion_arithmetic",
+      "axis": "retained operands/station projection/independent FFT",
+      "p1": 0,
+      "p2": 0,
+      "evidence_sha256": "a08c4409df06e8e9f2521641620edfba5639e05cb614ad5491770c5fcacb48b1"
+    },
+    {
+      "agent": "r246_spectrum_completion_provenance",
+      "axis": "captured scene/movie/source/resultseal identities",
+      "p1": 0,
+      "p2": 0,
+      "evidence_sha256": "5cb2cabd21784ba609a0b8ba86b188d81433553819eaa7836f8209c0544a3874"
+    }
+  ],
+  "original_exit_code": 98,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "accepted_utc": "2026-10-04T15:57:33.096566+00:00"
+}

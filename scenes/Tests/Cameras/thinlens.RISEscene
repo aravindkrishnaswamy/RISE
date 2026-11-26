@@ -1,8 +1,8 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           dof.RISEScene                                                                           #
+#   File:           thinlens.RISEscene                                                                           #
 #   Description:    Demonstrates depth of field effects via the thin lens camera.  Note the thin lens       #
 #                   camera can be difficult to use.  Consider the realistic camera instead.                 #
 #   Author:         Aravind Krishnaswamy                                                                    #
@@ -11,24 +11,34 @@ RISE ASCII SCENE 5
 #############################################################################################################
 
 ##################################################
+# Scene-level options.  Geometry is in metres (scene_unit defaults
+# to 1.0): a 3 m painted cube at the origin, viewed from 8 m by a
+# 100 mm f/1.4 telephoto.  At this distance + aperture the DOF span
+# is only ~0.5 m — far narrower than the cube's 5 m corner-to-
+# corner depth — so the focal plane VISIBLY sweeps through the cube
+# as `focus_distance` changes.  Try sweeping focus_distance from 5
+# (cube fully past focus) up through 8 (centre sharp, corners blur)
+# to 30+ (cube fully past focus the other direction).
+##################################################
+
+##################################################
 # Setup a renderer
 ##################################################
 
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
+	shaderop	DefaultPathTracing
 }
 
-adaptivepixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	min_samples			64
-	max_samples			500
-	num_steps			46
-	lum_samples			1
-	threshold			0.0005
-#	show_samples		true
+	samples					64
+	adaptive_max_samples	500
+	adaptive_threshold		0.0005
+#	show_adaptive_map		true
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -44,24 +54,162 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			1024
+	height			512
+}
+
 thinlens_camera
 {
-	location			0 0 30
+	location			0 0 8
 	lookat				0 0 0
 	up					0 1 0
-	width				1024
-	height				512
-	fov					20
-	aperture_size		5				# f/2.8
-	focal_length		14				# 14mm
-	focus_distance		28.0			# focus distance
+	sensor_size			36              # mm — full-frame 35mm
+	focal_length		100             # mm — short telephoto
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		8               # metres — onto cube centre; near and far corners fall out of DOF
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 png_painter
 {
@@ -86,9 +234,9 @@ lambertian_material
 box_geometry
 {
 	name				boxgeom
-	width				5.0
-	height				5.0
-	depth				5.0
+	width				3.0
+	height				3.0
+	depth				3.0
 }
 
 standard_object
@@ -110,4 +258,6 @@ directional_light
 	color		1.0 1.0 1.0
 	direction	0.0 0.0 1.0
 }
+
+
 

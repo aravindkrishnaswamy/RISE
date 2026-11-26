@@ -1,0 +1,11 @@
+{
+  "//": "Eval-harness E4 live-runner smoke config: ONE scenario x ONE provider x ONE repeat.",
+  "//key": "The api key is read at run time from the env var named below (XAI_API_KEY) -- it is NEVER stored in this file.",
+  "//run": "export XAI_API_KEY=xai-...   then:   ./bin/rise --agent-eval evals/runconfigs/smoke_xai.json",
+  "scenarios": [ "evals/scenarios/param_edit.json" ],
+  "providers": [
+    { "provider": "xai", "model": "grok-4.5", "keyEnvVar": "XAI_API_KEY" }
+  ],
+  "repeats": 1,
+  "runDir": "evals/runs/smoke_xai"
+}

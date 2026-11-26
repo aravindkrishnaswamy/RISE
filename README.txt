@@ -1,3 +1,11 @@
+HISTORICAL MANUAL (FROZEN)
+==========================
+
+This is the RISE 1.1.0 Build 80 manual from May 2006. It is retained for
+project history and user-context archaeology; its build instructions,
+supported-platform notes, executable names, contacts, and feature inventory
+are not current. Start with README.md for the maintained repository guide.
+
 ###########################################################
 
   REALISTIC IMAGE SYNTHESIS ENGINE

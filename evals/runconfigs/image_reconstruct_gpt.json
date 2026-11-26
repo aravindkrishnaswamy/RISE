@@ -1,0 +1,12 @@
+{
+  "//": "Harness-assist validation column for the compare_to_reference wiring: openai/gpt-5.6-terra ONLY, both image_reconstruct scenarios, against the SHARED evals/runs/image_reconstruct runDir (the same one image_reconstruct.json's full 4-provider matrix uses). The scenario oracle changed (requiredToolInOrder now requires compare_to_reference), so every cell's stamped scenarioContentHash is stale -- but RunEvalMatrix's resume guard is PER-CELL and this config's providers list contains only openai, so running it only visits and re-runs the 2 scenarios x 3 repeats = 6 openai cells; the anthropic/gemini/xai cells already on disk from image_reconstruct.json's prior run are untouched (not visited, so not wiped) until image_reconstruct.json itself is re-run.",
+  "scenarios": [
+    "evals/scenarios/image_reconstruct_single.json",
+    "evals/scenarios/image_reconstruct_multi.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/image_reconstruct"
+}

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -28,9 +28,13 @@ pathtracing_shaderop
 	name			pathtracer
 }
 
-# We want to setup an advanced shader to only do reflections on the first couple of bounces
-# so that we can avoid total internal reflection.  The flexibility of the advanced shader
-# lets us do this
+# Historical: under the legacy pixelpel_rasterizer this advanced shader meant to restrict
+# reflections to the first bounces (avoiding total internal reflection), but both ops are
+# path tracers whose `refractions` / `diffuse` lines are ignored legacy parameters, and their
+# overlapping depth ranges (0-1 and 1-10, `+`) made the legacy chain SUM two path tracers at
+# depth 1 (a double count).  Since legacy-deprecation Phase 2 the scene renders with
+# pathtracing_pel_rasterizer, which consults this chain only for PT's SSS continuation (none
+# here): it path-traces every bounce once, with total internal reflection.
 advanced_shader
 {
 	name			global
@@ -38,11 +42,10 @@ advanced_shader
 	shaderop		pathtracer_noreflections	1 10		+
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
 	samples				256
-	lum_samples			4
 	pixel_filter		tent
 	pixel_filter_width	1.7
 	pixel_filter_height	1.7
@@ -60,13 +63,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			1280
+	height			480
+}
+
 pinhole_camera
 {
 	location			0 -0.2 3.2
 	lookat				0 -0.2 1.0
 	up					0 1 0
-	width				1280
-	height				480
 	fov					30.0
 	theta				15
 }
@@ -75,7 +82,151 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 checker_painter
 {
@@ -92,7 +243,7 @@ checker_painter
 dielectric_material
 {
 	name				dieA
-	tau					color_white
+	tau			1
 	ior					1.000292
 	scattering				100000
 }
@@ -100,7 +251,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieB
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				100000
 }
@@ -108,7 +259,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieC
-	tau					color_white
+	tau			1
 	ior					1.51
 	scattering				100000
 }
@@ -116,7 +267,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieD
-	tau					color_white
+	tau			1
 	ior					1.71
 	scattering				100000
 }
@@ -124,7 +275,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieE
-	tau					color_white
+	tau			1
 	ior					2.47
 	scattering				100000
 }
@@ -236,3 +387,5 @@ standard_object
 	position			1.0 0 1.2
 	material			dieE
 }
+
+

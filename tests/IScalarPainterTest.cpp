@@ -1,0 +1,887 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  IScalarPainterTest.cpp - Direct unit tests for every
+//    IScalarPainter implementation.
+//
+//  Tests that each painter:
+//    - Implements GetValuesAt and GetValueAtNM consistently.
+//    - Reports HasPerChannelVariation correctly.
+//    - Round-trips physical scalars without JH-uplift artifacts
+//      (the bug this whole refactor exists to fix).
+//
+//  Reference-counting convention: every `Reference` subclass starts
+//  with refcount == 1 at construction.  When a test owns a painter
+//  and is finished with it, a single `release()` deletes it.  When a
+//  painter passes ownership to a parent painter (e.g. Scaled, Multiply),
+//  the parent's constructor addref's the child so the test must
+//  release ITS reference after construction.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <vector>
+
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
+#include "../src/Library/Painters/PiecewiseLinearScalarPainter.h"
+#include "../src/Library/Painters/SellmeierScalarPainter.h"
+#include "../src/Library/Painters/PolynomialScalarPainter.h"
+#include "../src/Library/Painters/ScaledScalarPainter.h"
+#include "../src/Library/Painters/MultiplyScalarPainter.h"
+#include "../src/Library/Painters/AddScalarPainter.h"
+#include "../src/Library/Painters/Function1DScalarPainter.h"
+#include "../src/Library/Painters/Function2DScalarPainter.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Interfaces/IFunction1D.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Utilities/Reference.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static int passCount = 0;
+static int failCount = 0;
+
+static void Check( bool condition, const char* testName )
+{
+	if( condition ) {
+		passCount++;
+	} else {
+		failCount++;
+		std::cout << "  FAIL: " << testName << std::endl;
+	}
+}
+
+static bool ApproxEq( Scalar a, Scalar b, Scalar tol = Scalar( 1e-9 ) )
+{
+	return std::fabs( a - b ) <= tol;
+}
+
+static RayIntersectionGeometric MakeDummyRig()
+{
+	return RayIntersectionGeometric( Ray(), nullRasterizerState );
+}
+
+//! Independent reference for DL-29's RGB convention, written OUT OF
+//! THE PAINTER'S REACH: the straight-line curve evaluated by hand at
+//! one wavelength.  `PiecewiseLinearScalarPainter` does its own binary
+//! search and its own interpolation over a sorted sample vector; this
+//! helper does neither, so agreeing is evidence and not a restatement.
+//! There is deliberately no CMF integration, no illuminant weighting
+//! and no colorspace matrix here -- the convention is "the curve, at
+//! that wavelength" (see ScalarPainterRGB::kChannelNM's doc comment in
+//! Interfaces/IScalarPainter.h for why a colorimetric integral would be
+//! the wrong answer for a pipe carrying iors, extinctions and
+//! roughnesses).
+static Scalar StraightLineCurveAt(
+	Scalar loNm, Scalar loVal, Scalar hiNm, Scalar hiVal, Scalar atNm )
+{
+	if( atNm <= loNm ) return loVal;
+	if( atNm >= hiNm ) return hiVal;
+	return loVal + ( atNm - loNm ) / ( hiNm - loNm ) * ( hiVal - loVal );
+}
+
+static void TestUniformScalarPainter()
+{
+	std::cout << "TestUniformScalarPainter" << std::endl;
+	UniformScalarPainter* p = new UniformScalarPainter( Scalar( 1.5 ) );
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	// GetValuesAt returns triple of v.
+	const ScalarTriple t = p->GetValuesAt( ri );
+	Check( ApproxEq( t.v[0], 1.5 ), "uniform: v[0]=1.5" );
+	Check( ApproxEq( t.v[1], 1.5 ), "uniform: v[1]=1.5" );
+	Check( ApproxEq( t.v[2], 1.5 ), "uniform: v[2]=1.5" );
+	Check( t.IsUniform(),           "uniform: IsUniform" );
+
+	// GetValueAtNM returns the same value at every wavelength.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 405 ) ), 1.5 ), "uniform: nm=405" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 555 ) ), 1.5 ), "uniform: nm=555" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 705 ) ), 1.5 ), "uniform: nm=705" );
+
+	// HasPerChannelVariation is false.
+	Check( ! p->HasPerChannelVariation(), "uniform: !HasPerChannelVariation" );
+
+	// CRITICAL REGRESSION: physical-scalar values much larger than 1.0
+	// must NOT be clamped or JH-uplifted.  This is the spectral-rasterizer
+	// bug this refactor exists to fix — `scattering 1000000` must
+	// round-trip as 1000000, not as a JH-uplifted ≈ 1.0 / 0.0.
+	UniformScalarPainter* huge = new UniformScalarPainter( Scalar( 1e6 ) );
+	Check( ApproxEq( huge->GetValueAtNM( ri, Scalar( 555 ) ), 1e6 ),
+	       "uniform: huge scalar round-trips (regression guard)" );
+	huge->release();
+
+	p->release();
+}
+
+static void TestRGBScalarPainter()
+{
+	std::cout << "TestRGBScalarPainter" << std::endl;
+	RGBScalarPainter* p = new RGBScalarPainter(
+		Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	// GetValuesAt returns the authored triple.
+	const ScalarTriple t = p->GetValuesAt( ri );
+	Check( ApproxEq( t.v[0], 1.3 ), "rgb: v[0]=R=1.3" );
+	Check( ApproxEq( t.v[1], 1.5 ), "rgb: v[1]=G=1.5" );
+	Check( ApproxEq( t.v[2], 2.0 ), "rgb: v[2]=B=2.0" );
+	Check( ! t.IsUniform(),         "rgb: !IsUniform" );
+
+	// Wavelength endpoints clamp to channel endpoints.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 380 ) ), 2.0 ), "rgb: nm=380 → B=2.0" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 720 ) ), 1.3 ), "rgb: nm=720 → R=1.3" );
+	// Anchors at 450, 550, 650.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 450 ) ), 2.0 ), "rgb: nm=450 → B=2.0" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 550 ) ), 1.5 ), "rgb: nm=550 → G=1.5" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 650 ) ), 1.3 ), "rgb: nm=650 → R=1.3" );
+	// Midpoints interpolate.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 500 ) ), Scalar( 0.5 ) * ( 2.0 + 1.5 ) ),
+	       "rgb: nm=500 → midpoint B-G" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 600 ) ), Scalar( 0.5 ) * ( 1.5 + 1.3 ) ),
+	       "rgb: nm=600 → midpoint G-R" );
+
+	Check( p->HasPerChannelVariation(), "rgb: HasPerChannelVariation" );
+
+	// A "uniform RGB" painter should report no channel variation.
+	RGBScalarPainter* uni = new RGBScalarPainter( Scalar( 1.5 ), Scalar( 1.5 ), Scalar( 1.5 ) );
+	Check( ! uni->HasPerChannelVariation(),
+	       "rgb-uniform-disguise: !HasPerChannelVariation" );
+	uni->release();
+
+	p->release();
+}
+
+static void TestPiecewiseLinearScalarPainter()
+{
+	std::cout << "TestPiecewiseLinearScalarPainter" << std::endl;
+
+	// colors/linear.ior shape: 380 → 1.10, 720 → 1.45.
+	std::vector<PiecewiseLinearScalarPainter::Sample> samples = {
+		{ Scalar( 380 ), Scalar( 1.10 ) },
+		{ Scalar( 720 ), Scalar( 1.45 ) }
+	};
+	PiecewiseLinearScalarPainter* p = new PiecewiseLinearScalarPainter( samples );
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	// Endpoints clamp.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 300 ) ), 1.10 ),
+	       "piecewise: clamp low → 1.10" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 800 ) ), 1.45 ),
+	       "piecewise: clamp high → 1.45" );
+
+	// Interior interpolation: 550 nm is (550-380)/(720-380) = 0.5 along
+	// the segment → 1.10 + 0.5·(1.45-1.10) = 1.275.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 550 ) ), 1.275, Scalar( 1e-6 ) ),
+	       "piecewise: midpoint interpolation" );
+
+	// Wavelength endpoints exact.
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 380 ) ), 1.10 ),
+	       "piecewise: exact endpoint low" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 720 ) ), 1.45 ),
+	       "piecewise: exact endpoint high" );
+
+	// DL-29 (docs/DEBT_LEDGER.md): this curve genuinely varies red-to-
+	// blue (1.10 at 380nm rising to 1.45 at 720nm), so under RGB
+	// rendering GetValuesAt must report a real per-channel triple, not
+	// a single-wavelength broadcast -- HasPerChannelVariation is now
+	// TRUE (was asserted FALSE pre-fix, which was exactly the bug: a
+	// measured curve silently rendering grey).
+	Check( p->HasPerChannelVariation(), "piecewise: HasPerChannelVariation (DL-29)" );
+
+	{
+		const ScalarTriple t = p->GetValuesAt( ri );
+		Check( ! t.IsUniform(), "piecewise: GetValuesAt is not grey (DL-29)" );
+		// R > G > B: the curve rises toward longer (redder) wavelengths,
+		// and this is a physical-scalar magnitude (an IOR-like value
+		// > 1), not a [0,1] reflectance -- no clamping.
+		Check( t.v[0] > t.v[1] && t.v[1] > t.v[2],
+		       "piecewise: R > G > B for a curve rising toward red" );
+
+		// The convention, asserted EXACTLY (1e-12, not a tolerance
+		// band): each channel is the curve at
+		// ScalarPainterRGB::kChannelNM.  611 nm -> 1.3378, 549 nm ->
+		// 1.2739, 465 nm -> 1.1875 for this 380:1.10 -> 720:1.45 line.
+		const char* chanName[3] = { "R (611nm)", "G (549nm)", "B (465nm)" };
+		for( int c = 0; c < 3; ++c ) {
+			const Scalar ref = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ), ScalarPainterRGB::kChannelNM[c] );
+			char msg[128];
+			std::snprintf( msg, sizeof(msg),
+				"piecewise: %s is the curve at that wavelength", chanName[c] );
+			Check( ApproxEq( t.v[c], ref, Scalar( 1e-12 ) ), msg );
+		}
+
+		// The triple and GetValueAtNM must agree at those three
+		// wavelengths -- the whole point of dropping the CMF
+		// integration is that the RGB report and the spectral report
+		// are the SAME function, sampled.
+		for( int c = 0; c < 3; ++c ) {
+			Check( t.v[c] == p->GetValueAtNM( ri, ScalarPainterRGB::kChannelNM[c] ),
+			       "piecewise: GetValuesAt channel == GetValueAtNM at the same wavelength" );
+		}
+	}
+
+	// DL-29 single-scalar-slot view: a material slot that reads only
+	// `.v[0]` binds this instead of being rejected.  Same curve
+	// spectrally, uniform green sample under RGB, and it reports no
+	// per-channel variation so the parser's requireSingle contract and
+	// every SPF's `disperse` test see a plain single-valued painter.
+	{
+		IScalarPainter* view = p->MakeSingleScalarSlotView();
+		Check( view != nullptr, "piecewise: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( ! view->HasPerChannelVariation(), "piecewise-view: !HasPerChannelVariation" );
+			Check( tv.IsUniform(), "piecewise-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], green, Scalar( 1e-12 ) ),
+			       "piecewise-view: v[0] is the curve at 549nm" );
+			// Spectral path identical to the original painter's.
+			Check( view->GetValueAtNM( ri, Scalar( 420 ) ) == p->GetValueAtNM( ri, Scalar( 420 ) ) &&
+			       view->GetValueAtNM( ri, Scalar( 700 ) ) == p->GetValueAtNM( ri, Scalar( 700 ) ),
+			       "piecewise-view: GetValueAtNM is the unchanged curve" );
+			// A view of a view would be pointless; it declines.
+			Check( view->MakeSingleScalarSlotView() == nullptr,
+			       "piecewise-view: does not offer a view of itself" );
+			view->release();
+		}
+	}
+
+	p->release();
+
+	// A FLAT curve (constant value at every sampled wavelength) must
+	// stay grey: HasPerChannelVariation FALSE and GetValuesAt uniform,
+	// exactly the pre-fix broadcast behaviour for the one case where
+	// broadcasting is actually correct.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> flat = {
+			{ Scalar( 380 ), Scalar( 1.33 ) },
+			{ Scalar( 720 ), Scalar( 1.33 ) }
+		};
+		PiecewiseLinearScalarPainter* pf = new PiecewiseLinearScalarPainter( flat );
+		Check( ! pf->HasPerChannelVariation(), "piecewise-flat: !HasPerChannelVariation" );
+		const ScalarTriple tf = pf->GetValuesAt( ri );
+		// EXACTLY uniform and EXACTLY 1.33 -- three evaluations of one
+		// flat curve are bit-identical, so this needs no snap-to-uniform
+		// tolerance (a CMF integration would have needed one, which is
+		// one more reason the convention is "sample the curve").
+		Check( tf.IsUniform(), "piecewise-flat: GetValuesAt is exactly uniform" );
+		Check( tf.v[0] == Scalar( 1.33 ), "piecewise-flat: v[0] is exactly 1.33" );
+		pf->release();
+	}
+
+	// Empty-samples edge case: defensive fallback to 0 (consumers will
+	// see "no contribution" rather than NaN / Inf).
+	std::vector<PiecewiseLinearScalarPainter::Sample> empty;
+	PiecewiseLinearScalarPainter* pe = new PiecewiseLinearScalarPainter( empty );
+	Check( ApproxEq( pe->GetValueAtNM( ri, Scalar( 555 ) ), 0.0 ),
+	       "piecewise: empty samples → 0" );
+	pe->release();
+
+	// Single-sample edge case: constant value regardless of nm.
+	std::vector<PiecewiseLinearScalarPainter::Sample> single = {
+		{ Scalar( 500 ), Scalar( 1.7 ) }
+	};
+	PiecewiseLinearScalarPainter* ps = new PiecewiseLinearScalarPainter( single );
+	Check( ApproxEq( ps->GetValueAtNM( ri, Scalar( 400 ) ), 1.7 ),
+	       "piecewise: single sample → 1.7 below" );
+	Check( ApproxEq( ps->GetValueAtNM( ri, Scalar( 600 ) ), 1.7 ),
+	       "piecewise: single sample → 1.7 above" );
+	ps->release();
+
+	// Duplicate-nm samples should not produce NaN.
+	std::vector<PiecewiseLinearScalarPainter::Sample> dup = {
+		{ Scalar( 500 ), Scalar( 1.5 ) },
+		{ Scalar( 500 ), Scalar( 1.7 ) },	// duplicate nm
+		{ Scalar( 600 ), Scalar( 2.0 ) }
+	};
+	PiecewiseLinearScalarPainter* pd = new PiecewiseLinearScalarPainter( dup );
+	const Scalar dv = pd->GetValueAtNM( ri, Scalar( 500 ) );
+	Check( std::isfinite( dv ),
+	       "piecewise: duplicate-nm samples produce finite output" );
+	pd->release();
+}
+
+static void TestSellmeierScalarPainter()
+{
+	std::cout << "TestSellmeierScalarPainter" << std::endl;
+
+	// BK7 glass — published coefficients.
+	SellmeierScalarPainter* p = new SellmeierScalarPainter(
+		Scalar( 1.03961212 ), Scalar( 0.231792344 ), Scalar( 1.01046945 ),
+		Scalar( 0.00600069867 ), Scalar( 0.0200179144 ), Scalar( 103.560653 )
+		);
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 587.6 ) ), Scalar( 1.5168 ), Scalar( 1e-3 ) ),
+	       "sellmeier: BK7 d-line ≈ 1.5168" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 486.1 ) ), Scalar( 1.5224 ), Scalar( 1e-3 ) ),
+	       "sellmeier: BK7 F-line ≈ 1.5224" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 656.3 ) ), Scalar( 1.5143 ), Scalar( 1e-3 ) ),
+	       "sellmeier: BK7 C-line ≈ 1.5143" );
+
+	// DL-82: GetValuesAt samples the curve at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} per channel -- BK7's mild visible-band dispersion
+	// makes the three samples genuinely (if slightly) different, so
+	// HasPerChannelVariation() is now true, not unconditionally false.
+	const ScalarTriple bk7Triple = p->GetValuesAt( ri );
+	Check( ApproxEq( bk7Triple.v[0], Scalar( 1.5158711781837417 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[0] = curve(611nm)" );
+	Check( ApproxEq( bk7Triple.v[1], Scalar( 1.518572836436827 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[1] = curve(549nm)" );
+	Check( ApproxEq( bk7Triple.v[2], Scalar( 1.5240123784970663 ), Scalar( 1e-9 ) ),
+	       "sellmeier: GetValuesAt.v[2] = curve(465nm)" );
+	Check( p->HasPerChannelVariation(), "sellmeier: HasPerChannelVariation (BK7 genuinely disperses)" );
+
+	// DL-82: MakeSingleScalarSlotView -- same curve through GetValueAtNM,
+	// a uniform green (549nm) triple through GetValuesAt.
+	IScalarPainter* bk7View = p->MakeSingleScalarSlotView();
+	Check( bk7View != nullptr, "sellmeier: MakeSingleScalarSlotView is offered" );
+	if( bk7View ) {
+		Check( ! bk7View->HasPerChannelVariation(), "sellmeier-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = bk7View->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "sellmeier-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1.518572836436827 ), Scalar( 1e-9 ) ),
+		       "sellmeier-view: v[0] = curve(549nm)" );
+		Check( ApproxEq( bk7View->GetValueAtNM( ri, Scalar( 587.6 ) ),
+		                  p->GetValueAtNM( ri, Scalar( 587.6 ) ), Scalar( 1e-12 ) ),
+		       "sellmeier-view: GetValueAtNM is the unchanged curve" );
+		Check( bk7View->MakeSingleScalarSlotView() == nullptr,
+		       "sellmeier-view: already a view, MakeSingleScalarSlotView returns nullptr" );
+		bk7View->release();
+	}
+
+	p->release();
+
+	// Singularity-guard sanity check: place a coefficient C exactly at
+	// the wavelength under test to provoke the (lam² - C) == 0 path.
+	// Author's intent for the safe handling is "skip the term"; verify
+	// the painter doesn't produce Inf/NaN.
+	SellmeierScalarPainter* sing = new SellmeierScalarPainter(
+		Scalar( 1.0 ), Scalar( 0.0 ), Scalar( 0.0 ),
+		Scalar( 0.25 ),	// C1 = 0.25 µm² → singular at λ = 500 nm (0.5 µm)
+		Scalar( 1.0 ), Scalar( 1.0 )
+		);
+	const Scalar ns = sing->GetValueAtNM( ri, Scalar( 500.0 ) );
+	Check( std::isfinite( ns ),
+	       "sellmeier: at-singularity λ produces finite output" );
+	sing->release();
+}
+
+static void TestPolynomialScalarPainter()
+{
+	std::cout << "TestPolynomialScalarPainter" << std::endl;
+
+	// f(λ) = 1.0 + 0.001·λ → linear.
+	std::vector<Scalar> coeffs = { Scalar( 1.0 ), Scalar( 0.001 ) };
+	PolynomialScalarPainter* p = new PolynomialScalarPainter( coeffs );
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 500 ) ), Scalar( 1.5 ) ),
+	       "polynomial linear: f(500) = 1.5" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 0 ) ), Scalar( 1.0 ) ),
+	       "polynomial linear: f(0) = 1.0" );
+
+	p->release();
+
+	// f(λ) = 2 + 3·λ + 4·λ² → quadratic.
+	std::vector<Scalar> q = { Scalar( 2.0 ), Scalar( 3.0 ), Scalar( 4.0 ) };
+	PolynomialScalarPainter* pq = new PolynomialScalarPainter( q );
+	Check( ApproxEq( pq->GetValueAtNM( ri, Scalar( 2 ) ), Scalar( 2.0 + 6.0 + 16.0 ) ),
+	       "polynomial quadratic: f(2) = 24" );
+
+	pq->release();
+
+	// Empty coeffs falls back to 1.0 (neutral, see header comment).
+	std::vector<Scalar> empty;
+	PolynomialScalarPainter* pe = new PolynomialScalarPainter( empty );
+	Check( ApproxEq( pe->GetValueAtNM( ri, Scalar( 555 ) ), 1.0 ),
+	       "polynomial: empty coeffs → 1.0 (air-IOR default)" );
+	pe->release();
+
+	// DL-82: GetValuesAt samples the curve at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} -- f(nm) = 1.0 + 0.001*nm gives 1.611/1.549/1.465,
+	// genuinely per-channel.
+	PolynomialScalarPainter* pv = new PolynomialScalarPainter( coeffs );
+	const ScalarTriple polyTriple = pv->GetValuesAt( ri );
+	Check( ApproxEq( polyTriple.v[0], Scalar( 1.611 ) ), "polynomial: GetValuesAt.v[0] = f(611nm)" );
+	Check( ApproxEq( polyTriple.v[1], Scalar( 1.549 ) ), "polynomial: GetValuesAt.v[1] = f(549nm)" );
+	Check( ApproxEq( polyTriple.v[2], Scalar( 1.465 ) ), "polynomial: GetValuesAt.v[2] = f(465nm)" );
+	Check( pv->HasPerChannelVariation(), "polynomial: HasPerChannelVariation (real slope disperses)" );
+
+	// DL-82: a CONSTANT polynomial (c1 = c2 = ... = 0) samples the same
+	// value at all three kChannelNM wavelengths -- IsUniform() is an
+	// EXACT comparison, so this must read false, not true.
+	std::vector<Scalar> flat = { Scalar( 1.5 ) };
+	PolynomialScalarPainter* pf = new PolynomialScalarPainter( flat );
+	Check( ! pf->HasPerChannelVariation(),
+	       "polynomial: constant curve stays !HasPerChannelVariation" );
+	Check( pf->GetValuesAt( ri ).IsUniform(), "polynomial: constant curve triple is exactly uniform" );
+
+	// DL-82: MakeSingleScalarSlotView on the dispersive painter.
+	IScalarPainter* polyView = pv->MakeSingleScalarSlotView();
+	Check( polyView != nullptr, "polynomial: MakeSingleScalarSlotView is offered" );
+	if( polyView ) {
+		Check( ! polyView->HasPerChannelVariation(), "polynomial-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = polyView->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "polynomial-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1.549 ) ), "polynomial-view: v[0] = f(549nm)" );
+		Check( ApproxEq( polyView->GetValueAtNM( ri, Scalar( 700 ) ),
+		                  pv->GetValueAtNM( ri, Scalar( 700 ) ), Scalar( 1e-12 ) ),
+		       "polynomial-view: GetValueAtNM is the unchanged curve" );
+		polyView->release();
+	}
+	// A flat (non-dispersive) painter still offers a view -- matching
+	// PiecewiseLinearScalarPainter's convention, MakeSingleScalarSlotView
+	// doesn't special-case the CURRENT HasPerChannelVariation() value,
+	// only whether this instance already IS a single-slot view.  The
+	// parser never actually calls this on a flat curve in production
+	// (ResolveScalarPainterArg accepts a !HasPerChannelVariation painter
+	// directly, without needing a view at all), so this is a structural
+	// consistency check, not a behavioural one.
+	IScalarPainter* flatView = pf->MakeSingleScalarSlotView();
+	Check( flatView != nullptr, "polynomial: constant curve still offers a view (structural)" );
+	if( flatView ) flatView->release();
+
+	pf->release();
+	pv->release();
+}
+
+static void TestScaledScalarPainter()
+{
+	std::cout << "TestScaledScalarPainter" << std::endl;
+
+	UniformScalarPainter* base = new UniformScalarPainter( Scalar( 2.0 ) );
+	ScaledScalarPainter* scaled = new ScaledScalarPainter( base, Scalar( 0.5 ) );
+	base->release();	// scaled holds its own reference now
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+	Check( ApproxEq( scaled->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 1.0 ) ),
+	       "scaled: 2.0 * 0.5 = 1.0" );
+	const ScalarTriple ts = scaled->GetValuesAt( ri );
+	Check( ApproxEq( ts.v[0], 1.0 ) && ApproxEq( ts.v[1], 1.0 ) && ApproxEq( ts.v[2], 1.0 ),
+	       "scaled: triple = (1.0, 1.0, 1.0)" );
+
+	// Null-child defensive behavior.
+	ScaledScalarPainter* nullChild = new ScaledScalarPainter( nullptr, Scalar( 2.0 ) );
+	Check( ApproxEq( nullChild->GetValueAtNM( ri, 555 ), 0.0 ),
+	       "scaled-null-child: GetValueAtNM = 0 (defensive)" );
+	nullChild->release();
+
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite. A `scalar_painter { base <curve> scale ... }`
+	// bound to a requireSingle slot (e.g. coated_material's coat_ior)
+	// used to hard-fail even though the curve alone would have resolved
+	// via a view -- ScaledScalarPainter didn't forward one.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		ScaledScalarPainter* triple = new ScaledScalarPainter( curve, Scalar( 3.0 ) );
+		curve->release();
+		Check( triple->HasPerChannelVariation(),
+		       "scaled-view: composite reports per-channel variation from the child" );
+
+		IScalarPainter* view = triple->MakeSingleScalarSlotView();
+		Check( view != nullptr, "scaled-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "scaled-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "scaled-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], Scalar( 3.0 ) * green, Scalar( 1e-12 ) ),
+			       "scaled-view: v[0] is 3.0 * curve(549nm)" );
+			// NM path is the unchanged composite -- unaffected by the view.
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  triple->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "scaled-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		triple->release();
+	}
+
+	// No view available: the child's own per-channel triple was
+	// AUTHORED (RGBScalarPainter), not sampled from one curve -- the
+	// composite must not manufacture a single-scalar reading out of it.
+	{
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		ScaledScalarPainter* wrapped = new ScaledScalarPainter( authored, Scalar( 2.0 ) );
+		authored->release();
+		Check( wrapped->MakeSingleScalarSlotView() == nullptr,
+		       "scaled-view: no view over an authored-triple child" );
+		wrapped->release();
+	}
+
+	scaled->release();
+}
+
+static void TestMultiplyScalarPainter()
+{
+	std::cout << "TestMultiplyScalarPainter" << std::endl;
+
+	UniformScalarPainter* a = new UniformScalarPainter( Scalar( 3.0 ) );
+	UniformScalarPainter* b = new UniformScalarPainter( Scalar( 4.0 ) );
+	MultiplyScalarPainter* m = new MultiplyScalarPainter( a, b );
+	a->release();
+	b->release();
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+	const ScalarTriple t = m->GetValuesAt( ri );
+	Check( ApproxEq( t.v[0], Scalar( 12.0 ) ), "multiply: 3 * 4 = 12 (v[0])" );
+	Check( ApproxEq( m->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 12.0 ) ),
+	       "multiply: 3 * 4 = 12 (nm)" );
+
+	// Channel-variation propagation: multiply uniform × RGB → variation.
+	UniformScalarPainter* u = new UniformScalarPainter( Scalar( 2.0 ) );
+	RGBScalarPainter*     r = new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+	MultiplyScalarPainter* m2 = new MultiplyScalarPainter( u, r );
+	u->release();
+	r->release();
+	Check( m2->HasPerChannelVariation(),
+	       "multiply: variation propagates from child" );
+	const ScalarTriple t2 = m2->GetValuesAt( ri );
+	Check( ApproxEq( t2.v[0], 2.6 ) && ApproxEq( t2.v[1], 3.0 ) && ApproxEq( t2.v[2], 4.0 ),
+	       "multiply: per-channel product (2.6, 3.0, 4.0)" );
+	m2->release();
+
+	// Wavelength composition: Sellmeier × Uniform → varies with λ.
+	SellmeierScalarPainter* bk7 = new SellmeierScalarPainter(
+		Scalar( 1.03961212 ), Scalar( 0.231792344 ), Scalar( 1.01046945 ),
+		Scalar( 0.00600069867 ), Scalar( 0.0200179144 ), Scalar( 103.560653 )
+		);
+	UniformScalarPainter* half = new UniformScalarPainter( Scalar( 0.5 ) );
+	MultiplyScalarPainter* m3 = new MultiplyScalarPainter( bk7, half );
+	bk7->release();
+	half->release();
+	// At λ = 587.6: 1.5168 * 0.5 = 0.7584.
+	Check( ApproxEq( m3->GetValueAtNM( ri, Scalar( 587.6 ) ),
+	                  Scalar( 0.5 ) * Scalar( 1.5168 ), Scalar( 1e-3 ) ),
+	       "multiply (sellmeier × uniform): per-wavelength product" );
+	m3->release();
+
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite -- only the operand that itself varies
+	// needs its own view; a non-varying operand is used as-is.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		UniformScalarPainter* two = new UniformScalarPainter( Scalar( 2.0 ) );
+		MultiplyScalarPainter* prod = new MultiplyScalarPainter( curve, two );
+		curve->release();
+		two->release();
+		Check( prod->HasPerChannelVariation(),
+		       "multiply-view: composite reports per-channel variation from one child" );
+
+		IScalarPainter* view = prod->MakeSingleScalarSlotView();
+		Check( view != nullptr, "multiply-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "multiply-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "multiply-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			Check( ApproxEq( tv.v[0], Scalar( 2.0 ) * green, Scalar( 1e-12 ) ),
+			       "multiply-view: v[0] is 2.0 * curve(549nm)" );
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  prod->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "multiply-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		prod->release();
+	}
+
+	// No view available: an authored-triple operand blocks the view,
+	// even though the OTHER operand is a plain curve.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		MultiplyScalarPainter* mixed = new MultiplyScalarPainter( curve, authored );
+		curve->release();
+		authored->release();
+		Check( mixed->MakeSingleScalarSlotView() == nullptr,
+		       "multiply-view: no view when either operand's triple was authored" );
+		mixed->release();
+	}
+
+	m->release();
+}
+
+static void TestAddScalarPainter()
+{
+	std::cout << "TestAddScalarPainter" << std::endl;
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	// Default weights (1.0, 1.0): plain sum.
+	UniformScalarPainter* a = new UniformScalarPainter( Scalar( 3.0 ) );
+	UniformScalarPainter* b = new UniformScalarPainter( Scalar( 4.0 ) );
+	AddScalarPainter* add = new AddScalarPainter( a, b );
+	a->release();
+	b->release();
+
+	const ScalarTriple t = add->GetValuesAt( ri );
+	Check( ApproxEq( t.v[0], Scalar( 7.0 ) ), "add: 3 + 4 = 7 (v[0], default weights)" );
+	Check( ApproxEq( add->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 7.0 ) ),
+	       "add: 3 + 4 = 7 (nm, default weights)" );
+	add->release();
+
+	// Explicit weights: weightA*a + weightB*b.
+	UniformScalarPainter* wa = new UniformScalarPainter( Scalar( 2.0 ) );
+	UniformScalarPainter* wb = new UniformScalarPainter( Scalar( 10.0 ) );
+	AddScalarPainter* weighted = new AddScalarPainter( wa, wb, Scalar( 0.5 ), Scalar( 0.1 ) );
+	wa->release();
+	wb->release();
+	// 0.5 * 2.0 + 0.1 * 10.0 = 1.0 + 1.0 = 2.0
+	Check( ApproxEq( weighted->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 2.0 ) ),
+	       "add: weighted sum 0.5*2 + 0.1*10 = 2.0" );
+	weighted->release();
+
+	// Channel-variation propagation: add uniform + RGB -> variation.
+	UniformScalarPainter* u = new UniformScalarPainter( Scalar( 1.0 ) );
+	RGBScalarPainter*     r = new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+	AddScalarPainter* add2 = new AddScalarPainter( u, r );
+	u->release();
+	r->release();
+	Check( add2->HasPerChannelVariation(),
+	       "add: variation propagates from child" );
+	const ScalarTriple t2 = add2->GetValuesAt( ri );
+	Check( ApproxEq( t2.v[0], 2.3 ) && ApproxEq( t2.v[1], 2.5 ) && ApproxEq( t2.v[2], 3.0 ),
+	       "add: per-channel sum (2.3, 2.5, 3.0)" );
+	add2->release();
+
+	// Wavelength composition: Sellmeier + Uniform -> varies with lambda.
+	SellmeierScalarPainter* bk7 = new SellmeierScalarPainter(
+		Scalar( 1.03961212 ), Scalar( 0.231792344 ), Scalar( 1.01046945 ),
+		Scalar( 0.00600069867 ), Scalar( 0.0200179144 ), Scalar( 103.560653 )
+		);
+	UniformScalarPainter* half = new UniformScalarPainter( Scalar( 0.5 ) );
+	AddScalarPainter* add3 = new AddScalarPainter( bk7, half );
+	bk7->release();
+	half->release();
+	// At lambda = 587.6: 1.5168 + 0.5 = 2.0168.
+	Check( ApproxEq( add3->GetValueAtNM( ri, Scalar( 587.6 ) ),
+	                  Scalar( 0.5 ) + Scalar( 1.5168 ), Scalar( 1e-3 ) ),
+	       "add (sellmeier + uniform): per-wavelength sum" );
+	add3->release();
+
+	// Null-operand defensive behavior: a missing operand contributes 0
+	// (addition's neutral element) rather than zeroing the whole result
+	// the way MultiplyScalarPainter's null-guard does.
+	UniformScalarPainter* solo = new UniformScalarPainter( Scalar( 5.0 ) );
+	AddScalarPainter* nullB = new AddScalarPainter( solo, nullptr );
+	solo->release();
+	Check( ApproxEq( nullB->GetValueAtNM( ri, 555 ), 5.0 ),
+	       "add-null-b: GetValueAtNM = 5.0 (missing operand contributes 0)" );
+	nullB->release();
+
+	AddScalarPainter* bothNull = new AddScalarPainter( nullptr, nullptr );
+	Check( ApproxEq( bothNull->GetValueAtNM( ri, 555 ), 0.0 ),
+	       "add-both-null: GetValueAtNM = 0 (defensive)" );
+	bothNull->release();
+
+	// DL-09/precision-slice P2-1: MakeSingleScalarSlotView forwarded
+	// through the composite, weights carried through unchanged.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		UniformScalarPainter* base = new UniformScalarPainter( Scalar( 0.2 ) );
+		AddScalarPainter* sum = new AddScalarPainter(
+			curve, base, Scalar( 1.0 ), Scalar( 0.5 ) );
+		curve->release();
+		base->release();
+		Check( sum->HasPerChannelVariation(),
+		       "add-view: composite reports per-channel variation from one child" );
+
+		IScalarPainter* view = sum->MakeSingleScalarSlotView();
+		Check( view != nullptr, "add-view: MakeSingleScalarSlotView is offered" );
+		if( view ) {
+			Check( ! view->HasPerChannelVariation(), "add-view: !HasPerChannelVariation" );
+			const ScalarTriple tv = view->GetValuesAt( ri );
+			Check( tv.IsUniform(), "add-view: GetValuesAt is exactly uniform" );
+			const Scalar green = StraightLineCurveAt( Scalar( 380 ), Scalar( 1.10 ),
+				Scalar( 720 ), Scalar( 1.45 ),
+				ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] );
+			// weightA*curve(549) + weightB*0.2 = 1.0*green + 0.5*0.2.
+			Check( ApproxEq( tv.v[0], green + Scalar( 0.5 ) * Scalar( 0.2 ), Scalar( 1e-12 ) ),
+			       "add-view: v[0] is the weighted sum at 549nm" );
+			Check( ApproxEq( view->GetValueAtNM( ri, Scalar( 420 ) ),
+			                  sum->GetValueAtNM( ri, Scalar( 420 ) ), Scalar( 1e-12 ) ),
+			       "add-view: GetValueAtNM is the unchanged composite" );
+			view->release();
+		}
+		sum->release();
+	}
+
+	// No view available: an authored-triple operand blocks the view.
+	{
+		std::vector<PiecewiseLinearScalarPainter::Sample> curveSamples = {
+			{ Scalar( 380 ), Scalar( 1.10 ) },
+			{ Scalar( 720 ), Scalar( 1.45 ) }
+		};
+		PiecewiseLinearScalarPainter* curve =
+			new PiecewiseLinearScalarPainter( curveSamples );
+		RGBScalarPainter* authored =
+			new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+		AddScalarPainter* mixed = new AddScalarPainter( curve, authored );
+		curve->release();
+		authored->release();
+		Check( mixed->MakeSingleScalarSlotView() == nullptr,
+		       "add-view: no view when either operand's triple was authored" );
+		mixed->release();
+	}
+}
+
+// Minimal IFunction1D for the Function1D wrapper test.  Returns
+// `lambda * 2`, lets the test verify (a) the wrapper queries the
+// function at the right argument and (b) the function's value
+// propagates correctly.
+class TestFunction1D : public virtual IFunction1D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar v ) const override { return v * Scalar( 2 ); }
+protected:
+	virtual ~TestFunction1D() {}
+};
+
+class TestFunction2D : public virtual IFunction2D, public virtual Reference
+{
+public:
+	Scalar Evaluate( const Scalar x, const Scalar y ) const override
+	{
+		return x + y * Scalar( 10 );
+	}
+protected:
+	virtual ~TestFunction2D() {}
+};
+
+static void TestFunction1DScalarPainter()
+{
+	std::cout << "TestFunction1DScalarPainter" << std::endl;
+	TestFunction1D* f = new TestFunction1D();
+	Function1DScalarPainter* p = new Function1DScalarPainter( f );
+	f->release();
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 100 ) ), Scalar( 200 ) ),
+	       "function1d-wrap: f(100) = 200" );
+	Check( ApproxEq( p->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 1110 ) ),
+	       "function1d-wrap: f(555) = 1110" );
+
+	// Null-function defensive.
+	Function1DScalarPainter* pn = new Function1DScalarPainter( nullptr );
+	Check( ApproxEq( pn->GetValueAtNM( ri, Scalar( 555 ) ), 0.0 ),
+	       "function1d-null-func: GetValueAtNM = 0 (defensive)" );
+	Check( ! pn->HasPerChannelVariation(),
+	       "function1d-null-func: !HasPerChannelVariation" );
+	Check( pn->GetValuesAt( ri ).IsUniform(),
+	       "function1d-null-func: GetValuesAt is uniform (zero triple)" );
+	pn->release();
+
+	// DL-82: GetValuesAt samples f(nm) = nm*2 at ScalarPainterRGB::kChannelNM
+	// {611, 549, 465} -- 1222/1098/930, genuinely per-channel.
+	const ScalarTriple f1dTriple = p->GetValuesAt( ri );
+	Check( ApproxEq( f1dTriple.v[0], Scalar( 1222 ) ), "function1d-wrap: GetValuesAt.v[0] = f(611nm)" );
+	Check( ApproxEq( f1dTriple.v[1], Scalar( 1098 ) ), "function1d-wrap: GetValuesAt.v[1] = f(549nm)" );
+	Check( ApproxEq( f1dTriple.v[2], Scalar( 930 ) ),  "function1d-wrap: GetValuesAt.v[2] = f(465nm)" );
+	Check( p->HasPerChannelVariation(),
+	       "function1d-wrap: HasPerChannelVariation (f(nm)=2nm genuinely disperses)" );
+
+	// DL-82: MakeSingleScalarSlotView -- same curve through GetValueAtNM,
+	// a uniform green (549nm) triple through GetValuesAt.
+	IScalarPainter* f1dView = p->MakeSingleScalarSlotView();
+	Check( f1dView != nullptr, "function1d-wrap: MakeSingleScalarSlotView is offered" );
+	if( f1dView ) {
+		Check( ! f1dView->HasPerChannelVariation(), "function1d-view: !HasPerChannelVariation" );
+		const ScalarTriple viewTriple = f1dView->GetValuesAt( ri );
+		Check( viewTriple.IsUniform(), "function1d-view: GetValuesAt is exactly uniform" );
+		Check( ApproxEq( viewTriple.v[0], Scalar( 1098 ) ), "function1d-view: v[0] = f(549nm)" );
+		Check( ApproxEq( f1dView->GetValueAtNM( ri, Scalar( 100 ) ),
+		                  p->GetValueAtNM( ri, Scalar( 100 ) ), Scalar( 1e-12 ) ),
+		       "function1d-view: GetValueAtNM is the unchanged curve" );
+		f1dView->release();
+	}
+
+	p->release();
+}
+
+static void TestFunction2DScalarPainter()
+{
+	std::cout << "TestFunction2DScalarPainter" << std::endl;
+	TestFunction2D* f = new TestFunction2D();
+	Function2DScalarPainter* p = new Function2DScalarPainter( f );
+	f->release();
+
+	RayIntersectionGeometric ri = MakeDummyRig();
+	ri.ptCoord = Point2( Scalar( 3 ), Scalar( 7 ) );
+	const ScalarTriple t = p->GetValuesAt( ri );
+	// 3 + 7*10 = 73.
+	Check( ApproxEq( t.v[0], Scalar( 73 ) ),
+	       "function2d-wrap: f(3, 7) = 73" );
+
+	p->release();
+}
+
+static void TestScalarTripleUniformity()
+{
+	std::cout << "TestScalarTripleUniformity" << std::endl;
+	Check(   ScalarTriple( Scalar( 1.5 ) ).IsUniform(),
+	         "triple: explicit-uniform IsUniform" );
+	Check(   ScalarTriple( Scalar( 1.5 ), Scalar( 1.5 ), Scalar( 1.5 ) ).IsUniform(),
+	         "triple: per-channel-equal IsUniform" );
+	Check( ! ScalarTriple( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) ).IsUniform(),
+	         "triple: per-channel-differ !IsUniform" );
+}
+
+int main()
+{
+	std::cout << "IScalarPainter unit tests" << std::endl;
+	TestScalarTripleUniformity();
+	TestUniformScalarPainter();
+	TestRGBScalarPainter();
+	TestPiecewiseLinearScalarPainter();
+	TestSellmeierScalarPainter();
+	TestPolynomialScalarPainter();
+	TestScaledScalarPainter();
+	TestMultiplyScalarPainter();
+	TestAddScalarPainter();
+	TestFunction1DScalarPainter();
+	TestFunction2DScalarPainter();
+
+	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
+	return failCount > 0 ? 1 : 0;
+}

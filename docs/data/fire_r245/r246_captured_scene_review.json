@@ -1,0 +1,30 @@
+{
+  "schema": "rise.fire.r246.captured-scene-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "4c1db5bce",
+  "round": 1,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "gate_sha256": "39d43072d2f0790eb7842cef202f40ce4d17889d63cb1a7b6258809038be4b82",
+  "reviewers": [
+    {
+      "agent": "r246_captured_scene_contract_r1",
+      "axis": "contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Canonical payload identity binds parsed manifest, retained-byte receipt hash and exact captured path; oldGREEN/boundRED controls verified."
+    },
+    {
+      "agent": "r246_captured_scene_lifecycle_r1",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Synchronous reference lifetime, recovered no-reopen source hash and historical default behavior sound; eight hashes and original producer evidence unchanged."
+    }
+  ],
+  "limitations": [
+    "Synthetic scene/receipt inventory, no render/native validation/full recovery.",
+    "Movie receipt admission and recovered command composition pending."
+  ],
+  "accepted_utc": "2026-10-04T10:18:37.307807+00:00"
+}

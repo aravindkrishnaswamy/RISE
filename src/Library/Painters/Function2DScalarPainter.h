@@ -1,0 +1,79 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  Function2DScalarPainter.h - Spatially-varying scalar painter that
+//    evaluates an IFunction2D at the hit's UV coordinates.
+//
+//  IFunction2D::Evaluate returns a Scalar, which is exactly what we
+//  want here.  Procedural 2D functions (Perlin, Worley, polynomial,
+//  composite) are all reusable as scalar painters via this wrapper.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: May 14, 2026
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef FUNCTION2D_SCALAR_PAINTER_
+#define FUNCTION2D_SCALAR_PAINTER_
+
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IFunction2D.h"
+#include "../Intersection/RayIntersectionGeometric.h"
+#include "../Utilities/Reference.h"
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		class Function2DScalarPainter :
+			public virtual IScalarPainter,
+			public virtual Reference
+		{
+		protected:
+			//! CONST because every use of it here is const (`Evaluate`, and
+			//! `Reference::addref`/`release`, are all const methods), and a
+			//! const-widened parameter lets a caller holding only a
+			//! `const IFunction2D&` -- the legacy `RISE_API_CreateBumpMapModifier`
+			//! shim is one -- wrap it without a const_cast.  Callers holding a
+			//! mutable pointer convert implicitly, so nothing else changes.
+			const IFunction2D* const pFunc;
+			const Scalar scale;
+			const Scalar bias;
+			virtual ~Function2DScalarPainter()
+			{
+				if( pFunc ) pFunc->release();
+			}
+
+		public:
+			//! out = bias + scale * f(u, v) -- the affine form mirrors the
+			//! `texture` form's scale/bias so procedural IFunction2D sources
+			//! (e.g. the guilloché oxide dose) drop into the same heat-tint
+			//! window semantics as a baked map.
+			explicit Function2DScalarPainter( const IFunction2D* p, const Scalar scale_ = Scalar(1), const Scalar bias_ = Scalar(0) ) :
+				pFunc( p ), scale( scale_ ), bias( bias_ )
+			{
+				if( pFunc ) pFunc->addref();
+			}
+
+			ScalarTriple GetValuesAt(
+				const RayIntersectionGeometric& ri
+				) const override
+			{
+				if( !pFunc ) return ScalarTriple();
+				// IFunction2D::Evaluate takes (x, y) — call sites in
+				// IPainter-based painters that use Function2D pass
+				// (ptCoord.x, ptCoord.y), and ptCoord is (u, v) in
+				// RISE's UV convention.  Matches `TexturePainter`'s
+				// implicit treatment.
+				const Scalar v = pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y );
+				return ScalarTriple( bias + scale * v );
+			}
+
+			bool HasPerChannelVariation() const override { return false; }
+		};
+	}
+}
+
+#endif

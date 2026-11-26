@@ -18,7 +18,12 @@
 #pragma warning( disable : 4290 )		// disables warning about C++ exception definition being ignored
 #endif
 
-#include "Utilities/stl_utils.h"
+#define _USE_MATH_DEFINES
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #include "Interfaces/ILog.h"
 
 //////////////////////////////////////////////////////////
@@ -68,6 +73,11 @@ namespace RISE
 }
 
 #include <string.h>										// for strncpy
+#include <cstdio>										// for the SDF parts-file read in RISE_API_CreateSDFGeometry, and vsnprintf in SweepFail
+#include <cstdarg>										// va_list / va_start -- SweepFail's formatted refusal channel
+#include <algorithm>									// std::reverse -- the loft's opposite-winding profile2 fix-up
+#include <string>										// parts-file buffer in RISE_API_CreateSDFGeometry
+#include <vector>
 
 namespace RISE
 {
@@ -145,14 +155,16 @@ namespace RISE
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
-		const Vector2& target_orientation						///< [in] Orientation relative to a target
+		const Vector2& target_orientation,						///< [in] Orientation relative to a target
+		const Scalar iso,										///< [in] Landing 5: ISO (0 = disabled)
+		const Scalar fstop										///< [in] Landing 5: f-number for EV
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new PinholeCamera( ptLocation, ptLookAt, vUp, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+		(*ppi) = new PinholeCamera( ptLocation, ptLookAt, vUp, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pinhole camera" );
 		return true;
 	}
@@ -169,14 +181,16 @@ namespace RISE
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
 		const Scalar exposure,									///< [in] Exposure time of the camera
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
-		const Scalar pixelRate									///< [in] Rate at which each pixel is recorded
+		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
+		const Scalar iso,										///< [in] Landing 5: ISO (0 = disabled)
+		const Scalar fstop										///< [in] Landing 5: f-number for EV
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new PinholeCamera( onb, ptLocation, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+		(*ppi) = new PinholeCamera( onb, ptLocation, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pinhole camera" );
 		return true;
 	}
@@ -188,7 +202,11 @@ namespace RISE
 		const Point3& ptLocation,								///< [in] Absolute location of where the camera is located
 		const Point3& ptLookAt, 								///< [in] Absolute point the camera is looking at
 		const Vector3& vUp,										///< [in] Up vector of the camera
-		const Scalar fov,										///< [in] Field of view in radians
+		const Scalar sensorSize,								///< [in] Sensor width (mm)
+		const Scalar focalLength,								///< [in] Lens focal length (mm)
+		const Scalar fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
+		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+		const Scalar sceneUnitMeters,							///< [in] Meters per scene unit
 		const unsigned int xres,								///< [in] X resolution of virtual screen
 		const unsigned int yres,								///< [in] Y resolution of virtual screen
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
@@ -197,16 +215,43 @@ namespace RISE
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
 		const Vector2& target_orientation,						///< [in] Orientation relative to a target
-		const Scalar aperture,									///< [in] Size of the aperture
-		const Scalar focalLength,								///< [in] Focal length
-		const Scalar focusDistance								///< [in] Focus distance
+		const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
+		const Scalar apertureRotation,							///< [in] Polygon rotation (radians)
+		const Scalar anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians)
+		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians)
+		const Scalar shiftX,									///< [in] Lens shift along x (mm)
+		const Scalar shiftY,									///< [in] Lens shift along y (mm)
+		const Scalar iso										///< [in] Landing 5: ISO (0 = disabled)
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focalLength, focusDistance );
+		// The scene parser rejects `anamorphic_squeeze <= 0` (thinlens_camera
+		// descriptor).  Only `squeeze == 0` collapses the aperture to a
+		// line, driving ThinLensCamera::GetApertureWorldArea() to zero and
+		// splitting the eye ray from the t==1 bidirectional connection onto
+		// different camera vertices (see that method's own comment).  A
+		// negative squeeze mirrors the aperture instead -- GetApertureWorldArea()
+		// takes `fabs()`, so the area and both samplers stay consistent with
+		// each other -- and is rejected only because it is nonsense authoring
+		// (the error message below spells out the intended `(0,1]` range),
+		// not because it would reproduce the zero-area hazard.  This API
+		// entry point is also reachable directly (editor, Blender bridge)
+		// without going through the parser, so enforce the same bound here
+		// rather than constructing a camera with an unauthored aperture.
+		if( anamorphicSqueeze <= 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateThinlensCamera:: anamorphicSqueeze must be > 0 (got %f) -- it scales "
+				"the aperture's x half-axis, so 0 collapses the aperture to a line and a negative "
+				"value mirrors it; use a value in (0,1] for oval bokeh, 1.0 for circular.",
+				anamorphicSqueeze );
+			return false;
+		}
+
+		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "thinlens camera" );
 		return true;
 	}
@@ -282,7 +327,7 @@ namespace RISE
 	bool RISE_API_CreatePointOmniLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		)
 	{
@@ -300,7 +345,7 @@ namespace RISE
 	bool RISE_API_CreatePointSpotLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
@@ -321,7 +366,7 @@ namespace RISE
 	bool RISE_API_CreateAmbientLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color										///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color										///< [in] Color of the light in linear Rec.709 (RISEPel)
 		)
 	{
 		if( !ppi ) {
@@ -338,7 +383,7 @@ namespace RISE
 	bool RISE_API_CreateDirectionalLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Vector3 vDir										///< [in] Direction the light is shining
 		)
 	{
@@ -366,13 +411,20 @@ namespace RISE
 #include "Geometry/InfinitePlaneGeometry.h"
 #include "Geometry/BezierPatchGeometry.h"
 #include "Geometry/BilinearPatchGeometry.h"
+#include "Geometry/DisplacedGeometry.h"
+#include "Geometry/SDFGeometry.h"
+#include "Geometry/HairGenerator.h"			// HairGroomRecipe validation + HairGeometry's deferred-groom ctor
+#include "Importers/HairFileLoader.h"		// Cem Yuksel .hair import -- HairGeometry's explicit-strand ctor
+#include "Interfaces/ProceduralDescriptors.h"	// SweepDescriptor / PathInstancesDescriptor for the procedural mesh factories
+#include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
 #include "Geometry/TriangleMeshLoaderRAW.h"
 #include "Geometry/TriangleMeshLoaderRAW2.h"
-#include "Geometry/TriangleMeshLoaderBezier.h"
 #include "Geometry/TriangleMeshLoaderPLY.h"
+#include "Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- the specific-reason channel a Finalize (however deep the call stack) may hand back instead of the generic "apply failed"
+#include "Utilities/FiniteMath.h"			// IsFiniteDouble -- profile-point validation in the procedural mesh factories
 
 namespace RISE
 {
@@ -434,7 +486,8 @@ namespace RISE
 								IGeometry** ppi,				///< [out] Pointer to recieve the geometry
 								const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 								const Scalar radius,			///< [in] Radius of the cylinder
-								const Scalar height			///< [in] Height of the cylinder
+								const Scalar height,			///< [in] Height of the cylinder
+								const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 								)
 	{
 		if( !ppi ) {
@@ -442,7 +495,7 @@ namespace RISE
 		}
 
 
-		(*ppi) = new CylinderGeometry( axis, radius, height );
+		(*ppi) = new CylinderGeometry( axis, radius, height, capped );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "cylinder" );
 		return true;
 	}
@@ -514,33 +567,27 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a triangle mesh geometry object
+	//! Creates a triangle mesh geometry object.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometry(
 						ITriangleMeshGeometry** ppi,			///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+						const bool double_sided					///< [in] Are the triangles double sided ?
 						)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new TriangleMeshGeometry( max_polys, max_recur, double_sided, use_bsp );
+		(*ppi) = new TriangleMeshGeometry( double_sided );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "triangle mesh" );
 		return true;
 	}
 
-	//! Creates an indexed triangle mesh geometry object
+	//! Creates an indexed triangle mesh geometry object.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometryIndexed(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp,					///< [in] Use a BSP tree rather than an Octree
 						const bool face_normals				///< [in] Use face normals rather than vertex normals
 						)
 	{
@@ -548,7 +595,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new TriangleMeshGeometryIndexed( max_polys, max_recur, double_sided, use_bsp, face_normals );
+		(*ppi) = new TriangleMeshGeometryIndexed( double_sided, face_normals );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "triangle mesh indexed" );
 		return true;
 	}
@@ -568,29 +615,6 @@ namespace RISE
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mesh loader 3DS" );
 		return true;
 	}
-
-	//! Creates a mesh loader capable of loading from a series of bezier patches
-	/// \return TRUE if successful, FALSE otherwise
-	/// \todo this is deprecated and should be removed
-	bool RISE_API_CreateBezierTriangleMeshLoader(
-						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
-						const char* szFileName,					///< [in] Name of the file to load from
-						const unsigned int detail,				///< [in] Level of tesselation
-						const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-						const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
-						)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new TriangleMeshLoaderBezier( szFileName, detail, bCombineSharedVertices, bCenterObject, displacement, disp_scale );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mesh loader bezier" );
-		return true;
-	}
-
 
 	//! Creates a mesh loader capable of loading from a raw file
 	/// \return TRUE if successful, FALSE otherwise
@@ -645,30 +669,28 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a geometry object made up of a series of bezier patches
+	//! RISE_API_CreateGLTFTriangleMeshLoader was retired 2026-05-01.  glTF
+	//! single-primitive imports now flow through Job::AddGLTFTriangleMeshGeometry,
+	//! which constructs a GLTFSceneImporter and calls ImportPrimitive.  The
+	//! intermediate ITriangleMeshLoaderIndexed wrapper that used to live
+	//! here re-parsed the .gltf for every primitive — pathological on
+	//! NewSponza-class assets.  See Importers/GLTFSceneImporter.h
+	//! "Lifecycle" for the new design.
+
+	//! Creates a bezier-patch geometry (analytic intersection).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBezierPatchGeometry(
 						IBezierPatchGeometry** ppi,				///< [out] Pointer to recieve the geometry
-						const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-						const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-						const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-						const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-						const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-						const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-						const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-						const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-						const unsigned int detail,				///< [in] Level of tesselation for polygons
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
+						const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+						const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+						const bool use_bsp						///< [in] Use BSP tree (true) or Octree (false)
 						)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BezierPatchGeometry( max_patches, max_recur, use_bsp, bAnalytic, cache_size, max_polys, max_poly_recursion, bDoubleSided, bPolyUseBSP, bUseFaceNormals, detail, displacement, disp_scale );
+		(*ppi) = new BezierPatchGeometry( max_patches, max_recur, use_bsp );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bezier patch geometry" );
 
 		return true;
@@ -692,6 +714,3468 @@ namespace RISE
 
 		return true;
 	}
+
+	bool RISE_API_CreateDisplacedGeometry(
+						IGeometry**         ppi,
+						IGeometry*          pBase,
+						const unsigned int  detail,
+						IFunction2D*        displacement,
+						const Scalar        disp_scale,
+						const bool          double_sided,
+						const bool          face_normals,
+						const bool          seam_fold,
+						const IScalarPainter* height
+						)
+	{
+		if( !ppi || !pBase ) {
+			return false;
+		}
+
+		// The two height routes are MUTUALLY EXCLUSIVE by construction (see
+		// DisplacedGeometry's class comment).  Job::AddDisplacedGeometryWith-
+		// Height refuses the pair with an authoring diagnostic naming both
+		// parameters; this is the C-API backstop for a direct caller that
+		// bypasses the scene layer, and it refuses rather than silently
+		// picking one.
+		if( displacement && height ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: `displacement` (IFunction2D) and `height` (IScalarPainter) are mutually exclusive — pass at most one; refusing." );
+			return false;
+		}
+
+		if( detail > 256 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateDisplacedGeometry: detail=%u is high; expect many triangles (grid is (detail+1)^2 per base axis or per face)",
+				detail );
+		}
+
+		DisplacedGeometry* pGeom = new DisplacedGeometry(
+			pBase, detail, displacement, disp_scale,
+			double_sided, face_normals, seam_fold, height );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
+
+		if( !pGeom->IsValid() ) {
+			// Recipe invalid: null base, OR a base that can never be tessellated
+			// (e.g. InfinitePlaneGeometry).  Both are CHEAP recipe checks
+			// (IsValid() = m_pBase != 0 && m_pBase->CanTessellate()), so we refuse
+			// construction at PARSE time, honoring "validate cheaply at parse,
+			// defer only the bake": the expensive tessellate+displace defers to
+			// Realize(), but the "can this base ever tessellate?" capability is
+			// known immediately and surfaced as a parse error here.  The geometry
+			// starts with refcount=1 from its Reference base, so one release
+			// destroys it.
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry is null or cannot be tessellated (e.g. InfinitePlaneGeometry) \u2014 refusing." );
+			pGeom->release();
+			*ppi = 0;
+			return false;
+		}
+
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateHairGeometryGroom(
+						IGeometry**             ppi,
+						const HairGroomRecipe&  recipe,
+						const char*             chunkName
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Every check that does NOT require tessellating the base runs
+		// here, at construction (= parse time for a scene), so an author
+		// sees the error against their own chunk rather than a silent
+		// empty groom at render time.  ValidateHairGroomRecipe logs one
+		// diagnostic naming the offending parameter.
+		if( !ValidateHairGroomRecipe( recipe, chunkName ) ) {
+			return false;
+		}
+
+		HairGeometry* pGeom = new HairGeometry( recipe, chunkName );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "hair geometry (deferred groom)" );
+
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateHairGeometryFromFile(
+						IGeometry**                     ppi,
+						const HairFileGroomDescriptor&  desc,
+						const char*                     chunkName
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Both stages log their own specific diagnostic (which file,
+		// which header field, how many strands were dropped and why), so
+		// there is nothing useful to add here -- just refuse.
+		HairFileData data;
+		if( !LoadHairFile( desc.file, data, chunkName ) ) {
+			return false;
+		}
+
+		std::vector<HairGeometry::StrandDesc> strands;
+		if( !BuildStrandsFromHairFile( data, desc.widthRootScale, desc.widthTipScale, strands, chunkName, desc.rootUVMode ) ) {
+			return false;
+		}
+
+		HairGeometry* pGeom = new HairGeometry( strands );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "hair geometry (imported .hair)" );
+
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,
+						const char*          szFileName,
+						const char*          szParts,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Exactly one source.  "none" is the scene-language not-set
+		// convention for filename parameters.
+		const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+		const bool hasParts = ( szParts && szParts[0] );
+		if( hasFile == hasParts ) {
+			GlobalLog()->Print( eLog_Error, hasFile
+				? "RISE_API_CreateSDFGeometry:: both an inline part list and a parts file were given -- provide exactly one"
+				: "RISE_API_CreateSDFGeometry:: no SDF source -- provide inline part lines or a parts file" );
+			return false;
+		}
+
+		// Both sources route through the ONE grammar --
+		// SDFGeometry::ParsePartLines -- which logs source / line / token
+		// context on failure.
+		std::vector<SDFGeometry::Part> parts;
+		if( hasParts ) {
+			if( !SDFGeometry::ParsePartLines( szParts, "<inline part list>", parts ) ) {
+				return false;
+			}
+		} else {
+			FILE* inputFile = fopen( szFileName, "rb" );
+			if( !inputFile ) {
+				char msg[512];
+				snprintf( msg, sizeof(msg), "RISE_API_CreateSDFGeometry:: cannot open `%s`", szFileName );
+				GlobalLog()->Print( eLog_Error, msg );
+				return false;
+			}
+			std::string source;
+			char buf[4096];
+			size_t got = 0;
+			while( ( got = fread( buf, 1, sizeof(buf), inputFile ) ) > 0 ) {
+				source.append( buf, got );
+			}
+			fclose( inputFile );
+			if( !SDFGeometry::ParsePartLines( source.c_str(), szFileName, parts ) ) {
+				return false;
+			}
+		}
+
+		if( parts.empty() ) {
+			GlobalLog()->Print( eLog_Error, hasParts
+				? "RISE_API_CreateSDFGeometry:: inline part list contains no parts"
+				: "RISE_API_CreateSDFGeometry:: parts file contains no parts" );
+			return false;
+		}
+
+		(*ppi) = new SDFGeometry( parts, maxSteps, surfaceEpsilonFraction, samplingDetail );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sdf geometry" );
+		return true;
+	}
+
+	// Heightfield SDF: the exact analytic surface z = scale*field(u,v), sphere-
+	// traced.  Allocation mirrors RISE_API_CreateSDFGeometry exactly -- `new`
+	// (the Reference base seeds refcount 1, the caller's owning reference) +
+	// PrintNew; the constructor addref's `field`, so the caller keeps ownership
+	// of its own reference.  No explicit addref here (would leak a reference,
+	// just like the parts path above).
+	bool RISE_API_CreateSDFHeightfieldGeometry(
+						IGeometry**          ppGeometry,
+						const IFunction2D*   field,
+						const double         radius,
+						const double         scale,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppGeometry ) {
+			return false;
+		}
+		*ppGeometry = 0;
+
+		if( !field ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: null heightfield function" );
+			return false;
+		}
+		if( !( radius > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: radius must be > 0" );
+			return false;
+		}
+
+		(*ppGeometry) = new SDFGeometry( field, Scalar(radius), Scalar(scale), maxSteps, Scalar(surfaceEpsilonFraction), samplingDetail );
+		GlobalLog()->PrintNew( *ppGeometry, __FILE__, __LINE__, "sdf heightfield geometry" );
+		return true;
+	}
+
+	// A FLAT Cartesian-grid circular disk with LINEAR Cartesian UV
+	// (u = (x+R)/2R, v = (y+R)/2R) and +Z normals -- the general flat base
+	// for displacing an arbitrary 2D field (an expression_function2d, a
+	// texture, noise) onto a disk via displaced_geometry (uv_seam_fold
+	// FALSE).  Uniform world-space cell density everywhere (unlike a polar
+	// fan), so a Cartesian pattern reads the same at the centre and the rim.
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const double         radius,
+						const int            meshN
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+		const int N = meshN < 2 ? 2 : ( meshN > 4096 ? 4096 : meshN );
+		const Scalar R = radius;
+		if( !( R > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: radius must be > 0" );
+			return false;
+		}
+		std::vector<Scalar> xs( N );
+		const Scalar step = Scalar(2) * R / Scalar( N - 1 );
+		for( int i = 0; i < N; i++ ) xs[i] = -R + step * Scalar(i);
+		xs[0] = -R; xs[ N - 1 ] = R;
+
+		std::vector<int> idx( size_t(N) * N, -1 );
+		int vc = 0;
+		for( int j = 0; j < N; j++ )
+			for( int i = 0; i < N; i++ )
+				if( sqrt( xs[i]*xs[i] + xs[j]*xs[j] ) <= R )
+					idx[ size_t(j)*N + i ] = vc++;
+		if( vc < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: degenerate (fewer than 3 vertices inside the disk)" );
+			return false;
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( false, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "cartesian disk geometry" );
+		pGeom->BeginIndexedTriangles();
+		const Scalar inv2R = Scalar(1) / ( Scalar(2) * R );
+		for( int j = 0; j < N; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N; i++ ) {
+				if( idx[ row + i ] < 0 ) continue;
+				pGeom->AddVertex( Vertex( xs[i], xs[j], Scalar(0) ) );
+				pGeom->AddNormal( Normal( 0, 0, 1 ) );
+				pGeom->AddTexCoord( TexCoord( ( xs[i] + R ) * inv2R, ( xs[j] + R ) * inv2R ) );
+			}
+		}
+		for( int j = 0; j < N - 1; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N - 1; i++ ) {
+				const int a = idx[ row + i ], b = idx[ row + i + 1 ];
+				const int c = idx[ row + N + i + 1 ], d = idx[ row + N + i ];
+				if( a >= 0 && b >= 0 && c >= 0 && d >= 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				}
+			}
+		}
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	//////////////////////////////////////////////////////////////////////
+	// General procedural sweep machinery shared by RISE_API_CreateSweepGeometry
+	// and RISE_API_CreatePathInstancesGeometry: a 3D Catmull-Rom path sampler
+	// and rotation-minimizing frame transport (Wang et al. 2008 double
+	// reflection -- no torsion-induced spin, stable through inflections).
+	//////////////////////////////////////////////////////////////////////
+	namespace
+	{
+		struct SweepV3 { Scalar x, y, z; };
+
+		inline SweepV3 svSub( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x-b.x, a.y-b.y, a.z-b.z }; return r; }
+		inline SweepV3 svAdd( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x+b.x, a.y+b.y, a.z+b.z }; return r; }
+		inline SweepV3 svScale( const SweepV3& a, const Scalar s ) { SweepV3 r = { a.x*s, a.y*s, a.z*s }; return r; }
+		inline Scalar  svDot( const SweepV3& a, const SweepV3& b ) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+		inline SweepV3 svCross( const SweepV3& a, const SweepV3& b )
+		{
+			SweepV3 r = { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+			return r;
+		}
+		inline Scalar svLen( const SweepV3& a ) { return sqrt( svDot( a, a ) ); }
+		inline SweepV3 svNorm( const SweepV3& a )
+		{
+			const Scalar l = svLen( a );
+			return ( l > 0 ) ? svScale( a, Scalar(1) / l ) : a;
+		}
+
+		// Catmull-Rom through 3D control points: reflective end padding,
+		// per-segment t = k/per for k in [0, per), then the final point --
+		// the same sampling scheme every RISE procedural path uses.
+		void SampleCatmullRom3(
+			const double* ctrl, const unsigned int nCtrl, const int nLen,
+			std::vector<SweepV3>& out )
+		{
+			std::vector<SweepV3> pad( nCtrl + 2 );
+			for( unsigned int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ].x = ctrl[ 3*i ]; pad[ i + 1 ].y = ctrl[ 3*i + 1 ]; pad[ i + 1 ].z = ctrl[ 3*i + 2 ];
+			}
+			pad[0]         = svSub( svScale( pad[1], 2 ),       pad[2] );
+			pad[ nCtrl+1 ] = svSub( svScale( pad[ nCtrl ], 2 ), pad[ nCtrl-1 ] );
+			const int segs = int(nCtrl) - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const SweepV3& p0 = pad[ sgi ];
+				const SweepV3& p1 = pad[ sgi + 1 ];
+				const SweepV3& p2 = pad[ sgi + 2 ];
+				const SweepV3& p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					SweepV3 q;
+					q.x = Scalar(0.5) * ( 2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3 );
+					q.y = Scalar(0.5) * ( 2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3 );
+					q.z = Scalar(0.5) * ( 2*p1.z + (-p0.z+p2.z)*t + (2*p0.z-5*p1.z+4*p2.z-p3.z)*t2 + (-p0.z+3*p1.z-3*p2.z+p3.z)*t3 );
+					out.push_back( q );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
+		// Periodic (closed-loop) twin of SampleCatmullRom3: instead of reflective
+		// end padding, consecutive pairs WRAP (control point nCtrl-1 connects back
+		// to control point 0), so nCtrl control points make nCtrl segments (not
+		// nCtrl-1) and every neighbor lookup is modulo nCtrl.  No trailing
+		// duplicate of the first point is appended -- the ring closes implicitly
+		// when the caller's ring-stitching wraps station (n-1) back to station 0.
+		void SampleCatmullRom3Periodic(
+			const double* ctrl, const unsigned int nCtrl, const int nLen,
+			std::vector<SweepV3>& out )
+		{
+			std::vector<SweepV3> raw( nCtrl );
+			for( unsigned int i = 0; i < nCtrl; i++ ) {
+				raw[i].x = ctrl[ 3*i ]; raw[i].y = ctrl[ 3*i + 1 ]; raw[i].z = ctrl[ 3*i + 2 ];
+			}
+			const int segs = int(nCtrl);
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const SweepV3& p0 = raw[ ( sgi - 1 + segs ) % segs ];
+				const SweepV3& p1 = raw[ sgi % segs ];
+				const SweepV3& p2 = raw[ ( sgi + 1 ) % segs ];
+				const SweepV3& p3 = raw[ ( sgi + 2 ) % segs ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					SweepV3 q;
+					q.x = Scalar(0.5) * ( 2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3 );
+					q.y = Scalar(0.5) * ( 2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3 );
+					q.z = Scalar(0.5) * ( 2*p1.z + (-p0.z+p2.z)*t + (2*p0.z-5*p1.z+4*p2.z-p3.z)*t2 + (-p0.z+3*p1.z-3*p2.z+p3.z)*t3 );
+					out.push_back( q );
+				}
+			}
+		}
+
+		// Catmull-Rom through 1D control VALUES, using the IDENTICAL reflective
+		// padding + per-segment (segs, per) scheme as SampleCatmullRom3 so an
+		// interpolated scalar track (e.g. a per-station width multiplier) lands in
+		// EXACT lockstep with the 3D path samples: control value j sits at the same
+		// output station as path control point j.
+		void SampleCatmullRom1(
+			const std::vector<Scalar>& ctrl, const int nLen,
+			std::vector<Scalar>& out )
+		{
+			const int nCtrl = (int)ctrl.size();
+			std::vector<Scalar> pad( nCtrl + 2 );
+			for( int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ] = ctrl[ i ];
+			}
+			pad[0]         = Scalar(2) * pad[1]       - pad[2];
+			pad[ nCtrl+1 ] = Scalar(2) * pad[ nCtrl ] - pad[ nCtrl-1 ];
+			const int segs = nCtrl - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const Scalar p0 = pad[ sgi ], p1 = pad[ sgi + 1 ], p2 = pad[ sgi + 2 ], p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					out.push_back( Scalar(0.5) * ( 2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3 ) );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
+		// Periodic (closed-loop) twin of SampleCatmullRom1 -- same wrap
+		// convention as SampleCatmullRom3Periodic, and 1:1 station lockstep
+		// with it (nCtrl control VALUES over nCtrl segments, no trailing point).
+		void SampleCatmullRom1Periodic(
+			const std::vector<Scalar>& ctrl, const int nLen,
+			std::vector<Scalar>& out )
+		{
+			const int nCtrl = (int)ctrl.size();
+			const int segs = nCtrl;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const Scalar p0 = ctrl[ ( sgi - 1 + segs ) % segs ];
+				const Scalar p1 = ctrl[ sgi % segs ];
+				const Scalar p2 = ctrl[ ( sgi + 1 ) % segs ];
+				const Scalar p3 = ctrl[ ( sgi + 2 ) % segs ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					out.push_back( Scalar(0.5) * ( 2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3 ) );
+				}
+			}
+		}
+
+		// Per-sample tangents (central differences, one-sided ends unless
+		// `closed`) and rotation-minimizing frames.  B = binormal (profile x
+		// axis), N = B x T (profile h axis).  The initial binormal comes from
+		// the caller's hint, or auto-picks the world axis most perpendicular
+		// to the start tangent (a planar path in YZ therefore gets the fixed
+		// world-X width axis the retired band generator used).
+		//
+		// `closed`: the path is a loop (station n-1 is adjacent to station 0).
+		// Tangents use periodic (wrapped) central differences instead of
+		// one-sided ends, and after the usual double-reflection propagation
+		// (stations 0..n-1, open-path order -- unchanged) an EXTRA wrap step
+		// (n-1 -> 0) measures the signed holonomy angle theta between the
+		// transported binormal and the frame this function already assigned
+		// to B[0]; every station's frame is then corrected by a linearly
+		// growing counter-rotation -theta*(i/n) about its own tangent so the
+		// seam closes up smoothly (Wang et al. 2008 sec 4, closed-curve RMF
+		// adjustment) instead of leaving a visible twist at the wrap edge.
+		void BuildPathFrames(
+			const std::vector<SweepV3>& path,
+			const SweepV3& hint, const bool haveHint, const bool closed,
+			std::vector<SweepV3>& T, std::vector<SweepV3>& B, std::vector<SweepV3>& N )
+		{
+			const size_t n = path.size();
+			T.resize( n ); B.resize( n ); N.resize( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const SweepV3& a = closed ? path[ ( i + n - 1 ) % n ] : path[ i > 0 ? i - 1 : 0 ];
+				const SweepV3& b = closed ? path[ ( i + 1 ) % n ]     : path[ i + 1 < n ? i + 1 : n - 1 ];
+				SweepV3 t = svSub( b, a );
+				const Scalar l = svLen( t );
+				if( l > 0 ) {
+					t = svScale( t, Scalar(1) / l );
+				} else {
+					t = ( i > 0 ) ? T[ i - 1 ] : t;
+				}
+				T[i] = t;
+			}
+			if( svLen( T[0] ) <= 0 ) {
+				GlobalLog()->Print( eLog_Warning,
+					"BuildPathFrames: degenerate start tangent (duplicated first path point?) -- frames may be unreliable" );
+			}
+			SweepV3 b0 = { 0, 0, 0 };
+			const SweepV3 axisPick = [&]() {
+				const Scalar ax = fabs( T[0].x ), ay = fabs( T[0].y ), az = fabs( T[0].z );
+				SweepV3 a = { 0, 0, 0 };
+				if( ax <= ay && ax <= az )      a.x = 1;
+				else if( ay <= ax && ay <= az ) a.y = 1;
+				else                            a.z = 1;
+				return a;
+			}();
+			if( haveHint ) {
+				b0 = svNorm( svSub( hint, svScale( T[0], svDot( hint, T[0] ) ) ) );
+				if( svLen( b0 ) <= 0 ) {
+					GlobalLog()->Print( eLog_Warning,
+						"BuildPathFrames: frame_hint is parallel to the start tangent -- falling back to the auto axis" );
+					b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+				}
+			} else {
+				b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+			}
+			B[0] = b0;
+			N[0] = svCross( B[0], T[0] );
+			for( size_t i = 0; i + 1 < n; i++ ) {
+				// double reflection step
+				const SweepV3 v1 = svSub( path[i+1], path[i] );
+				const Scalar c1 = svDot( v1, v1 );
+				if( c1 <= 0 ) {
+					// duplicated path sample: carry the frame, re-projected
+					// off the (possibly different) next tangent
+					B[i+1] = svNorm( svSub( B[i], svScale( T[i+1], svDot( B[i], T[i+1] ) ) ) );
+					N[i+1] = svCross( B[i+1], T[i+1] );
+					continue;
+				}
+				const SweepV3 bL = svSub( B[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, B[i] ) ) );
+				const SweepV3 tL = svSub( T[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, T[i] ) ) );
+				const SweepV3 v2 = svSub( T[i+1], tL );
+				const Scalar c2 = svDot( v2, v2 );
+				SweepV3 b = ( c2 > 0 ) ? svSub( bL, svScale( v2, ( Scalar(2)/c2 ) * svDot( v2, bL ) ) ) : bL;
+				// re-orthonormalize against accumulated drift
+				b = svNorm( svSub( b, svScale( T[i+1], svDot( b, T[i+1] ) ) ) );
+				B[i+1] = b;
+				N[i+1] = svCross( B[i+1], T[i+1] );
+			}
+			if( closed && n > 1 ) {
+				// one more double-reflection step, from the last station back
+				// to the first -- the wrap edge the loop above never takes.
+				SweepV3 bWrap;
+				const SweepV3 v1 = svSub( path[0], path[n-1] );
+				const Scalar c1 = svDot( v1, v1 );
+				if( c1 <= 0 ) {
+					bWrap = svNorm( svSub( B[n-1], svScale( T[0], svDot( B[n-1], T[0] ) ) ) );
+				} else {
+					const SweepV3 bL = svSub( B[n-1], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, B[n-1] ) ) );
+					const SweepV3 tL = svSub( T[n-1], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, T[n-1] ) ) );
+					const SweepV3 v2 = svSub( T[0], tL );
+					const Scalar c2 = svDot( v2, v2 );
+					SweepV3 b = ( c2 > 0 ) ? svSub( bL, svScale( v2, ( Scalar(2)/c2 ) * svDot( v2, bL ) ) ) : bL;
+					bWrap = svNorm( svSub( b, svScale( T[0], svDot( b, T[0] ) ) ) );
+				}
+				// signed angle from B[0] to bWrap about T[0], decomposed in the
+				// (B[0], N[0]) orthonormal plane: bWrap == cos(theta)*B[0] + sin(theta)*N[0]
+				const Scalar theta = atan2( svDot( bWrap, N[0] ), svDot( bWrap, B[0] ) );
+				if( fabs( theta ) > Scalar(1e-12) ) {
+					for( size_t i = 0; i < n; i++ ) {
+						const Scalar phi = -theta * ( Scalar(i) / Scalar(n) );
+						const Scalar cp = cos( phi ), sp = sin( phi );
+						const SweepV3 bi = B[i], ni = N[i];
+						B[i] = svAdd( svScale( bi, cp ), svScale( ni, sp ) );
+						N[i] = svAdd( svScale( ni, cp ), svScale( bi, -sp ) );
+					}
+				}
+			}
+		}
+
+		// Ear-clipping triangulation of a simple 2D polygon (indices into the
+		// profile).  Handles non-convex profiles (grooves, mouldings); the
+		// polygon must be simple (non-self-intersecting).  O(n^2), fine for
+		// authored profile sizes.
+		bool EarClipProfile(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			std::vector<unsigned int>& tris )
+		{
+			const size_t n = px.size();
+			if( n < 3 ) {
+				return false;
+			}
+			// signed area -> winding
+			Scalar area2 = 0;
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t j = ( i + 1 ) % n;
+				area2 += px[i] * ph[j] - px[j] * ph[i];
+			}
+			const Scalar wind = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+			// Drop consecutively-coincident points (the documented
+			// duplicate-a-point hard-edge idiom for the SIDE normals) before
+			// clipping: a zero-length edge makes its corner permanently
+			// reflex (cross == 0) and its twin sits ON every candidate ear's
+			// boundary, deadlocking the clip.  The dropped duplicates simply
+			// go unreferenced by the cap triangles.
+			std::vector<unsigned int> idx;
+			idx.reserve( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t prev = ( i + n - 1 ) % n;
+				if( px[i] == px[prev] && ph[i] == ph[prev] ) {
+					continue;
+				}
+				idx.push_back( (unsigned int)i );
+			}
+			if( idx.size() < 3 ) {
+				return false;
+			}
+			tris.clear();
+			tris.reserve( ( n - 2 ) * 3 );
+			size_t guard = n * n + 8;
+			while( idx.size() > 3 && guard-- > 0 ) {
+				bool clipped = false;
+				for( size_t i = 0; i < idx.size(); i++ ) {
+					const unsigned int ia = idx[ ( i + idx.size() - 1 ) % idx.size() ];
+					const unsigned int ib = idx[ i ];
+					const unsigned int ic = idx[ ( i + 1 ) % idx.size() ];
+					const Scalar cross = ( px[ib]-px[ia] ) * ( ph[ic]-ph[ia] ) - ( ph[ib]-ph[ia] ) * ( px[ic]-px[ia] );
+					if( cross * wind <= 0 ) {
+						continue;	// reflex corner, not an ear
+					}
+					// no other active vertex inside the candidate ear
+					bool inside = false;
+					for( size_t k = 0; k < idx.size() && !inside; k++ ) {
+						const unsigned int iq = idx[k];
+						if( iq == ia || iq == ib || iq == ic ) continue;
+						// a probe POSITIONALLY coincident with a corner is the
+						// corner (authored duplicates) -- not an interior point
+						if( ( px[iq] == px[ia] && ph[iq] == ph[ia] ) ||
+							( px[iq] == px[ib] && ph[iq] == ph[ib] ) ||
+							( px[iq] == px[ic] && ph[iq] == ph[ic] ) ) continue;
+						const Scalar d1 = ( ( px[ib]-px[ia] )*( ph[iq]-ph[ia] ) - ( ph[ib]-ph[ia] )*( px[iq]-px[ia] ) ) * wind;
+						const Scalar d2 = ( ( px[ic]-px[ib] )*( ph[iq]-ph[ib] ) - ( ph[ic]-ph[ib] )*( px[iq]-px[ib] ) ) * wind;
+						const Scalar d3 = ( ( px[ia]-px[ic] )*( ph[iq]-ph[ic] ) - ( ph[ia]-ph[ic] )*( px[iq]-px[ic] ) ) * wind;
+						inside = ( d1 >= 0 && d2 >= 0 && d3 >= 0 );
+					}
+					if( inside ) {
+						continue;
+					}
+					tris.push_back( ia ); tris.push_back( ib ); tris.push_back( ic );
+					idx.erase( idx.begin() + i );
+					clipped = true;
+					break;
+				}
+				if( !clipped ) {
+					return false;	// degenerate / self-intersecting profile
+				}
+			}
+			if( idx.size() == 3 ) {
+				tris.push_back( idx[0] ); tris.push_back( idx[1] ); tris.push_back( idx[2] );
+			}
+			return true;
+		}
+
+		// EVERY sweep refusal goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink (GenericManager.h's documented "however deep the
+		// call stack" channel) -- the same move RISE_API_CreateLatheGeometry
+		// already makes with its `fail` lambda, and for the same reason:
+		// without it a factory-only gate (the profile-point cap, a zero-area
+		// second profile, the ear-clip failure, a morph-vs-path_closed
+		// contradiction) surfaced to a scene author as the generic
+		// "apply failed (e.g. unresolved reference); see log", which is
+		// actively misleading since no reference is involved.  Job::
+		// AddSweepGeometry prepends the geometry's name.
+		bool SweepFail( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			// The SINK gets the RAW reason; only the LOG line carries the
+			// factory's own name.  Job::AddSweepGeometry prepends the
+			// geometry's name to the sink and DeriveToJob prepends
+			// `sweep_geometry: `, so baking "RISE_API_CreateSweepGeometry: "
+			// into the sink too would stutter three qualifiers deep in front
+			// of the author's actual reason -- which is exactly the shape
+			// RISE_API_CreateLatheGeometry's `fail` lambda already avoids.
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSweepGeometry: %s", buf );
+			SetFinalizeDiagIfEmpty( buf );
+			return false;
+		}
+
+		// Twice the signed area of a closed polygon (shoelace).  Positive =
+		// CCW.  The sweep derives "which side is outward" from this sign, and
+		// the loft uses it to decide whether profile2 was authored with the
+		// OPPOSITE winding to profile (which would fold the morph inside out).
+		Scalar ProfileSignedArea2( const std::vector<Scalar>& px, const std::vector<Scalar>& ph )
+		{
+			const size_t n = px.size();
+			Scalar a2 = 0;
+			for( size_t k = 0; k < n; k++ ) {
+				const size_t j = ( k + 1 ) % n;
+				a2 += px[k] * ph[j] - px[j] * ph[k];
+			}
+			return a2;
+		}
+
+		// Normalized cumulative arc-length parameter of EVERY vertex of a
+		// closed polygon: par[k] in [0, 1), par[0] == 0, non-decreasing.
+		// Two consecutive entries are EQUAL exactly when the segment between
+		// them has zero length -- the documented duplicate-a-point hard-edge
+		// idiom -- and the union merge below is written to keep both of them.
+		//
+		// A polygon with zero total perimeter (every vertex coincident) has
+		// no arc length to walk at all, so its vertices are parameterized by
+		// INDEX instead.  That keeps them DISTINCT, which is what keeps every
+		// one of them in the union; collapsing them all to parameter 0 would
+		// be the same silent vertex loss this whole helper exists to prevent.
+		void ProfileArcParams(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			std::vector<Scalar>& par )
+		{
+			const size_t n = px.size();
+			par.assign( n, Scalar(0) );
+			std::vector<Scalar> cum( n + 1, Scalar(0) );
+			for( size_t k = 0; k < n; k++ ) {
+				const size_t j = ( k + 1 ) % n;
+				const Scalar dx = px[j] - px[k], dh = ph[j] - ph[k];
+				cum[ k + 1 ] = cum[k] + sqrt( dx*dx + dh*dh );
+			}
+			const Scalar total = cum[n];
+			if( !( total > 0 ) ) {
+				for( size_t k = 0; k < n; k++ ) {
+					par[k] = Scalar(k) / Scalar(n);
+				}
+				return;
+			}
+			for( size_t k = 0; k < n; k++ ) {
+				par[k] = cum[k] / total;
+			}
+		}
+
+		// The point ON a closed polygon at normalized arc-length parameter p
+		// (par as produced by ProfileArcParams; p in [0, 1)).  Used ONLY for
+		// the parameters the OTHER profile contributed -- a parameter that is
+		// this profile's own is emitted as the authored vertex VERBATIM, never
+		// through this function, so no authored corner is ever rounded off by
+		// a floating-point round trip.
+		void ProfilePointAt(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			const std::vector<Scalar>& par, const Scalar p,
+			Scalar& ox, Scalar& oh )
+		{
+			const size_t n = px.size();
+			size_t seg = 0;
+			while( seg + 1 < n && par[ seg + 1 ] <= p ) {
+				seg++;
+			}
+			const Scalar p0 = par[ seg ];
+			const Scalar p1 = ( seg + 1 < n ) ? par[ seg + 1 ] : Scalar(1);
+			const Scalar span = p1 - p0;
+			const Scalar f = ( span > 0 ) ? ( ( p - p0 ) / span ) : Scalar(0);
+			const size_t a = seg, b = ( seg + 1 ) % n;
+			ox = px[a] + ( px[b] - px[a] ) * f;
+			oh = ph[a] + ( ph[b] - ph[a] ) * f;
+		}
+
+		// UNION resample: put the two closed profiles onto the MERGED set of
+		// their own normalized arc-length parameters, so that EVERY authored
+		// vertex of BOTH profiles survives verbatim into the common list.
+		//
+		// The obvious alternative -- pick N = max(n1, n2) and uniformly
+		// arc-length resample both -- silently destroys the smaller (usually
+		// hand-authored) profile: its corners survive only where they happen
+		// to land on the j/N grid.  A `profile_rect 2 2` (corners at arc
+		// 2.0 and 6.0 of perimeter 8) against a `profile2_circle r 30` keeps
+		// only two of its four corners, and since the morph delta is applied
+		// from t = 0 onward the damage lands at EVERY station and on the caps
+		// -- the authored square simply is not in the mesh.
+		//
+		// The merge is a two-pointer walk over the two sorted parameter
+		// lists.  A parameter present in BOTH (within paramEps) yields ONE
+		// union entry carrying both authored vertices; a parameter present in
+		// only one yields an entry with that profile's authored vertex and
+		// the OTHER profile evaluated on its polygon at that parameter.  So:
+		//
+		//   * no authored vertex is ever dropped -- the eps only decides
+		//     whether two vertices PAIR UP, never whether they are kept;
+		//   * a zero-length segment (the hard-edge idiom) produces two
+		//     entries at the same parameter, because the walk advances the
+		//     pointer rather than the parameter;
+		//   * N <= n1 + n2, and the identical-parameter case (which includes
+		//     profile == profile2) degenerates to both lists VERBATIM, so
+		//     the morph delta is bit-exactly zero with no special case.
+		//
+		// What the union does NOT preserve, and no common resample can, is
+		// the SHADING: the parameters the other profile contributes are real
+		// vertices, and a section's closed-loop central-difference normals
+		// are computed from the section it actually has.  A square section
+		// carrying a circle's parameters therefore shades its faces nearly
+		// flat where a bare 4-point square interpolated across its corners.
+		// Positions stay exact either way; only the normal field gets finer,
+		// which is the right trade -- the alternative loses the corner
+		// POSITIONS, which is a silhouette error, not a shading one.
+		void UnionResampleProfiles(
+			const std::vector<Scalar>& px,  const std::vector<Scalar>& ph,
+			const std::vector<Scalar>& p2x, const std::vector<Scalar>& p2h,
+			std::vector<Scalar>& rx,  std::vector<Scalar>& rh,
+			std::vector<Scalar>& r2x, std::vector<Scalar>& r2h )
+		{
+			std::vector<Scalar> par1, par2;
+			ProfileArcParams( px,  ph,  par1 );
+			ProfileArcParams( p2x, p2h, par2 );
+
+			// Parameters live in [0, 1), so this is an ABSOLUTE tolerance on
+			// a normalized quantity -- 1e-9 of the perimeter.  It only
+			// controls PAIRING (see above), so an over- or under-merge costs
+			// at most one redundant union entry, never a lost vertex.
+			const Scalar paramEps = Scalar(1e-9);
+
+			const size_t n1 = par1.size(), n2 = par2.size();
+			rx.clear();  rh.clear();  r2x.clear();  r2h.clear();
+			rx.reserve( n1 + n2 );  rh.reserve( n1 + n2 );
+			r2x.reserve( n1 + n2 ); r2h.reserve( n1 + n2 );
+
+			size_t ia = 0, ib = 0;
+			while( ia < n1 || ib < n2 ) {
+				const bool haveA = ( ia < n1 );
+				const bool haveB = ( ib < n2 );
+				bool takeA = false, takeB = false;
+				Scalar p = 0;
+				if( haveA && haveB && fabs( par1[ia] - par2[ib] ) <= paramEps ) {
+					takeA = true; takeB = true; p = par1[ia];
+				} else if( haveA && ( !haveB || par1[ia] < par2[ib] ) ) {
+					takeA = true; p = par1[ia];
+				} else {
+					takeB = true; p = par2[ib];
+				}
+				if( takeA ) {
+					rx.push_back( px[ia] ); rh.push_back( ph[ia] ); ia++;
+				} else {
+					Scalar x = 0, h = 0;
+					ProfilePointAt( px, ph, par1, p, x, h );
+					rx.push_back( x ); rh.push_back( h );
+				}
+				if( takeB ) {
+					r2x.push_back( p2x[ib] ); r2h.push_back( p2h[ib] ); ib++;
+				} else {
+					Scalar x = 0, h = 0;
+					ProfilePointAt( p2x, p2h, par2, p, x, h );
+					r2x.push_back( x ); r2h.push_back( h );
+				}
+			}
+		}
+	}
+
+	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
+	// along an arbitrary 3D Catmull-Rom path with rotation-minimizing
+	// frames, optional linear per-axis taper, optional NON-linear per-station
+	// width (point widths), and ear-clipped end caps.
+	// Profile-space (x, h) maps to  P(i) + x*scaleX(i)*B(i) + h*scaleY(i)*N(i).
+	// Vertex normals come from closed-loop central differences over the
+	// profile polyline (taper-corrected); longitudinal curvature lean is
+	// deliberately ignored (matches mesh-sweep convention; per-vertex
+	// normals carry the shading).
+	bool RISE_API_CreateSweepGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const SweepDescriptor&         desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.profilePoints || desc.numProfilePoints < 3 ) {
+			return SweepFail( "need at least 3 `profile_point` entries (a closed polygon)" );
+		}
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			return SweepFail( "need at least 2 `point` path control points" );
+		}
+		if( !( desc.endScaleX > 0 ) || !( desc.endScaleY > 0 ) ) {
+			return SweepFail( "end_scale_x / end_scale_y must be > 0" );
+		}
+		if( desc.pathClosed ) {
+			if( desc.numPathPoints < 3 ) {
+				return SweepFail(
+					"path_closed needs at least 3 `point` path control points (got %u)",
+					desc.numPathPoints );
+			}
+			const double dx = desc.pathPoints[0] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 0 ];
+			const double dy = desc.pathPoints[1] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 1 ];
+			const double dz = desc.pathPoints[2] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 2 ];
+			// SCALE-RELATIVE coincidence threshold: an absolute 1e-9 is too
+			// tight for a path authored at, say, kilometre scale (legitimately
+			// distinct points a millimetre apart would fail this check).
+			// Scale by the control points' own bounding-box diagonal, floored
+			// to 1 -- so a small-scale path (diagonal <= 1, including a
+			// degenerate single-point-scale path where everything is already
+			// clustered near the origin) keeps the original 1e-9 absolute
+			// behaviour byte-identical.  (Only the large-scale case is
+			// actually addressed here; there is no separate micron-scale
+			// tightening.)
+			double bMinX = desc.pathPoints[0], bMaxX = desc.pathPoints[0];
+			double bMinY = desc.pathPoints[1], bMaxY = desc.pathPoints[1];
+			double bMinZ = desc.pathPoints[2], bMaxZ = desc.pathPoints[2];
+			for( unsigned int pj = 1; pj < desc.numPathPoints; pj++ ) {
+				const double px = desc.pathPoints[3*pj+0], py = desc.pathPoints[3*pj+1], pz = desc.pathPoints[3*pj+2];
+				if( px < bMinX ) bMinX = px; if( px > bMaxX ) bMaxX = px;
+				if( py < bMinY ) bMinY = py; if( py > bMaxY ) bMaxY = py;
+				if( pz < bMinZ ) bMinZ = pz; if( pz > bMaxZ ) bMaxZ = pz;
+			}
+			const double diagX = bMaxX - bMinX, diagY = bMaxY - bMinY, diagZ = bMaxZ - bMinZ;
+			const double diag = sqrt( diagX*diagX + diagY*diagY + diagZ*diagZ );
+			const double coincidentTol = 1e-9 * ( diag > 1.0 ? diag : 1.0 );
+			if( dx*dx + dy*dy + dz*dz < coincidentTol*coincidentTol ) {
+				return SweepFail(
+					"path_closed TRUE with the first and last `point` authored coincident -- drop the duplicate, the loop closes itself" );
+			}
+			if( !( desc.endScaleX == 1.0 ) || !( desc.endScaleY == 1.0 ) ) {
+				return SweepFail(
+					"end_scale_x / end_scale_y must stay 1.0 with path_closed (a loop has no end to taper toward)" );
+			}
+		}
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSweepGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		unsigned int nProf = desc.numProfilePoints;
+		if( nProf > 4096 ) {
+			return SweepFail( "more than 4096 profile points" );
+		}
+
+		// BELT AND BRACES over the parser's own token-level finiteness gate:
+		// a NaN or Inf profile coordinate propagates through the shoelace
+		// area, the arc-length parameters, the frames and the vertex stream,
+		// and every downstream GATE is a COMPARISON -- which is FALSE for a
+		// NaN, so a NaN slips past `a2 == 0`, past the winding test, and
+		// bakes a mesh whose every vertex is NaN.  RISE_API is a PUBLIC
+		// entry point (the GUI, the agent surface and the tests all reach it
+		// without going through the scene parser), so it must not rely on a
+		// caller having validated for it.
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			if( !IsFiniteDouble( desc.profilePoints[ 2*k ] ) || !IsFiniteDouble( desc.profilePoints[ 2*k + 1 ] ) ) {
+				return SweepFail(
+					"profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+					k, desc.profilePoints[ 2*k ], desc.profilePoints[ 2*k + 1 ] );
+			}
+		}
+
+		std::vector<Scalar> px( nProf ), ph( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			px[k] = desc.profilePoints[ 2*k ];
+			ph[k] = desc.profilePoints[ 2*k + 1 ];
+		}
+
+		//////////////////////////////////////////////////////////////////
+		// LOFT (doc 89 slice A): an OPTIONAL second profile the section
+		// morphs toward along the path.  Everything below reduces the nine
+		// profile x profile2 authoring combinations to ONE code path: both
+		// profiles are already plain point lists by the time they reach the
+		// factory (the chunk parser expands profile_circle / profile_rect
+		// for BOTH slots), they are arc-length resampled to a common N,
+		// profile2 is index-rotated into the twist-free alignment, and the
+		// per-station section is a straight lerp of the CENTRED lists.
+		//
+		// Stored as a DELTA (morphDX/morphDH) rather than as a second point
+		// list on purpose: the per-station section is then
+		//     section[k] = px[k] + t * morphDX[k]
+		// which is EXACTLY px[k] at t == 0 and EXACTLY px[k] when the two
+		// profiles are the same shape (the delta is then identically zero,
+		// bit-for-bit) -- so a loft whose profiles agree bakes the very mesh
+		// a plain sweep bakes, with no tolerance argument required.
+		//////////////////////////////////////////////////////////////////
+		const bool morphActive = ( desc.numProfile2Points > 0 );
+		std::vector<Scalar> morphDX, morphDH;
+		if( desc.numPointMorphs > 0 && !morphActive ) {
+			return SweepFail(
+				"point_morph values were supplied with no second profile -- "
+				"a morph needs BOTH halves (add profile2_point / profile2_circle / profile2_rect, or drop point_morph)" );
+		}
+		if( morphActive ) {
+			if( !desc.profile2Points ) {
+				return SweepFail( "numProfile2Points > 0 but profile2Points is null" );
+			}
+			if( desc.numProfile2Points < 3 ) {
+				return SweepFail(
+					"the second profile needs at least 3 points (a closed polygon; got %u)",
+					desc.numProfile2Points );
+			}
+			if( desc.numProfile2Points > 4096 ) {
+				return SweepFail( "more than 4096 second-profile points" );
+			}
+			// Same belt-and-braces finiteness gate as the first profile
+			// above, and for the same reason: the zero-area gate just below
+			// is an EQUALITY compare, which a NaN passes, and the winding
+			// test after it would then print a bogus "wound OPPOSITE"
+			// warning before baking a NaN mesh.
+			for( unsigned int k = 0; k < desc.numProfile2Points; k++ ) {
+				if( !IsFiniteDouble( desc.profile2Points[ 2*k ] ) || !IsFiniteDouble( desc.profile2Points[ 2*k + 1 ] ) ) {
+					return SweepFail(
+						"second-profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+						k, desc.profile2Points[ 2*k ], desc.profile2Points[ 2*k + 1 ] );
+				}
+			}
+			std::vector<Scalar> p2x( desc.numProfile2Points ), p2h( desc.numProfile2Points );
+			for( unsigned int k = 0; k < desc.numProfile2Points; k++ ) {
+				p2x[k] = desc.profile2Points[ 2*k ];
+				p2h[k] = desc.profile2Points[ 2*k + 1 ];
+			}
+			const Scalar a2First  = ProfileSignedArea2( px, ph );
+			const Scalar a2Second = ProfileSignedArea2( p2x, p2h );
+			if( a2Second == 0 ) {
+				return SweepFail(
+					"the second profile encloses ZERO area (collinear or self-cancelling points) -- "
+					"a morph target must be a real closed section" );
+			}
+			// A profile2 authored with the OPPOSITE winding would run its
+			// points backwards around the section, so the lerp would drag
+			// every vertex across the middle and the section would collapse
+			// through a self-intersecting star before re-inflating.  Reverse
+			// it instead (keeping vertex 0 fixed, so the alignment search
+			// below still starts from the authored origin) and say so.
+			if( a2First != 0 && ( ( a2First > 0 ) != ( a2Second > 0 ) ) ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: the second profile is wound OPPOSITE the first -- reversing it so the morph "
+					"does not fold the section inside out (author both profiles CCW to silence this)" );
+				std::reverse( p2x.begin() + 1, p2x.end() );
+				std::reverse( p2h.begin() + 1, p2h.end() );
+			}
+			// Common N: the UNION of the two profiles' own normalized
+			// arc-length parameter sets, so EVERY authored vertex of BOTH
+			// profiles is reproduced exactly (see UnionResampleProfiles for
+			// why max(n1, n2) + uniform resampling is not good enough --
+			// it eats the smaller, usually hand-authored, profile's corners).
+			// max(n1, n2) <= N <= n1 + n2.
+			std::vector<Scalar> rx, rh, r2x, r2h;
+			UnionResampleProfiles( px, ph, p2x, p2h, rx, rh, r2x, r2h );
+			const size_t N = rx.size();
+
+			// Centroids (vertex means).  The morph runs on the CENTRED lists
+			// so profile2's own offset never TRANSLATES the section -- a
+			// circle morphing into an off-centre rect stays put on the path
+			// and only changes shape.  The section stays anchored at
+			// PROFILE's centroid, which is what preserves the authored
+			// "offset the tube from its path" idiom at every t.
+			Scalar c1x = 0, c1h = 0, c2x = 0, c2h = 0;
+			for( size_t k = 0; k < N; k++ ) { c1x += rx[k]; c1h += rh[k]; c2x += r2x[k]; c2h += r2h[k]; }
+			c1x /= Scalar(N); c1h /= Scalar(N); c2x /= Scalar(N); c2h /= Scalar(N);
+
+			// Twist-free start-vertex alignment: rotate profile2's index
+			// origin to the offset that minimizes the summed squared distance
+			// between the two CENTRED lists.  Without this, two profiles that
+			// merely start at different vertices would make the section
+			// SPIRAL along the path.  Ties resolve to the smallest rotation
+			// (strict <), so an already-aligned pair keeps offset 0 -- which
+			// is what makes the same-shape case exactly identity.
+			size_t bestRot = 0;
+			Scalar bestCost = 0;
+			for( size_t r = 0; r < N; r++ ) {
+				Scalar cost = 0;
+				for( size_t k = 0; k < N; k++ ) {
+					const size_t j = ( k + r ) % N;
+					const Scalar dx = ( rx[k] - c1x ) - ( r2x[j] - c2x );
+					const Scalar dh = ( rh[k] - c1h ) - ( r2h[j] - c2h );
+					cost += dx*dx + dh*dh;
+				}
+				if( r == 0 || cost < bestCost ) { bestCost = cost; bestRot = r; }
+			}
+
+			morphDX.resize( N );
+			morphDH.resize( N );
+			for( size_t k = 0; k < N; k++ ) {
+				const size_t j = ( k + bestRot ) % N;
+				morphDX[k] = ( r2x[j] - c2x ) - ( rx[k] - c1x );
+				morphDH[k] = ( r2h[j] - c2h ) - ( rh[k] - c1h );
+			}
+			px.swap( rx );
+			ph.swap( rh );
+			nProf = (unsigned int)N;
+		}
+
+		// closed-loop central-difference profile normals, oriented OUTWARD
+		// by the polygon winding (positive signed area = CCW -> outward is
+		// the right-hand perpendicular of the running direction).
+		Scalar area2 = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			area2 += px[k] * ph[j] - px[j] * ph[k];
+		}
+		const Scalar outward = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+		std::vector<Scalar> pnx( nProf ), pnh( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int kp = ( k + nProf - 1 ) % nProf;
+			const unsigned int kn = ( k + 1 ) % nProf;
+			const Scalar dx = px[kn] - px[kp];
+			const Scalar dh = ph[kn] - ph[kp];
+			const Scalar l = sqrt( dx*dx + dh*dh );
+			if( l > 0 ) {
+				pnx[k] =  outward * dh / l;
+				pnh[k] = -outward * dx / l;
+			} else {
+				pnx[k] = 0; pnh[k] = 1;
+			}
+		}
+
+		// profile arc-length fractions for U
+		std::vector<Scalar> uFrac( nProf + 1 );
+		uFrac[0] = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			const Scalar dx = px[j] - px[k], dh = ph[j] - ph[k];
+			uFrac[ k + 1 ] = uFrac[k] + sqrt( dx*dx + dh*dh );
+		}
+		const Scalar uTotal = uFrac[ nProf ] > 0 ? uFrac[ nProf ] : Scalar(1);
+		for( unsigned int k = 0; k <= nProf; k++ ) {
+			uFrac[k] /= uTotal;
+		}
+
+		std::vector<SweepV3> path;
+		if( desc.pathClosed ) {
+			SampleCatmullRom3Periodic( desc.pathPoints, desc.numPathPoints, nLen, path );
+		} else {
+			SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		}
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, desc.pathClosed, T, B, N );
+
+		// OPTIONAL per-station width track: Catmull-Rom interpolate the per-
+		// control-point width multipliers onto the path samples (1:1 with `path`),
+		// to be composed MULTIPLICATIVELY with the linear end_scale_x taper on the
+		// width (x/binormal) axis below.  Empty => uniform 1.0 (an exact no-op, so
+		// every sweep authored without point widths stays byte-identical).
+		std::vector<Scalar> widthMul;
+		if( desc.numPointWidths > 0 ) {
+			if( !desc.pointWidths ) {
+				return SweepFail( "numPointWidths > 0 but pointWidths is null" );
+			}
+			if( desc.numPointWidths > desc.numPathPoints ) {
+				return SweepFail(
+					"%u point widths exceed %u path points (one per point; pad the rest with 1.0)",
+					desc.numPointWidths, desc.numPathPoints );
+			}
+			std::vector<Scalar> wCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointWidths; j++ ) {
+				if( !( desc.pointWidths[j] > 0 ) ) {
+					return SweepFail(
+						"point width %u (%g) must be > 0", j, desc.pointWidths[j] );
+				}
+				wCtrl[j] = (Scalar)desc.pointWidths[j];
+			}
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( wCtrl, nLen, widthMul );
+			} else {
+				SampleCatmullRom1( wCtrl, nLen, widthMul );
+			}
+			// widthMul is a dimensionless MULTIPLIER on the profile x-extent, so it
+			// must stay strictly positive or the ring inverts (negative scale flips
+			// the winding + normals).  Catmull-Rom can dip below the smallest authored
+			// width between non-monotone controls; floor any non-positive (or NaN)
+			// sample to 1e-4 -- an effectively-zero pinch (0.01% of the UN-NECKED width
+			// at that station, so scale-relative by construction), NOT a fold -- and warn
+			// once so the author can tighten their point widths.
+			bool widthClamped = false;
+			for( size_t i = 0; i < widthMul.size(); i++ ) {
+				if( !( widthMul[i] > 0 ) ) { widthMul[i] = Scalar(1e-4); widthClamped = true; }
+			}
+			if( widthClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station width undershot <= 0 (aggressive non-monotone point widths); floored to avoid ring inversion" );
+			}
+		}
+
+		// OPTIONAL per-station UNIFORM (both profile axes) scale track --
+		// same sampler, same padding/validation/floor idiom as the width
+		// track above, just applied to BOTH sx and sy instead of x only.
+		// This is the round-taper control (point_width alone can only
+		// flatten, since it only ever touches x); the two compose
+		// multiplicatively (see the ring-emission loop below).  Empty =>
+		// uniform 1.0 (exact no-op, byte-identical to a sweep authored
+		// without point_scale).
+		std::vector<Scalar> scaleMul;
+		if( desc.numPointScales > 0 ) {
+			if( !desc.pointScales ) {
+				return SweepFail( "numPointScales > 0 but pointScales is null" );
+			}
+			if( desc.numPointScales > desc.numPathPoints ) {
+				return SweepFail(
+					"%u point scales exceed %u path points (one per point; pad the rest with 1.0)",
+					desc.numPointScales, desc.numPathPoints );
+			}
+			std::vector<Scalar> sCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointScales; j++ ) {
+				if( !( desc.pointScales[j] > 0 ) ) {
+					return SweepFail(
+						"point scale %u (%g) must be > 0", j, desc.pointScales[j] );
+				}
+				sCtrl[j] = (Scalar)desc.pointScales[j];
+			}
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( sCtrl, nLen, scaleMul );
+			} else {
+				SampleCatmullRom1( sCtrl, nLen, scaleMul );
+			}
+			// same non-monotone-undershoot floor as widthMul -- see its comment.
+			bool scaleClamped = false;
+			for( size_t i = 0; i < scaleMul.size(); i++ ) {
+				if( !( scaleMul[i] > 0 ) ) { scaleMul[i] = Scalar(1e-4); scaleClamped = true; }
+			}
+			if( scaleClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station scale undershot <= 0 (aggressive non-monotone point scales); floored to avoid ring inversion" );
+			}
+		}
+
+		// OPTIONAL SECOND HALF of the ANISOTROPIC `point_scale <sx> <sy>`
+		// form (doc 89 slice A): when present, `scaleMul` above drives the
+		// profile's x (binormal) axis and this track drives its y
+		// (frame-normal) axis independently -- a section that is, say, twice
+		// as wide as it is deep, flattening further toward one end.  ABSENT
+		// (the 1-arg `point_scale <s>` form and every pre-slice-A scene) the
+		// single track drives BOTH axes, exactly as before.
+		std::vector<Scalar> scaleMulY;
+		if( desc.numPointScalesY > 0 ) {
+			if( !desc.pointScalesY ) {
+				return SweepFail( "numPointScalesY > 0 but pointScalesY is null" );
+			}
+			if( desc.numPointScalesY != desc.numPointScales ) {
+				return SweepFail(
+					"%u y-axis point scales but %u x-axis point scales -- the anisotropic form supplies BOTH axes per station",
+					desc.numPointScalesY, desc.numPointScales );
+			}
+			std::vector<Scalar> sCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointScalesY; j++ ) {
+				if( !( desc.pointScalesY[j] > 0 ) ) {
+					return SweepFail(
+						"point scale y %u (%g) must be > 0", j, desc.pointScalesY[j] );
+				}
+				sCtrl[j] = (Scalar)desc.pointScalesY[j];
+			}
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( sCtrl, nLen, scaleMulY );
+			} else {
+				SampleCatmullRom1( sCtrl, nLen, scaleMulY );
+			}
+			bool scaleYClamped = false;
+			for( size_t i = 0; i < scaleMulY.size(); i++ ) {
+				if( !( scaleMulY[i] > 0 ) ) { scaleMulY[i] = Scalar(1e-4); scaleYClamped = true; }
+			}
+			if( scaleYClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station y scale undershot <= 0 (aggressive non-monotone point scales); floored to avoid ring inversion" );
+			}
+		}
+
+		// OPTIONAL per-station MORPH track (doc 89 slice A): the blend factor
+		// t in [0, 1] taking the section from `profile` (0) to `profile2`
+		// (1).  Same sampler and same one-per-control-point / pad-the-rest
+		// idiom as the width and scale tracks above; the pad value is 1.0
+		// ("finish the morph"), matching the default ramp's endpoint.
+		std::vector<Scalar> morphMul;
+		if( morphActive ) {
+			if( desc.numPointMorphs > 0 ) {
+				if( !desc.pointMorphs ) {
+					return SweepFail( "numPointMorphs > 0 but pointMorphs is null" );
+				}
+				if( desc.numPointMorphs > desc.numPathPoints ) {
+					return SweepFail(
+						"%u point morphs exceed %u path points (one per point; pad the rest with 1.0)",
+						desc.numPointMorphs, desc.numPathPoints );
+				}
+				std::vector<Scalar> mCtrl( desc.numPathPoints, Scalar(1) );
+				for( unsigned int j = 0; j < desc.numPointMorphs; j++ ) {
+					// REFUSE an authored value outside [0, 1] (as opposed to
+					// clamping it): outside that range the author is asking to
+					// extrapolate past both profiles, which is never what they
+					// meant, and silently clamping would hide the typo.  The
+					// negated idiom also rejects a NaN that reached the API
+					// past the parser's token gate.
+					if( !( desc.pointMorphs[j] >= 0.0 && desc.pointMorphs[j] <= 1.0 ) ) {
+						return SweepFail(
+							"point morph %u (%g) must be in [0, 1] (0 = the first profile, 1 = the second)",
+							j, desc.pointMorphs[j] );
+					}
+					mCtrl[j] = (Scalar)desc.pointMorphs[j];
+				}
+				if( desc.pathClosed ) {
+					SampleCatmullRom1Periodic( mCtrl, nLen, morphMul );
+				} else {
+					SampleCatmullRom1( mCtrl, nLen, morphMul );
+				}
+				// The AUTHORED values are in range, but Catmull-Rom overshoots
+				// between non-monotone controls -- and an overshoot here would
+				// extrapolate the section past profile2 (or back behind
+				// profile), which is a different shape entirely rather than a
+				// mere pinch.  CLAMP the interpolated track (the authored
+				// values are already refused above if out of range) and warn
+				// once, mirroring the width/scale floor.
+				bool morphClamped = false;
+				for( size_t i = 0; i < morphMul.size(); i++ ) {
+					if( !( morphMul[i] >= 0 ) )      { morphMul[i] = Scalar(0); morphClamped = true; }
+					else if( !( morphMul[i] <= 1 ) ) { morphMul[i] = Scalar(1); morphClamped = true; }
+				}
+				if( morphClamped ) {
+					GlobalLog()->Print( eLog_Warning,
+						"RISE_API_CreateSweepGeometry: a per-station morph overshot [0, 1] between non-monotone point morphs; clamped" );
+				}
+			} else if( desc.pathClosed ) {
+				// The implicit default is a linear 0 -> 1 ramp along the
+				// stations, which is DISCONTINUOUS across a loop's seam
+				// (station n-1 sits next to station 0, so the section would
+				// jump from profile2 straight back to profile).  Explicit
+				// point_morph values are fine on a loop -- they sample
+				// PERIODICALLY, so they close smoothly.
+				return SweepFail(
+					"a second profile with NO point_morph values defaults to a linear 0->1 ramp, "
+					"which is discontinuous at a closed loop's seam -- author explicit point_morph values (they sample periodically, "
+					"so a loop can morph out and back) or drop path_closed" );
+			}
+			// (no point_morph on an OPEN path => the default linear ramp,
+			//  computed inline from `frac` in the ring loop below)
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
+		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
+
+		// rings.  frac doubles as the linear-taper parameter and the V texture
+		// coordinate; a closed loop has no start/end to taper toward (end_scale_x/y
+		// are forced to 1.0 above) so it uses i/n (wraps at the seam with no
+		// duplicated ring, matching the profile U convention) instead of i/(n-1).
+		// Per-station SECTION scratch, used only when a morph is active.  The
+		// no-morph path keeps pointing straight at the loop-invariant px/ph
+		// and pnx/pnh arrays, so it does exactly the arithmetic it always did.
+		std::vector<Scalar> secX, secH, secNx, secNh;
+		if( morphActive ) {
+			secX.resize( nProf ); secH.resize( nProf );
+			secNx.resize( nProf ); secNh.resize( nProf );
+		}
+		// COMPOSITION ORDER (documented in the chunk descriptor too):
+		//     section  = morph( profile -> profile2, t_i )      [shape]
+		//     ring[k]  = section[k] * diag( sx_i, sy_i )        [scale]
+		// with sx_i = end_scale_x taper * point_width * point_scale_x and
+		//      sy_i = end_scale_y taper *                point_scale_y.
+		// The scale factors are scalars, so their own order among themselves
+		// does not matter; what does matter is that the morph happens FIRST,
+		// in the profile plane, and the anisotropic scale is applied to the
+		// already-morphed section.
+		int vc = 0;
+		for( size_t i = 0; i < n; i++ ) {
+			const Scalar frac = desc.pathClosed ? ( Scalar(i) / Scalar(n) ) : ( Scalar(i) / Scalar( n - 1 ) );
+			const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+			const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+			const Scalar smy = scaleMulY.empty() ? sm : scaleMulY[i];
+			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
+			const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * smy;
+			const Scalar* secPx = &px[0];
+			const Scalar* secPh = &ph[0];
+			const Scalar* secPnx = &pnx[0];
+			const Scalar* secPnh = &pnh[0];
+			if( morphActive ) {
+				// no explicit point_morph track on an open path => the
+				// documented default linear 0 -> 1 ramp along the stations
+				const Scalar t = morphMul.empty() ? frac : morphMul[i];
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					secX[k] = px[k] + t * morphDX[k];
+					secH[k] = ph[k] + t * morphDH[k];
+				}
+				// The section's OWN closed-loop central-difference normals,
+				// oriented by the FIRST profile's winding (`outward`): the
+				// alignment step above already put both profiles on the same
+				// winding, so one sign serves every station -- and it must,
+				// since the side-quad winding below is emitted once for the
+				// whole mesh.
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					const unsigned int kp = ( k + nProf - 1 ) % nProf;
+					const unsigned int kn = ( k + 1 ) % nProf;
+					const Scalar dx = secX[kn] - secX[kp];
+					const Scalar dh = secH[kn] - secH[kp];
+					const Scalar l = sqrt( dx*dx + dh*dh );
+					if( l > 0 ) {
+						secNx[k] =  outward * dh / l;
+						secNh[k] = -outward * dx / l;
+					} else {
+						secNx[k] = 0; secNh[k] = 1;
+					}
+				}
+				secPx = &secX[0]; secPh = &secH[0];
+				secPnx = &secNx[0]; secPnh = &secNh[0];
+			}
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const Scalar lx = secPx[k] * sx;
+				const Scalar lh = secPh[k] * sy;
+				pGeom->AddVertex( Vertex(
+					path[i].x + lx * B[i].x + lh * N[i].x,
+					path[i].y + lx * B[i].y + lh * N[i].y,
+					path[i].z + lx * B[i].z + lh * N[i].z ) );
+				// taper-corrected profile normal mapped through the frame
+				const Scalar nx = secPnx[k] / sx;
+				const Scalar nh = secPnh[k] / sy;
+				const Scalar nl = sqrt( nx*nx + nh*nh );
+				const Scalar nxn = ( nl > 0 ) ? nx / nl : 0;
+				const Scalar nhn = ( nl > 0 ) ? nh / nl : 1;
+				pGeom->AddNormal( Normal(
+					nxn * B[i].x + nhn * N[i].x,
+					nxn * B[i].y + nhn * N[i].y,
+					nxn * B[i].z + nhn * N[i].z ) );
+				pGeom->AddTexCoord( TexCoord( uFrac[k], frac ) );
+				vc++;
+			}
+		}
+
+		// The RING vertices (everything emitted so far; the planar end caps
+		// below are separate, non-wrapping vertices) wrap in u -- the closed
+		// profile's last vertex stitches back to its first with no duplicated
+		// column -- and, for a closed path, in v (ring n-1 stitches to ring 0,
+		// frac = i/n).  Declared for DisplacedGeometry's mesh refinement.
+		pGeom->SetUVPeriodicRegion(
+			(unsigned char)( TriangleMeshGeometryIndexed::kUPeriodic | ( desc.pathClosed ? TriangleMeshGeometryIndexed::kVPeriodic : 0 ) ),
+			0, (unsigned int)vc );
+
+		// side quads between consecutive rings (cyclic over the profile);
+		// winding gives outward-facing triangles for a CCW profile.  A closed
+		// path additionally wraps ring (n-1) to ring 0 (no open-path "ends"),
+		// so it walks all n rings instead of stopping at n-1.
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid): the path-direction
+		// edges of ring interval i are family i; the profile-direction edges of profile edge k
+		// are family sideRingCount + k (shared by every station).  End caps are in no cell.
+		const size_t sideRingCount = desc.pathClosed ? n : ( n - 1 );
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = (unsigned int)( sideRingCount + nProf );
+		unsigned int triCount = 0;
+		for( size_t i = 0; i < sideRingCount; i++ ) {
+			const size_t i1 = desc.pathClosed ? ( ( i + 1 ) % n ) : ( i + 1 );
+			const int r0 = int(i) * int(nProf);
+			const int r1 = int(i1) * int(nProf);
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const unsigned int kn = ( k + 1 ) % nProf;
+				const int a = r0 + int(k);
+				const int b = r1 + int(k);
+				const int c = r1 + int(kn);
+				const int d = r0 + int(kn);
+				{
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					const unsigned int pathFam = (unsigned int)i, profFam = (unsigned int)( sideRingCount + k );
+					// authored triangles (q0,q1,q2),(q0,q2,q3): outward -> (a,b,c)+(a,c,d), q = a,b,c,d;
+					// otherwise (a,c,b)+(a,d,c), q = a,d,c,b
+					if( outward > 0 ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = pathFam; q.famT = profFam; }
+					else              { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = profFam; q.famT = pathFam; }
+					grid->quads.push_back( q );
+					triCount += 2;
+				}
+				if( outward > 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				} else {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, d, c ) );
+				}
+			}
+		}
+
+		// end caps: ear-clipped, duplicated vertices with the flat cap normal.
+		// A closed loop has no ends -- never emit caps regardless of capStart/
+		// capEnd (the parser rejects an explicit TRUE for either alongside
+		// path_closed; this guard is the structural belt-and-suspenders).
+		if( !desc.pathClosed && ( desc.capStart || desc.capEnd ) ) {
+			for( int side = 0; side < 2; side++ ) {
+				const bool isStart = ( side == 0 );
+				if( isStart ? !desc.capStart : !desc.capEnd ) {
+					continue;
+				}
+				const size_t i = isStart ? 0 : n - 1;
+				const Scalar frac = Scalar(i) / Scalar( n - 1 );
+				const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+				const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+				const Scalar smy = scaleMulY.empty() ? sm : scaleMulY[i];
+				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
+				const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * smy;
+				// A cap closes the section that is ACTUALLY there at its own
+				// station, so under a morph the two ends are DIFFERENT
+				// polygons and each is ear-clipped (and UV-bounded) on its
+				// own.  Without a morph both sides see the identical px/ph and
+				// this reduces to the single clip it always was.
+				const std::vector<Scalar>* capPx = &px;
+				const std::vector<Scalar>* capPh = &ph;
+				std::vector<Scalar> capMorphX, capMorphH;
+				if( morphActive ) {
+					const Scalar t = morphMul.empty() ? frac : morphMul[i];
+					capMorphX.resize( nProf ); capMorphH.resize( nProf );
+					for( unsigned int k = 0; k < nProf; k++ ) {
+						capMorphX[k] = px[k] + t * morphDX[k];
+						capMorphH[k] = ph[k] + t * morphDH[k];
+					}
+					capPx = &capMorphX; capPh = &capMorphH;
+				}
+				// The cap's own winding, from the CAP polygon's shoelace --
+				// NOT from the first profile's `outward`.  Without a morph the
+				// cap polygon IS px/ph, so this is bit-identically `outward`
+				// and every existing sweep bakes unchanged.  WITH a morph the
+				// cap closes the MORPHED section, whose signed area is the
+				// quadratic (1-t)^2*A1 + 2t(1-t)*Amix + t^2*A2 -- so a
+				// sufficiently anti-aligned correspondence (a large negative
+				// mixed term) can carry it through zero even though both
+				// authored profiles are CCW, and the cap would then be emitted
+				// inside out while the side wall stayed correct.  Deriving the
+				// sign from the polygon actually being triangulated removes
+				// the assumption instead of betting on it.
+				const Scalar capArea2 = ProfileSignedArea2( *capPx, *capPh );
+				const Scalar capOutward = ( capArea2 >= 0 ) ? Scalar(1) : Scalar(-1);
+				std::vector<unsigned int> capTris;
+				if( !EarClipProfile( *capPx, *capPh, capTris ) ) {
+					pGeom->release();
+					// Name the SIDE and the STATION: under a morph the two
+					// caps are DIFFERENT polygons, so "the profile failed to
+					// triangulate" does not tell an author which of their two
+					// profiles (or which point on the morph track) is at fault.
+					return SweepFail(
+						"the %s cap's cross-section at path station %u failed to triangulate "
+						"(self-intersecting or degenerate polygon)",
+						isStart ? "START" : "END", (unsigned int)i );
+				}
+				// profile bbox for cap UV
+				Scalar bx0 = (*capPx)[0], bx1 = (*capPx)[0], bh0 = (*capPh)[0], bh1 = (*capPh)[0];
+				for( unsigned int k = 1; k < nProf; k++ ) {
+					if( (*capPx)[k] < bx0 ) bx0 = (*capPx)[k];
+					if( (*capPx)[k] > bx1 ) bx1 = (*capPx)[k];
+					if( (*capPh)[k] < bh0 ) bh0 = (*capPh)[k];
+					if( (*capPh)[k] > bh1 ) bh1 = (*capPh)[k];
+				}
+				const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1)/( bx1-bx0 ) : Scalar(1);
+				const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1)/( bh1-bh0 ) : Scalar(1);
+				// cap faces along -T at the start, +T at the end
+				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
+				const Normal capN( sgn * T[i].x, sgn * T[i].y, sgn * T[i].z );
+				const int base = vc;
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					const Scalar lx = (*capPx)[k] * sx;
+					const Scalar lh = (*capPh)[k] * sy;
+					pGeom->AddVertex( Vertex(
+						path[i].x + lx * B[i].x + lh * N[i].x,
+						path[i].y + lx * B[i].y + lh * N[i].y,
+						path[i].z + lx * B[i].z + lh * N[i].z ) );
+					pGeom->AddNormal( capN );
+					pGeom->AddTexCoord( TexCoord( ( (*capPx)[k]-bx0 ) * bxs, ( (*capPh)[k]-bh0 ) * bhs ) );
+					vc++;
+				}
+				for( size_t t = 0; t + 2 < capTris.size(); t += 3 ) {
+					const int a = base + int(capTris[t]);
+					const int b = base + int(capTris[t+1]);
+					const int c = base + int(capTris[t+2]);
+					// orient the cap triangles along the cap normal.  In the
+					// (B, N) profile basis B x N = -T, so triangles emitted in
+					// profile winding carry geometric normal -T for a CCW
+					// (capOutward > 0) polygon: the END cap (faces +T) must flip
+					// them, the START cap (faces -T) keeps them.
+					const bool flip = isStart ? ( capOutward < 0 ) : ( capOutward > 0 );
+					if( flip ) {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					} else {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					}
+				}
+			}
+		}
+
+		pGeom->SetGrid( grid );
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	// Surface of revolution (lathe): an OPEN 2D profile polyline authored
+	// in the (r, h) half-plane -- r = radius from the axis, h = height
+	// along it -- spun about a world axis, optionally through less than a
+	// full turn.
+	//
+	// AXIS BASIS.  For axis index a (0 = X, 1 = Y, 2 = Z) the frame is the
+	// cyclic triple (A, U, V) = (e[a], e[(a+1)%3], e[(a+2)%3]), which is
+	// right-handed (U x V = A) for all three axes.  A profile point (r, h)
+	// at angle t lands at  h*A + r*cos(t)*U + r*sin(t)*V.  For the default
+	// axis y that means A = +Y, U = +Z, V = +X: t = 0 sits on +Z and grows
+	// right-handedly about +Y.
+	//
+	// ORIENTATION.  Which side is "outward" is DERIVED, not assumed.  The
+	// signed volume of the solid of revolution is  V = pi * integral(r^2 dh)
+	// along the profile (closing the region back along the axis adds
+	// nothing, since r = 0 there), and V > 0 exactly when the profile runs
+	// up the OUTSIDE of the body.  So outward = sign(V), and a profile
+	// authored in either direction still produces outward normals and
+	// outward winding -- the same "derive it from the authored profile"
+	// contract sweep_geometry gets from its signed area.
+	//
+	// That sign is ROBUST, including for a profile that doubles back on
+	// itself or hugs the axis: by Green's theorem the same quantity is
+	// integral(r^2 dh) == doubleIntegral(2r dA) over the enclosed region,
+	// and the integrand 2r is NON-NEGATIVE everywhere in the half-plane.
+	// So the accumulation is a genuine (twice) area moment with nothing to
+	// cancel against -- it is never a near-zero difference of large terms,
+	// and a thin shell reports its own orientation as cleanly as a solid.
+	// vol3 == 0 therefore fires only on genuinely zero-volume input (a flat
+	// annulus, dh == 0 everywhere), where no outward side exists at all;
+	// +1 is an arbitrary but harmless pick there.
+	//
+	// WINDING CONVENTION.  With (t, h) as the surface parameters,
+	// dP/dt x dP/dh points radially OUTWARD:  dP/dt = r*(-sin(t)*U +
+	// cos(t)*V), dP/dh = A, and (-sin*U + cos*V) x A = cos*U + sin*V = e_r
+	// (using U x A = -V and V x A = U, which follow from U x V = A).  A
+	// triangle's geometric normal is (b-a) x (c-a), so a band quad is
+	// emitted with its FIRST edge along +t and its SECOND along +h:
+	//     (row[j][k], row[j][k+1], row[j+1][k+1])
+	//     (row[j][k], row[j+1][k+1], row[j+1][k])
+	// and both are reversed when outward < 0.  ProceduralMeshTest fires
+	// rays at the cylinder side, the cone side, and the partial-sweep caps
+	// from OUTSIDE and asserts front-face hits, so this convention is
+	// pinned by test rather than by this comment alone.
+	//
+	// POLES.  A profile point with r == 0 lies ON the axis: its ring is
+	// ONE vertex, fanned to the neighbouring ring, never nRadial
+	// coincident copies with a zero-area quad band between them.  That is
+	// what makes the common case -- a vase whose first and last profile
+	// points are on the axis -- watertight with no caps at all.  An
+	// INTERIOR pole (a waisted/hourglass profile pinched to r == 0 with a
+	// live band on BOTH sides) gets TWO pole vertices, one per adjacent
+	// band: across a pinch the two bands always demand OPPOSITE axial
+	// normals (below it dr < 0 so snh > 0, above it dr > 0 so snh < 0), so
+	// no single shared vertex can serve both -- one band would get a
+	// shading normal in the wrong half-space, and
+	// TriangleMeshGeometryIndexed re-orients vGeomNormal to agree with the
+	// interpolated normal, so the reported GEOMETRIC normal would flip too.
+	// Splitting is exactly what `smooth FALSE` already does structurally
+	// (two rows per segment); this makes the smooth path agree.
+	bool RISE_API_CreateLatheGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const LatheDescriptor&         desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// EVERY refusal below goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink (GenericManager.h's documented "however deep the
+		// call stack" channel).  Without it a factory-only gate -- the
+		// profile-point cap, the zero-area profile, the ear-clip failure,
+		// the vertex budget -- surfaced to a scene author as the generic
+		// "apply failed (e.g. unresolved reference); see log", which is
+		// actively misleading since no reference is involved.  Job::
+		// AddLatheGeometry prepends the geometry's name.
+		auto fail = []( const std::string& why ) -> bool {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateLatheGeometry: %s", why.c_str() );
+			SetFinalizeDiagIfEmpty( why );
+			return false;
+		};
+		char msgbuf[512];
+
+		if( !desc.profilePoints || desc.numProfilePoints < 2 ) {
+			return fail( "need at least 2 `profile_point` entries (an open polyline)" );
+		}
+		if( desc.numProfilePoints > 4096 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"%u profile points exceeds the 4096 maximum", desc.numProfilePoints );
+			return fail( msgbuf );
+		}
+		if( desc.axis < 0 || desc.axis > 2 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"axis %d is not 0 (world X), 1 (world Y) or 2 (world Z)", desc.axis );
+			return fail( msgbuf );
+		}
+		// Negated idiom on purpose: a NaN sweepDegrees fails BOTH halves and
+		// is rejected, where the naive `< 0 || > 360` would pass it through.
+		if( !( desc.sweepDegrees > 0.0 && desc.sweepDegrees <= 360.0 ) ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"sweep_degrees (%g) must be in (0, 360]", desc.sweepDegrees );
+			return fail( msgbuf );
+		}
+		const int nRadial = desc.nRadial < 3 ? 3 : ( desc.nRadial > 2048 ? 2048 : desc.nRadial );
+		if( nRadial != desc.nRadial ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateLatheGeometry: n_radial %d clamped to %d", desc.nRadial, nRadial );
+		}
+
+		const unsigned int nProf = desc.numProfilePoints;
+		std::vector<Scalar> pr( nProf ), ph( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			pr[k] = (Scalar)desc.profilePoints[ 2*k ];
+			ph[k] = (Scalar)desc.profilePoints[ 2*k + 1 ];
+			// BOTH components are checked for finiteness, not just the
+			// radius' sign.  `pr >= 0` alone rejects a NaN (it fails the
+			// compare) but PASSES +inf, and h was not checked at all: an
+			// infinite h makes every segment length inf, so the segment
+			// reads LIVE with a NaN normal, vol3 is inf, and the factory
+			// happily emits inf vertices with NaN texcoords for the BVH to
+			// build over.  The chunk parser's AllTokensAreFiniteNumbers gate
+			// already covers the scene/GUI/agent paths; this is the same
+			// defense in depth the sweepDegrees check above gets, for the
+			// direct RISE_API.h caller.
+			if( !IsFiniteDouble( (double)pr[k] ) || !IsFiniteDouble( (double)ph[k] ) ) {
+				std::snprintf( msgbuf, sizeof(msgbuf),
+					"profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+					k, (double)pr[k], (double)ph[k] );
+				return fail( msgbuf );
+			}
+			if( !( pr[k] >= 0 ) ) {
+				std::snprintf( msgbuf, sizeof(msgbuf),
+					"profile point %u radius (%g) must be >= 0 (the profile lives in a HALF-plane)",
+					k, (double)pr[k] );
+				return fail( msgbuf );
+			}
+		}
+
+		// PROFILE EXTENT -- the ONE scale every tolerance in this factory is
+		// measured against, taken from the profile's own bounding box in
+		// (r, h).  It is a SPAN, not a max coordinate: a thin washer far out
+		// on the axis (r ~ 1e6, 1e-3 thick) has a genuine extent of ~5, and
+		// scaling by |coordinate| instead would hand it a tolerance of 2e-3 --
+		// bigger than the part itself, so the closed-loop test below would
+		// fire on a plainly open profile and silently drop its last point.
+		Scalar rLo = pr[0], rHi = pr[0], hLo = ph[0], hHi = ph[0];
+		for( unsigned int k = 1; k < nProf; k++ ) {
+			if( pr[k] < rLo ) rLo = pr[k];
+			if( pr[k] > rHi ) rHi = pr[k];
+			if( ph[k] < hLo ) hLo = ph[k];
+			if( ph[k] > hHi ) hHi = ph[k];
+		}
+		const Scalar profileExtent = ( ( rHi - rLo ) > ( hHi - hLo ) ) ? ( rHi - rLo ) : ( hHi - hLo );
+		const Scalar profileEps = Scalar(1e-9) * profileExtent;
+
+		// SNAP TO THE AXIS, ONCE, BEFORE any pole / segment-live / cap
+		// decision reads a radius.  Every one of those is an EXACT `r > 0`
+		// test, and an exact test cannot survive a GENERATED profile: a
+		// semicircle sampled as r = R*sin(pi*i/M) lands on r = 1.5e-16 at
+		// i == M, because sin(pi) is not 0 in IEEE double.  Un-snapped, the
+		// factory then emits a full n_radial ring of radius 1.5e-16 where the
+		// author meant a single pole vertex, with a skirt of ~1e-17-area
+		// sliver triangles -- violating the same "no zero-area triangles"
+		// contract the pole collapse exists to uphold.  A generator (or the
+		// agent surface) cannot be expected to emit a bit-exact 0.0, so the
+		// snap happens here rather than being pushed onto the author.
+		//
+		// The threshold is RELATIVE to the profile's own extent, so it is
+		// scale-invariant: a microscopic lathe is not flattened, and a real
+		// feature is never eaten (a 1e-9-of-extent radius is sub-visible on
+		// any object at any scale).
+		bool anyPositiveRadius = false;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			if( pr[k] <= profileEps ) {
+				pr[k] = 0;
+			} else {
+				anyPositiveRadius = true;
+			}
+		}
+		if( !anyPositiveRadius ) {
+			return fail( "every profile point lies ON the axis (radius 0, or within 1e-9 of the profile's own extent) -- the profile revolves to zero area" );
+		}
+
+		// Signed volume of revolution -> the outward side (see ORIENTATION
+		// above).  Exact per linear segment: with r(u) = r0 + u*(r1-r0) and
+		// h linear too, integral(r^2 dh) = dh * (r0^2 + r0*r1 + r1^2)/3.
+		// Only the SIGN is used, so the common pi/3 factor is dropped.
+		Scalar vol3 = 0;
+		for( unsigned int k = 0; k + 1 < nProf; k++ ) {
+			vol3 += ( ph[k+1] - ph[k] ) * ( pr[k]*pr[k] + pr[k]*pr[k+1] + pr[k+1]*pr[k+1] );
+		}
+		const Scalar outward = ( vol3 >= 0 ) ? Scalar(1) : Scalar(-1);
+
+		// V texture coordinate = normalized ARC LENGTH along the profile
+		// polyline, not index fraction: arc length keeps texture density
+		// even on an unevenly-sampled profile (the same reason
+		// sweep_geometry measures its profile U by arc length).
+		std::vector<Scalar> vFrac( nProf );
+		vFrac[0] = 0;
+		for( unsigned int k = 0; k + 1 < nProf; k++ ) {
+			const Scalar dr = pr[k+1] - pr[k], dh = ph[k+1] - ph[k];
+			vFrac[k+1] = vFrac[k] + sqrt( dr*dr + dh*dh );
+		}
+		const Scalar vTotal = ( vFrac[ nProf - 1 ] > 0 ) ? vFrac[ nProf - 1 ] : Scalar(1);
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			vFrac[k] /= vTotal;
+		}
+
+		// Per-SEGMENT outward normal in the (r, h) half-plane: the segment
+		// direction rotated -90 degrees, times the derived orientation.  A
+		// segment is "live" (contributes a band AND a normal) only when it
+		// has non-zero length AND does not lie entirely on the axis -- a
+		// zero-length segment is the documented duplicate-a-profile-point
+		// hard-edge idiom, and an on-axis run revolves to a line.
+		const unsigned int nSeg = nProf - 1;
+		std::vector<Scalar> snr( nSeg, Scalar(0) ), snh( nSeg, Scalar(0) );
+		std::vector<unsigned char> segLive( nSeg, 0 );
+		for( unsigned int k = 0; k < nSeg; k++ ) {
+			const Scalar dr = pr[k+1] - pr[k], dh = ph[k+1] - ph[k];
+			const Scalar l = sqrt( dr*dr + dh*dh );
+			if( l > 0 && ( pr[k] > 0 || pr[k+1] > 0 ) ) {
+				snr[k] =  outward * dh / l;
+				snh[k] = -outward * dr / l;
+				segLive[k] = 1;
+			}
+		}
+
+		// ROWS + BANDS.  smooth TRUE: one row per profile point whose normal
+		// AVERAGES its two adjacent live segment normals -- a straight-sided
+		// section stays exactly flat-shaded and a curved one reads smooth,
+		// and duplicating a profile point kills the segment between the two
+		// copies so each keeps its own side's normal (the hard-edge idiom
+		// sweep_geometry documents for its profile).  smooth FALSE: two rows
+		// per live segment, both carrying that segment's own flat normal.
+		struct LatheRow { Scalar r, h, nr, nh, v; };
+		std::vector<LatheRow> rows;
+		std::vector<std::pair<int,int> > bands;
+		if( desc.smooth ) {
+			// A profile point normally contributes ONE row shared by the band
+			// below it and the band above it -- rowBelow[k] == rowAbove[k].
+			// The one exception is an INTERIOR POLE (r == 0 with a live band
+			// on both sides, i.e. a waisted/hourglass profile): see the POLES
+			// note in the header.  There the two bands demand provably
+			// opposite axial normals, so the point contributes TWO rows, each
+			// carrying its own band's segment normal, and the bands index
+			// them separately.
+			std::vector<int> rowBelow( nProf, -1 ), rowAbove( nProf, -1 );
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const bool liveBelow = ( k > 0 && segLive[ k - 1 ] != 0 );
+				const bool liveAbove = ( k < nSeg && segLive[ k ] != 0 );
+				// A point with NO live neighbour is referenced by no band, so
+				// emitting a row for it puts a vertex in the mesh that no
+				// triangle uses -- and TriangleMeshGeometryIndexed builds its
+				// BVH root box over ALL points, not over referenced ones, so a
+				// dead vertex silently inflates the root.  The case is real,
+				// not theoretical: a profile that walks up the axis before it
+				// leaves it -- (0,-100) (0,0) (1,1) (0,2) -- has a dead on-axis
+				// point at h = -100, which grows the box from [0,2] to
+				// [-100,2] and hands the traversal a 50x oversized root.  Dead
+				// rows from the zero-length duplicate-a-point hard-edge idiom
+				// are coincident with a live neighbour and cost nothing, so
+				// only on-axis (and >= 3-long coincident) runs are at stake --
+				// but skipping is uniform and cheaper than special-casing.
+				// Bands only ever read rowAbove[k] / rowBelow[k+1] for a LIVE
+				// segment k, and both of those points have a live neighbour by
+				// construction, so the -1 left behind here is never indexed.
+				if( !liveBelow && !liveAbove ) {
+					continue;
+				}
+				LatheRow row;
+				row.r = pr[k]; row.h = ph[k]; row.v = vFrac[k];
+				if( !( pr[k] > 0 ) && liveBelow && liveAbove ) {
+					LatheRow lo = row, hi = row;
+					lo.nr = snr[ k - 1 ]; lo.nh = snh[ k - 1 ];
+					hi.nr = snr[ k ];     hi.nh = snh[ k ];
+					rowBelow[k] = (int)rows.size(); rows.push_back( lo );
+					rowAbove[k] = (int)rows.size(); rows.push_back( hi );
+					continue;
+				}
+				Scalar ar = 0, ah = 0;
+				if( liveBelow ) { ar += snr[ k - 1 ]; ah += snh[ k - 1 ]; }
+				if( liveAbove ) { ar += snr[ k ];     ah += snh[ k ];     }
+				const Scalar l = sqrt( ar*ar + ah*ah );
+				if( l > 0 ) {
+					row.nr = ar / l; row.nh = ah / l;
+				} else {
+					// Rows no triangle references are skipped above, so this
+					// is reached only by an EXACT cusp whose two live segment
+					// normals cancel -- a profile that runs up and back down
+					// at the same radius (a zero-thickness shell).  Give it a
+					// sane radial normal rather than a zero vector.
+					row.nr = 1; row.nh = 0;
+				}
+				rowBelow[k] = rowAbove[k] = (int)rows.size();
+				rows.push_back( row );
+			}
+			for( unsigned int k = 0; k < nSeg; k++ ) {
+				if( segLive[k] ) {
+					// The band spans segment k: it uses point k's ABOVE row and
+					// point k+1's BELOW row -- identical to the single shared
+					// row everywhere except at a split interior pole.
+					bands.push_back( std::make_pair( rowAbove[k], rowBelow[ k + 1 ] ) );
+				}
+			}
+		} else {
+			for( unsigned int k = 0; k < nSeg; k++ ) {
+				if( !segLive[k] ) {
+					continue;
+				}
+				LatheRow a, b;
+				a.r = pr[k];     a.h = ph[k];     a.v = vFrac[k];     a.nr = snr[k]; a.nh = snh[k];
+				b.r = pr[k+1];   b.h = ph[k+1];   b.v = vFrac[k+1];   b.nr = snr[k]; b.nh = snh[k];
+				const int ia = (int)rows.size(); rows.push_back( a );
+				const int ib = (int)rows.size(); rows.push_back( b );
+				bands.push_back( std::make_pair( ia, ib ) );
+			}
+		}
+		if( bands.empty() ) {
+			return fail( "the profile revolves to zero surface area (every segment is zero-length or lies on the axis)" );
+		}
+
+		const int ax = desc.axis;
+		const int au = ( desc.axis + 1 ) % 3;
+		const int av = ( desc.axis + 2 ) % 3;
+		// A full turn closes on itself: nRadial columns, the last stitching
+		// straight back to column 0 with NO duplicated seam column (matching
+		// how sweep_geometry wraps its profile U).  A partial turn spans
+		// nRadial segments across nRadial + 1 distinct columns.
+		const bool fullTurn = ( desc.sweepDegrees >= 360.0 - 1e-9 );
+		const int nCols = fullTurn ? nRadial : ( nRadial + 1 );
+		const Scalar sweepRad = (Scalar)desc.sweepDegrees * DEG_TO_RAD;
+		const Scalar dTheta = ( fullTurn ? TWO_PI : sweepRad ) / Scalar( nRadial );
+
+		// Output budget.  It has to be REACHABLE to be a guard at all: the
+		// worst case the clamps allow is 4095 faceted segments x 2 rows =
+		// 8190 rows at nRadial 2048 -> 2049 columns = 16.8M vertices, so the
+		// original 20M ceiling could never fire.  2M is the working number --
+		// still an absurd single lathe (a 1000-row profile at full radial
+		// resolution), but low enough that a runaway request degrades to a
+		// diagnostic instead of a multi-gigabyte allocation.
+		//
+		// NOTE the budget bounds VERTICES, not memory: it is not a memory
+		// ceiling and must not be read as one.  TRIANGLES dominate, and there
+		// are ~2 per ring vertex -- at the cap that is ~4M PointerTriangle
+		// entries (~288 MB) against ~128 MB of vertex/normal/texcoord arrays,
+		// before the BVH built over them.
+		const double plannedVerts = (double)rows.size() * (double)nCols;
+		if( plannedVerts > 2000000.0 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"%g ring vertices requested (%u profile rows x %d radial columns) exceeds the 2M budget -- reduce n_radial or the profile point count",
+				plannedVerts, (unsigned int)rows.size(), nCols );
+			return fail( msgbuf );
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "lathe geometry" );
+		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
+
+		std::vector<int>  rowBase( rows.size(), 0 );
+		std::vector<unsigned char> rowIsPole( rows.size(), 0 );
+		int vc = 0;
+		for( size_t j = 0; j < rows.size(); j++ ) {
+			const LatheRow& row = rows[j];
+			// Exact, and safe to be exact: every radius was snapped to a hard
+			// 0.0 at the top of the factory (see SNAP TO THE AXIS), so a
+			// generated profile's 1.5e-16 endpoint reaches here as a genuine
+			// pole rather than as an n_radial ring of sliver triangles.
+			const bool pole = !( row.r > 0 );
+			rowIsPole[j] = pole ? 1 : 0;
+			rowBase[j] = vc;
+			if( pole ) {
+				// ONE vertex on the axis.  Its normal is the theta-average of
+				// the revolved profile normal: the radial part integrates to
+				// zero around the axis, leaving +-A.  nh cannot be zero for a
+				// pole whose band is live (a live band there forces dr != 0),
+				// so the sign is well defined -- and an interior pinch, whose
+				// two bands want opposite signs, has already been SPLIT into
+				// two rows above, so each of them carries its own band's
+				// (non-zero) nh.  The >= is then only a defensive tie-break
+				// for a row no band references at all.
+				Scalar p[3] = { 0, 0, 0 };
+				p[ax] = row.h;
+				pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+				Scalar nrm[3] = { 0, 0, 0 };
+				nrm[ax] = ( row.nh >= 0 ) ? Scalar(1) : Scalar(-1);
+				pGeom->AddNormal( Normal( nrm[0], nrm[1], nrm[2] ) );
+				// u is genuinely undefined on the axis (every angle maps to
+				// this one point); 0.5 puts the pole at the texture's middle.
+				pGeom->AddTexCoord( TexCoord( Scalar(0.5), row.v ) );
+				// u is a PLACEHOLDER here (stored 0.5): mark the pole so mesh refinement
+				// never averages it into a spoke midpoint's u.
+				pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPolar, (unsigned int)vc, 1 );
+				vc++;
+			} else {
+				for( int k = 0; k < nCols; k++ ) {
+					const Scalar th = dTheta * Scalar(k);
+					const Scalar ct = cos( th ), st = sin( th );
+					Scalar p[3] = { 0, 0, 0 };
+					p[ax] = row.h;
+					p[au] = row.r * ct;
+					p[av] = row.r * st;
+					pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+					Scalar nrm[3] = { 0, 0, 0 };
+					nrm[ax] = row.nh;
+					nrm[au] = row.nr * ct;
+					nrm[av] = row.nr * st;
+					pGeom->AddNormal( Normal( nrm[0], nrm[1], nrm[2] ) );
+					pGeom->AddTexCoord( TexCoord( Scalar(k) / Scalar( nRadial ), row.v ) );
+					vc++;
+				}
+			}
+		}
+
+		// A full turn stitches the last column back to column 0 with NO
+		// duplicated seam column, so u WRAPS (the wrap edge spans ~(1 -> 0) in
+		// chart space).  Declare it so DisplacedGeometry's mesh refinement takes
+		// midpoints of that edge the short way round; a partial turn has a real
+		// seam column and flat caps, and nothing wraps.
+		if( fullTurn ) {
+			pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kUPeriodic, 0, (unsigned int)vc );
+		}
+
+		// One place for the orientation flip derived above.
+		const bool flip = ( outward < 0 );
+		// The AUTHORED GRID STRUCTURE, recorded as the triangles are emitted (see
+		// TriangleMeshGeometryIndexed::MeshGrid): line family 0 is the radial ring (every
+		// ring edge of the lathe), family 1+band is that band's profile direction.  Pole
+		// fans are recorded as fans; the partial-sweep caps are in no cell (their rim edges are subdivided to match the wall by TessellateRefined).
+		std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+		grid->numFamilies = 1u + (unsigned int)bands.size();
+		unsigned int triCount = 0;
+		auto emitTri = [&]( const int a, const int b, const int c ) {
+			if( flip ) {
+				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+			} else {
+				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+			}
+			++triCount;
+		};
+
+		for( size_t bi = 0; bi < bands.size(); bi++ ) {
+			const int j0 = bands[bi].first, j1 = bands[bi].second;
+			const bool pole0 = rowIsPole[ (size_t)j0 ] != 0;
+			const bool pole1 = rowIsPole[ (size_t)j1 ] != 0;
+			for( int k = 0; k < nRadial; k++ ) {
+				const int kn = ( k + 1 ) % nCols;	// wraps to 0 only on a full turn (nCols == nRadial there)
+				const int a = rowBase[ (size_t)j0 ] + ( pole0 ? 0 : k );
+				const int d = rowBase[ (size_t)j0 ] + ( pole0 ? 0 : kn );
+				const int b = rowBase[ (size_t)j1 ] + ( pole1 ? 0 : k );
+				const int c = rowBase[ (size_t)j1 ] + ( pole1 ? 0 : kn );
+				// Quad corners: a = (j0,k), d = (j0,k+1), c = (j1,k+1),
+				// b = (j1,k).  Collapsing either row to a pole degenerates
+				// exactly one of the two triangles, so a pole emits a FAN of
+				// nRadial triangles instead of nRadial zero-area quads.
+				const unsigned int bandFam = 1u + (unsigned int)bi;
+				if( pole0 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = b; f.t[2] = c; } else { f.t[0] = a; f.t[1] = c; f.t[2] = b; }
+					f.pole = 0; f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
+					emitTri( a, c, b );
+				} else if( pole1 ) {
+					TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+					f.tri = triCount;
+					if( flip ) { f.t[0] = a; f.t[1] = c; f.t[2] = d; f.pole = 1; } else { f.t[0] = a; f.t[1] = d; f.t[2] = c; f.pole = 2; }
+					f.famSpoke = bandFam; f.famRing = 0;
+					grid->fans.push_back( f );
+					emitTri( a, d, c );
+				} else {
+					TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+					q.tri[0] = triCount; q.tri[1] = triCount + 1;
+					// authored triangles (q0,q1,q2),(q0,q2,q3): unflipped (a,d,c)+(a,c,b) -> q = a,d,c,b;
+					// flipped (a,c,d)+(a,b,c) -> q = a,b,c,d
+					if( flip ) { q.q[0] = a; q.q[1] = b; q.q[2] = c; q.q[3] = d; q.famS = bandFam; q.famT = 0; }
+					else       { q.q[0] = a; q.q[1] = d; q.q[2] = c; q.q[3] = b; q.famS = 0; q.famT = bandFam; }
+					grid->quads.push_back( q );
+					emitTri( a, d, c );
+					emitTri( a, c, b );
+				}
+			}
+		}
+
+		// PARTIAL SWEEP CAPS.  Below 360 degrees the surface is open along
+		// the two radial half-planes t = 0 and t = sweep; close each with the
+		// body's cross-section.  That cross-section is the profile polyline
+		// closed back through the AXIS (append the axis projection of the
+		// last and then the first profile point, skipping either that is
+		// already on the axis).  A profile authored as a closed LOOP (first
+		// point == last point, e.g. a hollow shell band) is already its own
+		// cross-section and is capped as authored.  EarClipProfile drops
+		// consecutively-coincident vertices itself (cyclically), so the
+		// shell case whose two axis projections land on the same point needs
+		// no separate dedup here.
+		//
+		// TWO exceptions to "close through the axis", both about the spur it
+		// would add:
+		//  - LOOP detection is a TOLERANCE, not exact equality.  A closed
+		//    profile GENERATED from cos/sin (a torus/bead ring) does not come
+		//    back bit-exact, so an `==` test read it as open, appended a spur
+		//    from the ring THROUGH its own interior to the axis, and the
+		//    self-intersecting cross-section then failed ear-clipping -- i.e.
+		//    a generated torus rendered fine at 360 and HARD-FAILED the
+		//    instant the author set sweep_degrees 180.  The tolerance is
+		//    profileEps -- 1e-9 of the profile's own bounding EXTENT, shared
+		//    with the on-axis snap.
+		//  - ENDS AT EQUAL HEIGHT (a tube/shell authored up one wall and back
+		//    down the other) puts both axis projections at the SAME point,
+		//    collinear with both endpoints: the spur has zero area and ear-
+		//    clipping it yields a zero-area triangle, contradicting the "no
+		//    zero-area triangles" contract.  Closing the cross-section
+		//    DIRECTLY there is both non-degenerate and the right shape (the
+		//    tube wall, not the filled bore).  When the ends are at DIFFERENT
+		//    heights the spur has real area and the cap does fill the bore --
+		//    a documented limitation of the close-through-the-axis rule, not
+		//    something this can decide for the author.
+		//
+		// And ONE reason the cross-section is not always a single polygon:
+		//  - AN INTERIOR ON-AXIS POINT (the hourglass/waisted profile, pinched
+		//    to r == 0 mid-way) makes the closed-through-the-axis polygon
+		//    NON-SIMPLE: the pinch point lies EXACTLY on the closing edge that
+		//    runs down the axis, so the polygon touches itself.  Ear clipping
+		//    still succeeds and the total area is still right, but it emits a
+		//    triangle of EXACTLY zero area at the touch -- the very thing the
+		//    level-ends rule above refuses to do.  So the cross-section is
+		//    SPLIT at every interior on-axis point into LOBES, and each lobe
+		//    is closed through the axis and ear-clipped on its own.  Each
+		//    lobe's own ends decide its own spur, so the hourglass at
+		//    sweep_degrees 90 caps as two clean triangles instead of one
+		//    self-touching pentagon.  (A lobe that revolves to nothing -- an
+		//    on-axis run, or a zero-thickness flat cross-section -- simply
+		//    contributes no cap; see the `< 3` skip below.)
+		if( !fullTurn ) {
+			// profileEps -- the SAME profile-extent-relative tolerance the
+			// on-axis snap uses, deliberately shared: both questions are
+			// "is this distance zero at the scale of the part?".
+			const Scalar loopTol = profileEps;
+			const bool profileLoop = ( fabs( pr[0] - pr[ nProf - 1 ] ) <= loopTol &&
+			                           fabs( ph[0] - ph[ nProf - 1 ] ) <= loopTol );
+
+			// LOBES: inclusive [first, last] index ranges of the profile, cut
+			// at every INTERIOR on-axis point (see the note above).  A profile
+			// that never touches the axis in its interior -- the overwhelming
+			// common case -- yields exactly one lobe spanning the whole
+			// polyline, so this is a no-op there.  A profile already authored
+			// as a closed LOOP is its own cross-section and is never cut: its
+			// last point is the duplicate of its first and is dropped instead.
+			std::vector<std::pair<unsigned int,unsigned int> > lobes;
+			if( profileLoop ) {
+				lobes.push_back( std::make_pair( 0u, nProf - 2u ) );
+			} else {
+				unsigned int lobeStart = 0;
+				for( unsigned int k = 1; k + 1 < nProf; k++ ) {
+					if( !( pr[k] > 0 ) ) {
+						lobes.push_back( std::make_pair( lobeStart, k ) );
+						lobeStart = k;
+					}
+				}
+				lobes.push_back( std::make_pair( lobeStart, nProf - 1u ) );
+			}
+
+			// Build + triangulate every lobe FIRST, so the cap UV frame can be
+			// the union box over all of them (one continuous cap parameter-
+			// ization across the lobes, not each lobe stretched to 0..1), and
+			// so a refusal happens before any cap vertex is emitted.
+			struct LatheCapLobe {
+				std::vector<Scalar>       cr, chh;
+				std::vector<unsigned int> tris;
+				bool                      ccw;
+			};
+			std::vector<LatheCapLobe> capLobes;
+			for( size_t li = 0; li < lobes.size(); li++ ) {
+				const unsigned int s = lobes[li].first, e = lobes[li].second;
+				LatheCapLobe lobe;
+				lobe.cr.reserve( ( e - s ) + 3 );
+				lobe.chh.reserve( ( e - s ) + 3 );
+				for( unsigned int k = s; k <= e; k++ ) {
+					lobe.cr.push_back( pr[k] ); lobe.chh.push_back( ph[k] );
+				}
+				// Each lobe answers the level-ends question for ITSELF: a lobe
+				// of a split profile has its own pair of ends, and the whole
+				// profile's endsLevel says nothing about them.
+				const bool lobeLevel = ( fabs( ph[s] - ph[e] ) <= loopTol );
+				if( !profileLoop && !lobeLevel ) {
+					if( pr[e] > 0 ) { lobe.cr.push_back( 0 ); lobe.chh.push_back( ph[e] ); }
+					if( pr[s] > 0 ) { lobe.cr.push_back( 0 ); lobe.chh.push_back( ph[s] ); }
+				}
+				// A cross-section with fewer than 3 distinct points has no
+				// area, so there is NOTHING to cap -- emit the band and no
+				// cap, rather than refusing to build the geometry at all.
+				// The case is ordinary, not pathological: a flat radial washer
+				// (1,0) (3,0) is level-ended, so no spur is appended and the
+				// cross-section is the 2-point segment itself.  Refusing here
+				// is exactly the "builds at 360, hard-fails the instant the
+				// author types sweep_degrees 180" pathology the loop tolerance
+				// above exists to remove.
+				if( lobe.cr.size() < 3 ) {
+					continue;
+				}
+				if( !EarClipProfile( lobe.cr, lobe.chh, lobe.tris ) ) {
+					pGeom->release();
+					// NOTE the wording: ear clipping REFUSED, and the reason is
+					// not diagnosed here.  In particular there is no self-
+					// intersection test -- a Z-shaped self-crossing profile
+					// ear-clips happily into two overlapping, oppositely-wound
+					// caps.  Garbage in is accepted (sweep_geometry behaves the
+					// same way); promising detection this code does not perform
+					// would send an author looking for the wrong bug.
+					return fail( "the partial-sweep cross-section could not be ear-clipped into triangles -- the usual cause is a profile that degenerates to a line once closed through the axis" );
+				}
+				// A cross-section wound CCW in (r, h) maps to geometric normal
+				// e_r x e_h = -tangent(t) (same U x A = -V, V x A = U
+				// identities as the WINDING note).  The START cap faces
+				// -tangent(0) and the END cap +tangent(sweep), so CCW is right
+				// for the start and must be reversed for the end.
+				// EarClipProfile preserves the polygon's own winding, and the
+				// winding is measured HERE from each lobe's signed area rather
+				// than inherited from `outward`, so the caps stay self-
+				// consistent even for a profile whose enclosed volume does not
+				// determine its cap winding.
+				Scalar capArea2 = 0;
+				for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+					const size_t k2 = ( k + 1 ) % lobe.cr.size();
+					capArea2 += lobe.cr[k] * lobe.chh[k2] - lobe.cr[k2] * lobe.chh[k];
+				}
+				lobe.ccw = ( capArea2 >= 0 );
+				capLobes.push_back( lobe );
+			}
+
+			// Cap UV over the UNION bounding box of every capped lobe.
+			Scalar bx0 = 0, bx1 = 0, bh0 = 0, bh1 = 0;
+			bool haveBox = false;
+			for( size_t li = 0; li < capLobes.size(); li++ ) {
+				const LatheCapLobe& lobe = capLobes[li];
+				for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+					if( !haveBox ) {
+						bx0 = bx1 = lobe.cr[k]; bh0 = bh1 = lobe.chh[k];
+						haveBox = true;
+						continue;
+					}
+					if( lobe.cr[k]  < bx0 ) bx0 = lobe.cr[k];
+					if( lobe.cr[k]  > bx1 ) bx1 = lobe.cr[k];
+					if( lobe.chh[k] < bh0 ) bh0 = lobe.chh[k];
+					if( lobe.chh[k] > bh1 ) bh1 = lobe.chh[k];
+				}
+			}
+			const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1) / ( bx1 - bx0 ) : Scalar(1);
+			const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1) / ( bh1 - bh0 ) : Scalar(1);
+
+			// Side-major on purpose: every start-cap face, then every end-cap
+			// face, so the face order stays "sides, start cap, end cap"
+			// whatever the lobe count.
+			for( int side = 0; side < 2; side++ ) {
+				const bool isStart = ( side == 0 );
+				const Scalar th = isStart ? Scalar(0) : sweepRad;
+				const Scalar ct = cos( th ), st = sin( th );
+				Scalar tang[3] = { 0, 0, 0 };
+				tang[au] = -st;
+				tang[av] =  ct;
+				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
+				const Normal capN( sgn * tang[0], sgn * tang[1], sgn * tang[2] );
+				for( size_t li = 0; li < capLobes.size(); li++ ) {
+					const LatheCapLobe& lobe = capLobes[li];
+					const int base = vc;
+					for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+						Scalar p[3] = { 0, 0, 0 };
+						p[ax] = lobe.chh[k];
+						p[au] = lobe.cr[k] * ct;
+						p[av] = lobe.cr[k] * st;
+						pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+						pGeom->AddNormal( capN );
+						pGeom->AddTexCoord( TexCoord( ( lobe.cr[k] - bx0 ) * bxs, ( lobe.chh[k] - bh0 ) * bhs ) );
+						vc++;
+					}
+					const bool capFlip = isStart ? !lobe.ccw : lobe.ccw;
+					for( size_t t = 0; t + 2 < lobe.tris.size(); t += 3 ) {
+						const int a = base + (int)lobe.tris[t];
+						const int b = base + (int)lobe.tris[t+1];
+						const int c = base + (int)lobe.tris[t+2];
+						if( capFlip ) {
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+						} else {
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+						}
+					}
+				}
+			}
+		}
+
+		pGeom->SetGrid( grid );
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	namespace
+	{
+		// EVERY skin refusal goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink -- the same "however deep the call stack" channel
+		// RISE_API_CreateLatheGeometry's `fail` lambda and SweepFail above
+		// already use, and for the same reason: a factory-only gate (a
+		// coincident rail, a zero-area sheet, the vertex budget) otherwise
+		// surfaced to a scene author as the generic "apply failed (e.g.
+		// unresolved reference); see log", which is actively misleading
+		// since no reference is involved.
+		//
+		// The SINK gets the RAW reason; only the LOG line carries this
+		// factory's own name.  Job::AddSkinGeometry prepends the geometry's
+		// name and DeriveToJob prepends `skin_geometry: `, so baking
+		// "RISE_API_CreateSkinGeometry: " into the sink too would stutter
+		// three qualifiers deep in front of the author's actual reason.
+		bool SkinFail( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateSkinGeometry: %s", buf );
+			SetFinalizeDiagIfEmpty( buf );
+			return false;
+		}
+
+		// The WARNING sibling of SkinFail, for a sheet that BUILDS but whose
+		// author needs to be told something about it.
+		//
+		// Deliberately NOT written to g_cstFinalizeDiagSink.  That sink's
+		// contract (GenericManager.h, and DeriveToJob's `if( ok ) continue;`)
+		// is FAILURE-ONLY: it is read exactly when a Finalize returns false,
+		// so a string left there by a SUCCEEDING build is either dropped on
+		// the floor or -- worse, if a later chunk in the same derive fails
+		// without setting its own reason -- misattributed to that chunk.
+		// The log is the channel that carries a warning, and it is the same
+		// one the n_len / n_across / billow-inert warnings in this factory
+		// already use.
+		void SkinWarn( const char* fmt, ... )
+		{
+			char buf[1024];
+			va_list ap;
+			va_start( ap, fmt );
+			vsnprintf( buf, sizeof(buf), fmt, ap );
+			va_end( ap );
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: %s", buf );
+		}
+
+		// Normalized cumulative arc-length parameter of every vertex of an
+		// OPEN polyline: par[0] == 0, par[n-1] == 1, non-decreasing.  Two
+		// consecutive entries are EQUAL exactly when the segment between
+		// them has zero length (the duplicate-a-point hard-edge idiom), and
+		// the union merge below keeps BOTH of them.
+		//
+		// This is the OPEN-polyline sibling of ProfileArcParams (the closed
+		// one the loft uses); it is separate rather than a flag on that one
+		// because the two differ in the segment set (no wrap segment here)
+		// AND in the endpoint convention (par[n-1] == 1 here, where a closed
+		// polygon's parameters live in [0, 1)).
+		//
+		// Returns FALSE when the polyline has ZERO total length -- every
+		// point coincident.  The lathe's closed-profile sibling falls back
+		// to index parameterization there; a skin rail cannot, because a
+		// zero-length rail is a refusal case (a sheet spanning a POINT and a
+		// curve is a fan whose "arc length along the rails" is meaningless
+		// on one side), so the caller is told rather than silently handed a
+		// substitute parameterization.
+		bool RailArcParams( const std::vector<Point3>& pts, std::vector<Scalar>& par )
+		{
+			const size_t n = pts.size();
+			par.assign( n, Scalar(0) );
+			std::vector<Scalar> cum( n, Scalar(0) );
+			for( size_t k = 0; k + 1 < n; k++ ) {
+				cum[ k + 1 ] = cum[k] + Vector3Ops::Magnitude( Vector3Ops::mkVector3( pts[k+1], pts[k] ) );
+			}
+			const Scalar total = cum[ n - 1 ];
+			if( !( total > 0 ) ) {
+				return false;
+			}
+			for( size_t k = 0; k < n; k++ ) {
+				par[k] = cum[k] / total;
+			}
+			par[ n - 1 ] = 1;
+			return true;
+		}
+
+		// The point ON an open polyline at normalized arc-length parameter p.
+		// Used ONLY for parameters this rail did not itself contribute -- a
+		// parameter that IS this rail's own is emitted as the authored vertex
+		// VERBATIM, never through this function, so no authored kink is ever
+		// rounded off by a floating-point round trip.
+		Point3 RailPointAt( const std::vector<Point3>& pts, const std::vector<Scalar>& par, const Scalar p )
+		{
+			const size_t n = pts.size();
+			size_t seg = 0;
+			while( seg + 2 < n && par[ seg + 1 ] <= p ) {
+				seg++;
+			}
+			const Scalar p0 = par[ seg ], p1 = par[ seg + 1 ];
+			const Scalar span = p1 - p0;
+			const Scalar f = ( span > 0 ) ? ( ( p - p0 ) / span ) : Scalar(0);
+			return Point3(
+				pts[seg].x + ( pts[seg+1].x - pts[seg].x ) * f,
+				pts[seg].y + ( pts[seg+1].y - pts[seg].y ) * f,
+				pts[seg].z + ( pts[seg+1].z - pts[seg].z ) * f );
+		}
+	}
+
+	// SKIN: the open ruled / billowed sheet spanning two boundary polylines.
+	//
+	// PARAMETERIZATION.  u runs ALONG the rails (normalized arc length,
+	// = the U texture coordinate); v runs ACROSS, 0 at rail A and 1 at rail
+	// B (= the V texture coordinate).  The base surface is RULED:
+	// P0(u, v) = A(u) + v * (B(u) - A(u)).
+	//
+	// STATIONS.  The u samples are the UNION of both rails' own normalized
+	// arc-length parameters, plus whichever of the nLen uniform parameters
+	// do not already coincide with one.  The union half is the load-bearing
+	// half: the obvious alternative -- resample both rails onto one uniform
+	// grid -- silently CHAMFERS every authored kink that does not happen to
+	// land on the grid, which on a sheet is a silhouette error (a wing's
+	// authored elbow simply is not in the mesh).  So an authored vertex is
+	// always emitted verbatim, and nLen only ever ADDS stations between
+	// them.
+	//
+	// NORMALS + BILLOW, in that order.  The ruled sheet's per-vertex normal
+	// is normalize(dP/du x dP/dv) by central differences on the grid;
+	// `billow` then displaces each vertex along THAT normal by
+	// billow * |B(u) - A(u)| * sin^2(pi*v) -- a falloff that is exactly
+	// zero AND tangent at v = 0 and v = 1, so the authored rails are never
+	// moved however hard the sheet is inflated.  The emitted normals are
+	// then RECOMPUTED from the displaced positions, so a billowed sheet
+	// shades as the curved surface it actually is.  A billow big enough to
+	// fold the sheet through itself at an authored crease is built as
+	// authored and WARNED about, not clamped -- see the fold check at the
+	// bottom of this function for why a clamp would be the wrong call.
+	//
+	// PINCHES.  A station where the two rails MEET -- a leaf tip, a sail
+	// corner, a wing's shoulder and outermost fingertip -- collapses to ONE
+	// shared vertex, exactly as the lathe collapses an on-axis profile row
+	// to a pole, so the tip is a connected FAN rather than nAcross unshared
+	// coincident copies with a torn perimeter.  Near-coincident rails are
+	// snapped to an exact pinch first (the lathe's axis snap, at the lathe's
+	// 1e-9-of-own-extent threshold), because the collapse is an exact test.
+	//
+	// SIDEDNESS -- decided against RENDERER REALITY, not assumed.  One
+	// sheet, baked DOUBLE-SIDED (as lathe and sweep are).
+	// TriangleMeshGeometryIndexed::IntersectRay re-orients BOTH the shading
+	// normal and the geometric normal toward the incoming ray on a
+	// double-sided mesh, so each face shades correctly from ITS OWN side.
+	// The measurement: two skins over the SAME two rails, one authored
+	// rail_a-first and one rail_b-first -- geometrically identical, opposite
+	// surface normal -- take the SAME ray to a FRONT-face hit, with the
+	// double-sided flip firing on exactly one of the two.  So the half of
+	// the membrane whose normal points AWAY from the eye is lit, not black,
+	// which is what "a membrane must light correctly from both sides" means
+	// for an opaque material.
+	// scenes/Tests/Geometry/skin_stress.RISEscene carries that pair as a
+	// specimen, and TestSkinTwoSided pins it as a ray probe.
+	//
+	// A THIN CLOSED SLAB was the alternative and buys nothing here: an
+	// opaque slab lit only from the far side is exactly as dark as this
+	// sheet is (also measured), so it does not make a backlit wing glow --
+	// a transmitting MATERIAL does -- while it doubles the triangle count
+	// and puts two surface events in the path of every transmitted ray.
+	bool RISE_API_CreateSkinGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const SkinDescriptor&          desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.railAPoints || desc.numRailAPoints < 2 ) {
+			return SkinFail( "need at least 2 `rail_a <x> <y> <z>` entries (the first boundary polyline)" );
+		}
+		if( !desc.railBPoints || desc.numRailBPoints < 2 ) {
+			return SkinFail( "need at least 2 `rail_b <x> <y> <z>` entries (the second boundary polyline)" );
+		}
+		if( desc.numRailAPoints > 4096 || desc.numRailBPoints > 4096 ) {
+			return SkinFail( "rail point counts (%u, %u) exceed the 4096 maximum per rail",
+				desc.numRailAPoints, desc.numRailBPoints );
+		}
+		// Defense in depth for the DIRECT RISE_API.h caller: the chunk
+		// parser's AllTokensAreFiniteNumbers gate already covers the scene /
+		// GUI / agent paths, but an inf coordinate reaching here makes every
+		// segment length inf, so the arc-length parameters come out NaN, the
+		// normals come out NaN, and the factory happily hands the BVH a box
+		// it cannot split.  Same belt-and-braces the lathe's profile loop and
+		// the sweep's profile loop already carry.
+		std::vector<Point3> railA( desc.numRailAPoints ), railB( desc.numRailBPoints );
+		for( int side = 0; side < 2; side++ ) {
+			const double* src = ( side == 0 ) ? desc.railAPoints : desc.railBPoints;
+			std::vector<Point3>& dst = ( side == 0 ) ? railA : railB;
+			for( size_t k = 0; k < dst.size(); k++ ) {
+				const double x = src[ 3*k ], y = src[ 3*k + 1 ], z = src[ 3*k + 2 ];
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) || !IsFiniteDouble( z ) ) {
+					return SkinFail( "rail_%c point %u (%g, %g, %g) must be three FINITE numbers (no nan, no inf)",
+						( side == 0 ) ? 'a' : 'b', (unsigned int)k, x, y, z );
+				}
+				dst[k] = Point3( (Scalar)x, (Scalar)y, (Scalar)z );
+			}
+		}
+		if( !IsFiniteDouble( desc.billow ) ) {
+			return SkinFail( "billow (%g) must be a FINITE number (no nan, no inf)", desc.billow );
+		}
+
+		// Clamp rather than refuse, matching lathe's n_radial: a tessellation
+		// count is a QUALITY dial, and an author who typed 100000 wants a
+		// dense sheet, not a hard failure.  The warning is what keeps the
+		// clamp from being silent.
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const int nAcross = desc.nAcross < 2 ? 2 : ( desc.nAcross > 1024 ? 1024 : desc.nAcross );
+		if( nAcross != desc.nAcross ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSkinGeometry: n_across %d clamped to %d", desc.nAcross, nAcross );
+		}
+		if( desc.billow != 0.0 && nAcross < 3 ) {
+			// Not a refusal: the sheet is still exactly the surface the rails
+			// describe, and `billow` is simply inert on a two-row grid that
+			// has no interior row to displace.  Silence here would read as a
+			// billow that did nothing for no stated reason.
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateSkinGeometry: billow %g is INERT at n_across %d -- the falloff is zero at both rails, so a sheet with no interior row has nothing to inflate (raise n_across)",
+				desc.billow, nAcross );
+		}
+
+		std::vector<Scalar> parA, parB;
+		if( !RailArcParams( railA, parA ) ) {
+			return SkinFail( "rail_a has ZERO length -- every one of its %u points is coincident, so the sheet has no rail to span from",
+				desc.numRailAPoints );
+		}
+		if( !RailArcParams( railB, parB ) ) {
+			return SkinFail( "rail_b has ZERO length -- every one of its %u points is coincident, so the sheet has no rail to span from",
+				desc.numRailBPoints );
+		}
+
+		// UNION RESAMPLE, PHASE 1 (see the STATIONS note above): a two-pointer
+		// merge over rail A's authored parameters and rail B's.  Rules:
+		//   * A and B pair (within authoredEps) -> ONE station carrying both
+		//     authored points;
+		//   * only one rail's parameter -> that rail's authored point
+		//     VERBATIM, the other rail evaluated on its polyline.
+		// The eps only ever decides whether two parameters PAIR UP, never
+		// whether an authored vertex is KEPT, so no authored vertex can be
+		// dropped whatever it is set to.  A zero-length rail segment (the
+		// duplicate-a-point hard-edge idiom) produces two stations at the
+		// same parameter, because the walk advances the POINTER, not the
+		// parameter -- which is exactly what splits the two normals there.
+		struct SkinStation { Scalar u; Point3 a, b; };
+		std::vector<SkinStation> stations;
+		{
+			// An ABSOLUTE tolerance on a normalized quantity: 1e-9 of the
+			// rail's own arc length.  Deliberately tight -- two AUTHORED
+			// parameters that are genuinely distinct must stay distinct.
+			const Scalar authoredEps = Scalar(1e-9);
+			const size_t nA = parA.size(), nB = parB.size();
+			stations.reserve( nA + nB + (size_t)nLen );
+			size_t ia = 0, ib = 0;
+			while( ia < nA || ib < nB ) {
+				const bool haveA = ( ia < nA ), haveB = ( ib < nB );
+				bool takeA = false, takeB = false;
+				Scalar p = 0;
+				if( haveA && haveB && fabs( parA[ia] - parB[ib] ) <= authoredEps ) {
+					takeA = true; takeB = true; p = parA[ia];
+				} else if( haveA && ( !haveB || parA[ia] < parB[ib] ) ) {
+					takeA = true; p = parA[ia];
+				} else {
+					takeB = true; p = parB[ib];
+				}
+				// MONOTONICITY, enforced rather than assumed.  parA and parB
+				// are each individually non-decreasing, but the PAIRING is
+				// tolerant to authoredEps, and that tolerance is what can
+				// emit a parameter that runs BACKWARDS: rail B carrying a
+				// duplicated point (the crease idiom) a hair BELOW a rail-A
+				// vertex pairs its FIRST copy with rail A at rail A's larger
+				// parameter, and then the second copy -- still at rail B's
+				// own smaller parameter -- is taken next.  Un-clamped that is
+				// a station whose u is below its predecessor's: a backwards
+				// U texture coordinate, and a band 1e-10 wide (not zero, so
+				// not dropped) of near-degenerate slivers exactly where the
+				// author asked for a clean crease.
+				//
+				// Clamping to the previous station's u -- rather than
+				// skipping rail B's second copy -- is what KEEPS the crease:
+				// the two stations then share one u, their positions are
+				// bit-identical (both copies of a duplicated rail point), the
+				// band between them is exactly zero-area and is dropped, and
+				// the two normal columns still split.  The clamp can only
+				// ever move p by at most authoredEps, since that is the only
+				// thing that could have put it out of order.
+				if( !stations.empty() && p < stations.back().u ) {
+					p = stations.back().u;
+				}
+				SkinStation s;
+				s.u = p;
+				s.a = takeA ? railA[ia] : RailPointAt( railA, parA, p );
+				s.b = takeB ? railB[ib] : RailPointAt( railB, parB, p );
+				stations.push_back( s );
+				if( takeA ) ia++;
+				if( takeB ) ib++;
+			}
+		}
+
+		// PHASE 2: the nLen uniform REFINEMENT parameters, inserted into that
+		// union wherever they are not already served.
+		//
+		// "Not already served" is a MUCH looser test than phase 1's pairing
+		// eps, and the looseness is load-bearing rather than cosmetic.  A
+		// uniform sample landing a hair away from an authored station leaves
+		// a hair-thin strip between two stations whose surface normals differ
+		// by the FULL crease angle of the kink that authored parameter
+		// encodes -- and `billow`, which displaces along those normals by a
+		// distance set by the rail-to-rail SPAN rather than by the strip
+		// width, then folds that strip through itself.  Rendered, that is a
+		// pinched crevice in the membrane at every authored kink (observed on
+		// a 4-point rail at n_len 24 during this slice's bring-up).  Snapping
+		// at HALF the uniform spacing bounds every station gap from below by
+		// that same half-spacing, so the displacement difference across any
+		// strip stays bounded next to the strip itself.  Nothing authored is
+		// at stake either way: only a UNIFORM sample is ever dropped here.
+		//
+		// EXACTLY ONE uniform sample per station, and the half-open interval
+		// is what makes that true.  A station SERVES the uniform samples in
+		// ( su - uniformEps, su + uniformEps ]: an interval of width exactly
+		// one uniform spacing (2 * uniformEps), open below and closed above,
+		// so it contains exactly ONE point of the uniform grid whatever su
+		// is.  Closing it at BOTH ends -- which is what a non-strict break
+		// test does -- makes it a CLOSED interval of a full spacing, which
+		// contains TWO grid points when su lands on one, and the station then
+		// eats both.  Measured before the strictness was added: rails
+		// authored at arc fractions {0, 0.375, 0.625, 1} with n_len 5 built
+		// FOUR stations, not five, with a widest gap of 1.5x the requested
+		// spacing -- refuting the descriptor's ">= max(nLen, |union|)"
+		// contract on the count the author asked for by name.  The lower
+		// bound the paragraph above is about is unaffected: a uniform sample
+		// is emitted only at pu <= su - uniformEps and consumed up to
+		// su + uniformEps, so every uniform-to-authored gap is still at least
+		// half the uniform spacing.
+		//
+		// What this does NOT (and cannot) remove is the pinch a LARGE billow
+		// makes at a SHARP authored crease, where the normal turns by tens of
+		// degrees across two strips whatever their width: inflating a folded
+		// sheet folds it further, and that is the surface, not an artifact.
+		// Keep billow modest on a creased rail, or round the crease.
+		{
+			const size_t nU = (size_t)nLen;
+			const Scalar uniformEps = Scalar(0.5) / Scalar( nU - 1 );
+			std::vector<SkinStation> refined;
+			refined.reserve( stations.size() + nU );
+			size_t iu = 0;
+			for( size_t is = 0; is < stations.size(); is++ ) {
+				const Scalar su = stations[is].u;
+				while( iu < nU ) {
+					const Scalar pu = Scalar(iu) / Scalar( nU - 1 );
+					if( pu > su - uniformEps ) {
+						break;			// inside this station's half-open service interval
+					}
+					if( refined.empty() || pu > refined.back().u + uniformEps ) {
+						SkinStation s;
+						s.u = pu;
+						s.a = RailPointAt( railA, parA, pu );
+						s.b = RailPointAt( railB, parB, pu );
+						refined.push_back( s );
+					}
+					iu++;
+				}
+				refined.push_back( stations[is] );
+				while( iu < nU && Scalar(iu) / Scalar( nU - 1 ) <= su + uniformEps ) {
+					iu++;			// consumed by this station
+				}
+			}
+			stations.swap( refined );
+		}
+		const size_t nStations = stations.size();
+		if( nStations < 2 ) {
+			return SkinFail( "the two rails resample to fewer than 2 stations -- there is no sheet to build" );
+		}
+
+		// SCALE for every tolerance below: the SPAN of the two rails' shared
+		// bounding box, not a max coordinate -- a small sheet far from the
+		// origin has a genuine extent of its own size, and scaling by
+		// |coordinate| instead would hand it a tolerance bigger than the part
+		// (the same reasoning as the lathe's profileExtent).
+		Scalar bLo[3] = { railA[0].x, railA[0].y, railA[0].z };
+		Scalar bHi[3] = { railA[0].x, railA[0].y, railA[0].z };
+		for( size_t s = 0; s < nStations; s++ ) {
+			const Scalar c[6] = { stations[s].a.x, stations[s].a.y, stations[s].a.z,
+			                      stations[s].b.x, stations[s].b.y, stations[s].b.z };
+			for( int k = 0; k < 6; k++ ) {
+				const int axis = k % 3;
+				if( c[k] < bLo[axis] ) bLo[axis] = c[k];
+				if( c[k] > bHi[axis] ) bHi[axis] = c[k];
+			}
+		}
+		Scalar sheetExtent = bHi[0] - bLo[0];
+		if( bHi[1] - bLo[1] > sheetExtent ) sheetExtent = bHi[1] - bLo[1];
+		if( bHi[2] - bLo[2] > sheetExtent ) sheetExtent = bHi[2] - bLo[2];
+		const Scalar sheetEps = Scalar(1e-9) * sheetExtent;
+
+		// SNAP A NEAR-PINCHED STATION TO AN EXACT PINCH, ONCE, BEFORE any
+		// grid, normal, billow or quad-drop decision reads a span.  This is
+		// the skin's copy of the lathe's SNAP TO THE AXIS (see
+		// RISE_API_CreateLatheGeometry above) and it exists for the same
+		// reason: everything downstream that cares about a pinch -- the quad
+		// collapse below -- is an EXACT test, and an exact test cannot
+		// survive a GENERATED rail.  A leaf whose two rails are traced from
+		// the same analytic curve lands its tips 1e-13 apart rather than
+		// bit-identical, and un-snapped the factory then emits a skirt of
+		// ~1e-13-area sliver triangles where the author meant a single tip --
+		// violating the same "no zero-area triangles" contract the collapse
+		// exists to uphold (measured: a leaf authored with a 1e-12 tip gap
+		// baked a min triangle area of 7.1e-14, below the suite's own
+		// 1e-12 floor).
+		//
+		// RAIL A WINS THE TIE: rail B's station point is moved onto rail A's,
+		// never the reverse and never to a midpoint.  A midpoint would break
+		// BOTH rails' bit-exactness (a pinned property -- an authored rail
+		// vertex is in the mesh VERBATIM), where this breaks only rail B's,
+		// and only by less than 1e-9 of the sheet's own extent.  Rail A is
+		// the v = 0 boundary and the first-named rail, which is the only
+		// asymmetry available to break the tie with.
+		//
+		// The threshold is the SAME 1e-9-of-own-extent the lathe uses, NOT a
+		// looser "authoring precision" tolerance: above FP-evaluation noise
+		// there is no principled scale to snap at (a genuinely thin ribbon is
+		// a legitimate sheet at any width), so a wider threshold would eat
+		// geometry an author meant to keep.
+		{
+			size_t snapped = 0;
+			for( size_t s = 0; s < nStations; s++ ) {
+				const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[s].b, stations[s].a ) );
+				if( d > 0 && d <= sheetEps ) {
+					stations[s].b = stations[s].a;
+					snapped++;
+				}
+			}
+			// EACH STATION SNAPS INDEPENDENTLY, and two ADJACENT ones can
+			// both snap -- the duplicated-rail-point crease idiom applied
+			// where the rails already very nearly meet.  Every quad between
+			// two pinched stations is degenerate, so that strip emits
+			// nothing and the sheet has a GAP; the pinch classification
+			// below detects exactly that condition (on snapped and authored
+			// pinches alike) and names it, rather than this loop trying to
+			// guess which of the two the author meant to keep.  Reaching it
+			// needs two coincidences within 1e-9 of the sheet's extent at
+			// CONSECUTIVE stations, which is why it is reported rather than
+			// repaired.  A snap MID-SPAN is likewise not a special case
+			// here: it becomes an ordinary interior pinch, and the per-side
+			// pole collapse below gives each lobe its own normals.
+			if( snapped > 0 ) {
+				SkinWarn( "%u station(s) had rail_a and rail_b within 1e-9 of the sheet's own extent -- snapped to an EXACT pinch (rail_b onto rail_a) so the tip collapses to one vertex instead of a skirt of sliver triangles",
+					(unsigned int)snapped );
+			}
+		}
+
+		// THE ZERO-AREA SHEET.  Two rails that describe the SAME curve span
+		// nothing at all -- every station's segment has zero length, so the
+		// bake would be a ribbon of degenerate triangles.  Measured on the
+		// resampled stations rather than on the authored point lists, so the
+		// same curve authored with DIFFERENT point counts (the case an
+		// element-wise comparison misses entirely) is still caught.  Rails
+		// that merely TOUCH at one or both ends -- a leaf, a sail pinched at
+		// a corner -- are not this case and are fully supported.
+		{
+			Scalar maxSpan = 0;
+			for( size_t s = 0; s < nStations; s++ ) {
+				const Scalar d = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[s].b, stations[s].a ) );
+				if( d > maxSpan ) maxSpan = d;
+			}
+			if( !( maxSpan > sheetEps ) ) {
+				return SkinFail( "rail_a and rail_b describe the SAME curve (their widest separation is %g, within 1e-9 of the sheet's own extent) -- a skin needs two DISTINCT boundaries to span",
+					(double)maxSpan );
+			}
+		}
+
+		const double plannedVerts = (double)nStations * (double)nAcross;
+		if( plannedVerts > 2000000.0 ) {
+			return SkinFail( "%g sheet vertices requested (%u stations x %d rows across) exceeds the 2M budget -- reduce n_len / n_across or the rail point counts",
+				plannedVerts, (unsigned int)nStations, nAcross );
+		}
+
+		// ---- base (ruled) grid -------------------------------------------
+		const size_t nAcrossSz = (size_t)nAcross;
+		std::vector<Point3> pos( nStations * nAcrossSz );
+		std::vector<Scalar> vFrac( nAcrossSz );
+		for( size_t j = 0; j < nAcrossSz; j++ ) {
+			vFrac[j] = Scalar(j) / Scalar( nAcross - 1 );
+		}
+		vFrac[ nAcrossSz - 1 ] = 1;
+		for( size_t i = 0; i < nStations; i++ ) {
+			const Point3& a = stations[i].a;
+			const Point3& b = stations[i].b;
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				const Scalar v = vFrac[j];
+				// Written as the two EXACT endpoints at v == 0 and v == 1 (not
+				// as a lerp that rounds), so an authored rail vertex is in the
+				// mesh BIT-EXACTLY -- which is what the corner-presence tests
+				// assert, and what makes "a planar pair of rails bakes an
+				// exactly planar sheet" true rather than nearly true.
+				pos[ i * nAcrossSz + j ] = ( j == 0 ) ? a
+					: ( ( j == nAcrossSz - 1 ) ? b
+						: Point3( a.x + ( b.x - a.x ) * v, a.y + ( b.y - a.y ) * v, a.z + ( b.z - a.z ) * v ) );
+			}
+		}
+
+		// ---- per-vertex normals by central differences on the grid --------
+		// Shared by the base sheet (which billow displaces along) and by the
+		// displaced sheet (whose normals are what actually ship), so the two
+		// can never drift apart.
+		//
+		// A station where the two rails MEET (a leaf tip, a pinched sail
+		// corner) has a zero dP/dv at every row, so its cross product is
+		// zero and carries no orientation of its own.  Those are filled from
+		// the nearest well-defined normal along the same row rather than left
+		// as a zero vector -- a zero shading normal would put the whole pinch
+		// column in the wrong half-space at the first shading query.
+		std::vector<Normal> nrm( nStations * nAcrossSz );
+		auto computeNormals = [&]( const std::vector<Point3>& P, std::vector<Normal>& N ) -> bool {
+			bool anyValid = false;
+			std::vector<unsigned char> valid( P.size(), 0 );
+			for( size_t i = 0; i < nStations; i++ ) {
+				const size_t i0 = ( i > 0 ) ? i - 1 : i;
+				const size_t i1 = ( i + 1 < nStations ) ? i + 1 : i;
+				for( size_t j = 0; j < nAcrossSz; j++ ) {
+					const size_t j0 = ( j > 0 ) ? j - 1 : j;
+					const size_t j1 = ( j + 1 < nAcrossSz ) ? j + 1 : j;
+					const Vector3 du = Vector3Ops::mkVector3( P[ i1 * nAcrossSz + j ], P[ i0 * nAcrossSz + j ] );
+					const Vector3 dv = Vector3Ops::mkVector3( P[ i * nAcrossSz + j1 ], P[ i * nAcrossSz + j0 ] );
+					const Vector3 c = Vector3Ops::Cross( du, dv );
+					const Scalar l = Vector3Ops::Magnitude( c );
+					if( l > 0 ) {
+						N[ i * nAcrossSz + j ] = Normal( c.x / l, c.y / l, c.z / l );
+						valid[ i * nAcrossSz + j ] = 1;
+						anyValid = true;
+					} else {
+						N[ i * nAcrossSz + j ] = Normal( 0, 0, 0 );
+					}
+				}
+			}
+			if( !anyValid ) {
+				return false;
+			}
+			// Fill every degenerate site from the nearest valid normal ALONG
+			// its own row (the pinch runs across the sheet, so its neighbours
+			// in u are the ones that carry the surface's orientation there).
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				for( size_t i = 0; i < nStations; i++ ) {
+					if( valid[ i * nAcrossSz + j ] ) continue;
+					// SYMMETRIC search: BOTH sides are examined at every
+					// distance, and when both are live at the SAME distance
+					// the two are AVERAGED.  Testing `i - d` first and
+					// breaking on it -- which is what a chained pair of ifs
+					// does -- is a silent LEFT BIAS, and it is wrong wherever
+					// the degenerate site has a live neighbour on each side
+					// carrying a DIFFERENT orientation (an interior pinch, a
+					// crease): one side's answer would be imposed on both.
+					// Nothing about the geometry privileges the -u side, so
+					// nothing here does either.
+					size_t srcLo = nStations, srcHi = nStations;
+					for( size_t d = 1; d < nStations; d++ ) {
+						const bool lo = ( i >= d ) && ( valid[ ( i - d ) * nAcrossSz + j ] != 0 );
+						const bool hi = ( i + d < nStations ) && ( valid[ ( i + d ) * nAcrossSz + j ] != 0 );
+						if( lo ) srcLo = i - d;
+						if( hi ) srcHi = i + d;
+						if( lo || hi ) break;
+					}
+					if( srcLo < nStations || srcHi < nStations ) {
+						if( srcLo < nStations && srcHi < nStations ) {
+							const Normal& nl = N[ srcLo * nAcrossSz + j ];
+							const Normal& nh = N[ srcHi * nAcrossSz + j ];
+							const Scalar sx = nl.x + nh.x, sy = nl.y + nh.y, sz = nl.z + nh.z;
+							const Scalar l = sqrt( sx*sx + sy*sy + sz*sz );
+							// Exactly OPPOSED neighbours cancel, and there is
+							// no mean to take: keep the -u side rather than
+							// ship a zero normal.  Where that actually happens
+							// -- an interior pinch the two rails cross through
+							// -- the per-side pole collapse below overwrites
+							// this with the right answer for each side anyway.
+							N[ i * nAcrossSz + j ] = ( l > 0 ) ? Normal( sx / l, sy / l, sz / l ) : nl;
+						} else {
+							const size_t src = ( srcLo < nStations ) ? srcLo : srcHi;
+							N[ i * nAcrossSz + j ] = N[ src * nAcrossSz + j ];
+						}
+						continue;
+					}
+					// The whole row is degenerate (a rail collapsed onto the
+					// other for its entire length is already refused above, so
+					// this is a row of an otherwise-live sheet): borrow across.
+					for( size_t jj = 0; jj < nAcrossSz; jj++ ) {
+						if( valid[ i * nAcrossSz + jj ] ) { N[ i * nAcrossSz + j ] = N[ i * nAcrossSz + jj ]; break; }
+					}
+				}
+			}
+			return true;
+		};
+
+		if( !computeNormals( pos, nrm ) ) {
+			return SkinFail( "the sheet has zero area everywhere (no station spans a non-degenerate quad)" );
+		}
+
+		// ---- billow --------------------------------------------------------
+		if( desc.billow != 0.0 && nAcross >= 3 ) {
+			std::vector<Point3> billowed( pos );
+			for( size_t i = 0; i < nStations; i++ ) {
+				const Scalar span = Vector3Ops::Magnitude( Vector3Ops::mkVector3( stations[i].b, stations[i].a ) );
+				const Scalar amp = (Scalar)desc.billow * span;
+				// j = 0 and j = nAcross-1 are deliberately NOT touched at all
+				// (not "displaced by a weight that evaluates to zero"): the
+				// authored rail vertices stay BIT-EXACT whatever sin(pi*v)
+				// rounds to at the endpoints.
+				for( size_t j = 1; j + 1 < nAcrossSz; j++ ) {
+					const Scalar sv = sin( (Scalar)M_PI * vFrac[j] );
+					const Scalar w = sv * sv;			// sin^2(pi v) = (1 - cos(2 pi v))/2: zero AND tangent at both rails
+					const Normal& n = nrm[ i * nAcrossSz + j ];
+					const Point3& p = pos[ i * nAcrossSz + j ];
+					billowed[ i * nAcrossSz + j ] = Point3( p.x + n.x * amp * w, p.y + n.y * amp * w, p.z + n.z * amp * w );
+				}
+			}
+			pos.swap( billowed );
+			// The shipped normals belong to the DISPLACED surface, not to the
+			// flat sheet the displacement was measured against.
+			if( !computeNormals( pos, nrm ) ) {
+				return SkinFail( "the billowed sheet has zero area everywhere" );
+			}
+		}
+
+		// ---- pinched stations collapse to ONE vertex (the lathe's pole) ----
+		//
+		// A station where the two rails MEET -- a leaf tip, a pinched sail
+		// corner, the shoulder and outer fingertip of a wing -- has EVERY row
+		// at the same point.  Emitting it as nAcross coincident vertices and
+		// then dropping the degenerate half of each quad is what the first
+		// cut did, and it TEARS the mesh: consecutive fan triangles around
+		// the tip then reference DIFFERENT coincident vertices, so they share
+		// no edge, every one of those edges reads as a boundary edge, and the
+		// rows nothing references at all are left in the buffer as orphans.
+		// Measured on the shipped wing: 142 boundary edges against a
+		// perimeter of 120, 26 duplicate-position vertices, 2 orphans.
+		//
+		// The lathe solved exactly this and its answer is copied here: a
+		// coincident row becomes a SINGLE pole-style vertex, so the tip is a
+		// connected FAN.  Pinched-ness is an EXACT test, which is what the
+		// near-pinch snap above exists to make survivable.
+		//
+		// Billow cannot un-pinch a station: its amplitude is billow * the
+		// station's own rail-to-rail SPAN, which is zero exactly here.
+		std::vector<unsigned char> pinched( nStations, 0 );
+		for( size_t i = 0; i < nStations; i++ ) {
+			pinched[i] = ( stations[i].a.x == stations[i].b.x &&
+			               stations[i].a.y == stations[i].b.y &&
+			               stations[i].a.z == stations[i].b.z ) ? 1 : 0;
+		}
+		// AN INTERIOR PINCH IS NOT AN END PINCH, and collapsing the two the
+		// same way ships a silently WRONG normal.
+		//
+		// At an END pinch the station has exactly ONE fan -- every face
+		// touching it lies on the same side -- so a single vertex carrying
+		// the mean of that fan's normals is meaningful and is what the lathe
+		// does at a pole.  At an INTERIOR pinch (rails that touch mid-span,
+		// or CROSS -- an hourglass) the station has TWO fans, one on each
+		// side, and they are two different surfaces that happen to meet at a
+		// point.  No single normal represents both: on a touch whose lobes
+		// lie in different planes the two fans' normals differ by the angle
+		// between those planes, and on a CROSSING they are exactly OPPOSED
+		// (the a->b direction reverses through the crossing, so d/dv and with
+		// it the whole normal field flips sign).  A mean is not a compromise
+		// there, it is wrong for both sides -- and a mean of exactly opposed
+		// normals is not even defined.
+		//
+		// So an interior pinch collapses PER SIDE: row 0 is the pole the +u
+		// fan shares, row 1 the pole the -u fan shares, both at the SAME
+		// point, each carrying its own side's normals.  That is the same
+		// idiom a duplicated rail point already uses for a CREASE -- two
+		// coincident stations whose normals are allowed to differ -- and an
+		// interior pinch is exactly a crease that has closed to a point.
+		//
+		// TOPOLOGY.  The two lobes then share no vertex: the sheet is two
+		// components touching at a line of coincident poles.  That IS the
+		// honest topology of a surface pinched to a point, and it keeps the
+		// boundary-edge closed form clean: each lobe is a grid pinched at
+		// ONE end, so an S-station R-row sheet with one interior pinch has
+		//     2*(S1-1) + (R-1)  +  2*(S2-1) + (R-1)  =  2*(S-1) + 2*(R-1)
+		// boundary edges (S1 + S2 = S + 1) -- the same perimeter as the
+		// un-pinched grid, with the pinch contributing no boundary of its
+		// own.  Both fans stay connected fans, so nothing tears.
+		//
+		// The author is TOLD, because a mid-span meeting is as often a
+		// mistake (two rails authored to cross) as an intent (a bowtie).
+		size_t nInteriorPinch = 0, firstInteriorPinch = 0;
+		for( size_t i = 1; i + 1 < nStations; i++ ) {
+			if( pinched[i] ) {
+				if( nInteriorPinch == 0 ) firstInteriorPinch = i;
+				nInteriorPinch++;
+			}
+		}
+		auto interiorPinch = [&]( const size_t i ) -> bool {
+			return pinched[i] != 0 && i > 0 && i + 1 < nStations;
+		};
+		if( nInteriorPinch > 0 ) {
+			SkinWarn( "rail_a and rail_b MEET at %u INTERIOR station(s) (first at station %u, u %g): the sheet pinches to a POINT there, so it bakes as separate lobes that share no vertex -- each lobe keeps its OWN normals on its own coincident pole vertex, because no single normal can represent both sides of a pinch.  If the rails were not meant to touch mid-span, move one of them apart there",
+				(unsigned int)nInteriorPinch, (unsigned int)firstInteriorPinch, (double)stations[firstInteriorPinch].u );
+		}
+
+		// TWO ADJACENT PINCHES leave a GAP.  Every quad between two pinched
+		// stations has both of its station-pairs collapsed to one site, so
+		// both of its triangles fall out and the strip between them emits
+		// NOTHING.  Reachable two ways: a duplicated rail point AT a pinch
+		// (the crease idiom applied where the rails already meet), and two
+		// near-pinches that the snap above resolves independently.  The
+		// mesh is still well-formed -- no tear, no orphan ships -- but it
+		// has a hole the author did not ask for, so it is named rather than
+		// left to be discovered in a render.
+		{
+			size_t nAdjacentPinch = 0, firstAdjacentPinch = 0;
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				if( pinched[i] && pinched[i+1] ) {
+					if( nAdjacentPinch == 0 ) firstAdjacentPinch = i;
+					nAdjacentPinch++;
+				}
+			}
+			if( nAdjacentPinch > 0 ) {
+				SkinWarn( "%u ADJACENT pair(s) of stations are BOTH pinched (first at stations %u and %u, u %g and %g): every quad between two pinched stations is degenerate, so the sheet has a GAP there.  Drop the duplicated rail point at the pinch, or move the two meeting points apart",
+					(unsigned int)nAdjacentPinch, (unsigned int)firstAdjacentPinch, (unsigned int)( firstAdjacentPinch + 1 ),
+					(double)stations[firstAdjacentPinch].u, (double)stations[firstAdjacentPinch+1].u );
+			}
+		}
+
+		// The grid SITE a (station, row) pair reads from: every row of a
+		// pinched station reads a POLE row, so the four corners of a quad
+		// touching it collapse in pairs and the degenerate triangle falls
+		// out by INDEX identity rather than by an area threshold.
+		//
+		// `quadAbove` says which side of station `i` the quad asking lies
+		// on: true when `i` is the quad's LOWER station (the quad is at
+		// larger u).  An end pinch has only one side and always answers row
+		// 0; an interior pinch answers row 0 for its +u fan and row 1 for
+		// its -u fan, which is what keeps the two fans' normals apart.
+		auto site = [&]( const size_t i, const size_t j, const bool quadAbove ) -> size_t {
+			if( !pinched[i] ) {
+				return i * nAcrossSz + j;
+			}
+			return i * nAcrossSz + ( ( !quadAbove && interiorPinch( i ) ) ? 1 : 0 );
+		};
+
+		// Quad (i,j)-(i+1,j)-(i+1,j+1)-(i,j+1) split into (a,b,d) + (b,c,d),
+		// a winding chosen so each face's geometric normal cross(du, dv)
+		// agrees with the vertex normals emitted below.
+		//
+		// A triangle is SKIPPED when two of its corners are the SAME site
+		// (the pinch fan) or when it has zero area (two consecutive stations
+		// at the same parameter -- the duplicated-rail-point crease idiom).
+		// The area threshold is deliberately at the FLOATING-POINT-ZERO level
+		// (1e-18 of the sheet's extent squared), not at a "thin enough to not
+		// matter" level: this predicate DELETES geometry, so it must fire
+		// only where the triangle is mathematically degenerate, and never
+		// quietly eat a sliver an author meant to keep.
+		const Scalar areaEps = sheetEps * sheetEps;
+		auto triArea2 = [&]( const size_t x, const size_t y, const size_t z ) -> Scalar {
+			const Vector3 e0 = Vector3Ops::mkVector3( pos[y], pos[x] );
+			const Vector3 e1 = Vector3Ops::mkVector3( pos[z], pos[x] );
+			return Vector3Ops::Magnitude( Vector3Ops::Cross( e0, e1 ) );
+		};
+		// ONE definition of the surviving triangle set, walked twice: once to
+		// learn which sites any triangle references, once to emit.  Walking
+		// rather than storing keeps the pass free of a second index buffer at
+		// the 2M-vertex budget.
+		auto walkTriangles = [&]( auto&& tri ) {
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				for( size_t j = 0; j + 1 < nAcrossSz; j++ ) {
+					const size_t a = site( i,     j,     true  );
+					const size_t b = site( i + 1, j,     false );
+					const size_t c = site( i + 1, j + 1, false );
+					const size_t d = site( i,     j + 1, true  );
+					if( a != b && a != d && b != d && triArea2( a, b, d ) > areaEps ) {
+						tri( i, a, b, d );
+					}
+					if( b != c && b != d && c != d && triArea2( b, c, d ) > areaEps ) {
+						tri( i, b, c, d );
+					}
+				}
+			}
+		};
+
+		// Sites no triangle references are SKIPPED, not emitted dead -- the
+		// same discipline the lathe applies to its unreferenced rows.  Those
+		// are the rows 1..nAcross-1 of every pinched station, plus (in a
+		// fully degenerate corner of the sheet) anything the area test ate.
+		std::vector<unsigned char> siteUsed( nStations * nAcrossSz, 0 );
+		size_t emitted = 0;
+		walkTriangles( [&]( size_t, const size_t x, const size_t y, const size_t z ) {
+			siteUsed[x] = 1; siteUsed[y] = 1; siteUsed[z] = 1;
+			emitted++;
+		} );
+		if( emitted == 0 ) {
+			return SkinFail( "every quad of the sheet is degenerate -- the two rails span no area anywhere" );
+		}
+
+		std::vector<int> siteVertex( nStations * nAcrossSz, -1 );
+		{
+			int next = 0;
+			for( size_t s = 0; s < siteUsed.size(); s++ ) {
+				if( siteUsed[s] ) siteVertex[s] = next++;
+			}
+		}
+
+		// THE NORMAL A COLLAPSED TIP SHIPS is the MEAN of the normals its
+		// nAcross coincident rows carried, renormalized: the tip is a FAN,
+		// and the fan's smooth normal is the average of the surface around
+		// it, not whichever row happened to be index 0.
+		//
+		// Written back into `nrm` IN PLACE rather than into a copy.  Row 0
+		// is the only site of a pinched station that ships, nothing else
+		// reads `nrm` from here on (the normals are computed and the billow
+		// is applied), and a parallel array would cost another 24 bytes per
+		// grid site at a 2M-site budget for no gain.  After this loop `nrm`
+		// IS what the mesh ships, which is what lets the fold check below
+		// read the shipped field rather than a stand-in for it.
+		//
+		// AN INTERIOR PINCH TAKES TWO MEANS, ONE PER FAN.  Its two poles are
+		// the +u fan's (row 0) and the -u fan's (row 1), and each takes the
+		// mean of the station its OWN fan's faces reach -- i + 1 and i - 1
+		// respectively, which are precisely the stations holding the other
+		// two corners of every face in that fan.  Reading the pinched
+		// station's own rows instead (as an end pinch does) would read
+		// BORROWED normals, and a borrow at an interior pinch has live
+		// neighbours on both sides: whatever it returns is a blend of two
+		// surfaces, so both fans would ship it and at least one of them
+		// would be wrong.  That is the silent-wrongness this split exists to
+		// remove.
+		auto meanStationNormal = [&]( const size_t s, Normal& out ) -> bool {
+			Scalar sx = 0, sy = 0, sz = 0;
+			for( size_t k = 0; k < nAcrossSz; k++ ) {
+				const Normal& n = nrm[ s * nAcrossSz + k ];
+				sx += n.x; sy += n.y; sz += n.z;
+			}
+			const Scalar l = sqrt( sx*sx + sy*sy + sz*sz );
+			if( !( l > 0 ) ) {
+				return false;
+			}
+			out = Normal( sx / l, sy / l, sz / l );
+			return true;
+		};
+		for( size_t i = 0; i < nStations; i++ ) {
+			if( !pinched[i] ) continue;
+			Normal n;
+			if( interiorPinch( i ) ) {
+				// Written to rows 0 and 1 only; rows 2.. of an interior
+				// pinch are referenced by nothing and never ship.  A source
+				// station that is ITSELF pinched can only be the adjacent
+				// case above, whose strip emits no face at all, so the pole
+				// it would have fed is unreferenced too.
+				if( meanStationNormal( i + 1, n ) ) nrm[ i * nAcrossSz     ] = n;
+				if( meanStationNormal( i - 1, n ) ) nrm[ i * nAcrossSz + 1 ] = n;
+			} else if( meanStationNormal( i, n ) ) {
+				nrm[ i * nAcrossSz ] = n;
+			}
+		}
+
+		// A BILLOW CAN INVERT THE NORMAL FIELD AGAINST THE WINDING, and the
+		// author has to be told when it does.  The shipped normals are
+		// central differences on the DISPLACED grid; across a fold the smooth
+		// normal and the triangle's own winding disagree, and
+		// TriangleMeshGeometryIndexed::IntersectRay then flips the TRUE face
+		// normal to agree with the (wrong) shading normal -- so vGeomNormal,
+		// which every side test reads (dielectric inside/outside, SMS chain
+		// physics), comes out inverted on those faces.
+		//
+		// A WARNING, not a refusal, and not a clamp on `billow`: the shape is
+		// authorable and the bound at which it folds depends on the crease
+		// angle of the rails, so clamping would silently change authored
+		// geometry.  What the author cannot do is NOTICE it -- a fold at one
+		// station of a fifty-station membrane is a few dark faces -- so the
+		// count, the first offending station, and the remedy are stated.
+		size_t foldedFaces = 0;
+		size_t firstFoldStation = 0;
+		Scalar firstFoldU = 0;
+		// PER CORNER, not against the mean of the three.  The shading normal
+		// inside a face is the BARYCENTRIC blend of its three vertex
+		// normals, so it opposes the face's geometric normal somewhere in
+		// the face exactly when it opposes it at some CORNER (a linear
+		// function on a simplex takes its minimum at a vertex).  Testing the
+		// mean tests the CENTROID only, and that is not merely weaker, it is
+		// specifically blind where this factory is most likely to be wrong:
+		// a collapsed pole ships ONE normal for a whole fan, so a fan with a
+		// single folded lobe hands every face a corner normal that is right
+		// for the fan on average and wrong for that lobe -- two sound
+		// summands outvote the one bad one and the fold passes unreported.
+		// The per-corner test is the criterion IntersectRay actually acts on
+		// (it flips vGeomNormal to agree with the interpolated shading
+		// normal), so it is sharper without being a heuristic: every face it
+		// names really does hand some ray an inverted geometric normal.
+		walkTriangles( [&]( const size_t i, const size_t x, const size_t y, const size_t z ) {
+			const Vector3 e0 = Vector3Ops::mkVector3( pos[y], pos[x] );
+			const Vector3 e1 = Vector3Ops::mkVector3( pos[z], pos[x] );
+			const Vector3 g  = Vector3Ops::Cross( e0, e1 );
+			const size_t corner[3] = { x, y, z };
+			for( int k = 0; k < 3; k++ ) {
+				const Normal& n = nrm[ corner[k] ];
+				if( g.x*n.x + g.y*n.y + g.z*n.z <= 0 ) {
+					if( foldedFaces == 0 ) { firstFoldStation = i; firstFoldU = stations[i].u; }
+					foldedFaces++;
+					break;
+				}
+			}
+		} );
+		if( foldedFaces > 0 ) {
+			// THE REMEDY HAS TO NAME THE ACTUAL CAUSE.  At billow 0 nothing
+			// displaced the sheet, so "reduce billow" is not advice, it is a
+			// misdirection: the fold is the RAILS' own -- they cross, or one
+			// doubles back -- and that is what the author has to change.
+			// (Reachable without any billow: two rails that nearly meet and
+			// swap sides bake a genuine crossing wherever the near-pinch is
+			// too wide to snap.)
+			if( desc.billow != 0.0 ) {
+				SkinWarn( "billow %g FOLDS the sheet through itself on %u face(s) (first at station %u, u %g): the surface normal there opposes the face winding, so the geometric normal every side test reads is inverted.  Reduce billow, or raise n_len near the crease",
+					desc.billow, (unsigned int)foldedFaces, (unsigned int)firstFoldStation, (double)firstFoldU );
+			} else {
+				SkinWarn( "the RAILS FOLD the sheet through itself on %u face(s) (first at station %u, u %g): the surface normal there opposes the face winding, so the geometric normal every side test reads is inverted.  billow is 0, so this is the rails' own doing -- they cross or double back there.  Separate them at that station, or raise n_len across the crossing",
+					(unsigned int)foldedFaces, (unsigned int)firstFoldStation, (double)firstFoldU );
+			}
+		}
+
+		// ---- emit ----------------------------------------------------------
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "skin geometry" );
+		pGeom->BeginIndexedTriangles();
+		// (after Begin: BeginIndexedTriangles resets the policy)
+		pGeom->SetDisplacementWeldPolicy( TriangleMeshGeometryIndexed::kWeldAll );
+
+		for( size_t i = 0; i < nStations; i++ ) {
+			for( size_t j = 0; j < nAcrossSz; j++ ) {
+				const size_t s = i * nAcrossSz + j;
+				if( !siteUsed[s] ) continue;
+				const Point3& p = pos[s];
+				pGeom->AddVertex( Vertex( p.x, p.y, p.z ) );
+				pGeom->AddNormal( nrm[s] );
+				// U = arc length along the rails, V = 0 at rail A, 1 at rail
+				// B -- except at a pinch, where V is genuinely undefined
+				// (every v maps to this one point) and 0.5 puts it at the
+				// texture's middle, the same convention the lathe uses for a
+				// pole's u.
+				pGeom->AddTexCoord( TexCoord( stations[i].u,
+					pinched[i] ? Scalar(0.5) : vFrac[j] ) );
+				// a pinch's v is a PLACEHOLDER (0.5): polar on v for mesh refinement
+				if( pinched[i] ) {
+					pGeom->SetUVPeriodicRegion( TriangleMeshGeometryIndexed::kVPolar, (unsigned int)siteVertex[s], 1 );
+				}
+			}
+		}
+
+		walkTriangles( [&]( size_t, const size_t x, const size_t y, const size_t z ) {
+			pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
+				siteVertex[x], siteVertex[y], siteVertex[z] ) );
+		} );
+
+		// The AUTHORED GRID STRUCTURE (TriangleMeshGeometryIndexed::MeshGrid), recorded by
+		// re-walking the quads with the SAME survival predicate walkTriangles used (so the
+		// running triangle count is the emission index): a quad whose two triangles both
+		// survive is a grid quad (family i = the station interval's edges, family
+		// (nStations-1)+j = the across-row j edges); a quad that lost one triangle to a
+		// collapsed pinch (a == d, or b == c) is a pole fan; anything else (a triangle the
+		// zero-area test ate) is left unrefined.
+		{
+			std::shared_ptr<TriangleMeshGeometryIndexed::MeshGrid> grid = std::make_shared<TriangleMeshGeometryIndexed::MeshGrid>();
+			grid->numFamilies = (unsigned int)( ( nStations - 1 ) + ( nAcrossSz - 1 ) );
+			unsigned int triCount = 0;
+			for( size_t i = 0; i + 1 < nStations; i++ ) {
+				for( size_t j = 0; j + 1 < nAcrossSz; j++ ) {
+					const size_t a = site( i,     j,     true  );
+					const size_t b = site( i + 1, j,     false );
+					const size_t c = site( i + 1, j + 1, false );
+					const size_t d = site( i,     j + 1, true  );
+					const bool t1 = ( a != b && a != d && b != d && triArea2( a, b, d ) > areaEps );
+					const bool t2 = ( b != c && b != d && c != d && triArea2( b, c, d ) > areaEps );
+					const unsigned int stationFam = (unsigned int)i, acrossFam = (unsigned int)( ( nStations - 1 ) + j );
+					if( t1 && t2 && a != c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Quad q;
+						// authored (a,b,d) + (b,c,d): q = b,c,d,a
+						q.q[0] = siteVertex[b]; q.q[1] = siteVertex[c]; q.q[2] = siteVertex[d]; q.q[3] = siteVertex[a];
+						q.famS = acrossFam; q.famT = stationFam; q.tri[0] = triCount; q.tri[1] = triCount + 1;
+						grid->quads.push_back( q );
+					} else if( t2 && !t1 && a == d ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[b]; f.t[1] = siteVertex[c]; f.t[2] = siteVertex[d]; f.pole = 2;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					} else if( t1 && !t2 && b == c ) {
+						TriangleMeshGeometryIndexed::MeshGrid::Fan f;
+						f.t[0] = siteVertex[a]; f.t[1] = siteVertex[b]; f.t[2] = siteVertex[d]; f.pole = 1;
+						f.famSpoke = stationFam; f.famRing = acrossFam; f.tri = triCount;
+						grid->fans.push_back( f );
+					}
+					triCount += ( t1 ? 1u : 0u ) + ( t2 ? 1u : 0u );
+				}
+			}
+			pGeom->SetGrid( grid );
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	// General along-path instancing: tessellate the named template ONCE via
+	// the universal TessellateToMesh contract, then stamp transformed copies
+	// along the Catmull-Rom path at arc-length pitch.  Template local axes:
+	// +X -> binormal, +Y -> tangent (rotated by slant about the normal),
+	// +Z -> frame normal.  Instances interpolate position AND frame inside
+	// the crossing segment (no sample-snapping).
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const PathInstancesDescriptor& desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.pGeometry ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: no template geometry" );
+			return false;
+		}
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: need at least 2 `point` path control points" );
+			return false;
+		}
+		if( !( desc.pitch > 0 ) || !( desc.scale > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: pitch and scale must be > 0" );
+			return false;
+		}
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 8192 ? 8192 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const unsigned int detail = desc.detail < 3 ? 3 : ( desc.detail > 256 ? 256 : desc.detail );
+		if( detail != desc.detail ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: detail %u clamped to %u (template tessellation is O(detail^2))", desc.detail, detail );
+		}
+
+		// Realize the template first: a deferred DisplacedGeometry template
+		// returns false from TessellateToMesh until its mesh is baked, and we
+		// need that mesh NOW to stamp instances.  Realize() is const + idempotent
+		// (single-threaded at parse); a template that is actually instanced IS
+		// used, so baking it here is correct (the deferral skips only UNused
+		// geometry).
+		desc.pGeometry->Realize();
+
+		// tessellate the template once (the same contract area lights and
+		// SSS sampling rely on -- every first-class geometry provides it)
+		IndexTriangleListType tTris;
+		VerticesListType      tVerts;
+		NormalsListType       tNorms;
+		TexCoordsListType     tCoords;
+		// Ex where the template carries chart bits (a builder's periodic / polar UV
+		// axes, a displaced base's), so the instanced copies keep them.
+		std::vector<unsigned char> tFlags;
+		std::vector<unsigned int>  tDomains;	// the template's own weld domains (a path_instances / displaced-of-path_instances template)
+		bool bTessellated;
+		if( const TriangleMeshGeometryIndexed* pTplIdx = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry ) ) {
+			bTessellated = pTplIdx->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
+		} else if( const DisplacedGeometry* pTplDsp = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+			bTessellated = pTplDsp->TessellateToMeshEx( tTris, tVerts, tNorms, tCoords, detail, &tFlags, &tDomains );
+		} else {
+			bTessellated = desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail );
+		}
+		if( !bTessellated ||
+			tVerts.empty() || tTris.empty() ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: template geometry does not support TessellateToMesh (or tessellated empty)" );
+			return false;
+		}
+
+		std::vector<SweepV3> path;
+		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, false, T, B, N );	// path_instances_geometry has no closed-loop mode (C2 scope: sweep_geometry only)
+
+		const Scalar slant = desc.slantDeg * PI / Scalar(180);
+		const Scalar cs = cos( slant ), sn = sin( slant );
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
+		pGeom->BeginIndexedTriangles();
+		// Weld policy: INSIDE each instance, the TEMPLATE's own rule (a creased lathe template stays closed in
+		// every instance); NEVER across instances (each instance is a weld domain).  A face-normal template is flat
+		// per corner by design and welds nothing.
+		int instancePolicy = TriangleMeshGeometryIndexed::kWeldCreaseCone;
+		{
+			const TriangleMeshGeometryIndexed* pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( desc.pGeometry );
+			if( !pTplMesh ) {
+				if( const DisplacedGeometry* pTplDsp2 = dynamic_cast<const DisplacedGeometry*>( desc.pGeometry ) ) {
+					pTplMesh = dynamic_cast<const TriangleMeshGeometryIndexed*>( pTplDsp2->GetBakedMesh() );
+				}
+			}
+			if( pTplMesh ) {
+				instancePolicy = pTplMesh->UsesFaceNormals() ? int( TriangleMeshGeometryIndexed::kWeldNone ) : pTplMesh->GetDisplacementWeldPolicy();
+			}
+		}
+		pGeom->SetDisplacementWeldPolicy( instancePolicy );
+
+		int vc = 0;
+		unsigned int placed = 0;
+		Scalar arc = 0;
+		Scalar nextAt = ( desc.phase >= 0 ) ? desc.phase : desc.pitch * Scalar(0.5);	// < 0 sentinel = centred pitch/2 default
+		// total-output budget: instances x template verts capped well below
+		// the signed-index ceiling, so a tiny pitch + heavy template degrades
+		// to a warning instead of an OOM / index overflow
+		const unsigned int kMaxTotalVerts = 20000000;
+		const unsigned int kMaxByBudget = kMaxTotalVerts / (unsigned int)tVerts.size();
+		const unsigned int kMaxInstances = ( 100000 < kMaxByBudget ) ? 100000 : kMaxByBudget;
+		for( size_t i = 1; i < n && placed < kMaxInstances; i++ ) {
+			const SweepV3 seg = svSub( path[i], path[i-1] );
+			const Scalar segLen = svLen( seg );
+			Scalar segStart = arc;
+			arc += segLen;
+			while( nextAt <= arc && segLen > 0 && placed < kMaxInstances ) {
+				const Scalar f = ( nextAt - segStart ) / segLen;
+				// interpolate position + frame inside the segment
+				const SweepV3 P = svAdd( path[i-1], svScale( seg, f ) );
+				const SweepV3 Ti = svNorm( svAdd( svScale( T[i-1], Scalar(1)-f ), svScale( T[i], f ) ) );
+				SweepV3 Bi = svAdd( svScale( B[i-1], Scalar(1)-f ), svScale( B[i], f ) );
+				Bi = svNorm( svSub( Bi, svScale( Ti, svDot( Bi, Ti ) ) ) );
+				const SweepV3 Ni = svCross( Bi, Ti );
+				// slant rotates the (B, T) pair about N
+				SweepV3 Bs = svAdd( svScale( Bi, cs ),  svScale( Ti, -sn ) );
+				SweepV3 Ts = svAdd( svScale( Bi, sn ),  svScale( Ti, cs ) );
+				const int base = vc;
+				for( size_t v = 0; v < tVerts.size(); v++ ) {
+					const Scalar lx = tVerts[v].x * desc.scale;
+					const Scalar ly = tVerts[v].y * desc.scale;
+					const Scalar lz = tVerts[v].z * desc.scale;
+					pGeom->AddVertex( Vertex(
+						P.x + lx * Bs.x + ly * Ts.x + lz * Ni.x,
+						P.y + lx * Bs.y + ly * Ts.y + lz * Ni.y,
+						P.z + lx * Bs.z + ly * Ts.z + lz * Ni.z ) );
+					const Vector3 tn = ( v < tNorms.size() ) ? tNorms[v] : Vector3( 0, 0, 1 );
+					pGeom->AddNormal( Normal(
+						tn.x * Bs.x + tn.y * Ts.x + tn.z * Ni.x,
+						tn.x * Bs.y + tn.y * Ts.y + tn.z * Ni.y,
+						tn.x * Bs.z + tn.y * Ts.z + tn.z * Ni.z ) );
+					pGeom->AddTexCoord( v < tCoords.size() ? tCoords[v] : TexCoord( 0.5, 0.5 ) );
+					vc++;
+				}
+				for( size_t t = 0; t < tTris.size(); t++ ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
+						base + tTris[t].iVertices[0],
+						base + tTris[t].iVertices[1],
+						base + tTris[t].iVertices[2] ) );
+				}
+				placed++;
+				nextAt += desc.pitch;
+			}
+		}
+
+		if( placed == 0 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: path shorter than the first instance position (phase) -- refusing an empty mesh" );
+			pGeom->release();
+			return false;
+		}
+		if( placed >= kMaxInstances ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreatePathInstancesGeometry: instance cap (%u) reached (vertex budget %u / template %u verts) -- pitch too small for the path length?",
+				kMaxInstances, kMaxTotalVerts, (unsigned int)tVerts.size() );
+		}
+
+		pGeom->DoneIndexedTriangles();
+		{	// one weld domain per instance (vertex order is the template's, repeated per instance).  A template
+			// that carries domains itself (instances of instances) COMPOSES them -- outer instance x inner
+			// domain -- so the inner touching instances stay separate bodies inside every outer instance.
+			unsigned int innerCount = 1;
+			const bool nested = tDomains.size() == tVerts.size();
+			if( nested ) {
+				for( size_t v = 0; v < tDomains.size(); ++v ) innerCount = std::max( innerCount, tDomains[v] + 1u );
+			}
+			std::vector<unsigned int> domains;
+			domains.reserve( tVerts.size() * placed );
+			for( unsigned int inst = 0; inst < placed; ++inst ) {
+				if( nested ) {
+					for( size_t v = 0; v < tDomains.size(); ++v ) domains.push_back( inst * innerCount + tDomains[v] );
+				} else {
+					domains.insert( domains.end(), tVerts.size(), inst );
+				}
+			}
+			pGeom->SetDisplacementWeldDomains( domains );
+		}
+		// Each instance's copy keeps the template's chart bits (vertex order is the template's).
+		if( tFlags.size() == tVerts.size() ) {
+			bool bAny = false;
+			for( size_t i = 0; i < tFlags.size(); ++i ) if( tFlags[i] ) { bAny = true; break; }
+			if( bAny ) {
+				std::vector<unsigned char> allFlags;
+				allFlags.reserve( tFlags.size() * placed );
+				for( unsigned int inst = 0; inst < placed; ++inst ) {
+					allFlags.insert( allFlags.end(), tFlags.begin(), tFlags.end() );
+				}
+				pGeom->SetUVPeriodicFlags( allFlags );
+			}
+		}
+		*ppi = pGeom;
+		return true;
+	}
+
 
 }
 
@@ -766,11 +4250,16 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Materials/Material.h"
+#include "Materials/NullBoundaryMaterial.h"
 #include "Materials/LambertianMaterial.h"
 #include "Materials/LambertianLuminaireMaterial.h"
 #include "Materials/PhongLuminaireMaterial.h"
 #include "Materials/PolishedMaterial.h"
+#include "Materials/CoatedMaterial.h"
+#include "Materials/FabricMaterial.h"
+#include "Materials/WeaveMaterial.h"
 #include "Materials/DielectricMaterial.h"
+#include "Materials/RoughDielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
 #include "Materials/RandomWalkSSSMaterial.h"
 #include "Materials/PerfectReflectorMaterial.h"
@@ -779,8 +4268,6 @@ namespace RISE
 #include "Materials/IsotropicPhongMaterial.h"
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
-#include "Materials/BioSpecSkinBSSRDFMaterial.h"
-#include "Materials/BioSpecSkinRWMaterial.h"
 #include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
@@ -788,9 +4275,17 @@ namespace RISE
 #include "Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "Materials/CookTorranceMaterial.h"
 #include "Materials/GGXMaterial.h"
+#include "Painters/UniformColorPainter.h"		// Landing 7 / 8: PBR-MR painter graph helpers
+#include "Painters/BlendPainter.h"				// Landing 7 / 8: PBR-MR painter graph helpers
+#include "Painters/UniformScalarPainter.h"
+#include "Painters/PainterToScalarAdapter.h"	// Bridge IPainter chains into IScalarPainter slots
+#include "Materials/SheenMaterial.h"
 #include "Materials/OrenNayarMaterial.h"
+#include "Materials/MixMaterial.h"
+#include "Materials/DiffuseTransmissionMaterial.h"
 #include "Materials/SchlickMaterial.h"
 #include "Materials/DataDrivenMaterial.h"
+#include "Materials/HairMaterial.h"
 
 namespace RISE
 {
@@ -806,6 +4301,19 @@ namespace RISE
 
 		(*ppi) = new NullMaterial();
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null material" );
+		return true;
+	}
+
+	bool RISE_API_CreateNullBoundaryMaterial(
+		IMaterial** ppi
+		)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new NullBoundaryMaterial();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null boundary material" );
 		return true;
 	}
 
@@ -830,9 +4338,9 @@ namespace RISE
 	bool RISE_API_CreatePolishedMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Reflectance of diffuse substrate
-								const IPainter& tau,			///< [in] Transmittance of the dielectric top
-								const IPainter& Nt,				///< [in] Index of refraction of dielectric coating
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
+								const IScalarPainter& tau,		///< [in] Transmittance of the dielectric top
+								const IScalarPainter& Nt,		///< [in] Index of refraction of dielectric coating
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG asymmetry)
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								)
 	{
@@ -845,32 +4353,174 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a Dielectric material
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateDielectricMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& tau,			///< [in] Transmittance
-								const IPainter& rIndex,			///< [in] Index of refraction
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
-								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+	bool RISE_API_CreateCoatedMaterial(
+								IMaterial** ppi,
+								const IMaterial& base,
+								const IScalarPainter& coat_weight,
+								const IScalarPainter& coat_ior,
+								const IScalarPainter& coat_roughness,
+								const IScalarPainter& coat_thickness,
+								const IScalarPainter& coat_absorption,
+								const IPainter& coat_tint,
+								const IPainter* coat_normal,
+								const Scalar coat_normal_scale
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg );
+		// Substrate allowlist (docs/WETNESS_COAT_DESIGN.md 7.2, Phase 2
+		// item 4a).  Enforced HERE as well as in Job::AddCoatedMaterial
+		// so a caller that bypasses the scene language -- the glTF
+		// importer, the interactive editor, a test -- gets the same
+		// refusal instead of a quietly wrong render.
+		const char* why = 0;
+		if( !CoatedMaterial::IsSupportedSubstrate( base, &why ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateCoatedMaterial: unsupported substrate -- %s.  "
+				"coated_material accepts: %s",
+				why ? why : "unsupported", CoatedMaterial::SubstrateAllowlistText() );
+			return false;
+		}
+
+		(*ppi) = new CoatedMaterial( base, coat_weight, coat_ior, coat_roughness,
+		                             coat_thickness, coat_absorption, coat_tint,
+		                             true, coat_normal, coat_normal_scale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "coated material" );
+		return true;
+	}
+
+	bool RISE_API_CreateFabricMaterial(
+								IMaterial** ppi,
+								const IMaterial& base,
+								const IPainter& sheen_color,
+								const IScalarPainter& sheen_roughness,
+								const IScalarPainter& weave_rotation
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Substrate allowlist (docs/CLOTH_FABRIC_DESIGN.md 9.2).
+		// Enforced HERE as well as in Job::AddFabricMaterial so a caller
+		// that bypasses the scene language -- the glTF importer, the
+		// interactive editor, a test -- gets the same refusal instead of
+		// a quietly wrong render.
+		const char* why = 0;
+		if( !FabricMaterial::IsSupportedSubstrate( base, &why ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFabricMaterial: unsupported substrate -- %s.  "
+				"fabric_material accepts: %s",
+				why ? why : "unsupported", FabricMaterial::SubstrateAllowlistText() );
+			return false;
+		}
+
+		(*ppi) = new FabricMaterial( base, sheen_color, sheen_roughness, weave_rotation );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "fabric material" );
+		return true;
+	}
+
+	bool RISE_API_CreateWeaveMaterial(
+								IMaterial** ppi,
+								const char* weave,
+								const char* transmission,
+								const IScalarPainter& weave_scale,
+								const IScalarPainter& weave_rotation,
+								const IScalarPainter& weft_skew,
+								const IScalarPainter* coverage,
+								const IScalarPainter& gap,
+								const IPainter& warp_color,
+								const IScalarPainter& warp_ior,
+								const IScalarPainter& warp_width,
+								const IScalarPainter& warp_azimuth,
+								const IScalarPainter& warp_kd,
+								const IScalarPainter& warp_tilt,
+								const IScalarPainter& warp_transmit,
+								const IPainter& weft_color,
+								const IScalarPainter& weft_ior,
+								const IScalarPainter& weft_width,
+								const IScalarPainter& weft_azimuth,
+								const IScalarPainter& weft_kd,
+								const IScalarPainter& weft_tilt,
+								const IScalarPainter& weft_transmit
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The draft.  An unrecognised spelling resolves to `plain` rather
+		// than failing: the scene-language path already constrains the
+		// slot to the enum values, so this fallback is a defence for API
+		// callers and matches `LookupWeavePreset`'s own convention.
+		const WeavePatternKind pattern = LookupWeavePattern( weave );
+
+		// P2-B: an unrecognised spelling resolves to `none`, the
+		// back-compatible, bit-identical-to-P2-A default.
+		const WeaveTransmissionKind trans = LookupWeaveTransmission( transmission );
+
+		// `coverage` is meaningful ONLY for `custom`, and is dropped
+		// otherwise rather than retained: holding a reference to a
+		// painter no code path reads would keep it alive for the scene's
+		// lifetime and make the editor's slot list claim a binding that
+		// does nothing.
+		const IScalarPainter* cov = ( pattern == eWeaveCustom ) ? coverage : 0;
+
+		(*ppi) = new WeaveMaterial( pattern, trans, weave_scale, weave_rotation, weft_skew, cov, gap,
+		                            warp_color, warp_ior, warp_width, warp_azimuth, warp_kd, warp_tilt, warp_transmit,
+		                            weft_color, weft_ior, weft_width, weft_azimuth, weft_kd, weft_tilt, weft_transmit );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "weave material" );
+		return true;
+	}
+
+	bool RISE_API_CreateRoughDielectricMaterial(IMaterial** ppi, const IScalarPainter& ior,
+		const IScalarPainter& alphaX, const IScalarPainter& alphaY)
+	{
+		if(!ppi) return false;
+		*ppi = nullptr;
+		if(ior.HasPerChannelVariation() || alphaX.HasPerChannelVariation() || alphaY.HasPerChannelVariation() ||
+			ior.ReadsWorldPosition() || ior.IsWorldPositionField()) return false;
+		*ppi = new RoughDielectricMaterial(ior,alphaX,alphaY);
+		GlobalLog()->PrintNew(*ppi,__FILE__,__LINE__,"rough dielectric material");
+		return true;
+	}
+
+	//! Creates a Dielectric material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDielectricMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IScalarPainter& tau,
+								const IScalarPainter& rIndex,
+								const IScalarPainter& scat,
+								const bool hg,
+								const Scalar* arN,
+								const Scalar* arK,
+								const Scalar* arThickness,
+								const unsigned int arNLayers
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness, (int)arNLayers );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "dielectric material" );
 		return true;
 	}
+
+	// The legacy single-film AR overload is now a SFINAE template defined inline
+	// in RISE_API.h (it must accept any arithmetic spelling incl. mixed int/double
+	// -- a fixed Scalar/int overload pair leaves mixed calls ambiguous).
 
 	//! Creates a SubSurface Scattering material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSubSurfaceScatteringMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness			///< [in] Surface roughness [0,1]
 								)
@@ -888,9 +4538,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateRandomWalkSSSMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness,			///< [in] Surface roughness [0,1]
 								const unsigned int maxBounces	///< [in] Maximum walk steps
@@ -898,6 +4548,18 @@ namespace RISE
 	{
 		if( !ppi ) {
 			return false;
+		}
+
+		// DL-314: these models freeze volume parameters / diffusion tables.
+		// Wavelength dependence is supported; dependence on a hit is not.
+		const IScalarPainter* const painters[] = { &ior, &absorption, &scattering };
+		const char* const slots[] = { "ior", "absorption", "scattering" };
+		for( unsigned int slot = 0; slot < 3; ++slot ) {
+			if( !painters[slot]->IsPositionIndependent() ) {
+				*ppi = 0;
+				GlobalLog()->PrintEx( eLog_Error, "randomwalk_sss_material (DL-314): `%s` must be position-independent; spatial painters are unsupported by the frozen subsurface model", slots[slot] );
+				return false;
+			}
 		}
 
 		(*ppi) = new RandomWalkSSSMaterial( ior, absorption, scattering, g, roughness, maxBounces );
@@ -908,10 +4570,10 @@ namespace RISE
 	//! Creates an isotropic phong material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& exponent		///< [in] Phong exponent
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& exponent		///< [in] Phong exponent (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -926,11 +4588,11 @@ namespace RISE
 	//! Creates the anisotropic phong material of Ashikmin and Shirley
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& Nu,				///< [in] Phong exponent in U
-								const IPainter& Nv				///< [in] Phong exponent in V
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& Nu,			///< [in] Phong exponent in U (physical scalar)
+								const IScalarPainter& Nv			///< [in] Phong exponent in V (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -963,7 +4625,7 @@ namespace RISE
 	bool RISE_API_CreatePerfectRefractorMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Amount of refraction
-								const IPainter& ior				///< [in] Index of refraction
+								const IScalarPainter& ior		///< [in] Index of refraction
 								)
 	{
 		if( !ppi ) {
@@ -979,11 +4641,11 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTranslucentMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rF,				///< [in] Reflectance
-								const IPainter& T,				///< [in] Transmittance
-								const IPainter& ext,			///< [in] Extinction
-								const IPainter& N,				///< [in] Phong exponent
-								const IPainter& scat			///< [in] Multiple scattering component
+								const IPainter& rF,				///< [in] Reflectance (color)
+								const IPainter& T,				///< [in] Transmittance (color)
+								const IScalarPainter& ext,		///< [in] Extinction (scalar)
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
+								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
 								)
 	{
 		if( !ppi ) {
@@ -999,25 +4661,25 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBioSpecSkinMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-								const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+								const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+								const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+								const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+								const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+								const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+								const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+								const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+								const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+								const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+								const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+								const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+								const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+								const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+								const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+								const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+								const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+								const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+								const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+								const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 								const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 								)
 	{
@@ -1051,136 +4713,34 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a BioSpec skin BSSRDF material (BDPT-compatible)
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinBSSRDFMaterial(
-								IMaterial** ppi,
-								const IPainter& thickness_SC_,
-								const IPainter& thickness_epidermis_,
-								const IPainter& thickness_papillary_dermis_,
-								const IPainter& thickness_reticular_dermis_,
-								const IPainter& ior_SC_,
-								const IPainter& ior_epidermis_,
-								const IPainter& ior_papillary_dermis_,
-								const IPainter& ior_reticular_dermis_,
-								const IPainter& concentration_eumelanin_,
-								const IPainter& concentration_pheomelanin_,
-								const IPainter& melanosomes_in_epidermis_,
-								const IPainter& hb_ratio_,
-								const IPainter& whole_blood_in_papillary_dermis_,
-								const IPainter& whole_blood_in_reticular_dermis_,
-								const IPainter& bilirubin_concentration_,
-								const IPainter& betacarotene_concentration_SC_,
-								const IPainter& betacarotene_concentration_epidermis_,
-								const IPainter& betacarotene_concentration_dermis_,
-								const IPainter& folds_aspect_ratio_,
-								const bool bSubdermalLayer,
-								const Scalar roughness
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BioSpecSkinBSSRDFMaterial(
-			thickness_SC_,
-			thickness_epidermis_,
-			thickness_papillary_dermis_,
-			thickness_reticular_dermis_,
-			ior_SC_,
-			ior_epidermis_,
-			ior_papillary_dermis_,
-			ior_reticular_dermis_,
-			concentration_eumelanin_,
-			concentration_pheomelanin_,
-			melanosomes_in_epidermis_,
-			hb_ratio_,
-			whole_blood_in_papillary_dermis_,
-			whole_blood_in_reticular_dermis_,
-			bilirubin_concentration_,
-			betacarotene_concentration_SC_,
-			betacarotene_concentration_epidermis_,
-			betacarotene_concentration_dermis_,
-			folds_aspect_ratio_,
-			bSubdermalLayer,
-			roughness
-			);
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin bssrdf material" );
-		return true;
-	}
-
-	//! Creates a BioSpec skin random-walk SSS material
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinRWMaterial(
-								IMaterial** ppi,
-								const IPainter& thickness_SC_,
-								const IPainter& thickness_epidermis_,
-								const IPainter& thickness_papillary_dermis_,
-								const IPainter& thickness_reticular_dermis_,
-								const IPainter& ior_SC_,
-								const IPainter& ior_epidermis_,
-								const IPainter& ior_papillary_dermis_,
-								const IPainter& ior_reticular_dermis_,
-								const IPainter& concentration_eumelanin_,
-								const IPainter& concentration_pheomelanin_,
-								const IPainter& melanosomes_in_epidermis_,
-								const IPainter& hb_ratio_,
-								const IPainter& whole_blood_in_papillary_dermis_,
-								const IPainter& whole_blood_in_reticular_dermis_,
-								const IPainter& bilirubin_concentration_,
-								const IPainter& betacarotene_concentration_SC_,
-								const IPainter& betacarotene_concentration_epidermis_,
-								const IPainter& betacarotene_concentration_dermis_,
-								const Scalar roughness,
-								const unsigned int maxBounces
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BioSpecSkinRWMaterial(
-			thickness_SC_,
-			thickness_epidermis_,
-			thickness_papillary_dermis_,
-			thickness_reticular_dermis_,
-			ior_SC_,
-			ior_epidermis_,
-			ior_papillary_dermis_,
-			ior_reticular_dermis_,
-			concentration_eumelanin_,
-			concentration_pheomelanin_,
-			melanosomes_in_epidermis_,
-			hb_ratio_,
-			whole_blood_in_papillary_dermis_,
-			whole_blood_in_reticular_dermis_,
-			bilirubin_concentration_,
-			betacarotene_concentration_SC_,
-			betacarotene_concentration_epidermis_,
-			betacarotene_concentration_dermis_,
-			roughness,
-			maxBounces
-			);
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin rw material" );
-		return true;
-	}
-
 	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
 								IMaterial** ppi,
-								const IPainter& melanin_fraction_,
-								const IPainter& melanin_blend_,
-								const IPainter& hemoglobin_epidermis_,
-								const IPainter& carotene_fraction_,
-								const IPainter& hemoglobin_dermis_,
-								const IPainter& epidermis_thickness_,
-								const IPainter& ior_epidermis_,
-								const IPainter& ior_dermis_,
-								const IPainter& blood_oxygenation_,
+								const IScalarPainter& melanin_fraction_,
+								const IScalarPainter& melanin_blend_,
+								const IScalarPainter& hemoglobin_epidermis_,
+								const IScalarPainter& carotene_fraction_,
+								const IScalarPainter& hemoglobin_dermis_,
+								const IScalarPainter& epidermis_thickness_,
+								const IScalarPainter& ior_epidermis_,
+								const IScalarPainter& ior_dermis_,
+								const IScalarPainter& blood_oxygenation_,
 								const Scalar roughness
 								)
 	{
 		if( !ppi ) {
 			return false;
+		}
+
+		// DL-314: these models freeze volume parameters / diffusion tables.
+		// Wavelength dependence is supported; dependence on a hit is not.
+		const IScalarPainter* const painters[] = { &melanin_fraction_, &melanin_blend_, &hemoglobin_epidermis_, &carotene_fraction_, &hemoglobin_dermis_, &epidermis_thickness_, &ior_epidermis_, &ior_dermis_, &blood_oxygenation_ };
+		const char* const slots[] = { "melanin_fraction", "melanin_blend", "hemoglobin_epidermis", "carotene_fraction", "hemoglobin_dermis", "epidermis_thickness", "ior_epidermis", "ior_dermis", "blood_oxygenation" };
+		for( unsigned int slot = 0; slot < 9; ++slot ) {
+			if( !painters[slot]->IsPositionIndependent() ) {
+				*ppi = 0;
+				GlobalLog()->PrintEx( eLog_Error, "donner_jensen_skin_bssrdf_material (DL-314): `%s` must be position-independent; spatial painters are unsupported by the frozen subsurface model", slots[slot] );
+				return false;
+			}
 		}
 
 		(*ppi) = new DonnerJensenSkinBSSRDFMaterial(
@@ -1203,8 +4763,8 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGenericHumanTissueMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& sca,										///< [in] Scattering co-efficient
-								const IPainter& g,											///< [in] The g factor in the HG phase function
+								const IScalarPainter& sca,									///< [in] Scattering co-efficient (scalar)
+								const IScalarPainter& g,									///< [in] HG phase function g (scalar)
 								const Scalar whole_blood_,									///< Percentage of the tissue made up of whole blood
 								const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 								const Scalar bilirubin_concentration_,						///< Concentration of Bilirubin in whole blood
@@ -1216,6 +4776,20 @@ namespace RISE
 			return false;
 		}
 
+		// DL-183 nit: this call's positional ORDER (whole_blood_,
+		// betacarotene_concentration_, bilirubin_concentration_, hb_ratio_)
+		// does NOT match GenericHumanTissueMaterial's ctor's declared
+		// parameter NAMES (hb_ratio_, whole_blood, bilirubin_concentration,
+		// betacarotene_concentration) in GenericHumanTissueMaterial.h.
+		// Traced end to end (debt-dl183 review round 1): that mismatch is
+		// the INVERSE of a second one inside GenericHumanTissueMaterial's
+		// own ctor body (which passes its members straight through
+		// positionally into GenericHumanTissueSPF's differently-ordered
+		// ctor), so the two cancel and each scalar lands in the correctly-
+		// NAMED member at the SPF. Confusing-but-currently-correct, NOT a
+		// defect -- do NOT reorder this call to "match" the ctor's declared
+		// names without re-deriving the full chain; see docs/DEBT_LEDGER.md's
+		// DL-183 row for the full trace.
 		(*ppi) = new GenericHumanTissueMaterial(
 			sca,
 			g,
@@ -1235,16 +4809,31 @@ namespace RISE
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
 								const IMaterial& top,										///< [in] Material on top
 								const IMaterial& bottom,									///< [in] Material on the bottom
-								const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-								const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-								const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-								const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-								const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+								const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+								const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+								const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+								const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+								const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 								const Scalar thickness,										///< [in] Thickness between the materials
-								const IPainter& extinction									///< [in] Extinction coefficient for absorption between layers
+								const IScalarPainter& extinction							///< [in] Extinction coefficient for absorption between layers (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								)
 	{
 		if( !ppi ) {
+			return false;
+		}
+
+		if( top.IsUnresolvedMix() || bottom.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "composite_material: a mix_material cannot be wrapped inside a composite_material (mix_material must be outermost)", __FILE__, __LINE__ );
+			return false;
+		}
+		// DL-422: a layered subsurface jump needs entry/exit transport
+		// through the other layer. The surface-only composite has no such
+		// model, so fail explicitly instead of silently dropping the jump.
+		if( top.GetDiffusionProfile() || top.GetRandomWalkSSSParams() ||
+			bottom.GetDiffusionProfile() || bottom.GetRandomWalkSSSParams() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "composite_material (DL-422): subsurface layers are unsupported; use a bare subsurface material or separate objects", __FILE__, __LINE__ );
 			return false;
 		}
 
@@ -1256,10 +4845,10 @@ namespace RISE
 	//! Creates Ward's isotropic gaussian material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardIsotropicGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alpha			///< [in] Standard deviation (RMS) of surface slope
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alpha			///< [in] Surface slope RMS (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -1274,11 +4863,11 @@ namespace RISE
 	//! Creates Ward's anisotropic elliptical gaussian material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardAnisotropicEllipticalGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alphax,			///< [in] Standard deviation (RMS) of surface slope in x
-								const IPainter& alphay			///< [in] Standard deviation (RMS) of surface slope in y
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alphax,		///< [in] Surface slope RMS in x (physical scalar)
+								const IScalarPainter& alphay		///< [in] Surface slope RMS in y (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -1290,36 +4879,292 @@ namespace RISE
 		return true;
 	}
 
+	// Forward declarations for the thin-film factories defined just below:
+	// RISE_API.cpp includes its own header at the BOTTOM of the file, so the
+	// ABI-preserving wrappers (which delegate to these) cannot see the header
+	// declarations yet at this point.  Signatures must match RISE_API.h exactly.
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness,
+								const IScalarPainter* tangent_rotation_scalar );
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const IPainter* emissive, const Scalar emissive_scale,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness,
+								const IScalarPainter* tangent_rotation_scalar );
+
 	//! Creates a GGX anisotropic microfacet material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
-								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& ext				///< [in] Extinction coefficient
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar)
+								const IScalarPainter& ext,			///< [in] Extinction coefficient (physical scalar)
+								const FresnelMode fresnel_mode,		///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
+								)
+	{
+		// ABI-preserving wrapper: this symbol's signature is frozen for
+		// out-of-tree callers; the thin-film evolution lives in the new
+		// *ThinFilm overload, which this delegates to with NULL film slots
+		// (NULL film painters == the exact pre-thin-film behaviour).
+		return RISE_API_CreateGGXMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr, nullptr );
+	}
+
+	//! Creates a GGX anisotropic microfacet material with thin-film slots.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode,		///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness,	///< [in] Thin-film oxide thickness in nm
+								const IScalarPainter* tangent_rotation_scalar	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation`
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext );
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
+		return true;
+	}
+
+	//! Creates a GGX material with an optional LambertianEmitter folded in.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterial(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode,
+								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
+								)
+	{
+		// ABI-preserving wrapper — see RISE_API_CreateGGXMaterial above.
+		return RISE_API_CreateGGXEmissiveMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr, nullptr );
+	}
+
+	//! Thin-film-aware GGX-emissive factory.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode,
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness,	///< [in] Thin-film oxide thickness in nm
+								const IScalarPainter* tangent_rotation_scalar	///< [in] DL-16: Scalar-pipe alias for `tangent_rotation`
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
+		return true;
+	}
+
+	//! Creates a glTF-spec pbrMetallicRoughness material as a
+	//! self-contained painter graph + final GGX.  Mirrors
+	//! Job::AddPBRMetallicRoughnessMaterial's chain composition but
+	//! without the Job-level painter manager — every internal helper
+	//! is held alive via refcounts on the chain (each BlendPainter
+	//! addrefs its inputs; GGXMaterial addrefs the chain head).  The
+	//! caller's input painters keep their original refcounts; we
+	//! release every locally-allocated helper before returning.
+	bool RISE_API_CreatePBRMetallicRoughnessMaterial(
+		IMaterial** ppi,
+		const IPainter& base_color,
+		const IPainter& metallic,
+		const IPainter& roughness,
+		const IPainter* emissive,
+		const Scalar    emissive_scale,
+		const IPainter* specular_factor,
+		const IPainter* specular_color,
+		const IPainter* anisotropy_factor,
+		const IPainter* anisotropy_rotation
+		)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Constants: zero, white, 0.04 (dielectric F0 baseline).
+		IPainter* nZero    = new UniformColorPainter( RISEPel( 0, 0, 0 ) );  nZero->addref();
+		IPainter* nWhite   = new UniformColorPainter( RISEPel( 1, 1, 1 ) );  nWhite->addref();
+		IPainter* nPoint04 = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  nPoint04->addref();
+
+		// one_minus_met = blend(zero, white, metallic) = white * (1 - metallic).
+		IPainter* nOneMinusMet = new BlendPainter( *nZero, *nWhite, metallic );  nOneMinusMet->addref();
+
+		// rd = blend(base_color, zero, one_minus_met) = base_color * (1 - metallic).
+		IPainter* nRd = new BlendPainter( base_color, *nZero, *nOneMinusMet );  nRd->addref();
+
+		// Landing 7 — KHR_materials_specular F0 chain.  Defaults preserve
+		// the standard 0.04 dielectric F0 bit-identically.
+		IPainter* nF0Diel = 0;
+		IPainter* nF0Aux  = 0;	// kept for refcount scope; released after consumption
+		const bool hasSpec = ( specular_factor != nullptr || specular_color != nullptr );
+		if( !hasSpec ) {
+			nF0Diel = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );
+			nF0Diel->addref();
+		} else {
+			const IPainter& specCol = specular_color ? *specular_color : *nWhite;
+			const IPainter& specFct = specular_factor ? *specular_factor : *nWhite;
+			// f0_aux = blend(specular_color, zero, point04) = specular_color * 0.04.
+			nF0Aux = new BlendPainter( specCol, *nZero, *nPoint04 );  nF0Aux->addref();
+			// f0_diel = blend(f0_aux, zero, specular_factor) = 0.04 * specCol * specFct.
+			nF0Diel = new BlendPainter( *nF0Aux, *nZero, specFct );  nF0Diel->addref();
+		}
+
+		// rs = blend(base_color, f0_diel, metallic) = lerp(F0_dielectric, baseColor, metallic).
+		IPainter* nRs = new BlendPainter( base_color, *nF0Diel, metallic );  nRs->addref();
+
+		// rough_sq = roughness²
+		IPainter* nRoughSq = new BlendPainter( roughness, *nZero, roughness );  nRoughSq->addref();
+
+		// Landing 8 — KHR_materials_anisotropy α-split.  Defaults preserve
+		// αx = αy = roughness² bit-identically.
+		IPainter* nAlphaX_owned = 0;	// allocated only when anisotropy is set
+		IPainter* nAnisoSq      = 0;
+		const IPainter* alphaX = nRoughSq;
+		const IPainter* alphaY = nRoughSq;
+		if( anisotropy_factor ) {
+			// aniso_sq = blend(aniso, zero, aniso) = aniso²
+			nAnisoSq = new BlendPainter( *anisotropy_factor, *nZero, *anisotropy_factor );  nAnisoSq->addref();
+			// alpha_t = blend(white, rough_sq, aniso_sq) = mix(roughness², 1, aniso²)
+			nAlphaX_owned = new BlendPainter( *nWhite, *nRoughSq, *nAnisoSq );  nAlphaX_owned->addref();
+			alphaX = nAlphaX_owned;
+		}
+
+		// IOR (scalar) — preserved for the GGX API; ignored under schlick_f0.
+		UniformScalarPainter* nIORscalar = new UniformScalarPainter( Scalar( 1.5 ) );
+		nIORscalar->addref();
+		// Extinction (scalar) — zero under the schlick_f0 path.
+		UniformScalarPainter* nExtScalar = new UniformScalarPainter( Scalar( 0.0 ) );
+		nExtScalar->addref();
+
+		// alphaX / alphaY come from a `BlendPainter` chain that varies
+		// spatially via the roughness texture.  Adapt the chain to
+		// IScalarPainter so it can plug into GGXMaterial's converted
+		// alpha slots (channel 0 read; per-channel variation flagged).
+		PainterToScalarAdapter* alphaXadapter = new PainterToScalarAdapter( *alphaX );
+		alphaXadapter->addref();
+		PainterToScalarAdapter* alphaYadapter = new PainterToScalarAdapter( *alphaY );
+		alphaYadapter->addref();
+
+		// Final GGX with the chain.  GGXMaterial addrefs each input; we
+		// release locals after construction so the chain is self-supporting.
+		(*ppi) = new GGXMaterial(
+			*nRd, *nRs, *alphaXadapter, *alphaYadapter, *nIORscalar, *nExtScalar,
+			emissive, emissive_scale, eFresnelSchlickF0, anisotropy_rotation );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pbr-mr material" );
+
+		// Release locals.  GGXMaterial's BSDF/SPF retain refs on the
+		// adapted slots (which in turn keep the underlying IPainter
+		// chains alive).
+		safe_release( alphaXadapter );
+		safe_release( alphaYadapter );
+		safe_release( nIORscalar );
+		safe_release( nExtScalar );
+		if( nAlphaX_owned ) safe_release( nAlphaX_owned );
+		if( nAnisoSq )      safe_release( nAnisoSq );
+		safe_release( nRoughSq );
+		safe_release( nRs );
+		safe_release( nF0Diel );
+		if( nF0Aux ) safe_release( nF0Aux );
+		safe_release( nRd );
+		safe_release( nOneMinusMet );
+		safe_release( nPoint04 );
+		safe_release( nWhite );
+		safe_release( nZero );
+
+		return true;
+	}
+
+	//! Creates a Charlie sheen material (Estevez & Kulla 2017 --
+	//! Lambda-polynomial visibility, NOT the Neubelt closed form; see
+	//! SheenBRDF.h)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSheenMaterial(
+								IMaterial** ppi,
+								const IPainter& sheenColor,
+								const IScalarPainter& sheenRoughness
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		(*ppi) = new SheenMaterial( sheenColor, sheenRoughness );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sheen material" );
 		return true;
 	}
 
 	//! Creates a Cook Torrance material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCookTorranceMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& facet,			///< [in] Facet distribution
-								const IPainter& ior,			///< [in] IOR delta
-								const IPainter& ext				///< [in] Extinction factor
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& facet,		///< [in] Facet distribution (roughness — physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar)
+								const IScalarPainter& ext			///< [in] Extinction coefficient (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -1334,9 +5179,9 @@ namespace RISE
 	//! Creates a Oren-Nayar material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateOrenNayarMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& reflectance,	///< [in] Reflectance
-								const IPainter& roughness		///< [in] Roughness
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& reflectance,		///< [in] Reflectance
+								const IScalarPainter& roughness		///< [in] Roughness (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -1348,14 +5193,67 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateOrenNayarMaterialModel(
+								IMaterial** ppi,
+								const IPainter& reflectance,
+								const IScalarPainter& roughness,
+								const bool energy_preserving
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new OrenNayarMaterial( reflectance, roughness, energy_preserving );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "oren nayar material" );
+		return true;
+	}
+
+	bool RISE_API_CreateMixMaterial(
+								IMaterial** ppi,
+								const IMaterial* const* pChildren,
+								const IScalarPainter* const* pWeights,
+								const IRayIntersectionModifier* const* pModifiers,
+								const unsigned int numChildren,
+								const IScalarPainter* pPassthroughWeight
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		if( !MixMaterial::ValidateChildren( pChildren, pWeights, numChildren ) ) {
+			*ppi = 0;
+			return false;
+		}
+
+		(*ppi) = new MixMaterial( pChildren, pWeights, pModifiers, numChildren, pPassthroughWeight );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mix material" );
+		return true;
+	}
+
+	bool RISE_API_CreateDiffuseTransmissionMaterial(
+								IMaterial** ppi,
+								const IPainter& reflectance,
+								const IPainter& transmittance
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DiffuseTransmissionMaterial( reflectance, transmittance );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "diffuse transmission material" );
+		return true;
+	}
+
 	//! Creates a Schlick material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSchlickMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& roughness,		///< [in] Roughness
-								const IPainter& isotropy		///< [in] Isotropy
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& roughness,	///< [in] Roughness (physical scalar)
+								const IScalarPainter& isotropy		///< [in] Isotropy (physical scalar)
 								)
 	{
 		if( !ppi ) {
@@ -1396,6 +5294,12 @@ namespace RISE
 			return false;
 		}
 
+		if( mat.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "lambertian_luminaire_material: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)", __FILE__, __LINE__ );
+			return false;
+		}
+
 		(*ppi) = new LambertianLuminaireMaterial( radEx, scale, mat );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "lambertian luminaire material" );
 		return true;
@@ -1405,9 +5309,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePhongLuminaireMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& radEx,			///< [in] Radiance exitance
+								const IPainter& radEx,			///< [in] Radiance exitance (color)
 								const IMaterial& mat,			///< [in] Material to use for all non emmission properties
-								const IPainter& N,				///< [in] Phong exponent
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
 								const Scalar scale				///< [in] Value to scale radiant exitance by
 								)
 	{
@@ -1415,8 +5319,56 @@ namespace RISE
 			return false;
 		}
 
+		if( mat.IsUnresolvedMix() ) {
+			*ppi = 0;
+			GlobalLog()->PrintSourceError( "phong_luminaire_material: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)", __FILE__, __LINE__ );
+			return false;
+		}
+
 		(*ppi) = new PhongLuminaireMaterial( radEx, scale, N, mat );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "phong luminaire material" );
+		return true;
+	}
+
+	//! Creates a hair material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHairMaterial(
+								IMaterial** ppi,
+								const IScalarPainter* eumelanin,
+								const IScalarPainter* pheomelanin,
+								const IScalarPainter* sigma_a,
+								const IPainter* color,
+								const IScalarPainter& beta_m,
+								const IScalarPainter& beta_n,
+								const IScalarPainter& alpha,
+								const IScalarPainter& ior,
+								const IScalarPainter* medulla_ratio,
+								const IScalarPainter* medulla_scatter,
+								const IScalarPainter* medulla_g
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		HairPainters painters;
+		painters.eumelanin   = eumelanin;
+		painters.pheomelanin = pheomelanin;
+		painters.sigma_a     = sigma_a;
+		painters.color       = color;
+		painters.beta_m      = &beta_m;
+		painters.beta_n      = &beta_n;
+		painters.alpha       = &alpha;
+		painters.ior         = &ior;
+		// Optional -- a null slot (or a kappa painter that resolves to
+		// 0) is the "no medulla" configuration, which HairBSDF short-
+		// circuits to the pre-Phase-3 model.
+		painters.medulla_ratio   = medulla_ratio;
+		painters.medulla_scatter = medulla_scatter;
+		painters.medulla_g       = medulla_g;
+
+		(*ppi) = new HairMaterial( painters );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "hair material" );
 		return true;
 	}
 
@@ -1427,19 +5379,40 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Painters/UniformColorPainter.h"
+#include "Painters/VertexColorPainter.h"
 #include "Painters/SpectralColorPainter.h"
 #include "Painters/TexturePainter.h"
 #include "Painters/CheckerPainter.h"
 #include "Painters/LinesPainter.h"
 #include "Painters/MandelbrotPainter.h"
 #include "Painters/Perlin2DPainter.h"
+#include "Painters/ControlledSmoothness2DPainter.h"
+#include "Painters/CompositeFunction2DPainter.h"
+#include "Painters/PolynomialFunction2DPainter.h"
+#include "Painters/GerstnerWavePainter.h"
 #include "Painters/Perlin3DPainter.h"
+#include "Painters/Turbulence3DPainter.h"
+#include "Painters/Worley3DPainter.h"
+#include "Painters/PerlinWorley3DPainter.h"
+#include "Painters/DomainWarp3DPainter.h"
+#include "Painters/CurlNoise3DPainter.h"
+#include "Painters/SDF3DPainter.h"
+#include "Painters/Simplex3DPainter.h"
+#include "Painters/Gabor3DPainter.h"
+#include "Painters/Wavelet3DPainter.h"
+#include "Painters/ReactionDiffusion3DPainter.h"
 #include "Painters/Voronoi2DPainter.h"
 #include "Painters/Voronoi3DPainter.h"
 #include "Painters/IridescentPainter.h"
 #include "Painters/Function1DSpectralPainter.h"
 #include "Painters/BlackBodyPainter.h"
 #include "Painters/BlendPainter.h"
+#include "Painters/ChannelPainter.h"
+#include "Painters/UVTransformPainter.h"
+#include "Painters/TexCoord1Painter.h"
+#include "Painters/MappingPainter.h"
+#include "Painters/StochasticTilePainter.h"
+#include "Painters/ScatterPainter.h"
 
 namespace RISE
 {
@@ -1524,6 +5497,191 @@ namespace RISE
 		return true;
 	}
 
+	//! Creates a controlled-smoothness radial-bump painter (test/diagnostic).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateControlledSmoothness2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Scalar centerU,
+								const Scalar centerV,
+								const Scalar radius,
+								const Scalar amplitude,
+								const unsigned int smoothnessMode
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to Gaussian as a safe smooth default — silently
+		// truncating to the lowest-order mode would be more surprising.
+		ControlledSmoothness2DPainter::SmoothnessMode mode;
+		switch( smoothnessMode ) {
+		case 0:  mode = ControlledSmoothness2DPainter::eHeaviside; break;
+		case 1:  mode = ControlledSmoothness2DPainter::eTent;      break;
+		case 2:  mode = ControlledSmoothness2DPainter::eQuadratic; break;
+		case 3:  mode = ControlledSmoothness2DPainter::eCubic;     break;
+		case 5:  mode = ControlledSmoothness2DPainter::eQuintic;   break;
+		case 99: mode = ControlledSmoothness2DPainter::eGaussian;  break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateControlledSmoothness2DPainter: unknown smoothness mode %u; using Gaussian",
+				smoothnessMode );
+			mode = ControlledSmoothness2DPainter::eGaussian;
+			break;
+		}
+
+		(*ppi) = new ControlledSmoothness2DPainter( cA, cB, centerU, centerV, radius, amplitude, mode );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "controlled-smoothness 2D painter" );
+		return true;
+	}
+
+	//! Creates a polynomial-based Function2D painter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePolynomialFunction2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const unsigned int polynomialType,
+								const Scalar centerU,
+								const Scalar centerV,
+								const Scalar scaleU,
+								const Scalar scaleV,
+								const Scalar amplitude,
+								const unsigned int degree,
+								const unsigned int powerX,
+								const unsigned int powerY,
+								const Scalar* pCoeffs,
+								const unsigned int nCoeffs
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to RadialBump (the most innocuous default) with a
+		// warning — silently dropping the chunk would be worse.
+		PolynomialFunction2DPainter::PolynomialType resolvedType;
+		switch( polynomialType ) {
+		case 0: resolvedType = PolynomialFunction2DPainter::eRadialBump;       break;
+		case 1: resolvedType = PolynomialFunction2DPainter::eMonomial;         break;
+		case 2: resolvedType = PolynomialFunction2DPainter::eParaboloid;       break;
+		case 3: resolvedType = PolynomialFunction2DPainter::eHyperbolicSaddle; break;
+		case 4: resolvedType = PolynomialFunction2DPainter::eMonkeySaddle;     break;
+		case 5: resolvedType = PolynomialFunction2DPainter::eBivariate;        break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreatePolynomialFunction2DPainter: unknown polynomial type %u; using radial_bump",
+				polynomialType );
+			resolvedType = PolynomialFunction2DPainter::eRadialBump;
+			break;
+		}
+
+		(*ppi) = new PolynomialFunction2DPainter(
+			cA, cB, resolvedType,
+			centerU, centerV, scaleU, scaleV, amplitude,
+			degree, powerX, powerY,
+			pCoeffs, nCoeffs );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "polynomial function2d painter" );
+		return true;
+	}
+
+	//! Creates a composable Function2D painter (binary operator on two operand Function2Ds).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCompositeFunction2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const IFunction2D& childA,
+								const IFunction2D& childB,
+								const unsigned int op,
+								const Scalar weightA,
+								const Scalar uvScaleAU,
+								const Scalar uvScaleAV,
+								const Scalar uvOffsetAU,
+								const Scalar uvOffsetAV,
+								const Scalar weightB,
+								const Scalar uvScaleBU,
+								const Scalar uvScaleBV,
+								const Scalar uvOffsetBU,
+								const Scalar uvOffsetBV,
+								const Scalar lerpT,
+								const Scalar outputScale,
+								const Scalar outputOffset
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to Sum (the most common case for layered displacement)
+		// with a warning — silently dropping the chunk would be worse.
+		CompositeFunction2DPainter::CompositeOp resolvedOp;
+		switch( op ) {
+		case 0: resolvedOp = CompositeFunction2DPainter::eSum;        break;
+		case 1: resolvedOp = CompositeFunction2DPainter::eProduct;    break;
+		case 2: resolvedOp = CompositeFunction2DPainter::eLerp;       break;
+		case 3: resolvedOp = CompositeFunction2DPainter::eMax;        break;
+		case 4: resolvedOp = CompositeFunction2DPainter::eMin;        break;
+		case 5: resolvedOp = CompositeFunction2DPainter::eDifference; break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateCompositeFunction2DPainter: unknown op %u; using Sum",
+				op );
+			resolvedOp = CompositeFunction2DPainter::eSum;
+			break;
+		}
+
+		(*ppi) = new CompositeFunction2DPainter(
+			cA, cB, childA, childB, resolvedOp,
+			weightA, uvScaleAU, uvScaleAV, uvOffsetAU, uvOffsetAV,
+			weightB, uvScaleBU, uvScaleBV, uvOffsetBU, uvOffsetBV,
+			lerpT, outputScale, outputOffset );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "composite function2d painter" );
+		return true;
+	}
+
+	//! Creates a sum-of-sines water-wave painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGerstnerWavePainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const unsigned int numWaves,
+								const Scalar medianWavelength,
+								const Scalar wavelengthRange,
+								const Scalar medianAmplitude,
+								const Scalar amplitudePower,
+								const Scalar windDirX,
+								const Scalar windDirY,
+								const Scalar directionalSpread,
+								const Scalar dispersionSpeed,
+								const unsigned int seed,
+								const Scalar time
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GerstnerWavePainter(
+			cA, cB,
+			numWaves,
+			medianWavelength, wavelengthRange,
+			medianAmplitude, amplitudePower,
+			windDirX, windDirY,
+			directionalSpread,
+			dispersionSpeed,
+			seed,
+			time );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "gerstner wave painter" );
+		return true;
+	}
+
 	//! Creates a 2D perlin noise painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePerlin3DPainter(
@@ -1542,6 +5700,223 @@ namespace RISE
 
 		(*ppi) = new Perlin3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D turbulence noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTurbulence3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Turbulence3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "turbulence 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D Worley (cellular) noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dJitter,			///< [in] Jitter amount [0,1]
+								const unsigned int nMetric,		///< [in] Distance metric
+								const unsigned int nOutput,		///< [in] Output mode
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Worley3DPainter( dJitter,
+			(Implementation::WorleyDistanceMetric)nMetric,
+			(Implementation::WorleyOutputMode)nOutput,
+			cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "worley 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D Perlin-Worley hybrid (cloud noise) painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePerlinWorley3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWorleyJitter,
+								const Scalar dBlend,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new PerlinWorley3DPainter( dPersistence, nOctaves, dWorleyJitter, dBlend, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin-worley 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateDomainWarp3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DomainWarp3DPainter( dPersistence, nOctaves, dWarpAmplitude, nWarpLevels, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "domain warp 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateCurlNoise3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dEpsilon,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new CurlNoise3DPainter( dPersistence, nOctaves, dEpsilon, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "curl noise 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateSDF3DPainter(
+								IPainter** ppi,
+								const unsigned int nType,
+								const Scalar dParam1,
+								const Scalar dParam2,
+								const Scalar dParam3,
+								const Scalar dShellThickness,
+								const Scalar dNoiseAmplitude,
+								const Scalar dNoiseFrequency,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new SDF3DPainter( (Implementation::SDFPrimitiveType)nType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "SDF 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateSimplex3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Simplex3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "simplex 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateGabor3DPainter(
+								IPainter** ppi,
+								const Scalar dFrequency,
+								const Scalar dBandwidth,
+								const Vector3& vOrientation,
+								const Scalar dImpulseDensity,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Gabor3DPainter( dFrequency, dBandwidth, vOrientation, dImpulseDensity, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "gabor 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateWavelet3DPainter(
+								IPainter** ppi,
+								const unsigned int nTileSize,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Wavelet3DPainter( nTileSize, dPersistence, nOctaves, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "wavelet 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateReactionDiffusion3DPainter(
+								IPainter** ppi,
+								const unsigned int nGridSize,
+								const Scalar dDa,
+								const Scalar dDb,
+								const Scalar dFeed,
+								const Scalar dKill,
+								const unsigned int nIterations,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReactionDiffusion3DPainter( nGridSize, dDa, dDb, dFeed, dKill, nIterations, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reaction-diffusion 3D painter" );
 		return true;
 	}
 
@@ -1567,14 +5942,15 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTexturePainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								IRasterImageAccessor* pSA		///< [in] Raster Image accessor to the image containing the texture
+								IRasterImageAccessor* pSA,		///< [in] Raster Image accessor to the image containing the texture
+								SpectrumKind kind				///< [in] Spectral-uplift role
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new TexturePainter( pSA );
+		(*ppi) = new TexturePainter( pSA, kind );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texture painter" );
 		return true;
 	}
@@ -1583,15 +5959,30 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformColorPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								const RISEPel& c					///< [in] Color to paint
+								const RISEPel& c,				///< [in] Color to paint
+								SpectrumKind kind				///< [in] Spectral-uplift role
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new UniformColorPainter( c );
+		(*ppi) = new UniformColorPainter( c, kind );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform color painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateVertexColorPainter(
+								IPainter** ppi,
+								const RISEPel& fallback
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new VertexColorPainter( fallback );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "vertex color painter" );
 		return true;
 	}
 
@@ -1616,7 +6007,10 @@ namespace RISE
 
 		Voronoi2DPainter::GeneratorsList gl;
 
-		stl_utils::shuffle( pts, p, gl );
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
 
 		(*ppi) = new Voronoi2DPainter( gl, border, bsize );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi2D painter" );
@@ -1644,9 +6038,48 @@ namespace RISE
 
 		Voronoi3DPainter::GeneratorsList gl;
 
-		stl_utils::shuffle( pts, p, gl );
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
 
 		(*ppi) = new Voronoi3DPainter( gl, border, bsize );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi3D painter" );
+		return true;
+	}
+
+	//! P1-A fix (S7 review round 1): new, separately-named function
+	//! carrying the P2.5 `space` parameter -- see RISE_API.h for the
+	//! ABI rationale.  Body is identical to RISE_API_CreateVoronoi3DPainter
+	//! above except for the extra argument threaded through to the
+	//! Voronoi3DPainter ctor.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVoronoi3DPainterWithSpace(
+								IPainter**ppi,					///< [out] Pointer to recieve the painter
+								const std::vector<Point3> pts,	///< [in] The locations of the generators
+								const std::vector<IPainter*> p,	///< [in] The painters for the generators
+								const IPainter& border,			///< [in] Painter for the border
+								const Scalar bsize,				///< [in] Size of the borders
+								const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		if( pts.size() != p.size() ) {
+			GlobalLog()->PrintEasyError( "RISE_API_CreateVoronoi3DPainterWithSpace:: Size of points array and painters array does not match" );
+			return false;
+		}
+
+		Voronoi3DPainter::GeneratorsList gl;
+
+		gl.reserve( pts.size() );
+		for( size_t i = 0; i < pts.size(); ++i ) {
+			gl.emplace_back( pts[i], p[i] );
+		}
+
+		(*ppi) = new Voronoi3DPainter( gl, border, bsize, worldSpace );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi3D painter" );
 		return true;
 	}
@@ -1704,6 +6137,24 @@ namespace RISE
 		return true;
 	}
 
+	//! Creates a channel-extraction painter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateChannelPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const char channel,
+								const Scalar scale,
+								const Scalar bias
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		(*ppi) = new ChannelPainter( source, (ChannelPainter::Channel)channel, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "channel painter" );
+		return true;
+	}
+
 	//! Creates a blend painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBlendPainter(
@@ -1721,6 +6172,142 @@ namespace RISE
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blend painter" );
 		return true;
 	}
+
+	//! P1-A fix (S7 review round 1): new, separately-named function
+	//! carrying the P2.4 `mode` parameter -- see RISE_API.h for the ABI
+	//! rationale.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendPainterWithMode(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& a,				///< [in] First color
+								const IPainter& b,				///< [in] Second color
+								const IPainter& mask,			///< [in] Blend mask
+								const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const BlendPainter::Mode m =
+			mode == 1 ? BlendPainter::Mode_Multiply :
+			mode == 2 ? BlendPainter::Mode_Screen :
+			mode == 3 ? BlendPainter::Mode_Overlay :
+			mode == 4 ? BlendPainter::Mode_Add :
+			            BlendPainter::Mode_Mix;
+
+		(*ppi) = new BlendPainter( a, b, mask, m );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blend painter" );
+		return true;
+	}
+
+	//! Creates a TEXCOORD_1 selector painter (glTF L12.D)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTexCoord1Painter(
+								IPainter** ppi,
+								const IPainter& source
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new TexCoord1Painter( source );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texcoord1 painter" );
+		return true;
+	}
+
+	//! Creates a UV-transform wrapper painter (glTF KHR_texture_transform)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateUVTransformPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const Scalar offset_u,
+								const Scalar offset_v,
+								const Scalar rotation,
+								const Scalar scale_u,
+								const Scalar scale_v
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new UVTransformPainter( source, offset_u, offset_v, rotation, scale_u, scale_v );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uv transform painter" );
+		return true;
+	}
+
+	//! Creates a mapping_painter (doc 88 P2.3): wraps `source` and
+	//! transforms the domain it is evaluated at (uv / world / object /
+	//! triplanar) before delegating.  See MappingPainter.h for the full
+	//! design rationale (TRS composition order, per-projection domain
+	//! field, triplanar axis convention).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMappingPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+								const Vector3& scale,				///< [in] Per-axis scale (uv: x/y only)
+								const Vector3& rotateDeg,			///< [in] Per-axis rotation in DEGREES (uv: z only)
+								const Vector3& translate,			///< [in] Per-axis translation (uv: x/y only)
+								const Scalar blendSharpness		///< [in] Triplanar normal-weight exponent (ignored otherwise)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const MappingPainter::Projection proj =
+			projection == 1 ? MappingPainter::Proj_World :
+			projection == 2 ? MappingPainter::Proj_Object :
+			projection == 3 ? MappingPainter::Proj_Triplanar :
+			                  MappingPainter::Proj_UV;
+
+		(*ppi) = new MappingPainter( source, proj, scale, rotateDeg, translate, blendSharpness );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mapping painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateStochasticTilePainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const Scalar tileScale,
+								const unsigned int seed,
+								const RISEPel& mean,
+								const Scalar blendGamma
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new StochasticTilePainter( source, tileScale, seed, mean, blendGamma );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "stochastic tile painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateScatterPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const IPainter& background,
+								const Scalar cellScale,
+								const Scalar stampScale,
+								const Scalar jitterPosition,
+								const Scalar jitterRotationDeg,
+								const Scalar jitterScale,
+								const Scalar probability,
+								const unsigned int seed
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ScatterPainter( source, background, cellScale, stampScale, jitterPosition, jitterRotationDeg, jitterScale, probability, seed );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "scatter painter" );
+		return true;
+	}
 }
 
 
@@ -1729,6 +6316,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Rendering/RadianceMap.h"
+#include "Rendering/HosekWilkieSpectralRadianceMap.h"
 
 namespace RISE
 {
@@ -1746,6 +6334,31 @@ namespace RISE
 
 		(*ppi) = new RadianceMap( painter, scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "radiance map" );
+		return true;
+	}
+
+	//! Hosek-Wilkie analytic spectral sun-and-sky radiance map.
+	//! See header for parameter semantics.
+	bool RISE_API_CreateHosekWilkieRadianceMap(
+								IRadianceMap** ppi,
+								const Scalar solarElevationDegrees,
+								const Scalar solarAzimuthDegrees,
+								const Scalar turbidity,
+								const RISEPel& groundAlbedo,
+								const Scalar skyIntensityScale )
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const Scalar deg2rad = Scalar( M_PI / 180.0 );
+		(*ppi) = new HosekWilkieSpectralRadianceMap(
+			solarElevationDegrees * deg2rad,
+			solarAzimuthDegrees   * deg2rad,
+			turbidity,
+			groundAlbedo,
+			skyIntensityScale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "hosek-wilkie radiance map" );
 		return true;
 	}
 }
@@ -2293,7 +6906,26 @@ namespace RISE
 #include "Managers/ObjectManager.h"
 #include "Managers/GeometryManager.h"
 #include "Managers/LightManager.h"
+#include "Managers/CameraManager.h"
 #include "Managers/PainterManager.h"
+#include "Managers/ScalarPainterManager.h"
+#include "Painters/UniformScalarPainter.h"
+#include "Painters/RGBScalarPainter.h"
+#include "Painters/PiecewiseLinearScalarPainter.h"
+#include "Painters/SellmeierScalarPainter.h"
+#include "Painters/PolynomialScalarPainter.h"
+#include "Painters/Function1DScalarPainter.h"
+#include "Painters/Function2DScalarPainter.h"
+#include "Painters/Function2DColorPainter.h"
+#include "Painters/ExpressionFunction2DPainter.h"
+#include "Painters/ExpressionPainter.h"
+#include "Painters/TextureScalarPainter.h"
+#include "Painters/PainterChannelScalarPainter.h"
+#include "Painters/RampPainter.h"
+#include "Painters/ScaledScalarPainter.h"
+#include "Painters/MultiplyScalarPainter.h"
+#include "Painters/AddScalarPainter.h"
+#include "Painters/Atan2ScalarPainter.h"
 #include "Managers/MaterialManager.h"
 #include "Managers/ShaderManager.h"
 #include "Managers/ShaderOpManager.h"
@@ -2375,6 +7007,346 @@ namespace RISE
 
 		(*ppi) = new PainterManager();
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter manager" );
+		return true;
+	}
+
+	//! Creates a scalar painter manager
+	bool RISE_API_CreateScalarPainterManager(
+								IScalarPainterManager** ppi
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ScalarPainterManager();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "scalar painter manager" );
+		return true;
+	}
+
+	// =========================================================================
+	// IScalarPainter constructors.  Each one takes outparam, returns
+	// TRUE on success.  Every painter is a small allocation tracked
+	// via GlobalLog()->PrintNew so the leak-tracking infrastructure
+	// catches mis-released constructions.
+	// =========================================================================
+
+	bool RISE_API_CreateUniformScalarPainter( IScalarPainter** ppi, Scalar value )
+	{
+		if( !ppi ) return false;
+		*ppi = new UniformScalarPainter( value );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateRGBScalarPainter( IScalarPainter** ppi, Scalar r, Scalar g, Scalar b )
+	{
+		if( !ppi ) return false;
+		*ppi = new RGBScalarPainter( r, g, b );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "rgb scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreatePiecewiseLinearScalarPainter(
+		IScalarPainter** ppi,
+		const std::vector<std::pair<Scalar, Scalar>>& samples
+		)
+	{
+		if( !ppi ) return false;
+		std::vector<PiecewiseLinearScalarPainter::Sample> converted;
+		converted.reserve( samples.size() );
+		for( const auto& s : samples ) {
+			converted.push_back( { s.first, s.second } );
+		}
+		*ppi = new PiecewiseLinearScalarPainter( std::move( converted ) );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "piecewise-linear scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateSellmeierScalarPainter(
+		IScalarPainter** ppi,
+		Scalar B1, Scalar B2, Scalar B3,
+		Scalar C1, Scalar C2, Scalar C3
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new SellmeierScalarPainter( B1, B2, B3, C1, C2, C3 );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sellmeier scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreatePolynomialScalarPainter(
+		IScalarPainter** ppi,
+		const std::vector<Scalar>& coeffs
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new PolynomialScalarPainter( coeffs );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "polynomial scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction1DScalarPainter(
+		IScalarPainter** ppi,
+		IFunction1D* pFunc
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function1DScalarPainter( pFunc );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function1d scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DScalarPainter(
+		IScalarPainter** ppi,
+		IFunction2D* pFunc
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DScalarPainter( pFunc );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+		IScalarPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DScalarPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter (affine)" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DColorPainter(
+		IPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DColorPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d color painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionFunction2D(
+		IPainter** ppi,
+		const Implementation::ExpressionProgram& prog
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		// This surface contracts "one number per (u,v)"; a vec3-typed final
+		// expression would silently evaluate as its .x (the same gap
+		// EvalExprBody / LocalEvalExprBody reject explicitly).
+		if( prog.ResultType() != Implementation::ExpressionProgram::kScalar ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: expression result is vec3; this surface requires a scalar (use a component, e.g. `.x`)" );
+			return false;
+		}
+		*ppi = new Implementation::ExpressionFunction2DPainter( prog );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression function2d painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionPainter(
+		IPainter** ppi,
+		const Implementation::ExpressionProgram& prog,
+		const std::vector<Implementation::ParamSpec>& paramSpecs,
+		const Scalar time
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionPainter: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		// Unlike RISE_API_CreateExpressionFunction2D, both result types are
+		// accepted here: vec3 is the natural colour result, scalar
+		// broadcasts to grayscale (doc 88 P1).
+		*ppi = new Implementation::ExpressionPainter( prog, paramSpecs, time );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateRampPainter(
+		IPainter** ppi,
+		const IPainter& input,
+		const unsigned int channel,
+		const unsigned int interpolation,
+		const std::vector<Implementation::RampPainter::Stop>& stops
+		)
+	{
+		if( !ppi ) return false;
+		if( stops.size() < 2 ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateRampPainter: needs at least 2 stops (got %u)", (unsigned int)stops.size() );
+			return false;
+		}
+		const Implementation::RampPainter::Channel ch =
+			channel == 1 ? Implementation::RampPainter::Channel_G :
+			channel == 2 ? Implementation::RampPainter::Channel_B :
+			channel == 3 ? Implementation::RampPainter::Channel_A :
+			               Implementation::RampPainter::Channel_R;
+		const Implementation::RampPainter::Interpolation interp =
+			interpolation == 1 ? Implementation::RampPainter::Interp_Constant :
+			interpolation == 2 ? Implementation::RampPainter::Interp_Smooth :
+			                     Implementation::RampPainter::Interp_Linear;
+		*ppi = new Implementation::RampPainter( input, ch, interp, stops );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ramp painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateTextureScalarPainter(
+		IScalarPainter** ppi,
+		IRasterImageAccessor* pRIA,
+		unsigned int channel
+		)
+	{
+		if( !ppi ) return false;
+		const TextureScalarPainter::Channel ch =
+			channel == 1 ? TextureScalarPainter::Channel_G :
+			channel == 2 ? TextureScalarPainter::Channel_B :
+			               TextureScalarPainter::Channel_R;
+		*ppi = new TextureScalarPainter( pRIA, ch );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texture scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateTextureScalarPainterAffine(
+		IScalarPainter** ppi,
+		IRasterImageAccessor* pRIA,
+		unsigned int channel,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		const TextureScalarPainter::Channel ch =
+			channel == 1 ? TextureScalarPainter::Channel_G :
+			channel == 2 ? TextureScalarPainter::Channel_B :
+			               TextureScalarPainter::Channel_R;
+		*ppi = new TextureScalarPainter( pRIA, ch, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "affine texture scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateScaledScalarPainter(
+		IScalarPainter** ppi,
+		IScalarPainter* pChild,
+		Scalar scale
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new ScaledScalarPainter( pChild, scale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "scaled scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultiplyScalarPainter(
+		IScalarPainter** ppi,
+		IScalarPainter* pA,
+		IScalarPainter* pB
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new MultiplyScalarPainter( pA, pB );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "multiply scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateAddScalarPainter(
+		IScalarPainter** ppi,
+		IScalarPainter* pA,
+		IScalarPainter* pB,
+		Scalar weightA,
+		Scalar weightB
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new AddScalarPainter( pA, pB, weightA, weightB );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "add scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateAtan2ScalarPainter(
+		IScalarPainter** ppi,
+		IScalarPainter* pY,
+		IScalarPainter* pX
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Atan2ScalarPainter( pY, pX );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "atan2 scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionScalarPainter(
+		IScalarPainter** ppi,
+		const Implementation::ExpressionProgram& prog,
+		const std::vector<Implementation::ParamSpec>& paramSpecs
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionScalarPainter: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		*ppi = new Implementation::ExpressionScalarPainter( prog, paramSpecs );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterChannelScalarPainter(
+		IScalarPainter** ppi,
+		const IPainter& source,
+		unsigned int channel,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		const Implementation::PainterChannelScalarPainter::Channel ch =
+			channel == 1 ? Implementation::PainterChannelScalarPainter::Channel_G :
+			channel == 2 ? Implementation::PainterChannelScalarPainter::Channel_B :
+			channel == 3 ? Implementation::PainterChannelScalarPainter::Channel_A :
+			               Implementation::PainterChannelScalarPainter::Channel_R;
+		*ppi = new Implementation::PainterChannelScalarPainter( source, ch, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter channel scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterRGBScalarPainter(
+		IScalarPainter** ppi,
+		const IPainter& source,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Implementation::PainterRGBScalarPainter( source, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter RGB scalar painter" );
+		return true;
+	}
+
+	//! Creates a camera manager
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCameraManager(
+								ICameraManager** ppi			///< [out] Pointer to recieve the manager
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new CameraManager();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "camera manager" );
 		return true;
 	}
 
@@ -2462,12 +7434,82 @@ namespace RISE
 // Modifiers
 //////////////////////////////////////////////////////////
 
-#include "Modifiers/BumpMap.h"
+#include "Modifiers/NormalMap.h"
+#include "Modifiers/GlintModifier.h"
+#include "Modifiers/ReliefModifier.h"
+#include "Modifiers/ModifierStack.h"
+#include "Modifiers/BlendedModifier.h"
 
 namespace RISE
 {
-	//! Creates a bump map
+	//! Creates a bump map -- LEGACY SHIM over `ReliefModifier`.
+	//!
+	//! The `BumpMap` class and the `bumpmap_modifier` chunk were REMOVED on
+	//! 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5, Phase B).  These two
+	//! entry points survive because their signatures are ABI-FROZEN: the
+	//! Blender bridge reaches them through `IJob::AddBumpMapModifier`, and
+	//! out-of-tree callers may hold either.  What they BUILD now is a
+	//! `ReliefModifier` over a `Function2DScalarPainter` in the UV domain --
+	//! the same four `IFunction2D::Evaluate(u, v)` calls at the same
+	//! coordinates, in the same order, that the deleted class made, so the
+	//! sampled values are identical and only the FP reassociation of the
+	//! amplitude multiply differs (ReliefModifierTest test 2 bounds that at
+	//! 1e-12 against a from-scratch reference implementation of the legacy
+	//! expression).
+	//!
+	//! THE FOLD (design 7.2), which is why `scale` is not passed through:
+	//!
+	//!     legacy   N + T*S*( f(u+W) - f(u-W) )              (normalizeGradient FALSE)
+	//!     legacy   N + T*S*( f(u+W) - f(u-W) ) / (2W)       (normalizeGradient TRUE)
+	//!     relief   N - T*S'*( f(u+W) - f(u-W) ) / (2W)      (Blinn sign, always)
+	//!  => S' = -S*2W  (FALSE),      S' = -S  (TRUE)
+	//!
+	//! `window <= 0` is NOT a point on that curve, it is a SPECIAL CASE.  The
+	//! legacy class was INERT there -- both sides of the central difference
+	//! sampled the same point, and its normalisation was gated on
+	//! `dWindow > 0` -- whereas a relief `step <= 0` selects the AUTOMATIC
+	//! step, i.e. a full perturbation, the opposite of inert.  So a
+	//! non-positive window folds to `scale 0`, which is exactly what makes
+	//! `ReliefModifier` inert.  This is the same rule
+	//! `tools/migrate_scenes_relief.py` applies to a scene file.
 	/// \return TRUE if successful, FALSE otherwise
+	// NOTE: RISE_API.cpp does not include RISE_API.h (see the signature-match
+	// comment elsewhere in this file), so the Ex implementation must precede
+	// the legacy wrapper that calls it.
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const Scalar folded = ( window > Scalar(0) )
+			? ( normalizeGradient ? ( -scale ) : ( -scale * Scalar(2) * window ) )
+			: Scalar(0);
+
+		// The height field: the SAME IFunction2D, read at ri.ptCoord by the
+		// wrapper -- Function2DScalarPainter::GetValuesAt is literally
+		// `pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y )`.
+		Function2DScalarPainter* pHeight = new Function2DScalarPainter( &func );
+		GlobalLog()->PrintNew( pHeight, __FILE__, __LINE__, "bumpmap legacy height" );
+
+		// maxSlope 0: the shim is ABI-frozen and reproduces the legacy
+		// unbounded tilt exactly.  The clamp is opt-in and reachable only
+		// through `RISE_API_CreateReliefModifierEx`.
+		(*ppi) = new ReliefModifier( *pHeight, folded, ReliefDomain::UV, window, Scalar(0) );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+
+		// The modifier addref'd it in its ctor; drop OUR construction
+		// reference so the painter dies with the modifier.
+		pHeight->release();
+		return true;
+	}
+
 	bool RISE_API_CreateBumpMapModifier(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
 								const IFunction2D& func,		///< [in] The function to use for the bumps
@@ -2475,12 +7517,122 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								)
 	{
+		// Legacy signature: the amplitude COUPLES to the window
+		// (normalizeGradient = false), which the fold above turns into
+		// S' = -S*2W.
+		return RISE_API_CreateBumpMapModifierEx( ppi, func, scale, window, false );
+	}
+
+	//! Creates a tangent-space normal-map modifier.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNormalMapModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IPainter& painter,		///< [in] Linear-RGB normal-map painter
+								const Scalar scale				///< [in] glTF normalTexture.scale
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BumpMap( func, scale, window );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+		(*ppi) = new NormalMap( painter, scale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "normalmap" );
+		return true;
+	}
+
+	bool RISE_API_CreateGlintModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const Scalar density,			///< [in] cells per object-space unit; <= 0 inert
+								const Scalar coverage,			///< [in] per-cell facet existence probability [0,1]
+								const Scalar fill,				///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+								const Scalar spread,			///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+								const Vector3& scale,			///< [in] anisotropic cell stretch (Worley convention pt*scale+shift)
+								const Vector3& shift,			///< [in] cell-space offset
+								const unsigned int seed			///< [in] hash seed
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GlintModifier( density, coverage, fill, spread, scale, shift, seed );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "glintmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateReliefModifierEx(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd)
+								const Scalar scale,							///< [in] Amplitude
+								const Implementation::ReliefDomain domain,	///< [in] Surface or UV
+								const Scalar step,							///< [in] Half-step; <= 0 = auto
+								const Scalar maxSlope						///< [in] Tilt bound as a slope; <= 0 = unclamped
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReliefModifier( height, scale, domain, step, maxSlope );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd)
+								const Scalar scale,							///< [in] Amplitude
+								const Implementation::ReliefDomain domain,	///< [in] Surface or UV
+								const Scalar step							///< [in] Half-step; <= 0 = auto
+								)
+	{
+		// Forwards with maxSlope 0 -- no clamp, the behaviour every caller
+		// of this signature has always had.  Kept as its own entry point
+		// rather than given a defaulted parameter because it is a shipped
+		// exported symbol.
+		return RISE_API_CreateReliefModifierEx( ppi, height, scale, domain, step, Scalar(0) );
+	}
+
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// An empty stack is a parse-time mistake, not a legitimate no-op
+		// (glint_modifier's stance).  A null entry would crash the ctor's
+		// addref loop, so it is rejected here rather than trusted.
+		if( count == 0 ) {
+			return false;
+		}
+		for( unsigned int i = 0; i < count; i++ ) {
+			if( !mods[i] ) {
+				return false;
+			}
+		}
+
+		(*ppi) = new ModifierStack( mods, count );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "modifierstack" );
+		return true;
+	}
+
+	bool RISE_API_CreateBlendedModifier(
+								IRayIntersectionModifier** ppi,
+								const IRayIntersectionModifier* pModA,
+								const IRayIntersectionModifier* pModB,
+								const IScalarPainter& weight
+								)
+	{
+		if( !ppi || ( !pModA && !pModB ) ) {
+			return false;
+		}
+
+		(*ppi) = new BlendedModifier( pModA, pModB, &weight );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blendedmodifier" );
 		return true;
 	}
 
@@ -2626,6 +7778,10 @@ namespace RISE
 		if( !ppi ) {
 			return false;
 		}
+		if( !pMemory && size != 0 ) {
+			*ppi = nullptr;
+			return false;
+		}
 
 		(*ppi) = new MemoryBuffer( pMemory, size, bTakeOwnership );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "memory buffer" );
@@ -2740,6 +7896,22 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateContainerObject(
+							IObjectPriv** ppi					///< [out] Pointer to recieve object
+							)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The no-argument Object ctor, deliberately: Object(const IGeometry*)
+		// logs a source ERROR for a null pointer, because for a LEAF a null
+		// geometry is a bug.  For a container it is the whole point.
+		(*ppi) = new Object();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "container object" );
+		return true;
+	}
+
 	//! Creates a CSG object
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCSGObject(
@@ -2757,20 +7929,7 @@ namespace RISE
 			return false;
 		}
 
-		CSGObject* pObj = 0;
-
-		switch( op ) {
-		default:
-		case 0:
-			pObj = new CSGObject( CSG_UNION );
-			break;
-		case 1:
-			pObj = new CSGObject( CSG_INTERSECTION );
-			break;
-		case 2:
-			pObj = new CSGObject( CSG_SUBTRACTION );
-			break;
-		}
+		CSGObject* pObj = new CSGObject( CsgOpFromChar( op ) );
 
 		pObj->AssignObjects( objA, objB );
 		(*ppi) = pObj;
@@ -3088,6 +8247,32 @@ bool RISE_API_CreateIrradianceCache(
 
 
 //////////////////////////////////////////////////////////
+// Film
+//////////////////////////////////////////////////////////
+
+#include "Rendering/Film.h"
+
+namespace RISE
+{
+	bool RISE_API_CreateFilm(
+								IFilm** ppi,
+								const unsigned int width,
+								const unsigned int height,
+								const Scalar pixelAR
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Implementation::Film( width, height, pixelAR );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "film" );
+		return true;
+	}
+}
+
+
+//////////////////////////////////////////////////////////
 // Rasterizer outputs
 //////////////////////////////////////////////////////////
 
@@ -3098,49 +8283,59 @@ namespace RISE
 	//! Creates a file rasterizer output
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFileRasterizerOutput(
-								IRasterizerOutput** ppi,			///< [out] Pointer to recieve the rasterizer output
-								const char* szPattern,				///< [in] File pattern
-								const bool bMultiple,				///< [in] Output multiple files (for animations usually)
-								const char type,					///< [in] Type of file
-																	///		0 - TGA
-																	///		1 - PPM
-																	///		2 - PNG
-																	///		3 - HDR
-																	///		4 - TIFF
-																	///		5 - RGBEA
-								const unsigned char bpp,			///< [in] Bits / pixel for the file
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								IRasterizerOutput** ppi,				///< [out] Pointer to recieve the rasterizer output
+								const char* szPattern,					///< [in] File pattern
+								const bool bMultiple,					///< [in] Output multiple files (for animations usually)
+								const char type,						///< [in] Type of file
+																		///		0 - TGA
+																		///		1 - PPM
+																		///		2 - PNG
+																		///		3 - HDR
+																		///		4 - TIFF
+																		///		5 - RGBEA
+																		///		6 - EXR
+								const unsigned char bpp,				///< [in] Bits / pixel for the file
+								const COLOR_SPACE color_space,			///< [in] Color space to apply
+								const Scalar exposureEV,				///< [in] Exposure offset in EV stops (LDR formats only)
+								const DISPLAY_TRANSFORM display_transform,	///< [in] Tone curve (LDR formats only)
+								const EXR_COMPRESSION exr_compression,	///< [in] EXR compression mode (EXR only)
+								const bool exr_with_alpha				///< [in] Write alpha channel (EXR only)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
+		*ppi = 0;
 
+		// Map char type code to FRO_TYPE enum once; the per-case body
+		// is otherwise identical across all formats.
+		FileRasterizerOutput::FRO_TYPE fro_type;
 		switch( type )
 		{
-		case 0:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::TGA, bpp, color_space);
-			break;
-		case 1:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::PPM, bpp, color_space );
-			break;
+		case 0:  fro_type = FileRasterizerOutput::TGA;   break;
+		case 1:  fro_type = FileRasterizerOutput::PPM;   break;
+		case 2:  fro_type = FileRasterizerOutput::PNG;   break;
+		case 3:  fro_type = FileRasterizerOutput::HDR;   break;
+		case 4:  fro_type = FileRasterizerOutput::TIFF;  break;
+		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
+		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
 		default:
-		case 2:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::PNG, bpp, color_space );
-			break;
-		case 3:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::HDR, bpp, color_space );
-			break;
-		case 4:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::TIFF, bpp, color_space );
-			break;
-		case 5:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::RGBEA, bpp, color_space );
-			break;
-		case 6:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::EXR, bpp, color_space );
-			break;
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: unknown file type code %d",
+				static_cast<int>(type) );
+			return false;
 		}
+		FileRasterizerOutput* output = new FileRasterizerOutput(
+			szPattern, bMultiple, fro_type, bpp, color_space,
+			exposureEV, display_transform, exr_compression, exr_with_alpha );
+		if( !output->HasEncoder() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: encoder '%s' is unavailable in this build",
+				FileRasterizerOutput::FormatNameForType(fro_type) );
+			output->release();
+			return false;
+		}
+		(*ppi) = output;
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "file rasterizer output" );
 
@@ -3237,6 +8432,7 @@ namespace RISE
 #include "RasterImages/BicubicRasterImageAccessor.h"
 #include "RasterImages/PNGReader.h"
 #include "RasterImages/PNGWriter.h"
+#include "RasterImages/JPEGReader.h"
 #include "RasterImages/TGAReader.h"
 #include "RasterImages/HDRReader.h"
 #include "RasterImages/TGAWriter.h"
@@ -3335,14 +8531,16 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateNNBRasterImageAccessor(
 								IRasterImageAccessor** ppi,				///< [out] Pointer to recieve the accessor
-								IRasterImage& image						///< [in] Raster Image to access
+								IRasterImage& image,					///< [in] Raster Image to access
+								const char wrap_s,						///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t						///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new NNBRasterImageAccessor<RISEColor>( image );
+		(*ppi) = new NNBRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "NNB RIA" );
 		return true;
 	}
@@ -3351,14 +8549,18 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBiLinRasterImageAccessor(
 								IRasterImageAccessor** ppi,				///< [out] Pointer to recieve the accessor
-								IRasterImage& image						///< [in] Raster Image to access
+								IRasterImage& image,					///< [in] Raster Image to access
+								const char wrap_s,						///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t,						///< [in] Wrap mode for V axis (same encoding)
+								const bool mipmap,						///< [in] Build a mip pyramid + use LOD-aware sampling (Landing 2)
+								const bool supersample					///< [in] Footprint stochastic supersampling (no pyramid; lowmem mode)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image );
+		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t, mipmap, supersample );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Bilin RIA" );
 		return true;
 	}
@@ -3367,7 +8569,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCatmullRomBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3376,7 +8580,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new CatmullRomCubicInterpolator<RISEColor>();
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "catmull rom RIA" );
 
 		interp->release();
@@ -3387,7 +8591,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformBSplineBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3396,7 +8602,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new UniformBSplineCubicInterpolator<RISEColor>();
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform bspline RIA" );
 
 		interp->release();
@@ -3408,7 +8614,9 @@ namespace RISE
 	bool RISE_API_CreateBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
 								IRasterImage& image,				///< [in] Raster image to access
-								const Matrix4& m
+								const Matrix4& m,
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3417,7 +8625,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new CubicInterpolator<RISEColor>(m);
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "cubic RIA" );
 
 		interp->release();
@@ -3456,6 +8664,23 @@ namespace RISE
 
 		(*ppi) = new PNGWriter( buffer, bpp, color_space );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PNG writer" );
+		return true;
+	}
+
+	//! Creates a JPEG reader
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateJPEGReader(
+								IRasterImageReader** ppi,			///< [out] Pointer to recieve the raster image reader
+								IReadBuffer& buffer,				///< [in] Buffer containing JPEG data
+								const COLOR_SPACE color_space		///< [in] Color space in the file
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new JPEGReader( buffer, color_space );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "JPEG reader" );
 		return true;
 	}
 
@@ -3615,14 +8840,34 @@ namespace RISE
 	bool RISE_API_CreateEXRWriter(
 								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
 								IWriteBuffer& buffer,				///< [in] Buffer to write to
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode
+								const bool with_alpha				///< [in] Write alpha channel
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new EXRWriter( buffer, color_space );
+		(*ppi) = new EXRWriter( buffer, color_space, compression, with_alpha );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "EXR writer" );
+		return true;
+	}
+
+	bool RISE_API_CreateEXRWriter(
+								IRasterImageWriter** ppi,
+								IWriteBuffer& buffer,
+								const COLOR_SPACE color_space,
+								const EXR_COMPRESSION compression,
+								const bool with_alpha,
+								const bool write_float
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new EXRWriter( buffer, color_space, compression, with_alpha, write_float );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "EXR writer" );
 		return true;
 	}
@@ -3647,11 +8892,13 @@ namespace RISE
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
 #include "Shaders/SMSShaderOp.h"
+#include "Utilities/SMSConfig.h"
 #include "Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "Shaders/SSS/SimpleExtinction.h"
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
 #include "Shaders/AreaLightShaderOp.h"
 #include "Shaders/TransparencyShaderOp.h"
+#include "Shaders/AlphaTestShaderOp.h"
 
 namespace RISE
 {
@@ -3710,17 +8957,14 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDirectLightingShaderOp(
 								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const IMaterial* bsdf,			///< [in] BSDF to use when computing radiance (overrides object BSDF)
-								const bool nonmeshlights,		///< [in] Compute lighting from non mesh lights?
-								const bool meshlights,			///< [in] Compute lighting from mesh lights (area light sources)?
-								const bool cache					///< [in] Should the rasterizer state cache be used?
+								const IMaterial* bsdf			///< [in] BSDF to use when computing radiance (overrides object BSDF)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		DirectLightingShaderOp* pShaderOp = new DirectLightingShaderOp( bsdf, nonmeshlights, meshlights, cache );
+		DirectLightingShaderOp* pShaderOp = new DirectLightingShaderOp( bsdf );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "direct lighting shaderop" );
@@ -3836,7 +9080,6 @@ namespace RISE
 								const unsigned int samples,		///< [in] Number of sample to use in distribution
 								const bool irradiancecaching,	///< [in] Should irradiance caching be used if available?
 								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool branch,				///< [in] Should we branch when doing scattering?
 								const bool reflections,			///< [in] Should reflections be traced?
 								const bool refractions,			///< [in] Should refractions be traced?
 								const bool diffuse,				///< [in] Should diffuse rays be traced?
@@ -3847,7 +9090,7 @@ namespace RISE
 			return false;
 		}
 
-		DistributionTracingShaderOp* pShaderOp = new DistributionTracingShaderOp( samples, irradiancecaching, forcecheckemitters, branch, reflections, refractions, diffuse, translucents );
+		DistributionTracingShaderOp* pShaderOp = new DistributionTracingShaderOp( samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "distribution tracing shaderop" );
@@ -3902,7 +9145,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
 								IShaderOp** pShaderOp,
-								const bool branch,
 								const bool smsEnabled,
 								const unsigned int smsMaxIterations,
 								const double smsThreshold,
@@ -3923,7 +9165,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 			smsConfig.biased = smsBiased;
 		}
 
-		*pShaderOp = new PathTracingShaderOp( branch, smsConfig, StabilityConfig() );
+		*pShaderOp = new PathTracingShaderOp( smsConfig, StabilityConfig() );
 		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "path tracing shaderop" );
 		return true;
 	}
@@ -4036,7 +9278,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int samples,				///< [in] Number of samples to take
 								const IPainter& emm,					///< [in] Emission of this light
 								const Scalar power,						///< [in] Power scale
-								const IPainter& N,						///< [in] Phong factor for focussing the light
+								const IScalarPainter& N,				///< [in] Phong factor for focussing the light (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								const Scalar hotSpot,					///< [in] Angle in radians of the light's hot spot
 								const bool cache						///< [in] Should the rasterizer state cache be used?
 								)
@@ -4068,6 +9310,25 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "transparency shaderop" );
+		return true;
+	}
+
+	//! Creates an alpha-test shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAlphaTestShaderOp(
+								IShaderOp** ppi,
+								const IPainter& alpha_painter,
+								const Scalar    cutoff
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		AlphaTestShaderOp* pShaderOp = new AlphaTestShaderOp( alpha_painter, cutoff );
+
+		(*ppi) = pShaderOp;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "alpha-test shaderop" );
 		return true;
 	}
 }
@@ -4225,15 +9486,14 @@ namespace RISE
 	//! Creates a luminary manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLuminaryManager(
-								ILuminaryManager** ppi,				///< [out] Pointer to recieve the luminary manager
-								const bool bChooseOnlyOneLight		///< [in] Choose only one luminaire for each sample
+								ILuminaryManager** ppi				///< [out] Pointer to recieve the luminary manager
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		LuminaryManager* pLum = new LuminaryManager( bChooseOnlyOneLight );
+		LuminaryManager* pLum = new LuminaryManager();
 
 		(*ppi) = pLum;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "luminary manager" );
@@ -4247,15 +9507,14 @@ namespace RISE
 								const bool seeRadianceMap,			///< [in] Is the radiance map (environment) visible to the view rays?
 								const unsigned int maxR,			///< [in] Maximum recursion level
 								const IShader& pDefaultShader,		///< [in] The default global shader
-								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
-								const bool chooseonlyonelight		///< [in] For luminaire sampling, a random light is chosen for each sample
+								const bool showLuminaires			///< [in] Should we be able to see luminaries?
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires, chooseonlyonelight );
+		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires );
 
 		(*ppi) = pCaster;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ray caster" );
@@ -4280,24 +9539,34 @@ namespace RISE
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 #ifndef RISE_ENABLE_OPENPGL
@@ -4326,23 +9595,33 @@ namespace RISE
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = scene-static work policy)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,				///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS );
+		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		if( pSamples && pFilter ) {
@@ -4358,10 +9637,13 @@ namespace RISE
 
 #include "Rendering/BDPTPelRasterizer.h"
 #include "Rendering/BDPTSpectralRasterizer.h"
+#include "Rendering/VCMPelRasterizer.h"
+#include "Rendering/VCMSpectralRasterizer.h"
 #include "Rendering/PathTracingPelRasterizer.h"
 #include "Rendering/PathTracingSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
+#include "Rendering/AutoRasterizer.h"
 #include "Utilities/ManifoldSolver.h"
 
 namespace RISE
@@ -4375,34 +9657,22 @@ namespace RISE
 								IPixelFilter* pFilter,
 								const unsigned int maxEyeDepth,
 								const unsigned int maxLightDepth,
-								const bool smsEnabled,
-								const unsigned int smsMaxIterations,
-								const double smsThreshold,
-								const unsigned int smsMaxChainDepth,
-								const bool smsBiased,
-								const unsigned int smsBernoulliTrials,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		ManifoldSolverConfig smsConfig;
-		smsConfig.enabled = smsEnabled;
-		if( smsEnabled ) {
-			smsConfig.maxIterations = smsMaxIterations;
-			smsConfig.solverThreshold = smsThreshold;
-			smsConfig.maxChainDepth = smsMaxChainDepth;
-			smsConfig.biased = smsBiased;
-			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
-		}
-
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4410,10 +9680,16 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4421,7 +9697,67 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a spectral BDPT rasterizer
+	//! Creates a spectral BDPT rasterizer with adaptive sampling support.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizerAdaptive(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
+			caster, maxEyeDepth, maxLightDepth,
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples,
+			guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
+		return true;
+	}
+
+	//! Creates a spectral BDPT rasterizer (legacy — no adaptive sampling).
+	/// Thin wrapper delegating to RISE_API_CreateBDPTSpectralRasterizerAdaptive
+	/// with a default-constructed AdaptiveSamplingConfig.  Kept for ABI
+	/// compatibility with callers that predate adaptive-sampling support.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBDPTSpectralRasterizer(
 								IRasterizer** ppi,
@@ -4434,36 +9770,64 @@ namespace RISE
 								const Scalar lambda_end,
 								const unsigned int num_wavelengths,
 								const unsigned int spectral_samples,
-								const bool smsEnabled,
-								const unsigned int smsMaxIterations,
-								const double smsThreshold,
-								const unsigned int smsMaxChainDepth,
-								const bool smsBiased,
-								const unsigned int smsBernoulliTrials,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
 								const PathGuidingConfig& guidingConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
-								const bool useHWSS
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		return RISE_API_CreateBDPTSpectralRasterizerAdaptive(
+			ppi, caster, pSamples, pFilter,
+			maxEyeDepth, maxLightDepth,
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, AdaptiveSamplingConfig(),
+			stabilityConfig, useZSobol, useHWSS, frameStore );
+	}
+
+	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMPelRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar mergeRadius,
+								const bool enableVC,
+								const bool enableVM,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		ManifoldSolverConfig smsConfig;
-		smsConfig.enabled = smsEnabled;
-		if( smsEnabled ) {
-			smsConfig.maxIterations = smsMaxIterations;
-			smsConfig.solverThreshold = smsThreshold;
-			smsConfig.maxChainDepth = smsMaxChainDepth;
-			smsConfig.biased = smsBiased;
-			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
-		}
-
-		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
-			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+		VCMPelRasterizer* pRasterizer = new VCMPelRasterizer(
+			caster,
+			maxEyeDepth,
+			maxLightDepth,
+			mergeRadius,
+			enableVC,
+			enableVM,
+			guidingConfig,
+			adaptiveConfig,
+			stabilityConfig,
+			useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4471,16 +9835,125 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "VCM Pel rasterizer" );
 		return true;
 	}
+
+	//! Creates a spectral Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const Scalar mergeRadius,
+								const bool enableVC,
+								const bool enableVM,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		VCMSpectralRasterizer* pRasterizer = new VCMSpectralRasterizer(
+			caster,
+			maxEyeDepth,
+			maxLightDepth,
+			lambda_begin,
+			lambda_end,
+			num_wavelengths,
+			spectral_samples,
+			mergeRadius,
+			enableVC,
+			enableVM,
+			guidingConfig,
+			adaptiveConfig,
+			stabilityConfig,
+			useZSobol,
+			useHWSS, frameStore);
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "VCM Spectral rasterizer" );
+		return true;
+	}
+
+	// Forward declaration (this file does not include RISE_API.h until
+	// later); the definition follows the frozen forwarder below.
+	bool RISE_API_CreatePathTracingPelRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
 
 	//! Creates a pure path tracing Pel rasterizer
 	bool RISE_API_CreatePathTracingPelRasterizer(
@@ -4494,11 +9967,55 @@ namespace RISE
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
 								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		return RISE_API_CreatePathTracingPelRasterizerEx( ppi, caster, pSamples, pFilter, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, smsTwoStage, smsUseLevenbergMarquardt, smsSeedingMode, smsTargetBounces, false, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore );
+	}
+
+	//! Ex: adds `smsExtended` (ManifoldSolverConfig::extendedMode, the `sms_extended`
+	//! scene parameter).  The legacy symbol above forwards with false.
+	bool RISE_API_CreatePathTracingPelRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -4513,10 +10030,19 @@ namespace RISE
 			smsConfig.maxChainDepth = smsMaxChainDepth;
 			smsConfig.biased = smsBiased;
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+			smsConfig.multiTrials = smsMultiTrials;
+			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
+			smsConfig.extendedMode = smsExtended;
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
-			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4524,16 +10050,157 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PathTracing Pel rasterizer" );
 		return true;
 	}
+
+	//! Creates the auto-routing integrator dispatcher (auto_rasterizer)
+	bool RISE_API_CreateAutoRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const AutoIntegratorChoice integrator,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+								const OidnDevice oidnDevice,
+								const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const ProgressiveConfig& progressiveConfig,
+								const bool probeEnabled,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The dispatcher stores these inputs and builds the chosen concrete
+		// delegate lazily at the first render-time entry (so the probe can
+		// see the assembled scene).  OIDN / progressive are NOT applied to
+		// the wrapper here — they ride into the delegate's factory call
+		// (BuildDelegate) and the post-build progressive wiring inside the
+		// wrapper, because the wrapper itself renders nothing.
+		AutoRasterizer* pRasterizer = new AutoRasterizer(
+			caster, pSamples, pFilter, integrator,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig,
+			useZSobol, progressiveConfig, probeEnabled,
+			/*spectral*/ false, SpectralConfig(), frameStore );
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto rasterizer" );
+		return true;
+	}
+
+	//! Creates the SPECTRAL auto-routing integrator dispatcher (auto_spectral_rasterizer)
+	bool RISE_API_CreateAutoSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const AutoIntegratorChoice integrator,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool useHWSS,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+								const OidnDevice oidnDevice,
+								const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const ProgressiveConfig& progressiveConfig,
+								const bool probeEnabled,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Bundle the spectral-core params the wrapper carries for the
+		// *_spectral_ delegate factories (BuildDelegate unpacks them).
+		SpectralConfig spectralConfig;
+		spectralConfig.nmBegin         = lambda_begin;
+		spectralConfig.nmEnd           = lambda_end;
+		spectralConfig.numWavelengths  = num_wavelengths;
+		spectralConfig.spectralSamples = spectral_samples;
+		spectralConfig.useHWSS         = useHWSS;
+
+		// The spectral domain exposes NO path-guiding (the spectral PT factory
+		// has no guiding arg; the BDPT/VCM spectral factories take a disabled
+		// one).  Supply the disabled default so the shared AutoRasterizer ctor
+		// signature is satisfied without a guiding knob on the spectral chunk.
+		const PathGuidingConfig guidingConfig;   // default = disabled
+
+		// Same dispatcher class as the Pel factory; the `true` domain flag is
+		// the only difference, switching BuildDelegate to the *_spectral_
+		// factories.  The Tier-0/1/2 decision logic is shared verbatim.
+		AutoRasterizer* pRasterizer = new AutoRasterizer(
+			caster, pSamples, pFilter, integrator,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig,
+			useZSobol, progressiveConfig, probeEnabled,
+			/*spectral*/ true, spectralConfig, frameStore );
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto spectral rasterizer" );
+		return true;
+	}
+
+	// Forward declaration (this file does not include RISE_API.h until
+	// later); the definition follows the frozen forwarder below.
+	bool RISE_API_CreatePathTracingSpectralRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
 
 	//! Creates a pure path tracing spectral rasterizer
 	bool RISE_API_CreatePathTracingSpectralRasterizer(
@@ -4551,11 +10218,59 @@ namespace RISE
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
 								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
-								const bool useHWSS
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		return RISE_API_CreatePathTracingSpectralRasterizerEx( ppi, caster, pSamples, pFilter, lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, smsTwoStage, smsUseLevenbergMarquardt, smsSeedingMode, smsTargetBounces, false, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore );
+	}
+
+	//! Ex: adds `smsExtended` (ManifoldSolverConfig::extendedMode, the `sms_extended`
+	//! scene parameter).  The legacy symbol above forwards with false.
+	bool RISE_API_CreatePathTracingSpectralRasterizerEx(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const unsigned int smsMultiTrials,
+								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
+								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
+								const bool smsExtended,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -4570,11 +10285,20 @@ namespace RISE
 			smsConfig.maxChainDepth = smsMaxChainDepth;
 			smsConfig.biased = smsBiased;
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+			smsConfig.multiTrials = smsMultiTrials;
+			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
+			smsConfig.extendedMode = smsExtended;
 		}
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(
 			caster, lambda_begin, lambda_end, num_wavelengths, spectral_samples,
-			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4582,10 +10306,16 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4612,6 +10342,65 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateMLTRasterizerWithFilter(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								ISampling2D* pSampler,
+								IPixelFilter* pFilter,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb, frameStore);
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
+#endif
+
+		// Install the pixel filter (and sampler, if any) on the base
+		// class.  The MLT render loop doesn't consume the sampler, but
+		// SubSampleRays() addref's both so the filter pointer stays
+		// valid for the rasterizer's entire lifetime.  This wiring is
+		// what lets MLT splats go through SplatFilm::SplatFiltered
+		// instead of the old integer point-splat path.
+		if( pSampler || pFilter ) {
+			pRasterizer->SubSampleRays( pSampler, pFilter );
+		}
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );
+		return true;
+	}
+
+	// Legacy wrapper preserving the pre-filter ABI.  Forwards to the
+	// *WithFilter variant with null sampler/filter, which reproduces
+	// the old unfiltered (round-to-nearest point splat) behaviour.
+	// External callers linked against the pre-filter RISE can keep
+	// using this symbol.  New code should call the *WithFilter variant.
 	bool RISE_API_CreateMLTRasterizer(
 								IRasterizer** ppi,
 								IRayCaster* caster,
@@ -4621,29 +10410,74 @@ namespace RISE
 								const unsigned int nChains,
 								const unsigned int nMutationsPerPixel,
 								const Scalar largeStepProb,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								)
+	{
+		return RISE_API_CreateMLTRasterizerWithFilter( ppi, caster,
+			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+			nMutationsPerPixel, largeStepProb, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0,
+			frameStore );  // L6a-2: thread through
+	}
+
+	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int nSpectralSamples,
+								const bool useHWSS,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								ISampling2D* pSampler,
+								IPixelFilter* pFilter,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
-			nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+		MLTSpectralRasterizer* pRasterizer = new MLTSpectralRasterizer( caster, maxEyeDepth, maxLightDepth,
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
+			lambda_begin, lambda_end, nSpectralSamples, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
+		pRasterizer->SetDenoisingDevice( oidnDevice );
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
+		(void)oidnDevice;
+		pRasterizer->SetDenoisingPrefilter( oidnPrefilter );
 #endif
 
+		// See RISE_API_CreateMLTRasterizerWithFilter above — install the
+		// filter on the base-class members so the spectral MLT splat
+		// path can spread each contribution through its reconstruction
+		// kernel instead of truncating to an integer pixel.
+		if( pSampler || pFilter ) {
+			pRasterizer->SubSampleRays( pSampler, pFilter );
+		}
+
 		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT Spectral rasterizer" );
 		return true;
 	}
 
+	// Legacy wrapper — see RISE_API_CreateMLTRasterizer above.
 	bool RISE_API_CreateMLTSpectralRasterizer(
 								IRasterizer** ppi,
 								IRayCaster* caster,
@@ -4657,28 +10491,15 @@ namespace RISE
 								const Scalar lambda_end,
 								const unsigned int nSpectralSamples,
 								const bool useHWSS,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
-		if( !ppi ) {
-			return false;
-		}
-
-		MLTSpectralRasterizer* pRasterizer = new MLTSpectralRasterizer( caster, maxEyeDepth, maxLightDepth,
-			nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-			lambda_begin, lambda_end, nSpectralSamples, useHWSS );
-
-#ifdef RISE_ENABLE_OIDN
-		pRasterizer->SetDenoisingEnabled( oidnDenoise );
-#else
-		if( oidnDenoise ) {
-			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
-		}
-#endif
-
-		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT Spectral rasterizer" );
-		return true;
+		return RISE_API_CreateMLTSpectralRasterizerWithFilter( ppi, caster,
+			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+			nMutationsPerPixel, largeStepProb, lambda_begin, lambda_end,
+			nSpectralSamples, useHWSS, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0,
+			frameStore );  // L6a-2: thread through
 	}
 }
 
@@ -4686,27 +10507,12 @@ namespace RISE
 // Parsers
 //////////////////////////////////////////////////////////
 
-#include "Parsers/AsciiSceneParser.h"
 #include "Parsers/AsciiScriptParser.h"
 #include "Parsers/AsciiCommandParser.h"
 #include "Options.h"
 
 namespace RISE
 {
-	bool RISE_API_CreateAsciiSceneParser(
-								ISceneParser** ppi,					///< [out] Pointer to recieve the parser
-								const char* name					///< [in] Name of the file to load
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new AsciiSceneParser( name );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ascii scene parser" );
-		return true;
-	}
-
 	//! Creates a parser capable of processing a script from a text file
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAsciiScriptParser(
@@ -4802,6 +10608,7 @@ namespace RISE
 #include "Volume/VolumeAccessor_NNB.h"
 #include "Volume/VolumeAccessor_TRI.h"
 #include "Volume/VolumeAccessor_TriCubic.h"
+#include "Volume/VolumeAccessor_Painter.h"
 #include "Utilities/CubicInterpolator.h"
 
 namespace RISE
@@ -4863,6 +10670,26 @@ namespace RISE
 
 		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission, phase );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium with emission" );
+		return true;
+	}
+
+	bool RISE_API_CreateHomogeneousMediumSpectral(
+								IMedium** ppi,
+								const RISEPel& sigma_a,
+								const RISEPel& sigma_s,
+								const RISEPel& emission,
+								const IFunction1D* sigma_a_spectral,
+								const IFunction1D* sigma_s_spectral,
+								const IPhaseFunction& phase
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission,
+			sigma_a_spectral, sigma_s_spectral, phase );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium (spectral)" );
 		return true;
 	}
 
@@ -4961,5 +10788,3323 @@ namespace RISE
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "heterogeneous medium with emission" );
 		return true;
+	}
+
+	bool RISE_API_CreatePainterHeterogeneousMedium(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const IPhaseFunction& phase,
+								const IPainter& densityPainter,
+								const unsigned int virtualResolution,
+								const char colorToScalar,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		IVolumeAccessor* pAccessor = new VolumeAccessor_Painter(
+			densityPainter, virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax, colorToScalar );
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, phase, *pAccessor,
+			virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterHeterogeneousMediumWithEmission(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const RISEPel& emission,
+								const IPhaseFunction& phase,
+								const IPainter& densityPainter,
+								const unsigned int virtualResolution,
+								const char colorToScalar,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		IVolumeAccessor* pAccessor = new VolumeAccessor_Painter(
+			densityPainter, virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax, colorToScalar );
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, emission, phase, *pAccessor,
+			virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium with emission" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMedium(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction( &phase, sootGHot ) || !phase ) {
+			return false;
+		}
+
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter,
+				volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, sceneUnitMeters,
+				sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon,
+				smokeAlbedoCarbon, smokeGCarbon,
+				*phase );
+		safe_release( phase );
+
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "multichannel heterogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter& condensedPainter,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon,
+		Scalar smokeKmCond,
+		Scalar smokeNCond,
+		Scalar smokeAlbedoCond,
+		Scalar smokeGCond
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction( &phase, sootGHot ) || !phase ) {
+			return false;
+		}
+
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, &condensedPainter,
+				volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, sceneUnitMeters,
+				sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon,
+				smokeAlbedoCarbon, smokeGCarbon,
+				smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond,
+				*phase );
+		safe_release( phase );
+
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with condensed constituent" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter* condensedPainter,
+		const IScalarPainter& chemCHPainter,
+		const IScalarPainter& chemC2Painter,
+		const IScalarPainter& chemCO2Painter,
+		const IFunction1D& chemCHSPD,
+		const IFunction1D& chemC2SPD,
+		const IFunction1D& chemCO2SPD,
+		Scalar chemCHIntervalMin,
+		Scalar chemCHIntervalMax,
+		Scalar chemC2IntervalMin,
+		Scalar chemC2IntervalMax,
+		Scalar chemCO2IntervalMin,
+		Scalar chemCO2IntervalMax,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon,
+		Scalar smokeKmCond,
+		Scalar smokeNCond,
+		Scalar smokeAlbedoCond,
+		Scalar smokeGCond
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction(&phase,sootGHot) ||
+			!phase ) return false;
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, condensedPainter,
+				&chemCHPainter, &chemC2Painter, &chemCO2Painter,
+				&chemCHSPD, &chemC2SPD, &chemCO2SPD,
+				chemCHIntervalMin, chemCHIntervalMax,
+				chemC2IntervalMin, chemC2IntervalMax,
+				chemCO2IntervalMin, chemCO2IntervalMax,
+				volWidth, volHeight, volDepth, bboxMin, bboxMax,
+				sceneUnitMeters, sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+				smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond, *phase );
+		safe_release(phase);
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with chem channels" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter* condensedPainter,
+		const IScalarPainter* chemCHPainter,
+		const IScalarPainter* chemC2Painter,
+		const IScalarPainter* chemCO2Painter,
+		const IFunction1D* chemCHSPD,
+		const IFunction1D* chemC2SPD,
+		const IFunction1D* chemCO2SPD,
+		Scalar chemCHIntervalMin,
+		Scalar chemCHIntervalMax,
+		Scalar chemC2IntervalMin,
+		Scalar chemC2IntervalMax,
+		Scalar chemCO2IntervalMin,
+		Scalar chemCO2IntervalMax,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		const char* opticalRecord
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+		const FireOpticsPreset* optics = FireOpticsPreset::Named(opticalRecord);
+		if( !optics ) return false;
+		const bool hasAnyChem = chemCHPainter || chemC2Painter || chemCO2Painter ||
+			chemCHSPD || chemC2SPD || chemCO2SPD;
+		const bool hasAllChem = chemCHPainter && chemC2Painter && chemCO2Painter &&
+			chemCHSPD && chemC2SPD && chemCO2SPD;
+		if( hasAnyChem != hasAllChem ) return false;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction(
+			&phase, optics->HotG(550.0)) || !phase ) return false;
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, condensedPainter,
+				chemCHPainter, chemC2Painter, chemCO2Painter,
+				chemCHSPD, chemC2SPD, chemCO2SPD,
+				chemCHIntervalMin, chemCHIntervalMax,
+				chemC2IntervalMin, chemC2IntervalMax,
+				chemCO2IntervalMin, chemCO2IntervalMax,
+				volWidth, volHeight, volDepth, bboxMin, bboxMax,
+				sceneUnitMeters, *optics, *phase );
+		safe_release(phase);
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with optical preset" );
+		return true;
+	}
+
+	//////////////////////////////////////////////////////////
+	// Interactive scene editor — C-API entry points
+	//////////////////////////////////////////////////////////
+}
+
+#include "RISE_API.h"
+#include "SceneEditor/SceneEditController.h"
+#include "SceneEditor/MaterialPreview.h"
+#include "SceneEditor/LiveSimulation.h"           // simulation M3c
+#include "Simulation/BuiltinSolvers.h"
+#include "Simulation/SceneSimulation.h"            // simulation M3c
+#include "Simulation/SimulationBakeManager.h"      // simulation M5
+#include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
+#include "Utilities/Transformable.h"
+
+namespace RISE
+{
+	bool RISE_API_CaptureTransformStateV2(
+		const ITransformable* transformable, TransformStateV2* outState )
+	{
+		if( !transformable || !outState ) return false;
+		const Implementation::Transformable* concrete =
+			dynamic_cast<const Implementation::Transformable*>( transformable );
+		if( !concrete ) return false;
+		*outState = concrete->CaptureTransformStateV2();
+		return true;
+	}
+
+	bool RISE_API_RestoreTransformStateV2(
+		ITransformable* transformable, const TransformStateV2* state )
+	{
+		if( !transformable || !state ) return false;
+		Implementation::Transformable* concrete =
+			dynamic_cast<Implementation::Transformable*>( transformable );
+		if( !concrete ) return false;
+		return concrete->RestoreTransformStateV2( *state );
+	}
+
+	bool RISE_API_CreateSceneEditController(
+		IJobPriv* pJob,
+		IRasterizer* pInteractiveRasterizer,
+		SceneEditController** ppOut )
+	{
+		if( !pJob || !ppOut ) return false;
+		(*ppOut) = new SceneEditController( *pJob, pInteractiveRasterizer );
+		return (*ppOut) != 0;
+	}
+
+	void RISE_API_DestroySceneEditController( SceneEditController* p )
+	{
+		if( !p ) return;
+		if( p->IsRawDestructionInProgress() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: a raw destructor already owns this controller; recursive destruction is rejected." );
+			return;
+		}
+		if( p->IsInLastRenderSinkCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a Last Render sink callback/final release is rejected; return from the callout and destroy from the owner thread." );
+			return;
+		}
+		if( p->IsInDirtyChangedCallbackOnThisThread() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_DestroySceneEditController: destruction from a dirty-changed callback/copy finalizer is rejected; return from the callback and destroy from the owner thread." );
+			return;
+		}
+		// Reserve BOTH preparation and the eventual delete before entering any
+		// drain/listener wait.  A dirty callback may call Destroy while an owner
+		// is waiting for it; only the lifecycle claimant may proceed to delete.
+		if( !p->PrepareForDestructionForDelete() ) return;
+		delete p;
+	}
+
+	bool RISE_API_SceneEditController_PrepareForDestruction(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->PrepareForDestruction();
+	}
+
+	bool RISE_API_SceneEditController_FinalizeOpenInteractions(
+		SceneEditController* p )
+	{
+		return p && p->FinalizeOpenInteractions();
+	}
+
+	bool RISE_API_SceneEditController_Start( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Start();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_StartSuppressingInitialRender(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Start( /*suppressInitialRender=*/true );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Stop( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Stop();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_StopInteractive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->StopInteractive();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPreviewSink(
+		SceneEditController* p, IRasterizerOutput* sink )
+	{
+		if( !p ) return false;
+		p->SetPreviewSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetProgressSink(
+		SceneEditController* p, IProgressCallback* sink )
+	{
+		if( !p ) return false;
+		p->SetProgressSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetLogSink(
+		SceneEditController* p, ILogPrinter* sink )
+	{
+		if( !p ) return false;
+		p->SetLogSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetTool( SceneEditController* p, int tool )
+	{
+		if( !p ) return false;
+		// Upper bound is RollCamera (=8), the highest enum value.  An
+		// earlier version used ScrubTimeline (=7) as the upper bound,
+		// which silently rejected RollCamera selections at the C-API
+		// boundary — the bridge would call SetTool(8), the call would
+		// return false, and the controller's mTool stayed at whatever
+		// the previous selection was.  Visually, clicking the Roll
+		// button looked like the previous tool was still active —
+		// e.g., dragging behaved like Zoom (move camera) instead of
+		// Roll (rotate around camera→lookat axis).
+		if( tool < SceneEditTool_Select || tool > SceneEditTool_RollCamera ) return false;
+		p->SetTool( static_cast<SceneEditController::Tool>( tool ) );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_CurrentTool( SceneEditController* p )
+	{
+		if( !p ) return SceneEditTool_Select;
+		return static_cast<int>( p->CurrentTool() );
+	}
+
+	int RISE_API_SceneEditController_CategoryForTool( int tool )
+	{
+		if( tool < SceneEditTool_Select || tool > SceneEditTool_RollCamera ) {
+			return static_cast<int>( SceneEditController::ToolCategory::Select );
+		}
+		const auto t = static_cast<SceneEditController::Tool>( tool );
+		return static_cast<int>( SceneEditController::CategoryForTool( t ) );
+	}
+
+	int RISE_API_SceneEditController_DefaultSubToolForCategory( int category )
+	{
+		if( category < 0 || category >= SceneEditController::kNumToolCategories ) {
+			return SceneEditTool_Select;
+		}
+		const auto cat = static_cast<SceneEditController::ToolCategory>( category );
+		return static_cast<int>( SceneEditController::DefaultSubToolForCategory( cat ) );
+	}
+
+	int RISE_API_SceneEditController_GetLastSubToolForCategory(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return SceneEditTool_Select;
+		if( category < 0 || category >= SceneEditController::kNumToolCategories ) {
+			return SceneEditTool_Select;
+		}
+		const auto cat = static_cast<SceneEditController::ToolCategory>( category );
+		return static_cast<int>( p->GetLastSubToolForCategory( cat ) );
+	}
+
+	bool RISE_API_SceneEditController_RefreshGizmoHandles( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->RefreshGizmoHandles();
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_GizmoHandleCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->GizmoHandleCount();
+	}
+
+	bool RISE_API_SceneEditController_GizmoHandle(
+		SceneEditController* p, unsigned int idx,
+		int* outKind, int* outAxis,
+		double* outScreenX, double* outScreenY, double* outScreenRadius )
+	{
+		if( !p ) return false;
+		if( idx >= p->GizmoHandleCount() ) return false;
+		if( outKind         ) *outKind         = p->GizmoHandleKind( idx );
+		if( outAxis         ) *outAxis         = p->GizmoHandleAxis( idx );
+		if( outScreenX      ) *outScreenX      = p->GizmoHandleScreenX( idx );
+		if( outScreenY      ) *outScreenY      = p->GizmoHandleScreenY( idx );
+		if( outScreenRadius ) *outScreenRadius = p->GizmoHandleScreenRadius( idx );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_GizmoHandleAt(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return -1;
+		return p->GizmoHandleAt( Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_IsGizmoDragActive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsGizmoDragActive();
+	}
+
+	int RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return p->ActiveGizmoKind();
+	}
+
+	int RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return p->ActiveGizmoAxis();
+	}
+
+	// -------- Navigation axis-ball gizmo (Tier 2 §4) --------
+
+	bool RISE_API_SceneEditController_RefreshNavGizmo(
+		SceneEditController* p,
+		double centerX, double centerY, double ballRadius, double nubRadius )
+	{
+		if( !p ) return false;
+		return p->RefreshNavGizmo( centerX, centerY, ballRadius, nubRadius );
+	}
+
+	unsigned int RISE_API_SceneEditController_NavGizmoNubCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->NavGizmoNubCount();
+	}
+
+	bool RISE_API_SceneEditController_NavGizmoNub(
+		SceneEditController* p, unsigned int idx,
+		int* outAxis, int* outNegative,
+		double* outScreenX, double* outScreenY, double* outScreenRadius,
+		int* outFacing )
+	{
+		if( !p ) return false;
+		int    axis = 0;   bool neg = false, facing = false;
+		double sx = 0, sy = 0, r = 0;
+		if( !p->NavGizmoNubInfo( idx, axis, neg, sx, sy, r, facing ) ) return false;
+		if( outAxis         ) *outAxis         = axis;
+		if( outNegative     ) *outNegative     = neg ? 1 : 0;
+		if( outScreenX      ) *outScreenX      = sx;
+		if( outScreenY      ) *outScreenY      = sy;
+		if( outScreenRadius ) *outScreenRadius = r;
+		if( outFacing       ) *outFacing       = facing ? 1 : 0;
+		return true;
+	}
+
+	int RISE_API_SceneEditController_NavGizmoNubAt(
+		SceneEditController* p, double x, double y )
+	{
+		if( !p ) return -1;
+		return p->NavGizmoNubAt( x, y );
+	}
+
+	// -------- View navigation (Tier 2 §4-5): non-destructive --------
+	//
+	// user-review P1-1: the UNINDEXED entries alias PANE 0 (the §7.4 contract:
+	// "existing calls = pane 0"), so legacy single-viewport clients keep
+	// mutating pane 0 regardless of which pane is primary.  The *Pane* twins
+	// below take an explicit pane index -- the N-up nav overlay (drawn on the
+	// primary pane) calls THOSE with the primary index.
+
+	bool RISE_API_SceneEditController_SnapViewToAxis(
+		SceneEditController* p, int axis, int negative )
+	{
+		if( !p ) return false;
+		return p->SnapViewToAxis( axis, negative != 0, /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_EnterFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->EnterFreeFlyFromActiveCamera( /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_ExitFreeFly( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->ExitFreeFly( /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_IsFreeFlyActive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsFreeFlyActive( /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_SetHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->SetHomeView( /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_GoToHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->GoToHomeView( /*pane=*/0 );
+	}
+
+	bool RISE_API_SceneEditController_HasHomeView( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->HasHomeView();   // home view is a single global bookmark -- no pane
+	}
+
+	// user-review P1-1: pane-indexed navigation twins (the N-up nav overlay
+	// targets its primary pane; PaneEnterFreeFly / PaneExitFreeFly already
+	// exist as the free-fly twins).
+	bool RISE_API_SceneEditController_SnapPaneViewToAxis(
+		SceneEditController* p, unsigned int pane, int axis, int negative )
+	{
+		// kViewportNavPrimary is an INTERNAL C++ default-argument sentinel;
+		// indexed C callers must never be able to spell it as a pane.
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->SnapViewToAxis( axis, negative != 0, pane );
+	}
+
+	bool RISE_API_SceneEditController_IsPaneFreeFlyActive( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->IsFreeFlyActive( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneSetHomeView( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->SetHomeView( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneGoToHomeView( SceneEditController* p, unsigned int pane )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary ) return false;
+		return p->GoToHomeView( pane );
+	}
+
+	// -------- Viewport render modes (P1, docs/gui/RENDER_MODES.md §5) ----
+
+	bool RISE_API_SceneEditController_SetViewportRenderMode(
+		SceneEditController* p, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetViewportRenderMode( name );
+	}
+
+	const char* RISE_API_SceneEditController_GetViewportRenderMode( SceneEditController* p )
+	{
+		if( !p ) return "preview";
+		return p->GetViewportRenderMode();
+	}
+
+	bool RISE_API_SceneEditController_SetViewportLayout(
+		SceneEditController* p, int layout )
+	{
+		if( !p ) return false;
+		return p->SetViewportLayout( static_cast<SceneEditController::ViewportLayout>( layout ) );
+	}
+
+	bool RISE_API_SceneEditController_GetViewportLayout(
+		SceneEditController* p, int* out )
+	{
+		if( !p || !out ) return false;
+		*out = static_cast<int>( p->GetViewportLayout() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPrimaryPane(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPrimaryPane( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPrimaryPane(
+		SceneEditController* p, unsigned int* out )
+	{
+		if( !p || !out ) return false;
+		*out = p->GetPrimaryPane();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPaneRenderMode(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneRenderMode( pane, name );
+	}
+
+	const char* RISE_API_SceneEditController_GetPaneRenderMode(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return "preview";
+		return p->GetPaneRenderMode( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int source )
+	{
+		if( !p || source < 0 || source > 1 ) return false;
+		return p->SetPaneContentSource(
+			pane,
+			static_cast<SceneEditController::PaneContentSource>( source ) );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneContentSource(
+		SceneEditController* p, unsigned int pane, int* out )
+	{
+		if( !p || !out || pane >= SceneEditController::kViewportPaneCount )
+			return false;
+		*out = static_cast<int>( p->GetPaneContentSource( pane ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerDown(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerDown( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerMove(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerMove( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_OnPanePointerUp(
+		SceneEditController* p, unsigned int pane, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		return p->OnPanePointerUp( pane, Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_PaneEnterFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneEnterFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_PaneExitFreeFly(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->PaneExitFreeFly( pane );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneRefinementStatus(
+		SceneEditController* p, unsigned int pane, int* outPhase,
+		unsigned int* outScaleDivisor )
+	{
+		if( !p || !outPhase || !outScaleDivisor ) return false;
+		return p->GetPaneRefinementStatus( pane, *outPhase, *outScaleDivisor );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneSurfaceDims(
+		SceneEditController* p, unsigned int pane, unsigned int w, unsigned int h )
+	{
+		if( !p ) return false;
+		return p->SetPaneSurfaceDims( pane, w, h );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneSink(
+		SceneEditController* p, unsigned int pane, IRasterizerOutput* pSink )
+	{
+		if( !p ) return false;
+		return p->SetPaneSink( pane, pSink );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCamera(
+		SceneEditController* p, unsigned int pane )
+	{
+		if( !p ) return false;
+		return p->SetPaneVantageSceneCamera( pane );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageSceneCameraNamed(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageSceneCameraNamed( pane, name );
+	}
+
+	bool RISE_API_SceneEditController_SetPaneVantageNamedView(
+		SceneEditController* p, unsigned int pane, const char* name )
+	{
+		if( !p || !name ) return false;
+		return p->SetPaneVantageNamedView( pane, name );
+	}
+
+	bool RISE_API_SceneEditController_GetPaneVantage(
+		SceneEditController* p, unsigned int pane, int* outKind,
+		char* outNamedView, unsigned int cap )
+	{
+		if( !p || !outKind || !outNamedView || cap == 0 ) return false;
+		SceneEditController::PaneVantageKind kind;
+		String namedView;
+		if( !p->GetPaneVantage( pane, kind, namedView ) ) return false;
+		*outKind = static_cast<int>( kind );
+		// NUL-terminated copy, truncating to cap-1 (house C-ABI string shape).
+		unsigned int n = 0;
+		for( ; n + 1 < cap && n < namedView.size(); ++n ) {
+			outNamedView[n] = namedView.c_str()[n];
+		}
+		outNamedView[n] = '\0';
+		return true;
+	}
+
+	unsigned int RISE_API_GetViewportRenderModeCount()
+	{
+		unsigned int count = 0;
+		Implementation::GetViewportRenderModes( count );
+		return count;
+	}
+
+	bool RISE_API_GetViewportRenderModeInfo(
+		unsigned int index,
+		const char** name, const char** title, const char** question,
+		bool* viewportSelectable )
+	{
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+
+		const Implementation::ViewportRenderModeInfo& info = modes[index];
+		if( name )               *name               = info.name;
+		if( title )              *title              = info.title;
+		if( question )           *question           = info.question;
+		if( viewportSelectable ) *viewportSelectable = info.viewportSelectable;
+		return true;
+	}
+
+	bool RISE_API_GetViewportRenderModeWantsDenoise(
+		unsigned int index, bool* out )
+	{
+		if( !out ) return false;
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+		*out = modes[index].wantsDenoise;
+		return true;
+	}
+
+	bool RISE_API_GetViewportRenderModeIsVariant(
+		unsigned int index, bool* out )
+	{
+		if( !out ) return false;
+		unsigned int count = 0;
+		const Implementation::ViewportRenderModeInfo* modes =
+			Implementation::GetViewportRenderModes( count );
+		if( !modes || index >= count ) return false;
+		*out = Implementation::IsBeautyVariantMode( modes[index].mode );
+		return true;
+	}
+
+	// -------- X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") ----
+
+	bool RISE_API_SceneEditController_SetViewportXray( SceneEditController* p, bool xray )
+	{
+		if( !p ) return false;
+		return p->SetViewportXray( xray );
+	}
+
+	bool RISE_API_SceneEditController_GetViewportXray( SceneEditController* p, bool* out )
+	{
+		if( !p || !out ) return false;
+		*out = p->GetViewportXray();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerDown(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerDown( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerMove(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerMove( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerUp(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerUp( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->OnTimeScrubBegin();
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t )
+	{
+		if( !p ) return false;
+		return p->OnTimeScrub( t );
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->OnTimeScrubEnd();
+	}
+
+	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->BeginPropertyScrub();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EndPropertyScrub( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->EndPropertyScrub();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Undo( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Undo();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Redo( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Redo();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PauseRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->PauseRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ResumeRefinement( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ResumeRefinement();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_IsRefinementPaused( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsRefinementPaused();
+	}
+
+	int RISE_API_SceneEditController_GetRefinementStatus(
+		SceneEditController* p, unsigned int* outScaleDivisor )
+	{
+		if( !p ) return -1;
+		unsigned int scaleDiv = 1;
+		const int phase = static_cast<int>( p->GetRefinementStatus( scaleDiv ) );
+		if( outScaleDivisor ) *outScaleDivisor = scaleDiv;
+		return phase;
+	}
+
+	bool RISE_API_SceneEditController_SetInteractiveRegion(
+		SceneEditController* p, unsigned int left, unsigned int top,
+		unsigned int right, unsigned int bottom )
+	{
+		if( !p ) return false;
+		p->SetInteractiveRegion( left, top, right, bottom );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ClearInteractiveRegion( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->ClearInteractiveRegion();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetInteractiveRegion(
+		SceneEditController* p, unsigned int* left, unsigned int* top,
+		unsigned int* right, unsigned int* bottom )
+	{
+		if( !p ) return false;
+		unsigned int l = 0, t = 0, r = 0, b = 0;
+		if( !p->GetInteractiveRegion( l, t, r, b ) ) return false;
+		if( left )   *left   = l;
+		if( top )    *top    = t;
+		if( right )  *right  = r;
+		if( bottom ) *bottom = b;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InteractiveRasterizerHonorsRegion(
+		SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->InteractiveRasterizerHonorsRegion();
+	}
+
+	// ---- Phase 6.5 scene-file save ----------------------------------
+
+	char* RISE_API_SceneEditController_SerializedSceneTextAlloc( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		const String text = p->SerializedSceneText();
+		const char* src = text.c_str();
+		if( !src ) return 0;
+		const size_t len = strlen( src );
+		char* out = static_cast<char*>( malloc( len + 1 ) );
+		if( !out ) return 0;
+		memcpy( out, src, len + 1 );
+		return out;
+	}
+
+	void RISE_API_FreeString( char* s )
+	{
+		if( s ) free( s );
+	}
+
+	bool RISE_API_SceneEditController_GetSceneTextVersion(
+		SceneEditController* p,
+		unsigned long long* outUuid, unsigned long long* outRevision )
+	{
+		if( !p ) return false;
+		std::uint64_t uuid = 0, revision = 0;
+		p->GetSceneTextVersion( uuid, revision );
+		if( outUuid )     *outUuid     = uuid;
+		if( outRevision ) *outRevision = revision;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetEntitySourceLocation(
+		SceneEditController* p, int category, const char* name,
+		unsigned long long* outByteOffset, unsigned int* outLine )
+	{
+		if( !p || !name ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		std::uint64_t byteOffset = 0; std::uint32_t line = 0;
+		if( !p->EntitySourceLocation( cat, String( name ), byteOffset, line ) ) return false;
+		if( outByteOffset ) *outByteOffset = byteOffset;
+		if( outLine )       *outLine       = line;
+		return true;
+	}
+
+	// Source traceability — any UI element -> its scene-file span, + the reverse.
+	// See SceneEditController::ResolveSourceSpan / SourceRefAtByteOffset.
+
+	bool RISE_API_SceneEditController_ResolveSourceSpan(
+		SceneEditController* p, int category, const char* name, const char* param, int occ,
+		unsigned long long* outByteOffset, unsigned long long* outByteLength,
+		unsigned int* outLine, unsigned int* outColumn )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		SceneEditController::SourceSpan sp;
+		if( !p->ResolveSourceSpan( cat, String( name ? name : "" ), String( param ? param : "" ), occ, sp ) )
+			return false;
+		if( outByteOffset ) *outByteOffset = sp.byteOffset;
+		if( outByteLength ) *outByteLength = sp.byteLength;
+		if( outLine )       *outLine       = sp.line;
+		if( outColumn )     *outColumn     = sp.column;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SourceRefAtByteOffset(
+		SceneEditController* p, unsigned long long offset,
+		int* outCategory,
+		char* outName, unsigned int outNameLen,
+		char* outParam, unsigned int outParamLen,
+		int* outOccurrence )
+	{
+		if( !p ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name, param;
+		int occ = 0;
+		if( !p->SourceRefAtByteOffset( offset, cat, name, param, &occ ) ) return false;
+		if( outCategory )   *outCategory   = static_cast<int>( cat );
+		if( outOccurrence ) *outOccurrence = occ;
+		// Inline truncating copy (CopyToBuf is defined later in this TU): NUL-terminate.
+		auto copyOut = []( const String& s, char* buf, unsigned int cap ) {
+			if( !buf || cap == 0 ) return;
+			const char* src = s.c_str();
+			unsigned int i = 0;
+			while( src && src[i] && i + 1 < cap ) { buf[i] = src[i]; ++i; }
+			buf[i] = '\0';
+		};
+		copyOut( name, outName, outNameLen );
+		copyOut( param, outParam, outParamLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->HasUnsavedChanges();
+	}
+
+	int RISE_API_SceneEditController_RequestSave(
+		SceneEditController* p,
+		const char* filePath,
+		char* errOut,
+		unsigned int errOutCap )
+	{
+		if( !p || !filePath ) return -1;
+		const SaveResult r = p->RequestSave( std::string( filePath ) );
+		if( errOut && errOutCap > 0 ) {
+			errOut[0] = '\0';
+			const std::string& msg = r.errorMessage;
+			if( !msg.empty() ) {
+				const unsigned int n =
+					( msg.size() + 1 < errOutCap ) ? (unsigned int)msg.size()
+					                               : ( errOutCap - 1 );
+				std::memcpy( errOut, msg.data(), n );
+				errOut[n] = '\0';
+			}
+		}
+		return static_cast<int>( r.status );
+	}
+
+	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
+		SceneEditController* p,
+		RISE_API_DirtyChangedFn cb,
+		void* userData )
+	{
+		if( !p ) return false;
+		if( cb ) {
+			// Capture by value: cb + userData live as long as the
+			// std::function; controller owns the function, so the
+			// closure outlives the C shim's stack frame.
+			p->SetDirtyChangedListener(
+				[cb, userData]( bool hasUnsaved ) {
+					cb( userData, hasUnsaved ? 1 : 0 );
+				} );
+		} else {
+			p->SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
+		}
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_LastSceneTime( SceneEditController* p, double* out )
+	{
+		if( !p || !out ) return false;
+		*out = static_cast<double>( p->LastSceneTime() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RequestProductionRender( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RequestProductionRender();
+	}
+
+	// Properties panel ------------------------------------------------
+
+	static void CopyToBuf( const String& s, char* buf, unsigned int bufLen )
+	{
+		if( !buf || bufLen == 0 ) return;
+		const char* src = s.c_str();
+		unsigned int i = 0;
+		while( src && src[i] && i + 1 < bufLen ) { buf[i] = src[i]; ++i; }
+		buf[i] = 0;
+	}
+
+	bool RISE_API_SceneEditController_RefreshProperties( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->RefreshProperties();
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PanelMode( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return static_cast<int>( p->CurrentPanelMode() );
+	}
+
+	bool RISE_API_SceneEditController_PanelHeader(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->CurrentPanelHeader(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_UndoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->UndoLabel(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RedoLabel(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->RedoLabel(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ConsumeHistoryNotice(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( buf && bufLen ) buf[0] = '\0';
+		if( !p ) return false;
+		const std::string notice = p->ConsumeHistoryNotice();
+		if( notice.empty() ) return false;
+		CopyToBuf( notice.c_str(), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PropertyCount();
+	}
+
+	bool RISE_API_SceneEditController_PropertyName(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyName( idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyValue(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyValue( idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyDescription(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyDescription( idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PropertyKind(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return -1;
+		return p->PropertyKind( idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyEditable(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->PropertyEditable( idx );
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyPresetCount(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return 0;
+		return p->PropertyPresetCount( idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetLabel(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() || presetIdx >= p->PropertyPresetCount( idx ) ) return false;
+		CopyToBuf( p->PropertyPresetLabel( idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetValue(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() || presetIdx >= p->PropertyPresetCount( idx ) ) return false;
+		CopyToBuf( p->PropertyPresetValue( idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyUnitLabel(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyUnitLabel( idx ), buf, bufLen );
+		return true;
+	}
+
+	// doc 88 S4b (Tier-1 param sliders).  No idx pre-check needed: the controller's
+	// own readers bounds-check and answer false/0, which is exactly the value a
+	// missing row should report -- and unlike the string readers there is no output
+	// buffer to leave untouched.
+	bool RISE_API_SceneEditController_PropertyHasRange(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyHasRange( idx ) : false;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMin(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMin( idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMax(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMax( idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeStep(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyRangeStep( idx ) : 0.0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyTargetsPainter(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyTargetsPainter( idx ) : false;
+	}
+
+	int RISE_API_SceneEditController_PropertyInlinePainterKind(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterKind( idx ) : 0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyInlinePainterValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyInlinePainterValue( idx ), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCount(
+		SceneEditController* p, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterRefCount( idx ) : 0u;
+	}
+
+	bool RISE_API_SceneEditController_PropertyJumpTarget(
+		SceneEditController* p, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTarget( idx, cat, name ) ) return false;
+		// External-review P2 (2026-07-22): the name is a LOOKUP KEY the shell
+		// feeds back to setSelection -- a silent truncation (CopyToBuf) would
+		// jump to a non-existent prefix.  Refuse rather than mis-navigate; the
+		// shells then hide the menu item.  (strlen, not String::size(), so the
+		// fit test is byte-exact against CopyToBuf's `i + 1 < bufLen` bound.)
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyJumpTargetForCategory(
+		SceneEditController* p, int category, unsigned int idx,
+		int* outCategory, char* nameBuf, unsigned int nameBufLen )
+	{
+		if( !p || !outCategory || !nameBuf || nameBufLen == 0 ) return false;
+		SceneEditController::Category cat = SceneEditController::Category::None;
+		String name;
+		if( !p->PropertyJumpTargetFor(
+				static_cast<SceneEditController::Category>( category ), idx, cat, name ) ) return false;
+		// Same truncation guard as the non-categorized twin above -- the name
+		// is a lookup key; refuse rather than jump to a truncated prefix.
+		if( strlen( name.c_str() ) >= nameBufLen ) return false;
+		*outCategory = static_cast<int>( cat );
+		CopyToBuf( name, nameBuf, nameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetProperty(
+		SceneEditController* p, const char* name, const char* valueStr )
+	{
+		if( !p || !name || !valueStr ) return false;
+		return p->SetProperty( String( name ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_GetAnimationOptions(
+		SceneEditController* p,
+		double* outTimeStart, double* outTimeEnd,
+		unsigned int* outNumFrames )
+	{
+		if( !p || !outTimeStart || !outTimeEnd || !outNumFrames ) return false;
+		double t0 = 0, t1 = 0;
+		unsigned int nf = 0;
+		if( !p->GetAnimationOptions( t0, t1, nf ) ) return false;
+		*outTimeStart = t0;
+		*outTimeEnd   = t1;
+		*outNumFrames = nf;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetHasAnimation(
+		SceneEditController* p, bool* outHasAnimation )
+	{
+		if( !p || !outHasAnimation ) return false;
+		bool hasAnimation = false;
+		if( !p->GetHasAnimation( hasAnimation ) ) return false;
+		*outHasAnimation = hasAnimation;
+		return true;
+	}
+
+	// ---- Simulation M3c ----
+
+	namespace
+	{
+		void M3cCopyText( const std::string& text, char* buf, unsigned int len )
+		{
+			if( !buf || len == 0 ) return;
+			const std::size_t n = std::min<std::size_t>( text.size(), len - 1 );
+			std::memcpy( buf, text.data(), n );
+			buf[n] = '\0';
+		}
+		template <typename T> void M3cSet( T* out, const T& value ) { if( out ) *out = value; }
+		std::vector<unsigned char> M3cBytes( const unsigned char* data, unsigned int len )
+		{
+			return data && len ? std::vector<unsigned char>( data, data + len ) : std::vector<unsigned char>();
+		}
+		//! Runs `fn`; an exception becomes false with its message (the ABI is bool).
+		template <typename F> bool M3cGuard( char* errorBuf, unsigned int errorBufLen, F fn )
+		{
+			std::string error;
+			bool ok = false;
+			try { ok = fn( error ); }
+			catch( const std::exception& e ) { error = e.what(); ok = false; }
+			catch( ... ) { error = "unknown exception"; ok = false; }
+			M3cCopyText( ok ? std::string() : error, errorBuf, errorBufLen );
+			return ok;
+		}
+	}
+
+	bool RISE_API_RegisterBuiltinSolvers( char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, []( std::string& error ) {
+			return Simulation::RegisterBuiltinSolvers( error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetTimeVaryingAssetCount(
+		SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::TimelineRange> ranges;
+			if( !p->GetTimeVaryingAssets( ranges ) ) return false;
+			M3cSet( outCount, static_cast<unsigned int>( ranges.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetTimeVaryingAsset(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen,
+		int* outKind, int* outState, bool* outPredictive,
+		double* outStart, double* outEnd, double* outAvailableEnd, double* outInterval,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::TimelineRange> ranges;
+			if( !p->GetTimeVaryingAssets( ranges ) || index >= ranges.size() ) return false;
+			const Simulation::TimelineRange& r = ranges[index];
+			M3cCopyText( r.name, nameBuf, nameBufLen );
+			M3cSet( outKind, static_cast<int>( r.kind ) );
+			M3cSet( outState, static_cast<int>( r.state ) );
+			M3cSet( outPredictive, r.fidelity == "predictive" );
+			M3cSet( outStart, r.start );
+			M3cSet( outEnd, r.end );
+			M3cSet( outAvailableEnd, r.availableEnd );
+			M3cSet( outInterval, r.interval );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( r.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( r.framesTotal ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPlay( SceneEditController* p, double fps, bool loop )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackPlay( fps, loop ); } );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPlayRange(
+		SceneEditController* p, double timeStart, double timeEnd, double fps, bool loop )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			return p->PlaybackPlayRange( timeStart, timeEnd, fps, loop );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackPause( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackPause(); } );
+	}
+
+	bool RISE_API_SceneEditController_PlaybackSeek( SceneEditController* p, double t )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) { return p->PlaybackSeek( t ); } );
+	}
+
+	bool RISE_API_SceneEditController_GetPlaybackStatus(
+		SceneEditController* p, bool* outPlaying, bool* outLive, bool* outWaitingForSolver,
+		double* outTime, double* outTimeStart, double* outTimeEnd, double* outFps,
+		unsigned long long* outFramesShown, unsigned long long* outFramesDropped,
+		unsigned long long* outSolverWaits, unsigned long long* outPassesCompleted,
+		double* outWallSeconds )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Implementation::PlaybackStatus s;
+			if( !p->GetPlaybackStatus( s ) ) return false;
+			M3cSet( outPlaying, s.playing );
+			M3cSet( outLive, s.live );
+			M3cSet( outWaitingForSolver, s.waitingForSolver );
+			M3cSet( outTime, s.time );
+			M3cSet( outTimeStart, s.start );
+			M3cSet( outTimeEnd, s.end );
+			M3cSet( outFps, s.fps );
+			M3cSet( outFramesShown, static_cast<unsigned long long>( s.framesShown ) );
+			M3cSet( outFramesDropped, static_cast<unsigned long long>( s.framesDropped ) );
+			M3cSet( outSolverWaits, static_cast<unsigned long long>( s.solverWaits ) );
+			M3cSet( outPassesCompleted, static_cast<unsigned long long>( s.passesCompleted ) );
+			M3cSet( outWallSeconds, s.wallSeconds );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationAttach(
+		SceneEditController* p, const char* geometryName, const char* solverId,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName || !solverId ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationAttach( geometryName, solverId, M3cBytes( parameters, parametersLen ), error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationDetach(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationDetach( geometryName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationReset(
+		SceneEditController* p, const char* geometryName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationReset( geometryName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationSetParameters(
+		SceneEditController* p, const char* geometryName,
+		const unsigned char* parameters, unsigned int parametersLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationSetParameters( geometryName, M3cBytes( parameters, parametersLen ), error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationRecord(
+		SceneEditController* p, const char* geometryName, const char* cacheDirectory,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !geometryName || !cacheDirectory ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationRecord( geometryName, cacheDirectory, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetLiveSimulationStatus(
+		SceneEditController* p, const char* geometryName,
+		bool* outPlaying, bool* outFinished, bool* outFailed,
+		long long* outLatestFrame, double* outLatestSceneTime,
+		double* outFirstSceneTime, double* outLastSceneTime,
+		unsigned long long* outFramesPublished, unsigned long long* outFramesTotal,
+		double* outSimulatedTime )
+	{
+		if( !p || !geometryName ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Implementation::LiveSimulationStatus s;
+			if( !p->GetLiveSimulationStatus( geometryName, s ) ) return false;
+			M3cSet( outPlaying, s.playing );
+			M3cSet( outFinished, s.finished );
+			M3cSet( outFailed, s.failed );
+			M3cSet( outLatestFrame, static_cast<long long>( s.latestFrame ) );
+			M3cSet( outLatestSceneTime, s.latestSceneTime );
+			M3cSet( outFirstSceneTime, s.firstSceneTime );
+			M3cSet( outLastSceneTime, s.lastSceneTime );
+			M3cSet( outFramesPublished, static_cast<unsigned long long>( s.framesPublished ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cSet( outSimulatedTime, s.simulatedTime );
+			return true;
+		} );
+	}
+
+	unsigned int RISE_API_SceneEditController_LiveSimulationCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		try { return p->LiveSimulationCount(); } catch( ... ) { return 0; }
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationAttachSimulation(
+		SceneEditController* p, const char* simulationName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !simulationName ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationAttachSimulation( simulationName, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationResync(
+		SceneEditController* p, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) { return p->LiveSimulationResync( error ); } );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationCount( SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			// M5: the panel's list is also when bakes still running from an
+			// earlier session are adopted (SimulationBakeManager::Attach).
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/false, error, /*checkUnsaved=*/false ) ) return false;
+			std::string ignored;
+			Simulation::SimulationBakeManager::Instance().Attach( snapshot, ignored );
+			M3cSet( outCount, static_cast<unsigned int>( snapshot.simulations.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulation(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cCopyText( s.name, nameBuf, nameBufLen );
+			M3cCopyText( s.keyword, keywordBuf, keywordBufLen );
+			M3cSet( outState, static_cast<int>( s.state ) );
+			M3cSet( outUpstreamOutOfDate, s.upstreamOutOfDate );
+			M3cSet( outInteractive, s.interactive );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( s.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cCopyText( s.cacheDir.string(), cacheBuf, cacheBufLen );
+			M3cCopyText( s.error, errorBuf, errorBufLen );
+			return true;
+		} );
+	}
+
+	// ---- Simulation M5: baking ----
+
+	namespace
+	{
+		struct BakeCallback
+		{
+			std::mutex mutex;
+			RISE_SimulationBakeChangeCallback fn = nullptr;
+			void* user = nullptr;
+			std::uint64_t listener = 0;
+		};
+		BakeCallback& TheBakeCallback()
+		{
+			static BakeCallback callback;
+			return callback;
+		}
+		Simulation::SimulationBakeManager& Bakes() { return Simulation::SimulationBakeManager::Instance(); }
+		bool BakeSnapshot( SceneEditController* p, Simulation::BakeSceneSnapshot& snapshot, std::string& error )
+		{
+			return p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/true, error );
+		}
+		const char* NameOrEmpty( const char* s ) { return s ? s : ""; }
+	}
+
+	bool RISE_API_SimulationBake_SetWorkerPath( const char* path )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Bakes().SetWorkerOverride( NameOrEmpty( path ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SimulationBake_GetWorkerPath( char* pathBuf, unsigned int pathBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			std::vector<std::string> command;
+			if( !Bakes().ResolveWorker( command, error ) ) return false;
+			std::string text;
+			for( const auto& c : command ) text += ( text.empty() ? "" : " " ) + c;
+			M3cCopyText( text, pathBuf, pathBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SimulationBake_SetLimits( unsigned int maxConcurrentCpuBakes, unsigned long long memoryBudgetBytes )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			Simulation::BakeManagerSettings settings = Bakes().Settings();
+			if( maxConcurrentCpuBakes ) settings.maxCpuBakes = maxConcurrentCpuBakes;
+			settings.memoryBudget = memoryBudgetBytes;
+			Bakes().SetSettings( settings );
+			return true;
+		} );
+	}
+
+	unsigned long long RISE_API_SimulationBake_ChangeCounter()
+	{
+		return static_cast<unsigned long long>( Bakes().ChangeCounter() );
+	}
+
+	bool RISE_API_SimulationBake_SetChangeCallback( RISE_SimulationBakeChangeCallback callback, void* userData )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			BakeCallback& cb = TheBakeCallback();
+			std::uint64_t old = 0;
+			{
+				std::lock_guard<std::mutex> lk( cb.mutex );
+				old = cb.listener;
+				cb.listener = 0;
+				cb.fn = callback;
+				cb.user = userData;
+			}
+			if( old ) Bakes().RemoveListener( old );
+			if( callback ) {
+				const std::uint64_t id = Bakes().AddListener( []( const Simulation::BakeEvent& e ) {
+					if( e.kind != Simulation::BakeEvent::Kind::JobChanged ) return;
+					BakeCallback& c = TheBakeCallback();
+					RISE_SimulationBakeChangeCallback fn = nullptr;
+					void* user = nullptr;
+					{
+						std::lock_guard<std::mutex> lk( c.mutex );
+						fn = c.fn;
+						user = c.user;
+					}
+					if( fn ) fn( user, static_cast<unsigned long long>( e.changeCounter ) );
+				} );
+				std::lock_guard<std::mutex> lk( cb.mutex );
+				cb.listener = id;
+			}
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBake( SceneEditController* p, const char* simulationName,
+		bool force, unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			Simulation::BakeRequest request;
+			request.simulations.push_back( NameOrEmpty( simulationName ) );
+			request.force = force;
+			std::vector<std::uint64_t> jobs;
+			if( !Bakes().RequestBake( snapshot, request, jobs, error ) ) return false;
+			// The named simulation's job (its upstreams come first in `jobs`).
+			Simulation::BakeJob job;
+			const std::string key = Simulation::SimulationBakeManager::SceneKey( snapshot.scene );
+			M3cSet( outJobId, static_cast<unsigned long long>(
+				Bakes().LatestJob( key, NameOrEmpty( simulationName ), job ) ? job.id : ( jobs.empty() ? 0 : jobs.back() ) ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeAll( SceneEditController* p, bool staleOnly, bool force,
+		unsigned int* outJobCount, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			Simulation::BakeRequest request;
+			request.all = true;
+			request.staleOnly = staleOnly;
+			request.force = force;
+			std::vector<std::uint64_t> jobs;
+			if( !Bakes().RequestBake( snapshot, request, jobs, error ) ) return false;
+			M3cSet( outJobCount, static_cast<unsigned int>( jobs.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeResume( SceneEditController* p, const char* simulationName,
+		unsigned long long* outJobId, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !BakeSnapshot( p, snapshot, error ) ) return false;
+			std::uint64_t job = 0;
+			if( !Bakes().Resume( snapshot, NameOrEmpty( simulationName ), job, error ) ) return false;
+			M3cSet( outJobId, static_cast<unsigned long long>( job ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeStop( SceneEditController* p, const char* simulationName,
+		bool kill, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			const std::string key = p->SimulationBakeSceneKey();
+			if( key.empty() ) { error = "the scene has no file, so it has no bakes"; return false; }
+			return Bakes().StopSimulation( key, NameOrEmpty( simulationName ), kill, nullptr, error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_SimulationBakeCancelQueued( SceneEditController* p, unsigned int* outCancelled )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			const std::string key = p->SimulationBakeSceneKey();
+			if( key.empty() ) return false;
+			M3cSet( outCancelled, Bakes().CancelQueued( key ) );
+			return true;
+		} );
+	}
+
+	namespace
+	{
+		bool BakeJobsOf( SceneEditController* p, std::vector<Simulation::BakeJob>& jobs )
+		{
+			bool attach = false;
+			const std::string key = p->SimulationBakeSceneKey( &attach );
+			if( key.empty() ) return false;
+			if( attach ) {
+				Simulation::BakeSceneSnapshot snapshot;
+				std::string ignored;
+				if( p->GetSimulationBakeSnapshot( snapshot, /*blocking=*/false, ignored, /*checkUnsaved=*/false ) )
+					Bakes().Attach( snapshot, ignored );
+			}
+			jobs = Bakes().Jobs( key );
+			return true;
+		}
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationBakeJobCount( SceneEditController* p, unsigned int* outCount )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::BakeJob> jobs;
+			if( !BakeJobsOf( p, jobs ) ) { M3cSet( outCount, 0u ); return true; }
+			M3cSet( outCount, static_cast<unsigned int>( jobs.size() ) );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationBakeJob( SceneEditController* p, unsigned int index,
+		unsigned long long* outJobId, char* simulationBuf, unsigned int simulationBufLen,
+		int* outState, bool* outResumable, bool* outAdopted, bool* outInterrupted,
+		double* outSimulatedTime, double* outEndTime,
+		unsigned long long* outFramesWritten, unsigned long long* outFramesTotal,
+		double* outWallSeconds, double* outEtaSeconds, unsigned long long* outPid,
+		char* backendBuf, unsigned int backendBufLen, char* waitingForBuf, unsigned int waitingForBufLen,
+		char* detailBuf, unsigned int detailBufLen, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::vector<Simulation::BakeJob> jobs;
+			if( !BakeJobsOf( p, jobs ) || index >= jobs.size() ) return false;
+			const Simulation::BakeJob& j = jobs[index];
+			M3cSet( outJobId, static_cast<unsigned long long>( j.id ) );
+			M3cCopyText( j.simulation, simulationBuf, simulationBufLen );
+			M3cSet( outState, static_cast<int>( j.state ) );
+			M3cSet( outResumable, j.resumable );
+			M3cSet( outAdopted, j.adopted );
+			M3cSet( outInterrupted, j.interrupted );
+			M3cSet( outSimulatedTime, j.simulatedTime );
+			M3cSet( outEndTime, j.endTime );
+			M3cSet( outFramesWritten, static_cast<unsigned long long>( j.framesWritten ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( j.framesTotal ) );
+			M3cSet( outWallSeconds, j.wallSeconds );
+			M3cSet( outEtaSeconds, j.etaSeconds );
+			M3cSet( outPid, static_cast<unsigned long long>( j.pid ) );
+			M3cCopyText( j.backend, backendBuf, backendBufLen );
+			M3cCopyText( j.waitingFor, waitingForBuf, waitingForBufLen );
+			M3cCopyText( j.detail, detailBuf, detailBufLen );
+			M3cCopyText( j.lastError, errorBuf, errorBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_RefreshSimulationFrames( SceneEditController* p, bool* outRefreshed,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			bool refreshed = false;
+			const bool ok = p->RefreshSimulationFrames( refreshed, error );
+			M3cSet( outRefreshed, refreshed );
+			return ok;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
+		const char* simulationName, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->LiveSimulationDetachSimulation( NameOrEmpty( simulationName ), error );
+		} );
+	}
+
+	bool RISE_API_SceneEditController_PainterPreview(
+		SceneEditController* p, const char* painterName, int defIndex,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		bool* outWasScalar, double* outRangeMin, double* outRangeMax )
+	{
+		if( !p || !painterName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		bool wasScalar = false;
+		double rangeMin = 0, rangeMax = 0;
+		if( !p->GetPainterPreview( String( painterName ), defIndex, w, h, rgba,
+				&wasScalar, &rangeMin, &rangeMax ) ) return false;
+		// GetPainterPreview only returns true with a full w*h*4 buffer
+		// (PainterPreview::Result's contract) -- this check is defensive,
+		// not a documented partial-success path.
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		if( outWasScalar ) *outWasScalar = wasScalar;
+		if( outRangeMin )  *outRangeMin  = rangeMin;
+		if( outRangeMax )  *outRangeMax  = rangeMax;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RampStripPreview(
+		SceneEditController* p, const char* painterName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA )
+	{
+		if( !p || !painterName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetRampStripPreview( String( painterName ), w, h, rgba ) ) return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_MaterialPreview(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA )
+	{
+		if( !p || !materialName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetMaterialPreview( String( materialName ), w, h, rgba ) ) return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_ThinFilmAngleStrip(
+		SceneEditController* p, const char* materialName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		double* outThicknessNm, double* outFilmIor )
+	{
+		if( !p || !materialName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetThinFilmAngleStrip( String( materialName ), w, h, rgba, outThicknessNm, outFilmIor ) )
+			return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EvaluateThinFilmAtAngle(
+		SceneEditController* p, const char* materialName,
+		double angleDeg, unsigned char* outRGBA4,
+		double* outThicknessNm, double* outFilmIor )
+	{
+		if( !p || !materialName || !outRGBA4 ) return false;
+		return p->EvaluateThinFilmAtAngle( String( materialName ), angleDeg, outRGBA4, outThicknessNm, outFilmIor );
+	}
+
+	bool RISE_API_SceneEditController_BlackbodyKelvinStrip(
+		unsigned int w, unsigned int h,
+		double minKelvin, double maxKelvin,
+		unsigned char* outRGBA )
+	{
+		if( !outRGBA ) return false;
+		const MaterialPreview::Result r = MaterialPreview::RenderBlackbodyKelvinStrip( w, h, minKelvin, maxKelvin );
+		if( r.status != MaterialPreview::Status::Ok ) return false;
+		if( r.rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, r.rgba.data(), r.rgba.size() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EvaluateBlackbodyKelvin(
+		double kelvin, double* outPeakNm, unsigned char* outRGBA4 )
+	{
+		return MaterialPreview::EvaluateBlackbodyKelvin( kelvin, outPeakNm, outRGBA4 );
+	}
+
+	bool RISE_API_SceneEditController_EvaluateSellmeierMetrics(
+		const char* sellmeierParamValue,
+		double* outNd, double* outAbbeVd )
+	{
+		if( !sellmeierParamValue ) return false;
+		return MaterialPreview::EvaluateSellmeierMetrics( String( sellmeierParamValue ), outNd, outAbbeVd );
+	}
+
+	bool RISE_API_SceneEditController_MeasuredMetalPresetSwatch(
+		const char* presetId, unsigned char* outRGBA4 )
+	{
+		if( !presetId || !outRGBA4 ) return false;
+		std::string fileN, fileK, polyN, polyK;
+		return MaterialPreview::LookupMeasuredMetalPreset( String( presetId ), fileN, fileK, polyN, polyK, outRGBA4 );
+	}
+
+	bool RISE_API_SceneEditController_ApplySpectralPreset(
+		SceneEditController* p, int category, const char* presetId )
+	{
+		if( !p || !presetId || !presetId[0] ) return false;
+		return p->ApplySpectralPreset( static_cast<SceneEditController::Category>( category ), String( presetId ) );
+	}
+
+
+	bool RISE_API_SceneEditController_GetCameraDimensions(
+		SceneEditController* p, unsigned int* outW, unsigned int* outH )
+	{
+		if( !p || !outW || !outH ) return false;
+		unsigned int w = 0, h = 0;
+		if( !p->GetCameraDimensions( w, h ) ) return false;
+		*outW = w;
+		*outH = h;
+		return true;
+	}
+
+	// Accordion list entries -----------------------------------------
+
+	unsigned int RISE_API_SceneEditController_CategoryEntityCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->CategoryEntityCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_CategoryEntityName(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		if( idx >= p->CategoryEntityCount( cat ) ) return false;
+		CopyToBuf( p->CategoryEntityName( cat, idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_GetSelectionCategory( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return static_cast<int>( p->GetSelectionCategory() );
+	}
+
+	bool RISE_API_SceneEditController_GetSelectionName(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->GetSelectionName(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetSelectionRowName(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->SelectionRowName(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetSelection(
+		SceneEditController* p, int category, const char* name )
+	{
+		if( !p ) return false;
+		const String entityName = name ? String( name ) : String();
+		return p->SetSelection(
+			static_cast<SceneEditController::Category>( category ),
+			entityName );
+	}
+
+	bool RISE_API_SceneEditController_CategoryActiveName(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		CopyToBuf( p->CategoryActiveName( cat ), buf, bufLen );
+		return true;
+	}
+
+	// Authored-graph node tree (87 step 4a) ---------------------------
+
+	unsigned int RISE_API_SceneEditController_TreeNodeCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeNodeCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	unsigned int RISE_API_SceneEditController_TreeRootCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeRootCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	unsigned long long RISE_API_SceneEditController_TreeGeneration(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeGeneration(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_TreeRootNode(
+		SceneEditController* p, int category, unsigned int rootIdx,
+		unsigned long long* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const SceneEditController::TreeNodeHandle n = p->TreeRootNode( cat, rootIdx );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_TreeChildCountByHandle(
+		SceneEditController* p, int category, unsigned long long node )
+	{
+		if( !p ) return 0;
+		return p->TreeChildCountByHandle(
+			static_cast<SceneEditController::Category>( category ), node );
+	}
+
+	bool RISE_API_SceneEditController_TreeChildNode(
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned int childIdx, unsigned long long* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const SceneEditController::TreeNodeHandle n = p->TreeChildNode( cat, node, childIdx );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_TreeNodeParent(
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned long long* outParent )
+	{
+		if( !p || !outParent ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const SceneEditController::TreeNodeHandle n = p->TreeNodeParent( cat, node );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outParent = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_TreeNodeNameByHandle(
+		SceneEditController* p, int category, unsigned long long node,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		// An unknown handle is reported as a FAILURE rather than as an empty
+		// name: the flat twin discriminates the same way (it range-checks the
+		// index before copying), and a shell that cannot tell "no such row"
+		// from "a row whose name is empty" would render a blank row for a
+		// handle that has gone stale.
+		//
+		// Discriminated on the RETURNED name being empty, NOT by asking
+		// TreeNodeCount first: that getter REFRESHES the snapshot, so calling
+		// it here would re-publish a possibly different tree in the middle of
+		// a shell's walk -- the exact hazard the split refresh cadence exists
+		// to remove.
+		//
+		// The two conditions COINCIDE rather than being one condition: every
+		// entity registered through the parsers has a non-empty name
+		// (standard_object defaults an omitted `name` to `noname`), but
+		// GenericManager::AddItem only NULL-checks the name pointer, so an
+		// entity literally named "" would be reported here as an unknown
+		// handle.  Not reachable through any parser today.  Recorded rather
+		// than guarded: a second discriminator would be one more thing to
+		// keep in sync, and the honest fix if it ever becomes reachable is
+		// for AddItem to refuse the empty name.
+		const String nm = p->TreeNodeNameByHandle( cat, node );
+		if( nm.size() <= 1 ) return false;
+		CopyToBuf( nm, buf, bufLen );
+		return true;
+	}
+
+	// Painter/Material node graph (doc-88 Phase 3 S14) ------------------
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeCount();
+	}
+
+	unsigned long long RISE_API_SceneEditController_PainterGraphGeneration( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphGeneration();
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeHandleAt(
+		SceneEditController* p, unsigned int idx, unsigned long long* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::GraphNodeHandle n = p->PainterGraphNodeHandleAt( idx );
+		if( n == SceneEditController::kInvalidGraphNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeName(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const String nm = p->PainterGraphNodeName( node );
+		if( nm.size() <= 1 ) return false;   // same discriminator as TreeNodeNameByHandle -- see its own comment
+		CopyToBuf( nm, buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeKeyword(
+		SceneEditController* p, unsigned long long node, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const String kw = p->PainterGraphNodeKeyword( node );
+		if( kw.size() <= 1 ) return false;
+		CopyToBuf( kw, buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeCategory( SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return -1;
+		return p->PainterGraphNodeCategory( node );
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeDefCount( SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return -1;
+		return p->PainterGraphNodeDefCount( node );
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodePosition(
+		SceneEditController* p, unsigned long long node, double* outX, double* outY )
+	{
+		if( !p || !outX || !outY ) return false;
+		return p->PainterGraphNodePosition( node, *outX, *outY );
+	}
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeOutEdgeCount(
+		SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeOutEdgeCount( node );
+	}
+
+	unsigned int RISE_API_SceneEditController_PainterGraphNodeInEdgeCount(
+		SceneEditController* p, unsigned long long node )
+	{
+		if( !p ) return 0;
+		return p->PainterGraphNodeInEdgeCount( node );
+	}
+
+	// Shared body for the Out/In edge shims immediately below -- the only
+	// difference between the two is which SceneEditController method it forwards to.
+	static bool PainterGraphNodeEdgeShim(
+		bool (SceneEditController::*fn)( SceneEditController::GraphNodeHandle, unsigned int,
+			SceneEditController::GraphNodeHandle&, String&, int&, String& ) const,
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		if( !p || !outOtherNode || !outOccurrence ) return false;
+		SceneEditController::GraphNodeHandle otherNode = SceneEditController::kInvalidGraphNode;
+		String paramName, otherName;
+		int occurrence = 0;
+		if( !( p->*fn )( node, portIdx, otherNode, paramName, occurrence, otherName ) ) return false;
+		*outOtherNode  = otherNode;
+		*outOccurrence = occurrence;
+		CopyToBuf( paramName, outParamNameBuf, paramNameBufLen );
+		CopyToBuf( otherName, outOtherNameBuf, otherNameBufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeOutEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		return PainterGraphNodeEdgeShim( &SceneEditController::PainterGraphNodeOutEdge,
+			p, node, portIdx, outOtherNode, outParamNameBuf, paramNameBufLen,
+			outOccurrence, outOtherNameBuf, otherNameBufLen );
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodeInEdge(
+		SceneEditController* p, unsigned long long node, unsigned int portIdx,
+		unsigned long long* outOtherNode, char* outParamNameBuf, unsigned int paramNameBufLen,
+		int* outOccurrence, char* outOtherNameBuf, unsigned int otherNameBufLen )
+	{
+		return PainterGraphNodeEdgeShim( &SceneEditController::PainterGraphNodeInEdge,
+			p, node, portIdx, outOtherNode, outParamNameBuf, paramNameBufLen,
+			outOccurrence, outOtherNameBuf, otherNameBufLen );
+	}
+
+	bool RISE_API_SceneEditController_WriteGraphNodeLayoutPosition(
+		SceneEditController* p, const char* nodeName, double x, double y,
+		char* outError, unsigned int outErrorLen )
+	{
+		if( outError && outErrorLen > 0 ) outError[0] = '\0';
+		if( !p || !nodeName || nodeName[0] == '\0' ) return false;
+		SceneEditController::GraphNodePositionUpdate u;
+		u.name = String( nodeName );
+		u.x = x;
+		u.y = y;
+		std::string err;
+		const bool ok = p->WriteGraphLayoutPositions( std::vector<SceneEditController::GraphNodePositionUpdate>{ u }, err );
+		if( !ok && outError && outErrorLen > 0 && !err.empty() ) {
+			const unsigned int n =
+				( err.size() + 1 < outErrorLen ) ? (unsigned int)err.size() : ( outErrorLen - 1 );
+			std::memcpy( outError, err.data(), n );
+			outError[n] = '\0';
+		}
+		return ok;
+	}
+
+	// doc-88 Phase 3 S17 -- connection-legality passthrough. See RISE_API.h.
+	bool RISE_API_SceneEditController_CheckConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* paramName,
+		int candidateCategory, const char* candidateName,
+		char* outDiagBuf, unsigned int outDiagBufLen )
+	{
+		if( outDiagBuf && outDiagBufLen > 0 ) outDiagBuf[0] = '\0';
+		if( !p || !targetName || !paramName || !candidateName ) return false;
+		const ConnectionVerdict v = p->CheckConnection(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ),
+			String( paramName ),
+			static_cast<ChunkCategory>( candidateCategory ), String( candidateName ) );
+		if( !v.legal && outDiagBuf && outDiagBufLen > 0 && !v.diagnostic.empty() ) {
+			const unsigned int n =
+				( v.diagnostic.size() + 1 < outDiagBufLen ) ? (unsigned int)v.diagnostic.size() : ( outDiagBufLen - 1 );
+			std::memcpy( outDiagBuf, v.diagnostic.data(), n );
+			outDiagBuf[n] = '\0';
+		}
+		return v.legal;
+	}
+
+	bool RISE_API_SceneEditController_WouldCycle(
+		SceneEditController* p,
+		int fromCategory, const char* fromName,
+		int toCategory, const char* toName )
+	{
+		if( !p || !fromName || !toName ) return false;
+		return p->WouldCycle(
+			static_cast<ChunkCategory>( fromCategory ), String( fromName ),
+			static_cast<ChunkCategory>( toCategory ), String( toName ) );
+	}
+
+	// doc-88 Phase 3 S21 -- pure-descriptor connection-legality passthrough.
+	// No SceneEditController* by design; see RISE_API.h.
+	bool RISE_API_ConnectionLegality_CheckConnectionByKeyword(
+		const char* targetKeyword, const char* paramName,
+		const char* candidateKeyword, int candidateCategory,
+		int candidateIsPerChannelValues,
+		char* outDiagBuf, unsigned int outDiagBufLen )
+	{
+		if( outDiagBuf && outDiagBufLen > 0 ) outDiagBuf[0] = '\0';
+		if( !targetKeyword || !paramName || !candidateKeyword ) return false;
+		const ConnectionVerdict v = ConnectionLegality::CheckConnectionByKeyword(
+			std::string( targetKeyword ), std::string( paramName ),
+			std::string( candidateKeyword ), static_cast<ChunkCategory>( candidateCategory ),
+			candidateIsPerChannelValues != 0 );
+		if( !v.legal && outDiagBuf && outDiagBufLen > 0 && !v.diagnostic.empty() ) {
+			const unsigned int n =
+				( v.diagnostic.size() + 1 < outDiagBufLen ) ? (unsigned int)v.diagnostic.size() : ( outDiagBufLen - 1 );
+			std::memcpy( outDiagBuf, v.diagnostic.data(), n );
+			outDiagBuf[n] = '\0';
+		}
+		return v.legal;
+	}
+
+	// doc-88 Phase 3 S19 -- the ownership-closure rewire verb. See RISE_API.h.
+	namespace {
+		//! '\n'-join a name list into a caller buffer -- the same convention
+		//! ApplyAgentRemoveChunks' batch echo uses.  A no-op (but still
+		//! NUL-terminating) on a null/zero-length buffer.
+		void CopyJoinedToBuf( const std::vector<String>& names, char* buf, unsigned int bufLen )
+		{
+			if( !buf || bufLen == 0 ) return;
+			std::string joined;
+			for( size_t i = 0; i < names.size(); ++i ) {
+				if( i ) joined += '\n';
+				joined += names[i].c_str();
+			}
+			const unsigned int n =
+				( joined.size() + 1 < bufLen ) ? (unsigned int)joined.size() : ( bufLen - 1 );
+			if( n ) std::memcpy( buf, joined.data(), n );
+			buf[n] = '\0';
+		}
+	}
+
+	bool RISE_API_SceneEditController_RewireConnectionEx(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outCanInsertScalarAdapter, int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen )
+	{
+		if( outCanInsertScalarAdapter ) *outCanInsertScalarAdapter = 0;
+		// Pre-clear every out so a caller that ignores the return value can
+		// never read a stale buffer as this call's answer.
+		if( outClosure )          *outClosure = 0;
+		if( outLegalityRefused )  *outLegalityRefused = 0;
+		if( outCycleRefused )     *outCycleRefused = 0;
+		if( outStatus && outStatusLen )                     outStatus[0] = '\0';
+		if( outMessage && outMessageLen )                   outMessage[0] = '\0';
+		if( outShared && outSharedLen )                     outShared[0] = '\0';
+		if( outReferrers && outReferrersLen )               outReferrers[0] = '\0';
+		if( outOwners && outOwnersLen )                     outOwners[0] = '\0';
+		if( outNowUnreferenced && outNowUnreferencedLen )   outNowUnreferenced[0] = '\0';
+		if( !p || !targetName || !param || !newRefName ) return false;
+
+		const SceneEditController::RewireResult r = p->RewireConnection(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ),
+			String( param ), occurrence,
+			static_cast<ChunkCategory>( newRefCategory ), String( newRefName ),
+			nullptr );
+
+		if( outCanInsertScalarAdapter ) *outCanInsertScalarAdapter = r.canInsertScalarAdapter ? 1 : 0;
+		if( outClosure )         *outClosure         = static_cast<int>( r.closure );
+		if( outLegalityRefused ) *outLegalityRefused = r.legalityRefused ? 1 : 0;
+		if( outCycleRefused )    *outCycleRefused    = r.cycleRefused ? 1 : 0;
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		CopyJoinedToBuf( r.sharedChunks,          outShared,          outSharedLen );
+		CopyJoinedToBuf( r.outOfClosureReferrers, outReferrers,       outReferrersLen );
+		CopyJoinedToBuf( r.owners,                outOwners,          outOwnersLen );
+		CopyJoinedToBuf( r.nowUnreferenced,       outNowUnreferenced, outNowUnreferencedLen );
+		return r.commit.applied;
+	}
+	bool RISE_API_SceneEditController_RewireConnection(
+		SceneEditController* p,
+		int targetCategory, const char* targetName,
+		const char* param, int occurrence,
+		int newRefCategory, const char* newRefName,
+		int* outClosure, int* outLegalityRefused, int* outCycleRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outShared, unsigned int outSharedLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outOwners, unsigned int outOwnersLen,
+		char* outNowUnreferenced, unsigned int outNowUnreferencedLen )
+	{
+		return RISE_API_SceneEditController_RewireConnectionEx( p, targetCategory, targetName,
+			param, occurrence, newRefCategory, newRefName, nullptr, outClosure, outLegalityRefused,
+			outCycleRefused, outStatus, outStatusLen, outMessage, outMessageLen, outShared, outSharedLen,
+			outReferrers, outReferrersLen, outOwners, outOwnersLen, outNowUnreferenced, outNowUnreferencedLen );
+	}
+
+	bool RISE_API_SceneEditController_InsertScalarAdapterAndRewire(
+		SceneEditController* p, int targetCategory, const char* targetName,
+		const char* param, int occurrence, int sourceCategory, const char* sourceName,
+		char* outAdapterName, unsigned int outAdapterNameLen,
+		char* outStatus, unsigned int outStatusLen, char* outMessage, unsigned int outMessageLen )
+	{
+		if( outAdapterName && outAdapterNameLen ) outAdapterName[0] = '\0';
+		if( outStatus && outStatusLen ) outStatus[0] = '\0';
+		if( outMessage && outMessageLen ) outMessage[0] = '\0';
+		if( !p || !targetName || !param || !sourceName ) return false;
+		String name;
+		const SceneEditController::RewireResult r = p->InsertScalarAdapterAndRewire(
+			static_cast<ChunkCategory>( targetCategory ), String( targetName ), String( param ), occurrence,
+			static_cast<ChunkCategory>( sourceCategory ), String( sourceName ), &name );
+		if( outAdapterName && outAdapterNameLen ) CopyToBuf( name, outAdapterName, outAdapterNameLen );
+		if( outStatus && outStatusLen ) CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		return r.commit.applied;
+	}
+
+	int RISE_API_SceneEditController_PainterGraphNodeOutputPipe( SceneEditController* p, unsigned long long node )
+	{
+		return p ? p->PainterGraphNodeOutputPipe( node ) : -1;
+	}
+
+	bool RISE_API_SceneEditController_PainterGraphNodePortPipe( SceneEditController* p,
+		unsigned long long node, unsigned int portIdx, bool incoming,
+		int* outPipe, int* outColorAlsoAcceptsScalar )
+	{
+		if( outPipe ) *outPipe = -1;
+		if( outColorAlsoAcceptsScalar ) *outColorAlsoAcceptsScalar = 0;
+		if( !p || !outPipe || !outColorAlsoAcceptsScalar ) return false;
+		bool dual = false;
+		const bool ok = p->PainterGraphNodePortPipe( node, portIdx, incoming, *outPipe, dual );
+		*outColorAlsoAcceptsScalar = dual ? 1 : 0;
+		return ok;
+	}
+
+	bool RISE_API_SceneEditController_DeleteGraphNode(
+		SceneEditController* p,
+		int category, const char* name, int cascade,
+		int* outClosure, int* outReferenceRefused, int* outCascadeRefused,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen,
+		char* outReferrers, unsigned int outReferrersLen,
+		char* outRemoved, unsigned int outRemovedLen )
+	{
+		// Pre-clear every out so a caller that ignores the return value can
+		// never read a stale buffer as this call's answer (the rewire verb's
+		// discipline, verbatim).
+		if( outClosure )           *outClosure = 0;
+		if( outReferenceRefused )  *outReferenceRefused = 0;
+		if( outCascadeRefused )    *outCascadeRefused = 0;
+		if( outStatus && outStatusLen )         outStatus[0] = '\0';
+		if( outMessage && outMessageLen )       outMessage[0] = '\0';
+		if( outReferrers && outReferrersLen )   outReferrers[0] = '\0';
+		if( outRemoved && outRemovedLen )       outRemoved[0] = '\0';
+		if( !p || !name ) return false;
+
+		const SceneEditController::DeleteResult r = p->DeleteGraphNode(
+			static_cast<ChunkCategory>( category ), String( name ),
+			cascade ? SceneEditController::GraphDeleteMode::Cascade
+			        : SceneEditController::GraphDeleteMode::TargetOnly,
+			nullptr );
+
+		if( outClosure )          *outClosure          = static_cast<int>( r.closure );
+		if( outReferenceRefused ) *outReferenceRefused = r.referenceRefused ? 1 : 0;
+		if( outCascadeRefused )   *outCascadeRefused   = r.cascadeRefused ? 1 : 0;
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		CopyJoinedToBuf( r.referrers, outReferrers, outReferrersLen );
+		CopyJoinedToBuf( r.removed,   outRemoved,   outRemovedLen );
+		return r.commit.applied;
+	}
+
+	bool RISE_API_SceneEditController_DuplicateGraphNode(
+		SceneEditController* p,
+		int category, const char* name,
+		int* outClosure, int* outOriginalIndex,
+		char* outNewName, unsigned int outNewNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( outClosure )       *outClosure = 0;
+		if( outOriginalIndex ) *outOriginalIndex = -1;
+		if( outNewName && outNewNameLen ) outNewName[0] = '\0';
+		if( outStatus && outStatusLen )   outStatus[0] = '\0';
+		if( outMessage && outMessageLen ) outMessage[0] = '\0';
+		if( !p || !name ) return false;
+
+		const SceneEditController::DuplicateResult r = p->DuplicateGraphNode(
+			static_cast<ChunkCategory>( category ), String( name ), nullptr );
+
+		if( outClosure )       *outClosure       = static_cast<int>( r.closure );
+		if( outOriginalIndex ) *outOriginalIndex = r.originalIndex;
+		if( outNewName && outNewNameLen > 0 ) CopyToBuf( r.newName, outNewName, outNewNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.commit.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.commit.message, outMessage, outMessageLen );
+		return r.commit.applied;
+	}
+
+	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->SceneEpoch();
+	}
+
+	bool RISE_API_SceneEditController_AddCameraFromActive(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->CloneActiveCamera( prop, outName, outLen );
+	}
+
+	bool RISE_API_SceneEditController_StampViewToNewCamera(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->StampViewToNewCamera( prop, outName, outLen, /*pane=*/0 );   // P1-1: pane-0 alias
+	}
+
+	// user-review P1-1: pane-indexed stamp (the N-up nav overlay stamps the
+	// PRIMARY pane's current free-fly view).
+	bool RISE_API_SceneEditController_PaneStampViewToNewCamera(
+		SceneEditController* p, unsigned int pane,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || pane == SceneEditController::kViewportNavPrimary || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->StampViewToNewCamera( prop, outName, outLen, pane );
+	}
+
+	// -------- Named Views (Tier 2 §3) --------
+
+	bool RISE_API_SceneEditController_CaptureNamedView(
+		SceneEditController* p, const char* name )
+	{
+		if( !p ) return false;
+		return p->CaptureNamedView( String( name ? name : "" ) );
+	}
+
+	unsigned int RISE_API_SceneEditController_NamedViewCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->NamedViewCount();
+	}
+
+	bool RISE_API_SceneEditController_NamedViewName(
+		SceneEditController* p, unsigned int idx, char* out, unsigned int outLen )
+	{
+		if( !p ) return false;
+		return p->NamedViewName( idx, out, outLen );
+	}
+
+	bool RISE_API_SceneEditController_RestoreNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->RestoreNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_UpdateNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->UpdateNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_DeleteNamedView(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->DeleteNamedView( idx );
+	}
+
+	bool RISE_API_SceneEditController_PromoteNamedViewToCamera(
+		SceneEditController* p, unsigned int idx, const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->PromoteNamedViewToCamera( idx, prop, outName, outLen );
+	}
+
+	// -------------------------------------------------------------------
+	// Entity-creation slice.  AgentCommitResult carries more fields
+	// (rawCode / conflict / retriable / headVersion / chunkKeyword /
+	// chunkName) than the C surface flattens out here -- matching the
+	// existing scope of this ABI (the Agent chunk-CRUD verbs themselves
+	// have no C export at all yet); `applied` + `status` + `message`
+	// are the fields a caller needs to show a user-facing result.
+	// -------------------------------------------------------------------
+
+	unsigned int RISE_API_SceneEditController_EntityTemplateCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->EntityTemplateCount( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_EntityTemplateLabel(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		const SceneEditController::Category cat = static_cast<SceneEditController::Category>( category );
+		if( idx >= p->EntityTemplateCount( cat ) ) return false;
+		CopyToBuf( p->EntityTemplateLabel( cat, idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_InstantiateEntityTemplate(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->InstantiateEntityTemplate(
+			static_cast<SceneEditController::Category>( category ), idx, &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_DuplicateEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		String newName;
+		const SceneEditController::AgentCommitResult r = p->DuplicateEntity(
+			static_cast<SceneEditController::Category>( category ),
+			String( name ? name : "" ), &newName );
+		if( outName && outNameLen > 0 )       CopyToBuf( newName, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	// S18 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): the node-graph canvas's
+	// create-node passthrough.  Same flattening as the entity CRUD
+	// wrappers above -- `applied` + `status` + `message` + the chosen
+	// name are what a caller needs to show a user-facing result.
+	unsigned int RISE_API_SceneEditController_ChunkNodeRequiredArgCount(
+		SceneEditController* p, const char* keyword )
+	{
+		if( !p || !keyword ) return 0;
+		return static_cast<unsigned int>( p->ChunkNodeRequirements( String( keyword ) ).size() );
+	}
+
+	bool RISE_API_SceneEditController_ChunkNodeRequiredArg(
+		SceneEditController* p, const char* keyword, unsigned int idx,
+		char* outParam, unsigned int outParamLen,
+		char* outDescription, unsigned int outDescriptionLen,
+		int* outIsReference )
+	{
+		if( !p || !keyword ) return false;
+		const std::vector<SceneEditController::ChunkNodeRequirement> reqs =
+			p->ChunkNodeRequirements( String( keyword ) );
+		if( idx >= reqs.size() ) return false;
+		if( outParam && outParamLen > 0 )             CopyToBuf( reqs[idx].param, outParam, outParamLen );
+		if( outDescription && outDescriptionLen > 0 ) CopyToBuf( reqs[idx].description, outDescription, outDescriptionLen );
+		if( outIsReference )                          *outIsReference = reqs[idx].isReference ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_CreateChunkNode(
+		SceneEditController* p, const char* keyword, const char* baseName,
+		const char* const* argParams, const char* const* argValues, unsigned int argCount,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		std::vector<SceneEditController::ChunkNodeArg> args;
+		// A null array with a non-zero count is a caller bug; treat it as
+		// "no args" rather than dereferencing it, and let the missing
+		// required argument surface as the ordinary honest refusal.
+		if( argParams && argValues )
+		{
+			args.reserve( argCount );
+			for( unsigned int i = 0; i < argCount; ++i )
+			{
+				SceneEditController::ChunkNodeArg a;
+				a.param = String( argParams[i] ? argParams[i] : "" );
+				a.value = String( argValues[i] ? argValues[i] : "" );
+				args.push_back( a );
+			}
+		}
+		String name;
+		const SceneEditController::AgentCommitResult r = p->CreateChunkNode(
+			String( keyword ? keyword : "" ), String( baseName ? baseName : "" ), args, &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	// S21 -- the "add node" search palette's keyword list.
+	unsigned int RISE_API_SceneEditController_PaletteKeywordCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return static_cast<unsigned int>(
+			p->PaletteKeywords( static_cast<ChunkCategory>( category ) ).size() );
+	}
+
+	bool RISE_API_SceneEditController_PaletteKeyword(
+		SceneEditController* p, int category, unsigned int idx,
+		char* outKeyword, unsigned int outKeywordLen )
+	{
+		if( !p ) return false;
+		const std::vector<String> kws =
+			p->PaletteKeywords( static_cast<ChunkCategory>( category ) );
+		if( idx >= kws.size() ) return false;
+		if( outKeyword && outKeywordLen > 0 ) CopyToBuf( kws[idx], outKeyword, outKeywordLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PaletteKeywordDeprecation(
+		SceneEditController* p, const char* keyword,
+		char* outReplacement, unsigned int outReplacementLen )
+	{
+		if( !p || !keyword ) return false;
+		const std::string replacement = p->PaletteKeywordDeprecation( String( keyword ) );
+		if( replacement.empty() ) return false;
+		if( outReplacement && outReplacementLen > 0 ) CopyToBuf( String( replacement.c_str() ), outReplacement, outReplacementLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PaletteKeywordFrozen(
+		SceneEditController* p, const char* keyword )
+	{
+		if( !p || !keyword ) return false;
+		return p->PaletteKeywordIsFrozen( String( keyword ) );
+	}
+
+	bool RISE_API_SceneEditController_RemoveEntity(
+		SceneEditController* p, int category, const char* name,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::AgentCommitResult r = p->RemoveEntity(
+			static_cast<SceneEditController::Category>( category ), String( name ? name : "" ) );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	// -------------------------------------------------------------------
+	// Environment / IBL section (GUI Environment panel).  Thin wrappers over
+	// SceneEditController's environment accessors; see docs/gui/ENVIRONMENT_SECTION.md.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetEnvironment(
+		SceneEditController* p,
+		int* outHasEnvironment, int* outProceduralSky, int* outEditable,
+		char* outPainterName, unsigned int outPainterNameLen,
+		char* outFile, unsigned int outFileLen,
+		double* outScale, double* outOrientX, double* outOrientY, double* outOrientZ,
+		int* outBackground )
+	{
+		if( !p ) return false;
+		SceneEditController::EnvironmentInfo info;
+		if( !p->GetEnvironment( info ) ) return false;
+		if( outHasEnvironment ) *outHasEnvironment = info.hasEnvironment ? 1 : 0;
+		if( outProceduralSky )  *outProceduralSky  = info.proceduralSky ? 1 : 0;
+		if( outEditable )       *outEditable       = info.editable ? 1 : 0;
+		if( outPainterName && outPainterNameLen > 0 ) CopyToBuf( info.painterName, outPainterName, outPainterNameLen );
+		if( outFile && outFileLen > 0 )               CopyToBuf( info.file, outFile, outFileLen );
+		if( outScale )      *outScale      = info.scale;
+		if( outOrientX )    *outOrientX    = info.orientDeg[0];
+		if( outOrientY )    *outOrientY    = info.orientDeg[1];
+		if( outOrientZ )    *outOrientZ    = info.orientDeg[2];
+		if( outBackground ) *outBackground = info.background ? 1 : 0;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentScale( SceneEditController* p, double scale )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentScale( scale );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentBackground( SceneEditController* p, int background )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentBackground( background != 0 );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentOrient(
+		SceneEditController* p, double xDeg, double yDeg, double zDeg )
+	{
+		if( !p ) return false;
+		return p->SetEnvironmentOrient( xDeg, yDeg, zDeg );
+	}
+
+	bool RISE_API_SceneEditController_SetEnvironmentFile( SceneEditController* p, const char* absPath )
+	{
+		if( !p || !absPath ) return false;
+		return p->SetEnvironmentFile( String( absPath ) );
+	}
+
+	bool RISE_API_SceneEditController_AddEnvironment(
+		SceneEditController* p, const char* hdriPath,
+		char* outName, unsigned int outNameLen,
+		char* outStatus, unsigned int outStatusLen,
+		char* outMessage, unsigned int outMessageLen )
+	{
+		if( !p || !hdriPath ) return false;
+		String name;
+		const SceneEditController::AgentCommitResult r = p->AddEnvironment( String( hdriPath ), &name );
+		if( outName && outNameLen > 0 )       CopyToBuf( name, outName, outNameLen );
+		if( outStatus && outStatusLen > 0 )   CopyToBuf( r.status, outStatus, outStatusLen );
+		if( outMessage && outMessageLen > 0 ) CopyToBuf( r.message, outMessage, outMessageLen );
+		return r.applied;
+	}
+
+	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RemoveEnvironment();
+	}
+
+	// -------------------------------------------------------------------
+	// Phase 4b — per-category selection + per-category property accessors.
+	// Each is a thin wrapper around the matching SceneEditController
+	// method.  The buffer-handling pattern follows the rest of the
+	// SceneEditController C-API: CopyToBuf-style truncation with null-
+	// terminator, returns false on null controller / null buf / bufLen 0.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetSelectionForCategory(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		CopyToBuf( p->GetSelectionNameForCategory( cat ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_IsSectionExpanded(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return false;
+		return p->IsSectionExpanded( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_CollapseSection(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return false;
+		p->CollapseSection( static_cast<SceneEditController::Category>( category ) );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyCountFor(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->PropertyCountFor( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_PropertyNameFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyNameFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyValueFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyDescriptionFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyDescriptionFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PropertyKindFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return -1;
+		return p->PropertyKindFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyEditableFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->PropertyEditableFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyPresetCountFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return 0;
+		return p->PropertyPresetCountFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetLabelFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyPresetLabelFor(
+			static_cast<SceneEditController::Category>( category ), idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetValueFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyPresetValueFor(
+			static_cast<SceneEditController::Category>( category ), idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyUnitLabelFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyUnitLabelFor(
+			static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	// doc 88 S4b: per-category twins of the range trio.
+	bool RISE_API_SceneEditController_PropertyHasRangeFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyHasRangeFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : false;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMinFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMinFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeMaxFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeMaxFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
+	}
+
+	double RISE_API_SceneEditController_PropertyRangeStepFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyRangeStepFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0.0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyTargetsPainterFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyTargetsPainterFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : false;
+	}
+
+	int RISE_API_SceneEditController_PropertyInlinePainterKindFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterKindFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0;
+	}
+
+	bool RISE_API_SceneEditController_PropertyInlinePainterValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyInlinePainterValueFor(
+			static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyInlinePainterRefCountFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		return p ? p->PropertyInlinePainterRefCountFor(
+			static_cast<SceneEditController::Category>( category ), idx ) : 0u;
+	}
+
+	bool RISE_API_SceneEditController_SetPropertyForCategory(
+		SceneEditController* p, int category, const char* name, const char* valueStr )
+	{
+		if( !p || !name || !valueStr ) return false;
+		return p->SetPropertyForCategory(
+			static_cast<SceneEditController::Category>( category ),
+			String( name ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_SetReferenceSlotPainterValue(
+		SceneEditController* p, int category, const char* slotParam, const char* valueStr )
+	{
+		if( !p || !slotParam || !valueStr ) return false;
+		return p->SetReferenceSlotPainterValue(
+			static_cast<SceneEditController::Category>( category ),
+			String( slotParam ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_ForkReferenceSlotPainter(
+		SceneEditController* p, int category, const char* slotParam,
+		char* outNewPainterName, unsigned int outNewPainterNameLen )
+	{
+		if( !p || !slotParam ) return false;
+		if( outNewPainterName && outNewPainterNameLen > 0 )
+			outNewPainterName[0] = '\0';
+		String newName;
+		const bool ok = p->ForkReferenceSlotPainter(
+			static_cast<SceneEditController::Category>( category ),
+			String( slotParam ), &newName );
+		if( ok && outNewPainterName && outNewPainterNameLen > 0 )
+		{
+			CopyToBuf( newName, outNewPainterName, outNewPainterNameLen );
+		}
+		return ok;
+	}
+}
+
+// ---- Simulation M5 (GUI shell support) ----
+#include "Simulation/SimulationCache.h"
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace RISE
+{
+	namespace
+	{
+		std::string M5Join( const std::vector<std::string>& items )
+		{
+			std::string out;
+			for( const std::string& item : items ) { if( !out.empty() ) out += ", "; out += item; }
+			return out;
+		}
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationDetails(
+		SceneEditController* p, unsigned int index,
+		char* nameBuf, unsigned int nameBufLen, char* keywordBuf, unsigned int keywordBufLen,
+		char* solverBuf, unsigned int solverBufLen, char* backendBuf, unsigned int backendBufLen,
+		char* fidelityBuf, unsigned int fidelityBufLen, char* consumerBuf, unsigned int consumerBufLen,
+		int* outState, bool* outUpstreamOutOfDate, bool* outInteractive,
+		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
+		double* outStartTime, double* outInterval,
+		char* cacheBuf, unsigned int cacheBufLen,
+		char* upstreamBuf, unsigned int upstreamBufLen, char* inputsBuf, unsigned int inputsBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cCopyText( s.name, nameBuf, nameBufLen );
+			M3cCopyText( s.keyword, keywordBuf, keywordBufLen );
+			M3cCopyText( s.solverId, solverBuf, solverBufLen );
+			M3cCopyText( s.backend, backendBuf, backendBufLen );
+			M3cCopyText( s.fidelity, fidelityBuf, fidelityBufLen );
+			M3cCopyText( s.meshConsumers.empty() ? std::string() : s.meshConsumers.front(), consumerBuf, consumerBufLen );
+			M3cSet( outState, static_cast<int>( s.state ) );
+			M3cSet( outUpstreamOutOfDate, s.upstreamOutOfDate );
+			M3cSet( outInteractive, s.interactive );
+			M3cSet( outFramesAvailable, static_cast<unsigned long long>( s.framesAvailable ) );
+			M3cSet( outFramesTotal, static_cast<unsigned long long>( s.framesTotal ) );
+			M3cSet( outStartTime, s.startTime );
+			M3cSet( outInterval, s.interval );
+			M3cCopyText( s.cacheDir.string(), cacheBuf, cacheBufLen );
+			M3cCopyText( M5Join( s.upstream ), upstreamBuf, upstreamBufLen );
+			M3cCopyText( M5Join( s.inputs ), inputsBuf, inputsBufLen );
+			M3cCopyText( s.error, errorBuf, errorBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_AddTrustedCacheRoot( const char* root, char* errorBuf, unsigned int errorBufLen )
+	{
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			if( !root || !root[0] ) { error = "no directory given"; return false; }
+			if( !Simulation::AddTrustedCacheRoot( std::filesystem::path( root ), error ) ) return false;
+#if !defined(_WIN32)
+			// Bakes run in rise-sim worker processes, which read trusted roots
+			// from the environment only: export the roots in force (the
+			// environment's, then the added ones, canonical) so every worker
+			// started from now on inherits them.
+			std::string joined;
+			for( const auto& r : Simulation::TrustedCacheRoots() ) { if( !joined.empty() ) joined += ':'; joined += r.string(); }
+			::setenv( Simulation::TrustedCacheRootsEnvironment, joined.c_str(), 1 );
+#endif
+			return true;
+		} );
+	}
+
+	bool RISE_API_CheckCacheLocation( const char* cacheDirectory,
+		char* suggestedRootBuf, unsigned int suggestedRootBufLen,
+		char* errorBuf, unsigned int errorBufLen )
+	{
+		M3cCopyText( std::string(), suggestedRootBuf, suggestedRootBufLen );
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			if( !cacheDirectory || !cacheDirectory[0] ) { error = "no cache directory given"; return false; }
+			namespace fs = std::filesystem;
+			if( Simulation::CheckCacheLocation( fs::path( cacheDirectory ), false, error ) ) return true;
+			// Refused.  The narrowest root to offer: the deepest existing
+			// directory above the cache directory (trusting it stops the
+			// ancestor check there; the cache directory and everything
+			// created below it stay owner-only).  Nothing to offer when the
+			// cache directory itself exists and is not private: no root fixes that.
+			std::error_code ec;
+			fs::path wanted = fs::absolute( fs::path( cacheDirectory ), ec ).lexically_normal();
+			if( ec ) return false;
+			if( wanted.filename().empty() && wanted != wanted.root_path() ) wanted = wanted.parent_path();
+#if !defined(_WIN32)
+			struct stat info{};
+			if( ::lstat( wanted.c_str(), &info ) == 0 &&
+				( !S_ISDIR( info.st_mode ) || info.st_uid != ::geteuid() || ( info.st_mode & 0022 ) != 0 ) )
+				return false;
+#endif
+			for( fs::path dir = wanted.parent_path(); !dir.empty() && dir != dir.root_path(); dir = dir.parent_path() ) {
+				if( !fs::is_directory( dir, ec ) || ec ) { ec.clear(); continue; }
+				const fs::path canonical = fs::canonical( dir, ec );
+				if( !ec && canonical != canonical.root_path() ) M3cCopyText( canonical.string(), suggestedRootBuf, suggestedRootBufLen );
+				break;
+			}
+			return false;
+		} );
+	}
+
+	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			std::string joined;
+			for( const auto& root : Simulation::TrustedCacheRoots() ) { if( !joined.empty() ) joined += '\n'; joined += root.string(); }
+			M3cCopyText( joined, buf, bufLen );
+			return true;
+		} );
 	}
 }

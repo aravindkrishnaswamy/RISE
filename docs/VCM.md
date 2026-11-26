@@ -1,0 +1,292 @@
+# VCM (Vertex Connection and Merging) in RISE
+
+This document describes the VCM integrator, a unified bidirectional light transport method that combines BDPT connection strategies with photon-mapping-style vertex merging under a single MIS umbrella (Georgiev et al., *Light Transport Simulation with Vertex Connection and Merging*, SIGGRAPH Asia 2012).
+
+## Scope
+
+- **VCMIntegrator** with **VCMPelRasterizer** (RGB) and **VCMSpectralRasterizer** (NM / HWSS).
+- Surface **and volume** merging (`DL-469`), connectible medium vertices (`DL-218` / `DL-200`), and media-aware connection and escape transmittance consistent with PT and BDPT (`BDPTIntegrator::EvalConnectionTransmittance{,NM}` + coordinated `GenerateEyeSubpath{,NM}` escape-Tr; see "Volume merging" and "Known Limitations" below).
+- SPPM-style progressive radius shrinkage (global per-iteration, clamped by an adaptive density floor), with an automatic initial radius (the median-light-segment estimate clipped to 8 eye-side pixel footprints, DL-319).  Set `vcm_disable_progressive_radius=true` in global options to revert to fixed-radius SmallVCM.
+- Balance-heuristic MIS (matches SmallVCM, Mitsuba VCM, and the Georgiev 2012 reference); RISE BDPT's power-heuristic path is untouched.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for the full power-vs-balance reasoning.
+- No SMS interop; no OpenPGL guiding.
+
+## Reuse Strategy
+
+BDPT already ships `GenerateLightSubpath` / `GenerateEyeSubpath` that produce `BDPTVertex` arrays with area-measure `pdfFwd` / `pdfRev`, delta flags, material pointers, and full medium / BSSRDF / dispersion handling.  VCM recovers the per-vertex SmallVCM running quantities `(dVCM, dVC, dVM)` in a **single-pass post-walk** over the generated array, so we avoid re-implementing ~2000 lines of generator code.
+
+The one BDPT data-side change is two new fields on [src/Library/Shaders/BDPTVertex.h](../src/Library/Shaders/BDPTVertex.h):
+
+- `emissionPdfW` — solid-angle emission / importance PDF at path endpoints.  Light vertex 0 holds `pdfSelect * pdfPosition * pdfDirection`; camera vertex 0 holds `pdfCamDir`.
+- `cosAtGen` — generator-side cosine at the receiving vertex, used by the VCM post-pass to invert `BDPTUtilities::SolidAngleToArea`.
+
+BDPT itself never reads these fields.
+
+### Post-specular vertex handling (Veach transparency)
+
+BDPT follows the Veach convention of storing `pdfFwd = 0` on any vertex reached via a specular scatter — a "delta transparency" marker that tells the BDPT MISWeight walk to pass through the vertex without applying a pdf ratio there.  `ConvertLightSubpath` / `ConvertEyeSubpath` **must not** skip these vertices: they are the diffuse receivers of glass/mirror caustic chains, and skipping them would drop every caustic photon from the light vertex store.
+
+The converter detects `isDelta` on the vertex itself and applies the **specular branch** of `ApplyBsdfSamplingUpdate` (which only needs `cosThetaOut` and explicitly zeros `dVCM` per Veach's convention) instead of the non-specular branch that would require `next.pdfFwd > 0`.  This preserves the SmallVCM recurrence across arbitrary specular chains and is essential for VCM to catch S-D-S-E caustics on dielectric / mirror scenes like triplecaustic.
+
+### BSSRDF entry vertices
+
+BSSRDF and random-walk subsurface jumps relocate the path from an incident hit `x_o` (marked delta) to a sampled entry vertex `x_i` (`isBSSRDFEntry`) with no geometric ray edge and no closed-form reverse jump density (`DL-317`, `DL-375`).  `ConvertLightSubpath` / `ConvertEyeSubpath` therefore treat `isBSSRDFEntry` as an **MIS barrier**: `(dVCM, dVC, dVM) = (0, 0, 0)` at the entry itself (never stored in the merge tree, so nothing splits across the jump), followed by the ordinary non-specular onward update (`ApplyLightEntryOnwardUpdate` / eye-side non-specular update) for vertices past `x_i`.  Both diffusion and random-walk entries are connectible (`DL-375`, evaluating `Sw` via `PathVertexEval::EvalBSDFAtVertex`, matching PT's `RandomWalkEntryBSDF`), and eye-sampled vs. light-sampled jump families are partitioned by path via `BDPTUtilities::LightSegmentEyeWitness` / `LightJumpPartition` (`DL-317`, depth-cap-aware since `DL-380`) so paths covered by the eye walk are never double-counted by the light walk.  Full derivation: [MIS_HEURISTICS.md](MIS_HEURISTICS.md) §4a.
+
+### Endpoint eligibility: `isConnectible` vs `isDelta`
+
+BDPT records two distinct flags per vertex: `isDelta` (which lobe was *sampled* to continue the subpath) and `isConnectible` (whether the material has any non-delta BxDF component).  A mixed material that sampled its specular lobe is `isDelta=true, isConnectible=true`.  BDPT explicitly clears endpoint `isDelta` for connectible vertices before MIS weight computation (BDPTIntegrator.cpp:4283) because connection evaluation uses the full non-delta BSDF, independent of the previously sampled lobe.
+
+VCM follows this convention: all endpoint gates (store append, NEE, splats, interior connections, merges) check `isConnectible` only.  `isDelta` is used solely in the recurrence (specular branch of `ApplyBsdfSamplingUpdate`) and does not exclude vertices from VC/VM strategies.
+
+### `vc_enabled` / `vm_enabled` ablation
+
+Both flags are plumbed from the parser through `ComputeNormalization` into `VCMNormalization::mEnableVC` / `mEnableVM`.  All VC strategies (t=1 splat, s=0, NEE, interior connections) are gated by `mEnableVC` in both rasterizers.  VM is gated by `mEnableVM`.  When VM is disabled, `PreRenderSetup` skips the entire light vertex store build and KD-tree construction.
+
+## Critical Files
+
+| File | Role |
+|---|---|
+| [src/Library/Shaders/VCMRecurrence.h](../src/Library/Shaders/VCMRecurrence.h) / `.cpp` | Pure-math SmallVCM running quantities (`InitLight`, `InitCamera`, `ApplyGeometricUpdate`, `ApplyBsdfSamplingUpdate`, `ComputeNormalization`) |
+| [src/Library/Shaders/VCMLightVertex.h](../src/Library/Shaders/VCMLightVertex.h) | `LightVertex` (`240 B`) record stored in the merging KD-tree (plus `LightVertexNM`, `256 B`, reserved for per-wavelength store) |
+| [src/Library/Shaders/VCMLightVertexStore.h](../src/Library/Shaders/VCMLightVertexStore.h) / `.cpp` | Append-then-query store with a left-balanced KD-tree cloned from `PhotonMapCore<T>` |
+| [src/Library/Shaders/VCMIntegrator.h](../src/Library/Shaders/VCMIntegrator.h) / `.cpp` | Strategy implementations: `ConvertLightSubpath`, `ConvertEyeSubpath`, `EvaluateS0`, `EvaluateNEE`, `EvaluateInteriorConnections`, `SplatLightSubpathToCamera`, `EvaluateMerges` |
+| [src/Library/Rendering/VCMRasterizerBase.h](../src/Library/Rendering/VCMRasterizerBase.h) / `.cpp` | Lifecycle + multi-threaded VCM light pass (`PreRenderSetup` / `OnProgressivePassBegin`), splat-film resolve in the flush overrides |
+| [src/Library/Rendering/VCMPelRasterizer.h](../src/Library/Rendering/VCMPelRasterizer.h) / `.cpp` | Pel (RGB) subclass; `IntegratePixel` runs the per-sample eye pass |
+
+## Pipeline
+
+`VCMRasterizerBase` builds a fresh photon store **once per progressive iteration** (`PreRenderSetup` for iteration 0, `OnProgressivePassBegin(passIdx)` for subsequent iterations; see "v2 Architecture" below).  Each iteration's light pass:
+
+1. Computes `mVCMNormalization` from `(W, H, mergeRadius, enableVC, enableVM)`.
+2. Generates `W * H` light subpaths in parallel via `LightPassDispatcher` (multi-threaded 32×32 tiles concatenated in deterministic worker-index order).
+3. For each subpath: `ConvertLightSubpath` produces the parallel `VCMMisQuantities` array (and `VCMStep` window records) and appends connectible surface vertices and thinned medium vertices (`DL-469`) to the `LightVertexStore`.  (t=1 splats are handled per-sample in `IntegratePixel`, not here.)
+4. `LightVertexStore::BuildKDTree()` balances the tree.
+
+`VCMPelRasterizer::IntegratePixel` runs **per pixel per eye sample**.  It:
+
+1. Generates the eye subpath via `BDPTIntegrator::GenerateEyeSubpath`.
+2. Walks `ConvertEyeSubpath` to produce the eye-side `VCMMisQuantities` array.
+3. Generates an **independent** per-pixel light subpath (used by interior connections for MIS state on both sides).  The store built in `PreRenderSetup` is used for merging only.
+4. Accumulates the strategies: `EvaluateS0` + `EvaluateNEE` + `EvaluateInteriorConnections` + `EvaluateMerges`.
+
+The final flush resolves the splat film on top of a scratch image before forwarding to the rasterizer outputs, matching BDPT's convention.
+
+## SmallVCM Formulas (balance heuristic)
+
+```
+mLightSubPathCount  = W * H
+etaVCM              = PI * radius^2 * mLightSubPathCount
+mMisVmWeightFactor  = VM ? etaVCM       : 0
+mMisVcWeightFactor  = VC ? 1 / etaVCM   : 0
+mVmNormalization    = 1 / etaVCM
+```
+
+**InitLight** (at the emitter):
+```
+dVCM = directPdfA / emissionPdfW
+dVC  = cosLight / emissionPdfW    (delta: 0)
+dVM  = dVC * mMisVcWeightFactor   (note: VC, not VM)
+```
+
+**InitCamera** (at the pixel):
+```
+dVCM = mLightSubPathCount / cameraPdfW
+dVC  = 0
+dVM  = 0
+```
+
+**ApplyGeometricUpdate** (at each bounce, before BSDF sampling):
+```
+dVCM *= distSq   (if not the first bounce off an infinite light)
+dVCM /= |cosThetaFix|
+dVC  /= |cosThetaFix|
+dVM  /= |cosThetaFix|
+```
+
+**ApplyBsdfSamplingUpdate** (non-specular branch, after BSDF sampling):
+```
+dVC  = (cosThetaOut / bsdfDirPdfW) * (dVC  * bsdfRevPdfW + dVCM + mMisVmWeightFactor)
+dVM  = (cosThetaOut / bsdfDirPdfW) * (dVM  * bsdfRevPdfW + dVCM * mMisVcWeightFactor + 1)
+dVCM = 1 / bsdfDirPdfW
+```
+(Specular branch: `dVCM = 0`, `dVC *= cosThetaOut`, `dVM *= cosThetaOut`.)
+
+See [src/Library/Shaders/VCMRecurrence.cpp](../src/Library/Shaders/VCMRecurrence.cpp) for the authoritative implementation.
+
+## Strategy Weights
+
+Per-vertex MIS weights (balance heuristic), evaluated inside each `Evaluate*` function:
+
+- **s=0** (eye hits emitter):
+  `wCamera = directPdfA * dVCM + emissionPdfW * dVC`; `w = 1 / (1 + wCamera)`.
+
+- **s=1** (NEE):
+  `wLight = bsdfDirPdfW / (lightPickProb * directPdfW)`;
+  `wCamera = (emissionPdfW * cosToLight / (directPdfW * cosAtLight)) * (mMisVmWeightFactor + dVCM + dVC * bsdfRevPdfW)`;
+  `w = 1 / (wLight + 1 + wCamera)`.
+
+- **t=1** (splat):
+  `wLight = (cameraPdfA / mLightSubPathCount) * (mMisVmWeightFactor + dVCM + dVC * bsdfRevPdfW)`;
+  `w = 1 / (wLight + 1)`.
+
+- **interior** (s≥2, t≥2):
+  `wLight = cameraBsdfDirPdfA * (mMisVmWeightFactor + L.dVCM + L.dVC * lightBsdfRevPdfW)`;
+  `wCamera = lightBsdfDirPdfA * (mMisVmWeightFactor + C.dVCM + C.dVC * cameraBsdfRevPdfW)`;
+  `w = 1 / (wLight + 1 + wCamera)`.
+
+- **merge** (per candidate in query radius):
+  `wLight = L.dVCM * mMisVcWeightFactor + L.dVM * cameraBsdfDirPdfW`;
+  `wCamera = C.dVCM * mMisVcWeightFactor + C.dVM * cameraBsdfRevPdfW`;
+  `w = 1 / (wLight + 1 + wCamera)`.
+  The summed contributions are scaled by `mVmNormalization` and the eye vertex's throughput.
+
+## Regression Scenes
+
+| Scene | Purpose |
+|---|---|
+| [`cornellbox_vcm_simple`](../scenes/Tests/VCM/cornellbox_vcm_simple.RISEscene) | Minimal smoke test |
+| [`cornellbox_vcm_caustics`](../scenes/Tests/VCM/cornellbox_vcm_caustics.RISEscene) | Cornell + glass sphere — VC+VM on LSDE caustics |
+| [`cornellbox_vcm_spectral`](../scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene) | HWSS spectral variant |
+| [`diacaustic_vcm`](../scenes/Tests/VCM/diacaustic_vcm.RISEscene) | Reflective-tube S-D-S-E caustic |
+| [`triplecaustic_vcm`](../scenes/Tests/VCM/triplecaustic_vcm.RISEscene) | Three-sphere RGB dielectric caustics |
+| [`pool_caustics_vcm`](../scenes/Tests/VCM/pool_caustics_vcm.RISEscene) | Water refraction caustics |
+
+## Feature Parity with BDPT
+
+`VCMPelRasterizer::IntegratePixel` mirrors `BDPTPelRasterizer::IntegratePixel` line-for-line on the structural side so that progressive rendering, per-sample light subpath splats, ZSobol blue-noise pixel distribution, adaptive sampling, and OIDN denoising all behave identically:
+
+- **Progressive film state persistence** — each pass resumes from `(colorSum, weightSum, sampleIndex, wMean, wM2, wN)` instead of starting fresh, so `GetEffectiveSplatSPP` sees the cumulative sample count.
+- **Per-sample t=1 splat** — `SplatLightSubpathToCamera` runs inside the sample loop so the splat film's variance reduces across progressive passes.  Splats land on the image-plane pixel determined by `BDPTCameraUtilities::Rasterize`, not the pixel being rendered.
+- **`mTotalAdaptiveSamples` counter** + **`GetEffectiveSplatSPP`** — the splat film normalization uses the actual running total of rendered camera samples.  Adaptive early-termination increments the counter by the delta rather than a fixed batch size.
+- **ZSobol blue-noise sampler** — Morton-code seeding, `effectiveIndex = (mortonIndex << log2SPP) | globalSampleIndex`, gated by `blue_noise_sampler true`.
+- **Adaptive sampling** — Welford luminance variance check with `adaptive_max_samples` / `adaptive_threshold` / `show_adaptive_map`.  Converged pixels return their stored value and skip resampling.
+- **Light subpath first, sharing the sampler** — mirrors `BDPTPelRasterizer::IntegratePixelRGB` so eye and light subpaths are jointly stratified across the Sobol dimensions.
+- **OIDN denoising pipeline** — first-hit albedo / normal are extracted from `eyeVerts[1]` and accumulated into `pAOVBuffers`; the pre-denoised output is the splat-composited image, denoise runs on the non-splat pImage, then `FlushDenoisedToOutputs` composites splats back onto the denoised result.
+- **Scene parser parity** — the `vcm_pel_rasterizer` chunk accepts the same knobs as `bdpt_pel_rasterizer` (minus SMS / path guiding / optimal MIS, which are out of scope for VCM v1): `oidn_denoise`, `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map`, `blue_noise_sampler`, the full `StabilityConfig`, `progressive_rendering`, `progressive_samples_per_pass`.
+- **Path-tree branching at multi-lobe delta vertices** — removed in 2026-05.  PT, BDPT, VCM, MLT all use stochastic single-lobe selection at Fresnel splits with proper `kray / selectProb` correction (matches PBRT/Mitsuba/Arnold/Cycles X convention).  See [CLAUDE.md](../CLAUDE.md) High-Value Facts entry on the BDPT MIS-vs-tree mismatch.  Scenes that previously set `branching_threshold` will now fail to parse — the parameter has been removed.
+
+At 256 spp the diffuse Cornell box matches BDPT within 1% on both the pre-denoised and denoised outputs.
+
+## Merge Radius
+
+The `merge_radius` parameter controls VM merging:
+- **`merge_radius > 0`** — explicit radius in world units, used as the initial `r_0`.
+- **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the light-side radius, then clips it to 8 eye-side pixel footprints (DL-319, 2026-10-01; see [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §5.3 "VCM automatic merge radius") to give the initial merge radius `r_0`.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... light_radius=... eye_footprint=... eye_radius=... effective_radius=... (eye-clipped|light)`.
+  The pre-pass also decides **whether VM runs at all**: it sets `foundSpecular` when any
+  light-subpath vertex is a DELTA **surface** (delta-position *lights* deliberately do not
+  count — see [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)), and logs
+  `no specular vertices — disabling VM` otherwise.  `curr.isDelta` there records the lobe
+  the walk sampled, not a property of the material, but the loop runs over
+  width × height × `lightSubpathsPerPixel` subpaths, so it is a Monte-Carlo test of the
+  per-surface question "can any surface a light path reaches scatter through a delta lobe?"
+  and is exact for any lobe probability a scene realistically uses.  A **mixed**
+  delta+continuum material therefore enables VM: `polished_material`'s specular coat, a
+  Fresnel `composite_material`, and a `weave_material` with `transmission thin, gap > 0`.
+  For the first two that is what you want; for the weave's undeviated gap it buys nothing,
+  but it is a cost question only — VCM is unbiased with VM on there (VCM/PT 0.99990 at
+  gap 0.1) since the 2026-09-04 delta-light NEE partition fix
+  ([CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 24).
+- **`vm_enabled false`** — VM is disabled regardless of radius; VCM degenerates to VC-only (matching BDPT).
+
+### Progressive radius shrinkage (SPPM-style)
+
+By default (`mProgressiveRadiusEnabled = true`), `VCMRasterizerBase` applies the Hachisuka-Ogaki-Jensen shrinkage formula once per progressive pass:
+
+```
+r_{n+1} = r_n * sqrt( (n + alpha) / (n + 1) )
+```
+
+with `alpha = 2/3` (asymptotically optimal rate) and `n = mMergeRadiusPassCount`.  The shrunk radius is clamped below by `mMergeRadiusFloor`, an adaptive lower bound derived from `mTargetPhotonsPerQuery` (default 20) and the current photon density so that Poisson noise on photon count does not drown out bias reduction.  A scene-derived safety floor (`0.1 * r_0`, i.e. `0.001 * medianSegment` when the light-side radius wins) prevents the radius from collapsing below a geometric floor on pathologically sparse scenes.
+
+The photon-store build sets `mLightSubPathCount` to `pathsShot` each pass — equal to W×H since path-tree branching was removed in 2026-05; the renormalization is now a no-op but harmless.
+
+To revert to the legacy fixed-radius SmallVCM behavior for benchmarking or regression comparison, set `vcm_disable_progressive_radius=true` in `global.options` (or via `RISE_OPTIONS_FILE`).
+
+Defaults live in `VCMRasterizerBase::VCMRasterizerBase` at [src/Library/Rendering/VCMRasterizerBase.cpp](../src/Library/Rendering/VCMRasterizerBase.cpp).  The shrinkage call site is `OnProgressivePassBegin`.
+
+## Spectral / HWSS Variant
+
+`VCMSpectralRasterizer` mirrors `BDPTSpectralRasterizer` for spectral rendering.  Key HWSS property the integrator relies on: `VCMMisQuantities` (dVCM / dVC / dVM) are **wavelength-independent**, so `ConvertLightSubpath` / `ConvertEyeSubpath` from the Pel side are reused verbatim.  Only the strategy evaluators (`EvaluateS0NM`, `EvaluateNEENM`, `SplatLightSubpathToCameraNM`, `EvaluateInteriorConnectionsNM`, `EvaluateMergesNM`) have NM variants that return a Scalar radiance estimate; the caller converts to XYZ via `ColorUtils::XYZFromNM`.
+
+HWSS flow per pixel sample:
+1. Select a hero wavelength via `SampledWavelengths::SampleEquidistant`.
+2. Generate light and eye subpaths at the hero wavelength (`GenerateLightSubpathNM` / `GenerateEyeSubpathNM`).
+3. Run `ConvertLightSubpath` / `ConvertEyeSubpath` once — the result is shared across wavelengths.
+4. Evaluate all VCM-NM strategies at the hero wavelength; accumulate `XYZFromNM(heroNM) × heroValue`.
+5. For each companion wavelength: check `BDPTIntegrator::HasDispersiveDeltaVertex`.  If any vertex is dispersive, terminate the companion (its geometry doesn't survive wavelength change).  Otherwise copy the vertex arrays, call `BDPTIntegrator::RecomputeSubpathThroughputNM` to patch `throughputNM`, then run the NM evaluators again.
+
+[tests/VCMSpectralRecurrenceTest.cpp](../tests/VCMSpectralRecurrenceTest.cpp) asserts the wavelength-invariance of `VCMMisQuantities` — ConvertLightSubpath / ConvertEyeSubpath produce bit-identical MIS arrays regardless of the wavelength-dependent `throughputNM` field.
+
+## v2 Architecture: Per-Iteration Store + Parallel Light Pass
+
+Each progressive pass is one VCM iteration (`progressiveConfig.samplesPerPass = 1` forced when VM is enabled), matching the paper's iteration model:
+
+1. `PreRenderSetup` — auto-radius pre-pass, initial light-vertex-store build (for iteration 0).
+2. `OnProgressivePassBegin(passIdx)` — rebuilds the store with fresh photon positions for iteration `passIdx` (using `sampleIndex = passIdx` in the Sobol sampler).
+3. `IntegratePixel` — exactly 1 eye sample per pixel, querying the current iteration's store for merges.
+
+Total SPP = number of iterations.  Each iteration gets a fresh photon store, so density-noise variance averages as 1/√N_iterations.
+
+### Parallel light pass (`LightPassDispatcher`)
+
+Light-subpath generation is parallelized via a 32×32 tile-based dispatcher in an anonymous namespace within `VCMRasterizerBase.cpp`:
+
+- Tiles pulled by atomic counter (`nextTile.fetch_add`)
+- Each worker has its own `RandomNumberGenerator` + `RuntimeContext` + scratch buffers + local `LightVertex` accumulator
+- After all workers join, per-thread buffers are concat'd into the shared store in deterministic worker-index order (preserves KD-tree determinism)
+- Sobol sampler indexing: `SobolSampler(sampleIndex=passIdx, pixelSeed=y*W+x)` — identical to the eye-pass sampler for the same (pass, pixel) pair, but draws from non-overlapping dimension streams via `StartStream()`
+
+Worker count comes from `HowManyThreadsToSpawn()` (respects `maximum_thread_count` / `force_number_of_threads` options).
+
+### Super-iteration batching — why not
+
+The literature (SmallVCM, Mitsuba 3, PBRT-v4 SPPM) suggests batching K classical iterations into one super-iteration: `K × W × H` light subpaths in the store, K eye samples per pixel per super-iteration.  Georgiev eq. (20) confirms ηVCM = (nVM/nVC) × πr² is invariant under uniform K-scaling.
+
+**Measured on RISE:** K=32 on diacaustic runs 5.8× slower per eye sample than K=1.  The issue is that per-iteration photon density scales K× and merge candidate counts scale K× too — merge evaluation becomes K× more expensive per sample.  SmallVCM/Mitsuba counter this with SPPM-style progressive radius reduction (r scales as 1/√K), which keeps candidate count constant.  RISE now applies SPPM-style shrinkage **across progressive passes (each K=1)** — see "Progressive radius shrinkage" above.  True super-iteration batching (K>1 with intra-batch per-pixel radius tracking) remains out of scope.
+
+For v2, K=1 matches the paper and minimizes per-sample merge cost.  Parallel efficiency comes from within-iteration parallelism (tile-based dispatch) rather than cross-iteration batching.
+
+### Block-level progressive output
+
+VCM overrides `SkipPerBlockIntermediateOutput()` to return `true`.  With 1 spp per pass, per-block intermediate flushes (every 32×32 tile) would trigger thousands of output updates per render — wasted I/O.  The end-of-pass flush still runs once per iteration, giving the user progressive preview at the natural VCM iteration boundary.
+
+## Depth caps (DL-467, DL-470)
+
+`max_eye_depth` / `max_light_depth` bound each walk's surface hits (plus the `max_volume_bounce` iteration budget), and VCM's weights reserve MIS mass only for strategies the walks can actually generate.  Grouped by LEVEL m (vertices handed to the other subpath), a weight's level-m terms are the connection whose other part covers m vertices and the merge at the deepest one; the levels that exist are a prefix 1..m*, and the ones past it are removed by replaying the stamped affine (dVC, dVM) steps of the records (`VCMMisQuantities::xf / xgVC / xgVM`) from record e - m* + 1 with its dVC / dVM zeroed (`LightSideWindow` / `EyeSideWindow` / `ReplayWindow`, [VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp), "DL-467").  When no level is cut the stored record is used verbatim, so a render whose caps never bind is bit-identical.
+
+- **Merge, light side (DL-470).**  A merge's wLight covers the light subpath BEHIND the merge point, which a stored `LightVertex` does not carry, so DL-467 windowed only the merge's wCamera.  The light pass now keeps, per light subpath that stored a vertex, its records 0..(deepest stored vertex) as `VCMStep`s (the stamped step plus how the EYE walk would count the vertex: surface hit / medium scatter / environment-root escape / BSSRDF entry) in a pool in `LightVertexStore` (`ConvertLightSubpath`'s `outSteps`; each light-pass worker's records are adopted as one chunk by `Concat`, no copy; `LightVertex::stepChunk` / `stepBase` locate record 0).  At merge time `MergeLightSideWindow` counts the merging eye prefix plus the handed light vertices (level 1 is free: the eye already holds the merge point), finds m*, and `ReplayStepWindow` rebuilds the windowed dVC (volume merge, `(dVCM + dVC p) / (q eta_v)`) or dVM (surface merge, `dVCM / eta_s + dVM p`); dVCM is level 1 and never cut.  A fast exit (merging prefix + k handed vertices within both caps) skips the scan.  Bit-identity where nothing is cut was checked by hashing every pixel of deterministic single-threaded renders against the pre-fix build (caustic scene at (32,8), fog box at (20,20), Lambertian box): identical.
+- **Why it mattered.**  A caustic L-S-S-D-E seen directly has three strategies: the t = 1 splat, the merge at D, and the eye hitting the light through the glass (s = 0, eye walk 4 surfaces).  At `max_eye_depth` 1-3 the s = 0 strategy does not exist, but the merge still reserved its mass: VCM read 0.908-0.917 of BDPT at the same caps over the whole frame (now 1.001-1.006).  With three index-matched delta slabs in front of the lens (floor = eye surface 7) the same happens at the DEFAULT caps (8, 8): VCM 0.772 of PT (now 0.996).  Regression: `BDPTDepthCapMISTest` row E; `VCMRecurrenceTest` Test 9 checks the windowed weight against a brute-force sum over exactly the strategies of level <= K.
+- **Memory.**  `LightVertex` grows 232 -> 240 bytes; each kept record is 16 bytes (single precision -- the replay runs in double, so a CUT weight is float-rounded, ~1e-7 relative; a subpath whose values do not fit a normal float keeps no records and merges unwindowed).  Records are written in per-worker 64K-record blocks that the store adopts as chunks (`LightVertexStore::Concat`), never copied into one array.  Fog room (global fog, 640x480, ~0.94M stored vertices and 7.2M records per pass): peak RSS 781 -> 974 MB; `cornellbox_vcm_caustics` (256x256, 16 spp) 308 -> 334 MB.
+
+## Volume merging (DL-469)
+
+VCM merges at MEDIUM vertices as well as surfaces ([VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp), "volume merging").  Before DL-469 the recurrence and the NEE / splat / connection endpoint weights counted a surface merge at every medium vertex that never ran (multiple scattering read ~5 % low whenever surface merging was on), and a path whose only connectible vertex is a medium scatter between delta surfaces -- fog behind index-matched glass lit by a point light and seen through it -- had no strategy at all (fog box: 0.58 of PT).
+
+- **Estimator.**  Eye medium vertex x stored medium light vertex of the SAME medium object within r_v, uniform 3-D ball kernel `1 / (N 4/3 pi r_v^3)`.  Both stored throughputs carry sigma_s at their own vertex, so the contribution is `T_e p(wi, wo) / sigma_s(M_e) * T_l * kernel * w`.
+- **MIS.**  At a medium vertex the merge factor `q eta_v` (`VCMNormalization::mMisVolumeWeightFactor`) replaces the surface factor `eta_s` in the recurrence and every endpoint weight (`VertexMergeFactorVC` / `VertexMergeFactorVM`, [VCMRecurrence.h](../src/Library/Shaders/VCMRecurrence.h)); the merge's own weight uses SmallVCM's `dVM == dVC / eta_s` identity: `wLight = (dVCM + dVC p) / (q eta_v)`.  Needs VC and VM both on (otherwise volume merging is off and the medium factor is 0).  `VCMRecurrenceTest` Test 8 checks the recurrence against a brute-force sum over every light-side strategy at q = 1 and 0.1.
+- **Memory (thinning).**  Every medium light vertex would otherwise be stored (a fog room at 640x480 stored 11.6M per pass, 14.4 GB peak).  Each is stored with probability `q = min(1, vcm_volume_merge_max_vertices / expected per-pass count)` and its throughput divided by q; the merge's density is then q times the unthinned one, which is why the MIS factor is `q eta_v`.  The draw is a hash of the vertex position, its index along the light subpath and the pass index.  Same room: 1.30 GB peak at the default budget. The budget holds in expectation, not exactly: q is fixed for the render from the pass-0 pre-pass count, so a pass can store more or fewer than `vcm_volume_merge_max_vertices`. The store's two firefly clamps (the pass-0 median clamp and `ClampOutlierThroughputs`) take their thresholds from the surface vertices and judge a medium vertex on its PHYSICAL throughput, q times the stored value; comparing the stored `T/q` capped it at q times the threshold, a bias growing as q falls (`VCMVolumeMergeTest` row E at q = 0.01: 0.632 before, 0.936 +/- 0.031 after).
+- **Radius.**  From the pre-pass medium-vertex density (after thinning) for `vcm_volume_merge_neighbours` expected neighbours per query, clipped to `vcm_volume_merge_footprints` pixel footprints at the eye's first medium vertex (or its first mergeable surface when no eye ray reaches a medium first) and to 5 % of the medium vertices' extent; shrunk per pass as `r^3 ~ (n + 2/3)/(n + 1)`, floored at r_0/10.  Scenes without a medium skip the pre-pass work entirely. A merge pairs only vertices of the same medium object, so the ball is truncated at a medium boundary: a consistent boundary bias that vanishes as the radius shrinks, like a surface merge near a surface's edge.
+- **Options** (`global.options` / `RISE_OPTIONS_FILE`):
+  - `vcm_volume_merge_neighbours` (default 0.01): bias/variance -- a ball cut by a wall or an opaque object under-counts (black-sphere fog box: 1 / 0.1 / 0.01 read -11 % / -4.5 % / -2.5 %; DL-474).
+  - `vcm_volume_merge_max_vertices` (default 250000; 0 = no thinning): stored medium vertices per pass, ~1.2 KB each with the KD-tree.
+  - `vcm_volume_merge_footprints` (default 2).
+- **Not covered.**  BDPT / MLT keep the sandwiched-medium gap (DL-475).  Surface merge queries share the KD-tree with medium vertices and skip them by flag.
+- **Regression.**  [tests/VCMVolumeMergeTest.cpp](../tests/VCMVolumeMergeTest.cpp).
+
+## Known Limitations (v1 → v2)
+
+- **Store lives for one iteration.**  Kept for v2: each iteration has a fresh store.  Density-noise variance averages across iterations as 1/√N.
+- **Surface-only merging (superseded by DL-469, see "Volume merging" below).**  Medium scatter vertices propagate the geometric update (using `sigma_t_scalar` in place of `|cos|`).  Before DL-469 they were not stored and the recurrence counted a phantom surface merge at them; medium endpoints are connectible since DL-218/DL-200.  **Connection + escape transmittance through participating media is now media-aware and consistent with PT/BDPT.**  Connection-Tr at three of four connection-strategy sites (NEE / interior / splat-to-camera) reuses `BDPTIntegrator::EvalConnectionTransmittance{,NM}` directly since Pre-Phase-1 Piece 2 (2026-05-31).  The fourth strategy — s=0 *escape* (eye/camera ray exits the scene through a medium to env-IBL) — is now Tr-attenuated too, via the **coordinated escape-Tr fix** (2026-05-31, [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) "Coordinated escape-Tr fix"): the transmittance is applied in the shared `GenerateEyeSubpath{,NM}` at the synthetic env-vertex push (`vEnv.throughput *= Tr`, `maxDist=1e10` matching PT), so VCM's `EvaluateS0Impl` env-escape inherits it with no VCM-side change.  (For surface direct hits the eye-walk's throughput already folds in Tr along the final segment, so s=0 surface emitters are untouched — applying it again would double-attenuate.)  Result: on the bounded-medium env-IBL fixture `env_bounded_fog_{pt,bdpt,vcm}` (pure absorption) **PT ≈ BDPT ≈ VCM to within ±5 % (VCM +0.1 % of PT)** — a cross-integrator agreement property.  Volume-aware merging landed with DL-469 (below).  **Known residual (separate workstream, NOT the escape-Tr fix):** with in-scattering (σ_s > 0), VCM under-counts single-scatter of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS gap (medium-vertex env connection / env-S0 ↔ env-NEE partition, IMPROVEMENTS.md §12 family); the pure-absorption fixture isolates and validates the escape-Tr fix independently of it.
+- **Spectral merges uplift Pel-stored photon throughput via `RGBIlluminantSpectrum`.**  At photon deposit time, `ConvertLightSubpath` caches `LightVertex::throughputSpectrum` via Jakob–Hanika illuminant uplift (`RGBIlluminantSpectrum::FromRGB(lv.throughput)`), and `EvaluateMergesNM` evaluates that cached spectrum at each hero and companion wavelength (replacing the older scalar luminance proxy).  Because the photon store itself is still populated by a Pel `GenerateLightSubpath` pass, non-RGB spectral power distributions (narrowband `.spectra` emitters/filters) and dispersive photon paths whose geometry depends on wavelength remain approximated on the merge strategy (`VCM_SPECTRAL_PHOTON_STORE_DESIGN.md`); VC strategies (s=0, NEE, interior, t=1) are traced spectrally per bundle.
+- **No SMS, path guiding, or optimal MIS.**  User-confirmed out of scope for v1.  (The optimal-MIS direction is the principled answer to the BDPT-power vs VCM-balance question — extending [Kondapaneni 2019](https://cgg.mff.cuni.cz/~jaroslav/papers/2019-optimal-mis/) to bidirectional / VCM is open research.)
+
+The **BDPT-power / VCM-balance asymmetry** is *not* a mismatch — it matches PBRT-v4, Mitsuba 0.6/3, SmallVCM, and SmallUPBP, and is mandated by the Georgiev 2012 dVCM/dVC/dVM running-quantities recurrence which only closes algebraically at β=1.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for the full treatment.  On diffuse scenes BDPT and VCM agree to within ~1% at 256 spp; on caustic-heavy scenes they can differ because BDPT cannot reach S-D-S-E paths VCM's merging strategy catches — a transport-coverage difference, not an MIS-weighting one.
+
+## Unit Tests
+
+- [tests/VCMRecurrenceTest.cpp](../tests/VCMRecurrenceTest.cpp) — 75 assertions against SmallVCM formulas
+- [tests/VCMLightVertexStoreTest.cpp](../tests/VCMLightVertexStoreTest.cpp) — 31 assertions incl. brute-force KD-tree comparison
+- [tests/VCMLightPostPassTest.cpp](../tests/VCMLightPostPassTest.cpp) — 28 assertions on synthetic light subpaths
+- [tests/VCMEyePostPassTest.cpp](../tests/VCMEyePostPassTest.cpp) — 26 assertions on synthetic eye subpaths
+- [tests/VCMSpectralRecurrenceTest.cpp](../tests/VCMSpectralRecurrenceTest.cpp) — 27 assertions on HWSS wavelength-invariance
+
+Total: 187/187 passing.

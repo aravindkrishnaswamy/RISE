@@ -1,0 +1,29 @@
+RISE ASCII SCENE 7
+# Coverage: scalar_painter `add` form (AddScalarPainter, multiply's additive
+# sibling) -- out = weight_a*a + weight_b*b.
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_add_a
+	value		0.2
+}
+
+scalar_painter
+{
+	name		cc_add_b
+	value		0.05
+}
+
+scalar_painter
+{
+	name		cc_scalar_painter_add
+	add		cc_add_a cc_add_b
+	weight_a	1.0
+	weight_b	0.5
+}

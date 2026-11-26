@@ -1,0 +1,258 @@
+RISE ASCII SCENE 7
+# SDF + refractive-caustic test.  A glass SDF torus sits above a white floor with
+# an overhead area light.  Light passes through the ring's hole AND refracts
+# through the glass band -> a ring caustic focused on the floor.  Photons are
+# traced from the light through the ray-marched dielectric (up to 4 boundary
+# crossings per photon: enter/exit the near band, enter/exit the far band),
+# exercising the sphere-tracer's entry/exit tracking on the LIGHT-transport side
+# as well as the camera side.
+
+standard_shader
+{
+	name		global
+	shaderop		DefaultPathTracing
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+vcm_pel_rasterizer
+{
+	samples				64
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/sdf_caustic
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			640
+	height			512
+}
+
+pinhole_camera
+{
+	location		0 7.5 -9.5
+	lookat			0 0.6 0
+	up				0 1 0
+	fov				42.0
+}
+
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		pnt_glass_tau
+	color		0.99 0.99 0.99
+}
+
+lambertian_material
+{
+	name		white
+	reflectance	color_white
+}
+
+lambertian_luminaire_material
+{
+	name		light_mat
+	exitance	color_white
+	scale		220.0
+	material	none
+}
+
+perfectrefractor_material
+{
+	name		glass
+	refractance	pnt_glass_tau
+	ior			1.5
+}
+
+clippedplane_geometry
+{
+	name		floorgeom
+	pta			-7 0 -7
+	ptb			 7 0 -7
+	ptc			 7 0  7
+	ptd			-7 0  7
+}
+
+clippedplane_geometry
+{
+	name		lightgeom
+	pta			-1.4 9 -1.4
+	ptb			 1.4 9 -1.4
+	ptc			 1.4 9  1.4
+	ptd			-1.4 9  1.4
+}
+
+sdf_geometry
+{
+	name		gemgeom
+	part		torus union 0  0 0 0  0 0 0  1 1 1  1.45 0.55 0  0
+}
+
+standard_object
+{
+	name		floor
+	geometry	floorgeom
+	material	white
+}
+
+standard_object
+{
+	name		light
+	geometry	lightgeom
+	material	light_mat
+}
+
+standard_object
+{
+	name		glass_gem
+	geometry	gemgeom
+	position	0 2.0 0
+	material	glass
+}
+
+

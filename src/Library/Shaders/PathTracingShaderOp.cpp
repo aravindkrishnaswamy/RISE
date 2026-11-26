@@ -23,7 +23,9 @@
 #include "pch.h"
 #include "PathTracingShaderOp.h"
 #include "PathTracingIntegrator.h"
+#include "../Rendering/AOVBuffers.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/RuntimeContext.h"
 #include "../Utilities/Color/Color.h"
 
 using namespace RISE;
@@ -35,20 +37,69 @@ using namespace RISE::Implementation;
 //////////////////////////////////////////////////////////////////////
 
 PathTracingShaderOp::PathTracingShaderOp(
-	const bool branch,
 	const ManifoldSolverConfig& smsConfig,
 	const StabilityConfig& stabilityCfg
 	) :
   pIntegrator( 0 ),
   bSMSEnabled( smsConfig.enabled )
 {
-	pIntegrator = new PathTracingIntegrator( branch, smsConfig, stabilityCfg );
-	pIntegrator->addref();
+	pIntegrator = new PathTracingIntegrator( smsConfig, stabilityCfg );
 }
 
 PathTracingShaderOp::~PathTracingShaderOp()
 {
 	safe_release( pIntegrator );
+}
+
+void PathTracingShaderOp::SetMaxPathDepth( unsigned int n )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetMaxPathDepth( n );
+	}
+}
+
+void PathTracingShaderOp::SetIndirectOnly( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetIndirectOnly( b );
+	}
+}
+
+void PathTracingShaderOp::SetClayOverride( bool b )
+{
+	if( pIntegrator ) {
+		pIntegrator->SetClayOverride( b );
+	}
+}
+
+unsigned long long PathTracingShaderOp::SurfaceVolumeEndpointAttemptCount() const
+{
+	return pIntegrator ? pIntegrator->SurfaceVolumeEndpointAttemptCount() : 0;
+}
+
+unsigned long long PathTracingShaderOp::NonCompetingSurfaceGuideInitializationCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceGuideInitializationCount() : 0;
+}
+
+unsigned long long PathTracingShaderOp::NonCompetingSurfaceRISCount() const
+{
+	return pIntegrator ? pIntegrator->NonCompetingSurfaceRISCount() : 0;
+}
+
+unsigned long long
+PathTracingShaderOp::NonCompetingSurfaceGuidedCandidateInstalledCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceGuidedCandidateInstalledCount() : 0;
+}
+
+unsigned long long
+PathTracingShaderOp::NonCompetingSurfaceRISCandidateInstalledCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceRISCandidateInstalledCount() : 0;
 }
 
 
@@ -86,7 +137,30 @@ void PathTracingShaderOp::PerformOperation(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth );
+		0, rs.glossyFilterWidth,
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
+		rc.pAOV,
+		// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): `bsdfPdf` and the
+		// MIS-PARTNER density are two different quantities in RAY_STATE and
+		// this boundary has to forward BOTH.  They differ for exactly one
+		// producer -- RayCaster's volume phase-scatter continuation under
+		// volume guiding, which records the guided mixture in `bsdfPdf`
+		// (the training denominator) and the raw phase pdf in `bsdfMisPdf`
+		// (what volume NEE weights against).  Forwarding only `bsdfPdf`
+		// made the integrator's emitter-hit weight use the guided density
+		// against an NEE arm that had used the raw one: measured +44 % on
+		// PTGuidingMISPartitionTest's row (g).
+		rs.MisPartnerPdf(),
+		// DL-185: forward CastRay's cast-level RR compensation for THIS
+		// hit (see RAY_STATE::castRRCompensation's doc) so the FIRST
+		// vertex's own NEE -- reached only when this shading is itself a
+		// re-entry through RayCaster::CastRay, e.g. a BSSRDF/random-walk
+		// continuation's exit hit -- trains its optimal-MIS moment
+		// consistently with the escape arm (DL-148).  1.0 (no-op) for an
+		// ordinary top-level camera-ray dispatch.
+		rs.castRRCompensation,
+		// DL-633: the object the producing vertex's light sampling excluded.
+		rs.pNEESelfObject );
 }
 
 
@@ -126,7 +200,25 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth );
+		0, rs.glossyFilterWidth,
+		// Forward the SMS emission-suppression flags so a path that
+		// re-enters shading across the SSS recursion boundary (the
+		// integrator's BSSRDF continuation) keeps its suppression state.
+		// The RGB PerformOperation above already forwards these; the NM
+		// twin previously dropped them (relied on the false/false
+		// defaults), double-counting spectral SMS+SSS+glass+emitter
+		// paths.  Codex review Finding 2.
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
+		// Inline OIDN AOV sink parked on rc by the shader-dispatch spectral
+		// rasterizer (PixelBasedSpectralIntegratingRasterizer); NULL otherwise.
+		rc.pAOV,
+		// DL-74 -- see the RGB twin above.
+		rs.MisPartnerPdf(),
+		// DL-185 -- see the RGB twin above.
+		rs.castRRCompensation,
+		false, nullptr, false,
+		// DL-633 -- see the RGB twin above.
+		rs.pNEESelfObject );
 }
 
 
@@ -157,6 +249,11 @@ void PathTracingShaderOp::PerformOperationHWSS(
 	const IScene* pScene = caster.GetAttachedScene();
 	if( !pScene ) return;
 
+	// DL-451: shader-op HWSS explicitly retains legacy SMS until the
+	// whole dispatch chain has a per-lane extended-domain contract. Keep
+	// direct callers consistent with CastRayHWSS; the integrator warns once
+	// per solver and the scope restores the caller's mode on return.
+	const SMSLegacyModeScope smsMode( rc, true );
 	IndependentSampler sampler( rc.random );
 	IORStack localIorStack( ior_stack );
 
@@ -168,5 +265,17 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth, result );
+		0, rs.glossyFilterWidth, result, rc.pAOV,
+		// DL-74 -- see the RGB twin above.  The HWSS body has no guiding
+		// block of its own, but it still CONSUMES the incoming partner.
+		rs.MisPartnerPdf(),
+		// DL-196 -- see the RGB/NM twins above (DL-185).  Inert today:
+		// the only production caller of `CastRayHWSS` passes a default-
+		// constructed `RAY_STATE` (`rs.castRRCompensation == 1.0`), so
+		// this closes the training-consistency gap without moving any
+		// rendered pixel.
+		rs.castRRCompensation,
+		0,
+		// DL-633 -- see the RGB twin above.
+		rs.pNEESelfObject );
 }

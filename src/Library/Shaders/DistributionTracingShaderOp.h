@@ -34,7 +34,6 @@ namespace RISE
 			Scalar dOVNumSamples;
 			const bool bUseIrradianceCache;
 			const bool bForceCheckEmitters;
-			const bool bBranch;
 			const bool bTraceReflection;
 			const bool bTraceRefraction;
 			const bool bTraceDiffuse;
@@ -43,11 +42,10 @@ namespace RISE
 			bool ShouldTraceRay( const ScatteredRay::ScatRayType type ) const;
 
 		public:
-			DistributionTracingShaderOp( 
-				const unsigned int numSamples_, 
+			DistributionTracingShaderOp(
+				const unsigned int numSamples_,
 				const bool irradiancecaching,
 				const bool forcecheckemitters,
-				const bool branch,
 				const bool reflections,
 				const bool refractions,
 				const bool diffuse,
@@ -61,7 +59,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [in/out] Resultant color from op
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 
@@ -74,7 +72,7 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar caccum,						///< [in] Current value for wavelength
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 

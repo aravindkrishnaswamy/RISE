@@ -1,0 +1,123 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           hair_furnace.RISEscene                                                                 #
+#   Description:    WHITE FURNACE for the Chiang hair BCSDF at render level (docs/HAIR_FUR_DESIGN.md       #
+#                    section 7 Phase-1 gate).  `sigma_a` is bound to a scalar_painter at 0.0 (Tier 2,       #
+#                    direct absorption override) so every one of R/TT/TRT/residual attenuates by exactly    #
+#                    1.0 -- a groom with NO absorption inside a spatially-uniform unit-radiance             #
+#                    environment must scatter every photon it receives back out, so the rendered strands    #
+#                    should read at the SAME luminance as the surrounding environment (mean image           #
+#                    luminance ~= 1.0).  A dimmer render means a lobe's energy is leaking (a dropped p>3    #
+#                    residual term, a normalisation bug in M_p/N_p, or an incorrect pdf causing biased      #
+#                    importance sampling).  This is the render-level twin of HairBSDFTest's SPF-side        #
+#                    furnace identity (RunFurnace/RunFurnaceCorners) -- that test proves the BCSDF's own    #
+#                    kray integrates to 1, THIS scene proves the same fact survives geometry generation,    #
+#                    the h/tangent plumbing, and a full PT integration.  HairRenderTest.cpp's               #
+#                    "White furnace" assertion group renders an equivalent scene in-process (RGB and        #
+#                    spectral, both hwss settings) and checks the measured mean against a tolerance          #
+#                    derived from MC noise at its sample count -- this file is the human-renderable/         #
+#                    CST-golden-covered companion, not itself sample-count-tuned for a tight assertion.     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      August 27, 2026                                                                         #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+film
+{
+	width			64
+	height			64
+}
+
+pinhole_camera
+{
+	location		0 0 3.2
+	lookat			0 0 0
+	up			0 1 0
+	fov			32.0
+}
+
+##################################################
+# Env: uniform L=1.0 in every direction -- the furnace enclosure.
+# Must be declared BEFORE the rasterizer chunk that references it by
+# name (named-painter refs resolve at parse time, not finalisation).
+##################################################
+uniformcolor_painter
+{
+	name			pnt_env
+	color			1.0 1.0 1.0
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			64
+	radiance_map		pnt_env
+	radiance_scale		1.0
+	radiance_background	TRUE
+	rr_min_depth		12
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/hair_furnace
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# The groom: sigma_a = 0 (Tier 2, direct override) -- zero absorption
+# at every wavelength, every lobe.  beta_m/beta_n left at their 0.3
+# defaults (mid-roughness, not a corner case -- the corners are
+# HairBSDFTest's job).
+##################################################
+scalar_painter
+{
+	name			pnt_sigma_a_zero
+	value			0.0
+}
+
+hair_material
+{
+	name			mat_furnace_hair
+	sigma_a			pnt_sigma_a_zero
+}
+
+##################################################
+# base_geometry is grown-on but never itself rendered (no
+# standard_object binds `scalp`) -- the furnace measurement must
+# see only fibres, not the scalp's own (nonexistent) material.
+##################################################
+sphere_geometry
+{
+	name			scalp
+	radius			1.0
+}
+
+hair_geometry
+{
+	name			furnace_groom
+	base_geometry		scalp
+	count			3000
+	segments		6
+	length			0.22
+	width_root		0.03
+	width_tip		0.01
+	base_detail		24
+	seed			7
+}
+
+standard_object
+{
+	name			groom_obj
+	geometry		furnace_groom
+	material		mat_furnace_hair
+	position		0 0 0
+}

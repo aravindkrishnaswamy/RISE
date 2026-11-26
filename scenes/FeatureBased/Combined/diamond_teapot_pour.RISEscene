@@ -1,0 +1,1033 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:           diamond_teapot_pour.RISEscene
+#   Description:    Showcase + stress test.  Polished marble teapot floats above a dark wood table,
+#                   tilted as if pouring; a cascade of ~50 dispersive-diamond mini-teapots streams from
+#                   its spout to the table top.  Single bezier-patch geometry instanced ~51 times.
+#                   Recessed pot lights in the ceiling provide warm directional illumination.  Rendered
+#                   with VCM to capture S-D-S-E caustics through the diamond stream.
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      April 28, 2026
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+vcm_pel_rasterizer
+{
+	samples				64
+	max_eye_depth		128
+	max_light_depth		128
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter		gaussian
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/diamond_teapot_pour
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera (pinhole — keeps the diamond cascade sharp)
+##################################################
+
+film
+{
+	width			350
+	height			500
+}
+
+pinhole_camera
+{
+	location			1.06256 1.38004 1.04797
+	lookat				0 1.15948 -0.0180852
+	up					0  1  0
+	fov					54
+
+	theta				3.54561
+	phi					-157.018
+}
+
+##################################################
+# Painters (colors + procedural patterns)
+##################################################
+
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Marble — high-contrast veining
+uniformcolor_painter
+{
+	name				pnt_marble_dark
+	color				0.35 0.32 0.30
+}
+perlin3d_painter
+{
+	name				pnt_marble
+	colora				color_white
+	colorb				pnt_marble_dark
+	persistence			0.62
+	octaves				5
+	scale				4 4 4
+	shift				0 0 0
+}
+
+# Diamond — per-channel IOR for chromatic dispersion in RGB
+
+# Dark wood — worley colors must be painter references
+uniformcolor_painter
+{
+	name				pnt_wood_dark
+	color				0.18 0.10 0.05
+}
+uniformcolor_painter
+{
+	name				pnt_wood_light
+	color				0.32 0.18 0.08
+}
+worley3d_painter
+{
+	name				pnt_wood
+	colora				pnt_wood_dark
+	colorb				pnt_wood_light
+	jitter				1.0
+	metric				euclidean
+	output				f1
+	scale				3 1 0.5
+	shift				0 0 0
+}
+
+# Walls (light gray)
+uniformcolor_painter
+{
+	name				pnt_walls
+	color				0.72 0.72 0.74
+	colorspace			RISERGB
+}
+
+# Pot-light fixture face (slightly off-white, emissive)
+uniformcolor_painter
+{
+	name				pnt_fixture
+	color				1.0 0.92 0.78
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+# Legacy phase 2 slice B2: substrate of `marble_mat` (was polished_material reflectance).
+lambertian_material
+{
+	name				marble_mat_base
+	reflectance			pnt_marble
+}
+
+# Legacy phase 2 slice B2: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `marble_mat_base`; coat_weight = tau 1, coat_ior 1.5, coat_roughness 1/sqrt(2*512+1) = 0.03123 (SCENE_CONVENTIONS 11.5).
+coated_material
+{
+	name				marble_mat
+	base				marble_mat_base
+	coat_weight			1
+	coat_ior			1.5
+	coat_roughness		0.03123
+}
+
+dielectric_material
+{
+	name				diamond_mat
+	tau			0.999
+	ior			2.4 2.42 2.45
+	scattering			10000
+}
+
+lambertian_material
+{
+	name				wood_mat
+	reflectance			pnt_wood
+}
+
+lambertian_material
+{
+	name				table_mat
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				walls_mat
+	reflectance			pnt_walls
+}
+
+lambertian_luminaire_material
+{
+	name				fixture_lum_mat
+	exitance			pnt_fixture
+	scale				10000.0
+	material			none
+}
+
+##################################################
+# Geometry — single bezier load reused 51 times
+##################################################
+
+bezierpatch_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	maxpatches			2
+	maxdepth			7
+	bsp					TRUE
+	center_object		TRUE
+}
+
+# Room walls (clippedplane, default doublesided so winding errors don't kill the render)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					 1.5  0.0 -1.5
+	ptb					-1.5  0.0 -1.5
+	ptc					-1.5  0.0  1.5
+	ptd					 1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					 1.5  2.5  1.5
+	ptb					-1.5  2.5  1.5
+	ptc					-1.5  2.5 -1.5
+	ptd					 1.5  2.5 -1.5
+}
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					 1.5  0.0 -1.5
+	ptb					 1.5  2.5 -1.5
+	ptc					-1.5  2.5 -1.5
+	ptd					-1.5  0.0 -1.5
+}
+clippedplane_geometry
+{
+	name				fwallgeom
+	pta					-1.5  0.0  1.5
+	ptb					-1.5  2.5  1.5
+	ptc					 1.5  2.5  1.5
+	ptd					 1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					-1.5  0.0 -1.5
+	ptb					-1.5  2.5 -1.5
+	ptc					-1.5  2.5  1.5
+	ptd					-1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					 1.5  0.0  1.5
+	ptb					 1.5  2.5  1.5
+	ptc					 1.5  2.5 -1.5
+	ptd					 1.5  0.0 -1.5
+}
+
+# Table — single thin slab, top surface at y=0.78
+box_geometry
+{
+	name				tablegeom
+	width				2.0
+	height				0.06
+	depth				2.0
+}
+
+# Pot-light fixture face (one geometry, four instances)
+circulardisk_geometry
+{
+	name				fixturegeom
+	radius				0.01
+	axis				z
+}
+
+##################################################
+# Room + table objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			walls_mat
+}
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				fwall
+	geometry			fwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			walls_mat
+}
+
+standard_object
+{
+	name				table
+	geometry			tablegeom
+	material			wood_mat
+	position			0  0.65  0
+	orientation			0  0  0
+	scale				1  1  1
+}
+
+##################################################
+# The marble teapot (large, tilted forward as if pouring)
+##################################################
+
+standard_object
+{
+	name				marble_teapot
+	geometry			teapotgeom
+	material			marble_mat
+	position			0.6  1.55  -0.15
+	orientation			0  180  -50
+	scale				0.13  0.13  0.13
+}
+
+##################################################
+# Streaming diamond teapots — quadratic Bezier from spout to splash
+# P_start  ≈ marble spout tip (estimated; refine after smoke test)
+# P_ctrl   = arc midpoint, biased toward gravity
+# P_end    = splash point on table top (y=0.81 = table top + small clearance)
+##################################################
+
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.000000000000*0.000000000000 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0000
+		geometry		teapotgeom
+		material		diamond_mat
+		position		0.090000000000 1.300000000000 -0.210000000000
+		orientation		0.000000000000 0.000000000000 0.000000000000
+		scale			0.012000000000 0.012000000000 0.012000000000
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.242535625036*0.242535625036 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0001
+		geometry		teapotgeom
+		material		diamond_mat
+		position		0.047809718377 1.160557056352 -0.169547241170
+		orientation		102.857142857143 229.090909090909 110.769230769231
+		scale			0.014910427500 0.014910427500 0.014910427500
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.342997170285*0.342997170285 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0002
+		geometry		teapotgeom
+		material		diamond_mat
+		position		0.025509807925 1.110280129203 -0.158414570402
+		orientation		257.142857142857 130.909090909091 249.230769230769
+		scale			0.016115966043 0.016115966043 0.016115966043
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.420084025208*0.420084025208 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0003
+		geometry		teapotgeom
+		material		diamond_mat
+		position		0.006482354118 1.062263310365 -0.157610085379
+		orientation		154.285714285714 65.454545454545 55.384615384615
+		scale			0.017041008302 0.017041008302 0.017041008302
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.485071250073*0.485071250073 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0004
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.010851151481 1.035885354531 -0.112623894106
+		orientation		51.428571428571 294.545454545455 193.846153846154
+		scale			0.017820855001 0.017820855001 0.017820855001
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.542326144547*0.542326144547 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0005
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.027102130825 1.018068365560 -0.154521934519
+		orientation		205.714285714286 163.636363636364 304.615384615385
+		scale			0.018507913735 0.018507913735 0.018507913735
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.594088525786*0.594088525786 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0006
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.042584158316 0.976095904137 -0.093204659403
+		orientation		308.571428571429 32.727272727273 166.153846153846
+		scale			0.019129062309 0.019129062309 0.019129062309
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.641688947920*0.641688947920 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0007
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.057483511533 0.966685977654 -0.105023885980
+		orientation		14.693877551020 261.818181818182 27.692307692308
+		scale			0.019700267375 0.019700267375 0.019700267375
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.685994340570*0.685994340570 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0008
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.071921560621 0.963174637488 -0.123958552568
+		orientation		117.551020408163 196.363636363636 138.461538461538
+		scale			0.020231932087 0.020231932087 0.020231932087
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.727606875109*0.727606875109 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0009
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.085982609574 0.902455482777 -0.031324076454
+		orientation		271.836734693878 98.181818181818 276.923076923077
+		scale			0.020731282501 0.020731282501 0.020731282501
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.766964988847*0.766964988847 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0010
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.099728039615 0.902783969655 -0.156462072372
+		orientation		168.979591836735 327.272727272727 83.076923076923
+		scale			0.021203579866 0.021203579866 0.021203579866
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.804399666540*0.804399666540 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0011
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.113204188610 0.908188086788 -0.048684288648
+		orientation		66.122448979592 20.826446280992 221.538461538462
+		scale			0.021652795998 0.021652795998 0.021652795998
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.840168050417*0.840168050417 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0012
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.126447056470 0.855768450797 -0.079526053109
+		orientation		220.408163265306 249.917355371901 332.307692307692
+		scale			0.022082016605 0.022082016605 0.022082016605
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.874474632195*0.874474632195 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0013
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.139485272036 0.865663804562 -0.117189941202
+		orientation		323.265306122449 151.735537190083 8.520710059172
+		scale			0.022493695586 0.022493695586 0.022493695586
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.907485212973*0.907485212973 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0014
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.152342047463 0.880258327555 0.022821163488
+		orientation		36.734693877551 86.280991735537 119.289940828402
+		scale			0.022889822556 0.022889822556 0.022889822556
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.939336436628*0.939336436628 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0015
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.165036512893 0.821038660899 -0.173353228964
+		orientation		139.591836734694 315.371900826446 257.751479289941
+		scale			0.023272037240 0.023272037240 0.023272037240
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 0.970142500145*0.970142500145 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0016
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.045819950020 0.839570273335 -0.017883082330
+		orientation		293.877551020408 184.462809917355 63.905325443787
+		scale			0.023641710002 0.023641710002 0.023641710002
+	}
+
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as 1.000000000000*1.000000000000 so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+
+	standard_object
+	{
+		name			diamond_0017
+		geometry		teapotgeom
+		material		diamond_mat
+		position		-0.050000000000 0.862592592593 -0.066800000000
+		orientation		191.020408163265 53.553719008264 202.366863905325
+		scale			0.024000000000 0.024000000000 0.024000000000
+	}
+
+
+##################################################
+# Pot lights (4) — recessed in a 2×2 grid above the table
+# spot_light inner/outer are HALF-angles in degrees.
+# Visible disc fixture is placed slightly ABOVE the spot light origin so the
+# light is not occluded by its own fixture geometry.
+##################################################
+/*
+spot_light
+{
+	name				pot1
+	power				200
+	color				1.0 0.92 0.78
+	position			-0.5  2.495  -0.5
+	target				-0.2  0.78   -0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot2
+	power				200
+	color				1.0 0.92 0.78
+	position			 0.5  2.495  -0.5
+	target				 0.2  0.78   -0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot3
+	power				200
+	color				1.0 0.92 0.78
+	position			-0.5  2.495   0.5
+	target				-0.2  0.78    0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot4
+	power				200
+	color				1.0 0.92 0.78
+	position			 0.5  2.495   0.5
+	target				 0.2  0.78    0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+*/
+
+spot_light
+{
+	name				pot1
+	power				500
+	color				1.0 0.92 0.78
+	colorspace			sRGB
+	position			0  2.495  0
+	target				-0.05  0   -0.05
+	inner				15
+	outer				25
+	shootphotons		true
+}
+
+# Visible fixture discs (just above each spot light's origin)
+standard_object
+{
+	name				pot1_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			-0.5  2.499  -0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot2_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			 0.5  2.499  -0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot3_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			-0.5  2.499   0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot4_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			 0.5  2.499   0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+
+

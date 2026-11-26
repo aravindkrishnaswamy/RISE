@@ -1,0 +1,349 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           sponza_new_ivy.RISEscene                                                                #
+#   Description:    Loads Intel/Khronos's New Sponza (NewSponza_Main_glTF_003.gltf) — the                   #
+#                   modern, PBR-textured rebuild of the classic Crytek Sponza atrium.                       #
+#                   ~155 nodes, dozens of unique materials, full PBR (baseColor + metallic-                 #
+#                   roughness + normal + emissive maps) for every surface.                                  #
+#                                                                                                           #
+#                   The asset itself is NOT in this repo (it's ~1.5 GB of textures + buffer).               #
+#                   Download once from Intel's GitHub mirror or Khronos's glTF-Sample-Assets:               #
+#                                                                                                           #
+#                       https://github.com/KhronosGroup/glTF-Sample-Assets                                  #
+#                       https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-       #
+#                                            research/samples.html                                          #
+#                                                                                                           #
+#                   This scene file expects the asset at:                                                   #
+#                                                                                                           #
+#                     C:/Users/micro/Downloads/main_sponza/main_sponza/                                     #
+#                       ├── NewSponza_Main_glTF_003.gltf                                                    #
+#                       ├── NewSponza_Main_glTF_003.bin                                                     #
+#                       └── textures/                                                                       #
+#                            └── *.png  (137 files — albedo / metalness / roughness / normal)               #
+#                                                                                                           #
+#                   Update the `file` parameter in the `gltf_import` block below to point at                #
+#                   wherever you put the .gltf.                                                             #
+#                                                                                                           #
+#                   What you should see in a healthy render:                                                #
+#                     - The familiar Sponza atrium viewed from outside the entrance, looking                #
+#                       down the colonnaded hall.                                                           #
+#                     - Stone arches with normal-mapped detail; gilded ornament_doors with                  #
+#                       crisp metallic highlights; wooden door + plaster walls with diffuse                 #
+#                       roughness; lamps emissive-glowing.                                                  #
+#                     - Sun streaming in from the open ceiling; soft sky-fill on the shadowed               #
+#                       side; ambient bounce filling the deep interior.                                     #
+#                                                                                                           #
+#                   Asset conventions:                                                                      #
+#                     - Y-up (the "Yup" suffix in the filename).  Eye level ≈ 1.6 m.                        #
+#                     - Atrium runs along the X axis; entrance at -X, back wall at +X.                      #
+#                     - Columns and arches are along Z (the colonnade depth).                               #
+#                     - Asset's bundled lights are all intensity=0 (the artists left lighting               #
+#                       to the renderer); we wake them via lights_intensity_override below                 #
+#                       and add a sky_dome environment radiance_map for fill.                              #
+#                     - Asset's bundled cameras are all valid; we still override with our own               #
+#                       pinhole below so the framing matches PhysCamera001 (the canonical                   #
+#                       hero shot) without depending on quaternion-import correctness.                      #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Scene-level options.  Sponza is authored in
+# metres, which is RISE's default scene_unit (1.0),
+# so this declaration is documentation more than
+# a real conversion -- but it pins the convention
+# in case scene_unit's default ever changes.
+##################################################
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+##################################################
+# Hosek-Wilkie analytic sun-and-sky (Landing 3.D) —
+# matches the base `sponza_new.RISEscene`; see
+# the long comment there for the rationale.
+##################################################
+
+hosek_wilkie_skylight
+{
+	solar_elevation		60.0
+	solar_azimuth		135.0
+	turbidity			3.0
+	sky_intensity_scale	1.0
+	sun_intensity_scale	3.14
+	create_sun			TRUE
+}
+
+##################################################
+# Shader.  Path tracing -- the atrium has a single
+# directional sun streaming through the open ceiling,
+# and the entire interior is lit by indirect bounces
+# off the walls / floor / column ornament.  Direct
+# lighting alone (DefaultDirectLighting) leaves the
+# colonnade depths black; path tracing is the right
+# integrator for an interior of this geometry-to-
+# light-source ratio.  DefaultPathTracing is the
+# stock recursive-eye-walk PT shaderop.
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+##################################################
+# Rasterizer + output.  pathtracing_pel_rasterizer
+# at 64 spp, 640x360 for iteration speed (bump
+# samples to 256+ and resolution to 1280x720 for a
+# final-quality render).  The radiance_map is the
+# sky_dome painter above; radiance_background TRUE
+# makes the open ceiling actually show the sky
+# colour rather than rendering as black, AND lets
+# rays that exit through the ceiling pick up the
+# sky's contribution.  radiance_scale tunes the
+# overall sky brightness; ~3.0 here because the
+# sky is the ONLY light source (the earlier
+# directional sun + ambient_light fill have been
+# retired in favour of pure environment lighting).
+##################################################
+
+pathtracing_pel_rasterizer
+{
+    samples                       32
+    radiance_background           TRUE
+    pathguiding                   TRUE
+    pathguiding_online            TRUE
+    pathguiding_warmup_iterations 2
+    pathguiding_iterations        6
+}
+
+##################################################
+# HDR primary output (Landing 1).  EXR is the
+# integrator's verbatim output: linear ROMM-primaries
+# radiance, half-float, PIZ-compressed.  No exposure,
+# no display transform.  This is the radiometric
+# ground truth — use it as the source of truth for
+# variance / RMSE comparisons across PB pipeline
+# landings, and for external colour-managed
+# compositing (Nuke + OCIO, Resolve, etc.).
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new_ivy
+	type				EXR
+	color_space			ROMMRGB_Linear
+	exr_compression		piz
+}
+
+##################################################
+# PNG display preview.  sRGB OETF only — radiance
+# values from the by-eye light calibration above
+# already land in display range, so no exposure or
+# tone curve is needed here.
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new_ivy
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Bulk import the entire .gltf.
+#
+#   - import_meshes/materials/normal_maps: TRUE
+#     (the whole point of the scene)
+#   - import_cameras: TRUE -- the asset declares 6
+#     PhysCamera nodes (PhysCamera001..006); each
+#     becomes an alternative camera under the name
+#     `sponza.cam.PhysCamera001` etc.  The user can
+#     SetActiveCamera at runtime to switch hero
+#     shots.  Pre-multi-camera-CL this was forced
+#     FALSE because we could only carry one camera;
+#     post-CL the asset's six-shot reel is a feature.
+#     The hand-placed pinhole below is added AFTER
+#     this chunk and therefore wins active-camera
+#     status via RISE's last-added-wins auto-promote
+#     rule -- the importer's own SetActiveCamera
+#     during the walk only reorders within the
+#     gltf_import chunk's contribution.  The 6
+#     PhysCamera entries are switchable extras.
+#   - import_lights: TRUE -- the asset carries 24
+#     KHR_lights_punctual entries (1 white directional
+#     "sun" placeholder, 1 white point, 21 warm-orange
+#     point lights for the colonnade lamp fixtures, +
+#     one variant warm point) all authored at
+#     intensity=0 by Khronos convention ("lighting is
+#     up to the renderer").  We pair this with
+#     `lights_intensity_override` below to wake the
+#     dormant fixtures up uniformly so the warm-orange
+#     oil lamps actually contribute -- they give the
+#     atrium the trademark warm pools-of-light against
+#     the cool sky environment.
+#   - lowmem_textures: TRUE -- the texture set is
+#     137 PBR PNGs (~2.6 GB on disk).  Without this,
+#     load time is dominated by libpng decode +
+#     sRGB->linear conversion across the whole set
+#     (~60-80 s on this corpus).  TRUE defers the
+#     color-space conversion to per-sample at render
+#     time, dropping load to ~5 s at the cost of
+#     ~25% per-sample render-time overhead (the
+#     sRGB->linear decode moves from load-time to
+#     ray-hit time, where the cost is spread out and
+#     partially hidden by other shading work).  This
+#     is the right knob for iteration on a scene
+#     this large; flip back to FALSE for a one-shot
+#     high-spp final render where total wall-clock
+#     favours the upfront-decode path.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/main_sponza/main_sponza/NewSponza_Main_glTF_003.gltf
+	name_prefix			sponza
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		TRUE
+	import_lights		TRUE
+	# By-eye uniform light override.  All 24 of the asset's
+	# bundled lights (1 directional + 23 points) ship at
+	# intensity=0 (Khronos convention: "lighting is up to
+	# the renderer").  100.0 wakes them all uniformly to a
+	# level that pairs well with radiance_scale=40 above.
+	lights_intensity_override	100.0
+	lowmem_textures		TRUE
+}
+
+##################################################
+# Sponza ivy growth add-on (Intel Sponza addon pack
+# `pkg_b_ivy`).  Loaded as a SECOND `gltf_import`
+# after the base atrium — the chunk parser supports
+# any number of glTF imports as long as each carries
+# a unique `name_prefix` (created geometry / material
+# / object / texture entries inherit the prefix to
+# keep the manager namespaces clean).  Ivy is
+# authored to fit the base atrium's coordinates 1:1,
+# so no transform is needed.
+#
+# Asset specifics:
+#  - 2 materials: `IvyLeaf` (basecolour + normal +
+#    metalness + roughness) and `Lianas` (the
+#    woody vines).
+#  - 2 meshes / 2 nodes / 1 scene; standard PBR
+#    metallicRoughness, no KHR extensions, all
+#    `alphaMode = OPAQUE` (the leaves are full
+#    polygons rather than alpha-cut planes).
+#  - Asset has no lights or cameras of its own, so
+#    `import_lights = FALSE` / `import_cameras =
+#    FALSE` keeps the base scene's light + camera
+#    configuration intact.
+#  - Same `lowmem_textures = TRUE` as the base for
+#    matching load-time / per-sample-cost trade-off.
+#
+# Sibling scene `sponza_new.RISEscene` is the base
+# atrium without this block — load that one when
+# rendering the canonical hero shot.  Sibling
+# `sponza_new_curtains.RISEscene` swaps this addon
+# for the curtains pack.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/pkg_b_ivy1/pkg_b_ivy/NewSponza_IvyGrowth_glTF.gltf
+	name_prefix			sponza_ivy
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		FALSE
+	import_lights		FALSE
+	lowmem_textures		TRUE
+}
+
+##################################################
+# Cameras.  Two hand-authored pinhole cameras, both
+# framed to put the ivy front-and-centre — they're
+# variations on the same vantage point (eye-level
+# inside the atrium, looking up at the entrance arch
+# where the ivy actually drapes).  The asset's six
+# PhysCameraNNN nodes are also imported by the base
+# `gltf_import` block above and remain available
+# under `sponza.cam.PhysCamera001`..`006`, but none
+# of them frame the ivy: the scene's canonical
+# PhysCamera001 looks down the colonnade away from
+# the entrance, and PhysCamera006 (the closest to
+# the ivy bbox) targets the back wall, not the ivy
+# above the entrance arch.
+#
+# RISE camera-precedence rule: cameras are added in
+# parse order; the LAST chunk added wins active-
+# camera status by default (see `gltf_import`
+# documentation in the base scene file).  At
+# runtime, switch via `SetActiveCamera <name>` —
+# both cameras are always available regardless of
+# which is the default.
+#
+# Camera reel (default = `ivy_arch_zoom`):
+#   `ivy_arch_wide` — fov 58.5°, sweeping arch view
+#                     with ceiling sky framing the
+#                     ivy on both sides.
+#   `ivy_arch_zoom` — fov 40°, tighter framing on
+#                     the ivy mass itself.  Default.
+##################################################
+
+# Wide arch view — added FIRST so it's NOT the default.
+film
+{
+	width			640
+	height			360
+}
+
+pinhole_camera
+{
+	name				ivy_arch_wide
+	location			-3.0  1.6  0.0
+	lookat				-7.0 10.0  0.0
+	up					 0.0  1.0  0.0
+	fov					58.5
+}
+
+# Tighter zoom on the ivy mass — added LAST so it's the
+# default when the scene loads.
+pinhole_camera
+{
+	name				ivy_arch_zoom
+	location			-3.0  1.6  0.0
+	lookat				-7.0  9.0  0.0
+	up					 0.0  1.0  0.0
+	fov					40.0
+}
+
+##################################################
+# Lighting.  All of the asset's bundled lights are
+# intensity=0, so we light the scene ourselves.
+#
+# This scene's only light source is the sky_dome
+# radiance_map declared on the rasterizer above.
+# An earlier revision had a directional sun with
+# power 3.5 plus an ambient_light fill -- both have
+# been retired in favour of pure environment-light
+# illumination via the radiance_map (PT-correct,
+# integrator samples it through NEE, no ambient
+# hack).  The trade-off: no hot rectangular sun
+# shafts on the floor, but a cleaner uniform
+# diffuse-sky look that converges faster at low spp
+# and matches what the open-ceiling atrium would
+# look like under heavy overcast.  Bump
+# radiance_scale on the rasterizer to brighten;
+# colour the sky_dome painter to tint.
+##################################################
+

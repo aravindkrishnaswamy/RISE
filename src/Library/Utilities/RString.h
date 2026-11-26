@@ -17,6 +17,8 @@
 
 #include <vector>
 #include <ctype.h>			// for toupper
+#include <cstdio>			// for sscanf
+#include <cstring>			// for strlen / strcpy
 
 namespace RISE
 {
@@ -55,6 +57,13 @@ namespace RISE
 
 		const char* c_str() const
 		{
+			// Empty String → empty vector → begin() == end(), so
+			// dereferencing begin() is UB.  In Debug builds MSVC's
+			// checked iterators assert; in Release it returns a
+			// garbage pointer that callers (e.g. CopyToBuf in
+			// RISE_API.cpp) then read until they find a stray null.
+			// Hand back a static empty C string for that case.
+			if( empty() ) return "";
 			return (const char*)(&(*(begin())));
 		}
 
@@ -72,7 +81,7 @@ namespace RISE
 			if( strlen( sz ) != strlen(c_str()) ) {
 				return false;
 			}
-			return ( strcmp( (const char*)(&(*(begin()))), sz ) == 0 );
+			return ( strcmp( c_str(), sz ) == 0 );
 		}
 
 		void concatenate( const char* s )
@@ -118,7 +127,7 @@ namespace RISE
 		bool toBoolean() const
 		{
 			// If the first character is a t, then its true, otherwise false
-			return (toupper(*(begin())) == 'T');
+			return (toupper(c_str()[0]) == 'T');
 		}
 
 		char toChar() const

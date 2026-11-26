@@ -1,0 +1,1354 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  VCMRasterizerBase.cpp - Implementation of the VCM rasterizer
+//    base class.
+//
+//    Step 6 drops the VCM light pass into PreRenderSetup.  The
+//    call order inside PixelBasedRasterizerHelper::RasterizeScene is:
+//
+//      1. Create image + scratch
+//      2. pCaster->AttachScene( scene )
+//      3. pScene.GetObjects()->PrepareForRendering()
+//      4. PreRenderSetup( scene, rect )        <-- we hook here
+//      5. Block-dispatch loop calling IntegratePixel per pixel
+//         (this is the VCM eye pass; IntegratePixel queries the
+//         LightVertexStore populated in step 4)
+//      6. Resolve / flush outputs
+//
+//    Step 6 keeps the eye pass as the Step 0 solid-color placeholder
+//    so we can validate:
+//      - Light subpaths generate without crashing
+//      - Post-walk produces LightVertex records
+//      - Store accepts them and builds its KD-tree
+//      - Memory stays within the plan's budget
+//
+//    Step 7 onward fills in IntegratePixel with the real VC/VM
+//    evaluation that reads the store.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 14, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include "../Utilities/RenderParallelScope.h"
+#include "VCMRasterizerBase.h"
+#include "../Interfaces/IOptions.h"
+#include "../Interfaces/IScene.h"
+#include "../Interfaces/ICamera.h"
+#include "../Interfaces/IRayCaster.h"
+#include "../Interfaces/IRasterImage.h"
+#include "../Utilities/RuntimeContext.h"
+#include "../Utilities/SobolSampler.h"
+#include "../Utilities/Threads/Threads.h"
+#include "../Utilities/ThreadPool.h"
+#include "AdaptiveTileSizer.h"
+#include "FrameStore.h"  // L6d-2a — FrameStoreBulkBracket RAII guard
+#include "../Lights/LightSampler.h"
+#include "../Shaders/BDPTIntegrator.h"
+#include "../Shaders/BDPTVertex.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Managers/ObjectManager.h"
+#include "../RasterImages/RasterImage.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <vector>
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+VCMRasterizerBase::VCMRasterizerBase(
+	IRayCaster* pCaster_,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const Scalar mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
+	const StabilityConfig& stabilityCfg,
+	RISE::Implementation::FrameStore* frameStore
+	) :
+	PixelBasedRasterizerHelper( pCaster_ ),
+	BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
+	pIntegrator( 0 ),
+	pLightVertexStore( 0 ),
+	mBaseMergeRadius( 0 ),
+	mCurrentMergeRadius( 0 ),
+	mMergeRadiusFloor( 0 ),
+	mGeometricRadiusFloor( 0 ),
+	mMergeRadiusPassCount( 0 ),
+	mBaseVolumeRadius( 0 ),
+	mCurrentVolumeRadius( 0 ),
+	mVolumeRadiusPassCount( 0 ),
+	mVolumeStoreProbability( 1 ),
+	mVolumeThinSeed( 0 ),
+	mRadiusShrinkAlpha( Scalar( 2.0 ) / Scalar( 3.0 ) ),
+	mTargetPhotonsPerQuery( Scalar( 20 ) ),
+	// `vcm_disable_progressive_radius=true` in global.options (or via
+	// RISE_OPTIONS_FILE) reverts to fixed-radius SmallVCM — used for
+	// benchmarking + regression comparison.
+	mProgressiveRadiusEnabled(
+		!GlobalOptions().ReadBool( "vcm_disable_progressive_radius", false ) ),
+	// Throughput clamp tuning.  Defaults: 99th-percentile threshold,
+	// 20× multiplier — clamps only the brightest ~1% of photons and
+	// only when they exceed 20× the bulk distribution's tail.  Tuned
+	// to suppress SSS-induced fireflies without measurably biasing
+	// well-behaved scenes.  Override via global options
+	// `vcm_throughput_clamp_percentile` (0..1) and
+	// `vcm_throughput_clamp_multiplier` (>0; 0 disables).
+	mThroughputClampPercentile(
+		GlobalOptions().ReadDouble( "vcm_throughput_clamp_percentile", 0.99 ) ),
+	mThroughputClampMultiplier(
+		GlobalOptions().ReadDouble( "vcm_throughput_clamp_multiplier", 20.0 ) )
+{
+	pIntegrator = new VCMIntegrator(
+		maxEyeDepth,
+		maxLightDepth,
+		mergeRadius,
+		enableVC,
+		enableVM,
+		stabilityCfg );
+	pLightVertexStore = new LightVertexStore();
+}
+
+VCMRasterizerBase::~VCMRasterizerBase()
+{
+	safe_release( pIntegrator );
+	delete pLightVertexStore;
+	pLightVertexStore = 0;
+	// pSplatFilm and pScratchImage are released by the
+	// BidirectionalRasterizerBase destructor.
+}
+
+bool VCMRasterizerBase::ValidateSceneForRasterizer( const IScene& pScene ) const
+{
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		const unsigned int pdMask = pObjMgr->ComputeScenePathDependence( &offender );
+		if( pdMask != 0u ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"VCMRasterizerBase:: Refusing scene with non-physical path/view-dependent inputs or "
+				"spatially varying subsurface mix weights (first object '%s', mask=0x%x). "
+				"Use pathtracing_pel_rasterizer or pathtracing_spectral_rasterizer.",
+				offender.c_str(), pdMask );
+			return false;
+		}
+	}
+	return true;
+}
+
+namespace
+{
+	//////////////////////////////////////////////////////////////////////
+	// LightPassDispatcher — parallel dispatcher for VCM light-pass
+	// subpath generation + conversion.
+	//
+	// Pixels are divided into blocks; each worker thread pulls blocks
+	// from an atomic counter, generates subpaths with its own
+	// RuntimeContext and SobolSampler, and accumulates converted
+	// LightVertex records into a thread-local buffer.  After all
+	// threads join, the main thread concatenates the per-thread
+	// buffers into the shared store in deterministic index order.
+	//////////////////////////////////////////////////////////////////////
+	struct LightPassDispatcher
+	{
+		const IScene&			scene;
+		const IRayCaster&		caster;
+		BDPTIntegrator*			pGen;
+		const VCMNormalization&	norm;
+		const unsigned int		width;
+		const unsigned int		height;
+		const unsigned int		maxLightDepth;
+		const uint32_t			baseSampleIndex;	// Sobol index base (= passIdx × samplesPerSuperIter)
+		const unsigned int		samplesPerSuperIter;	// K — sub-samples within one super-iteration
+
+		std::vector<Rect>		tiles;
+		std::atomic<unsigned int>	nextTile;
+
+		// DL-625 review: per-tile RNG seeds, as RasterizeBlockDispatcher.
+		// Workers used to default-construct their generator, each calling
+		// libc rand() concurrently (a data race), and which seed served
+		// which tile depended on scheduling.  One value is read on the
+		// constructing thread; each tile reseeds from (value, tile corner).
+		const unsigned int		tileSeedBase;
+
+		// Per-thread output buffers (one per worker).
+		std::vector<std::vector<LightVertex>>	perThreadOutput;
+		// DL-470: each worker's light-subpath step records, in fixed-size
+		// blocks (a subpath's records never straddle two) so the light pass
+		// carries at most one block of growth slack per worker; adopted by
+		// the store as chunks (LightVertexStore::Concat).
+		std::vector<std::vector<std::vector<VCMStep>>>	perThreadStepBlocks;
+		static constexpr std::size_t kStepBlockRecords = 65536;	// 2 MB
+		std::vector<unsigned long long>			perThreadPathsShot;
+
+		struct ThreadLocal {
+			std::vector<BDPTVertex>			tmpLightVerts;
+			std::vector<LightVertex>		tmpConverted;
+			std::vector<VCMMisQuantities>	tmpLightMis;
+			std::vector<VCMStep>			tmpSteps;		// DL-470: one subpath's records
+			unsigned long long				pathsShot = 0;
+			unsigned long long				storedCount = 0;
+		};
+
+		LightPassDispatcher(
+			const IScene& scene_,
+			const IRayCaster& caster_,
+			BDPTIntegrator* pGen_,
+			const VCMNormalization& norm_,
+			const unsigned int width_,
+			const unsigned int height_,
+			const unsigned int maxLightDepth_,
+			const uint32_t baseSampleIndex_,
+			const unsigned int samplesPerSuperIter_,
+			const unsigned int numWorkers
+			) :
+			scene( scene_ ),
+			caster( caster_ ),
+			pGen( pGen_ ),
+			norm( norm_ ),
+			width( width_ ),
+			height( height_ ),
+			maxLightDepth( maxLightDepth_ ),
+			baseSampleIndex( baseSampleIndex_ ),
+			samplesPerSuperIter( std::max( 1u, samplesPerSuperIter_ ) ),
+			nextTile( 0 ),
+			tileSeedBase( LockedLibcRand() ),
+			perThreadOutput( numWorkers ),
+			perThreadStepBlocks( numWorkers ),
+			perThreadPathsShot( numWorkers, 0 )
+		{
+			// Block the pixel grid into tiles.  Tile size adapts to
+			// image × thread count so small scenes / high core counts
+			// still decompose into ≥8 tiles per thread.
+			const unsigned int TILE = ComputeTileSize(
+				width, height, numWorkers, 8, 8, 64 );
+			for( unsigned int y = 0; y < height; y += TILE ) {
+				for( unsigned int x = 0; x < width; x += TILE ) {
+					const unsigned int right  = std::min( x + TILE - 1, width - 1 );
+					const unsigned int bottom = std::min( y + TILE - 1, height - 1 );
+					// Rect( top, left, bottom, right )
+					tiles.push_back( Rect( y, x, bottom, right ) );
+				}
+			}
+		}
+
+		bool GetNextBlock( Rect& rc )
+		{
+			const unsigned int idx = nextTile.fetch_add( 1, std::memory_order_relaxed );
+			if( idx >= tiles.size() ) {
+				return false;
+			}
+			rc = tiles[idx];
+			return true;
+		}
+
+		void RunWorker( unsigned int workerIdx )
+		{
+			// Each worker has its own RNG (for RR) and scratch buffers;
+			// the RNG is reseeded per tile below.
+			RandomNumberGenerator localRng( tileSeedBase );
+			RuntimeContext rc( localRng, RuntimeContext::PASS_NORMAL, true );
+
+			ThreadLocal tl;
+			tl.tmpLightVerts.reserve( maxLightDepth + 1 );
+			tl.tmpConverted.reserve( maxLightDepth + 1 );
+			tl.tmpLightMis.reserve( maxLightDepth + 1 );
+
+			std::vector<LightVertex>& out = perThreadOutput[workerIdx];
+			// Estimate: only a fraction of subpaths deposit a vertex
+			// (typically 1-2 non-delta surface hits per subpath), and
+			// the store gets at most ~one vertex per subpath on
+			// average.  Reserve that much per worker to amortize
+			// std::vector growth without over-committing memory.
+			const std::size_t pixelsPerWorker =
+				( static_cast<std::size_t>( width ) * height +
+				  std::max<std::size_t>( 1, perThreadOutput.size() ) - 1 ) /
+				std::max<std::size_t>( 1, perThreadOutput.size() );
+			const std::size_t estimatedPerWorker =
+				pixelsPerWorker * samplesPerSuperIter * 2;	// ~2 verts/subpath avg
+			out.reserve( estimatedPerWorker );
+
+			Rect rect( 0, 0, 0, 0 );
+			while( GetNextBlock( rect ) )
+			{
+				const unsigned int tileSeed = DeriveSeed( tileSeedBase,
+					( static_cast<unsigned long long>( rect.top ) << 32 ) | static_cast<unsigned long long>( rect.left ) );
+				localRng.Reseed( tileSeed );
+				ScopedMediumTileSeed mediumSeed( tileSeed );
+				for( unsigned int y = rect.top; y <= rect.bottom; y++ )
+				{
+					for( unsigned int x = rect.left; x <= rect.right; x++ )
+					{
+						const uint32_t pixelSeed = y * width + x;
+
+						// Generate K sub-samples per pixel for this
+						// super-iteration.  Each sub-sample uses a
+						// distinct Sobol sample index so photons land
+						// at different positions across sub-samples.
+						for( unsigned int k = 0; k < samplesPerSuperIter; k++ )
+						{
+							const uint32_t sampleIdx = baseSampleIndex + k;
+							SobolSampler sampler( sampleIdx, pixelSeed );
+
+							tl.tmpLightVerts.clear();
+							static thread_local std::vector<uint32_t> tmpLightSubpathStarts;
+                            // Count the independent emission proposal, including a
+                            // rejected alpha endpoint or an empty continuation.
+                            // Any branches belong to this same emission attempt.
+                            ++tl.pathsShot;
+                            pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random );
+                            if( tl.tmpLightVerts.empty() ) {
+                                continue;
+                            }
+
+							tl.tmpConverted.clear();
+							tl.tmpSteps.clear();
+							VCMIntegrator::ConvertLightSubpath(
+								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis,
+								VCMIntegrator::SeeThroughLive( caster ), &tl.tmpSteps, pGen );
+							// DL-470: move the subpath's records into the worker's
+							// current block; the vertices index (block, offset).
+							if( !tl.tmpSteps.empty() ) {
+								std::vector<std::vector<VCMStep>>& blocks = perThreadStepBlocks[workerIdx];
+								if( blocks.empty() ||
+									blocks.back().size() + tl.tmpSteps.size() > blocks.back().capacity() ) {
+									blocks.emplace_back();
+									blocks.back().reserve( std::max( kStepBlockRecords, tl.tmpSteps.size() ) );
+								}
+								const std::size_t off = blocks.back().size();
+								blocks.back().insert( blocks.back().end(), tl.tmpSteps.begin(), tl.tmpSteps.end() );
+								for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+									LightVertex& lv = tl.tmpConverted[m];
+									if( lv.stepBase != kLightVertexNoSteps && blocks.size() <= 0xFFFFu ) {
+										lv.stepBase += static_cast<unsigned int>( off );
+										lv.stepChunk = static_cast<unsigned short>( blocks.size() - 1 );
+									} else {
+										lv.stepBase = kLightVertexNoSteps;
+									}
+								}
+							}
+							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+								out.push_back( tl.tmpConverted[m] );
+								tl.storedCount++;
+							}
+						}
+					}
+				}
+			}
+
+			perThreadPathsShot[workerIdx] = tl.pathsShot;
+		}
+	};
+
+	// Returns total pathsShot across all workers.  After this call,
+	// dispatcher.perThreadOutput[i] holds that worker's LightVertex
+	// buffer — the caller concatenates them into the shared store in
+	// index order for determinism.
+	unsigned long long RunLightPassParallel(
+		LightPassDispatcher& dispatcher,
+		unsigned int numWorkers
+		)
+	{
+		if( numWorkers <= 1 ) {
+			// Single-threaded fallback.
+			dispatcher.RunWorker( 0 );
+			return dispatcher.perThreadPathsShot[0];
+		}
+
+		ThreadPool& pool = GlobalThreadPool();
+		// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
+		// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
+		RenderParallelScope renderParallelScope;
+		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int workerIdx ) {
+			dispatcher.RunWorker( workerIdx );
+		} );
+
+		unsigned long long totalPaths = 0;
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			totalPaths += dispatcher.perThreadPathsShot[i];
+		}
+		return totalPaths;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Eye-side merge footprint (DL-319).
+//
+// The merge kernel blurs the image at the scale of the merge radius,
+// and VCM merging is CONSISTENT, not unbiased: a radius wider than the
+// features the image resolves is a bias, not noise (a 0.14-wide patch
+// under a 0.19 radius read 0.62 of its closed form).  The quantity that
+// says what the image resolves is the EYE side's pixel footprint at the
+// surfaces it merges on, so this traces one eye subpath per pixel of a
+// grid, walks it through pure-delta interfaces to the first vertex
+// EvaluateMergesImpl would merge at (SURFACE, material, isConnectible),
+// and measures the world-space pixel spacing there from the camera
+// ray's differentials propagated as a ray cone along the path length
+// (the cone ignores the curvature of the delta interfaces it crosses;
+// at a flat refraction into index n it overestimates the in-medium
+// part by up to n, toward the old, larger radius).
+//
+// The median over the grid is what PreRenderSetup clips the
+// light-segment radius to.  Why the pixel footprint is also the right
+// NOISE scale: a pass shoots W x H light subpaths, and the visible
+// region's area is ~W x H footprints squared, so a radius of k
+// footprints holds ~ pi k^2 x (light vertices landing in the visible
+// region per light subpath) photons per query -- independent of the
+// image resolution and of the enclosure size, which is exactly what
+// the light-segment median is not.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	//! DL-469: does the scene have any participating medium (a global
+	//! one, or an object's interior medium)?  Gates the volume merge's
+	//! pre-pass so a scene without media renders exactly as before.
+	bool SceneHasMedium( const IScene& scene )
+	{
+		if( scene.GetGlobalMedium() ) {
+			return true;
+		}
+		struct MediumScan : public IEnumCallback<IObject>
+		{
+			bool found;
+			MediumScan() : found( false ) {}
+			bool operator()( const IObject& obj )
+			{
+				if( obj.GetInteriorMedium() ) {
+					found = true;
+					return false;
+				}
+				return true;
+			}
+		};
+		const IObjectManager* objs = scene.GetObjects();
+		if( !objs ) {
+			return false;
+		}
+		MediumScan scan;
+		objs->EnumerateObjects( scan );
+		return scan.found;
+	}
+
+	struct EyeMergeFootprint
+	{
+		std::size_t	samples = 0;		///< eye rays traced
+		std::size_t	mergeable = 0;		///< reached a merge vertex with a usable footprint
+		Scalar		medianFootprint = 0;	///< world-space pixel spacing there (median)
+		std::size_t	medium = 0;			///< DL-469: reached a medium scatter first (through delta surfaces only)
+		Scalar		medianMediumFootprint = 0;	///< DL-469: pixel spacing at that medium vertex (median)
+	};
+
+	EyeMergeFootprint EstimateEyeMergeFootprint(
+		const IScene& scene,
+		const IRayCaster& caster,
+		const ICamera& camera,
+		const BDPTIntegrator& gen,
+		const RuntimeContext& rc,
+		const unsigned int width,
+		const unsigned int height
+		)
+	{
+		EyeMergeFootprint out;
+		if( width == 0 || height == 0 ) {
+			return out;
+		}
+
+		// At most ~16k eye rays: the pass stays small next to the
+		// W x H light pre-pass that runs beside it (+20-30 ms at 1 spp
+		// on the shipped caustic scenes, once per render).
+		const std::size_t kTarget = 16384;
+		const std::size_t pixels = static_cast<std::size_t>( width ) * height;
+		unsigned int stride = 1;
+		while( pixels / ( static_cast<std::size_t>( stride ) * stride ) > kTarget ) {
+			stride++;
+		}
+
+		std::vector<Scalar> footprints;
+		footprints.reserve( pixels / ( static_cast<std::size_t>( stride ) * stride ) + 1 );
+		std::vector<Scalar> mediumFootprints;
+		std::vector<BDPTVertex> verts;
+		std::vector<uint32_t> starts;
+
+		for( unsigned int y = stride / 2; y < height; y += stride )
+		{
+			for( unsigned int x = stride / 2; x < width; x += stride )
+			{
+				const Point2 ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
+				Ray cameraRay;
+				if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
+					continue;
+				}
+				out.samples++;
+				if( !cameraRay.hasDifferentials ) {
+					continue;
+				}
+
+				SobolSampler sampler( 0, y * width + x );
+				verts.clear();
+				gen.GenerateEyeSubpath( rc, cameraRay, ptOnScreen, scene, caster, sampler, verts, starts, 0 );
+
+				// Walk pure-delta interfaces (non-connectible surfaces) to
+				// the first merge vertex.  Anything else first (a medium
+				// scatter, an emitter) ends the walk unrecorded: a
+				// scattered path has no pixel footprint.
+				Scalar pathLength = 0;
+				Point3 prev = cameraRay.origin;
+				for( std::size_t k = 1; k < verts.size(); k++ )
+				{
+					const BDPTVertex& v = verts[k];
+					pathLength += Vector3Ops::Magnitude( Vector3Ops::mkVector3( v.position, prev ) );
+					prev = v.position;
+					if( v.type == BDPTVertex::MEDIUM ) {
+						// DL-469: the volume merge's resolution scale.
+						const RayDifferentials& d = cameraRay.diffs;
+						const Scalar fx = Vector3Ops::Magnitude( d.rxOrigin + d.rxDir * pathLength );
+						const Scalar fy = Vector3Ops::Magnitude( d.ryOrigin + d.ryDir * pathLength );
+						const Scalar fp = Scalar( 0.5 ) * ( fx + fy );
+						if( fp > 0 && std::isfinite( fp ) ) {
+							mediumFootprints.push_back( fp );
+							out.medium++;
+						}
+						break;
+					}
+					if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+						break;
+					}
+					if( !v.isConnectible ) {
+						continue;
+					}
+					const RayDifferentials& d = cameraRay.diffs;
+					const Scalar fx = Vector3Ops::Magnitude( d.rxOrigin + d.rxDir * pathLength );
+					const Scalar fy = Vector3Ops::Magnitude( d.ryOrigin + d.ryDir * pathLength );
+					const Scalar fp = Scalar( 0.5 ) * ( fx + fy );
+					if( fp > 0 && std::isfinite( fp ) ) {
+						footprints.push_back( fp );
+						out.mergeable++;
+					}
+					break;
+				}
+			}
+		}
+
+		if( !footprints.empty() ) {
+			std::nth_element( footprints.begin(),
+				footprints.begin() + footprints.size() / 2, footprints.end() );
+			out.medianFootprint = footprints[footprints.size() / 2];
+		}
+		if( !mediumFootprints.empty() ) {
+			std::nth_element( mediumFootprints.begin(),
+				mediumFootprints.begin() + mediumFootprints.size() / 2, mediumFootprints.end() );
+			out.medianMediumFootprint = mediumFootprints[mediumFootprints.size() / 2];
+		}
+		return out;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// PreRenderSetup — VCM light pass
+//
+// The initial light pass is parallelized via LightPassDispatcher.
+// The auto-radius pre-pass remains single-threaded (it runs once
+// before the store-build and collects segment-length statistics
+// into a shared vector; keeping it single-threaded is simpler than
+// merging per-thread segLens arrays and this pre-pass is only ~1%
+// of total time).
+//////////////////////////////////////////////////////////////////////
+void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+{
+	if( !pIntegrator || !pLightVertexStore ) {
+		return;
+	}
+
+	ResetFluxAccumulators();
+
+	// Plumb the ray caster's light sampler into the BDPT
+	// generator that VCM wraps.  Mirrors what BDPTRasterizerBase
+	// does at the top of its RasterizeScene, which never runs for
+	// VCM because we inherit PixelBasedRasterizerHelper directly.
+	const LightSampler* pLS = pCaster ? pCaster->GetLightSampler() : 0;
+	pIntegrator->SetLightSampler( pLS );
+
+	// Force 1 SPP per progressive pass.  Super-iteration batching
+	// (K > 1) was tested and found to scale merge evaluation cost
+	// by K× because photon density grows K× but merge radius stays
+	// fixed.  SPPM-style radius-reduction-per-K would counter this
+	// (√K radius shrink keeps candidate count constant) but is a
+	// v3 feature.  For v2, keep K=1 matching the original paper.
+	if( pIntegrator->GetEnableVM() ) {
+		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.samplesPerPass = 1;
+		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.enabled = true;
+	}
+
+	// DL-462: the second field of an interlaced frame keeps the splat
+	// film and the adaptive counter (both fields compose in the frame's
+	// single flush); the light pass below still re-runs at the field's
+	// own time.
+	const bool continuing = mContinuingInterlacedFrame && pSplatFilm;
+
+	// Reset the adaptive sample counter for this render.
+	if( !continuing ) {
+		mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
+	}
+
+	// Snapshot the active camera once — structural changes serialize
+	// against rendering per the IScenePriv.h contract.
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		return;
+	}
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+	ConfigureSplatRegion( pRect, width, height );
+	// Composition scratch for previews: prepared here, single-threaded,
+	// never inside the (possibly concurrent) GetIntermediateOutputImage.
+	EnsureCompositionScratch( width, height );
+
+	// PreRenderSetup runs ONE light pass to populate the photon
+	// store used by VM merging.  The t=1 splat strategy is handled
+	// per eye sample inside IntegratePixel (mirroring BDPT), so it
+	// does NOT use the subpaths generated here — only the merge
+	// store does.
+	const unsigned int lightSubpathsPerPixel = 1;
+
+	BDPTIntegrator* pGen = pIntegrator->GetGenerator();
+	if( !pGen ) {
+		return;
+	}
+
+	// Splat film for t=1 light-to-camera contributions.  Needed
+	// regardless of VM state (VC's t=1 splat goes through here).
+	if( !continuing ) {
+		safe_release( pSplatFilm );
+		pSplatFilm = new SplatFilm( width, height );
+	}
+
+	// VM-disabled: skip the entire light vertex store build.
+	// VC's t=1 splats are generated per-sample in IntegratePixel,
+	// not from this prepass, so VC-only mode needs no store.
+	if( !pIntegrator->GetEnableVM() ) {
+		mBaseVolumeRadius = 0;	// DL-469: the volume merge is a merging strategy too
+		mCurrentVolumeRadius = 0;
+		mVCMNormalization = ComputeNormalization(
+			width, height,
+			Scalar( 0 ),
+			pIntegrator->GetEnableVC(),
+			false );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+
+		mSplatTotalSamples = 1.0;
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
+		}
+		mSplatTotalSamples *= GetSplatSampleScale();
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"VCMRasterizerBase::PreRenderSetup:: VM disabled — "
+			"skipping light vertex store build" );
+		return;
+	}
+
+	pLightVertexStore->Clear();
+	pLightVertexStore->Reserve(
+		static_cast<std::size_t>( width ) *
+		static_cast<std::size_t>( height ) *
+		static_cast<std::size_t>( pIntegrator->GetMaxLightDepth() + 1 ) );
+
+	std::vector<BDPTVertex> tmpLightVerts;
+	std::vector<LightVertex> tmpConverted;
+	std::vector<VCMMisQuantities> tmpLightMis;
+	tmpLightVerts.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	tmpConverted.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	tmpLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+
+	// Single-threaded: one RuntimeContext, reused across all pixels.
+	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+	PrepareRuntimeContext( rc );
+
+	// DL-469: the volume-merge radius (VCMIntegrator.cpp, "volume
+	// merging"), from the density of the medium light vertices it
+	// merges with: their per-pass count n over their bounding volume V
+	// gives a ball holding kVolumeTargetNeighbours of them on average,
+	// r_v = cbrt( 3 K V / (4 pi n) ), clipped to a few pixel footprints
+	// (below, after the merge-radius pre-pass, which collects the same
+	// light subpaths).  It shrinks per pass (OnProgressivePassBegin).
+	mBaseVolumeRadius = 0;
+	mCurrentVolumeRadius = 0;
+	mVolumeRadiusPassCount = 0;
+	mVolumeStoreProbability = 1;
+	mVolumeThinSeed = 0;
+	const bool sceneHasMedium = SceneHasMedium( pScene );
+	const unsigned int prepassMediumSeed = sceneHasMedium ? LockedLibcRand() : 0u;
+	ScopedMediumTileSeed prepassMediumScope( prepassMediumSeed, sceneHasMedium );
+	std::size_t mediumCount = 0;
+	Point3 mediumMin( 0, 0, 0 ), mediumMax( 0, 0, 0 );
+	auto accumulateMediumVertices = [&]( const std::vector<BDPTVertex>& verts ) {
+		for( std::size_t k = 1; k < verts.size(); k++ ) {
+			if( verts[k].type != BDPTVertex::MEDIUM || !verts[k].isConnectible ) {
+				continue;
+			}
+			const Point3& p = verts[k].position;
+			if( mediumCount == 0 ) {
+				mediumMin = mediumMax = p;
+			} else {
+				mediumMin.x = std::min( mediumMin.x, p.x ); mediumMax.x = std::max( mediumMax.x, p.x );
+				mediumMin.y = std::min( mediumMin.y, p.y ); mediumMax.y = std::max( mediumMax.y, p.y );
+				mediumMin.z = std::min( mediumMin.z, p.z ); mediumMax.z = std::max( mediumMax.z, p.z );
+			}
+			mediumCount++;
+		}
+	};
+	// With a user radius the pre-pass below does not run; shoot its
+	// subpaths here instead (one per pixel, sample index 0 -- the same
+	// ones the pre-pass shoots).
+	if( sceneHasMedium && pIntegrator->GetRequestedMergeRadius() > 0 ) {
+		for( unsigned int y = 0; y < height; y++ ) {
+			for( unsigned int x = 0; x < width; x++ ) {
+				SobolSampler sampler( 0, y * width + x );
+				tmpLightVerts.clear();
+				static thread_local std::vector<uint32_t> tmpVolumeStarts;
+				pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpVolumeStarts, rc.random );
+				accumulateMediumVertices( tmpLightVerts );
+			}
+		}
+	}
+
+	// Determine the merge radius.  If the user supplied a positive
+	// radius, use it directly.  Otherwise run a pre-pass over the
+	// light subpaths to derive an auto-radius.
+	Scalar effectiveMergeRadius = pIntegrator->GetRequestedMergeRadius();
+	if( pIntegrator->GetEnableVM() && effectiveMergeRadius <= 0 )
+	{
+		std::vector<Scalar> segLens;
+		segLens.reserve( static_cast<std::size_t>( width ) *
+		                 static_cast<std::size_t>( height ) * 4 );
+
+		bool foundSpecular = false;
+
+		for( unsigned int s = 0; s < lightSubpathsPerPixel; s++ )
+		{
+			for( unsigned int y = 0; y < height; y++ )
+			{
+				for( unsigned int x = 0; x < width; x++ )
+				{
+					const uint32_t pixelSeed = y * width + x;
+					const uint32_t sampleIndex = s;
+					SobolSampler sampler( sampleIndex, pixelSeed );
+
+					tmpLightVerts.clear();
+					static thread_local std::vector<uint32_t> tmpLightSubpathStarts2;
+					// Auto-radius pre-pass: use single-branch subpaths so
+					// segment-length median isn't skewed by branch-crossing
+					// prefix-copy boundaries (which are not real segments).
+					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random );
+					if( s == 0 && sceneHasMedium ) {
+						accumulateMediumVertices( tmpLightVerts );	// DL-469
+					}
+					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
+						const BDPTVertex& curr = tmpLightVerts[k];
+						const BDPTVertex& prevV = tmpLightVerts[k - 1];
+
+						// "foundSpecular" gates whether VM is actually
+						// needed.  Only DELTA SURFACE scatters (specular
+						// reflection / refraction) require VM — those are
+						// the paths NEE cannot sample.  Delta-position
+						// LIGHTS (omni / spot / directional) also have
+						// isDelta=true but they are perfectly NEE-friendly:
+						// NEE samples their position deterministically.
+						// Treating them as "specular" enables VM with an
+						// auto-radius wide enough that VM gets significant
+						// MIS weight on direct-lighting paths, producing
+						// visible photon-density splotches at low spp on
+						// scenes that should converge instantly via NEE.
+						//
+						// NOTE ON `curr.isDelta` BEING A PER-DRAW FLAG
+						// (2026-09-04).  `isDelta` records the lobe THIS
+						// light subpath happened to sample, not a property
+						// of the material.  That is deliberate here: the
+						// loop is a Monte-Carlo estimator of the per-surface
+						// question "can any surface a light path reaches
+						// scatter through a delta lobe?", evaluated over
+						// width x height x lightSubpathsPerPixel subpaths,
+						// so a lobe of selection probability p is detected
+						// with probability 1 - (1-p)^N and the estimate is
+						// exact for any p a scene realistically uses.
+						//
+						// A MIXED delta+continuum material therefore trips
+						// this — `polished_material`'s specular coat, a
+						// Fresnel `composite_material`, and a
+						// `weave_material` with `transmission thin, gap > 0`
+						// all enable VM.  For the first two that is exactly
+						// right (they make real caustics).  For the weave's
+						// undeviated gap pass-through VM buys nothing, so
+						// this is a COST decision, not a correctness one:
+						// with the delta-light NEE partition fixed
+						// (VCMIntegrator::EvaluateNEEImpl's wCamera, same
+						// day), VCM is unbiased on the gap-0.1 backlit
+						// curtain with VM ON — VCM/PT = 0.99990 with VM vs
+						// 0.99985 without, against 1.03704 / 1.02964 before
+						// that fix.  Narrowing the predicate to "the
+						// material is PURELY delta" (`GetBSDF() == 0`) was
+						// considered and REJECTED: it would disable VM for
+						// polished coats and dielectric-over-diffuse
+						// composites, whose GetBSDF() is non-null, losing
+						// their caustics.  An exact per-surface "has any
+						// delta lobe" query would need a new virtual on
+						// every ISPF, changes no scene's VM decision, and
+						// has no measured benefit — see
+						// docs/CLOTH_FABRIC_DESIGN.md §15 debt 24.
+						const bool currIsSpecularSurface =
+							curr.isDelta  && curr.type  == BDPTVertex::SURFACE;
+						const bool prevIsSpecularSurface =
+							prevV.isDelta && prevV.type == BDPTVertex::SURFACE;
+						if( currIsSpecularSurface || prevIsSpecularSurface ) {
+							foundSpecular = true;
+						}
+
+						const bool currStoreable = ( curr.isConnectible && curr.type == BDPTVertex::SURFACE );
+						const bool prevStoreable = ( prevV.isConnectible && prevV.type == BDPTVertex::SURFACE );
+						if( !currStoreable && !prevStoreable ) {
+							continue;
+						}
+						const Vector3 d = Vector3Ops::mkVector3( curr.position, prevV.position );
+						const Scalar len = Vector3Ops::Magnitude( d );
+						if( len > 0 ) {
+							segLens.push_back( len );
+						}
+					}
+				}
+			}
+		}
+
+		if( !foundSpecular ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"VCMRasterizerBase::PreRenderSetup:: no specular "
+				"vertices — disabling VM" );
+			effectiveMergeRadius = 0;
+			// No light pass follows: no store for the volume merge either
+			// (its light prefixes need a non-connectible surface, which a
+			// delta surface would have flagged as specular).
+			mBaseVolumeRadius = 0;
+			mCurrentVolumeRadius = 0;
+
+			mVCMNormalization = ComputeNormalization(
+				width, height, Scalar( 0 ),
+				pIntegrator->GetEnableVC(), false );
+			SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+			mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+
+			mSplatTotalSamples = 1.0;
+			if( ActiveSampling() ) {
+				mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
+			}
+			mSplatTotalSamples *= GetSplatSampleScale();
+
+			GlobalLog()->PrintEx( eLog_Event,
+				"VCMRasterizerBase::PreRenderSetup:: light pass done — "
+				"paths shot=0, light vertices stored=0, kd-tree built=0" );
+			return;
+		}
+		else {
+			// DL-319: what the camera resolves at the vertices it merges on.
+			const EyeMergeFootprint eye = EstimateEyeMergeFootprint(
+				pScene, *pCaster, *pCamera, *pGen, rc, width, height );
+
+			if( segLens.size() >= 8 ) {
+				std::sort( segLens.begin(), segLens.end() );
+				const Scalar medianSeg = segLens[segLens.size() / 2];
+				// Light-side scale: 1 % of the median light segment.  It
+				// knows the photon density but not which surfaces the
+				// image sees.
+				const Scalar rLight = Scalar( 0.01 ) * medianSeg;
+				effectiveMergeRadius = rLight;
+				// Scene-geometric floor: 1/10th of the initial auto-radius.
+				// Prevents progressive shrinkage collapsing to sub-numeric-
+				// precision on pathological scenes.
+				mGeometricRadiusFloor = Scalar( 0.001 ) * medianSeg;
+
+				// Eye-side clip (DL-319): never wider than
+				// kMergeRadiusFootprints pixel footprints at the camera's
+				// merge vertices.  Where the light-side scale is already
+				// that small nothing changes: every shipped VCM scene and
+				// SMS `_ref` twin sits at 1.0-6.2 footprints (diacaustic
+				// 6.2, triplecaustic 3.0, pool 1.8, egg 1.5, SMS refs
+				// 1.0-1.1 -- measured 2026-10-01), so 8 leaves their
+				// hand-tuned noise/blur balance alone.  Where light paths
+				// mostly run to a large enclosure the image never sees
+				// (RefractiveRadianceScalingTest row E in its black room:
+				// ~70 footprints, wider than the receiver), the radius
+				// falls to what the image resolves.  DL-319.
+				const Scalar kMergeRadiusFootprints = Scalar( 8 );
+				const Scalar rEye = kMergeRadiusFootprints * eye.medianFootprint;
+				const bool eyeClipped = eye.mergeable > 0 && rEye > 0 && rEye < rLight;
+				if( eyeClipped ) {
+					effectiveMergeRadius = rEye;
+					mGeometricRadiusFloor = Scalar( 0.1 ) * rEye;
+				}
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"VCMRasterizerBase::PreRenderSetup:: auto-radius "
+					"segments=%zu median_segment=%g light_radius=%g "
+					"eye_footprint=%g (%zu of %zu eye samples) eye_radius=%g "
+					"effective_radius=%g (%s) geom_floor=%g",
+					segLens.size(), (double)medianSeg, (double)rLight,
+					(double)eye.medianFootprint, eye.mergeable, eye.samples, (double)rEye,
+					(double)effectiveMergeRadius, eyeClipped ? "eye-clipped" : "light",
+					(double)mGeometricRadiusFloor );
+			} else {
+				// Not a failure of VCM: the pre-pass found a delta surface
+				// but fewer than 8 light-subpath segments touching a
+				// MERGEABLE (non-delta) surface.  VM is disabled; the VC
+				// strategies are unaffected and stay unbiased
+				// (RefractiveRadianceScalingTest rows B and E read their
+				// closed forms through this branch).  DL-308; the eye
+				// pass says which of the two reasons fired (DL-319).
+				if( eye.mergeable == 0 ) {
+					// e.g. a camera inside a closed dielectric under an
+					// environment light: nothing it sees is diffuse.
+					GlobalLog()->PrintEx( eLog_Warning,
+						"VCMRasterizerBase::PreRenderSetup:: auto-radius: the camera "
+						"sees no mergeable (non-delta) surface (0 of %zu eye samples) "
+						"and only %zu pre-pass light segments reach one (need 8) — "
+						"disabling VM; set merge_radius to force it",
+						eye.samples, segLens.size() );
+				} else {
+					// e.g. a small receiver: the camera sees it, but the
+					// pre-pass's one light subpath per pixel lands on
+					// mergeable surfaces fewer than 8 times.
+					GlobalLog()->PrintEx( eLog_Warning,
+						"VCMRasterizerBase::PreRenderSetup:: auto-radius: the camera "
+						"sees mergeable surfaces (%zu of %zu eye samples) but only %zu "
+						"pre-pass light segments reach a mergeable surface (need 8) — "
+						"too few light paths land there to size a radius; disabling VM; "
+						"set merge_radius to force it",
+						eye.mergeable, eye.samples, segLens.size() );
+				}
+				effectiveMergeRadius = 0;
+			}
+		}
+	}
+
+	// DL-469: the volume-merge radius from the medium vertices collected
+	// above, and the store probability q bounding their memory: the
+	// pre-pass shot one subpath per pixel, i.e. one pass's worth, so
+	// mediumCount estimates the vertices a pass would store; q keeps the
+	// expected stored count at vcm_volume_merge_max_vertices (each stored
+	// vertex costs ~1.2 KB with its share of the KD-tree), and the
+	// radius is sized against the THINNED density.
+	if( mediumCount >= 8 ) {
+		const Scalar dx = mediumMax.x - mediumMin.x, dy = mediumMax.y - mediumMin.y, dz = mediumMax.z - mediumMin.z;
+		const Scalar ext = std::max( dx, std::max( dy, dz ) );
+		const Scalar minExt = Scalar( 1e-3 ) * ext;
+		const Scalar volume = std::max( dx, minExt ) * std::max( dy, minExt ) * std::max( dz, minExt );
+		const Scalar kVolumeTargetNeighbours = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_neighbours", 0.01 ) );
+		const Scalar kMaxStored = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_max_vertices", 250000.0 ) );
+		Scalar q = ( kMaxStored > 0 && static_cast<Scalar>( mediumCount ) > kMaxStored )
+			? kMaxStored / static_cast<Scalar>( mediumCount ) : Scalar( 1 );
+		const double qOverride = TestVolumeStoreProbabilityOverride().load();
+		if( qOverride > 0 && qOverride <= 1 ) {
+			q = static_cast<Scalar>( qOverride );
+		}
+		if( volume > 0 && kVolumeTargetNeighbours > 0 ) {
+			const Scalar rDensity = std::cbrt( Scalar( 3 ) * kVolumeTargetNeighbours * volume /
+				( Scalar( 4 ) * PI * q * static_cast<Scalar>( mediumCount ) ) );
+			// The bounding volume over-states where the vertices are (a
+			// global medium's light walks run far past anything the
+			// camera sees), so the radius is also clipped to what the
+			// image resolves: kVolumeFootprints pixel footprints at the
+			// first medium vertex the eye reaches -- or, when no eye ray
+			// reaches a medium vertex first, at its first mergeable
+			// surface -- and never past 5 % of the vertices' extent.
+			const Scalar kVolumeFootprints = Scalar( GlobalOptions().ReadDouble( "vcm_volume_merge_footprints", 2.0 ) );
+			const EyeMergeFootprint eye = EstimateEyeMergeFootprint(
+				pScene, *pCaster, *pCamera, *pGen, rc, width, height );
+			Scalar rEye = 0;
+			if( eye.medium > 0 ) {
+				rEye = kVolumeFootprints * eye.medianMediumFootprint;
+			} else if( eye.mergeable > 0 ) {
+				rEye = kVolumeFootprints * eye.medianFootprint;
+			}
+			Scalar r = rDensity;
+			if( rEye > 0 && rEye < r ) {
+				r = rEye;
+			}
+			r = std::min( r, Scalar( 0.05 ) * ext );
+			mBaseVolumeRadius = r;
+			mCurrentVolumeRadius = r;
+			mVolumeStoreProbability = q;
+			GlobalLog()->PrintEx( eLog_Event,
+				"VCMRasterizerBase::PreRenderSetup:: volume merge (DL-469): %zu medium "
+				"light vertices per pass, store probability %g, density radius %g, eye radius %g "
+				"(%zu medium / %zu surface of %zu eye samples), radius %g", mediumCount, (double)q,
+				(double)rDensity, (double)rEye, eye.medium, eye.mergeable, eye.samples, (double)r );
+		}
+	}
+
+	// Set up progressive-radius state.  With user-supplied radius, the
+	// geometric floor defaults to 1/10th of it (mirrors the auto path).
+	if( mGeometricRadiusFloor <= 0 && effectiveMergeRadius > 0 ) {
+		mGeometricRadiusFloor = effectiveMergeRadius * Scalar( 0.1 );
+	}
+	mBaseMergeRadius = effectiveMergeRadius;
+	mCurrentMergeRadius = effectiveMergeRadius;
+	mMergeRadiusFloor = mGeometricRadiusFloor;
+	mMergeRadiusPassCount = 0;
+
+
+	// K = 1 (samplesPerPass forced to 1 above).  Normalization uses
+	// W × H (one light subpath per pixel per iteration).
+	const unsigned int samplesPerSuperIter = 1;
+
+	mVCMNormalization = ComputeNormalization(
+		width, height,
+		effectiveMergeRadius,
+		pIntegrator->GetEnableVC(),
+		pIntegrator->GetEnableVM() );
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+	mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+
+	unsigned long long totalStored = 0;
+	unsigned long long pathsShot = 0;
+
+	// DL-463: a motion-blurred frame that will trace each pass at its own
+	// shutter time (WantsPerPassShutterTime: merging on, radius > 0) has
+	// its pass-0 store rebuilt by OnProgressivePassBegin; tracing it here
+	// at the frame time would be thrown away.
+	if( mPerPassShutterTimeCandidate && effectiveMergeRadius > 0 ) {
+		mSplatTotalSamples = 1.0;
+		if( ActiveSampling() ) {
+			mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
+		}
+		mSplatTotalSamples *= GetSplatSampleScale();
+		GlobalLog()->PrintEx( eLog_Info,
+			"VCMRasterizerBase::PreRenderSetup:: per-pass shutter time -- "
+			"the light store is traced at each pass's time" );
+		return;
+	}
+
+	// Parallel light pass — generates K × W × H light subpaths using
+	// distinct Sobol sample indices [0 .. K-1] for super-iteration 0.
+	// Per-thread local buffers are concat'd into the shared store in
+	// deterministic worker-index order.
+	{
+		const unsigned int numWorkers = std::max( 1, HowManyThreadsToSpawn() );
+		LightPassDispatcher dispatcher(
+			pScene, *pCaster, pGen, mVCMNormalization,
+			width, height, pIntegrator->GetMaxLightDepth(),
+			/*baseSampleIndex=*/ 0,
+			samplesPerSuperIter,
+			numWorkers );
+
+		pathsShot = RunLightPassParallel( dispatcher, numWorkers );
+
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			const std::vector<LightVertex>& localBuf = dispatcher.perThreadOutput[i];
+			totalStored += localBuf.size();
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ), std::move( dispatcher.perThreadStepBlocks[i] ) );
+		}
+	}
+
+    // Normalize by independent emission attempts, including empty paths.
+    // Deposits and any branches are not additional emission proposals.
+	if( pathsShot > 0 ) {
+		mVCMNormalization = ComputeNormalization(
+			width, height, effectiveMergeRadius,
+			pIntegrator->GetEnableVC(),
+			pIntegrator->GetEnableVM(),
+			static_cast<Scalar>( pathsShot ) );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+	}
+
+	// Throughput clamping (kept as secondary safeguard).
+	// With per-iteration store rebuild the density noise averages
+	// out, but extreme throughput outliers can still cause fireflies.
+	// to median × 20 to control the worst variance while preserving
+	// caustic structure.
+	{
+		// DL-380: the median is taken over the vertices NOT past an
+		// eye-coverable subsurface jump -- exactly the store the pre-DL-380
+		// partition kept -- so the threshold is unchanged; the vertices
+		// past such a jump (now stored, merged only where the eye walk's
+		// depth caps leave the eye family without a strategy) are clamped
+		// against it like every other.
+		const std::size_t storeSize = pLightVertexStore->Size();
+		std::vector<Scalar> throughputLums;
+		throughputLums.reserve( storeSize );
+		for( std::size_t k = 0; k < storeSize; k++ ) {
+			const LightVertex& lv = pLightVertexStore->Get( k );
+			if( lv.flags & ( kLVF_JumpCover | kLVF_IsMedium ) ) {	// DL-469: volume-merge vertices too
+				continue;
+			}
+			throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+		}
+		if( throughputLums.size() > 16 ) {
+			std::sort( throughputLums.begin(), throughputLums.end() );
+			const Scalar medianThroughput = throughputLums[throughputLums.size() / 2];
+			const Scalar clampThreshold = medianThroughput * Scalar( 20 );
+
+			unsigned long long clamped = 0;
+			if( clampThreshold > 0 ) {
+				for( std::size_t k = 0; k < storeSize; k++ ) {
+					LightVertex& lv = pLightVertexStore->GetMutable( k );
+					// DL-469: a thinned medium vertex carries throughput / q;
+					// judge and cap its PHYSICAL throughput, q * stored, so
+					// the clamp does not tighten as q falls.
+					const Scalar q = ( ( lv.flags & kLVF_IsMedium ) && mVolumeStoreProbability > 0 )
+						? mVolumeStoreProbability : Scalar( 1 );
+					const Scalar maxC = q * ColorMath::MaxValue( lv.throughput );
+					if( maxC > clampThreshold ) {
+						lv.throughput = lv.throughput * ( clampThreshold / maxC );
+						// Rebuild the cached NM-merge spectrum to match --
+						// see LightVertex::throughputSpectrum's comment
+						// (VCMLightVertex.h).
+						lv.throughputSpectrum = VCMIntegrator::LightThroughputSpectrum( lv.throughput );
+						clamped++;
+					}
+				}
+			}
+
+			if( clamped > 0 ) {
+				GlobalLog()->PrintEx( eLog_Info,
+					"VCMRasterizerBase::PreRenderSetup:: throughput clamp "
+					"median=%g threshold=%g clamped=%llu of %zu vertices",
+					(double)medianThroughput, (double)clampThreshold,
+					clamped, storeSize );
+			}
+		}
+	}
+
+	pLightVertexStore->BuildKDTreeParallel();
+
+	mSplatTotalSamples = 1.0;
+	if( ActiveSampling() ) {
+		mSplatTotalSamples = static_cast<Scalar>( ActiveSampling()->GetNumSamples() );
+	}
+	mSplatTotalSamples *= GetSplatSampleScale();
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"VCMRasterizerBase::PreRenderSetup:: light pass done — "
+		"paths shot=%llu, light vertices stored=%llu, kd-tree built=%d",
+		pathsShot,
+		totalStored,
+		(int)pLightVertexStore->IsBuilt() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// OnProgressivePassBegin — rebuild the light vertex store
+//
+// Each progressive pass gets a fresh set of light subpaths so the
+// photon density noise averages across passes instead of persisting
+// from a single fixed store.  Uses passIdx as a seed offset so each
+// pass generates different photon positions.
+//
+// Also shrinks the merge radius using the Hachisuka-Ogaki-Jensen
+// (SPPM) formula r_{n+1} = r_n * sqrt((n+alpha)/(n+1)), clamped from
+// below by mMergeRadiusFloor so shrinkage stops once Poisson noise
+// on photon count per query would dominate bias reduction.
+//
+// Pass 0 is a no-op because PreRenderSetup already built the store.
+//////////////////////////////////////////////////////////////////////
+void VCMRasterizerBase::OnProgressivePassBegin(
+	const IScene& pScene,
+	const unsigned int passIdx
+	) const
+{
+	// Pass 0: PreRenderSetup already built the store -- at the frame
+	// time.  A per-pass shutter time (DL-463) has since moved the scene,
+	// so the store is rebuilt for pass 0 too (without a radius shrink).
+	if( passIdx == 0 && !mPerPassShutterTime ) {
+		return;
+	}
+
+	// Nothing to rebuild if VM is disabled or the integrator is absent.
+	if( !pIntegrator || !pLightVertexStore || !pIntegrator->GetEnableVM() ) {
+		return;
+	}
+	if( mVCMNormalization.mMergeRadiusSq <= 0 && mBaseVolumeRadius <= 0 ) {
+		return;
+	}
+
+	BDPTIntegrator* pGen = pIntegrator->GetGenerator();
+	if( !pGen ) {
+		return;
+	}
+
+	// Snapshot the active camera once — structural changes serialize
+	// against rendering per the IScenePriv.h contract.
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		return;
+	}
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+
+	// ---------------------------------------------------------------
+	// Progressive radius reduction.
+	//
+	// Hachisuka-Ogaki-Jensen SPPM shrinkage:
+	//     r_{n+1}^2 = r_n^2 * (n + alpha) / (n + 1)
+	// with alpha in (0,1).  `n` is the 1-based completed-iteration
+	// count: at the very first shrink call it equals 1 and the factor
+	// is sqrt((1+alpha)/2) ~= 0.913 for alpha=2/3 — NOT sqrt(alpha),
+	// which would be the formula one iteration later.
+	//
+	// We track mMergeRadiusPassCount as that 1-based counter.  Pre-
+	// increment: value before ++ is the previous iteration's n,
+	// post-increment it becomes current n.  Apply the factor
+	// sqrt((n+alpha)/(n+1)) where n is the current value.
+	//
+	// The adaptive floor `mMergeRadiusFloor` caps further shrinkage.
+	// When disabled (`mProgressiveRadiusEnabled=false`) or when the
+	// floor == base, the radius stays at r_0 forever — matches the
+	// prior fixed-radius behavior exactly.
+	// ---------------------------------------------------------------
+	if( passIdx > 0 && mProgressiveRadiusEnabled && mBaseMergeRadius > 0 )
+	{
+		mMergeRadiusPassCount++;
+		const Scalar n = static_cast<Scalar>( mMergeRadiusPassCount );
+		const Scalar alpha = mRadiusShrinkAlpha;
+		const Scalar shrinkFactor = std::sqrt( ( n + alpha ) / ( n + Scalar( 1 ) ) );
+		const Scalar rShrunk = mCurrentMergeRadius * shrinkFactor;
+		const Scalar rClamped = std::max( rShrunk, mMergeRadiusFloor );
+		mCurrentMergeRadius = rClamped;
+	}
+	mVolumeThinSeed = passIdx;	// DL-469: a fresh thinning draw per pass
+	// DL-469: the volume radius shrinks as r^3 ~ (n + alpha) / (n + 1)
+	// (the 3-D analogue of the r^2 rule above), floored at a tenth of r_0.
+	if( passIdx > 0 && mProgressiveRadiusEnabled && mBaseVolumeRadius > 0 )
+	{
+		mVolumeRadiusPassCount++;
+		const Scalar n = static_cast<Scalar>( mVolumeRadiusPassCount );
+		const Scalar shrinkFactor = std::cbrt( ( n + mRadiusShrinkAlpha ) / ( n + Scalar( 1 ) ) );
+		mCurrentVolumeRadius = std::max( mCurrentVolumeRadius * shrinkFactor, Scalar( 0.1 ) * mBaseVolumeRadius );
+	}
+
+	pLightVertexStore->Clear();
+
+	// K = 1 matches the forced samplesPerPass = 1 in PreRenderSetup.
+	// (A pass-0 rebuild at a per-pass shutter time reuses sample index 0.)
+	const unsigned int samplesPerSuperIter = 1;
+	const uint32_t baseSampleIndex = passIdx;
+
+	// Recompute normalization against the current (possibly shrunken)
+	// radius BEFORE generating the light pass; the dispatcher passes
+	// mVCMNormalization into ConvertLightSubpath, which stores the MIS
+	// quantities against this normalization on every LightVertex.
+	mVCMNormalization = ComputeNormalization(
+		width, height, mCurrentMergeRadius,
+		pIntegrator->GetEnableVC(),
+		pIntegrator->GetEnableVM() );
+	SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+	mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+
+	unsigned long long totalStored = 0;
+	unsigned long long pathsShot = 0;
+	{
+		const unsigned int numWorkers = std::max( 1, HowManyThreadsToSpawn() );
+		LightPassDispatcher dispatcher(
+			pScene, *pCaster, pGen, mVCMNormalization,
+			width, height, pIntegrator->GetMaxLightDepth(),
+			baseSampleIndex,
+			samplesPerSuperIter,
+			numWorkers );
+
+		pathsShot = RunLightPassParallel( dispatcher, numWorkers );
+
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			totalStored += dispatcher.perThreadOutput[i].size();
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ), std::move( dispatcher.perThreadStepBlocks[i] ) );
+		}
+	}
+
+    // Same attempted-emission denominator as the initial light pass.
+	if( pathsShot > 0 ) {
+		mVCMNormalization = ComputeNormalization(
+			width, height, mCurrentMergeRadius,
+			pIntegrator->GetEnableVC(),
+			pIntegrator->GetEnableVM(),
+			static_cast<Scalar>( pathsShot ) );
+		SetVolumeMergeRadius( mVCMNormalization, mCurrentVolumeRadius, mVolumeStoreProbability, mVolumeThinSeed );	// DL-469
+		mVCMNormalization.mVolumeObjects = pScene.GetObjects();	// DL-474: borrowed for this frame/pass
+	}
+
+	// Cap outlier photon throughputs before tree balance.  The biased
+	// rescale targets the firefly tail produced by rare bright photons
+	// (notably BSSRDF emergences with small pdfSurface), which under
+	// progressive radius shrinkage become more pronounced as 1/r²
+	// amplifies their per-merge contribution.  Skipped when
+	// mThroughputClampMultiplier == 0 (set via global option).
+	if( pIntegrator->GetEnableVM() && mThroughputClampMultiplier > 0 ) {
+		pLightVertexStore->ClampOutlierThroughputs(
+			mThroughputClampPercentile,
+			mThroughputClampMultiplier,
+			mVolumeStoreProbability );	// DL-469: medium vertices judged un-thinned
+	}
+
+	pLightVertexStore->BuildKDTreeParallel();
+
+	// Update the adaptive radius floor from the just-built store's
+	// photon density.  Target K photons per merge query:
+	//   r_floor_density = sqrt(K / (pi * density))
+	//   density         = storeSize / bboxSurfaceArea
+	// Cap at 0.5 * r_0 so the adaptive floor can never prevent at
+	// least a 2x shrinkage — otherwise pathologically sparse scenes
+	// would freeze at the initial auto-radius.  The geometric floor
+	// (0.001 * medianSegment, set in PreRenderSetup) is the hard
+	// lower bound to avoid sub-numeric-precision collapse.
+	// DL-380: density over the ORDINARY vertices (the store the
+	// pre-DL-380 partition kept), so the floor is unchanged by the
+	// jump-cover vertices stored since.
+	const std::size_t ordinaryStored = ( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 )
+		? pLightVertexStore->CountOrdinaryVertices() : 0;
+	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && ordinaryStored > 0 ) {
+		const Scalar surfaceArea = pLightVertexStore->ComputeBBoxSurfaceArea();
+		if( surfaceArea > NEARZERO ) {
+			const Scalar density = static_cast<Scalar>( ordinaryStored ) / surfaceArea;
+			if( density > NEARZERO ) {
+				const Scalar rFloorRaw = std::sqrt( mTargetPhotonsPerQuery / ( PI * density ) );
+				const Scalar rFloorCapped = std::min( rFloorRaw, mBaseMergeRadius * Scalar( 0.5 ) );
+				mMergeRadiusFloor = std::max( mGeometricRadiusFloor, rFloorCapped );
+			}
+		}
+	}
+    
+	GlobalLog()->PrintEx( eLog_Info,
+		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
+		"rebuilt store with %llu light vertices, %zu step records (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
+		passIdx, totalStored, pLightVertexStore->StepCount(), samplesPerSuperIter,
+		(double)mCurrentMergeRadius, (double)mMergeRadiusFloor,
+		(double)( mBaseMergeRadius > 0 ? mCurrentMergeRadius / mBaseMergeRadius : 1.0 ) );
+}
+
+bool VCMRasterizerBase::WantsPerPassShutterTime() const
+{
+	return pIntegrator && pLightVertexStore && pIntegrator->GetEnableVM() &&
+		( mVCMNormalization.mMergeRadiusSq > 0 || mBaseVolumeRadius > 0 );
+}
+
+// GetIntermediateOutputImage is inherited from BidirectionalRasterizerBase
+// — both algorithms use the same region-only splat composition into a
+// scratch prepared in PreRenderSetup (EnsureCompositionScratch).
+// FlushToOutputs / FlushPreDenoisedToOutputs / FlushDenoisedToOutputs
+// (splat-film composition at flush time) live in
+// BidirectionalRasterizerBase since DL-458 -- BDPT shares them so its
+// animation frames (PixelBasedRasterizerHelper::RasterizeSceneAnimation)
+// composite their t==1 splats exactly like a still render.
+
+
+std::atomic<double>& VCMRasterizerBase::TestVolumeStoreProbabilityOverride()
+{
+	static std::atomic<double> override_( 0.0 );
+	return override_;
+}

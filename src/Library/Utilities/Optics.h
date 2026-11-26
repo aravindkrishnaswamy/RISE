@@ -37,6 +37,13 @@ namespace RISE
 			Vector3& vIn				///< [out] The refracted vector
 			);
 
+		//! Refraction cosine for positive finite indices; false only for TIR or invalid input.
+		//! A critical ray is tangent (cosT == 0); equal media preserve abs(cosI).
+		static bool CalculateRefractedCosine( Scalar cosI, Scalar Ni, Scalar Nt, Scalar& cosT );
+
+		//! Unpolarized dielectric Fresnel from incidence cosine and ordered indices.
+		static Scalar CalculateDielectricReflectanceCosine( Scalar cosI, Scalar Ni, Scalar Nt );
+
 		//! Computes fresnel dielectric reflectance
 		/// \return Dielectric refractance value
 		static Scalar CalculateDielectricReflectance( 

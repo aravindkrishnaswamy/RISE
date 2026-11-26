@@ -20,6 +20,9 @@
 #ifndef UTIL_THREADS_
 #define UTIL_THREADS_
 
+#include <vector>
+#include <cstddef>
+
 namespace RISE
 {
 	typedef unsigned long long RISETHREADID;
@@ -34,14 +37,58 @@ namespace RISE
 	//! Utility thread functions
 	struct Threading
 	{
-		//! Creates and starts a thread running
+		//! Creates and starts a thread running.  `initial_stack_size` is the
+		//! thread's stack size in bytes; 0 means the platform default
+		//! (512 KB for a secondary pthread on macOS, 8 MB on glibc Linux,
+		//! 1 MB on Windows).  Honoured on every platform since DL-315 (the
+		//! pthread build used to ignore it).
 		/// \return 1 if successful, 0 otherwise
-		static unsigned int riseCreateThread( 
-			THREAD_FUNC pFunc, 
-			void* pParam, 
-			unsigned int initial_stack_size, 
-			void* thread_attributes, 
-			RISETHREADID* threadid 
+		static unsigned int riseCreateThread(
+			THREAD_FUNC pFunc,
+			void* pParam,
+			unsigned int initial_stack_size,
+			void* thread_attributes,
+			RISETHREADID* threadid
+			);
+
+		//! Creates a thread that immediately lowers its own priority.
+		//! Kept as a primitive even though GlobalThreadPool no longer
+		//! uses it for any "courtesy" pattern — the legacy background
+		//! mode (force_all_threads_low_priority) is applied via the
+		//! regular thread-start wrapper reading a global option.
+		//! Most render threads DO NOT want this — see
+		//! riseSetThreadLowPriority for the severity warning.
+		/// \return 1 if successful, 0 otherwise
+		static unsigned int riseCreateLowPriorityThread(
+			THREAD_FUNC pFunc,
+			void* pParam,
+			unsigned int initial_stack_size,
+			void* thread_attributes,
+			RISETHREADID* threadid
+			);
+
+		//! Lowers the priority of the calling thread so cross-process
+		//! work is not starved.  WARNING: this is a hard throttle on
+		//! macOS (E-core pinning + P-core frequency cap, ~2–4× real
+		//! throughput loss under load) and should only be applied to
+		//! threads whose purpose is to soak leftover capacity.
+		static void riseSetThreadLowPriority(
+			RISETHREADID threadid
+			);
+
+		//! Mark the calling thread as a render worker.  On macOS this
+		//! applies QOS_CLASS_USER_INITIATED which tells the scheduler
+		//! to prefer P-cores and not throttle them.  Elsewhere this is
+		//! a no-op because affinity does the equivalent job.
+		static void riseSetThreadRenderPriority(
+			RISETHREADID threadid
+			);
+
+		//! Pin the calling thread to the given CPU set (sched_setaffinity
+		//! on Linux, SetThreadSelectedCpuSetMasks on Windows).  No-op on
+		//! macOS — Apple Silicon doesn't expose a thread-affinity API.
+		static void riseSetThreadAffinity(
+			const std::vector<unsigned int>& cpuIds
 			);
 
 		//! Waits for a thread to finish execution
@@ -53,6 +100,13 @@ namespace RISE
 
 		/// \return Handle to the current thread
 		static RISETHREADID riseGetCurrentThread( );
+
+		//! DL-315: bytes of stack still available to the CALLING thread
+		//! below the caller's frame, or SIZE_MAX when the platform cannot
+		//! say.  The stack's low bound is looked up once per thread and
+		//! cached, so a call is a thread-local read and a subtraction.  Any
+		//! guard page is inside the reported region; callers keep a margin.
+		static size_t riseRemainingStackBytes( );
 
 		//! Initializes a structure which threads can use to put themselves to sleep for 
 		//! some period of time

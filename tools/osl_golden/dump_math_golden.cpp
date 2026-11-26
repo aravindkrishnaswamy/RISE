@@ -1,0 +1,312 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  dump_math_golden.cpp - Dump golden values for RISE's `osl_` Safe
+//    Math, Vector Math, Clamp and Map Range builtins
+//    (src/Library/Utilities/OslMath.*) from Cycles' own SVM nodes.
+//    Build and run with tools/osl_golden/dump_math_golden.sh.
+//    Output: tests/data/osl_math_golden.inc.
+//
+//  Tabs: 2
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
+
+#define OSL_DECL(path) \
+  float Math##path(int, float, float, float); \
+  void VectorMath##path(int, const float *, const float *, const float *, float, float *, float *); \
+  float Clamp##path(int, float, float, float); \
+  float MapRange##path(int, int, float, float, float, float, float, float); \
+  void VectorMapRange##path(int, int, const float *, const float *, const float *, const float *, const float *, const float *, float *);
+OSL_DECL(simd)
+OSL_DECL(scalar)
+OSL_DECL(ieee)
+
+namespace {
+
+uint32_t g_state = 0x9e3779b9u;
+uint32_t Next()
+{
+  g_state = g_state * 1664525u + 1013904223u;
+  return g_state;
+}
+void Reseed(unsigned table)
+{
+  g_state = 0x9e3779b9u ^ (table * 0x85ebca6bu);
+}
+float Rand01()
+{
+  return float(Next() >> 8) * (1.0f / 16777216.0f);
+}
+float RandRange(float lo, float hi)
+{
+  return lo + (hi - lo) * Rand01();
+}
+
+void PrintFloat(float v)
+{
+  if (std::isnan(v)) {
+    printf("NAN");
+  }
+  else if (std::isinf(v)) {
+    printf("%sINFINITY", v < 0 ? "-" : "");
+  }
+  else {
+    printf("%a", double(v));
+  }
+}
+
+void PrintVec3(const float *v)
+{
+  printf("{");
+  for (int k = 0; k < 3; ++k) {
+    PrintFloat(v[k]);
+    printf("%s", k + 1 < 3 ? "," : "");
+  }
+  printf("}");
+}
+
+void EmitMathRow(int op, float a, float b, float c)
+{
+  const float rSimd   = Mathsimd(op, a, b, c);
+  const float rScalar = Mathscalar(op, a, b, c);
+  const float rIeee   = Mathieee(op, a, b, c);
+  printf("  {%d,", op);
+  PrintFloat(a); printf(",");
+  PrintFloat(b); printf(",");
+  PrintFloat(c); printf(",");
+  PrintFloat(rSimd); printf(",");
+  PrintFloat(rScalar); printf(",");
+  PrintFloat(rIeee);
+  printf("},\n");
+}
+
+void EmitVecMathRow(int op, const float a[3], const float b[3], const float c[3], float scale)
+{
+  float vs, vsc, vi;
+  float s[3], sc[3], ie[3];
+  VectorMathsimd(op, a, b, c, scale, &vs, s);
+  VectorMathscalar(op, a, b, c, scale, &vsc, sc);
+  VectorMathieee(op, a, b, c, scale, &vi, ie);
+  printf("  {%d,", op);
+  PrintVec3(a); printf(",");
+  PrintVec3(b); printf(",");
+  PrintVec3(c); printf(",");
+  PrintFloat(scale); printf(",");
+  PrintFloat(vs); printf(",");
+  PrintFloat(vsc); printf(",");
+  PrintFloat(vi); printf(",");
+  PrintVec3(s); printf(",");
+  PrintVec3(sc); printf(",");
+  PrintVec3(ie);
+  printf("},\n");
+}
+
+void EmitClampRow(int type, float v, float mn, float mx)
+{
+  const float rs  = Clampsimd(type, v, mn, mx);
+  const float rsc = Clampscalar(type, v, mn, mx);
+  const float ri  = Clampieee(type, v, mn, mx);
+  printf("  {%d,", type);
+  PrintFloat(v); printf(",");
+  PrintFloat(mn); printf(",");
+  PrintFloat(mx); printf(",");
+  PrintFloat(rs); printf(",");
+  PrintFloat(rsc); printf(",");
+  PrintFloat(ri);
+  printf("},\n");
+}
+
+void EmitMapRangeRow(int type, int cl, float v, float fmin, float fmax, float tmin, float tmax, float steps)
+{
+  const float rs  = MapRangesimd(type, cl, v, fmin, fmax, tmin, tmax, steps);
+  const float rsc = MapRangescalar(type, cl, v, fmin, fmax, tmin, tmax, steps);
+  const float ri  = MapRangeieee(type, cl, v, fmin, fmax, tmin, tmax, steps);
+  printf("  {%d,%d,", type, cl);
+  PrintFloat(v); printf(",");
+  PrintFloat(fmin); printf(",");
+  PrintFloat(fmax); printf(",");
+  PrintFloat(tmin); printf(",");
+  PrintFloat(tmax); printf(",");
+  PrintFloat(steps); printf(",");
+  PrintFloat(rs); printf(",");
+  PrintFloat(rsc); printf(",");
+  PrintFloat(ri);
+  printf("},\n");
+}
+
+void EmitVecMapRangeRow(
+    int type, int cl,
+    const float v[3], const float fmin[3], const float fmax[3],
+    const float tmin[3], const float tmax[3], const float steps[3])
+{
+  float rs[3], rsc[3], ri[3];
+  VectorMapRangesimd(type, cl, v, fmin, fmax, tmin, tmax, steps, rs);
+  VectorMapRangescalar(type, cl, v, fmin, fmax, tmin, tmax, steps, rsc);
+  VectorMapRangeieee(type, cl, v, fmin, fmax, tmin, tmax, steps, ri);
+  printf("  {%d,%d,", type, cl);
+  PrintVec3(v); printf(",");
+  PrintVec3(fmin); printf(",");
+  PrintVec3(fmax); printf(",");
+  PrintVec3(tmin); printf(",");
+  PrintVec3(tmax); printf(",");
+  PrintVec3(steps); printf(",");
+  PrintVec3(rs); printf(",");
+  PrintVec3(rsc); printf(",");
+  PrintVec3(ri);
+  printf("},\n");
+}
+
+}  // namespace
+
+int main()
+{
+  const float kNan = std::numeric_limits<float>::quiet_NaN();
+  const float kInf = std::numeric_limits<float>::infinity();
+
+  printf("// Generated by tools/osl_golden/dump_math_golden.sh -- DO NOT EDIT.\n");
+  printf("// See tests/OslMathTest.cpp.\n\n");
+
+  // 1. Scalar Math (41 ops): 8 random + targeted edge cases per op.
+  printf("static const OslMathRow kMathRows[] = {\n");
+  Reseed(101);
+  for (int op = 0; op < 41; ++op) {
+    for (int i = 0; i < 8; ++i) {
+      float a = RandRange(-6.0f, 6.0f);
+      float b = RandRange(-4.0f, 4.0f);
+      float c = RandRange(-3.0f, 3.0f);
+      if (op == 10 && i < 4) {
+        // Negative base with integer and non-integer exponents
+        a = -RandRange(0.2f, 3.0f);
+        b = (i % 2 == 0) ? float(i - 2) : RandRange(-2.5f, 2.5f);
+      }
+      EmitMathRow(op, a, b, c);
+    }
+    // Targeted edge/sign-of-zero/domain-boundary rows per op
+    EmitMathRow(op, 0.0f, 0.0f, 0.0f);
+    EmitMathRow(op, -0.0f, 0.0f, 0.5f);
+    EmitMathRow(op, -0.0f, -0.0f, -0.5f);
+    EmitMathRow(op, -2.5f, 0.0f, 0.25f);
+    EmitMathRow(op, 2.5f, -3.0f, 0.25f);
+    EmitMathRow(op, -1.5f, 2.0f, 0.0f);
+    EmitMathRow(op, 1.5f, 1.5f, 0.0f);
+    EmitMathRow(op, kNan, 1.0f, 0.5f);
+    if (op != 10) {
+      // Skip NaN/Inf exponent on POWER where Cycles has UB float_to_int(b);
+      // POWER's non-finite exponent guard is tested directly in OslMathTest.
+      EmitMathRow(op, 1.0f, kNan, 0.5f);
+      EmitMathRow(op, kInf, 2.0f, 0.5f);
+      EmitMathRow(op, -kInf, 2.0f, 0.5f);
+    }
+    else {
+      EmitMathRow(op, -2.0f, 3.0f, 0.0f);
+      EmitMathRow(op, -2.0f, 2.0f, 0.0f);
+      EmitMathRow(op, -2.0f, 0.5f, 0.0f);
+    }
+  }
+  printf("};\n\n");
+
+  // 2. Vector Math (30 ops): 6 random + edge cases per op.
+  printf("static const OslVecMathRow kVecMathRows[] = {\n");
+  Reseed(202);
+  for (int op = 0; op < 30; ++op) {
+    for (int i = 0; i < 6; ++i) {
+      float a[3] = {RandRange(-4.0f, 4.0f), RandRange(-4.0f, 4.0f), RandRange(-4.0f, 4.0f)};
+      float b[3] = {RandRange(-4.0f, 4.0f), RandRange(-4.0f, 4.0f), RandRange(-4.0f, 4.0f)};
+      float c[3] = {RandRange(-3.0f, 3.0f), RandRange(-3.0f, 3.0f), RandRange(-3.0f, 3.0f)};
+      float s = RandRange(-2.0f, 2.0f);
+      EmitVecMathRow(op, a, b, c, s);
+    }
+    const float z[3] = {0.0f, 0.0f, 0.0f};
+    const float nz[3] = {-0.0f, 0.0f, -0.0f};
+    const float u[3] = {1.5f, -2.25f, 0.0f};
+    const float v[3] = {0.0f, -0.0f, 2.0f};
+    const float w[3] = {-1.0f, 0.5f, 2.5f};
+    const float nanv[3] = {kNan, 1.0f, -2.0f};
+    EmitVecMathRow(op, z, z, z, 0.0f);
+    EmitVecMathRow(op, nz, v, w, -0.0f);
+    EmitVecMathRow(op, u, v, w, 1.5f);
+    EmitVecMathRow(op, u, z, w, 0.66f);
+    if (op != 27) {
+      EmitVecMathRow(op, nanv, w, u, 1.0f);
+    }
+    else {
+      const float negA[3] = {-2.0f, -3.0f, 0.0f};
+      const float expB[3] = {2.0f, 0.5f, 0.0f};
+      EmitVecMathRow(op, negA, expB, w, 1.0f);
+    }
+  }
+  printf("};\n\n");
+
+  // 3. Clamp (2 modes)
+  printf("static const OslClampRow kClampRows[] = {\n");
+  Reseed(303);
+  for (int type = 0; type < 2; ++type) {
+    for (int i = 0; i < 8; ++i) {
+      EmitClampRow(type, RandRange(-3.0f, 3.0f), RandRange(-2.0f, 2.0f), RandRange(-2.0f, 2.0f));
+    }
+    EmitClampRow(type, 0.5f, 1.0f, 0.0f);
+    EmitClampRow(type, -0.0f, 0.0f, 1.0f);
+    EmitClampRow(type, kNan, 0.25f, 0.75f);
+    EmitClampRow(type, kInf, -1.0f, 1.0f);
+    EmitClampRow(type, -kInf, -1.0f, 1.0f);
+  }
+  printf("};\n\n");
+
+  // 4. Scalar Map Range (4 modes x 2 clamp flags)
+  printf("static const OslMapRangeRow kMapRangeRows[] = {\n");
+  Reseed(404);
+  for (int type = 0; type < 4; ++type) {
+    for (int cl = 0; cl < 2; ++cl) {
+      for (int i = 0; i < 5; ++i) {
+        EmitMapRangeRow(
+            type, cl,
+            RandRange(-2.0f, 3.0f),
+            RandRange(-1.0f, 2.0f),
+            RandRange(-1.0f, 2.0f),
+            RandRange(-2.0f, 2.0f),
+            RandRange(-2.0f, 2.0f),
+            RandRange(-1.0f, 6.0f));
+      }
+      // Degenerate fromMin == fromMax, reversed bounds, steps <= 0, NaN
+      EmitMapRangeRow(type, cl, 0.5f, 1.0f, 1.0f, 0.2f, 0.8f, 4.0f);
+      EmitMapRangeRow(type, cl, 0.5f, 1.0f, 0.0f, 2.0f, -1.0f, 4.0f);
+      EmitMapRangeRow(type, cl, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f);
+      EmitMapRangeRow(type, cl, kNan, 0.0f, 1.0f, 0.2f, 0.8f, 4.0f);
+    }
+  }
+  printf("};\n\n");
+
+  // 5. Vector Map Range (4 modes x 2 clamp flags)
+  printf("static const OslVecMapRangeRow kVecMapRangeRows[] = {\n");
+  Reseed(505);
+  for (int type = 0; type < 4; ++type) {
+    for (int cl = 0; cl < 2; ++cl) {
+      for (int i = 0; i < 4; ++i) {
+        float v[3], fmin[3], fmax[3], tmin[3], tmax[3], steps[3];
+        for (int k = 0; k < 3; ++k) {
+          v[k] = RandRange(-2.0f, 3.0f);
+          fmin[k] = RandRange(-1.0f, 2.0f);
+          fmax[k] = RandRange(-1.0f, 2.0f);
+          tmin[k] = RandRange(-2.0f, 2.0f);
+          tmax[k] = RandRange(-2.0f, 2.0f);
+          steps[k] = RandRange(-1.0f, 6.0f);
+        }
+        EmitVecMapRangeRow(type, cl, v, fmin, fmax, tmin, tmax, steps);
+      }
+      const float v0[3] = {0.5f, -0.5f, 1.5f};
+      const float fm[3] = {1.0f, 1.0f, 0.0f};
+      const float fx[3] = {1.0f, 0.0f, 1.0f};
+      const float tm[3] = {0.2f, 2.0f, 0.0f};
+      const float tx[3] = {0.8f, -1.0f, 1.0f};
+      const float st[3] = {0.0f, 3.0f, 4.0f};
+      EmitVecMapRangeRow(type, cl, v0, fm, fx, tm, tx, st);
+    }
+  }
+  printf("};\n");
+  return 0;
+}

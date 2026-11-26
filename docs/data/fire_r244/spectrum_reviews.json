@@ -1,0 +1,41 @@
+{
+  "status": "converged_final_report_and_provenance_zero_P1_P2",
+  "reviewers": [
+    {
+      "name": "r244_wide_preview_review",
+      "P1": 0,
+      "P2": 0,
+      "scope": "All940wide and940baseline hashes; generated-scene byte reconstruction; canonical sidecars, stripped EXR and embedded provenance, PNG primary links, every frame/time/VDB binding and matched profile."
+    },
+    {
+      "name": "r244_spectrum_verdict_review",
+      "P1": 0,
+      "P2": 0,
+      "scope": "Independent native full-spectrum comparison and8192-sample sensitivity; qualified unresolved verdict and next localization scope."
+    }
+  ],
+  "wide_preview_inventory_sha256": "59431c3c68c48690543c5dfeadd8d785885c0cd2e5baaa53398e76d574eb949a",
+  "scene_sha256": "074632abfd066ddf1a66e33b0ef156dded3004c1788b86748b2af1c9cf6a45a4",
+  "limitations": [
+    "Read-only, no new render or simulation. EXR pixel decoding not independently repeated; native consumer completed it.",
+    "Native negative-radiance warnings disclosed in campaign record.",
+    "Centerline resampling sensitivity recorded without changing evidence or gates."
+  ],
+  "report_review_rounds": [
+    {
+      "reviewer": "r244_final_report_review",
+      "reviewed_commit": "a3c8b8bd",
+      "P1": 0,
+      "P2": 1,
+      "finding": "Sensitivity centerline input was not independently hash-bound; fixed before final report publication, with copied-input GREEN and both-variant corruption REDs."
+    },
+    {
+      "reviewer": "r244_r245_final_review",
+      "reviewed_commit": "f58459d6",
+      "P1": 0,
+      "P2": 0,
+      "scope": "Fresh post-fix review; independently reran copied-input gate, all report hashes, FFT grids and sensitivities, pinned station extraction and all480summary rows."
+    }
+  ],
+  "recorded_utc": "2026-09-29T21:57:09.633029+00:00"
+}

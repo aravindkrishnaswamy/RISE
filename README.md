@@ -2,12 +2,19 @@
 
 Contributor map for the Realistic Image Synthesis Engine.
 
-The historical user manual remains in [README.txt](README.txt). This file is the landing page for humans; [AGENTS.md](AGENTS.md) is the shared agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude-compatible shim, and [docs/README.md](docs/README.md) indexes deeper design notes and roadmaps.
+The frozen 2006 user manual remains in [README.txt](README.txt) for historical
+context; its version numbers, platform notes, and commands are not current.
+This file is the landing page for humans; [AGENTS.md](AGENTS.md) is the shared
+agent quickstart, [CLAUDE.md](CLAUDE.md) is the Claude companion and running
+invariant/debt-closure log, [docs/ROADMAP.md](docs/ROADMAP.md) is the current
+next-steps implementation roadmap, and [docs/README.md](docs/README.md) indexes
+current references, active plans, and historical design records.
 
 ## Start Here
 
 - Repo and workflow map: [README.md](README.md)
 - Agent quickstart and invariants: [AGENTS.md](AGENTS.md)
+- Implementation roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Docs catalog and deep dives: [docs/README.md](docs/README.md)
 - Scene taxonomy: [scenes/README.md](scenes/README.md)
 - Core library overview: [src/Library/README.md](src/Library/README.md)
@@ -16,45 +23,136 @@ The historical user manual remains in [README.txt](README.txt). This file is the
 - Curated showcase scenes: [scenes/FeatureBased/README.md](scenes/FeatureBased/README.md)
 - Regression and validation scenes: [scenes/Tests/README.md](scenes/Tests/README.md)
 - Executable tests: [tests/README.md](tests/README.md)
+- Agent eval suite: [evals/README.md](evals/README.md)
 
 ## Doc Roles
 
 - `README.md`: top-level repo map, canonical read order, and common commands
 - `AGENTS.md`: concise working model and invariants for LLM contributors
-- `CLAUDE.md`: thin tool-specific companion that points back to the shared docs
-- `docs/*.md`: focused deep dives and forward-looking plans
-- `src/**/README.md`, `scenes/**/README.md`, `tests/README.md`: subsystem-local reference docs
+- `CLAUDE.md`: Claude-specific companion plus chronological invariant and correctness-debt closure notes
+- `docs/ROADMAP.md`: prioritized next-steps roadmap grounded in current repository state
+- `docs/*.md`: focused deep dives, design records, and subsystem plans
+- `src/**/README.md`, `scenes/**/README.md`, `tests/README.md`, `evals/README.md`: subsystem-local reference docs
 
 ## Layout
 
-- `src/Library/`: active core rendering library
-- `src/RISE/`: main CLI and conversion tools
+- `src/Library/`: active core rendering, CST/parser, editor, and agent library
+- `src/RISE/`: main CLI (`bin/rise`) and conversion tools
 - `scenes/FeatureBased/`: curated showcase and torture scenes
 - `scenes/Tests/`: isolated regression, comparison, and validation scenes
-- `tests/`: standalone executable tests
-- `docs/`: focused design notes and roadmaps
-- `build/make/rise/`: current GNU make build
-- `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data and media
-- `tools/`: helper utilities and scripts outside the core runtime
-- `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `src/Blender/`: sidecar integrations and legacy surfaces
+- `tests/`: standalone executable tests (`fast` and `extended` tiers)
+- `evals/`: deterministic and live LLM scene-authoring evaluation harness
+- `skills/agent/`: runtime scene-authoring and viewport-observation skills loaded by the RISE agent
+- `docs/`: focused design notes, debt closure records, engineering skills (`docs/skills/`), and roadmaps
+- `build/make/rise/`: canonical GNU make build; `build/XCode/rise/`, `build/VS2022/`, `build/cmake/`: macOS GUI, Windows GUI/CLI, and Android/Windows-test CMake projects
+- `android/`: Android Kotlin/Compose + NDK viewport and editor app
+- `src/Blender/`: Blender 4.x render-engine add-on and native C ABI bridge
+- `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data, spectral/thin-film curves, and media
+- `extlib/`: third-party dependencies and submodules (including OIDN and Jakob-Hanika spectral uplift LUTs)
+- `tools/` and `scripts/`: offline LUT generators, migration/validation scripts, red-proof runner, and release packaging
+- `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `build/VS2005/` and the SGI / Solaris make configs: FROZEN legacy surfaces (kept in the tree, unsupported, may not build; see each one's README / header and [docs/LEGACY_DEPRECATION_ASSESSMENT.md](docs/LEGACY_DEPRECATION_ASSESSMENT.md) §13)
 
 ## Main Flow
 
 1. [src/RISE/commandconsole.cpp](src/RISE/commandconsole.cpp) creates a `Job`.
 2. [src/Library/Job.cpp](src/Library/Job.cpp) initializes the `Scene`, managers, default null assets, and default shader ops.
-3. [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp) loads `.RISEscene` content into the `Job`.
+3. [src/Library/Cst/Cst.cpp](src/Library/Cst/Cst.cpp) parses `.RISEscene`
+   content into the canonical CST and derives it into the `Job`; the chunk
+   registry lives in
+   [src/Library/Parsers/ChunkParserRegistry.cpp](src/Library/Parsers/ChunkParserRegistry.cpp).
 4. The `Job` resolves named assets, configures shaders and rasterizers, and attaches outputs.
 5. [src/Library/Rendering/PixelBasedRasterizerHelper.cpp](src/Library/Rendering/PixelBasedRasterizerHelper.cpp) drives the render passes.
 
 ## Common Commands
 
+### Linux / macOS
+
 ```sh
 make -C build/make/rise -j8 all
-make -C build/make/rise tests
-./run_all_tests.sh
+make -C build/make/rise -j8 tests
+./run_all_tests.sh                                  # default: all tiers (fast + extended)
+./run_all_tests.sh --tier fast                      # fast tier only
+./run_all_tests.sh --filter "*GGX*" --timeout 180   # targeted subset
+./run_all_tests.sh --jobs 1                         # one test at a time (default: one per core)
+make -C build/make/rise build-test/SourceHygieneTest && ./bin/tests/SourceHygieneTest
+tools/red_prove.sh [--args "<test-args>"] <TestBinaryName> <marker> <src-file>...  # stash-based red-proof
+
 export RISE_MEDIA_PATH="$(pwd)/"
+# ~1 s: path-traced (direct light only) shapes -> rendered/shapes.png + shapes_denoised.png
+# (`mkdir -p rendered` first in a fresh checkout or worktree; the directory is gitignored)
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
 
-If you changed only header files, run a clean rebuild first. The makefile does not track header dependencies reliably.
+Headless CLI flags include resolution, denoise, and camera overrides (`--width N`,
+`--height N`, `--pixel-ar X`, `--denoise` / `--no-denoise`, `--camera <name>`) and
+agent/MCP/eval modes (`--agent-stdio`, `--agent-stdio --mcp`,
+`--agent-http[=PORT]`, `--agent-autonomy=read|propose|commit`,
+`--agent-eval <runconfig.json>`).
+
+### macOS release DMG
+
+The release script performs a clean `RISE-GUI-Opto` Xcode build in fresh
+DerivedData, bundles and relinks non-system runtime libraries, signs the app,
+and creates a drag-to-Applications DMG plus a dSYM archive and SHA-256 file:
+
+```sh
+scripts/create_macos_release.sh
+```
+
+The release requires a GPU-capable OIDN at `extlib/oidn/install/` — run
+`extlib/oidn/fetch_prebuilt.sh` (or `extlib/oidn/build.sh`) once first. The
+script stages that install into its source snapshot and refuses to build
+without a Metal device module, because the Homebrew fallback is built
+CPU-device-only and would silently ship a DMG that cannot denoise on the GPU.
+
+The current dependency stack produces an Apple Silicon (`arm64`) app and uses
+the Xcode project's deployment target (currently macOS 26.2). The default uses
+an ad-hoc signature. For public distribution, provide a Developer ID
+Application identity and a `notarytool` keychain profile; the script then
+signs, notarizes, and staples the DMG:
+
+```sh
+RISE_CODESIGN_IDENTITY='Developer ID Application: Example (TEAMID)' \
+RISE_NOTARY_PROFILE=rise-notary \
+scripts/create_macos_release.sh --version 1.2.0 --build 42
+```
+
+Run `scripts/create_macos_release.sh --help` for output and overwrite options.
+The source tree must be clean; the script builds a detached snapshot of the
+captured commit. Version and build default to `src/Library/Version.h`;
+overrides update both the compiled library and app bundle metadata, and version
+overrides use canonical `X.Y.Z` form. Artifacts include both version and build
+number and are written to `dist/macos/` by default.
+
+The script fails closed on anything it cannot account for: a bundled dylib with
+no third-party notice mapping, a notice directory with no licence file, a Mach-O
+image in the app bundle that the relinking pass never visited, or an entitlement
+the manual signing steps do not carry. Third-party notices land in
+`RISE-GUI.app/Contents/Resources/Third-Party Licenses/`, so a new dependency
+needs a mapping in `copy_dependency_license` (bundled dylibs) or a
+`copy_static_license` call (sources compiled straight into the executable)
+before a release will complete.
+
+### Windows
+
+```powershell
+cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
+cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel
+.\run_all_tests.ps1
+.\run_all_tests.ps1 -Tier all -Filter "*GGX*"
+.\run_all_tests.ps1 -Config Debug
+```
+
+The Windows test flow builds every `tests/*.cpp` via
+[build/cmake/rise-tests/CMakeLists.txt](build/cmake/rise-tests/CMakeLists.txt)
+and runs them through [run_all_tests.ps1](run_all_tests.ps1). The CMake test
+project links against the prebuilt `RISE.lib` from the VS2022 Library project,
+so build the Windows library/CLI once first.
+
+Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
+automatically via `-MMD -MP` `.d` sidecars and rebuilds the test library
+(`librise_test.a`, a non-LTO copy, on macOS, where the LTO-sensitive tests
+still link `librise.a`; `librise.a` elsewhere) before
+test targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
+re-linking CMake test targets after `src/Library/` header or source edits.

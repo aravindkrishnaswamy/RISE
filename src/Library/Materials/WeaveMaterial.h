@@ -1,0 +1,237 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  WeaveMaterial.h - `weave_material`: a structured two-thread-family
+//    cloth BSDF (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+//
+//  The triad is WeaveMaterial + WeaveBRDF + WeaveSPF; the pattern
+//  functions and the preset table live in WeavePresets.h, and the
+//  fibre-lobe primitives it shares with `hair_material` in
+//  FibreLobeMath.h.  Read WeaveBRDF.h for the model and the energy
+//  argument, WeaveSPF.h for the sampler.
+//
+//  WHY THIS IS A NEW MATERIAL AND NOT A MODE ON `fabric_material`.
+//  9.9 gate 9b put a number on Phase 1's limit: 95 % (silk) / 99 %
+//  (satin) of an anisotropic GGX substrate's highlight anisotropy
+//  survives being wrapped in the isotropic Charlie sheen, so 9.5's
+//  delegation is working almost losslessly -- and the result still
+//  reads as brushed metal.  The deficit is the absence of a PATTERN
+//  SCALE, which no amount of sheen tuning reaches.  Nothing in this
+//  material is a sheen lobe; sharing a chunk with one would have meant
+//  two disjoint parameter sets behind one keyword, each meaningless in
+//  the other's mode.
+//
+//  THE TWO COMPOSE, AND THE STACK IS PHYSICAL.  `fabric_material`'s
+//  substrate allowlist accepts `weave_material`, so the Phase-1 fuzz
+//  layer sits OVER the structured weave -- which is the real thing:
+//  surface fuzz is loose fibre ends standing off the woven cloth
+//  underneath.  The energy bookkeeping composes correctly because this
+//  material implements `hemisphericalAlbedo`, which is exactly what the
+//  allowlist exists to require.
+//
+//  NO SHEEN TERM HERE, DELIBERATELY.  A `weave_material` on its own is
+//  the woven cloth with no fuzz.  Adding a sheen lobe would duplicate
+//  `fabric_material`'s, and the two would then have to agree about
+//  which one subtracts the sheen's energy from the substrate -- the
+//  exact double-counting `fabric_material` was built to end.
+//
+//  P2-B: `transmission thin` OVERRIDES `ScattersFullSphere()` AND
+//  `CouldLightPassThrough()` TO TRUE.  Both stay at their IMaterial
+//  defaults (false) for `transmission none`, so a scene that never
+//  authors `transmission` sees no behaviour change at all -- the
+//  overrides read the SAME `WeaveBRDF::GetTransmission()` the BSDF/SPF
+//  gate their own new lobes on, so the flag and the lobes it advertises
+//  can never disagree.  `IsVolumetric` stays at its default either way:
+//  the gap's delta lobe and the diffuse transmission lobe are both
+//  ordinary (if full-sphere) BSDF terms, not a medium the integrator
+//  marches.
+//
+//  NO `GetSpecularInfo` OVERRIDE, for the same reason
+//  `fabric_material` has none: neither lobe is a delta distribution, so
+//  the ISPF default is correct and SMS ignores this material.
+//  `SpecularInfo` also carries `canRefract` + `ior`, which the SMS
+//  solver and IOR-stack seeding read as "rays cross a refractive
+//  boundary here" -- the per-thread `eta` is a FIBRE property consumed
+//  inside the lobe, not a boundary anything crosses, and reporting it
+//  would be a lie to both subsystems.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef WEAVE_MATERIAL_
+#define WEAVE_MATERIAL_
+
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/ILog.h"
+#include "WeaveBRDF.h"
+#include "WeaveSPF.h"
+#include "WeavePresets.h"
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		class WeaveMaterial : public virtual IMaterial, public virtual Reference
+		{
+		protected:
+			WeaveBRDF*	pBRDF;
+			WeaveSPF*	pSPF;
+
+			virtual ~WeaveMaterial()
+			{
+				safe_release( pBRDF );
+				safe_release( pSPF );
+			}
+
+		public:
+			WeaveMaterial(
+				const WeavePatternKind pattern,
+				const WeaveTransmissionKind transmission,		///< P2-B: `none` or `thin`
+				const IScalarPainter& weaveScale,
+				const IScalarPainter& weaveRotation,
+				const IScalarPainter& weftSkew,
+				const IScalarPainter* coverage,		///< NULL unless `pattern == eWeaveCustom`
+				const IScalarPainter& gap,
+				const IPainter& warpColor,
+				const IScalarPainter& warpIOR,
+				const IScalarPainter& warpWidth,
+				const IScalarPainter& warpAzimuth,
+				const IScalarPainter& warpKd,
+				const IScalarPainter& warpTilt,
+				const IScalarPainter& warpTransmit,			///< P2-B
+				const IPainter& weftColor,
+				const IScalarPainter& weftIOR,
+				const IScalarPainter& weftWidth,
+				const IScalarPainter& weftAzimuth,
+				const IScalarPainter& weftKd,
+				const IScalarPainter& weftTilt,
+				const IScalarPainter& weftTransmit				///< P2-B
+				)
+			{
+				pBRDF = new WeaveBRDF( pattern, transmission, weaveScale, weaveRotation, weftSkew, coverage, gap,
+				                       warpColor, warpIOR, warpWidth, warpAzimuth, warpKd, warpTilt, warpTransmit,
+				                       weftColor, weftIOR, weftWidth, weftAzimuth, weftKd, weftTilt, weftTransmit );
+				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
+
+				pSPF = new WeaveSPF( *pBRDF );
+				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
+			}
+
+			/// \return The BRDF for this material.  Never NULL.
+			inline IBSDF* GetBSDF() const { return pBRDF; }
+
+			/// \return The SPF for this material.  Never NULL.
+			inline ISPF* GetSPF() const { return pSPF; }
+
+			/// \return NULL: a weave never emits.
+			inline IEmitter* GetEmitter() const { return 0; }
+
+			//! P2-B: TRUE iff `transmission thin` -- see the file header.
+			//! `false` (the IMaterial default) for `transmission none`,
+			//! matching the committed P2-A behaviour exactly.
+			inline bool ScattersFullSphere() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin; }
+
+			//! P2-B: same condition as `ScattersFullSphere()` -- the gap's
+			//! delta lobe is a genuine see-through aperture only when
+			//! `transmission thin`.
+			inline bool CouldLightPassThrough() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin; }
+
+			//! DL-05: the gap IS a non-bending delta pass-through, under the
+			//! same condition -- WeaveSPF draws it only when `transmission
+			//! thin` -- AND only if the gap can open at all: `silk` / `satin`
+			//! ship `thin` with a uniform `gap 0`, whose SPF never draws the
+			//! lobe, and reporting the capability there would only make
+			//! every delta-light shadow ray they occlude pay for a walk that
+			//! finds zero (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin && pBRDF->GapCanOpen(); }
+
+			//! Read-back for the interactive editor / snapshot clone.
+			//! Every slot is forwarded from the BRDF, which holds the one
+			//! copy of the state.
+			inline WeavePatternKind      GetPattern()       const { return pBRDF->GetPattern(); }
+			inline WeaveTransmissionKind GetTransmission()  const { return pBRDF->GetTransmission(); }
+			inline const IScalarPainter& GetWeaveScale()    const { return pBRDF->GetWeaveScale(); }
+			inline const IScalarPainter& GetWeaveRotation() const { return pBRDF->GetWeaveRotation(); }
+			inline const IScalarPainter& GetWeftSkew()      const { return pBRDF->GetWeftSkew(); }
+			inline const IScalarPainter* GetCoverage()      const { return pBRDF->GetCoverage(); }
+			inline const IScalarPainter& GetGap()           const { return pBRDF->GetGap(); }
+			inline const IPainter&       GetWarpColor()     const { return pBRDF->GetWarpColor(); }
+			inline const IScalarPainter& GetWarpIOR()       const { return pBRDF->GetWarpIOR(); }
+			inline const IScalarPainter& GetWarpWidth()     const { return pBRDF->GetWarpWidth(); }
+			inline const IScalarPainter& GetWarpAzimuth()   const { return pBRDF->GetWarpAzimuth(); }
+			inline const IScalarPainter& GetWarpKd()        const { return pBRDF->GetWarpKd(); }
+			inline const IScalarPainter& GetWarpTilt()      const { return pBRDF->GetWarpTilt(); }
+			inline const IScalarPainter& GetWarpTransmit()  const { return pBRDF->GetWarpTransmit(); }
+			inline const IPainter&       GetWeftColor()     const { return pBRDF->GetWeftColor(); }
+			inline const IScalarPainter& GetWeftIOR()       const { return pBRDF->GetWeftIOR(); }
+			inline const IScalarPainter& GetWeftWidth()     const { return pBRDF->GetWeftWidth(); }
+			inline const IScalarPainter& GetWeftAzimuth()   const { return pBRDF->GetWeftAzimuth(); }
+			inline const IScalarPainter& GetWeftKd()        const { return pBRDF->GetWeftKd(); }
+			inline const IScalarPainter& GetWeftTilt()      const { return pBRDF->GetWeftTilt(); }
+			inline const IScalarPainter& GetWeftTransmit()  const { return pBRDF->GetWeftTransmit(); }
+
+			//! Rebind for the interactive editor.  Only the BRDF is
+			//! touched -- `WeaveSPF` reads every parameter back through it
+			//! (WeaveSPF.h), so there is no second copy to keep in
+			//! lockstep (contrast SheenMaterial / GGXMaterial, which must
+			//! forward to BOTH their BRDF and their SPF).
+			//!
+			//! `weave` is deliberately NOT rebindable: it selects which
+			//! cell function -- and, for `custom`, whether the `coverage`
+			//! painter is read at all -- so changing it re-authors the
+			//! material's structure rather than one of its fields.
+			//! Re-author the chunk.  Same call as `fabric_material`'s
+			//! non-rebindable `base`.
+			inline void SetWeaveScale( const IScalarPainter& v )    { pBRDF->SetWeaveScale( v ); }
+			inline void SetWeaveRotation( const IScalarPainter& v ) { pBRDF->SetWeaveRotation( v ); }
+			inline void SetWeftSkew( const IScalarPainter& v )      { pBRDF->SetWeftSkew( v ); }
+			inline void SetCoverage( const IScalarPainter& v )      { pBRDF->SetCoverage( v ); }
+			inline void SetGap( const IScalarPainter& v )           { pBRDF->SetGap( v ); }
+			inline void SetWarpColor( const IPainter& v )           { pBRDF->SetWarpColor( v ); }
+			inline void SetWarpIOR( const IScalarPainter& v )       { pBRDF->SetWarpIOR( v ); }
+			inline void SetWarpWidth( const IScalarPainter& v )     { pBRDF->SetWarpWidth( v ); }
+			inline void SetWarpAzimuth( const IScalarPainter& v )   { pBRDF->SetWarpAzimuth( v ); }
+			inline void SetWarpKd( const IScalarPainter& v )        { pBRDF->SetWarpKd( v ); }
+			inline void SetWarpTilt( const IScalarPainter& v )      { pBRDF->SetWarpTilt( v ); }
+			inline void SetWarpTransmit( const IScalarPainter& v )  { pBRDF->SetWarpTransmit( v ); }
+			inline void SetWeftColor( const IPainter& v )           { pBRDF->SetWeftColor( v ); }
+			inline void SetWeftIOR( const IScalarPainter& v )       { pBRDF->SetWeftIOR( v ); }
+			inline void SetWeftWidth( const IScalarPainter& v )     { pBRDF->SetWeftWidth( v ); }
+			inline void SetWeftAzimuth( const IScalarPainter& v )   { pBRDF->SetWeftAzimuth( v ); }
+			inline void SetWeftKd( const IScalarPainter& v )        { pBRDF->SetWeftKd( v ); }
+			inline void SetWeftTilt( const IScalarPainter& v )      { pBRDF->SetWeftTilt( v ); }
+			inline void SetWeftTransmit( const IScalarPainter& v )  { pBRDF->SetWeftTransmit( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetWeaveScale().GetPathDependence() |
+					pBRDF->GetWeaveRotation().GetPathDependence() |
+					pBRDF->GetWeftSkew().GetPathDependence() |
+					( pBRDF->GetCoverage() ? pBRDF->GetCoverage()->GetPathDependence() : 0u ) |
+					pBRDF->GetGap().GetPathDependence() |
+					pBRDF->GetWarpColor().GetPathDependence() |
+					pBRDF->GetWarpIOR().GetPathDependence() |
+					pBRDF->GetWarpWidth().GetPathDependence() |
+					pBRDF->GetWarpAzimuth().GetPathDependence() |
+					pBRDF->GetWarpKd().GetPathDependence() |
+					pBRDF->GetWarpTilt().GetPathDependence() |
+					pBRDF->GetWarpTransmit().GetPathDependence() |
+					pBRDF->GetWeftColor().GetPathDependence() |
+					pBRDF->GetWeftIOR().GetPathDependence() |
+					pBRDF->GetWeftWidth().GetPathDependence() |
+					pBRDF->GetWeftAzimuth().GetPathDependence() |
+					pBRDF->GetWeftKd().GetPathDependence() |
+					pBRDF->GetWeftTilt().GetPathDependence() |
+					pBRDF->GetWeftTransmit().GetPathDependence();
+			}
+		};
+	}
+}
+
+#endif

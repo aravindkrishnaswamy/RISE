@@ -1,0 +1,312 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RasterizerDefaults.h - Single source of truth for the defaults
+//    used by every production rasterizer.
+//
+//    Three independent code paths historically picked their own
+//    defaults for "what value should this parameter take when the
+//    user / scene file omits it?":
+//
+//      1. AsciiSceneParser chunk parsers' `Finalize` fallback —
+//         `bag.GetUInt("samples", 32)` style.
+//      2. AsciiSceneParser chunk parsers' `Describe` defaultValueHint
+//         strings — what the GUI panel labels the default as.
+//      3. Job::InstantiateRasterizerWithDefaults — the literals it
+//         passes when the GUI lazy-builds a rasterizer with no
+//         matching chunk in the scene file.
+//
+//    Plus the underlying `*Config` structs (PixelFilterConfig /
+//    SMSConfig / etc.) which have their own in-class member
+//    initializers that act as a fourth default surface for nested
+//    config knobs.
+//
+//    Drift between these surfaces produced visible bugs: BDPT-pel
+//    parser rendered at 32 spp with OIDN on, while clicking the
+//    same rasterizer in the GUI panel without a chunk gave 1 spp
+//    with OIDN off.  This header collapses surfaces 1-3 into one
+//    set of structs, while the *Config* structs remain canonical
+//    for nested-config defaults (consumed via default-construction).
+//
+//    Convention: every field on every *Defaults struct in this
+//    header is the canonical value.  Parsers reference it via
+//    `BDPTPelDefaults d; bag.GetUInt("samples", d.numPixelSamples)`,
+//    descriptors reference it via `to_hint(d.numPixelSamples)`, and
+//    Job's lazy-build branches default-construct the matching
+//    struct and read its fields directly.  Tests assert all three
+//    surfaces remain in agreement.
+//
+//    Interactive viewport preview (InteractivePelRasterizer) is a
+//    separate code path that overrides `numPixelSamples` to 1 for
+//    live-edit feedback — the production-quality default of 32 lets
+//    a "click Render with no chunk" produce a real image instead of
+//    one-sample noise.
+//
+//    Adding a new rasterizer: add a `*Defaults` struct here with
+//    its parameter values, then have the parser / Job branch read
+//    from it.  Adding a new parameter: add a field to the relevant
+//    *Defaults struct, surface it in the parser's Finalize +
+//    Describe, and the GUI panel + lazy-build path pick it up
+//    automatically.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: May 5, 2026
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RASTERIZER_DEFAULTS_
+#define RASTERIZER_DEFAULTS_
+
+#include "OidnConfig.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdint>
+#include <limits>
+#include <string>
+
+namespace RISE
+{
+	//
+	// Auto-rasterizer integrator selection (Phase-3 Candidate C: a
+	// PT-default auto-routed hybrid; see docs/AUTO_RASTERIZER_DESIGN.md).
+	// The `auto_rasterizer` chunk's `integrator` field carries one of
+	// these.  `Auto` means "let the dispatcher decide" — in Phase 1 that
+	// resolves to PT (Tier 0 author-hint only); Phases 2-4 add static
+	// analysis + a render-time probe behind the same `Auto` value.  PT /
+	// BDPT / VCM are explicit author pins that skip detection.
+	//
+	// This enum is the single vocabulary shared across the API boundary
+	// (RISE_API_CreateAutoRasterizer), the scene parser, IJob, and the
+	// AutoRasterizer wrapper — it lives here, next to the rasterizer
+	// defaults, so no layer has to redefine it.
+	//
+	enum class AutoIntegratorChoice
+	{
+		Auto = 0,   ///< Dispatcher decides (Phase 1 -> PT).
+		PT,         ///< Author pin: unidirectional path tracing.
+		BDPT,       ///< Author pin: bidirectional path tracing.
+		VCM         ///< Author pin: vertex connection and merging.
+	};
+
+	enum class RasterSequenceKind
+	{
+		Morton,
+		Block,
+		Hilbert,
+		Scanline,
+		RasterizerDefault
+	};
+
+	struct ResolvedRasterSequence
+	{
+		RasterSequenceKind kind = RasterSequenceKind::Morton;
+		unsigned int tileSize = 32;
+		unsigned int blockWidth = 0;
+		unsigned int blockHeight = 0;
+		unsigned int blockOrder = 0;
+		unsigned int hilbertDepth = 0;
+		std::uint32_t shuffleSeed = 0;
+		bool hasShuffleSeed = false;
+	};
+
+	template <typename NextRandom>
+	ResolvedRasterSequence ResolveRasterSequence(
+		const int authoredType,
+		const std::string& authoredOptions,
+		NextRandom nextRandom )
+	{
+		ResolvedRasterSequence resolved;
+		const auto bindShuffleSeed = [&]( ResolvedRasterSequence& sequence ) {
+			if( sequence.blockOrder != 1u ) return;
+			const double unit = nextRandom();
+			const double span = static_cast<double>(
+				std::numeric_limits<std::uint32_t>::max()) + 1.0;
+			sequence.shuffleSeed = static_cast<std::uint32_t>(unit * span);
+			sequence.hasShuffleSeed = true;
+		};
+
+		switch( authoredType ) {
+		case 0:
+			resolved.kind = RasterSequenceKind::Scanline;
+			return resolved;
+		case 1: {
+			unsigned int width = 0, height = 0, order = 0;
+			if( std::sscanf(authoredOptions.c_str(),"%u %u %u",
+				&width,&height,&order) != 3 || width == 0u || height == 0u || order > 8u ) {
+				return resolved;
+			}
+			resolved.kind = RasterSequenceKind::Block;
+			resolved.blockWidth = width;
+			resolved.blockHeight = height;
+			resolved.blockOrder = order;
+			bindShuffleSeed(resolved);
+			return resolved;
+		}
+		case 2: {
+			unsigned int depth = 0;
+			if( std::sscanf(authoredOptions.c_str(),"%u",&depth) != 1 || depth == 0u ) {
+				return resolved;
+			}
+			resolved.kind = RasterSequenceKind::Hilbert;
+			resolved.hilbertDepth = depth;
+			return resolved;
+		}
+		case 3:
+			if( nextRandom() < 0.1 ) {
+				resolved.kind = RasterSequenceKind::Hilbert;
+				resolved.hilbertDepth = 4u;
+			} else {
+				resolved.kind = RasterSequenceKind::Block;
+				resolved.blockWidth = 64u;
+				resolved.blockHeight = 64u;
+				resolved.blockOrder = static_cast<unsigned int>(
+					std::floor(nextRandom()*8.999999));
+				bindShuffleSeed(resolved);
+			}
+			return resolved;
+		case 4:
+		default: {
+			unsigned int tileSize = 32u;
+			if( !authoredOptions.empty() ) {
+				unsigned int parsed = 0;
+				if( std::sscanf(authoredOptions.c_str(),"%u",&parsed) == 1 && parsed > 0u ) {
+					tileSize = parsed;
+				}
+			}
+			resolved.tileSize = tileSize;
+			return resolved;
+		}
+		}
+	}
+
+	//
+	// Common base — every production rasterizer accepts these.  The
+	// values here are the universal canonical defaults; per-rasterizer
+	// structs override individual fields where their behaviour
+	// genuinely differs (MLT overrides oidnDenoise, MLT overrides the
+	// depth caps, etc.).
+	//
+	// numPixelSamples = 32: production-ready default.  The interactive
+	//   viewport preview (InteractivePelRasterizer) is a separate code
+	//   path that uses 1.  See PixelBasedRasterizerHelper.cpp.
+	//
+	// oidnDenoise = true: matches modern denoise-by-default expectation.
+	//   MLT overrides to false because the splat-film accumulation
+	//   pattern is incompatible with OIDN.
+	//
+	struct BaseRasterizerDefaults
+	{
+		unsigned int   numPixelSamples = 32;
+		bool           showLuminaires  = true;
+		bool           oidnDenoise     = true;
+		OidnQuality    oidnQuality     = OidnQuality::Auto;
+		OidnDevice     oidnDevice      = OidnDevice::Auto;
+		OidnPrefilter  oidnPrefilter   = OidnPrefilter::Fast;
+		std::string    defaultShader   = "global";
+	};
+
+	//
+	// Legacy `pixelpel_rasterizer` — recursion-driven shader-op
+	// integrator used by the pre-PT codepath.  Same base values plus
+	// max_recursion / lum_samples / luminary_sampler.
+	//
+	struct PixelPelDefaults : BaseRasterizerDefaults
+	{
+		unsigned int   maxRecursion         = 10;
+		unsigned int   numLumSamples        = 1;
+		std::string    luminarySampler      = "none";
+		double         luminarySamplerParam = 1.0;
+
+		PixelPelDefaults()
+		{
+			// PixelPel was historically the only RGB rasterizer that
+			// kept `samples = 1`.  Snap to that to avoid surprising
+			// users who select pixelpel for a quick-look render.
+			numPixelSamples = 1;
+		}
+	};
+
+	//
+	// Legacy `pixelintegratingspectral_rasterizer` — same recursion
+	// model as PixelPel plus the RGB-to-SPD conversion knob.
+	//
+	struct PixelIntegratingSpectralDefaults : PixelPelDefaults
+	{
+		bool           integrateRGB = false;
+	};
+
+	struct PathTracingPelDefaults      : BaseRasterizerDefaults {};
+	struct PathTracingSpectralDefaults : BaseRasterizerDefaults {};
+
+	struct BDPTPelDefaults : BaseRasterizerDefaults
+	{
+		unsigned int   maxEyeDepth   = 8;
+		unsigned int   maxLightDepth = 8;
+	};
+	struct BDPTSpectralDefaults : BDPTPelDefaults {};
+
+	struct VCMPelDefaults : BaseRasterizerDefaults
+	{
+		unsigned int   maxEyeDepth   = 8;
+		unsigned int   maxLightDepth = 8;
+		double         mergeRadius   = 0.0;   // 0 = scene-auto
+		bool           enableVC      = true;
+		bool           enableVM      = true;
+	};
+	struct VCMSpectralDefaults : VCMPelDefaults {};
+
+	//
+	// `auto_rasterizer` — the thin-shell integrator dispatcher.  It only
+	// surfaces the universally-meaningful params (the base set + the
+	// `integrator` pin); per-integrator specifics (BDPT depth, VCM merge
+	// radius, PT/SMS knobs) are NOT author-facing on this chunk in Phase
+	// 1 — the dispatcher builds the chosen delegate with the canonical
+	// per-integrator defaults above (BDPTPelDefaults / VCMPelDefaults /
+	// SMSConfig).  Param-population option (i) from the design doc §4.
+	//
+	struct AutoRasterizerDefaults : BaseRasterizerDefaults
+	{
+		AutoIntegratorChoice integrator = AutoIntegratorChoice::Auto;
+
+		//! Tier-2 render-time probe (Phase 4).  OFF by default: the
+		//! probe is a final-render tool (the Phase-3 gate found it
+		//! cheap only at production spp >= ~256), and shipping it
+		//! opt-in keeps the cheap preview / lower-tier paths free of
+		//! the probe tax.  When TRUE, the probe still only fires once
+		//! the production sample count clears the activation-spp gate
+		//! (GlobalOptions `auto_probe_activation_spp`); below it the
+		//! dispatcher falls back to the Tier-1 static best-guess.
+		bool probeEnabled = false;
+	};
+
+	//
+	// MLT canonical — production values matching what scene authors
+	// have historically gotten when they omit these fields.  OIDN is
+	// off by default because the splat-film accumulation pattern is
+	// incompatible with the denoiser; users who want denoised MLT
+	// can opt in with `oidn_denoise true` per scene.
+	//
+	struct MLTDefaults : BaseRasterizerDefaults
+	{
+		unsigned int   maxEyeDepth        = 10;
+		unsigned int   maxLightDepth      = 10;
+		unsigned int   nBootstrap         = 100000;
+		unsigned int   nChains            = 512;
+		unsigned int   nMutationsPerPixel = 32;
+		double         largeStepProb      = 0.3;
+
+		MLTDefaults()
+		{
+			// Override the base default — MLT cannot use OIDN (see
+			// the MLT parser's oidn_denoise comment for the splat-
+			// film rationale).
+			oidnDenoise = false;
+		}
+	};
+	struct MLTSpectralDefaults : MLTDefaults {};
+
+}
+
+#endif

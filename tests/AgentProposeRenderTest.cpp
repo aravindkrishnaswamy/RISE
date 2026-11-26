@@ -1,0 +1,3992 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentProposeRenderTest.cpp - Facet 5 (agentic surface) slice 0b.
+//
+//  Proves the TWO new AgentSession capabilities end-to-end, both
+//  headless + single-threaded (docs/agentic-redesign/50-agentic-surface.md
+//  §2.2.3 propose_patch, §2.2.5 render / read_image):
+//
+//    * ProposePatch (STRUCTURED set) — a param-value edit routed through
+//      Job::ApplyCstParamEdit (the SAME call the GUI property panel makes)
+//      that MUTATES the retained CST Document and re-derives the live Job.
+//      Asserted: applied==true, ReadDocument() now CONTAINS the new value
+//      AND round-trips (RED-PROVEN: the value differs from the pre-edit
+//      head); a BOGUS target is rejected (applied==false) WITHOUT
+//      corrupting the head (ReadDocument still round-trips + unchanged).
+//
+//    * Render + ReadImage — render the current head into an in-memory
+//      sRGB PNG.  Asserted: non-empty PNG bytes, valid \x89PNG signature,
+//      IHDR dims match the film; a render is SIDE-EFFECT-FREE on the
+//      Document (ReadDocument() byte-identical across the Render call); and
+//      a NOISE FLOOR is measured by re-rendering the SAME head — RISE's PT
+//      sampler is not bit-deterministic (per-worker RNG state depends on
+//      thread order, so the DEFLATE stream diverges wholesale), but the
+//      LINEAR channel means agree within a tiny MC noise floor.  The
+//      edit-changes-render "money assertion" below is measured AGAINST that
+//      floor so it cannot ride on render nondeterminism.
+//
+//    * Edit-then-render coherence (the money assertion): a VISIBLE edit
+//      (recolour the sphere's albedo painter) then a second Render yields
+//      DIFFERENT PNG bytes — proving the edit flowed
+//      Document -> derive -> render, i.e. the agent is a genuine client of
+//      the GUI's edit pathway (L2).
+//
+//  Self-contained: an inline native-v7 scene (a lit sphere), OIDN off,
+//  no RISE_MEDIA_PATH.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
+#include "../src/Library/Agent/Json.h"   // pre-S2 hardening: red-prove the session-local id's exact wire round-trip
+#include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IRasterizer.h"   // Model-B F2 slice S3: SetSampleCountOverride/GetSampleCountOverride red-prove
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/RISE_API.h"           // Arc 81: the tone step's own cost is one PNG decode -- measured directly
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"   // Model-B F2 S3 fix round (P1): ForTest_SamplingKernelName red-prove
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
+#include "../src/Library/Utilities/Reference.h"
+
+#include <atomic>      // Model-B F2 slice S1: TestController's simulated-render slice counter
+#include <chrono>      // Model-B F2 slice S1: TestController's simulated-render sleep
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <stdexcept>   // P1-A red-prove: ThrowingRasterizeJob throws std::runtime_error
+#include <string>
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
+#include <thread>      // Model-B F2 slice S1: drive a Render(AgentRenderParams) from a background thread
+#include <vector>
+#include "TestTempDir.h"
+
+using namespace RISE;
+using namespace RISE::Agent;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const std::string& w )
+{
+	if( c ) ++g_pass;
+	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
+}
+
+// A small, self-contained native-v7 scene: a lit diffuse sphere with an
+// area emitter, path-traced at a low sample count with OIDN off.  The
+// shader chunk precedes the rasterizer (Job::Set*Rasterizer resolves
+// `defaultshader` during the rasterizer chunk's Finalize).  Mirrors the
+// known-good AutoRasterizerTest body so it renders non-black.
+static const char* const kScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// Round-2 P2-A: the SAME scene, but with NO rasterizer chunk at all --
+// Job::GetRasterizer() resolves to nullptr on this head.  Used to prove a
+// draft render does not need a production rasterizer to exist (the
+// standard_shader chunk is dropped too since it exists only to be resolved
+// by the (now absent) rasterizer chunk's Finalize).
+static const char* const kSceneNoRasterizer =
+	"RISE ASCII SCENE 7\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+// Write `text` to a temp file and return its path (or "" on failure).
+static std::string WriteTemp( const char* name, const std::string& text )
+{
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
+	std::ofstream f( path.c_str(), std::ios::binary );
+	if( !f ) return std::string();
+	f.write( text.data(), (std::streamsize)text.size() );
+	f.close();
+	return path;
+}
+
+// The 8-byte PNG signature.
+static bool HasPngSignature( const std::vector<unsigned char>& b )
+{
+	static const unsigned char sig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+	if( b.size() < 8 ) return false;
+	for( int i = 0; i < 8; ++i ) if( b[i] != sig[i] ) return false;
+	return true;
+}
+
+// Read the big-endian width/height out of the PNG IHDR chunk (bytes
+// 16..23 for a well-formed PNG: 8 sig + 4 len + 4 "IHDR" + 4 width +
+// 4 height).  Returns false if the buffer is too short or IHDR is absent.
+static bool ReadPngDims( const std::vector<unsigned char>& b, unsigned int& w, unsigned int& h )
+{
+	if( b.size() < 24 ) return false;
+	if( std::memcmp( &b[12], "IHDR", 4 ) != 0 ) return false;
+	w = ( (unsigned)b[16] << 24 ) | ( (unsigned)b[17] << 16 ) | ( (unsigned)b[18] << 8 ) | (unsigned)b[19];
+	h = ( (unsigned)b[20] << 24 ) | ( (unsigned)b[21] << 16 ) | ( (unsigned)b[22] << 8 ) | (unsigned)b[23];
+	return true;
+}
+
+class LastRenderRecordingSink
+	: public virtual IRasterizerOutput
+	, public virtual Implementation::Reference
+{
+public:
+	unsigned int count = 0;
+	unsigned int width = 0;
+	unsigned int height = 0;
+	double meanR = 0.0;
+	double meanG = 0.0;
+	double meanB = 0.0;
+	double meanA = 0.0;
+	std::vector<RISEColor> pixels;
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+
+	void OutputImage(
+		const IRasterImage& image, const Rect*, const unsigned int ) override
+	{
+		width = image.GetWidth();
+		height = image.GetHeight();
+		double sr = 0.0, sg = 0.0, sb = 0.0, sa = 0.0;
+		pixels.resize( static_cast<std::size_t>( width ) * height );
+		for( unsigned int y = 0; y < height; ++y )
+		{
+			for( unsigned int x = 0; x < width; ++x )
+			{
+				const RISEColor c = image.GetPEL( x, y );
+				pixels[ static_cast<std::size_t>( y ) * width + x ] = c;
+				sr += c.base.r;
+				sg += c.base.g;
+				sb += c.base.b;
+				sa += c.a;
+			}
+		}
+		const double n = static_cast<double>( width ) * height;
+		meanR = n > 0.0 ? sr / n : 0.0;
+		meanG = n > 0.0 ? sg / n : 0.0;
+		meanB = n > 0.0 ? sb / n : 0.0;
+		meanA = n > 0.0 ? sa / n : 0.0;
+		++count;
+	}
+
+	std::vector<unsigned char> EncodedPng(
+		double exposureEV, int displayTransform ) const
+	{
+		InMemoryRasterizerOutput* encoder =
+			new InMemoryRasterizerOutput();
+		std::vector<RISEColor> copy = pixels;
+		encoder->AdoptCoherentSnapshot(
+			std::move( copy ), width, height );
+		encoder->SetDisplayTransform( exposureEV, displayTransform );
+		const std::vector<unsigned char> png = encoder->ToPng();
+		encoder->release();
+		return png;
+	}
+
+	bool MatchesImage( const IRasterImage& image ) const
+	{
+		if( width != image.GetWidth() || height != image.GetHeight()
+		 || pixels.size() != static_cast<std::size_t>( width ) * height )
+			return false;
+		for( unsigned int y = 0; y < height; ++y )
+		{
+			for( unsigned int x = 0; x < width; ++x )
+			{
+				const RISEColor actual =
+					pixels[ static_cast<std::size_t>( y ) * width + x ];
+				const RISEColor expected = image.GetPEL( x, y );
+				if( actual.base.r != expected.base.r
+				 || actual.base.g != expected.base.g
+				 || actual.base.b != expected.base.b
+				 || actual.a != expected.a )
+					return false;
+			}
+		}
+		return true;
+	}
+
+protected:
+	~LastRenderRecordingSink() override = default;
+};
+
+class RejectingProgressCallback : public IProgressCallback
+{
+public:
+	bool Progress( const double, const double ) override { return false; }
+	void SetTitle( const char* ) override {}
+};
+
+static void RunCameraOverrideTests();          // fwd decl -- defined below, called from main()
+static void RunRestoreOnThrowTest();           // P1-A red-prove -- defined below, called from main()
+static void RunMalformedCameraOverrideTests(); // P1-B -- defined below, called from main()
+static void RunRenderJobIdTests();             // Model-B F2 slice S1 -- defined below, called from main()
+static void RunPreS2HardeningTests();          // Model-B F2 slice S1 pre-S2 hardening -- defined below, called from main()
+static void RunSampleCountOverrideTests();     // Model-B F2 slice S3 (EffectiveRenderConfig) -- defined below, called from main()
+static void RunDraftQualityTests();            // Toolkit slice 2 (quality:"draft") -- defined below, called from main()
+static void RunDraftCancelTest();              // Toolkit slice 2 draft-quality cancel mid-flight -- defined below, called from main()
+static void RunNoRasterizerDraftTest();        // Round-2 P2-A: draft render on a rasterizer-less head -- defined below, called from main()
+static void RunLastRenderCompletionSitesTest();// T4: agent + GUI-production completion capture
+
+static void RunCoreTests()
+{
+	std::printf( "=== AgentProposeRenderTest (Facet 5 slice 0b: propose_patch + render/read_image) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_slice0b.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the scene to a temp file" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::LoadFromFile( scenePath );
+	Check( session != nullptr, "AgentSession::LoadFromFile loads the native-v7 scene" );
+	if( !session ) { std::printf( "cannot continue without a session\n" ); return; }
+
+	//----------------------------------------------------------------------
+	// propose_patch — a structured set on a real param.
+	//----------------------------------------------------------------------
+	std::printf( "[propose_patch] set a real param (albedo colour)\n" );
+	const std::string preEdit = session->ReadDocument();
+	Check( preEdit.find( "0.5 0.5 0.5" ) != std::string::npos,
+	       "pre-edit head carries the original albedo colour (0.5 0.5 0.5)" );
+
+	{
+		AgentSetPatch sp;
+		sp.target = "pnt_albedo";
+		sp.param  = "color";
+		sp.value  = "0.9 0.1 0.1";
+		AgentPatchResult r = session->ProposePatch( sp );
+		Check( r.applied, "ProposePatch(pnt_albedo.color) applied" );
+		Check( r.status == "applied", "clean apply -> status==\"applied\"" );
+
+		const std::string postEdit = session->ReadDocument();
+		// The Document was mutated: it now carries the new value ...
+		Check( postEdit.find( "0.9 0.1 0.1" ) != std::string::npos,
+		       "ReadDocument() now CONTAINS the new albedo value (Document mutated)" );
+		// ... RED-PROVE: and it DIFFERS from the pre-edit head.
+		Check( postEdit != preEdit, "post-edit head DIFFERS from pre-edit head (red-prove)" );
+		// ... and still round-trips through the CST parser.
+		Cst::Document rt = Cst::ParseToCst( postEdit );
+		Check( Cst::SerializeCst( rt ) == postEdit,
+		       "ParseToCst(ReadDocument()) round-trips byte-identically after the edit" );
+	}
+
+	//----------------------------------------------------------------------
+	// propose_patch — a bogus target is rejected without corrupting the head.
+	//----------------------------------------------------------------------
+	std::printf( "[propose_patch] a bogus target is rejected, head intact\n" );
+	{
+		const std::string before = session->ReadDocument();
+		AgentSetPatch bad;
+		bad.target = "no_such_entity";
+		bad.param  = "color";
+		bad.value  = "0 0 0";
+		AgentPatchResult r = session->ProposePatch( bad );
+		Check( !r.applied, "ProposePatch(bogus target) is NOT applied" );
+		Check( r.rawCode == 0, "bogus target maps to rawCode 0 (reject)" );
+		Check( r.status == "rejected", "bogus target -> status==\"rejected\" (head byte-identical)" );
+		const std::string after = session->ReadDocument();
+		Check( after == before, "head is unchanged after a rejected edit" );
+		Cst::Document rt = Cst::ParseToCst( after );
+		Check( Cst::SerializeCst( rt ) == after, "head still round-trips after a rejected edit" );
+	}
+
+	// A missing-Document guard is exercised implicitly via a bogus param on
+	// a real target too (defensive) — but keep the head-integrity focus above.
+	//
+	// P1 #2 code-3 mapping (mutated-but-diagnosed -> applied=false/"diagnosed"):
+	// NOT synthesizable here.  rawCode 3 fires only when Job.cpp's
+	// DeriveEditedCstDocument_ full re-derive emits diagnostics on a document
+	// whose validate-before-destroy dry-run ALREADY passed the identical
+	// derive -- the source calls this the "should-not-happen" branch.  Every
+	// authorable bad edit is caught earlier and returns 0 (reject, head
+	// intact), so a real code-3 cannot be reliably provoked from a scene edit
+	// without a fault-injection seam that does not exist in slice 0.  The
+	// mapping (rawCode 3 -> applied=false, status=="diagnosed", message states
+	// the Document WAS mutated) is therefore covered BY INSPECTION of the
+	// switch in AgentSession::ProposePatch, not by a flaky synthesized case.
+
+	//----------------------------------------------------------------------
+	// render — the current head to an in-memory sRGB PNG.
+	//----------------------------------------------------------------------
+	std::printf( "[render] head -> in-memory sRGB PNG\n" );
+	std::vector<unsigned char> firstPng;
+	double firstMeanR = 0.0, firstMeanG = 0.0, firstMeanB = 0.0;
+	double noiseFloor = 0.0;
+	{
+		// A render must NOT mutate the retained Document -- capture the head
+		// before rendering so we can prove it is byte-identical afterward.
+		const std::string docBeforeRender = session->ReadDocument();
+
+		AgentRenderResult rr = session->Render( /*samplesOverride=*/-1 );
+		Check( rr.ok, "Render() succeeded" );
+		Check( rr.width == 24 && rr.height == 24, "render dims match the film (24x24)" );
+		Check( !rr.png.empty(), "render produced non-empty PNG bytes" );
+		Check( HasPngSignature( rr.png ), "PNG bytes carry the \\x89PNG signature" );
+		Check( !rr.perceptionAvailable && rr.perceptionPersistentBytes == 0 &&
+		       rr.perceptionAuxiliaryPeakBytes == 0,
+		       "direct C++ Render() keeps perception opt-in and zero-allocation" );
+
+		unsigned int w = 0, h = 0;
+		Check( ReadPngDims( rr.png, w, h ), "PNG IHDR is present" );
+		Check( w == 24 && h == 24, "PNG IHDR dims match the film (24x24)" );
+
+		// A render is side-effect-free on the Document: ReadDocument() is
+		// byte-identical across the Render call (proves samplesOverride and
+		// the sink swap never touch the retained CST).
+		Check( session->ReadDocument() == docBeforeRender,
+		       "ReadDocument() is byte-identical after a Render (render does not mutate the Document)" );
+
+		// ReadImage() returns the cached bytes of the last render.
+		std::vector<unsigned char> cached = session->ReadImage();
+		Check( cached == rr.png, "ReadImage() returns the last render's PNG bytes" );
+
+		firstPng     = rr.png;
+		firstMeanR   = rr.meanR;
+		firstMeanG   = rr.meanG;
+		firstMeanB   = rr.meanB;
+	}
+
+	//----------------------------------------------------------------------
+	// render noise floor — re-render the SAME head (no edit between) to
+	// MEASURE the run-to-run difference.  RISE's PT sampler draws from a
+	// per-worker RNG whose state depends on thread scheduling, so two
+	// renders are NOT byte-identical (the DEFLATE stream diverges wholesale
+	// on any sub-LSB pixel change).  We therefore establish determinism in
+	// the STABLE, order-independent LINEAR channel-mean signature: the same
+	// head re-renders to means within a tiny MC noise floor.  This bounds
+	// the noise BEFORE the edit-changes-render assertion below, so a mean
+	// shift under an edit cannot be attributed to render nondeterminism.
+	//----------------------------------------------------------------------
+	std::printf( "[noise floor] re-render the same head: channel means stable within MC noise\n" );
+	{
+		AgentRenderResult rr = session->Render( -1 );
+		Check( rr.ok && !rr.png.empty(), "second Render() of the unchanged head produced PNG bytes" );
+		const double dR = std::fabs( rr.meanR - firstMeanR );
+		const double dG = std::fabs( rr.meanG - firstMeanG );
+		const double dB = std::fabs( rr.meanB - firstMeanB );
+		noiseFloor = dR + dG + dB;
+		std::printf( "  same-head mean drift: dR=%.5f dG=%.5f dB=%.5f (sum=%.5f)\n", dR, dG, dB, noiseFloor );
+		// Same head, same sample count: the linear means agree within a small
+		// MC noise floor (empirically << 0.02 at 8 spp on this scene).
+		Check( noiseFloor < 0.05,
+		       "re-rendering the SAME head yields channel means within the MC noise floor (deterministic in mean)" );
+	}
+
+	//----------------------------------------------------------------------
+	// edit-then-render coherence — the money assertion.  A VISIBLE recolour
+	// (grey -> saturated red sphere) then a re-render must shift the rendered
+	// image FAR BEYOND the run-to-run noise floor measured above.  We compare
+	// in the stable LINEAR channel-mean signature (not raw PNG bytes, which
+	// diverge on every render): the red channel mean jumps and the green/blue
+	// means drop, a change orders of magnitude larger than `noiseFloor`.  That
+	// the shift exceeds the noise floor is what proves the EDIT (not render
+	// nondeterminism) drove it — the edit flowed Document -> derive -> render.
+	//----------------------------------------------------------------------
+	std::printf( "[coherence] visible edit changes the rendered image (beyond the noise floor)\n" );
+	{
+		AgentSetPatch sp;
+		sp.target = "pnt_albedo";
+		sp.param  = "color";
+		sp.value  = "0.9 0.05 0.05";   // grey -> saturated red: a large, obvious shift
+		AgentPatchResult r = session->ProposePatch( sp );
+		Check( r.applied, "ProposePatch(recolour sphere red) applied" );
+
+		AgentRenderResult rr = session->Render( -1 );
+		Check( rr.ok && !rr.png.empty(), "post-edit Render() produced PNG bytes" );
+
+		const double editShift =
+			std::fabs( rr.meanR - firstMeanR ) +
+			std::fabs( rr.meanG - firstMeanG ) +
+			std::fabs( rr.meanB - firstMeanB );
+		std::printf( "  post-edit mean shift=%.5f  (noise floor=%.5f)\n", editShift, noiseFloor );
+		// The visible recolour must move the image by MUCH more than the
+		// same-head noise floor (guard against a false positive from MC noise).
+		// Empirically the edit shifts the mean ~0.011 vs a ~0.0001 noise floor
+		// (~100x); require a comfortable margin over BOTH the measured floor
+		// (10x) and a small absolute threshold that still sits well under the
+		// edit shift (most of the 24x24 frame is background/emitter, so the
+		// lit-sphere recolour moves the whole-frame mean only modestly).
+		Check( editShift > 10.0 * noiseFloor + 0.002,
+		       "post-edit channel means shift FAR beyond the render noise floor (edit flowed Document->derive->render)" );
+		// The PNG bytes also differ (necessary but not sufficient on its own,
+		// since two renders of the SAME head already differ); kept as a cheap
+		// sanity check alongside the mean-shift money assertion.
+		Check( rr.png != firstPng, "post-edit PNG bytes differ from the pre-edit render" );
+	}
+
+	//----------------------------------------------------------------------
+	// Preview-render: legacy Render(int) stays EXACTLY byte-compatible --
+	// AgentRenderParams with every field absent must reproduce the same
+	// result shape as before (previewWidth/previewHeight echo the actual
+	// (unoverridden) film dims; cameraOverridden is false).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] all-absent params == legacy Render(-1) behaviour\n" );
+	{
+		AgentRenderParams legacy;   // every field at its default (absent)
+		AgentRenderResult rr = session->Render( legacy );
+		Check( rr.ok, "Render(all-absent AgentRenderParams) succeeded" );
+		Check( rr.width == 24 && rr.height == 24, "dims are the Document's authored 24x24 (no override applied)" );
+		Check( rr.previewWidth == 24 && rr.previewHeight == 24, "previewWidth/previewHeight echo the dims actually used" );
+		Check( !rr.cameraOverridden, "cameraOverridden is false when no camera override was requested" );
+	}
+
+	//----------------------------------------------------------------------
+	// Preview-render: transient film-dims override.  Render at a SMALL
+	// preview size; assert the result echoes the requested dims (PNG dims
+	// too), then assert a FOLLOW-UP unoverridden Render is back at the
+	// Document's authored 24x24 -- proving the override is TRANSIENT (never
+	// wrote back into the Scene/Document permanently).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] transient film-dims override (16x16 preview)\n" );
+	{
+		const std::string docBeforePreview = session->ReadDocument();
+
+		AgentRenderParams p;
+		p.width  = 16;
+		p.height = 16;
+		AgentRenderResult rr = session->Render( p );
+		Check( rr.ok, "Render(width=16,height=16) succeeded" );
+		Check( rr.width == 16 && rr.height == 16, "render dims honour the 16x16 preview override" );
+		Check( rr.previewWidth == 16 && rr.previewHeight == 16, "previewWidth/previewHeight echo 16x16" );
+		unsigned int pw = 0, ph = 0;
+		Check( ReadPngDims( rr.png, pw, ph ), "preview PNG IHDR is present" );
+		Check( pw == 16 && ph == 16, "preview PNG IHDR dims are 16x16" );
+
+		// THE HARD CONTRACT: a previewed render must not mutate the retained
+		// Document AT ALL (RED-PROVEN below by checking this catches a
+		// regression: if the override leaked into the Document, this would
+		// differ by a width/height param on the film chunk).
+		Check( session->ReadDocument() == docBeforePreview,
+		       "ReadDocument() is BYTE-IDENTICAL across a dims-overridden preview render" );
+
+		// Restoration: a follow-up render with NO override is back at the
+		// Document's authored 24x24 (the Job-level Film dims were restored,
+		// not just the Document).
+		AgentRenderResult rr2 = session->Render( -1 );
+		Check( rr2.ok, "follow-up unoverridden Render() succeeded" );
+		Check( rr2.width == 24 && rr2.height == 24,
+		       "follow-up render is back at the Document's authored 24x24 (film-dims override was TRANSIENT)" );
+	}
+
+	//----------------------------------------------------------------------
+	// Preview-render: width/height clamping.  Out-of-range requests are
+	// CLAMPED (never rejected) to [16,512] -- AgentRpc.cpp does the
+	// clamping before it reaches AgentSession, so drive that layer here via
+	// a second AgentSession sharing the same head is unnecessary; the
+	// clamp is exercised directly by requesting an in-range-but-boundary
+	// value (16, the floor) and confirming it round-trips exactly (the
+	// clamp logic itself is unit-level AgentRpc.cpp behaviour, exercised
+	// end-to-end by the wire test below).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] boundary dims (16x16 floor) round-trip exactly\n" );
+	{
+		AgentRenderParams p;
+		p.width  = 16;
+		p.height = 16;
+		AgentRenderResult rr = session->Render( p );
+		Check( rr.ok && rr.width == 16 && rr.height == 16, "16x16 (the clamp floor) renders at exactly 16x16" );
+	}
+
+	//----------------------------------------------------------------------
+	// read_image maxEdge: downscale on read (no re-render).  Render at the
+	// Document's authored 24x24, then ReadImage with maxEdge=8: the long
+	// edge must be clamped to 8, aspect preserved (source is square), PNG
+	// signature valid, and the byte count should shrink vs the un-clamped
+	// read.
+	//----------------------------------------------------------------------
+	std::printf( "[read_image] maxEdge downscales the cached image (no re-render)\n" );
+	{
+		AgentRenderResult rr = session->Render( -1 );
+		Check( rr.ok && rr.width == 24 && rr.height == 24, "full-res render (24x24) for the maxEdge test" );
+
+		unsigned int fullW = 0, fullH = 0;
+		std::vector<unsigned char> fullBytes = session->ReadImage( /*maxEdge=*/0, fullW, fullH );
+		Check( HasPngSignature( fullBytes ), "ReadImage(maxEdge=0) PNG carries a valid signature" );
+		Check( fullW == 24 && fullH == 24, "ReadImage(maxEdge=0) reports the native 24x24 dims (back-compat)" );
+		Check( fullBytes == rr.png, "ReadImage(maxEdge=0) returns the SAME bytes as the render (legacy behaviour)" );
+
+		unsigned int smallW = 0, smallH = 0;
+		std::vector<unsigned char> smallBytes = session->ReadImage( /*maxEdge=*/8, smallW, smallH );
+		Check( HasPngSignature( smallBytes ), "ReadImage(maxEdge=8) PNG carries a valid signature" );
+		Check( smallW == 8 && smallH == 8, "ReadImage(maxEdge=8) downscales the square 24x24 source to 8x8" );
+		Check( smallBytes.size() < fullBytes.size(),
+		       "the downscaled PNG is smaller than the full-resolution PNG" );
+
+		// Never-upscale: requesting a maxEdge LARGER than the native image
+		// returns the SAME dims (and bytes) as the unbounded read.
+		unsigned int bigW = 0, bigH = 0;
+		std::vector<unsigned char> bigBytes = session->ReadImage( /*maxEdge=*/1024, bigW, bigH );
+		Check( bigW == 24 && bigH == 24, "maxEdge larger than the source never upscales (stays at 24x24)" );
+		Check( bigBytes == fullBytes, "a maxEdge above the native size returns the SAME bytes as the unbounded read" );
+	}
+
+	std::printf( "=== AgentProposeRenderTest (core): %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// A separate main-body helper: the camera-override tests need to
+// introspect the ACTIVE camera's properties directly (before/after) to
+// prove restoration, which requires holding our OWN Job* (AgentSession
+// owns its Job privately with no accessor) -- so this second scene uses
+// AgentSession::WrapJob over a locally-owned Job, mirroring the
+// AgentLiveCommitTest pattern.
+//////////////////////////////////////////////////////////////////////
+static void RunCameraOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: camera-pose override (preview-render) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_camera_override.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the camera-override scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (for camera introspection)" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	// Resolve the active camera directly so we can introspect its
+	// properties before/after a camera-overridden render.
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String origLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String origUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String origFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+	std::printf( "  original camera: location=\"%s\" lookat=\"%s\" up=\"%s\" fov=\"%s\"\n",
+	             origLocation.c_str(), origLookAt.c_str(), origUp.c_str(), origFov.c_str() );
+
+	//----------------------------------------------------------------------
+	// Baseline render from the AUTHORED camera angle.
+	//----------------------------------------------------------------------
+	AgentRenderResult baseline = session->Render( -1 );
+	Check( baseline.ok, "baseline (unoverridden) render succeeded" );
+
+	//----------------------------------------------------------------------
+	// Render from a markedly DIFFERENT angle (side-on instead of head-on) --
+	// the money assertion: the two renders' channel means must differ by
+	// more than the same-head MC noise floor established in the main test
+	// above (this scene is identical, so we re-establish a local floor via
+	// two overridden renders from the SAME new angle).
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] camera override renders from a different angle\n" );
+	AgentRenderParams sideParams;
+	sideParams.camera.hasLocation = true;
+	sideParams.camera.location    = "3.5 0 0";   // 90 degrees around from the authored +Z view
+	sideParams.camera.hasLookAt   = true;
+	sideParams.camera.lookAt      = "0 0 0";
+	AgentRenderResult side1 = session->Render( sideParams );
+	Check( side1.ok, "side-angle render (camera override) succeeded" );
+	Check( side1.cameraOverridden, "cameraOverridden==true when a camera override was applied" );
+
+	AgentRenderResult side2 = session->Render( sideParams );
+	Check( side2.ok, "second side-angle render (same override) succeeded" );
+	const double sideNoiseFloor =
+		std::fabs( side2.meanR - side1.meanR ) +
+		std::fabs( side2.meanG - side1.meanG ) +
+		std::fabs( side2.meanB - side1.meanB );
+
+	const double angleShift =
+		std::fabs( side1.meanR - baseline.meanR ) +
+		std::fabs( side1.meanG - baseline.meanG ) +
+		std::fabs( side1.meanB - baseline.meanB );
+	std::printf( "  angleShift=%.5f  (same-angle noise floor=%.5f)\n", angleShift, sideNoiseFloor );
+	Check( angleShift > 10.0 * sideNoiseFloor + 0.002,
+	       "a different camera angle shifts the channel means FAR beyond the same-angle noise floor" );
+
+	//----------------------------------------------------------------------
+	// Restoration: the active camera's properties must be IDENTICAL to
+	// their pre-render values after EVERY Render call, overridden or not.
+	//----------------------------------------------------------------------
+	std::printf( "[preview-render] camera properties are RESTORED after an overridden render\n" );
+	const String afterLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String afterLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String afterUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String afterFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+	Check( std::string( afterLocation.c_str() ) == std::string( origLocation.c_str() ),
+	       "camera 'location' restored to its pre-render value after a camera-overridden render" );
+	Check( std::string( afterLookAt.c_str() ) == std::string( origLookAt.c_str() ),
+	       "camera 'lookat' restored to its pre-render value after a camera-overridden render" );
+	Check( std::string( afterUp.c_str() ) == std::string( origUp.c_str() ),
+	       "camera 'up' restored to its pre-render value (was not part of the override -- must be untouched too)" );
+	Check( std::string( afterFov.c_str() ) == std::string( origFov.c_str() ),
+	       "camera 'fov' restored to its pre-render value (was not part of the override)" );
+
+	// A follow-up UNOVERRIDDEN render is back to the baseline angle (channel
+	// means agree with the ORIGINAL baseline within noise, not the side angle).
+	AgentRenderResult after = session->Render( -1 );
+	Check( after.ok, "follow-up unoverridden render succeeded" );
+	Check( !after.cameraOverridden, "follow-up render reports cameraOverridden==false (no override requested)" );
+	const double backToBaseline =
+		std::fabs( after.meanR - baseline.meanR ) +
+		std::fabs( after.meanG - baseline.meanG ) +
+		std::fabs( after.meanB - baseline.meanB );
+	std::printf( "  backToBaseline drift=%.5f (side angle shift was %.5f)\n", backToBaseline, angleShift );
+	Check( backToBaseline < angleShift,
+	       "the follow-up unoverridden render is back near the ORIGINAL baseline angle, not the side angle" );
+
+	//----------------------------------------------------------------------
+	// RED-PROVE the restoration test: verify Render(-1) (no override
+	// requested at all) leaves the camera untouched too -- confirming the
+	// assertions above are actually discriminating (they would catch a
+	// "forgot to restore" regression because they compare against a KNOWN
+	// original value captured before ANY override ran).
+	//----------------------------------------------------------------------
+	Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() )
+	           == std::string( origLocation.c_str() ),
+	       "RED-PROVE: camera location still matches the ORIGINAL captured value (not just the last override's target)" );
+
+	std::printf( "=== camera-pose override tests: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// P1-A red-prove: a Job subclass whose Rasterize() throws AFTER the base
+// Job::Rasterize() has genuinely run (so the sink really got a completed
+// image and the camera/film overrides were really applied) -- mirrors the
+// CodeThreeJob technique in AgentLiveCommitTest.cpp (override a single
+// virtual, call the base for real, then corrupt/interrupt the outcome) so
+// the exception fires from the EXACT call site AgentSession::RenderCore_
+// invokes (mJob->Rasterize()), proving the RAII guard's restore runs on a
+// real unwind through that real call, not a synthetic short-circuit.
+//////////////////////////////////////////////////////////////////////
+class ThrowingRasterizeJob : public Job
+{
+public:
+	ThrowingRasterizeJob() : Job(), mThrowOnRasterize( true ) {}
+	void SetThrowOnRasterize( bool on ) { mThrowOnRasterize = on; }
+	bool Rasterize() override
+	{
+		const bool base = Job::Rasterize();   // the real render actually runs
+		if( mThrowOnRasterize ) {
+			throw std::runtime_error( "ThrowingRasterizeJob: simulated OIDN-class throw from Rasterize()" );
+		}
+		return base;
+	}
+private:
+	bool mThrowOnRasterize;
+};
+
+static void RunRestoreOnThrowTest()
+{
+	std::printf( "=== AgentProposeRenderTest: P1-A RAII restore-on-throw (Rasterize() throws) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_throw_restore.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the throw-restore scene to a temp file" );
+
+	ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job" );
+	if( !session ) { pJob->release(); return; }
+
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const IScenePriv* scenePriv = pJob->GetScene();
+	const IFilm* curFilm = scenePriv ? scenePriv->GetFilm() : nullptr;
+	Check( curFilm != nullptr, "the scene has a Film to capture pre-override dims from" );
+	const unsigned int origW = curFilm ? curFilm->GetWidth()  : 0;
+	const unsigned int origH = curFilm ? curFilm->GetHeight() : 0;
+	Check( origW == 24 && origH == 24, "pre-override Film dims are the Document's authored 24x24" );
+
+	//----------------------------------------------------------------------
+	// Render WITH both a film-dims override and a camera-pose override so
+	// BOTH restore paths (camera fields + film dims) are exercised by the
+	// SAME throwing call.  mJob->Rasterize() throws; AgentRpc's caller-side
+	// dispatch (not exercised directly here -- this is the AgentSession
+	// layer) would turn an escaping exception into a clean -32603, but the
+	// money assertion is what happens to the CAMERA/FILM STATE: it must be
+	// restored EVEN THOUGH the exception unwound past the old straight-line
+	// restore code that used to sit after Rasterize().
+	//----------------------------------------------------------------------
+	AgentRenderParams p;
+	p.width  = 16;
+	p.height = 16;
+	p.camera.hasLocation = true;
+	p.camera.location    = "3.5 0 0";
+	p.camera.hasLookAt   = true;
+	p.camera.lookAt      = "0 0 0";
+
+	// Model-B F2 slice S2a doc-truth fix: Render() no longer lets a thrown
+	// exception escape as a raw C++ exception -- RenderCore_ now catches it
+	// (at every call shape that can run doRenderWork(), including this
+	// headless direct-call path) and reports it as an ordinary ok=false
+	// result CARRYING the renderJobId the failed render was assigned (see
+	// AgentSession.cpp's S1-delta doc-truth-fix comment).  RED-PROVE the
+	// seam actually fires via the result instead of a caught exception.
+	const AgentRenderResult thrownResult = session->Render( p );
+	Check( !thrownResult.ok, "Render() with a throwing Rasterize() reports ok=false (RED-PROVE the seam actually fires)" );
+	Check( thrownResult.renderJobId != 0, "S1-delta doc-truth fix: a FAILED (thrown) render still carries a real, nonzero renderJobId" );
+	Check( thrownResult.message.find( "ThrowingRasterizeJob" ) != std::string::npos,
+	       "the failure message names the thrown exception's text" );
+
+	//----------------------------------------------------------------------
+	// THE MONEY ASSERTION: despite the exception, both overrides are
+	// restored -- the RAII guard's destructor ran during unwinding.
+	//----------------------------------------------------------------------
+	const String afterLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	Check( std::string( afterLocation.c_str() ) == std::string( origLocation.c_str() ),
+	       "P1-A: camera 'location' is RESTORED after Rasterize() throws (RAII guard ran on unwind)" );
+
+	const IScenePriv* scenePrivAfter = pJob->GetScene();
+	const IFilm* filmAfter = scenePrivAfter ? scenePrivAfter->GetFilm() : nullptr;
+	Check( filmAfter != nullptr, "the scene still has a Film after the throwing render" );
+	Check( filmAfter && filmAfter->GetWidth() == origW && filmAfter->GetHeight() == origH,
+	       "P1-A: Film dims are RESTORED to the pre-override 24x24 after Rasterize() throws (RAII guard ran on unwind)" );
+
+	//----------------------------------------------------------------------
+	// RED-PROVE the red-prove: confirm the session is still USABLE after the
+	// exception (a subsequent non-throwing render succeeds cleanly) -- the
+	// guard's restore did not itself leave the Job in a broken state.
+	//----------------------------------------------------------------------
+	pJob->SetThrowOnRasterize( false );
+	AgentRenderResult clean = session->Render( -1 );
+	Check( clean.ok, "a follow-up non-throwing Render() succeeds after the earlier throw+restore (session still usable)" );
+	Check( clean.width == 24 && clean.height == 24, "follow-up render is at the authored 24x24 (no lingering override)" );
+
+	std::printf( "=== P1-A RAII restore-on-throw: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// P1-B: malformed camera vectors must be rejected CLEANLY, not silently
+// no-op while cameraOverridden reports true.  Exercises BOTH layers:
+//
+//   * AgentSession's belt-and-braces (this file, via WrapJob + a HOSTILE
+//     string passed directly through the C++ API, bypassing AgentRpc's
+//     validation entirely) -- proves fail-loud holds even for a caller
+//     that skips the wire layer.
+//   * The RPC-layer shape validation (AgentRpc.cpp ParseCameraOverrideParam)
+//     is exercised end-to-end by AgentChatLoopTest.cpp / the JSON-RPC wire
+//     tests, not duplicated here -- this file is the AgentSession-level
+//     (C++ API) surface.
+//////////////////////////////////////////////////////////////////////
+static void RunMalformedCameraOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: P1-B fail-loud camera-override validation (AgentSession belt-and-braces) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_malformed_camera.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the malformed-camera scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	ICameraManager* cams = pJob->GetCameras();
+	const std::string activeName = pJob->GetActiveCameraName();
+	ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+	Check( cam != nullptr, "the active camera resolves for introspection" );
+	if( !cam ) { pJob->release(); return; }
+
+	const String origLocation = CameraIntrospection::GetPropertyValue( *cam, String( "location" ) );
+	const String origLookAt   = CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) );
+	const String origUp       = CameraIntrospection::GetPropertyValue( *cam, String( "up" ) );
+	const String origFov      = CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) );
+
+	// RED-PROVE THE BUG THIS FIXES: before the fix, CameraIntrospection::
+	// SetProperty's bool return was discarded (captureAndSet ignored it) and
+	// overrodeCamera = !capturedCam.empty() counted ATTEMPTS, not successes
+	// -- so a hostile string like "5 5" (2 tokens, ParseVec3's sscanf wants
+	// 3) would sail through as ok:true, cameraOverridden:true, with the
+	// camera actually UNCHANGED (SetProperty's ParseVec3 failed and
+	// returned early before calling SetLocation). That is precisely the
+	// false observation the feature exists to prevent. The fixed contract:
+	// ok must be FALSE and the camera must be untouched.
+	auto CheckMalformed = [&]( const std::string& label,
+	                            bool hasLoc, const std::string& loc,
+	                            bool hasLookAt, const std::string& lookAt,
+	                            bool hasUp, const std::string& up,
+	                            bool hasFov, const std::string& fov )
+	{
+		AgentRenderParams p;
+		p.camera.hasLocation = hasLoc;   p.camera.location = loc;
+		p.camera.hasLookAt   = hasLookAt; p.camera.lookAt   = lookAt;
+		p.camera.hasUp       = hasUp;     p.camera.up       = up;
+		p.camera.hasFov      = hasFov;    p.camera.fov      = fov;
+
+		AgentRenderResult rr = session->Render( p );
+		Check( !rr.ok, ( "[" + label + "] malformed camera override -> ok==false (fail-loud)" ).c_str() );
+		Check( !rr.cameraOverridden, ( "[" + label + "] malformed camera override -> cameraOverridden==false (no false-positive)" ).c_str() );
+		Check( !rr.message.empty(), ( "[" + label + "] malformed camera override -> a non-empty message explains the failure" ).c_str() );
+
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() ) == std::string( origLocation.c_str() ),
+		       ( "[" + label + "] camera 'location' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "lookat" ) ).c_str() ) == std::string( origLookAt.c_str() ),
+		       ( "[" + label + "] camera 'lookat' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "up" ) ).c_str() ) == std::string( origUp.c_str() ),
+		       ( "[" + label + "] camera 'up' is UNCHANGED after a rejected override" ).c_str() );
+		Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "fov" ) ).c_str() ) == std::string( origFov.c_str() ),
+		       ( "[" + label + "] camera 'fov' is UNCHANGED after a rejected override" ).c_str() );
+	};
+
+	std::printf( "[fail-loud] location \"5 5\" (2 tokens -- the exact reported false-positive)\n" );
+	CheckMalformed( "location 2-token", true, "5 5", true, "0 0 0", false, "", false, "" );
+
+	std::printf( "[fail-loud] location \"abc def ghi\" (non-numeric)\n" );
+	CheckMalformed( "location non-numeric", true, "abc def ghi", true, "0 0 0", false, "", false, "" );
+
+	// NOTE (honest gap, by design): "1 2 3 4" (trailing-token garbage) is
+	// NOT a case this AgentSession-level belt-and-braces layer can catch on
+	// its own -- CameraIntrospection::SetProperty's ParseVec3 is a plain
+	// sscanf( "%lf %lf %lf" ), which reads the first 3 tokens and silently
+	// ignores trailing content, so SetProperty returns TRUE (a real,
+	// successful apply) for that string. The belt-and-braces guard here
+	// only fires when SetProperty itself reports failure; it cannot
+	// retroactively invent a rejection SetProperty didn't produce. The
+	// EXACT-3-token shape check that catches "1 2 3 4" lives at the RPC
+	// layer (AgentRpc.cpp ParseCameraOverrideParam / ValidateVec3Shape),
+	// which validates the wire string BEFORE it ever reaches AgentSession
+	// -- see AgentFirstSliceTest.cpp's "camera vector SHAPE validation
+	// (P1-B)" block for that coverage. A direct C++ caller that bypasses
+	// the RPC layer (as this test does) and hands SetProperty a
+	// trailing-garbage string gets exactly what SetProperty gives it: a
+	// clean apply of the first 3 components. That is SetProperty's
+	// documented contract, not a bug this layer is responsible for.
+
+	std::printf( "[fail-loud] location \"\" (empty)\n" );
+	CheckMalformed( "location empty", true, "", true, "0 0 0", false, "", false, "" );
+
+	std::printf( "[fail-loud] up malformed while location/lookat are VALID (must not silently keep original up)\n" );
+	CheckMalformed( "up malformed", true, "3.5 0 0", true, "0 0 0", true, "9 9", false, "" );
+
+	//------------------------------------------------------------------
+	// Sanity: after all those rejections, a CLEAN override still works --
+	// proves the session was never left in a broken state by a rejected
+	// override.
+	//------------------------------------------------------------------
+	std::printf( "[fail-loud] a clean override still works after several rejections\n" );
+	{
+		AgentRenderParams good;
+		good.camera.hasLocation = true;  good.camera.location = "3.5 0 0";
+		good.camera.hasLookAt   = true;  good.camera.lookAt   = "0 0 0";
+		AgentRenderResult rr = session->Render( good );
+		Check( rr.ok, "a well-formed camera override renders successfully after prior rejections" );
+		Check( rr.cameraOverridden, "a well-formed camera override reports cameraOverridden==true" );
+	}
+	Check( std::string( CameraIntrospection::GetPropertyValue( *cam, String( "location" ) ).c_str() ) == std::string( origLocation.c_str() ),
+	       "camera 'location' restored to ORIGINAL after the clean override's render too" );
+
+	std::printf( "=== P1-B fail-loud camera-override validation: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Model-B F2 slice S1: render IDENTITY (RenderJobId + coordinator
+// bookkeeping), ZERO behavior change.  Four sub-tests:
+//
+//   (a) Headless, no controller -- two sequential Render() calls yield
+//       DISTINCT, MONOTONICALLY INCREASING renderJobId (the session-local
+//       counter documented on AgentRenderResult::renderJobId).
+//
+//   (b) part 1, LIVE / RenderClass::Interactive -- the controller's OWN
+//       interactive RenderLoop pass is genuinely observable mid-flight
+//       from another thread (DoOneRenderPass runs OUTSIDE mMutex, between
+//       the two lock_guard bookkeeping blocks): a background poll catches
+//       CurrentRenderJob() reporting {active=true, RenderClass::
+//       Interactive} while a slowed simulated pass is in flight, then
+//       {active=false} after.  A RenderJobIdTestController subclass
+//       (mirroring AgentLiveCommitTest.cpp's TestController) overrides
+//       DoOneRenderPass with a cancel-checked simulated render so this is
+//       a REAL render thread, not a mock.
+//
+//   (b) part 2, LIVE / RenderClass::AgentPreview -- a render routed
+//       through RunPreviewRenderParked (forced via a camera-pose
+//       override, matching AgentSession::RenderCore_'s documented
+//       routing rule).  RunPreviewRenderParked holds mMutex across its
+//       WHOLE call BY DESIGN (the record lives under the SAME lock that
+//       critical section already took -- this slice's zero-new-
+//       synchronization mandate), so its active window is NOT observable
+//       from another thread without that thread blocking on the same
+//       mutex until the render finishes.  What IS safely checked: the
+//       result's renderJobId is nonzero and shares the SAME monotonic
+//       counter as part 1 (greater than whatever id the controller had
+//       already assigned), and the post-render snapshot correctly
+//       reports {inactive, that id, RenderClass::AgentPreview}.
+//
+//   (c) RED-PROVE: a deliberately "unwired" read of renderJobId (as if
+//       the id were never threaded through) would show 0 for both
+//       renders in (a) -- assert the SECOND call's id is nonzero AND
+//       different from the first, so a regression that drops the
+//       threading (leaves renderJobId at its 0 default) fails this test.
+//////////////////////////////////////////////////////////////////////
+
+// Mirrors AgentLiveCommitTest.cpp's TestController: a real render thread
+// whose DoOneRenderPass simulates work in cancel-checked slices so the
+// interactive loop cycles without needing a live IRasterizer, and so a
+// RunPreviewRenderParked call from another thread can be observed as
+// "active" via CurrentRenderJob() while it holds the park.
+class RenderJobIdTestController : public SceneEditController
+{
+public:
+	RenderJobIdTestController( IJobPriv& job, unsigned int simulatedRenderMs = 20 )
+	: SceneEditController( job, /*interactiveRasterizer*/0 )
+	, mSimulatedRenderMs( simulatedRenderMs )
+	{}
+
+protected:
+	void DoOneRenderPass() override
+	{
+		const unsigned int sliceMs = 2;
+		const unsigned int slices  = ( mSimulatedRenderMs + sliceMs - 1 ) / sliceMs;
+		for( unsigned int i = 0; i < slices; ++i )
+		{
+			if( IsCancelRequested() ) return;
+			std::this_thread::sleep_for( std::chrono::milliseconds( sliceMs ) );
+		}
+	}
+
+private:
+	unsigned int mSimulatedRenderMs;
+};
+
+static void RunRenderJobIdTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Model-B F2 slice S1 (RenderJobId + coordinator bookkeeping) ===\n" );
+
+	//----------------------------------------------------------------------
+	// (a) + (c): headless, no controller -- distinct, monotonically
+	// increasing ids across sequential renders; RED-PROVE that both are
+	// nonzero and differ (catches "id never threaded, stays at 0 default").
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_headless.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the headless render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (headless render-id test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the headless Job (render-id test)" );
+		if( session )
+		{
+			Check( !session->HasController(), "headless session has no attached controller (sets up the no-coordinator id path)" );
+
+			const AgentRenderResult r1 = session->Render( -1 );
+			Check( r1.ok, "headless render #1 succeeds" );
+			const AgentRenderResult r2 = session->Render( -1 );
+			Check( r2.ok, "headless render #2 succeeds" );
+
+			// RED-PROVE (c): both must be nonzero (a dropped-threading
+			// regression leaves renderJobId at its 0 default on BOTH
+			// calls, which would pass a weaker "r2 != r1" check alone if
+			// both were 0 -- so assert nonzero explicitly too).
+			Check( r1.renderJobId != 0, "headless render #1 reports a NONZERO renderJobId (RED-PROVE: catches an unthreaded id stuck at the 0 default)" );
+			Check( r2.renderJobId != 0, "headless render #2 reports a NONZERO renderJobId" );
+			Check( r2.renderJobId != r1.renderJobId, "sequential headless renders yield DISTINCT renderJobId values" );
+			Check( r2.renderJobId > r1.renderJobId, "sequential headless renders yield MONOTONICALLY INCREASING renderJobId values" );
+
+			// A third call keeps the sequence going (not just a 1->2 fluke).
+			const AgentRenderResult r3 = session->Render( -1 );
+			Check( r3.ok, "headless render #3 succeeds" );
+			Check( r3.renderJobId > r2.renderJobId, "a third headless render continues the monotonic sequence" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// (b) part 1: the INTERACTIVE render class's active window IS
+	// genuinely observable from another thread -- DoOneRenderPass runs
+	// OUTSIDE mMutex (between the two lock_guard bookkeeping blocks in
+	// RenderLoop; see SceneEditController.cpp), unlike
+	// RunPreviewRenderParked's agent-preview window, which holds mMutex
+	// for its ENTIRE duration (by design -- the record lives under the
+	// SAME lock that critical section already took, per this slice's
+	// zero-new-synchronization mandate). RenderJobIdTestController's
+	// slowed DoOneRenderPass (mSimulatedRenderMs) gives a wide,
+	// deterministic window for the poll below to land in.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_interactive.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the interactive render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (interactive render-id test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/300 );
+		controller.Start();
+
+		// Poll CurrentRenderJob() for the window where the controller's
+		// OWN initial render pass (RenderLoop's Start-up "show something"
+		// pass) is active with RenderClass::Interactive -- the 300ms
+		// simulated pass gives a wide margin for the poll (started
+		// immediately after Start(), before waiting for completion) to
+		// land inside it.
+		bool observedInteractiveActive = false;
+		SceneEditController::RenderJobStatus observedInteractiveStatus;
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds( 5000 );
+			while( controller.ForTest_GetRenderCount() == 0 && std::chrono::steady_clock::now() < deadline )
+			{
+				const SceneEditController::RenderJobStatus st = controller.CurrentRenderJob();
+				if( st.active && st.renderClass == SceneEditController::RenderClass::Interactive )
+				{
+					observedInteractiveActive = true;
+					observedInteractiveStatus = st;
+					break;
+				}
+				std::this_thread::yield();
+			}
+		}
+		Check( controller.ForTest_WaitForRenders( 1, 3000 ), "the controller's initial interactive render completes" );
+
+		Check( observedInteractiveActive, "CurrentRenderJob() caught the INTERACTIVE render ACTIVE mid-flight (RenderClass::Interactive)" );
+		if( observedInteractiveActive )
+		{
+			Check( observedInteractiveStatus.id != SceneEditController::kInvalidRenderJobId,
+			       "the observed interactive job has a NONZERO id" );
+		}
+
+		const SceneEditController::RenderJobStatus afterInteractive = controller.CurrentRenderJob();
+		Check( !afterInteractive.active, "CurrentRenderJob() reports the job INACTIVE after the interactive pass completes" );
+		if( observedInteractiveActive )
+		{
+			Check( afterInteractive.id == observedInteractiveStatus.id,
+			       "the post-pass snapshot still names the SAME renderJobId observed mid-flight (stale-but-informational)" );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// (b) part 2: the AGENT-PREVIEW class -- a controller is attached, and
+	// the render actually routes through RunPreviewRenderParked (forced
+	// via a camera-pose override, matching AgentSession::RenderCore_'s
+	// documented routing rule).  Because RunPreviewRenderParked holds
+	// mMutex across the WHOLE call (by design -- see part 1's doc), its
+	// "active" window is NOT observable from another thread without that
+	// thread itself blocking on the same mutex until the render finishes
+	// -- so the assertions here are the ones that ARE meaningful: the
+	// result's renderJobId is nonzero, DISTINCT from (and greater than)
+	// every id assigned so far on this controller (proving it shares the
+	// SAME monotonic counter as the interactive pass above -- one counter
+	// per controller, not a separate one per class), and the post-render
+	// snapshot correctly reports {inactive, that id, RenderClass::
+	// AgentPreview}.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_renderjobid_live.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the live render-id scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (live render-id test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the live Job" );
+		if( session )
+		{
+			session->AttachController( &controller );
+			Check( session->HasController(), "live session reports an attached controller" );
+
+			const SceneEditController::RenderJobStatus before = controller.CurrentRenderJob();
+
+			AgentRenderParams p;
+			p.camera.hasLocation = true;
+			p.camera.location    = "3.5 0 0";
+			p.camera.hasLookAt   = true;
+			p.camera.lookAt      = "0 0 0";
+			const AgentRenderResult liveResult = session->Render( p );
+
+			Check( liveResult.ok, "live camera-override render succeeds" );
+			Check( liveResult.renderJobId != 0, "live render reports a NONZERO renderJobId" );
+			Check( liveResult.renderJobId > before.id,
+			       "the agent-preview render's id is GREATER than whatever the controller's counter last assigned (ONE shared monotonic counter across BOTH render classes)" );
+
+			// AFTER the render completes, CurrentRenderJob() reports the
+			// job inactive -- this snapshot IS safely observable (no race:
+			// the render thread released mMutex before Render() returned).
+			//
+			// ARC 80 (2026-08-12) CHANGED WHICH ID IT NAMES, and the change
+			// is honest rather than incidental.  A full-scene beauty render
+			// now attaches a SCENE INVENTORY, whose small identity pass is a
+			// second parked render on the synchronous path -- so the
+			// controller's shared counter advances once more and its
+			// single-slot record names THAT pass, not the beauty render.
+			// The assertion becomes the invariant that is actually true and
+			// still worth pinning: the beauty render's own id is real, the
+			// record is coherent and inactive, and the counter only ever
+			// moves FORWARD.  (Nothing observable is lost: the id the caller
+			// was handed is the beauty render's, the sync render has already
+			// completed by the time it is handed back, and on the ASYNC path
+			// the inventory's pass runs inside the worker's existing park and
+			// mints no id at all.  In a live GUI this record is churned
+			// constantly anyway -- RenderLoop mints an Interactive job for
+			// every viewport pass.)
+			const SceneEditController::RenderJobStatus after = controller.CurrentRenderJob();
+			Check( !after.active, "CurrentRenderJob() reports the job INACTIVE after the render completes" );
+			Check( after.id >= liveResult.renderJobId,
+			       "CurrentRenderJob()'s post-render snapshot names an id at or after the one the "
+			       "result reported (the scene inventory's ephemeral identity pass is the later "
+			       "mint on the synchronous path)" );
+			Check( after.renderClass == SceneEditController::RenderClass::AgentPreview,
+			       "CurrentRenderJob()'s post-render snapshot reports RenderClass::AgentPreview for the agent-routed render" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== Model-B F2 slice S1: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Pre-S2 hardening (two review-flagged items that must land BEFORE S2
+// builds Status(jobId) on this bookkeeping):
+//
+//   ITEM 1 (P2): a throw out of RunPreviewRenderParked's `fn` must NOT
+//     leave CurrentRenderJob().active stuck at true forever.  Reuses the
+//     ThrowingRasterizeJob seam (a real mJob->Rasterize() throw site, the
+//     same one the P1-A restore-on-throw test exercises) but THIS time
+//     with a controller ATTACHED and a camera override, so the render
+//     actually routes through RunPreviewRenderParked (matching
+//     AgentSession::RenderCore_'s documented routing rule) rather than
+//     running headless.
+//
+//   ITEM 2 (P3, S2-blocking): the controller's coordinator-tracked ids
+//     and AgentSession's session-local ids must be PROVABLY DISJOINT (by
+//     parity: coordinator EVEN, session-local ODD), and a session-local
+//     id must round-trip through the JSON wire serializer EXACTLY (not
+//     just "some number came out the other end").
+//////////////////////////////////////////////////////////////////////
+static void RunPreS2HardeningTests()
+{
+	std::printf( "=== AgentProposeRenderTest: pre-S2 hardening (exception-safe active flip + disjoint render-job ids) ===\n" );
+
+	//----------------------------------------------------------------------
+	// ITEM 1: throw out of a CONTROLLER-ATTACHED, RunPreviewRenderParked-
+	// routed render must leave CurrentRenderJob().active == false.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_throw_active_flip.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the throw-active-flip scene to a temp file" );
+
+		ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (active-flip test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires (active-flip test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job (active-flip test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+			Check( session->HasController(), "active-flip session reports an attached controller" );
+
+			// Force the RunPreviewRenderParked route (matches
+			// AgentSession::RenderCore_'s documented routing rule: a
+			// controller attached + a requested override).
+			AgentRenderParams p;
+			p.camera.hasLocation = true;
+			p.camera.location    = "3.5 0 0";
+			p.camera.hasLookAt   = true;
+			p.camera.lookAt      = "0 0 0";
+
+			// Model-B F2 slice S2a doc-truth fix: the thrown exception is now
+			// caught by RenderCore_ and reported as ok=false + a nonzero
+			// renderJobId (see AgentSession.cpp's S1-delta comment) rather
+			// than escaping as a raw C++ exception -- RED-PROVE the seam via
+			// the result.
+			const AgentRenderResult throwResult = session->Render( p );
+			Check( !throwResult.ok, "controller-routed Render() with a throwing Rasterize() reports ok=false (RED-PROVE the seam fires)" );
+			Check( throwResult.renderJobId != 0, "S1-delta doc-truth fix: the failed controller-routed render still carries a real, nonzero renderJobId" );
+
+			// THE MONEY ASSERTION: unfixed code leaves `active` stuck true
+			// forever after this throw (mCurrentRenderJob.active = false
+			// sat AFTER fn() in plain sequential code, so the throw skips
+			// it) -- this assertion FAILS against that code and PASSES
+			// once the RAII guard flips `active` false on every exit.
+			const SceneEditController::RenderJobStatus afterThrow = controller.CurrentRenderJob();
+			Check( !afterThrow.active,
+			       "ITEM 1 MONEY ASSERTION: CurrentRenderJob().active is FALSE after fn() throws out of RunPreviewRenderParked (RAII guard ran on unwind)" );
+			Check( afterThrow.id == throwResult.renderJobId,
+			       "the controller's post-throw job record names the SAME id the failed result reported" );
+
+			// RED-PROVE THE RED-PROVE: the session/controller are still
+			// usable after the throw -- a follow-up non-throwing render
+			// succeeds AND correctly reports active again while it should,
+			// then inactive again after.
+			pJob->SetThrowOnRasterize( false );
+			AgentRenderParams good;
+			good.camera.hasLocation = true;  good.camera.location = "3.5 0 0";
+			good.camera.hasLookAt   = true;  good.camera.lookAt   = "0 0 0";
+			AgentRenderResult clean = session->Render( good );
+			Check( clean.ok, "a follow-up non-throwing controller-routed Render() succeeds after the earlier throw" );
+			const SceneEditController::RenderJobStatus afterClean = controller.CurrentRenderJob();
+			Check( !afterClean.active, "CurrentRenderJob().active is false after the follow-up render completes normally too" );
+			Check( afterClean.id != afterThrow.id, "the follow-up render was assigned a FRESH id (the counter kept advancing through the throw)" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// ITEM 2a (Model-B F2 slice S2a REBASE): pre-S2a, a controller-attached
+	// no-override render never reached RunPreviewRenderParked at all (the
+	// documented pre-existing race -- see AgentSession.h's LIVE-MODE
+	// SAFETY note) and so fell through to the session-local (ODD) counter.
+	// S2a closes that race by routing EVERY controller-attached render --
+	// override or not -- through the controller's coordinator (either
+	// RunPreviewRenderParked for an override, or SubmitAgentRenderSync for
+	// no override).  The updated, deliberate contract: BOTH now yield EVEN
+	// (coordinator) ids, from the SAME shared monotonic counter, and the
+	// session-local (ODD) counter is now reachable ONLY when no controller
+	// is attached at all (headless) -- covered separately below.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_disjoint_ids.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the disjoint-ids scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (disjoint-ids test)" );
+
+		RenderJobIdTestController controller( *pJob, /*simulatedRenderMs*/5 );
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders( 1, 2000 ), "controller's initial interactive render fires (disjoint-ids test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (disjoint-ids test)" );
+		if( session )
+		{
+			session->AttachController( &controller );
+
+			// Model-B F2 slice S2a: no override requested, but a controller
+			// IS attached -- now routes through SubmitAgentRenderSync (the
+			// no-override race closure), so this ALSO yields an EVEN
+			// (coordinator) id, not the pre-S2a session-local ODD one.
+			const AgentRenderResult noOverride = session->Render( -1 );
+			Check( noOverride.ok, "controller-attached, no-override render succeeds" );
+			Check( ( noOverride.renderJobId % 2 ) == 0,
+			       "ITEM 2a (S2a rebase): a controller-attached render with NO override now yields an EVEN (coordinator) renderJobId -- the no-override race closure" );
+
+			// A camera override IS requested -> routes through
+			// RunPreviewRenderParked -> coordinator (EVEN) id.
+			AgentRenderParams p;
+			p.camera.hasLocation = true;  p.camera.location = "3.5 0 0";
+			p.camera.hasLookAt   = true;  p.camera.lookAt   = "0 0 0";
+			const AgentRenderResult withOverride = session->Render( p );
+			Check( withOverride.ok, "controller-attached, WITH-override render succeeds" );
+			Check( ( withOverride.renderJobId % 2 ) == 0,
+			       "ITEM 2a: a controller-attached render WITH an override yields an EVEN (coordinator) renderJobId" );
+
+			Check( withOverride.renderJobId != noOverride.renderJobId,
+			       "ITEM 2a: the two ids are numerically distinct" );
+			Check( withOverride.renderJobId > noOverride.renderJobId,
+			       "ITEM 2a (S2a rebase): both draw from the SAME shared monotonic coordinator counter (strictly increasing across classes)" );
+
+			// A second no-override render continues the SAME coordinator
+			// sequence (proves this is the stable shared-counter behavior,
+			// not a fluke of one call).
+			const AgentRenderResult noOverride2 = session->Render( -1 );
+			Check( noOverride2.ok, "second controller-attached, no-override render succeeds" );
+			Check( ( noOverride2.renderJobId % 2 ) == 0, "a second no-override render also yields an EVEN (coordinator) id" );
+			Check( noOverride2.renderJobId > withOverride.renderJobId, "coordinator ids keep increasing across calls, across BOTH override and no-override renders" );
+
+			session->AttachController( nullptr );
+		}
+
+		controller.Stop();
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//----------------------------------------------------------------------
+	// ITEM 2b: a session-local renderJobId round-trips through the JSON
+	// wire serializer BYTE-EXACTLY.  This is the concrete red-prove for
+	// the rejected high-bit-tag scheme: id | (1ULL<<63) (~9.22e18) fails
+	// Json.cpp SerializeNumber's `fabs(d) < 9.0e15` exact-integer fast
+	// path, falls through to %.17g (scientific notation), AND cannot even
+	// round-trip through a double bit-exactly (2^63 exceeds the 53-bit
+	// mantissa) -- so this test would FAIL under that scheme. The chosen
+	// parity scheme keeps every realistic id comfortably inside the
+	// exact-double-integer range, so this test PASSES.
+	//----------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_wire_roundtrip.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the wire-roundtrip scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene directly (wire-roundtrip test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (wire-roundtrip test)" );
+		if( session )
+		{
+			const AgentRenderResult r = session->Render( -1 );
+			Check( r.ok, "headless render for the wire-roundtrip test succeeds" );
+			Check( ( r.renderJobId % 2 ) == 1, "headless session-local renderJobId is ODD" );
+
+			// Mirror AgentRpc.cpp's exact wire encoding: MakeNumber(double).
+			const RISE::Agent::JsonValue wire = RISE::Agent::JsonValue::MakeNumber( static_cast<double>( r.renderJobId ) );
+			const std::string serialized = RISE::Agent::JsonSerialize( wire );
+
+			// Must be an exact base-10 integer literal -- NOT scientific
+			// notation, NOT a trailing ".0" -- so a wire client parses it
+			// back as the exact same integer.
+			Check( serialized.find( 'e' ) == std::string::npos && serialized.find( 'E' ) == std::string::npos,
+			       "ITEM 2b: the serialized renderJobId is NOT in scientific notation" );
+			Check( serialized.find( '.' ) == std::string::npos,
+			       "ITEM 2b: the serialized renderJobId has no trailing fractional part" );
+			Check( serialized == std::to_string( r.renderJobId ),
+			       "ITEM 2b: the serialized renderJobId is the EXACT decimal string of the uint64 id" );
+
+			// Full round-trip: parse it back and compare as a uint64,
+			// bit-for-bit.
+			RISE::Agent::JsonValue parsedBack;
+			std::string parseErr;
+			Check( RISE::Agent::JsonParse( serialized, parsedBack, parseErr ), "the serialized renderJobId re-parses as valid JSON" );
+			Check( parsedBack.isNumber(), "the re-parsed value is a JSON number" );
+			const std::uint64_t roundTripped = static_cast<std::uint64_t>( parsedBack.asNumber() );
+			Check( roundTripped == r.renderJobId,
+			       "ITEM 2b MONEY ASSERTION: the renderJobId round-trips through JsonSerialize -> JsonParse EXACTLY (byte-exact wire identity)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== pre-S2 hardening: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Model-B F2 slice S3 (EffectiveRenderConfig): AgentRenderParams::samples
+// is no longer a documented no-op -- it is HONORED via
+// IRasterizer::SetSampleCountOverride/GetSampleCountOverride (implemented
+// on PixelBasedRasterizerHelper, covering the pixel-based rasterizer
+// family: PT, spectral PT, BDPT, VCM) with a capture/apply/restore window
+// around Rasterize() that NEVER touches the retained CST Document.  kScene
+// authors `pathtracing_pel_rasterizer { samples 8 ... }`, so the pre-
+// override scene-authored count is 8 throughout.
+//////////////////////////////////////////////////////////////////////
+static void RunSampleCountOverrideTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Model-B F2 slice S3 sample-count override ===\n" );
+
+	//------------------------------------------------------------------
+	// (a) RED-PROVE byte-identity: ReadDocument() before/after a
+	//     samples-overridden render is IDENTICAL -- the whole point of
+	//     the design is that this is a LIVE rasterizer-state mutation,
+	//     never a CST edit.  Without the design's non-mutating contract
+	//     (the old slice-0b draft that routed samplesOverride through
+	//     ProposePatch), the Document would gain a rewritten `samples`
+	//     line here.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_byteidentity.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the byte-identity scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples byte-identity test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (samples byte-identity test)" );
+		if( session )
+		{
+			const std::string beforeDoc = session->ReadDocument();
+			Check( beforeDoc.find( "samples 8" ) != std::string::npos, "the pre-render Document authors 'samples 8'" );
+
+			AgentRenderParams p;
+			p.samples = 64;   // a big departure from the authored 8 -- if this leaked into the CST, the doc would visibly change
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the samples-overridden render succeeds" );
+			Check( r.samplesOverridden, "PT (a pixel-based rasterizer) accepts the sample-count override" );
+			Check( r.effectiveSamples == 64, "effectiveSamples echoes the requested override (64)" );
+
+			const std::string afterDoc = session->ReadDocument();
+			Check( afterDoc == beforeDoc,
+			       "MONEY ASSERTION (byte-identity): ReadDocument() is BYTE-IDENTICAL before and after a samples-overridden render -- "
+			       "the override never touches the retained CST Document" );
+			Check( afterDoc.find( "samples 8" ) != std::string::npos, "the Document STILL authors 'samples 8' after a samples=64 override render" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (b) RED-PROVE restore: after an overridden render, the rasterizer's
+	//     OWN sample count reads back to the scene-authored 8 (not left
+	//     stuck at the override) -- both via GetSampleCountOverride()
+	//     directly and via a SECOND, un-overridden render's
+	//     effectiveSamples echo.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_restore.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the restore scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples restore test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (samples restore test)" );
+		if( session )
+		{
+			IRasterizer* rast = pJob->GetRasterizer();
+			Check( rast != nullptr, "the scene has an active rasterizer to query" );
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8, "GetSampleCountOverride() reads the scene-authored count (8) before any override" );
+			}
+
+			AgentRenderParams p1;
+			p1.samples = 1;   // a big departure DOWN from 8, so a failed restore is easy to observe
+			const AgentRenderResult r1 = session->Render( p1 );
+			Check( r1.ok && r1.samplesOverridden, "the samples=1 override render succeeds and is accepted" );
+			Check( r1.effectiveSamples == 1, "effectiveSamples echoes 1 for the first render" );
+
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8,
+				       "RESTORE MONEY ASSERTION: immediately after the samples=1 override render, GetSampleCountOverride() reads back the "
+				       "scene-authored 8 -- NOT left stuck at the override value" );
+			}
+
+			// A SECOND render with NO override requested renders at the
+			// restored (scene-authored) count -- corroborating evidence
+			// via the result's own echo, independent of the direct
+			// rasterizer query above.
+			AgentRenderParams p2;   // samples left at -1 (no override)
+			const AgentRenderResult r2 = session->Render( p2 );
+			Check( r2.ok, "the follow-up un-overridden render succeeds" );
+			Check( !r2.samplesOverridden, "the follow-up render did not request an override" );
+			Check( r2.effectiveSamples == 8, "the follow-up render's effectiveSamples echoes the RESTORED scene-authored count (8), not the prior override (1)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c) RED-PROVE the existing-kernel in-place mutation path: kScene's
+	//     rasterizer already authors a kernel (samples 8), so overriding
+	//     to another value > 1 must MUTATE that kernel's count in place
+	//     (SetNumSamples) rather than silently doing nothing -- observed
+	//     via the same GetSampleCountOverride() readback.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_inplace.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the in-place-mutation scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (samples in-place test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (samples in-place test)" );
+		if( rast ) {
+			Check( rast->SetSampleCountOverride( 32 ), "SetSampleCountOverride(32) is accepted against the authored 8-sample kernel" );
+			Check( rast->GetSampleCountOverride() == 32, "the existing kernel's count is MUTATED IN PLACE to 32" );
+			Check( rast->SetSampleCountOverride( 8 ), "restoring back to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the kernel's count is restored to 8" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c2) Model-B F2 S3 fix round (P1) RED-PROVE: the samples-override
+	//      restore must NOT silently swap the sampling-kernel TYPE.
+	//      Without the stash, SetSampleCountOverride(1) released the
+	//      scene-authored kernel outright, so a later restore to N>1
+	//      (pSampling==null, no way to tell "authored Sobol" apart from
+	//      "no kernel at all") always rebuilt a FRESH MultiJittered
+	//      kernel -- silently changing the kernel TYPE under the caller.
+	//      Exercised against BOTH the DEFAULT kernel (kScene authors
+	//      `samples 8` with no explicit `pixel_sampler`, which
+	//      PixelFilterConfig defaults to "sobol") and an EXPLICIT
+	//      non-default kernel (`pixel_sampler halton`), via the
+	//      ForTest_SamplingKernelName() test seam (typeid-based; no
+	//      other public accessor exposes the kernel's concrete type).
+	//------------------------------------------------------------------
+	{
+		// (c2-i) Default kernel (Sobol): orig=8 -> override(1) -> restore(8).
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_sobol.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the Sobol kernel-type scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (Sobol kernel-type test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (Sobol kernel-type test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (Sobol kernel-type test)" );
+		if( rast && pHelper )
+		{
+			const std::string kernelBefore = pHelper->ForTest_SamplingKernelName();
+			Check( !kernelBefore.empty(), "the scene-authored kernel (default Sobol) is installed before any override" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "SetSampleCountOverride(1) (preview override) is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the override reads back as 1 spp" );
+
+			Check( rast->SetSampleCountOverride( 8 ), "restoring to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the restore reads back the scene-authored count (8)" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "P1 MONEY ASSERTION (Sobol): the restored kernel's CONCRETE TYPE matches the pre-override kernel -- "
+			       "WITHOUT the stash fix this reads back as MultiJitteredSampling2D instead, a silent kernel-type swap" );
+
+			// Double-override sequence: orig=8 -> 1 -> 64 -> 8.  The stash
+			// is reinstalled (not re-released) at the intermediate 64
+			// step, so the type survives a THIRD override, not just one
+			// restore.
+			Check( rast->SetSampleCountOverride( 1 ), "second cycle: SetSampleCountOverride(1) accepted" );
+			Check( rast->SetSampleCountOverride( 64 ), "second cycle: SetSampleCountOverride(64) (reinstall-from-stash path) accepted" );
+			Check( rast->GetSampleCountOverride() == 64, "second cycle: the reinstalled kernel's count reads back as 64" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "second cycle: the kernel type is STILL the original Sobol type after reinstall-at-64, not MultiJittered" );
+			Check( rast->SetSampleCountOverride( 8 ), "second cycle: final restore to 8 accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "second cycle: final restore reads back 8" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "second cycle: the kernel type is still the original Sobol type after the final restore to 8" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		// (c2-ii) Explicit non-default kernel (Halton): same shape as
+		//         (c2-i), authored via `pixel_sampler halton` (syntax
+		//         mirrors scenes/Tests/Shaders/transparency_shaderop.RISEscene).
+		const std::string haltonScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\tpixel_sampler halton\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_halton.RISEscene", haltonScene );
+		Check( !scenePath.empty(), "wrote the Halton kernel-type scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (Halton kernel-type test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (Halton kernel-type test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (Halton kernel-type test)" );
+		if( rast && pHelper )
+		{
+			const std::string kernelBefore = pHelper->ForTest_SamplingKernelName();
+			Check( !kernelBefore.empty(), "the scene-authored Halton kernel is installed before any override" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "SetSampleCountOverride(1) (preview override) is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the override reads back as 1 spp" );
+
+			Check( rast->SetSampleCountOverride( 8 ), "restoring to 8 is accepted" );
+			Check( rast->GetSampleCountOverride() == 8, "the restore reads back the scene-authored count (8)" );
+			Check( pHelper->ForTest_SamplingKernelName() == kernelBefore,
+			       "P1 MONEY ASSERTION (Halton): the restored kernel's CONCRETE TYPE matches the pre-override Halton kernel -- "
+			       "WITHOUT the stash fix this reads back as MultiJitteredSampling2D instead, a silent kernel-type swap" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		// (c2-iii) orig-samples-1 (no kernel authored at all -- explicit
+		//          `samples 1`, since PathTracingPelDefaults::numPixelSamples
+		//          defaults to 32, not 1: GetSamplingAndFilterElements only
+		//          builds a kernel when numPixelSamples > 1, so `samples 1`
+		//          is what actually leaves `pSampling` null) -> override 64
+		//          -> restore 1: the GENUINE from-scratch MultiJittered path
+		//          must still fire when there was never a kernel to stash,
+		//          and the restore back to 1 must release it outright (no
+		//          stash created, since SetSampleCountOverride(1) only
+		//          stashes when `pSampling` was already non-null).
+		const std::string noKernelScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_kerneltype_nokernel.RISEscene", noKernelScene );
+		Check( !scenePath.empty(), "wrote the no-kernel-authored scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (no-kernel-authored test)" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the scene has an active rasterizer (no-kernel-authored test)" );
+		RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( rast );
+		Check( pHelper != nullptr, "the active rasterizer is a PixelBasedRasterizerHelper (no-kernel-authored test)" );
+		if( rast && pHelper )
+		{
+			Check( std::string( pHelper->ForTest_SamplingKernelName() ).empty(), "no kernel is installed before any override (implicit 1 spp)" );
+			Check( rast->GetSampleCountOverride() == 1, "GetSampleCountOverride() reads 1 for the un-authored scene" );
+
+			Check( rast->SetSampleCountOverride( 64 ), "SetSampleCountOverride(64) against a no-kernel scene is accepted" );
+			Check( rast->GetSampleCountOverride() == 64, "the fresh from-scratch kernel reads back 64 samples" );
+			Check( !std::string( pHelper->ForTest_SamplingKernelName() ).empty(), "a genuine from-scratch kernel (MultiJittered) is now installed" );
+
+			Check( rast->SetSampleCountOverride( 1 ), "restoring to 1 is accepted" );
+			Check( rast->GetSampleCountOverride() == 1, "the restore reads back 1 spp" );
+			Check( std::string( pHelper->ForTest_SamplingKernelName() ).empty(),
+			       "restoring to 1 releases the from-scratch kernel outright -- back to the TRUE original null/1-spp state, "
+			       "no stash left installed in its place" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (d) RED-PROVE the unsupported-rasterizer honesty contract: MLT
+	//     (mlt_rasterizer) does NOT derive from PixelBasedRasterizerHelper
+	//     and therefore inherits IRasterizer's safe default -- ALWAYS
+	//     false/-1, never silently "succeeding" at nothing.  Queried
+	//     directly (no render needed -- MLT is comparatively expensive
+	//     and this is purely an interface-contract check).
+	//------------------------------------------------------------------
+	{
+		const std::string mltScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"mlt_rasterizer\n{\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_samples_unsupported.RISEscene", mltScene );
+		Check( !scenePath.empty(), "wrote the MLT (unsupported-rasterizer) scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the MLT native-v7 scene via the CST path" );
+
+		IRasterizer* rast = pJob->GetRasterizer();
+		Check( rast != nullptr, "the MLT scene has an active rasterizer" );
+		if( rast ) {
+			Check( rast->GetSampleCountOverride() == -1,
+			       "HONESTY MONEY ASSERTION: MLT (not a PixelBasedRasterizerHelper subclass) reports GetSampleCountOverride()==-1 -- unsupported, never guessed" );
+			Check( !rast->SetSampleCountOverride( 16 ),
+			       "HONESTY MONEY ASSERTION: MLT's SetSampleCountOverride(16) returns false -- honestly unsupported, no silent no-op success" );
+			Check( rast->GetSampleCountOverride() == -1, "MLT's state is unchanged by the refused override attempt" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (e) RED-PROVE throw-path restore: ThrowingRasterizeJob + a samples
+	//     override -- the rasterizer's sample count is restored via the
+	//     SAME SampleCountRestoreGuard RAII pattern as the film/camera
+	//     overrides, even though mJob->Rasterize() throws mid-render.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_samples_throwrestore.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the samples throw-restore scene to a temp file" );
+
+		ThrowingRasterizeJob* pJob = new ThrowingRasterizeJob();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "ThrowingRasterizeJob loads the native-v7 scene via the CST path (samples throw-restore test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the throwing Job (samples throw-restore test)" );
+		if( session )
+		{
+			IRasterizer* rast = pJob->GetRasterizer();
+			Check( rast != nullptr, "the throwing Job has an active rasterizer" );
+
+			AgentRenderParams p;
+			p.samples = 40;   // a big departure from the authored 8
+
+			const AgentRenderResult thrownResult = session->Render( p );
+			Check( !thrownResult.ok, "the samples-overridden render on a throwing Rasterize() reports ok=false" );
+			Check( thrownResult.message.find( "ThrowingRasterizeJob" ) != std::string::npos,
+			       "the failure message names the thrown exception's text (samples throw-restore test)" );
+
+			if( rast ) {
+				Check( rast->GetSampleCountOverride() == 8,
+				       "THROW-PATH RESTORE MONEY ASSERTION: despite the exception, the rasterizer's sample count is restored to the "
+				       "scene-authored 8 -- the SampleCountRestoreGuard's destructor ran during unwinding, exactly like the film/camera guard" );
+			}
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== sample-count override: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Toolkit slice 2: `quality:"draft"|"production"` on the agent `render`
+// verb -- an EPHEMERAL, cheap-rasterizer override (a wholly separate
+// InteractiveMaterialPreviewPipeline preview render), NO scene mutation.
+// See AgentSession.h's AgentRenderQuality / AgentRenderParams::quality /
+// AgentRenderResult::renderMode docs for the full contract this proves:
+//
+//   (a) byte-identity: a draft render never touches the retained CST
+//       Document (same non-mutation contract as the samples/film/camera
+//       overrides above).
+//   (b) MONEY ASSERTION (deterministic cheapness): a draft render CAPS
+//       `samples` at 4 regardless of the requested value, and reports
+//       the cap honestly in `message` -- never measured by wall-clock.
+//   (c) an in-cap request is honored verbatim, not silently forced.
+//   (d) production is UNCHANGED: absent/explicit quality:"production"
+//       reports renderMode=="production" and the SAME `integrator` every
+//       pre-existing test in this file already expects.
+//////////////////////////////////////////////////////////////////////
+static void RunDraftQualityTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Toolkit slice 2 (quality:\"draft\") ===\n" );
+
+	//------------------------------------------------------------------
+	// (a) RED-PROVE byte-identity: ReadDocument() before/after a DRAFT
+	//     render is IDENTICAL -- the ephemeral preview pipeline never
+	//     touches the retained CST Document, exactly like the production
+	//     samples/film/camera overrides above.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_byteidentity.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft byte-identity scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft byte-identity test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft byte-identity test)" );
+		if( session )
+		{
+			const std::string beforeDoc = session->ReadDocument();
+
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the draft render succeeds" );
+			Check( r.renderMode == "draft", "the result reports renderMode==\"draft\"" );
+			Check( r.width > 0 && r.height > 0, "the draft render produced a non-empty image" );
+
+			const std::string afterDoc = session->ReadDocument();
+			Check( afterDoc == beforeDoc,
+			       "MONEY ASSERTION (byte-identity): ReadDocument() is BYTE-IDENTICAL before and after a draft render -- "
+			       "the ephemeral preview pipeline never touches the retained CST Document" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (b) RED-PROVE deterministic cheapness: a draft render honours the
+	//     kDraftMaxSamples==4 cap even when a much larger `samples` is
+	//     requested -- asserted via the STRUCTURED result fields, never
+	//     wall-clock (a slow CI machine must not make this flaky).
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_samplescap.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft samples-cap scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft samples-cap test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft samples-cap test)" );
+		if( session )
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			p.samples = 64;   // far above the draft cap -- must be clamped, not honoured verbatim
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the over-requested-samples draft render succeeds" );
+			Check( r.renderMode == "draft", "the result reports renderMode==\"draft\"" );
+			Check( r.samplesOverridden, "the draft pipeline accepts a (capped) sample-count override" );
+			Check( r.effectiveSamples == 4,
+			       "MONEY ASSERTION (cap): effectiveSamples reads back 4 (the draft cap), NOT the requested 64" );
+			Check( r.message.find( "caps samples at 4" ) != std::string::npos,
+			       "MONEY ASSERTION (honesty): the result message names the draft sample cap" );
+			Check( r.message.find( "64" ) != std::string::npos,
+			       "the honest message names the ORIGINALLY REQUESTED count (64)" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (c) A draft request WITHIN the cap (samples=2) is honoured
+	//     verbatim, not silently forced to some other value -- and NOT
+	//     reported as capped.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_samplesunder.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the draft under-cap scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft under-cap test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft under-cap test)" );
+		if( session )
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			p.samples = 2;
+			const AgentRenderResult r = session->Render( p );
+			Check( r.ok, "the under-cap draft render succeeds" );
+			Check( r.effectiveSamples == 2, "a within-cap request (2) is honoured verbatim, not forced to the cap" );
+			Check( r.message.find( "caps samples at 4" ) == std::string::npos,
+			       "the message does NOT claim a cap fired when the request was already within the cap" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	//------------------------------------------------------------------
+	// (d) Absent `quality` -> today's EXACT production behaviour: the
+	//     result reports renderMode=="production" and `integrator` is
+	//     STILL the head's active rasterizer -- unchanged from every
+	//     pre-existing test in this file (RunCoreTests etc.), which
+	//     never set `quality` at all.
+	//------------------------------------------------------------------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_draft_productiondefault.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the production-default scene to a temp file" );
+
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (production-default test)" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		Check( session != nullptr, "AgentSession::WrapJob wraps the Job (production-default test)" );
+		if( session )
+		{
+			const AgentRenderResult r1 = session->Render( -1 );
+			Check( r1.ok, "a plain Render(-1) succeeds" );
+			Check( r1.renderMode == "production", "Render(-1) (absent quality) reports renderMode==\"production\"" );
+			Check( r1.integrator == "pathtracing_pel_rasterizer", "integrator names the scene's authored PT rasterizer" );
+
+			AgentRenderParams p;   // quality left at its default (Production)
+			const AgentRenderResult r2 = session->Render( p );
+			Check( r2.ok, "a default-constructed AgentRenderParams render succeeds" );
+			Check( r2.renderMode == "production", "a default-constructed AgentRenderParams reports renderMode==\"production\"" );
+
+			AgentRenderParams p3;
+			p3.quality = AgentRenderQuality::Production;   // explicit, same as default
+			const AgentRenderResult r3 = session->Render( p3 );
+			Check( r3.ok, "an explicit quality:Production render succeeds" );
+			Check( r3.renderMode == "production", "an explicit quality:Production render reports renderMode==\"production\"" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	std::printf( "=== Toolkit slice 2 (quality:\"draft\"): %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Toolkit slice 2: cancel MID-FLIGHT on a draft render.  Reuses this
+// file's existing controller-attached idiom (a plain SceneEditController,
+// Start(suppressInitialRender=true) -- see RunRenderJobIdTests' (b) part
+// 2 and RunSampleCountOverrideTests) plus AgentSession's own RenderAsync /
+// CancelAsyncRender / RenderWait surface.  A LARGE film-dims override
+// (900x900) makes the draft preview pipeline's per-pixel AO shading take
+// long enough (many pixels, many tiles) that a cancel shortly after
+// submission lands mid-flight rather than after the render already
+// finished -- the draft path shares the SAME single-agent-render-slot /
+// cancel-and-park machinery as a production render (both route through
+// the SAME doRenderWork lambda via SubmitAgentRenderAsync), so a real
+// cancel here proves that sharing holds for draft too, not a
+// mocked/simulated stand-in.
+//////////////////////////////////////////////////////////////////////
+static void RunDraftCancelTest()
+{
+	std::printf( "=== AgentProposeRenderTest: Toolkit slice 2 draft-quality cancel mid-flight ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_draft_cancel.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the draft-cancel scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the native-v7 scene via the CST path (draft-cancel test)" );
+
+	SceneEditController* controller = new SceneEditController( *pJob, /*interactiveRasterizer*/0 );
+	LastRenderRecordingSink* lastRenderSink = new LastRenderRecordingSink();
+	Check( controller->SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH )
+	    && controller->SetPaneSink( 1, lastRenderSink )
+	    && controller->SetPaneContentSource(
+			1, SceneEditController::PaneContentSource::LastRender ),
+		"T4 cancellation fixture wires a Last Render pane" );
+	controller->Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the Job (draft-cancel test)" );
+	if( session )
+	{
+		session->AttachController( controller );
+
+		AgentRenderParams p;
+		p.quality = AgentRenderQuality::Draft;
+		p.width   = 512;
+		p.height  = 512;
+
+		const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+		Check( ar.accepted, "the draft async render is accepted" );
+
+		// Cancel immediately: SceneEditController's agent worker preserves
+		// mAgentRenderCancelRequested across its per-render Reset(), so
+		// doDraftRenderWork's ephemeral rasterizer polls AgentRenderProgress()
+		// on its first tile and aborts deterministically without any timing
+		// race (if SetProgressCallback were unwired, RasterizeScene would run
+		// to completion and ok would be true / lastRenderSink->count == 2).
+		session->CancelAsyncRender( ar.renderJobId );
+
+		const bool completed = session->RenderWait( ar.renderJobId, 10000 );
+		Check( completed, "render_wait observes the cancelled draft render complete within the 10s bound" );
+
+		const AgentSession::AgentLastAsyncRenderResult cached = session->LastAsyncRenderResult( ar.renderJobId );
+		Check( cached.found, "the cached async result names this draft job" );
+		if( cached.found ) {
+			Check( !cached.result.ok,
+			       "MONEY ASSERTION: the cancelled draft render reports ok=false -- genuinely interrupted, never a partial success" );
+			Check( cached.result.renderMode == "draft", "the cancelled result still reports renderMode==\"draft\"" );
+		}
+		Check( lastRenderSink->count == 1
+		    && lastRenderSink->width == 1 && lastRenderSink->height == 1,
+			"MONEY (T4/cancel): cancelled agent render preserves the prior "
+			"Last Render placeholder without a partial-frame push" );
+
+		// RED-PROVE the red-prove: the session is still USABLE after a
+		// cancelled draft render -- a clean follow-up draft render (small,
+		// no override) succeeds.
+		AgentRenderParams p2;
+		p2.quality = AgentRenderQuality::Draft;
+		const AgentRenderResult clean = session->Render( p2 );
+		Check( clean.ok, "a follow-up draft render succeeds after the cancelled one (session still usable)" );
+		Check( clean.renderMode == "draft", "the follow-up render reports renderMode==\"draft\"" );
+		Check( lastRenderSink->count == 2
+		    && lastRenderSink->width == 24 && lastRenderSink->height == 24,
+			"T4 cancellation control: the next successful render pushes exactly once" );
+
+		session->AttachController( nullptr );
+	}
+
+	Check( controller->SetPaneSink( 1, nullptr ),
+		"T4 cancellation fixture detaches its pane sink" );
+	lastRenderSink->release();
+	controller->Stop();
+	delete controller;
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== draft-quality cancel mid-flight: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Round-2 P2-A regression lock: a scene with NO active rasterizer chunk
+// at all (kSceneNoRasterizer -- Job::GetRasterizer() resolves nullptr)
+// must still be able to run a quality:"draft" render, since
+// doDraftRenderWork never dereferences the production rasterizer.  A
+// PRODUCTION render on the SAME rasterizer-less head must still fail
+// honestly with "no active rasterizer" -- proving the fix narrowed the
+// gate to the production branch rather than removing the check
+// entirely.
+//////////////////////////////////////////////////////////////////////
+static void RunNoRasterizerDraftTest()
+{
+	std::printf( "=== AgentProposeRenderTest: Round-2 P2-A no-rasterizer draft render ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_no_rasterizer.RISEscene", kSceneNoRasterizer );
+	Check( !scenePath.empty(), "wrote the no-rasterizer scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the rasterizer-less native-v7 scene via the CST path" );
+	Check( pJob->GetRasterizer() == nullptr,
+	       "RED-PROVE the fixture: the scene truly has NO active rasterizer" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession::WrapJob wraps the rasterizer-less Job" );
+	if( session )
+	{
+		AgentRenderParams pDraft;
+		pDraft.quality = AgentRenderQuality::Draft;
+		const AgentRenderResult draftRes = session->Render( pDraft );
+		Check( draftRes.ok,
+		       "MONEY ASSERTION (P2-A): a draft render succeeds on a scene with NO active rasterizer" );
+		Check( draftRes.renderMode == "draft", "the draft result reports renderMode==\"draft\"" );
+		Check( draftRes.width > 0 && draftRes.height > 0, "the draft render produced a non-empty image" );
+		Check( !draftRes.png.empty(), "the draft render produced non-empty PNG bytes" );
+
+		AgentRenderParams pProd;   // default -> quality:Production
+		const AgentRenderResult prodRes = session->Render( pProd );
+		Check( !prodRes.ok,
+		       "a PRODUCTION render on the SAME rasterizer-less scene still fails honestly "
+		       "(the gate narrowed to production, it was not removed)" );
+		Check( prodRes.message == "no active rasterizer",
+		       "the production failure names the exact pre-existing reason (\"no active rasterizer\")" );
+
+		// A plain legacy Render(int) call (quality defaults to Production
+		// via AgentRenderParams' default) must fail the same honest way.
+		const AgentRenderResult prodRes2 = session->Render( -1 );
+		Check( !prodRes2.ok, "Render(-1) (legacy entry point) on the rasterizer-less scene also fails honestly" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+
+	std::printf( "=== Round-2 P2-A no-rasterizer draft render: %d passed, %d failed (cumulative) ===\n", g_pass, g_fail );
+}
+
+//////////////////////////////////////////////////////////////////////
+// T4 money evidence for every real completion branch.  The scheduler test
+// proves pane-source mechanics directly; this test prevents any integration
+// hook from disappearing while the core helper stays green:
+//   1. AgentSession::RenderCore_'s production, object-map, view-mode, and
+//      draft InMemoryRasterizerOutput branches.
+//   2. SceneEditController's common GUI production-render composition.
+// It also exercises render-first/select-later retention: no Last Render pane
+// exists during the first completion, then the retained image is delivered
+// when a pane subscribes.
+//////////////////////////////////////////////////////////////////////
+static void RunLastRenderCompletionSitesTest()
+{
+	std::printf( "=== AgentProposeRenderTest: T4 Last Render completion sites ===\n" );
+	const std::string scenePath =
+		WriteTemp( "rise_agent_t4_last_render.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the T4 completion scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		"Job loads the T4 completion scene" );
+	SceneEditController controller( *pJob, nullptr );
+	LastRenderRecordingSink* sink = new LastRenderRecordingSink();
+	Check( controller.SetViewportLayout(
+			SceneEditController::ViewportLayout::TwoH )
+	    && controller.SetPaneSink( 1, sink ),
+		"pane 1 sink is installed while its source remains Interactive" );
+	Check( sink->count == 0,
+		"no Last Render subscriber receives an image before the first completion" );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "AgentSession wraps the controller-owned Job" );
+	if( session )
+	{
+		session->AttachController( &controller );
+		AgentRenderParams agentParams;
+		agentParams.width = 16;
+		agentParams.height = 16;
+		agentParams.samples = 1;
+		const unsigned int beforeAgent = sink->count;
+		const AgentRenderResult agentResult = session->Render( agentParams );
+		Check( agentResult.ok && agentResult.width == 16
+		    && agentResult.height == 16,
+			"real coordinated agent render completes at the override size" );
+		Check( sink->count == beforeAgent,
+			"MONEY (T4/no-subscriber): completion is retained without "
+			"pushing an Interactive pane" );
+		Check( controller.SetPaneContentSource(
+				1, SceneEditController::PaneContentSource::LastRender ),
+			"pane 1 subscribes to Last Render after the render completes" );
+		Check( sink->count == beforeAgent + 1
+		    && sink->width == 16 && sink->height == 16
+		    && sink->EncodedPng( 0.0, 2 ) == agentResult.png,
+			"MONEY (T4/agent): render-first/select-later delivers the exact "
+			"position-sensitive RGBA InMemory image, not a blank, flattened, "
+			"permuted, or stale substitute" );
+
+		AgentRenderParams objectMapParams;
+		objectMapParams.width = 16;
+		objectMapParams.height = 16;
+		objectMapParams.renderTarget = AgentRenderTarget::ObjectMap;
+		const unsigned int beforeObjectMap = sink->count;
+		const AgentRenderResult objectMapResult =
+			session->Render( objectMapParams );
+		Check( objectMapResult.ok
+		    && objectMapResult.renderMode == "objectmap"
+		    && sink->count == beforeObjectMap + 1
+		    && sink->EncodedPng( 0.0, 0 ) == objectMapResult.png,
+			"MONEY (T4/object-map): successful object-map completion "
+			"publishes its exact position-sensitive RGBA image once" );
+
+		AgentRenderParams viewModeParams;
+		viewModeParams.width = 16;
+		viewModeParams.height = 16;
+		viewModeParams.renderTarget = AgentRenderTarget::ViewMode;
+		viewModeParams.viewMode =
+			Implementation::ViewportRenderMode::Normals;
+		const unsigned int beforeViewMode = sink->count;
+		const AgentRenderResult viewModeResult =
+			session->Render( viewModeParams );
+		Check( viewModeResult.ok
+		    && viewModeResult.renderMode == "normals"
+		    && sink->count == beforeViewMode + 1
+		    && sink->EncodedPng( 0.0, 0 ) == viewModeResult.png,
+			"MONEY (T4/view-mode): successful diagnostic-view completion "
+			"publishes its exact position-sensitive RGBA image once" );
+
+		AgentRenderParams variantParams;
+		variantParams.width = 16;
+		variantParams.height = 16;
+		variantParams.renderTarget = AgentRenderTarget::ViewMode;
+		variantParams.viewMode =
+			Implementation::ViewportRenderMode::Direct;
+		const unsigned int beforeVariant = sink->count;
+		const AgentRenderResult variantResult =
+			session->Render( variantParams );
+		Check( variantResult.ok
+		    && variantResult.renderMode == "direct"
+		    && sink->count == beforeVariant + 1
+		    && sink->width == variantResult.width
+		    && sink->height == variantResult.height
+		    && sink->EncodedPng( 0.0, 2 ) == variantResult.png,
+			"MONEY (T4/BeautyVariant): successful production-class variant "
+			"completion publishes its exact reduced-resolution RGBA image once" );
+
+		AgentRenderParams draftParams;
+		draftParams.width = 16;
+		draftParams.height = 16;
+		draftParams.quality = AgentRenderQuality::Draft;
+		const unsigned int beforeDraft = sink->count;
+		const AgentRenderResult draftResult = session->Render( draftParams );
+		Check( draftResult.ok
+		    && draftResult.renderMode == "draft"
+		    && sink->count == beforeDraft + 1
+		    && sink->EncodedPng( 0.0, 2 ) == draftResult.png,
+			"MONEY (T4/draft): successful draft completion publishes its "
+			"exact position-sensitive RGBA image once" );
+
+		const unsigned int beforeFailure = sink->count;
+		AgentRenderParams failedParams;
+		failedParams.view = "definitely_missing_t4_view";
+		const AgentRenderResult failedResult = session->Render( failedParams );
+		Check( !failedResult.ok && sink->count == beforeFailure,
+			"MONEY (T4/agent): failed agent render preserves the previous Last Render" );
+
+		const unsigned int beforeProduction = sink->count;
+		Check( controller.RequestProductionRender(),
+			"real GUI production-render composition completes" );
+		IRasterizer* completedRasterizer = pJob->GetRasterizer();
+		Implementation::FrameStore* completedStore =
+			completedRasterizer ? completedRasterizer->GetFrameStore() : nullptr;
+		Check( sink->count == beforeProduction + 1
+		    && sink->width == 24 && sink->height == 24
+		    && completedStore
+		    && sink->MatchesImage(
+				completedStore->AsBeautyRasterImage() ),
+			"MONEY (T4/production): common production completion pushes "
+			"the exact per-pixel RGBA canonical FrameStore image once" );
+
+		// A platform Cancel button reports cancellation by returning false
+		// from the composed inner callback.  Some rasterizers still return
+		// true after stopping, so the composition layer must remember the
+		// callback refusal and preserve the prior completed image.
+		RejectingProgressCallback rejectingProgress;
+		bool innerAccepted = true;
+		const unsigned int beforeCancelledGuiRender = sink->count;
+		const bool composedResult =
+			SceneEditController::RunProductionRenderComposed(
+				*pJob, &controller, String( "t4_gui_cancel_probe" ),
+				&rejectingProgress,
+				[&]() -> bool {
+					IProgressCallback* active = pJob->GetProgress();
+					innerAccepted = active
+						? active->Progress( 1.0, 2.0 ) : true;
+					return true;
+				} );
+		Check( composedResult && !innerAccepted,
+			"GUI-cancel probe reproduces a rasterizer that returns success "
+			"after its inner progress callback refuses work" );
+		Check( sink->count == beforeCancelledGuiRender,
+			"MONEY (T4/GUI cancel): inner-callback cancellation preserves "
+			"the prior Last Render without a partial/stale-frame push" );
+		session->AttachController( nullptr );
+	}
+
+	Check( controller.SetPaneSink( 1, nullptr ), "Last Render sink detached" );
+	sink->release();
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//======================================================================
+// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the WHOLE-SCENE
+// target on the render surface.
+//
+// WHY THIS IS THE SURFACE.  The battery that selected this mechanism
+// measured models visiting the full-frame render 64/64 times and every
+// per-part consultation surface 0/64 -- so the target rides the render
+// rather than waiting to be asked for.  These tests pin WHERE it attaches
+// and, just as importantly, where it must NOT:
+//   * DRAFT ignores the scene's authored LIGHTING (a fixed synthetic
+//     studio rig stands in for it, no shadows/GI), so setting it beside a
+//     coloured, lit target invites reading a shading difference as a scene
+//     difference -- even though draft DOES shade with the material's own
+//     BSDF under that fixed rig.
+//   * OBJECTMAP paints identity colours, not appearance.
+//   * ISOLATE is a look at ONE PART; the whole-scene target is not what it
+//     is a look at.
+//
+// PHASE 2b (2026-08-11) -- what these tests now pin instead of an RMSE.
+// The shipped Phase 2 reported an RMSE plus per-channel means and replaced
+// the frame with a half-width [target | render] strip.  A live run measured
+// the result: 16 consultations, then 23 emissive_scale / 10 power / 9
+// radiance_scale edits and a blown-out frame the user judged WORSE than the
+// pre-Phase-2 baseline.  RMSE over full-frame RGB is a TONE metric -- the
+// only axis it exposes a gradient on is global exposure -- so the number
+// was deleted outright.  The two assertions that replace it are:
+//   (1) NO SCORE.  Nothing numeric that could be chased survives in the
+//       result.  A future "just a small similarity hint" re-lands the
+//       measured failure, so the absence is a MONEY assertion.
+//   (2) THE RENDER IS NEVER SMALLER.  The composite's render half is the
+//       exact size the plain frame would have been for the same call --
+//       asserted against a real ReadImage(imageMaxEdge), not restated.
+//======================================================================
+
+//! Mint a real, decodable PNG of a known size without adding a PNG encoder
+//! to this test: the build-plan sketch composite is exactly 256x256 per
+//! tile, so one part gives a 256x256 image and two give 512x256.
+static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
+{
+	std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
+	if( !s ) return std::vector<unsigned char>();
+	std::vector<AgentSession::AgentBuildPlanEntry> parts;
+	for( int i = 0; i < partCount; ++i ) {
+		AgentSession::AgentBuildPlanEntry e;
+		e.element         = "canned" + std::to_string( i );
+		e.pieces.push_back( "piece" );
+		e.construction.push_back( "primitive" );
+		e.outline      = "0 0; 1 0; 1 1; 0 1";
+		parts.push_back( e );
+	}
+	return s->FileBuildPlan( parts ).compositePng;
+}
+
+static AgentSession::AgentImageGenerator MakeFakeImageGen( const std::vector<unsigned char>& png )
+{
+	AgentSession::AgentImageGenerator g;
+	g.supported    = true;
+	g.providerName = "gemini";
+	g.modelId      = "test-image-model";
+	g.generate = [png]( const std::string& ) {
+		AgentSession::AgentImageGenOutcome o;
+		o.ok       = true;
+		o.bytes    = png;
+		o.mimeType = "image/png";
+		return o;
+	};
+	return g;
+}
+
+static void RunSceneTargetTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 77 Phase 2 (the imagined whole-scene target) ===\n" );
+
+	const std::string scenePath = WriteTemp( "rise_agent_scene_target.RISEscene", kScene );
+	Check( !scenePath.empty(), "wrote the scene-target scene to a temp file" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+	       "Job loads the native-v7 scene via the CST path (scene-target test)" );
+
+	const std::vector<unsigned char> squarePng = MintCannedPng( pJob, 1 );   // 256x256
+	const std::vector<unsigned char> widePng   = MintCannedPng( pJob, 2 );   // 512x256
+	Check( !squarePng.empty() && !widePng.empty(), "two canned target images were minted" );
+
+	// (a) BASELINE: a session that never imagined a scene produces a render
+	//     result with no comparison at all -- back-compat by construction.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "baseline production render succeeds" );
+		Check( !r.sceneTargetApplied,
+		       "MONEY ASSERTION (back-compat): with no imagined target the render result carries NO "
+		       "sceneTarget block -- a session that does not use the mechanism is untouched by it" );
+		Check( r.sceneTargetCompositePng.empty(), "and no composite" );
+		Check( r.message.find( "scene target" ) == std::string::npos,
+		       "and the message is unchanged" );
+	}
+
+	// (b) THE TARGET on a full-frame production beauty render.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		session->SetImageGenerator( MakeFakeImageGen( squarePng ) );
+		Check( session->ImagineScene( "a grey sphere lit from the front" ).ok, "the imagine succeeds" );
+
+		const std::string docBefore = session->ReadDocument();
+		// No inline image requested: the FACTS ride, and -- exactly as before
+		// this mechanism existed -- no bytes do.
+		const AgentRenderResult noImage = session->Render( AgentRenderParams() );
+		Check( noImage.ok && noImage.sceneTargetApplied,
+		       "MONEY ASSERTION: a full-frame production BEAUTY render carries the sceneTarget "
+		       "facts automatically -- the model does not have to ask for them, which is the "
+		       "whole point (the per-part consultation surfaces measured 0/64)" );
+		Check( noImage.sceneTargetCompositePng.empty(),
+		       "MONEY ASSERTION (Phase 2b): a render that asked for NO inline image gets no "
+		       "composite -- the composite is sized by imageMaxEdge, and a call that wanted no "
+		       "picture is not handed one" );
+
+		AgentRenderParams withImage;
+		withImage.imageMaxEdge = 192;
+		const AgentRenderResult r = session->Render( withImage );
+		Check( r.ok, "the production render succeeds" );
+		Check( r.sceneTargetApplied, "and carries the sceneTarget facts" );
+		Check( r.sceneTargetWidth == 256 && r.sceneTargetHeight == 256,
+		       "the target's own dims are reported" );
+
+		// (b1) THE SIZE CONTRACT, proven against the real thing rather than
+		//      restated: AgentRpc would have returned ReadImage(imageMaxEdge)
+		//      for this call, so the composite must be exactly that wide.
+		unsigned int plainW = 0, plainH = 0;
+		const std::vector<unsigned char> plainFrame = session->ReadImage( 192, plainW, plainH );
+		Check( !plainFrame.empty() && plainW > 0 && plainH > 0,
+		       "the plain frame this call would have returned is readable" );
+		Check( r.sceneTargetCompositeWidth == plainW,
+		       "MONEY ASSERTION (Phase 2b): the composite is EXACTLY as wide as the plain frame "
+		       "would have been -- the render is never shown smaller because a scene target "
+		       "exists.  Phase 2 halved it (a side-by-side strip) and the measured cost was the "
+		       "model having less resolution to spot its own defects than with no target at all." );
+		Check( r.sceneTargetCompositeHeight > plainH,
+		       "and TALLER than the frame -- the target is stacked ABOVE the full-width render, "
+		       "which is what buys the width back" );
+		Check( r.sceneTargetCompositePng.size() >= 8 && r.sceneTargetCompositePng[0] == 0x89 &&
+		       r.sceneTargetCompositePng[1] == 'P' && r.sceneTargetCompositePng[2] == 'N' &&
+		       r.sceneTargetCompositePng[3] == 'G',
+		       "MONEY ASSERTION: and it is a real PNG -- the composite is HOW the imagined target "
+		       "re-enters the model's context at the moment it looks (the single live-image slot)" );
+
+		// (b2) NO SCORE.  The measured Phase 2 failure was a tone metric
+		//      driving emissive/power cranking; the absence of any number to
+		//      chase is the fix, so it is asserted directly.
+		Check( r.message.find( "rmse" ) == std::string::npos &&
+		       r.message.find( "RMSE" ) == std::string::npos &&
+		       r.message.find( "mean rgb" ) == std::string::npos,
+		       "MONEY ASSERTION (Phase 2b): the render message reports NO similarity score and no "
+		       "per-channel means -- RMSE over a full frame is a tone metric, and the only edits "
+		       "it can motivate (exposure, emissive_scale, light power) measurably made the "
+		       "picture worse.  The composite IMAGE is the comparison." );
+		Check( r.message.find( "scene target" ) != std::string::npos,
+		       "the message still states that the image is the target above the render" );
+		Check( r.message.find( "close" ) == std::string::npos &&
+		       r.message.find( "poor" ) == std::string::npos &&
+		       r.message.find( "good" ) == std::string::npos,
+		       "MONEY ASSERTION: and CHARACTERIZES nothing -- no verdict word anywhere, per the "
+		       "design's no-Goodhart rule" );
+		Check( session->ReadDocument() == docBefore,
+		       "attaching the target is side-effect-free on the Document" );
+
+		// (c) The three exclusions, on the SAME session (so the only variable
+		//     is the render kind, not whether a target exists).
+		{
+			AgentRenderParams p;
+			p.quality      = AgentRenderQuality::Draft;
+			p.imageMaxEdge = 192;
+			const AgentRenderResult d = session->Render( p );
+			Check( d.ok, "the draft render succeeds" );
+			Check( !d.sceneTargetApplied,
+			       "MONEY ASSERTION: a DRAFT render carries NO scene target -- draft ignores the "
+			       "scene's authored LIGHTING (a fixed rig stands in for it), so setting it "
+			       "beside a lit, coloured target invites reading a shading difference as a "
+			       "scene difference" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult om = session->Render( p );
+			Check( om.ok, "the objectmap render succeeds" );
+			Check( !om.sceneTargetApplied,
+			       "MONEY ASSERTION: an OBJECTMAP render carries NO scene target -- it paints "
+			       "identity colours, not appearance" );
+		}
+		{
+			AgentRenderParams p;
+			p.isolate      = "obj_sph";
+			p.imageMaxEdge = 192;
+			const AgentRenderResult iso = session->Render( p );
+			Check( iso.ok, "the isolate render succeeds" );
+			Check( iso.isolateApplied, "and really did isolate" );
+			Check( !iso.sceneTargetApplied,
+			       "MONEY ASSERTION: an ISOLATE render carries NO whole-scene target -- isolate "
+			       "deletes the rest of the scene, so it is a look at one PART and the whole-scene "
+			       "target is not what it is a look at" );
+		}
+	}
+
+	// (d) A target whose aspect differs from the render's.  Phase 2 squeezed
+	//     both sides onto a per-axis-minimum canvas and reported the squeeze
+	//     as `aspectMatched:false` so a distorted RMSE could not read as a
+	//     content difference.  Phase 2b has no RMSE to distort: the render
+	//     tile keeps its own dims and the target is fitted to that WIDTH with
+	//     its own aspect preserved, so there is nothing to disclose.
+	{
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		session->SetImageGenerator( MakeFakeImageGen( widePng ) );   // 512x256, 2:1
+		Check( session->ImagineScene( "a wide panorama" ).ok, "the wide-target imagine succeeds" );
+		AgentRenderParams p;
+		p.imageMaxEdge = 192;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.sceneTargetApplied, "the target still attaches" );
+		Check( r.sceneTargetWidth == 512 && r.sceneTargetHeight == 256,
+		       "and the target's own dims are reported" );
+		unsigned int plainW = 0, plainH = 0;
+		Check( !session->ReadImage( 192, plainW, plainH ).empty(),
+		       "the plain frame this call would have returned is readable" );
+		Check( r.sceneTargetCompositeWidth == plainW,
+		       "MONEY ASSERTION (Phase 2b): a 2:1 target against a 1:1 render still leaves the "
+		       "render half at FULL size -- the target is scaled to the render's width and "
+		       "stacked above, never squeezed onto a shared canvas that shrinks the render" );
+		// A 2:1 target fitted to a square-ish render's width is HALF that
+		// width tall, plus the 2px rule -- so the composite is shorter than
+		// the two-panels-tall a same-aspect target would give.
+		Check( r.sceneTargetCompositeHeight > plainH &&
+		       r.sceneTargetCompositeHeight < plainH * 2,
+		       "and the band above it keeps the TARGET's own aspect (a wide target makes a short "
+		       "band), so nothing about either image is distorted" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+
+//======================================================================
+// Arc 80 (2026-08-12): the SCENE INVENTORY on the render surface.
+//
+// WHAT IT IS FOR, from the measurement.  docs/agentic-redesign/
+// 79-clean-room-construction.md sec 8.2: a composed scene rendered as an
+// empty frame, `query_object_at` answered "no object at this pixel" on
+// four of five probes, and the model concluded its GEOMETRY was broken and
+// replaced 80 of 82 hand-built SDF parts with primitives.  Its geometry
+// was fine.  Nothing in the harness could say so, because an INVERSE
+// (pixel -> object) query cannot: you must already know where to look, and
+// a miss reports nothing about where anything is.
+//
+// These tests pin the FORWARD answer -- every object, its footprint, and
+// where it is -- and the two properties that make it usable:
+//   (1) IT RIDES THE RENDER.  Not a verb the model has to think of; every
+//       voluntary consultation surface this workstream shipped measured
+//       0/64 uses.  `scene_inventory` exists and returns the SAME text
+//       through the SAME code path, and that identity is asserted.
+//   (2) EVERY CLAUSE IS TRUE OF WHAT THE CODE COMPUTES.  A non-pinhole
+//       camera produces NO frustum verdict, only a stated reason (arc 79
+//       sec 8.1: one false clause in a model-facing payload cost an entire
+//       session's mechanism).
+//======================================================================
+
+//! 19 objects, NONE of which covers a pixel -- the shape of the arc-79
+//! failure, with every off-screen reason class represented at once:
+//! 6 behind the camera, 5 off-frame (2 left, 1 right, 1 above, 1 below),
+//! 2 crossing the camera plane far to the side, and 6 sub-pixel spheres
+//! whose bounding boxes overlap the frame.  The camera sits at +Z looking
+//! at the origin, so "behind" is +Z beyond the eye.
+static std::string BuildNineteenObjectScene()
+{
+	std::string s =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 96\n\theight 72\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n";
+
+	auto sphere = []( const std::string& name, double r, double x, double y, double z ) {
+		char buf[512];
+		std::snprintf( buf, sizeof( buf ),
+			"sphere_geometry\n{\n\tname geo_%s\n\tradius %.6g\n}\n\n"
+			"standard_object\n{\n\tname %s\n\tgeometry geo_%s\n\tmaterial mat\n"
+			"\tposition %.6g %.6g %.6g\n}\n\n",
+			name.c_str(), r, name.c_str(), name.c_str(), x, y, z );
+		return std::string( buf );
+	};
+	auto box = []( const std::string& name, double x, double y, double z,
+	               double w, double h, double d ) {
+		char buf[512];
+		std::snprintf( buf, sizeof( buf ),
+			"box_geometry\n{\n\tname geo_%s\n\twidth %.6g\n\theight %.6g\n\tdepth %.6g\n}\n\n"
+			"standard_object\n{\n\tname %s\n\tgeometry geo_%s\n\tmaterial mat\n"
+			"\tposition %.6g %.6g %.6g\n}\n\n",
+			name.c_str(), w, h, d, name.c_str(), name.c_str(), x, y, z );
+		return std::string( buf );
+	};
+
+	// 6 BEHIND the camera (eye at z=+10, looking toward -Z).
+	for( int i = 0; i < 6; ++i )
+		s += sphere( "behind_" + std::to_string( i ), 1.0, -5.0 + 2.0 * i, 0.0, 30.0 );
+	// 5 OFF-FRAME, in front of the camera but outside its cone.
+	s += sphere( "offleft_a",  1.0, -60.0,   0.0, 0.0 );
+	s += sphere( "offleft_b",  1.0, -80.0,   0.0, 0.0 );
+	s += sphere( "offright_a", 1.0,  60.0,   0.0, 0.0 );
+	s += sphere( "offabove_a", 1.0,   0.0,  60.0, 0.0 );
+	s += sphere( "offbelow_a", 1.0,   0.0, -60.0, 0.0 );
+	// 2 CROSSING the camera plane, far off to the side.
+	s += box( "straddle_a", -70.0, 0.0, 10.0, 2.0, 2.0, 60.0 );
+	s += box( "straddle_b",  70.0, 0.0, 10.0, 2.0, 2.0, 60.0 );
+	// 6 SUB-PIXEL spheres inside the frame: their bounding boxes overlap
+	// it, no ray centre lands on them at the pass's resolution.
+	for( int i = 0; i < 6; ++i )
+		s += sphere( "speck_" + std::to_string( i ), 0.0005,
+		             -0.213 + 0.0917 * i, 0.137 - 0.0713 * i, 0.0 );
+	return s;
+}
+
+static void RunSceneInventoryTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 80 (the scene inventory) ===\n" );
+
+	// ---- (a) The ORDINARY case: a two-object scene, both visible. -------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_inventory.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the inventory scene to a temp file" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the inventory scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const std::string docBefore = session->ReadDocument();
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the production render succeeds" );
+		Check( r.inventoryApplied,
+		       "MONEY ASSERTION: a full-scene production BEAUTY render carries the scene "
+		       "inventory automatically -- the model never has to ask 'where is everything', "
+		       "which is the whole point (every voluntary consultation surface this workstream "
+		       "shipped measured 0/64 uses)" );
+		Check( r.inventoryObjectCount == 2, "both scene objects are counted" );
+		// obj_emit is a clipped plane at z=3.5 and the camera's eye is at
+		// z=3.5 -- it lies ON the camera plane, so it covers no pixel and is
+		// reported as such.  Asserting the MEASURED state rather than a
+		// convenient one is the point of the mechanism.
+		Check( r.inventoryCoveredCount == 1,
+		       "one covered pixels and one (the emitter plane, coplanar with the eye) did not" );
+		Check( r.inventoryPassWidth > 0 && r.inventoryPassHeight > 0,
+		       "the identity pass's own dims are reported" );
+		Check( r.inventoryText.find( "SCENE INVENTORY" ) != std::string::npos,
+		       "the inventory text is present" );
+		Check( r.inventoryText.find( "obj_sph" ) != std::string::npos &&
+		       r.inventoryText.find( "obj_emit" ) != std::string::npos,
+		       "MONEY ASSERTION: EVERY object is named, not just the ones with a problem -- the "
+		       "inventory answers 'where is everything', and the zero-pixel entries are simply "
+		       "the ones whose answer is unhappy" );
+		Check( r.inventoryText.find( "across / " ) != std::string::npos,
+		       "and a visible object's position in the frame is reported" );
+		// NO ADVICE, NO VERDICT.  The one rule this payload cannot break.
+		Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+		       r.inventoryText.find( "should" )   == std::string::npos &&
+		       r.inventoryText.find( "missing" )  == std::string::npos &&
+		       r.inventoryText.find( "broken" )   == std::string::npos &&
+		       r.inventoryText.find( "wrong" )    == std::string::npos,
+		       "MONEY ASSERTION: the inventory advises nothing and calls nothing missing or "
+		       "broken -- it reports what is, and any nudge toward a fix would contaminate the "
+		       "very behaviour this mechanism exists to measure" );
+		Check( session->ReadDocument() == docBefore,
+		       "computing the inventory is side-effect-free on the Document" );
+
+		// THE VERB AND THE PAYLOAD ARE ONE CODE PATH.
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok && si.objectCount == 2 && si.coveredCount == 1,
+		       "scene_inventory reports the same two objects" );
+		Check( si.text == r.inventoryText,
+		       "MONEY ASSERTION: the explicit verb returns the SAME text the render payload "
+		       "carried -- ONE code path, so the two surfaces cannot describe one scene "
+		       "differently.  The payload is where the mechanism lives; the verb is for "
+		       "anyone who wants to ask." );
+		Check( si.entries.size() == 2 && si.entries[0].onScreen && !si.entries[1].onScreen,
+		       "and the structured entries carry both objects, largest footprint first" );
+
+		// A CAMERA OVERRIDE: the inventory describes the view that ACTUALLY
+		// rendered, not the pre-override camera.  Head-on from +Z the
+		// emitter plane (1.2 units wide at z=3.5) subtends more than the
+		// sphere behind it and hides it completely -- so this is also the
+		// OCCLUSION case, and what it must say about it.
+		{
+			AgentRenderParams cp;
+			cp.camera.hasLocation = true;  cp.camera.location = "0 0 8";
+			cp.camera.hasLookAt   = true;  cp.camera.lookAt   = "0 0 0";
+			const AgentRenderResult cr = session->Render( cp );
+			Check( cr.ok && cr.inventoryApplied, "the camera-override render carries the inventory" );
+			Check( cr.inventoryText.find( "obj_emit -- " ) != std::string::npos &&
+			       cr.inventoryText.find( "obj_emit -- 0 px" ) == std::string::npos,
+			       "MONEY ASSERTION: the emitter plane is now the VISIBLE object -- the inventory "
+			       "measures the caller's ephemeral camera override, not the scene's authored "
+			       "camera (which had the eye coplanar with that same plane)" );
+			Check( cr.inventoryText.find( "obj_sph -- 0 px, its bounding box overlaps the frame" )
+			       != std::string::npos,
+			       "MONEY ASSERTION: the sphere is fully OCCLUDED by that plane, and the "
+			       "inventory says exactly what it measured -- its bounding box overlaps the "
+			       "frame and it covered no pixels -- without speculating that it is occluded "
+			       "rather than sub-pixel.  It does NOT say the object is missing." );
+		}
+
+
+
+		// The ephemeral pass must not become "the last render".
+		unsigned int iw = 0, ih = 0;
+		const std::vector<unsigned char> img = session->ReadImage( 0, iw, ih );
+		Check( !img.empty() && iw == r.width && ih == r.height,
+		       "MONEY ASSERTION: read_image still serves the caller's OWN beauty frame -- the "
+		       "inventory's identity pass never displaces it in the image cache" );
+
+		// ---- (b) The exclusions. ----------------------------------------
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult d = session->Render( p );
+			Check( d.ok && d.inventoryApplied,
+			       "MONEY ASSERTION: a DRAFT render DOES carry the inventory -- draft ignores "
+			       "authored LIGHTING, but the inventory measures where GEOMETRY is, which "
+			       "draft shows faithfully, and an empty-looking draft frame misleads exactly as "
+			       "an empty production one does" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult om = session->Render( p );
+			Check( om.ok && !om.inventoryApplied,
+			       "MONEY ASSERTION: an OBJECTMAP render carries NO inventory -- that render IS "
+			       "this measurement, at full size, with a legend" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ViewMode;
+			p.viewMode = RISE::Implementation::ViewportRenderMode::Normals;
+			const AgentRenderResult vm = session->Render( p );
+			Check( vm.ok && !vm.inventoryApplied,
+			       "MONEY ASSERTION: a false-colour DATA mode carries no inventory -- already a "
+			       "diagnostic" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ViewMode;
+			p.viewMode = RISE::Implementation::ViewportRenderMode::Direct;
+			const AgentRenderResult bv = session->Render( p );
+			Check( bv.ok && !bv.inventoryApplied,
+			       "MONEY ASSERTION: a PRODUCTION-TRANSPORT mode (direct) carries no inventory "
+			       "either -- a deliberately selected transport at a fixed reduced resolution, "
+			       "answering a lighting question the geometry census does not describe" );
+		}
+		{
+			AgentRenderParams p;
+			p.isolate = "obj_sph";
+			const AgentRenderResult iso = session->Render( p );
+			Check( iso.ok && iso.isolateApplied && !iso.inventoryApplied,
+			       "MONEY ASSERTION: an ISOLATE render carries no inventory -- it renders ONE "
+			       "object with every other hidden, so an inventory of it would report the rest "
+			       "of the scene covering no pixels and be true of nothing the caller asked" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (b2) EVERY object visible: the headline's all-present form. ----
+	{
+		static const char* const kTwoVisible =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 64\n\theight 48\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_l\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_left\n\tgeometry geo_l\n\tmaterial mat\n\tposition -1.4 0 0\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_r\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_right\n\tgeometry geo_r\n\tmaterial mat\n\tposition 1.4 0 0\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_2vis.RISEscene", kTwoVisible );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the two-visible-object scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok && r.inventoryApplied && r.inventoryCoveredCount == 2,
+		       "both spheres cover pixels" );
+		Check( r.inventoryText.find( "all 2 covered at least one pixel" ) != std::string::npos,
+		       "the headline reads in its all-present form" );
+		Check( r.inventoryText.find( "Covered no pixels" ) == std::string::npos,
+		       "which is stated by its absence, not by an empty list" );
+		// LEFT is left and RIGHT is right: the in-frame position is a real
+		// measurement, not a placeholder.
+		double leftX = -1.0, rightX = -1.0;
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			if( si.entries[i].name == "obj_left"  ) leftX  = si.entries[i].frameX;
+			if( si.entries[i].name == "obj_right" ) rightX = si.entries[i].frameX;
+		}
+		Check( leftX >= 0.0 && rightX >= 0.0 && leftX < 0.5 && rightX > 0.5 && leftX < rightX,
+		       "MONEY ASSERTION: the frame position is REAL -- the object at world -X reports a "
+		       "frame position left of centre and the one at +X reports right of centre, read "
+		       "from the identity pass's own pixels" );
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			Check( si.entries[i].framePositionKnown && si.entries[i].framePositionFromPixels,
+			       "and it is reported as a PIXEL measurement, not the coarser projected-bbox "
+			       "fallback -- the two are different facts and the entry says which it is" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (b3) ARC 82 (2026-08-12): THE POPULATION FACT. -----------------
+	//
+	// The frontier benchmark on this workstream's own prompt has 47 objects
+	// built from 18 distinct geometries -- 38 of the 47 are repeats of a
+	// geometry another object already uses -- and it reaches that with no
+	// generator or instancing chunk at all: every repeat is an ordinary
+	// standard_object naming the same geometry at a different transform.
+	// The inventory's walk already visits every object, so stating how many
+	// distinct geometries they draw on and how many of those are drawn on
+	// more than once is free.  FACTS ONLY: two counts, no verdict, no
+	// target, and no comparison to any reference.
+	{
+		// FOUR objects, TWO geometries, ONE of which is repeated three times
+		// -- so the two figures are distinguishable from each other and from
+		// the object count.  Distinctness is decided by geometry POINTER, and
+		// this scene is the proof that two objects naming one geometry chunk
+		// count as one geometry rather than two.
+		static const char* const kRepeatScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 64\n\theight 48\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.5\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_lone\n\tradius 0.4\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_a\n\tgeometry geo_ball\n\tmaterial mat\n\tposition -1.6 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_b\n\tgeometry geo_ball\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_c\n\tgeometry geo_ball\n\tmaterial mat\n\tposition 1.6 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_lone\n\tgeometry geo_lone\n\tmaterial mat\n\tposition 0 1.4 0\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_repeat.RISEscene", kRepeatScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the repeated-geometry scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok && si.objectCount == 4, "the repeated-geometry scene has four objects" );
+		Check( si.distinctGeometryCount == 2,
+		       "MONEY ASSERTION: four objects drawing on TWO geometries are counted as two -- "
+		       "distinctness is geometry POINTER identity, so three objects naming one geometry "
+		       "chunk cannot read as three geometries (got " +
+		       std::to_string( si.distinctGeometryCount ) + ")" );
+		Check( si.sharedGeometryCount == 1,
+		       "MONEY ASSERTION: and exactly ONE of those two is used by more than one object -- "
+		       "the reuse figure, which is what separates 47-objects-from-18-geometries from "
+		       "47-objects-from-47 (got " + std::to_string( si.sharedGeometryCount ) + ")" );
+		Check( si.geometryUnreadCount == 0,
+		       "with every object's geometry read, so neither figure is silently partial" );
+		Check( si.text.find( "Those objects draw on 2 distinct geometries, 1 of which is used by "
+		                      "more than one object." ) != std::string::npos,
+		       "MONEY ASSERTION: and the fact is IN THE TEXT the model reads, on the render "
+		       "payload it already meets -- every voluntary consultation surface this workstream "
+		       "shipped measured 0/64 uses" );
+		Check( si.text.find( "could not be read" ) == std::string::npos,
+		       "and the unread clause is absent when there is nothing unread, rather than "
+		       "present with a zero" );
+		// FACTS ONLY, exactly as the rest of the inventory is: no target, no
+		// comparison, no verdict about whether two is enough.
+		static const char* const kBannedPopulationWords[] = {
+			"consider", "should", "sparse", "benchmark", "too few", "only", "more variety" };
+		for( std::size_t i = 0;
+		     i < sizeof( kBannedPopulationWords ) / sizeof( kBannedPopulationWords[0] ); ++i ) {
+			Check( si.text.find( kBannedPopulationWords[i] ) == std::string::npos,
+			       std::string( "the population fact never says \"" ) + kBannedPopulationWords[i] +
+			       "\" -- it states two counts and stops; a verdict would contaminate the very "
+			       "behaviour arc 82 measures" );
+		}
+		// THE PAYLOAD AND THE VERB ARE STILL ONE CODE PATH.
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok && r.inventoryApplied &&
+		       r.inventoryText.find( "2 distinct geometries" ) != std::string::npos,
+		       "and the same sentence rides the render payload, from the same formatter" );
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (c) THE ARC-79 SHAPE: 19 objects, none of them on screen. ------
+	{
+		const std::string sceneText = BuildNineteenObjectScene();
+		const std::string scenePath = WriteTemp( "rise_agent_inventory19.RISEscene", sceneText );
+		Check( !scenePath.empty(), "wrote the 19-object scene to a temp file" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the 19-object scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the 19-object render succeeds" );
+		Check( r.inventoryApplied, "and carries the inventory" );
+		Check( r.inventoryObjectCount == 19,
+		       "all 19 objects are counted (got " + std::to_string( r.inventoryObjectCount ) + ")" );
+		Check( r.inventoryCoveredCount == 0,
+		       "and NONE of them covered a pixel (got " +
+		       std::to_string( r.inventoryCoveredCount ) + " that did)" );
+
+		// THE DELIVERABLE: print the exact text a model would read here.
+		std::printf( "---- inventory text, 19 objects, none on screen ----\n%s\n----\n",
+		             r.inventoryText.c_str() );
+
+		Check( r.inventoryText.find( "entirely behind the camera" ) != std::string::npos,
+		       "MONEY ASSERTION: an object behind the camera is named WITH THAT REASON -- the "
+		       "reason class is the load-bearing part; 'it covered no pixels' alone is what "
+		       "query_object_at already said" );
+		Check( r.inventoryText.find( "off-frame, left" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, right" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, above" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, below" ) != std::string::npos,
+		       "an object outside the frustum is named with the DIRECTION it lies in" );
+		Check( r.inventoryText.find( "overlaps the frame" ) != std::string::npos,
+		       "an object inside the frame that covered no pixels says exactly that, and does "
+		       "NOT speculate about whether it is occluded or sub-pixel" );
+		Check( r.inventoryText.find( "crosses the camera plane" ) != std::string::npos,
+		       "and a box spanning the camera plane says its screen position is undefined "
+		       "rather than inventing one" );
+		Check( r.inventoryText.find( "world bbox centre (" ) != std::string::npos,
+		       "MONEY ASSERTION: every off-screen object is reported WITH ITS WORLD POSITION -- "
+		       "'all 19 exist and here is where each one is' is the answer arc 79's model "
+		       "needed and could not get" );
+		Check( r.inventoryText.find( "behind_0" ) != std::string::npos &&
+		       r.inventoryText.find( "speck_5" ) != std::string::npos,
+		       "and EVERY zero-pixel object is named in full, never summarized away" );
+		Check( r.inventoryText.find( "across / " ) == std::string::npos,
+		       "MONEY ASSERTION: and NOT ONE of them is given an in-frame position -- an object "
+		       "that covered no pixels has no measured place in the frame, and a fabricated "
+		       "0.00/0.00 would read as 'top-left corner'" );
+		{
+			const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+			Check( si.ok && si.entries.size() == 19, "the verb agrees on the object count" );
+			bool anyPositioned = false;
+			for( std::size_t i = 0; i < si.entries.size(); ++i )
+				if( si.entries[i].framePositionKnown ) anyPositioned = true;
+			Check( !anyPositioned,
+			       "and no entry carries a frame position at all, so the wire omits frameX/frameY "
+			       "rather than serializing measured-looking zeros" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (d) A NON-PINHOLE camera fabricates no verdict. ----------------
+	{
+		std::string ortho = kScene;
+		const std::string pin = "pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n";
+		const std::size_t at = ortho.find( pin );
+		Check( at != std::string::npos, "found the pinhole camera chunk to replace" );
+		ortho.replace( at, pin.size(),
+			"orthographic_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n"
+			"\tviewport_scale 2.0\n}\n" );
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_ortho.RISEscene", ortho );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the orthographic-camera scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok, "the inventory still runs on a non-pinhole camera" );
+		Check( !si.framePositionComputed,
+		       "MONEY ASSERTION: a NON-PINHOLE camera produces NO frustum verdict -- the "
+		       "projected-bbox formula is a tan(fov/2) pinhole model, so applying it here "
+		       "would be the WRONG projection, not an approximation of the right one (the "
+		       "rule G1's fix-round set for isolate.bboxCoverage)" );
+		Check( si.framePositionSuppressedReason.find( "not a pinhole" ) != std::string::npos,
+		       "and it says so, in one clause, instead of leaving the caller to guess" );
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			Check( si.entries[i].onScreen || si.entries[i].placement == "unknown",
+			       "every off-screen entry's placement is honestly 'unknown' on a non-pinhole "
+			       "camera" );
+		}
+		// The FOOTPRINTS and in-frame positions still work: they are read
+		// from the pass's own pixels, with no camera model involved.
+		bool anyOnScreenWithPosition = false;
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			if( si.entries[i].onScreen && si.entries[i].frameX > 0.0 ) anyOnScreenWithPosition = true;
+		}
+		Check( anyOnScreenWithPosition,
+		       "MONEY ASSERTION: a VISIBLE object's frame position survives a non-pinhole "
+		       "camera -- it is measured from the identity pass's own pixels, so 'where is it' "
+		       "is answerable for everything on screen under any projection" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (e) THE COST, measured rather than asserted. -------------------
+	// The census rides EVERY qualifying render, so its overhead is a tax on
+	// the whole surface and has to be a reported number, not a hope.
+	{
+		const std::string sceneText = BuildNineteenObjectScene();
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_cost.RISEscene", sceneText );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the cost-measurement scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 256; p.height = 192; p.samples = 8;
+		session->Render( p );   // warm up
+
+		double beautyMs = 0.0, inventoryMs = 0.0;
+		const int kReps = 3;
+		for( int i = 0; i < kReps; ++i ) {
+			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+			const AgentRenderResult rr = session->Render( p );
+			const std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+			Check( rr.ok && rr.inventoryApplied, "the timed render carries the inventory" );
+			const std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+			session->SceneInventory();
+			const std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+			beautyMs    += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+			inventoryMs += std::chrono::duration<double, std::milli>( t3 - t2 ).count();
+		}
+		std::printf( "[arc 80 cost] 256x192 @ 8spp, 19 objects: render+inventory %.1f ms, "
+		             "inventory alone %.1f ms (%.1f%% of the whole call)\n",
+		             beautyMs / kReps, inventoryMs / kReps,
+		             beautyMs > 0.0 ? 100.0 * inventoryMs / beautyMs : 0.0 );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (f) ARC 83 (2026-08-14): THE NOT-AREA-SAMPLED FACT. -------------
+	//
+	// LuminaryManager::AddToLuminaryList (LuminaryManager.cpp) refuses to
+	// register an emissive object as an NEE area light when it has no
+	// directly-owned geometry (a csg_object) or when its geometry's
+	// CanBeAreaLight() is false (e.g. an sdf_geometry whose sampling mesh
+	// provably missed a feature).  The object still renders -- direct
+	// camera view and a BSDF-sampled hit still carry its emission -- it is
+	// simply never SELECTED by light sampling.  This is a MEASUREMENT from
+	// THIS render's AttachScene (not a prediction from the CST), riding
+	// the same inventory the rest of this file exercises.
+	{
+		// (f1) THE CONTROL: an ordinary emissive sphere_geometry object
+		// PASSES CanBeAreaLight() -- it must not be named by the new fact
+		// at all.
+		{
+			static const char* const kControlScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_glow\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname obj_glow\n\tgeometry sph_glow\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_control.RISEscene", kControlScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f1) Job loads the control (ordinary emissive sphere) scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok && r.inventoryApplied, "(f1) the control render carries the inventory" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) == std::string::npos,
+			       "MONEY ASSERTION: an ordinary emissive object that PASSES CanBeAreaLight() is "
+			       "not named by the not-area-sampled fact at all" );
+			Check( r.inventoryNotAreaSampled.empty(),
+			       "and the structured list is empty to match" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f2a) THE GENUINE MISSED-FEATURE CASE: a MESHED emissive
+		// sdf_geometry (nonzero triangles, nonzero GetArea()) that STILL
+		// fails CanBeAreaLight() because SuspectedMissedFeatureCells() > 0
+		// -- the second clause of `GetArea() > 0 &&
+		// SuspectedMissedFeatureCells() == 0`, exercised for real rather
+		// than short-circuited by the first.  A prior version of this
+		// fixture (a 0.1-thick hollow-shell SDF plus a tiny sphere) never
+		// reached that second clause: the whole shell evaded BOTH the
+		// marching-tets corner test AND the missed-feature centre probe
+		// (its wall is thinner than half a grid cell in every direction
+		// that matters), so the mesh was 0 triangles / 0 area and
+		// CanBeAreaLight() was already false before the tiny sphere
+		// mattered -- deleting the sphere would not have changed the
+		// verdict.  Confirmed directly against the RISE CLI on an
+		// isolated copy of that scene: `SDFGeometry:: sampling structure
+		// built: 0 triangles, corrected surface area 0.000000 (detail 8,
+		// J-clamped 0, missed-cells 0)` even WITH the tiny sphere present
+		// (see (f2b) below, which keeps that fixture honestly relabelled).
+		//
+		// This fixture instead unions a big sphere (radius 2.5 -- meshes
+		// cleanly at sampling_detail 8) with a tiny sphere (radius 0.1)
+		// placed OUTSIDE the big sphere's solid, at grid cell (7,7,7)'s
+		// exact centre.  ComputeBounds pads the big sphere's local AABB
+		// (a cube of half-extent 2.5) by `pad = max(1e-3, 3*eps0)`,
+		// `eps0 = diag0*5e-5`, `diag0 = sqrt(3*5^2)` -- giving bbox
+		// [-2.5012990381, 2.5012990381]^3, cell width
+		// 5.0025980763/8 = 0.6253247595, and cell(7,7,7)'s centre at
+		// (2.1886366586, 2.1886366586, 2.1886366586) on every axis --
+		// distance from the origin ~3.79, well outside the r=2.5 solid,
+		// so it is a genuinely isolated feature, not a redundant union
+		// inside the big sphere. Every one of that cell's 8 corners
+		// (~1.876 to ~2.501 per axis) is >0.49 units from the tiny
+		// sphere's centre (outside it) and >0.75 units from the origin
+		// minus 2.5 (outside the big sphere too) -- all 8 read OUTSIDE the
+		// solid -- while the cell's OWN centre sits inside the tiny
+		// sphere (radius 0.1 comfortably covers the sub-millimetre
+		// float slop in the hand-derived centre).  Confirmed directly
+		// against the RISE CLI on an isolated copy of this scene:
+		// `SDFGeometry:: sampling structure built: 1656 triangles,
+		// corrected surface area 78.827673 (detail 8, J-clamped 0,
+		// missed-cells 1)` -- nonzero triangles/area (the big sphere) AND
+		// a provable miss (the tiny one), exactly the state the prior
+		// fixture's comment claimed but did not construct.
+		{
+			static const char* const kMissedFeatureScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_missed\n\tsampling_detail 8\n"
+				"\tpart sphere union 0 0 0 0 0 0 0 1 1 1 2.5 0 0 0\n"
+				"\tpart sphere union 0 2.188637 2.188637 2.188637 0 0 0 1 1 1 0.1 0 0 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname obj_missed\n\tgeometry sdf_missed\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_sdf_missed.RISEscene", kMissedFeatureScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f2a) Job loads the meshed-plus-missed-feature sdf_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f2a) the render succeeds" );
+			Check( r.inventoryApplied, "(f2a) and carries the inventory" );
+			std::printf( "---- inventory text, genuine-missed-feature not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_missed" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive sdf_geometry whose sampling mesh MESHED (nonzero "
+			       "area) but still provably missed the isolated tiny-sphere feature is named by "
+			       "the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_missed",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) != std::string::npos,
+			       "MONEY ASSERTION: the reason names sampling_detail -- the actionable parameter "
+			       "for an sdf_geometry (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			// NO ADVICE, NO VERDICT -- same rule as the rest of the inventory.
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f2b) THE ZERO-AREA CASE: an emissive sdf_geometry whose mesh is
+		// entirely EMPTY (0 triangles), so GetArea() == 0 and
+		// CanBeAreaLight()'s FIRST clause (`GetArea() > 0`) already fails
+		// -- the missed-feature clause is never exercised here, unlike
+		// (f2a) above.  `sampling_detail 8` (the minimum) puts an 8x8x8
+		// grid over a bbox that is a hollow shell (a roundbox union'd
+		// solid, then a slightly smaller roundbox subtracted out of it --
+		// see SDFGeometry::ComputeBounds, which skips subtract parts when
+		// folding the bound, so the bbox stays close to the OUTER
+		// roundbox's [-4,4]^3), giving ~1-unit cells.  The shell wall is
+		// only 0.1 units thick -- thinner than half a cell in every
+		// direction -- so it evades BOTH the marching-tets corner test
+		// (the wall's two faces both read "outside": one from the hollow
+		// interior via the subtract, one from beyond the outer surface,
+		// so no cell corner pair disagrees in sign across it) AND the
+		// missed-feature centre probe (a sub-half-cell feature can evade
+		// the centre too -- see SDFGeometry.h's own doc on
+		// SuspectedMissedFeatureCells()).  The union'd tiny sphere
+		// (radius 0.05 at (0.5, 0.5, 0.5)) IS caught by the missed-feature
+		// probe on its own (its enclosing cell's corners all read outside
+		// while the centre reads inside), but that is not what fails
+		// CanBeAreaLight() here -- GetArea() is already 0 without it.
+		// Confirmed directly against the RISE CLI: WITH the tiny sphere,
+		// `SDFGeometry:: sampling structure built: 0 triangles, corrected
+		// surface area 0.000000 (detail 8, J-clamped 0, missed-cells 1)`;
+		// with the tiny sphere part deleted entirely, the same command
+		// against the bare shell gives `0 triangles, corrected surface
+		// area 0.000000 (detail 8, J-clamped 0, missed-cells 0)` -- the
+		// verdict (0 triangles, CanBeAreaLight() false) is unchanged
+		// either way, which is the point of keeping this a SEPARATE,
+		// honestly-labelled fixture from (f2a) rather than claiming it
+		// demonstrates the missed-feature clause.
+		{
+			static const char* const kZeroAreaSdfScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_thin\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 0 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 0 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"\tpart sphere union 0 0.5 0.5 0.5 0 0 0 1 1 1 0.05 0 0 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname obj_thinsdf\n\tgeometry sdf_thin\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_sdf_zeroarea.RISEscene", kZeroAreaSdfScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f2b) Job loads the zero-area sdf_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f2b) the zero-area render succeeds" );
+			Check( r.inventoryApplied, "(f2b) and carries the inventory" );
+			std::printf( "---- inventory text, zero-area not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_thinsdf" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive sdf_geometry whose mesh is entirely empty (0 "
+			       "triangles, 0 area) is named by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_thinsdf",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) != std::string::npos,
+			       "MONEY ASSERTION: the reason names sampling_detail -- the actionable parameter "
+			       "for an sdf_geometry (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			// NO ADVICE, NO VERDICT -- same rule as the rest of the inventory.
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken" );
+
+			// (f2b suppression) an ISOLATE render of the SAME session
+			// carries no inventory at all, hence no not-area-sampled fact
+			// either -- the new fact rides the same qualification rule as
+			// every other inventory field, with no second rule of its own.
+			{
+				AgentRenderParams p;
+				p.isolate = "obj_thinsdf";
+				const AgentRenderResult iso = session->Render( p );
+				Check( iso.ok && iso.isolateApplied && !iso.inventoryApplied,
+				       "(f2b suppression) an isolate render carries no inventory" );
+				Check( iso.inventoryNotAreaSampled.empty(),
+				       "MONEY ASSERTION: and therefore no not-area-sampled entries either -- the "
+				       "new fact inherits the inventory's existing suppression rule automatically, "
+				       "with no second rule of its own" );
+			}
+
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f3) THE NULL-GEOMETRY CASE: an emissive csg_object.  A
+		// csg_object has no directly-owned IGeometry* (its shape is
+		// synthesized from its two operand objects), so
+		// IObject::GetGeometry() returns null for it -- the OTHER
+		// LuminaryManager refusal branch.  The insert-time gate would
+		// refuse CREATING this binding without `allow_non_sampling_emitter
+		// TRUE` (see AgentChunkCrudTest.cpp's E1 suite); a scene FILE load
+		// only warns, but the fixture carries the flag anyway to match the
+		// acknowledged-construct convention kCsgReadyScene there uses.
+		{
+			static const char* const kCsgNullGeomScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n\n"
+				"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_csg.RISEscene", kCsgNullGeomScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f3) Job loads the null-geometry csg_object scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f3) the csg render succeeds" );
+			Check( r.inventoryApplied, "(f3) and carries the inventory" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "csg_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive csg_object (no directly-owned geometry) is named "
+			       "by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "csg_glow" &&
+			       r.inventoryNotAreaSampled[0].reason.find( "no directly-owned geometry" ) !=
+			           std::string::npos,
+			       "and the structured entry names csg_glow with the null-geometry reason" );
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken, "
+			       "even for the null-geometry case" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f4) THE EMISSIVE GATE, RED-PROVED: TWO non-emissive objects --
+		// a csg_object (null geometry, same shape as (f3)'s object) AND a
+		// coarse sdf_geometry (same shape as (f2b)'s zero-area object) --
+		// both bound to a plain `matte` material instead of `mat_glow`,
+		// plus a properly registered emissive control sphere AND (H5 fix
+		// round, 2026-08-14) an EMISSIVE twin bound to the SAME
+		// sdf_matte_shell geometry as the non-emissive sdf_matte_coarse.
+		// `AddToLuminaryList` -- and this mirrored walk -- only ever
+		// evaluate the null-geometry / CanBeAreaLight() branches for an
+		// object with `pMat && pMat->GetEmitter()`; neither non-emissive
+		// object is a luminary candidate at all and neither must appear
+		// here.
+		//
+		// H4 fix round (2026-08-14): the walk's null-geometry branch is now
+		// `if( !pObjGeom )` -- a structural mirror of LuminaryManager's own
+		// gate -- rather than a call into the shared IsNullGeometryEmitter_
+		// helper (see that function's doc comment: it is back to a TWO-
+		// consumer predicate).  That also changes what "dropping the outer
+		// gate" means for THIS fixture: with the current code neither
+		// inner branch has an independent emitter check of its own, so
+		// mutating `if( pMat && pMat->GetEmitter() )` to `if( true )` would
+		// make BOTH csg_matte and sdf_matte_coarse spuriously appear, not
+		// only the CanBeAreaLight() one. Both objects are kept anyway --
+		// together they exercise BOTH refusal branches this walk mirrors
+		// (not just one), which is the coverage that actually matters now.
+		//
+		// H5 fix round (2026-08-14): `Check(!foundSdfMatte)` only means
+		// something if sdf_matte_shell's CanBeAreaLight() genuinely IS
+		// false -- nothing else in this fixture asserted that, so a future
+		// mesher change that made the shell mesh cleanly could silence this
+		// whole branch without failing anything.  sdf_shell_glow_twin binds
+		// the IDENTICAL geometry chunk to `mat_glow` instead of `matte` and
+		// its MONEY ASSERTION below requires it to BE reported -- pinning
+		// the precondition the negative assertions on csg_matte /
+		// sdf_matte_coarse depend on, inside the same fixture that depends
+		// on it.
+		//
+		// H6 fix round (2026-08-14): sdf_matte_shell's centre moved from
+		// (0,0,8) -- INSIDE the shell's own hollow interior, since the
+		// camera sits at `location 0 0 8` -- to (-7,0,0), clear of the
+		// camera, the csg spheres (x in [-2.6,-1.05]) and the control
+		// sphere (x=2), so the comment above (and this one) describing
+		// separate objects actually matches the scene laid out below.
+		{
+			static const char* const kNonEmissiveGateScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tposition -2 0 0\n\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition -1.65 0 0\n\tmaterial matte\n}\n\n"
+				"csg_object\n{\n\tname csg_matte\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial matte\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_matte_shell\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 -7 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 -7 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname sdf_matte_coarse\n\tgeometry sdf_matte_shell\n"
+				"\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname sdf_shell_glow_twin\n\tgeometry sdf_matte_shell\n"
+				"\tposition 0 6 0\n\tmaterial mat_glow\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_glow\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname obj_glow_control\n\tgeometry sph_glow\n\tposition 2 0 0\n"
+				"\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_nonemissive.RISEscene", kNonEmissiveGateScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f4) Job loads the non-emissive-gate-plus-control scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f4) the render succeeds" );
+			Check( r.inventoryApplied, "(f4) and carries the inventory" );
+			std::printf( "---- inventory text, non-emissive gate ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			// csg_matte and sdf_matte_coarse legitimately DO appear in the
+			// inventory's ordinary per-object listing ("Covered
+			// pixels..."/"Covered no pixels..." below) -- they are real,
+			// non-emissive, world-visible objects and that listing is not
+			// gated on emissive status at all.  The MONEY ASSERTIONS are
+			// narrower and different: neither must appear inside the
+			// NOT-AREA-SAMPLED FACT specifically, which is gated on
+			// `pMat && pMat->GetEmitter()`.
+			bool foundCsgMatte = false, foundSdfMatte = false, foundGlowTwin = false;
+			for( std::size_t i = 0; i < r.inventoryNotAreaSampled.size(); ++i ) {
+				if( r.inventoryNotAreaSampled[i].name == "csg_matte" )       foundCsgMatte = true;
+				if( r.inventoryNotAreaSampled[i].name == "sdf_matte_coarse" ) foundSdfMatte = true;
+				if( r.inventoryNotAreaSampled[i].name == "sdf_shell_glow_twin" ) foundGlowTwin = true;
+			}
+			Check( !foundCsgMatte,
+			       "the NON-emissive csg_object (null geometry, same shape as (f3)'s reported "
+			       "object) carries no not-area-sampled entry -- the emissive gate excludes it" );
+			Check( !foundSdfMatte,
+			       "MONEY ASSERTION: the NON-emissive coarse sdf_geometry (same shape as (f2b)'s "
+			       "reported object, CanBeAreaLight() == false) carries no not-area-sampled entry "
+			       "either -- this is the branch with NO independent emitter check of its own, so "
+			       "this assertion is the one that actually catches a dropped outer gate" );
+			Check( foundGlowTwin,
+			       "H5 MONEY ASSERTION: the EMISSIVE twin bound to the identical sdf_matte_shell "
+			       "geometry IS reported not-area-sampled -- pinning the precondition that "
+			       "CanBeAreaLight() on this geometry really is false, which is what makes "
+			       "!foundCsgMatte / !foundSdfMatte above a meaningful red-proof rather than a "
+			       "vacuous one" );
+			// The control sphere is an ordinary emissive object that PASSES
+			// CanBeAreaLight() -- with both non-emissive objects
+			// (csg_matte, sdf_matte_coarse) correctly excluded by the gate,
+			// exactly the emissive twin should be reported not-area-sampled.
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "sdf_shell_glow_twin" ) != std::string::npos,
+			       "and the not-area-sampled fact fires for exactly the emissive twin" );
+			Check( r.inventoryNotAreaSampled.size() == 1,
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// ---- (f5)/(f6) H1 fix round (2026-08-14): the grouping/cap code's
+		// own coverage. -----------------------------------------------
+		//
+		// Every (f) fixture above yields notAreaSampled.size() 0 or 1, so
+		// FormatSceneInventory_'s "; "-joined multi-group separator, the
+		// per-group "N with <reason>" count, the kInventoryMaxNotAreaSampled-
+		// Lines cap (`std::min`), the ", and N more" elision arithmetic, and
+		// the plural HEADER branch ("N objects bind ... are") are all
+		// unexercised by (f1)-(f4).  (f5) exercises TWO simultaneous groups;
+		// (f6) exercises the per-group cap.  Object enumeration for the
+		// inventory legend (and therefore notAreaSampled's first-seen group
+		// order) walks GenericManager's name-keyed std::map, i.e.
+		// ALPHABETICAL by object name, not scene-declaration order -- both
+		// fixtures below name their objects with that in mind.
+
+		// (f5) TWO GROUPS: one emissive csg_object (null geometry, same
+		// mechanism as (f3)) plus one emissive coarse sdf_geometry (same
+		// zero-area shell as (f2b)) in the SAME scene, so both reasons fire
+		// together and the ONLY prior multi-object (f) fixture with more
+		// than one notAreaSampled entry (f4) never actually reached this --
+		// (f4)'s two non-emissive objects are excluded by the emissive
+		// gate.  "csg_no_geom_glow" sorts before "sdf_zero_area_glow", so
+		// the null-geometry group is group 0 and the CanBeAreaLight() group
+		// is group 1 -- a fixed, assertable order.
+		{
+			static const char* const kTwoGroupScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname opmat\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tposition -6 0 0\n\tmaterial opmat\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition -5.65 0 0\n\tmaterial opmat\n}\n\n"
+				"csg_object\n{\n\tname csg_no_geom_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_thin_shape\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 6 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 6 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname sdf_zero_area_glow\n\tgeometry sdf_thin_shape\n"
+				"\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_twogroup.RISEscene", kTwoGroupScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f5) Job loads the two-group scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f5) the render succeeds" );
+			Check( r.inventoryApplied, "(f5) and carries the inventory" );
+			std::printf( "---- inventory text, TWO-GROUP not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryNotAreaSampled.size() == 2,
+			       "MONEY ASSERTION: both the null-geometry csg_object and the zero-area "
+			       "sdf_geometry are reported (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED: 2 objects bind an emissive material "
+			                              "but are not selected" ) != std::string::npos,
+			       "MONEY ASSERTION: the PLURAL header branch (\"2 objects ... are\") fires -- "
+			       "every prior (f) fixture only ever exercised the singular (\"1 object ... is\") "
+			       "branch" );
+			Check( r.inventoryText.find( "1 with no directly-owned geometry: csg_no_geom_glow" ) !=
+			           std::string::npos,
+			       "MONEY ASSERTION: group 0 carries its own count and name" );
+			Check( r.inventoryText.find(
+			           "1 with geometry cannot be uniformly area-sampled" ) != std::string::npos &&
+			       r.inventoryText.find( "sdf_zero_area_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: group 1 carries its own count and name" );
+			Check( r.inventoryText.find( "csg_no_geom_glow; 1 with geometry cannot be uniformly "
+			                              "area-sampled" ) != std::string::npos,
+			       "MONEY ASSERTION: the two groups are joined by the \"; \" separator, exactly "
+			       "once, between group 0's last name and group 1's count" );
+			bool foundNullGeom = false, foundZeroArea = false;
+			for( std::size_t i = 0; i < r.inventoryNotAreaSampled.size(); ++i ) {
+				const AgentSceneNotAreaSampledEntry& e = r.inventoryNotAreaSampled[i];
+				if( e.name == "csg_no_geom_glow" ) {
+					foundNullGeom = true;
+					Check( e.reason.find( "no directly-owned geometry" ) != std::string::npos,
+					       "the structured entry for csg_no_geom_glow carries the null-geometry "
+					       "reason" );
+				}
+				if( e.name == "sdf_zero_area_glow" ) {
+					foundZeroArea = true;
+					Check( e.reason.find( "sampling_detail" ) != std::string::npos,
+					       "the structured entry for sdf_zero_area_glow carries the sdf-specific "
+					       "reason" );
+				}
+			}
+			Check( foundNullGeom && foundZeroArea,
+			       "both structured entries are present by name" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f6) THE CAP: 13 emissive csg_objects (null geometry, each
+		// acknowledged via allow_non_sampling_emitter TRUE), all sharing
+		// ONE reason and therefore ONE group -- exercising
+		// kInventoryMaxNotAreaSampledLines (12) for real.  Names are
+		// zero-padded ("csg_glow_01".."csg_glow_13") so alphabetical
+		// object-manager order matches numeric order: csg_glow_01..12 are
+		// the first 12 seen and shown; csg_glow_13 is the 13th, elided.
+		{
+			std::string kCapScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 80\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname opmat\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n";
+			for( int i = 1; i <= 13; ++i ) {
+				char suf[4];
+				std::snprintf( suf, sizeof( suf ), "%02d", i );
+				const std::string s( suf );
+				const double x = -60.0 + 5.0 * i;
+				kCapScene += "sphere_geometry\n{\n\tname sph_a_" + s + "\n\tradius 0.4\n}\n\n";
+				kCapScene += "sphere_geometry\n{\n\tname sph_b_" + s + "\n\tradius 0.4\n}\n\n";
+				kCapScene += "standard_object\n{\n\tname csg_opA_" + s + "\n\tgeometry sph_a_" + s +
+					"\n\tposition " + std::to_string( x ) + " 0 0\n\tmaterial opmat\n}\n\n";
+				kCapScene += "standard_object\n{\n\tname csg_opB_" + s + "\n\tgeometry sph_b_" + s +
+					"\n\tposition " + std::to_string( x + 0.35 ) + " 0 0\n\tmaterial opmat\n}\n\n";
+				kCapScene += "csg_object\n{\n\tname csg_glow_" + s + "\n\tobja csg_opA_" + s +
+					"\n\tobjb csg_opB_" + s + "\n\toperation union\n\tmaterial mat_glow\n"
+					"\tallow_non_sampling_emitter TRUE\n}\n\n";
+			}
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_cap.RISEscene", kCapScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f6) Job loads the 13-csg cap scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f6) the render succeeds" );
+			Check( r.inventoryApplied, "(f6) and carries the inventory" );
+			std::printf( "---- inventory text, CAP not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryNotAreaSampled.size() == 13,
+			       "MONEY ASSERTION: the structured list is UNCAPPED -- all 13 entries are present "
+			       "(got " + std::to_string( r.inventoryNotAreaSampled.size() ) + "); only the "
+			       "formatted TEXT truncates" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED: 13 objects bind an emissive material "
+			                              "but are not selected" ) != std::string::npos,
+			       "MONEY ASSERTION: the header states the TRUE total, 13, not the capped 12" );
+			Check( r.inventoryText.find( "13 with no directly-owned geometry: " ) != std::string::npos,
+			       "MONEY ASSERTION: the single group's own line also states 13" );
+			// Narrow to just the NOT-AREA-SAMPLED clause: the ORDINARY
+			// per-object listing further down ("Covered pixels (largest
+			// first):" / "Covered no pixels:") legitimately names EVERY
+			// object including csg_glow_13 -- that listing is not gated on
+			// the cap at all, so searching the whole inventoryText for
+			// "csg_glow_13" would find it there and falsely fail this
+			// elision check.
+			const std::size_t clauseStart = r.inventoryText.find( "NOT AREA-SAMPLED:" );
+			const std::size_t clauseEnd   = r.inventoryText.find( "\nCovered", clauseStart );
+			Check( clauseStart != std::string::npos && clauseEnd != std::string::npos &&
+			       clauseEnd > clauseStart,
+			       "(f6) the not-area-sampled clause is bounded so it can be searched in isolation" );
+			const std::string clause = r.inventoryText.substr( clauseStart, clauseEnd - clauseStart );
+			for( int i = 1; i <= 12; ++i ) {
+				char suf[4];
+				std::snprintf( suf, sizeof( suf ), "%02d", i );
+				Check( clause.find( std::string( "csg_glow_" ) + suf ) != std::string::npos,
+				       std::string( "csg_glow_" ) + suf + " (within the first 12 alphabetically) "
+				       "is named in the capped clause" );
+			}
+			Check( clause.find( "csg_glow_13" ) == std::string::npos,
+			       "MONEY ASSERTION: csg_glow_13, the 13th object alphabetically, is the one "
+			       "ELIDED name -- it does not appear in the capped not-area-sampled clause (it "
+			       "legitimately still appears further down, in the ordinary per-object listing)" );
+			Check( clause.find( ", and 1 more" ) != std::string::npos,
+			       "MONEY ASSERTION: the elision arithmetic (13 total - 12 shown = 1 more) is "
+			       "stated, not silent" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f7) H7(d) fix round (2026-08-14): the `isSdf == false` arm of
+		// the hedged CanBeAreaLight() reason -- the entire point of the F1
+		// fix -- never executed anywhere else in this suite, because every
+		// other CanBeAreaLight()-false fixture above ((f2a), (f2b), (f5),
+		// via sdf_geometry) is an sdf_geometry.  BilinearPatchGeometry is
+		// the OTHER class overriding CanBeAreaLight() (`!patches.empty()
+		// && dTotalArea > 0`), with no `sampling_detail` knob at all.  A
+		// `bilinearpatch_geometry` chunk takes no inline points -- only a
+		// `file` reference to an external patch file (0 patches -- and 0
+		// area -- is a ONE-LINE file: just the patch count) -- so this
+		// needs a second temp file alongside the scene text.
+		{
+			const std::string patchPath =
+				WriteTemp( "rise_agent_inventory_nas_bilinear.bilinear", "0\n" );
+			Check( !patchPath.empty(), "(f7) wrote the zero-patch .bilinear file" );
+			const std::string kBilinearScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"bilinearpatch_geometry\n{\n\tname bp_empty\n\tfile " + patchPath + "\n"
+				"\tmaxpolygons 10\n\tmaxdepth 4\n\tbsp FALSE\n}\n\n"
+				"standard_object\n{\n\tname obj_bp_glow\n\tgeometry bp_empty\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_bilinear.RISEscene", kBilinearScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f7) Job loads the zero-patch bilinearpatch_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f7) the render succeeds" );
+			Check( r.inventoryApplied, "(f7) and carries the inventory" );
+			std::printf( "---- inventory text, bilinearpatch not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_bp_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive bilinearpatch_geometry with zero patches (hence "
+			       "zero area) is named by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_bp_glow",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) == std::string::npos,
+			       "MONEY ASSERTION: the reason does NOT name sampling_detail for a "
+			       "bilinearpatch_geometry -- the hedged, generic phrasing is used instead (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "degenerate zero-area field" ) !=
+			           std::string::npos,
+			       "and the generic clause of the reason is present" );
+			pJob->release();
+			std::remove( patchPath.c_str() );
+			std::remove( scenePath.c_str() );
+		}
+	}
+}
+
+//======================================================================
+// ARC 81 (2026-08-12): THE TONAL FACT.
+// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+//
+// WHY IT EXISTS.  Arc 80 sec 6.1 pointed the brand-new inventory at the
+// arc-79 scene that "renders empty" and found 17 of 19 objects covering
+// pixels, every one sensibly placed.  The picture was one flat blue --
+// luma stdev 3.5 on a mean of 101, about 3% contrast across the whole
+// frame.  The inventory says WHERE things are; it cannot say whether they
+// are DISTINGUISHABLE.  Arc 80 recorded that as the named next candidate;
+// this is it.
+//
+// WHAT THESE TESTS PIN:
+//   (1) THE TWO FRAMES ARE TOLD APART BY THE NUMBERS.  A frame with no
+//       tonal range and an ordinary one produce unmistakably different
+//       strings -- which is the whole design, because the harness is
+//       forbidden from saying "this looks flat".
+//   (2) IT COSTS NO RENDER.  Measured, and reported as a number.
+//   (3) FACTS ONLY, and every clause true of what the code computes.
+//   (4) THE SUPPRESSION RULE, on every surface it excludes.
+//======================================================================
+
+//! A frame with NO tonal range at all: one emissive quad, of CONSTANT
+//! exitance, filling the whole view.  Emission is view-independent, so
+//! every pixel resolves to the same displayed byte -- the shape of the
+//! mermaid2 pathology (measured luma stdev 0.4 out of 255), reproduced
+//! deterministically rather than approximated.
+static const char* const kFlatToneScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.35 0.4 0.45\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_flat\n\texitance pnt_flat\n"
+	"\tscale 1.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_flat\n\tpta -40 40 -2\n\tptb 40 40 -2\n"
+	"\tptc 40 -40 -2\n\tptd -40 -40 -2\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry quad_flat\n\tmaterial mat_flat\n}\n";
+
+static void RunFrameToneTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 81 (the tonal fact) ===\n" );
+
+	// ---- (a) THE MONEY COMPARISON: a flat frame and an ordinary one. ----
+	std::string flatText, normalText;
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_flat.RISEscene", kFlatToneScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the flat-tone scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		const std::string docBefore = session->ReadDocument();
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the flat-tone production render succeeds" );
+		Check( r.tonalApplied,
+		       "MONEY ASSERTION: a full-scene production render carries the tonal fact "
+		       "automatically -- the model never has to ask what its own frame looks like, which "
+		       "is the whole point (every voluntary consultation surface this workstream shipped "
+		       "measured 0/64 uses)" );
+		flatText = r.tonalText;
+		std::printf( "[arc 81 tone] FLAT   : %s\n", flatText.c_str() );
+
+		Check( r.tonalLumaStdDev < 2.0,
+		       "the flat frame's luma standard deviation is under 2 of 255 (got " +
+		       std::to_string( r.tonalLumaStdDev ) + ")" );
+		Check( r.tonalLumaP99 - r.tonalLumaP1 <= 4,
+		       "and its 1st-to-99th percentile span is at most 4 levels (got " +
+		       std::to_string( r.tonalLumaP99 - r.tonalLumaP1 ) + ")" );
+		Check( r.tonalModeConcentration > 0.98,
+		       "MONEY ASSERTION: essentially the whole frame sits within a few levels of one "
+		       "value -- the statistic chosen so the mermaid2 pathology is unmistakable" );
+		Check( r.tonalPixelsMeasured == r.width * r.height,
+		       "every pixel of the frame was counted, not a sample" );
+		Check( session->ReadDocument() == docBefore,
+		       "computing the tonal fact is side-effect-free on the Document" );
+
+		// NO ADVICE, NO VERDICT.  The one rule this payload cannot break --
+		// the same list the inventory's own test pins, plus the adjectives
+		// this particular fact would be tempted into.
+		static const char* const kBanned[] = {
+			"consider", "should", "missing", "broken", "wrong",
+			"flat", "dull", "low ", "too ", "lacks", "needs" };
+		for( std::size_t i = 0; i < sizeof( kBanned ) / sizeof( kBanned[0] ); ++i ) {
+			Check( flatText.find( kBanned[i] ) == std::string::npos,
+			       std::string( "MONEY ASSERTION: the tonal fact never says \"" ) + kBanned[i] +
+			       "\" -- it states the distribution and the model draws the conclusion; a "
+			       "verdict would contaminate the very behaviour arc 81 measures" );
+		}
+		Check( flatText.find( "Rec.709 luma" ) != std::string::npos &&
+		       flatText.find( "0-255 scale" ) != std::string::npos,
+		       "and it says exactly what it measured and on what scale, so no clause is "
+		       "left for the reader to assume" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_normal.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the ordinary scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 64; p.height = 64;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.tonalApplied, "the ordinary production render carries the tonal fact" );
+		normalText = r.tonalText;
+		std::printf( "[arc 81 tone] NORMAL : %s\n", normalText.c_str() );
+
+		Check( r.tonalLumaStdDev > 20.0,
+		       "MONEY ASSERTION: an ordinary lit frame measures a standard deviation an order of "
+		       "magnitude above the flat one (got " + std::to_string( r.tonalLumaStdDev ) +
+		       ") -- the two frames are told apart by the NUMBERS, which is what lets the harness "
+		       "stay silent about what they mean" );
+		Check( r.tonalLumaP99 - r.tonalLumaP1 > 40,
+		       "and its percentile span is dozens of levels wide (got " +
+		       std::to_string( r.tonalLumaP99 - r.tonalLumaP1 ) + ")" );
+		Check( r.tonalModeConcentration < 0.9,
+		       "with the frame NOT concentrated on one value (got " +
+		       std::to_string( r.tonalModeConcentration ) + ")" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	Check( !flatText.empty() && !normalText.empty() && flatText != normalText,
+	       "the two frames produce different strings" );
+
+	// ---- (b) SUPPRESSION, on every surface the rule excludes. -----------
+	// A strict SUBSET of the inventory's rule: draft is additionally
+	// excluded here, because a draft frame's pixels come from a fixed
+	// studio-preview shader that ignores the scene's authored lighting
+	// entirely -- a tonal number off one would be true of the preview and
+	// read as a statement about the scene.
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_suppress.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the suppression scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		{
+			AgentRenderParams d;
+			d.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult r = session->Render( d );
+			Check( r.ok && r.inventoryApplied && !r.tonalApplied,
+			       "MONEY ASSERTION: a DRAFT render carries the inventory but NOT the tonal fact "
+			       "-- draft ignores the scene's authored lighting, so its tone is the preview "
+			       "shader's, and reporting it would be a true number about the wrong thing" );
+		}
+		{
+			AgentRenderParams om;
+			om.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult r = session->Render( om );
+			Check( r.ok && !r.tonalApplied,
+			       "an OBJECTMAP render carries no tonal fact -- its pixels are identity colours, "
+			       "so their luma histogram is a histogram of a palette" );
+		}
+		{
+			AgentRenderParams vm;
+			vm.renderTarget = AgentRenderTarget::ViewMode;
+			vm.viewMode     = RISE::Implementation::ViewportRenderMode::Normals;
+			const AgentRenderResult r = session->Render( vm );
+			Check( r.ok && !r.tonalApplied,
+			       "a false-colour view-mode render carries no tonal fact, for the same reason" );
+		}
+		{
+			AgentRenderParams iso;
+			iso.isolate = "obj_sph";
+			const AgentRenderResult r = session->Render( iso );
+			Check( r.ok && r.isolateApplied && !r.tonalApplied,
+			       "an ISOLATE render carries no tonal fact -- most of that frame is the "
+			       "background the isolation created, not the scene's own tone" );
+		}
+		{
+			// A FAILED render describes no image, so it gets no facts about
+			// one: the same rule the inventory follows, and the reason
+			// AgentRenderResult::tonalApplied gates on `ok` first.
+			AgentRenderParams bad;
+			bad.isolate = "no_such_object_anywhere";
+			const AgentRenderResult r = session->Render( bad );
+			Check( !r.ok && !r.tonalApplied,
+			       "a FAILED render carries no tonal fact at all" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (c) WHAT IT COSTS.  The whole design claim of this mechanism is
+	// that it is free beside the inventory's own identity pass, so the
+	// comparison is measured rather than asserted.
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_cost.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the tone-cost scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 256; p.height = 192; p.samples = 8;
+		session->Render( p );   // warm up
+
+		double wholeMs = 0.0, inventoryMs = 0.0;
+		const int kReps = 3;
+		for( int i = 0; i < kReps; ++i ) {
+			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+			const AgentRenderResult rr = session->Render( p );
+			const std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+			Check( rr.ok && rr.tonalApplied && rr.inventoryApplied,
+			       "the timed render carries both payload facts" );
+			const std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+			session->SceneInventory();
+			const std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+			wholeMs     += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+			inventoryMs += std::chrono::duration<double, std::milli>( t3 - t2 ).count();
+		}
+		// AND THE TONE STEP ITSELF.  Its whole cost is ONE decode of the
+		// PNG the render already produced, so the honest way to measure it
+		// is to run exactly that decode here, independently, on the same
+		// bytes.  (Timing Render() twice cannot separate it: every
+		// suppression that would turn the fact off also changes what gets
+		// rendered.)
+		{
+			const AgentRenderResult rr = session->Render( p );
+			Check( rr.ok && !rr.png.empty(), "the cost-measurement render produced bytes" );
+			double decodeMs = 0.0;
+			for( int i = 0; i < kReps; ++i ) {
+				const std::chrono::steady_clock::time_point d0 = std::chrono::steady_clock::now();
+				Implementation::MemoryBuffer* buf = new Implementation::MemoryBuffer(
+					const_cast<char*>( reinterpret_cast<const char*>( rr.png.data() ) ),
+					static_cast<unsigned int>( rr.png.size() ), false );
+				IRasterImageReader* reader = nullptr;
+				if( RISE_API_CreatePNGReader( &reader, *buf, eColorSpace_Rec709RGB_Linear ) && reader ) {
+					unsigned int w = 0, h = 0;
+					if( reader->BeginRead( w, h ) ) {
+						double acc = 0.0;
+						for( unsigned int y = 0; y < h; ++y )
+							for( unsigned int x = 0; x < w; ++x ) {
+								RISEColor px;
+								reader->ReadColor( px, x, y );
+								acc += px.base.r;   // keep the loop from being elided
+							}
+						(void)acc;
+						reader->EndRead();
+					}
+					reader->release();
+				}
+				buf->release();
+				const std::chrono::steady_clock::time_point d1 = std::chrono::steady_clock::now();
+				decodeMs += std::chrono::duration<double, std::milli>( d1 - d0 ).count();
+			}
+			std::printf( "[arc 81 cost] 256x192 @ 8spp: render+inventory+tone %.1f ms, "
+			             "inventory alone %.1f ms, the tone step's whole cost (one PNG decode of "
+			             "the frame already produced) %.1f ms\n",
+			             wholeMs / kReps, inventoryMs / kReps, decodeMs / kReps );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+}
+
+int main()
+{
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
+	RunCoreTests();
+	RunCameraOverrideTests();
+	RunRestoreOnThrowTest();
+	RunMalformedCameraOverrideTests();
+	RunRenderJobIdTests();
+	RunPreS2HardeningTests();
+	RunSampleCountOverrideTests();
+	RunDraftQualityTests();
+	RunDraftCancelTest();
+	RunNoRasterizerDraftTest();
+	RunLastRenderCompletionSitesTest();
+	RunSceneTargetTests();   // Arc 77 Phase 2 (2026-08-11)
+	RunSceneInventoryTests();   // Arc 80 (2026-08-12)
+	RunFrameToneTests();        // Arc 81 (2026-08-12)
+
+	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
+}

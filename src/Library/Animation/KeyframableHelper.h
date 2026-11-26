@@ -18,6 +18,12 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+
 #ifndef KEYFRAMABLE_HELPER_
 #define KEYFRAMABLE_HELPER_
 
@@ -106,6 +112,49 @@ namespace RISE
 
 		typedef Parameter<Point3> Point3Keyframe;
 		typedef Parameter<Vector3> Vector3Keyframe;
+
+		//! Strict scalar parse used by camera and light KeyframeFromParameters.
+		//! Returns true and fills `out` only if `s` parsed to a finite
+		//! scalar (rejects "garbage", "nan", "inf").  Without this,
+		//! the prior `atof(value.c_str())` silently mapped invalid
+		//! input to 0 / NaN / ±inf and the keyframe machinery happily
+		//! wrote it through to light state — the interactive editor
+		//! then displayed a phantom-successful edit while the render
+		//! either went dark (energy=0) or produced NaN pixels.  Caller
+		//! should return null (i.e. reject the edit) on false.
+		//!
+		//! IMPORTANT: this code is compiled with `-ffast-math`, which
+		//! permitted the compiler to assume NaN / Inf never occur (bare -ffast-math; fixed 2026-07-29) and
+		//! optimise ordinary FP classification predicates to constants.
+		//! Defence-in-depth is two layers:
+		//!   1. Textual pre-check rejects "nan" / "inf" / "infinity"
+		//!      (case-insensitive, with optional sign + whitespace)
+		//!      before strtod even runs.  `strtod` is what would
+		//!      produce the NaN/Inf for those inputs.
+		//!   2. RISE::IsFiniteDouble materialises the parsed value through
+		//!      volatile before its IEEE-754 exponent test, catching cases
+		//!      like "1e1000" that overflow to +Inf during strtod.
+		//! Non-`inline` external linkage: the symbol must survive in
+		//! `librise.a` for out-of-tree consumers (e.g. the Blender
+		//! bridge dylib) — `inline` let LTO elide it.  See commit
+		//! 11575d8.  The body's shared finite predicate plus textual layer
+		//! defeat `-ffast-math` from inside the function, regardless
+		//! of whether the optimiser decides to inline-fold a callsite.
+		bool ParseStrictScalar( const String& s, Scalar& out );
+
+		//! Strict 2-vector parse with the same finite and exact-arity contract.
+		bool ParseStrictVec2( const String& s, double out[2] );
+
+		//! Strict 3-vector parse — tokenises on whitespace, requires
+		//! exactly three components, each routed through
+		//! ParseStrictScalar.  Use this in place of `sscanf("%lf %lf
+		//! %lf", ...)` for editable vec3 fields (color, direction,
+		//! target, position, orientation, scale): plain `sscanf`
+		//! accepts "nan nan nan" and "inf 0 0" and writes the
+		//! resulting non-finite values into light/transform state.
+		//! Returns false (and leaves `out` untouched) on any parse
+		//! failure or non-finite component.
+		bool ParseStrictVec3( const String& s, double out[3] );
 	}
 }
 
@@ -114,4 +163,3 @@ namespace RISE
 #endif
 
 #endif
-

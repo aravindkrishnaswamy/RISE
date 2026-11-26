@@ -26,6 +26,7 @@
 #define DONNER_JENSEN_SKIN_BSSRDF_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
@@ -43,8 +44,9 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			DonnerJensenSkinDiffusionProfile*		pProfile;
-			const IPainter&							iorPainter;
+			const IScalarPainter&					iorPainter;
 			const Scalar							surfaceRoughness;
+			unsigned int							pathDependence;
 
 			virtual ~DonnerJensenSkinBSSRDFMaterial()
 			{
@@ -56,29 +58,36 @@ namespace RISE
 
 		public:
 			DonnerJensenSkinBSSRDFMaterial(
-				const IPainter& melanin_fraction_,
-				const IPainter& melanin_blend_,
-				const IPainter& hemoglobin_epidermis_,
-				const IPainter& carotene_fraction_,
-				const IPainter& hemoglobin_dermis_,
-				const IPainter& epidermis_thickness_,
-				const IPainter& ior_epidermis_,
-				const IPainter& ior_dermis_,
-				const IPainter& blood_oxygenation_,
+				const IScalarPainter& melanin_fraction_,
+				const IScalarPainter& melanin_blend_,
+				const IScalarPainter& hemoglobin_epidermis_,
+				const IScalarPainter& carotene_fraction_,
+				const IScalarPainter& hemoglobin_dermis_,
+				const IScalarPainter& epidermis_thickness_,
+				const IScalarPainter& ior_epidermis_,
+				const IScalarPainter& ior_dermis_,
+				const IScalarPainter& blood_oxygenation_,
 				const Scalar roughness
 				) :
 			iorPainter( ior_epidermis_ ),
-			surfaceRoughness( roughness )
+			surfaceRoughness( roughness ),
+			pathDependence(
+				melanin_fraction_.GetPathDependence() |
+				melanin_blend_.GetPathDependence() |
+				hemoglobin_epidermis_.GetPathDependence() |
+				carotene_fraction_.GetPathDependence() |
+				hemoglobin_dermis_.GetPathDependence() |
+				epidermis_thickness_.GetPathDependence() |
+				ior_epidermis_.GetPathDependence() |
+				ior_dermis_.GetPathDependence() |
+				blood_oxygenation_.GetPathDependence() )
 			{
 				iorPainter.addref();
 				// Surface BSDF/SPF use epidermis IOR for Fresnel reflection.
-				// The absorption and scattering painters are not used by the
-				// surface BSDF/SPF for BSSRDF materials, so we pass the IOR
-				// painter as a dummy.
-				pBSDF = new SubSurfaceScatteringBSDF( ior_epidermis_, ior_epidermis_, ior_epidermis_, 0.0, roughness );
+				pBSDF = new SubSurfaceScatteringBSDF( ior_epidermis_, 0.0, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
-				pSPF = new SubSurfaceScatteringSPF( ior_epidermis_, ior_epidermis_, ior_epidermis_, 0.0, roughness, true );
+				pSPF = new SubSurfaceScatteringSPF( ior_epidermis_, 0.0, roughness, true );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				pProfile = new DonnerJensenSkinDiffusionProfile(
@@ -96,33 +105,38 @@ namespace RISE
 			}
 
 			/// \return The BSDF for this material.
-			inline IBSDF* GetBSDF() const {			return pBSDF; };
+			inline IBSDF* GetBSDF() const override {		return pBSDF; };
 
 			/// \return The SPF for this material.
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {		return pSPF; };
+
+			//! DL-482: the ordinary finite surface BSDF is reflection only.
+			//! Nonlocal jumps and isBSSRDFEntry re-emission keep their separate rules.
+			inline unsigned int ConnectionScatterTypes() const override { return 1u << ScatteredRay::eRayReflection; }
+			inline bool HasConnectionTypeSplit() const override { return true; }
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
 
 			// SSS materials scatter light diffusely through the volume,
 			// so straight-line camera connections through them are unphysical.
-			inline bool CouldLightPassThrough() const { return false; };
+			inline bool CouldLightPassThrough() const override { return false; };
 
 			/// BSSRDF-based SSS does not use volumetric random walk.
-			inline bool IsVolumetric() const { return false; };
+			inline bool IsVolumetric() const override { return false; };
 
 			/// \return The diffusion profile for BSSRDF importance sampling.
-			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pProfile; };
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return pProfile; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColor( ri )[0];
+				info.ior = iorPainter.GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -131,14 +145,19 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,
 				const Scalar nm
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.ior = iorPainter.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
+			}
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() | pathDependence | iorPainter.GetPathDependence();
 			}
 		};
 	}

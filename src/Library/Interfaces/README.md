@@ -12,10 +12,17 @@ This directory defines the abstract contracts that hold the engine together. Whe
 ## Taxonomy
 
 - Scene and job: `IJob.h`, `IJobPriv.h`, `IScene.h`, `IScenePriv.h`
-- Rendering: `IRasterizer.h`, `IRasterizeSequence.h`, `IRasterizerOutput.h`, `IRayCaster.h`, `IJobRasterizerOutput.h`
-- Shading and materials: `IShader.h`, `IShaderOp.h`, `IMaterial.h`, `IBSDF.h`, `ISPF.h`, `IEmitter.h`
-- Scene elements: `ICamera.h`, `IGeometry.h`, `IObject.h`, `ILight.h`, `IPainter.h`, `IRadianceMap.h`, `IPhotonMap.h`, `IIrradianceCache.h`
-- Infrastructure: `IReference.h`, `IManager.h`, `ILog*.h`, plus buffer, image, and sampling interfaces
+- Rendering and observers: `IRasterizer.h`, `IRasterizeSequence.h`, `IRasterizerOutput.h`, `IRayCaster.h`, `IJobRasterizerOutput.h`, `IFilm.h`, `IRenderObserver.h`, `IFrameEncoder.h`
+- Shading, materials, subsurface, and media: `IShader.h`, `IShaderOp.h`, `IMaterial.h`, `IBSDF.h`, `ISPF.h`, `IEmitter.h`, `SpecularInfo.h`, `ISubSurfaceDiffusionProfile.h`, `ISubSurfaceExtinctionFunction.h`, `IMedium.h`, `IPhaseFunction.h`
+- Scene elements, painters, and procedural signals: `ICamera.h`, `IGeometry.h`, `IObject.h`, `ILight.h`, `IPainter.h`, `IScalarPainter.h`, `IRadianceMap.h`, `IPhotonMap.h`, `IIrradianceCache.h`, `ISurfaceSignalProvider.h`, `SurfaceSignalProximity.h`, `ProceduralDescriptors.h`
+- Managers and infrastructure: `IReference.h`, `IManager.h`, `IScalarPainterManager.h`, `IModifierManager.h`, `ILog*.h`, plus buffer, image, and sampling interfaces
+
+### `IPainter` vs `IScalarPainter`
+
+RISE separates perceptual/reflectance colors from physical scalar quantities at the interface boundary:
+
+- `IPainter.h` — **color pipe**: evaluates RGB (`RISEPel`) or spectral reflectance/radiance (`GetColor` / `GetColorNM`), subject to input color-space conversion and Jakob–Hanika RGB-to-spectral uplift on spectral render paths. Used for albedo, reflectance, transmittance tint, and emission slots.
+- `IScalarPainter.h` (managed by `IScalarPainterManager.h`) — **physical-scalar pipe**: evaluates raw `Scalar` values (`GetScalar` / `GetScalarNM`) directly with **no** color-space transfer curve and **no** Jakob–Hanika spectral uplift. Used for physical parameters such as roughness (`alphax`/`alphay`), IOR, extinction `k`, thin-film thickness, coverage, displacement/relief height, SSS scale, and `dielectric_material.tau`.
 
 ## Public Vs Privileged Interfaces
 
@@ -53,12 +60,16 @@ To understand real behavior, read:
 
 - If you know an interface name, search for `public virtual <InterfaceName>`.
 - If you know a creation API, search in `RISE_API.cpp` to find the concrete class used.
-- If you know a scene chunk name, search in `AsciiSceneParser.cpp` to find the parser class and then the corresponding `Job` method or API constructor.
+- If you know a scene chunk name, search in
+  [../Parsers/ChunkParserRegistry.cpp](../Parsers/ChunkParserRegistry.cpp) to
+  find its descriptor/finalizer and then the corresponding `Job` method or API
+  constructor.
 
 ## High-Leverage Files
 
 - Scene construction: [IJob.h](IJob.h)
-- Scene parsing: [ISceneParser.h](ISceneParser.h)
+- Legacy parser interface (retained for compatibility; native scene loading is
+  CST-only): [ISceneParser.h](ISceneParser.h)
 - Rendering: [IRasterizer.h](IRasterizer.h)
 - Shading: [IShader.h](IShader.h), [IShaderOp.h](IShaderOp.h), [IMaterial.h](IMaterial.h)
 - Ownership: [IReference.h](IReference.h), [IManager.h](IManager.h)

@@ -1,0 +1,2438 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ManifoldSolverTest.cpp - Unit tests for ManifoldSolver
+//
+//    Covers pure-math constraints, derivatives, Jacobians, chain geometry,
+//    throughput, Fresnel and physics; scene seed-walk controls exercise
+//    double-sided interfaces and exit refraction. Recorded photon queries
+//    independently pin RGB/NM material UV and object-frame coordinates.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <iostream>
+#include <vector>
+#include <cassert>
+#include <cmath>
+#include <chrono>
+#include <string>
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "TestableManifoldSolver.h"
+#include "../src/Library/Utilities/SMSPhoton.h"
+
+// DL-70 P2-1 chain-level pin: a double-sided dielectric "slab" caster
+// (two independent double-sided ClippedPlaneGeometry objects) end-to-end
+// through BuildSeedChain / SnellContinueChain.  Needs real scene/object
+// plumbing the rest of this file doesn't otherwise touch.
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Managers/ObjectManager.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/PerfectReflectorMaterial.h"
+#include "../src/Library/Materials/PerfectRefractorMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/RISE_API.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static const double kPi = std::acos(-1.0);
+
+static bool IsClose( Scalar a, Scalar b, Scalar epsilon = 1e-5 )
+{
+	return std::fabs( a - b ) < epsilon;
+}
+
+static bool IsVectorClose( const Vector3& a, const Vector3& b, Scalar epsilon = 1e-5 )
+{
+	return IsClose( a.x, b.x, epsilon ) &&
+		   IsClose( a.y, b.y, epsilon ) &&
+		   IsClose( a.z, b.z, epsilon );
+}
+
+/// Build a ManifoldVertex with manual data (no pObject/pMaterial).
+static ManifoldVertex MakeVertex(
+	const Point3& pos,
+	const Vector3& normal,
+	const Vector3& dpdu,
+	const Vector3& dpdv,
+	Scalar eta,
+	bool isReflection,
+	const Vector3& dndu = Vector3(0,0,0),
+	const Vector3& dndv = Vector3(0,0,0)
+	)
+{
+	ManifoldVertex v;
+	v.position = pos;
+	v.normal = normal;
+	v.dpdu = dpdu;
+	v.dpdv = dpdv;
+	v.dndu = dndu;
+	v.dndv = dndv;
+	v.eta = eta;
+	v.isReflection = isReflection;
+	v.attenuation = RISEPel( 1.0, 1.0, 1.0 );
+	v.valid = true;
+	return v;
+}
+
+// ============================================================
+// Group 1: 2x2 Block Utilities
+// ============================================================
+
+void TestInvert2x2_Identity()
+{
+	std::cout << "Testing Invert2x2 identity..." << std::endl;
+	Scalar I[4] = {1,0,0,1};
+	Scalar inv[4];
+	assert( ManifoldSolver::Invert2x2( I, inv ) );
+	assert( IsClose( inv[0], 1.0 ) );
+	assert( IsClose( inv[1], 0.0 ) );
+	assert( IsClose( inv[2], 0.0 ) );
+	assert( IsClose( inv[3], 1.0 ) );
+}
+
+void TestInvert2x2_Known()
+{
+	std::cout << "Testing Invert2x2 known matrix..." << std::endl;
+	Scalar A[4] = {2,1,3,4};
+	Scalar inv[4];
+	assert( ManifoldSolver::Invert2x2( A, inv ) );
+	// det = 2*4 - 1*3 = 5; inv = [4,-1;-3,2]/5
+	assert( IsClose( inv[0],  4.0/5.0 ) );
+	assert( IsClose( inv[1], -1.0/5.0 ) );
+	assert( IsClose( inv[2], -3.0/5.0 ) );
+	assert( IsClose( inv[3],  2.0/5.0 ) );
+}
+
+void TestInvert2x2_Singular()
+{
+	std::cout << "Testing Invert2x2 singular..." << std::endl;
+	Scalar A[4] = {1,2,2,4};  // det = 0
+	Scalar inv[4];
+	assert( !ManifoldSolver::Invert2x2( A, inv ) );
+}
+
+void TestInvert2x2_RoundTrip()
+{
+	std::cout << "Testing Invert2x2 round-trip..." << std::endl;
+	Scalar A[4] = {3.5, -1.2, 0.7, 2.3};
+	Scalar inv[4];
+	assert( ManifoldSolver::Invert2x2( A, inv ) );
+	// A * inv should be identity
+	Scalar product[4];
+	ManifoldSolver::Mul2x2( A, inv, product );
+	assert( IsClose( product[0], 1.0, 1e-10 ) );
+	assert( IsClose( product[1], 0.0, 1e-10 ) );
+	assert( IsClose( product[2], 0.0, 1e-10 ) );
+	assert( IsClose( product[3], 1.0, 1e-10 ) );
+}
+
+void TestMul2x2_Known()
+{
+	std::cout << "Testing Mul2x2 known product..." << std::endl;
+	Scalar A[4] = {1,2,3,4};
+	Scalar B[4] = {5,6,7,8};
+	Scalar C[4];
+	ManifoldSolver::Mul2x2( A, B, C );
+	assert( IsClose( C[0], 19.0 ) );
+	assert( IsClose( C[1], 22.0 ) );
+	assert( IsClose( C[2], 43.0 ) );
+	assert( IsClose( C[3], 50.0 ) );
+}
+
+void TestMul2x2Vec_Known()
+{
+	std::cout << "Testing Mul2x2Vec known product..." << std::endl;
+	Scalar A[4] = {1,2,3,4};
+	Scalar v[2] = {5,6};
+	Scalar r[2];
+	ManifoldSolver::Mul2x2Vec( A, v, r );
+	assert( IsClose( r[0], 17.0 ) );
+	assert( IsClose( r[1], 39.0 ) );
+}
+
+void TestSub2x2_SelfSubtraction()
+{
+	std::cout << "Testing Sub2x2 self-subtraction..." << std::endl;
+	Scalar A[4] = {1,2,3,4};
+	Scalar C[4];
+	ManifoldSolver::Sub2x2( A, A, C );
+	assert( IsClose( C[0], 0.0 ) );
+	assert( IsClose( C[1], 0.0 ) );
+	assert( IsClose( C[2], 0.0 ) );
+	assert( IsClose( C[3], 0.0 ) );
+}
+
+// ============================================================
+// Group 10: DeriveNormalized
+// ============================================================
+
+void TestDeriveNormalized_Perpendicular()
+{
+	std::cout << "Testing DeriveNormalized perpendicular..." << std::endl;
+	Vector3 h( 1, 0, 0 );
+	Vector3 dv( 0, 1, 0 );
+	Vector3 result = ManifoldSolver::DeriveNormalized( h, dv, 1.0 );
+	// dv is perpendicular to h, so full projection: result = dv / vLen = (0,1,0)
+	assert( IsVectorClose( result, Vector3( 0, 1, 0 ) ) );
+}
+
+void TestDeriveNormalized_Parallel()
+{
+	std::cout << "Testing DeriveNormalized parallel..." << std::endl;
+	Vector3 h( 1, 0, 0 );
+	Vector3 dv( 3, 0, 0 );  // parallel to h
+	Vector3 result = ManifoldSolver::DeriveNormalized( h, dv, 1.0 );
+	// Parallel component is removed: result ≈ (0, 0, 0)
+	assert( IsVectorClose( result, Vector3( 0, 0, 0 ) ) );
+}
+
+void TestDeriveNormalized_ZeroLength()
+{
+	std::cout << "Testing DeriveNormalized zero length..." << std::endl;
+	Vector3 h( 1, 0, 0 );
+	Vector3 dv( 0, 1, 0 );
+	Vector3 result = ManifoldSolver::DeriveNormalized( h, dv, 0.0 );
+	assert( IsVectorClose( result, Vector3( 0, 0, 0 ) ) );
+}
+
+void TestDeriveNormalized_FiniteDifference()
+{
+	std::cout << "Testing DeriveNormalized vs finite difference..." << std::endl;
+	Vector3 v( 2.0, 1.0, 0.5 );
+	Vector3 dv( 0.3, -0.1, 0.7 );
+	Scalar vLen = Vector3Ops::Magnitude( v );
+	Vector3 h = v * (1.0 / vLen);
+
+	Vector3 analytical = ManifoldSolver::DeriveNormalized( h, dv, vLen );
+
+	// Finite difference: d/deps normalize(v + eps*dv)
+	const Scalar eps = 1e-6;
+	Vector3 vp = Vector3( v.x + eps * dv.x, v.y + eps * dv.y, v.z + eps * dv.z );
+	Vector3 vm = Vector3( v.x - eps * dv.x, v.y - eps * dv.y, v.z - eps * dv.z );
+	Vector3 hp = Vector3Ops::Normalize( vp );
+	Vector3 hm = Vector3Ops::Normalize( vm );
+	Vector3 numerical( (hp.x - hm.x) / (2*eps), (hp.y - hm.y) / (2*eps), (hp.z - hm.z) / (2*eps) );
+
+	assert( IsVectorClose( analytical, numerical, 1e-4 ) );
+}
+
+// ============================================================
+// Group 11: ComputeDielectricFresnel
+// ============================================================
+
+void TestFresnel_NormalIncidence()
+{
+	std::cout << "Testing Fresnel normal incidence..." << std::endl;
+	// F = ((eta_i - eta_t) / (eta_i + eta_t))^2  at normal incidence
+	Scalar F = ManifoldSolver::ComputeDielectricFresnel( 1.0, 1.0, 1.5 );
+	Scalar expected = ((1.0 - 1.5) / (1.0 + 1.5)) * ((1.0 - 1.5) / (1.0 + 1.5));
+	assert( IsClose( F, expected, 1e-10 ) );
+}
+
+void TestFresnel_GrazingAngle()
+{
+	std::cout << "Testing Fresnel grazing angle..." << std::endl;
+	// At grazing (cos_i → 0), Fresnel → 1.0
+	Scalar F = ManifoldSolver::ComputeDielectricFresnel( 0.001, 1.0, 1.5 );
+	assert( F > 0.95 );
+}
+
+void TestFresnel_TIR()
+{
+	std::cout << "Testing Fresnel TIR..." << std::endl;
+	// From dense medium at steep angle → TIR
+	// Critical angle for eta_i=1.5, eta_t=1.0: sin(θc) = 1/1.5 = 0.667, cos(θc) = 0.745
+	// At cos_i = 0.5 (below critical), should be TIR
+	Scalar F = ManifoldSolver::ComputeDielectricFresnel( 0.5, 1.5, 1.0 );
+	assert( IsClose( F, 1.0 ) );
+}
+
+void TestFresnel_Symmetry()
+{
+	std::cout << "Testing Fresnel symmetry at normal incidence..." << std::endl;
+	// F(1, η_i, η_t) at normal incidence should equal F(1, η_t, η_i) (reciprocal)
+	Scalar F1 = ManifoldSolver::ComputeDielectricFresnel( 1.0, 1.0, 1.5 );
+	Scalar F2 = ManifoldSolver::ComputeDielectricFresnel( 1.0, 1.5, 1.0 );
+	assert( IsClose( F1, F2, 1e-10 ) );
+}
+
+// ============================================================
+// Group 2: ComputeSpecularDirection
+// ============================================================
+
+void TestReflection_NormalIncidence()
+{
+	std::cout << "Testing reflection normal incidence..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi( 0, 1, 0 );
+	Vector3 normal( 0, 1, 0 );
+	Vector3 wo;
+	bool ok = solver.ComputeSpecularDirection( wi, normal, 1.0, true, wo );
+	assert( ok );
+	// wo should be (0, 1, 0) — reflects straight back since wi = normal
+	// Actually: wo = -wi + 2*(wi.n)*n = -(0,1,0) + 2*1*(0,1,0) = (0,1,0)
+	assert( IsVectorClose( wo, Vector3( 0, 1, 0 ) ) );
+}
+
+void TestReflection_45Degrees()
+{
+	std::cout << "Testing reflection 45 degrees..." << std::endl;
+	TestableManifoldSolver solver;
+	const Scalar s = 1.0 / sqrt(2.0);
+	Vector3 wi( s, s, 0 );
+	Vector3 normal( 0, 1, 0 );
+	Vector3 wo;
+	bool ok = solver.ComputeSpecularDirection( wi, normal, 1.0, true, wo );
+	assert( ok );
+	// wo = -wi + 2*(wi.n)*n = -(s,s,0) + 2*s*(0,1,0) = (-s, s, 0)
+	assert( IsVectorClose( wo, Vector3( -s, s, 0 ) ) );
+	assert( IsClose( Vector3Ops::Magnitude( wo ), 1.0 ) );
+}
+
+void TestRefraction_NormalIncidence()
+{
+	std::cout << "Testing refraction normal incidence..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi( 0, 1, 0 );
+	Vector3 normal( 0, 1, 0 );
+	Vector3 wo;
+	bool ok = solver.ComputeSpecularDirection( wi, normal, 1.5, false, wo );
+	assert( ok );
+	// Normal incidence: goes straight through → wo = (0, -1, 0)
+	assert( IsVectorClose( wo, Vector3( 0, -1, 0 ) ) );
+}
+
+void TestRefraction_SnellsLaw()
+{
+	std::cout << "Testing refraction Snell's law..." << std::endl;
+	TestableManifoldSolver solver;
+	// wi at 30 degrees from normal, eta = 1.5
+	// sin(30) = 0.5, sin(theta_t) = sin(30)/1.5 = 1/3, theta_t = asin(1/3)
+	const Scalar cos30 = sqrt(3.0) / 2.0;
+	const Scalar sin30 = 0.5;
+	Vector3 wi( sin30, cos30, 0 );
+	Vector3 normal( 0, 1, 0 );
+	Vector3 wo;
+	bool ok = solver.ComputeSpecularDirection( wi, normal, 1.5, false, wo );
+	assert( ok );
+	assert( IsClose( Vector3Ops::Magnitude( wo ), 1.0, 1e-10 ) );
+	// Verify Snell's law: eta_i * sin(theta_i) = eta_t * sin(theta_t)
+	const Scalar sinT = sqrt( 1.0 - Vector3Ops::Dot( wo, Vector3(0,-1,0) ) * Vector3Ops::Dot( wo, Vector3(0,-1,0) ) );
+	assert( IsClose( 1.0 * sin30, 1.5 * sinT, 1e-10 ) );
+}
+
+void TestRefraction_TIR()
+{
+	std::cout << "Testing refraction TIR..." << std::endl;
+	TestableManifoldSolver solver;
+	// From inside glass (cos_i < 0 convention), steep angle
+	// eta = 1.5, wi on opposite side of normal → exiting
+	Vector3 wi( 0.8, -0.6, 0 );  // cos_i = -0.6 → exiting
+	wi = Vector3Ops::Normalize( wi );
+	Vector3 normal( 0, 1, 0 );
+	Vector3 wo;
+	bool ok = solver.ComputeSpecularDirection( wi, normal, 1.5, false, wo );
+	// sin²(t) = (1.5)² * (1 - 0.6²) = 2.25 * 0.64 = 1.44 > 1 → TIR
+	assert( !ok );
+}
+
+void TestRefraction_UnitVector()
+{
+	std::cout << "Testing refraction produces unit vector..." << std::endl;
+	TestableManifoldSolver solver;
+	// Multiple angles and eta values
+	Scalar angles[] = { 0.1, 0.3, 0.5, 0.7, 0.9 };
+	Scalar etas[] = { 1.2, 1.5, 2.0 };
+	Vector3 normal( 0, 1, 0 );
+	for( int a = 0; a < 5; a++ )
+	{
+		for( int e = 0; e < 3; e++ )
+		{
+			Vector3 wi( sin(angles[a]), cos(angles[a]), 0 );
+			Vector3 wo;
+			if( solver.ComputeSpecularDirection( wi, normal, etas[e], false, wo ) )
+			{
+				assert( IsClose( Vector3Ops::Magnitude( wo ), 1.0, 1e-10 ) );
+			}
+		}
+	}
+}
+
+// ============================================================
+// Group 3: Specular Direction Derivative
+// ============================================================
+
+void TestReflectionDerivative_FD()
+{
+	std::cout << "Testing reflection derivative vs FD..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi( 0.5, 0.8, 0.2 );
+	wi = Vector3Ops::Normalize( wi );
+	Vector3 normal( 0, 1, 0 );
+
+	Scalar analytical[9];
+	solver.ComputeSpecularDirectionDerivativeWrtNormal( wi, normal, 1.0, true, analytical );
+
+	// Finite differences: perturb normal without re-normalizing
+	// (the derivative is d(wo)/d(n_j) for the raw normal components)
+	const Scalar eps = 1e-6;
+	for( int j = 0; j < 3; j++ )
+	{
+		Vector3 np = normal, nm = normal;
+		Scalar* npArr = &np.x;
+		Scalar* nmArr = &nm.x;
+		npArr[j] += eps;
+		nmArr[j] -= eps;
+
+		Vector3 wop, wom;
+		solver.ComputeSpecularDirection( wi, np, 1.0, true, wop );
+		solver.ComputeSpecularDirection( wi, nm, 1.0, true, wom );
+
+		for( int i = 0; i < 3; i++ )
+		{
+			Scalar* wopArr = &wop.x;
+			Scalar* womArr = &wom.x;
+			Scalar fd = (wopArr[i] - womArr[i]) / (2 * eps);
+			if( !IsClose( analytical[i*3+j], fd, 1e-3 ) )
+			{
+				std::cout << "  MISMATCH: i=" << i << " j=" << j
+					<< " analytical=" << analytical[i*3+j]
+					<< " fd=" << fd << std::endl;
+				assert( false );
+			}
+		}
+	}
+}
+
+void TestRefractionDerivative_FD()
+{
+	std::cout << "Testing refraction derivative vs FD..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi( 0.3, 0.9, 0.1 );
+	wi = Vector3Ops::Normalize( wi );
+	Vector3 normal( 0, 1, 0 );
+	Scalar eta = 1.5;
+
+	Scalar analytical[9];
+	solver.ComputeSpecularDirectionDerivativeWrtNormal( wi, normal, eta, false, analytical );
+
+	const Scalar eps = 1e-6;
+	for( int j = 0; j < 3; j++ )
+	{
+		Vector3 np = normal, nm = normal;
+		Scalar* npArr = &np.x;
+		Scalar* nmArr = &nm.x;
+		npArr[j] += eps;
+		nmArr[j] -= eps;
+
+		Vector3 wop, wom;
+		solver.ComputeSpecularDirection( wi, np, eta, false, wop );
+		solver.ComputeSpecularDirection( wi, nm, eta, false, wom );
+
+		for( int i = 0; i < 3; i++ )
+		{
+			Scalar* wopArr = &wop.x;
+			Scalar* womArr = &wom.x;
+			Scalar fd = (wopArr[i] - womArr[i]) / (2 * eps);
+			assert( IsClose( analytical[i*3+j], fd, 1e-3 ) );
+		}
+	}
+}
+
+// ============================================================
+// Group 4: DirectionToSpherical
+// ============================================================
+
+void TestSpherical_NormalDirection()
+{
+	std::cout << "Testing spherical normal direction..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 dpdu( 1, 0, 0 );
+	Vector3 dpdv( 0, 0, 1 );
+	Vector3 normal( 0, 1, 0 );
+	Point2 sp = solver.DirectionToSpherical( normal, dpdu, dpdv, normal );
+	assert( IsClose( sp.x, 0.0 ) );  // theta = 0 for normal direction
+}
+
+void TestSpherical_TangentU()
+{
+	std::cout << "Testing spherical tangent-u direction..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 dpdu( 1, 0, 0 );
+	Vector3 dpdv( 0, 0, 1 );
+	Vector3 normal( 0, 1, 0 );
+	Point2 sp = solver.DirectionToSpherical( Vector3(1,0,0), dpdu, dpdv, normal );
+	assert( IsClose( sp.x, kPi / 2.0 ) );  // theta = pi/2
+	assert( IsClose( sp.y, 0.0 ) );         // phi = 0
+}
+
+void TestSpherical_TangentV()
+{
+	std::cout << "Testing spherical tangent-v direction..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 dpdu( 1, 0, 0 );
+	Vector3 dpdv( 0, 0, 1 );
+	Vector3 normal( 0, 1, 0 );
+	Point2 sp = solver.DirectionToSpherical( Vector3(0,0,1), dpdu, dpdv, normal );
+	assert( IsClose( sp.x, kPi / 2.0 ) );  // theta = pi/2
+	assert( IsClose( sp.y, kPi / 2.0 ) );  // phi = pi/2
+}
+
+void TestSpherical_NegativeNormal()
+{
+	std::cout << "Testing spherical negative normal..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 dpdu( 1, 0, 0 );
+	Vector3 dpdv( 0, 0, 1 );
+	Vector3 normal( 0, 1, 0 );
+	Point2 sp = solver.DirectionToSpherical( Vector3(0,-1,0), dpdu, dpdv, normal );
+	assert( IsClose( sp.x, kPi ) );  // theta = pi
+}
+
+// ============================================================
+// Group 5: Constraint Functions
+// ============================================================
+
+void TestHalfVectorConstraint_AtSolution_Reflection()
+{
+	std::cout << "Testing half-vector constraint at reflection solution..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Flat mirror at origin, normal = (0,1,0)
+	// wi from (0,2,0) → vertex at origin: wi = (0,1,0)
+	// Reflected: wo = (0,1,0) → nextPos should be at (0,2,0) too... but that's trivial
+	// Better: 45-degree reflection
+	Point3 prevPos( -1, 1, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	// wi = normalize((-1,1,0) - (0,0,0)) = (-1/sqrt2, 1/sqrt2, 0)
+	// Reflected wo = (1/sqrt2, 1/sqrt2, 0) → nextPos at (1, 1, 0)
+	Point3 nextPos( 1, 1, 0 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+void TestHalfVectorConstraint_NotAtSolution()
+{
+	std::cout << "Testing half-vector constraint NOT at solution..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( -1, 1, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0.5, 1, 0.5 );  // NOT the reflected direction
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	// At least one component should be nonzero
+	assert( std::fabs( C[0] ) > 1e-6 || std::fabs( C[1] ) > 1e-6 );
+}
+
+void TestHalfVectorConstraint_AtSolution_Refraction()
+{
+	std::cout << "Testing half-vector constraint at refraction solution..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Flat glass at origin, normal = (0,1,0), eta = 1.5
+	// wi = (0,1,0) → normal incidence → wo = (0,-1,0) → nextPos = (0,-1,0)
+	Point3 prevPos( 0, 1, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0, -1, 0 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+//----------------------------------------------------------------------
+// Nested-dielectric constraint correctness — regression test for the
+// air-on-the-other-side bug fixed by the (etaI, etaT) change.
+//
+// Setup: a flat interface at the origin with the surface MATERIAL'S IOR
+// = 1.0 (analogous to the air_cavity boundary inside the Veach Egg's
+// glass shell).  The OTHER side of this interface has IOR=1.5 (the
+// glass).  The ray comes from the glass side (incident medium = 1.5),
+// hits the interface, and refracts into the air-like medium on the
+// other side.
+//
+// At normal incidence, the refracted direction is exactly the same as
+// the incident direction — no bending.  The Walter-form half-vector
+// at this configuration:
+//     wi = (0, 1, 0)       (toward "previous", which is the source on
+//                           the eta=1.5 side)
+//     wo = (0,-1, 0)       (toward "next", normal-incidence transmission)
+//     normal = (0, 1, 0)   (outward from the eta=1.0 material)
+//     eta_i = 1.5, eta_t = 1.0
+//     h = -(1.5*wi + 1.0*wo) = -(1.5*(0,1,0) + 1.0*(0,-1,0)) = -(0, 0.5, 0)
+//     h_normalized = (0, -1, 0)   (parallel to -normal, which is the
+//                                  same direction as +normal up to sign;
+//                                  the constraint projects onto tangent
+//                                  s, t — both projections must be 0.)
+//
+// The OLD eta_eff formula (`isExiting ? 1/eta : eta` with v.eta = 1.0)
+// would compute eta_eff = 1.0 (entering case from the buggy code's POV)
+// and h = -(wi + 1.0*wo) = -(0, 0, 0) = ZERO VECTOR — degenerate.  The
+// constraint would be set to (1, 1) per the NEARZERO branch, indicating
+// "infinitely far from satisfied" even though we're exactly on a valid
+// Snell solution.
+//
+// With the (etaI, etaT) fix, h is non-degenerate and the constraint
+// correctly evaluates to ≈ 0.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_AtSolution_NestedDielectric_NormalIncidence()
+{
+	std::cout << "Testing nested-dielectric constraint (air-cavity inside glass, normal incidence)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Point3 prevPos( 0,  1, 0 );
+	const Point3 vertPos( 0,  0, 0 );
+	const Point3 nextPos( 0, -1, 0 );
+
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.0,	// surface material IOR (air_cavity-style)
+		false );	// refraction
+	v.etaI = 1.5;	// incident-side IOR (glass shell surrounding the cavity)
+	v.etaT = 1.0;	// outgoing-side IOR (air_cavity material)
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+//----------------------------------------------------------------------
+// Same air-cavity boundary, but with a non-normal-incidence Snell pair.
+// Ray comes from glass (eta=1.5) at 45 degrees; refracts to a wider
+// angle in the eta=1.0 medium per Snell's law:
+//     sin(θ_t) = (η_i / η_t) sin(θ_i) = 1.5 * sin(45°) = 1.5 * √2/2
+//             ≈ 1.06   →  this angle would be TIR for a real glass→air
+//                          interface (critical angle ≈ 41.8°).
+//
+// Use 30° instead so it transmits cleanly:
+//     sin(θ_t) = 1.5 * sin(30°) = 1.5 * 0.5 = 0.75
+//     cos(θ_t) = √(1 − 0.5625) = √0.4375 ≈ 0.6614
+// Set up wi at θ_i=30° from normal in the +x direction, wo at θ_t in
+// the -x direction so they're on opposite sides of the normal.
+//
+// This exercises the η_i ≠ η_t case at non-normal incidence — the OLD
+// eta_eff formula (which treats the other side as air, eta_eff=1.0)
+// would compute h = -(wi + wo) = -2*(sin·x̂)*x̂  WHICH HAS A NONZERO
+// TANGENT COMPONENT, so the OLD constraint at this Snell solution
+// evaluates to a non-zero (s, t) projection — i.e. would tell Newton
+// "you're not at a solution" when in fact you are.  The (etaI, etaT)
+// fix evaluates correctly to ≈ 0.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_AtSolution_NestedDielectric_45Deg()
+{
+	std::cout << "Testing nested-dielectric constraint (air-cavity inside glass, 30 degree incidence)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Scalar sinI = 0.5;					// sin(30°)
+	const Scalar cosI = std::sqrt( Scalar( 0.75 ) );	// cos(30°)
+	const Scalar etaI = 1.5;
+	const Scalar etaT = 1.0;
+	const Scalar sinT = ( etaI / etaT ) * sinI;	// = 0.75
+	const Scalar cosT = std::sqrt( Scalar( 1.0 ) - sinT * sinT );
+
+	// Place prev at unit distance along (sinI, cosI, 0) from the origin.
+	// This means the direction FROM origin TO prev is (sinI, cosI, 0),
+	// which is `wi` in the constraint convention.
+	const Point3 prevPos(  sinI, cosI, 0 );
+	const Point3 vertPos(    0,    0, 0 );
+	// Place next at unit distance along (-sinT, -cosT, 0) from origin.
+	// Direction FROM origin TO next is (-sinT, -cosT, 0), which is `wo`.
+	const Point3 nextPos( -sinT, -cosT, 0 );
+
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.0, false );	// surface material IOR = 1.0
+	v.etaI = etaI;
+	v.etaT = etaT;
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+//----------------------------------------------------------------------
+// Back-compat regression: the existing test corpus (and any user code
+// that hand-constructs ManifoldVertex objects with only `eta` set)
+// must continue to behave as before.  GetEffectiveEtas detects the
+// "default (etaI=1.0, etaT=1.0) AND eta != 1.0" case and falls back
+// to the old `isExiting ? 1/eta : eta` derivation.
+//
+// Verify by repeating the existing
+// TestHalfVectorConstraint_AtSolution_Refraction test setup explicitly
+// — same MakeVertex call (no etaI/etaT override), expect ≈ 0
+// constraint at the Snell solution.  If GetEffectiveEtas's back-compat
+// logic ever drifts, this test will catch it.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_BackCompat_SingleIORInAir()
+{
+	std::cout << "Testing back-compat: single-IOR-in-air vertex (no etaI/etaT override)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Point3 prevPos( 0,  1, 0 );
+	const Point3 vertPos( 0,  0, 0 );
+	const Point3 nextPos( 0, -1, 0 );
+
+	// MakeVertex sets eta=1.5; etaI and etaT default to 1.0.
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.5, false );
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+void TestAngleDiffConstraint_AtSolution()
+{
+	std::cout << "Testing angle-diff constraint at solution..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Same 45-degree reflection setup as half-vector test
+	Point3 prevPos( -1, 1, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 1, 1, 0 );
+
+	Scalar C0, C1;
+	solver.EvaluateConstraintAtVertex(
+		vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1),
+		1.0, true,
+		prevPos, nextPos, C0, C1 );
+	assert( IsClose( C0, 0.0, 1e-6 ) );
+	assert( IsClose( C1, 0.0, 1e-6 ) );
+}
+
+// ============================================================
+// Group 6: Analytical vs Numerical Jacobian
+// ============================================================
+
+void TestJacobian_SingleVertex_Reflection()
+{
+	std::cout << "Testing Jacobian agreement (single vertex, reflection)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( -1, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 1, 2, 0 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobian( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	for( int i = 0; i < 4; i++ )
+	{
+		assert( IsClose( adiag[i], ndiag[i], 1e-3 ) );
+	}
+}
+
+void TestJacobian_SingleVertex_Refraction()
+{
+	std::cout << "Testing Jacobian agreement (single vertex, refraction)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( 0, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0, -2, 0 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobian( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	for( int i = 0; i < 4; i++ )
+	{
+		assert( IsClose( adiag[i], ndiag[i], 1e-3 ) );
+	}
+}
+
+void TestJacobian_TwoVertex_Agreement()
+{
+	std::cout << "Testing Jacobian agreement (two vertices)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Two refraction vertices (entering then exiting glass slab)
+	Point3 prevPos( 0, 2, 0 );
+	Point3 v1Pos( 0, 0.1, 0 );
+	Point3 v2Pos( 0, -0.1, 0 );
+	Point3 nextPos( 0, -2, 0 );
+
+	ManifoldVertex mv1 = MakeVertex( v1Pos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	ManifoldVertex mv2 = MakeVertex( v2Pos, Vector3(0,-1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( mv1 );
+	chain.push_back( mv2 );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobian( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	// Check diagonal blocks (8 entries)
+	for( int i = 0; i < 8; i++ )
+		assert( IsClose( adiag[i], ndiag[i], 1e-2 ) );
+	// Check upper and lower blocks (4 entries each)
+	for( int i = 0; i < 4; i++ )
+	{
+		assert( IsClose( aupper[i], nupper[i], 1e-2 ) );
+		assert( IsClose( alower[i], nlower[i], 1e-2 ) );
+	}
+}
+
+// Regression test for SMS curvature bug (documents expected behavior).
+//
+// On curved surfaces (dndu, dndv != 0), the analytical BuildJacobian
+// includes tangent-frame rotation terms (ds_du, dt_du) that the
+// current BuildJacobianNumerical does not capture, because
+// EvaluateConstraint freezes v.dpdu/v.dpdv during FD perturbation.
+//
+// So analytical and numerical DISAGREE on curved surfaces — but the
+// analytical is right (matches Cycles MNEE / Zeltner 2020).  This test
+// verifies that the Jacobian diagonal *changes* when curvature is
+// introduced, which is essential for caustic focusing on displaced
+// meshes.
+//
+// Prior coverage only exercised dndu=dndv=0 (flat surfaces), where both
+// formulations agree, masking a bug where an incorrect ds_du formula
+// gave zero at convergence regardless of actual curvature.  See
+// docs/SMS.md (April 2026) for the full analysis.
+void TestJacobian_SingleVertex_WithCurvature()
+{
+	std::cout << "Testing Jacobian changes with surface curvature..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Non-convergent geometry so the dot(ds_du, h) term is meaningful
+	Point3 prevPos( -0.5, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0.3, -2, 0.2 );
+
+	// Flat vertex (reference)
+	ManifoldVertex vFlat = MakeVertex(
+		vertPos, Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, false );  // dndu, dndv default to zero
+
+	// Same vertex but with curvature (convex sphere-like, radius 1)
+	ManifoldVertex vCurv = MakeVertex(
+		vertPos, Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, false,
+		Vector3(1,0,0), Vector3(0,0,1) );  // nonzero dndu, dndv
+
+	std::vector<ManifoldVertex> chainFlat;  chainFlat.push_back( vFlat );
+	std::vector<ManifoldVertex> chainCurv;  chainCurv.push_back( vCurv );
+
+	std::vector<Scalar> diagFlat, upFlat, lowFlat;
+	std::vector<Scalar> diagCurv, upCurv, lowCurv;
+	solver.BuildJacobian( chainFlat, prevPos, nextPos, diagFlat, upFlat, lowFlat );
+	solver.BuildJacobian( chainCurv, prevPos, nextPos, diagCurv, upCurv, lowCurv );
+
+	// At least one diagonal entry must differ noticeably.  If the ds_du
+	// formula degenerates to zero (old RISE bug), the curved Jacobian
+	// equals the flat one and this assertion fails.
+	Scalar maxDelta = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		const Scalar d = std::fabs( diagCurv[i] - diagFlat[i] );
+		if( d > maxDelta ) maxDelta = d;
+	}
+	assert( maxDelta > 0.1 );  // curvature must change the Jacobian
+}
+
+// ============================================================
+// Group 7: Block-Tridiagonal Solver
+// ============================================================
+
+void TestTridiag_SingleBlock()
+{
+	std::cout << "Testing block-tridiagonal solver k=1..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// [2,1;1,3] * [x,y] = [5,7]
+	// Solution: det=5, x=(5*3-1*7)/5=8/5=1.6, y=(2*7-5*1)/5=9/5=1.8
+	std::vector<Scalar> diag = {2,1,1,3};
+	std::vector<Scalar> upper, lower;
+	std::vector<Scalar> rhs = {5,7};
+	std::vector<Scalar> delta;
+
+	bool ok = solver.SolveBlockTridiagonal( diag, upper, lower, rhs, 1, delta );
+	assert( ok );
+	assert( IsClose( delta[0], 1.6 ) );
+	assert( IsClose( delta[1], 1.8 ) );
+}
+
+void TestTridiag_Singular()
+{
+	std::cout << "Testing block-tridiagonal solver singular..." << std::endl;
+	TestableManifoldSolver solver;
+
+	std::vector<Scalar> diag = {1,2,2,4};  // singular
+	std::vector<Scalar> upper, lower;
+	std::vector<Scalar> rhs = {1,2};
+	std::vector<Scalar> delta;
+
+	bool ok = solver.SolveBlockTridiagonal( diag, upper, lower, rhs, 1, delta );
+	assert( !ok );
+}
+
+void TestTridiag_Verification()
+{
+	std::cout << "Testing block-tridiagonal solver verification..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// k=2: known system. Solve then verify J*delta = rhs
+	std::vector<Scalar> diag = {4,1,1,3, 2,0.5,0.5,2};
+	std::vector<Scalar> upper = {0.1,0.2,0.3,0.4};
+	std::vector<Scalar> lower = {0.4,0.3,0.2,0.1};
+	std::vector<Scalar> rhs = {1, 2, 3, 4};
+	std::vector<Scalar> delta;
+
+	// Save a copy of diag since SolveBlockTridiagonal may modify it
+	std::vector<Scalar> diag_copy( diag );
+
+	bool ok = solver.SolveBlockTridiagonal( diag, upper, lower, rhs, 2, delta );
+	assert( ok );
+
+	// Verify: multiply block-tridiagonal system by delta
+	// Row 0-1: D[0]*delta[0:1] + U[0]*delta[2:3]
+	Scalar r0 = diag_copy[0]*delta[0] + diag_copy[1]*delta[1] + upper[0]*delta[2] + upper[1]*delta[3];
+	Scalar r1 = diag_copy[2]*delta[0] + diag_copy[3]*delta[1] + upper[2]*delta[2] + upper[3]*delta[3];
+	// Row 2-3: L[0]*delta[0:1] + D[1]*delta[2:3]
+	Scalar r2 = lower[0]*delta[0] + lower[1]*delta[1] + diag_copy[4]*delta[2] + diag_copy[5]*delta[3];
+	Scalar r3 = lower[2]*delta[0] + lower[3]*delta[1] + diag_copy[6]*delta[2] + diag_copy[7]*delta[3];
+
+	assert( IsClose( r0, rhs[0], 1e-8 ) );
+	assert( IsClose( r1, rhs[1], 1e-8 ) );
+	assert( IsClose( r2, rhs[2], 1e-8 ) );
+	assert( IsClose( r3, rhs[3], 1e-8 ) );
+}
+
+// ============================================================
+// Group 8: Chain Geometry & Throughput
+// ============================================================
+
+void TestCosineProduct_EmptyChain()
+{
+	std::cout << "Testing cosine product empty chain..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	Scalar cp = solver.EvaluateChainCosineProduct( Point3(0,0,0), Point3(0,1,0), chain );
+	assert( IsClose( cp, 1.0 ) );
+}
+
+void TestCosineProduct_SingleVertex_NormalIncidence()
+{
+	std::cout << "Testing cosine product single vertex normal incidence..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Start directly above vertex, normal = (0,1,0)
+	Point3 start( 0, 2, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	// Direction from start to vertex = (0,-1,0), cos = |dot((0,1,0),(0,-1,0))| = 1.0
+	assert( IsClose( cp, 1.0 ) );
+}
+
+void TestCosineProduct_SingleVertex_ObliqueIncidence()
+{
+	std::cout << "Testing cosine product single vertex oblique incidence..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Start at 45 degrees
+	Point3 start( 1, 1, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	// Direction = normalize((0,0,0)-(1,1,0)) = (-1/sqrt2, -1/sqrt2, 0)
+	// cos = |dot((0,1,0),(-1/sqrt2,-1/sqrt2,0))| = 1/sqrt(2) ≈ 0.707
+	assert( IsClose( cp, 1.0 / sqrt(2.0), 1e-6 ) );
+}
+
+void TestCosineProduct_Range()
+{
+	std::cout << "Testing cosine product range [0,1]..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0.5, 2, 0.3 );
+	Point3 end( -0.3, -2, 0.1 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	assert( cp >= 0.0 && cp <= 1.0 );
+}
+
+void TestGeometry_EmptyChain()
+{
+	std::cout << "Testing chain geometry empty chain..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	Scalar g = solver.EvaluateChainGeometry( Point3(0,0,0), Point3(0,1,0), chain );
+	assert( IsClose( g, 1.0 ) );
+}
+
+void TestGeometry_SingleVertex()
+{
+	std::cout << "Testing chain geometry single vertex..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0, 2, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar g = solver.EvaluateChainGeometry( start, end, chain );
+	// cos_in at vertex = |dot((0,1,0), (0,1,0))| = 1, dist_to_prev = 2
+	// factor = 1 / 4 (= cos/dist²)
+	// last segment: dist_to_end = 2, factor = 1/4
+	// total = 1/4 * 1/4 = 1/16 = 0.0625
+	assert( IsClose( g, 0.0625, 1e-8 ) );
+}
+
+void TestGeometry_Positive()
+{
+	std::cout << "Testing chain geometry positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 1, 3, 0 );
+	Point3 end( -1, -3, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar g = solver.EvaluateChainGeometry( start, end, chain );
+	assert( g >= 0 );
+}
+
+void TestThroughput_EmptyChain()
+{
+	std::cout << "Testing chain throughput empty chain..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	RISEPel t = solver.EvaluateChainThroughput( Point3(0,0,0), Point3(0,1,0), chain );
+	assert( IsClose( t[0], 1.0 ) );
+	assert( IsClose( t[1], 1.0 ) );
+	assert( IsClose( t[2], 1.0 ) );
+}
+
+void TestThroughput_NormalIncidence_Refraction()
+{
+	std::cout << "Testing throughput normal incidence refraction..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0, 2, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	RISEPel t = solver.EvaluateChainThroughput( start, end, chain );
+	// F at normal incidence: ((1-1.5)/(1+1.5))^2 = 0.04
+	// Refraction radiance throughput: (1 - F) * (eta_i/eta_t)^2
+	//   = 0.96 * (1/1.5)^2 ≈ 0.4267
+	// The (eta_i/eta_t)^2 factor is the standard radiance rescale
+	// across a dielectric boundary (see EvaluateChainThroughput for
+	// the full rationale).
+	assert( IsClose( t[0], 0.96 * (1.0/1.5) * (1.0/1.5), 1e-4 ) );
+}
+
+void TestThroughput_NormalIncidence_Reflection()
+{
+	std::cout << "Testing throughput normal incidence reflection..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0, 2, 0 );
+	Point3 end( 0, 2, 0 );  // reflected back
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	RISEPel t = solver.EvaluateChainThroughput( start, end, chain );
+	assert( IsClose( t[0], 0.04, 1e-4 ) );
+}
+
+void TestThroughput_Range()
+{
+	std::cout << "Testing throughput range [0,1]..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0.5, 2, 0 );
+	Point3 end( -0.3, -2, 0.1 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.8, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	RISEPel t = solver.EvaluateChainThroughput( start, end, chain );
+	assert( t[0] >= 0 && t[0] <= 1.0 );
+	assert( t[1] >= 0 && t[1] <= 1.0 );
+	assert( t[2] >= 0 && t[2] <= 1.0 );
+}
+
+// ============================================================
+// Group 9: Physical Validation
+// ============================================================
+
+void TestValidateChain_ValidRefraction()
+{
+	std::cout << "Testing ValidateChainPhysics valid refraction..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// wi from above (wi.n > 0), wo going below (wo.n < 0) → valid refraction
+	Point3 prevPos( 0, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	assert( solver.ValidateChainPhysics( chain, prevPos, nextPos ) );
+}
+
+void TestValidateChain_InvalidRefraction()
+{
+	std::cout << "Testing ValidateChainPhysics invalid refraction..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Both wi and wo above surface → invalid for refraction
+	Point3 prevPos( 0, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0, 2, 0 );
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	assert( !solver.ValidateChainPhysics( chain, prevPos, nextPos ) );
+}
+
+void TestValidateChain_ValidReflection()
+{
+	std::cout << "Testing ValidateChainPhysics valid reflection..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Both wi and wo above surface → valid for reflection
+	Point3 prevPos( -1, 1, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 1, 1, 0 );
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	assert( solver.ValidateChainPhysics( chain, prevPos, nextPos ) );
+}
+
+void TestValidateChain_InvalidReflection()
+{
+	std::cout << "Testing ValidateChainPhysics invalid reflection..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// wi above, wo below → invalid for reflection
+	Point3 prevPos( 0, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	assert( !solver.ValidateChainPhysics( chain, prevPos, nextPos ) );
+}
+
+// ============================================================
+// Group 11: Light-to-First-Vertex Jacobian Determinant
+//
+// The SMS measure-conversion factor uses |det(δv_1_⊥ / δy_⊥)|
+// (Zeltner et al. 2020, Eq. 14).  This block-tridiagonal
+// solve underlies the G(x,v_1) · |det(δv/δy)| formula that
+// replaced the obsolete cosAtLight × chainGeom / jacobianDet in
+// EvaluateAtShadingPoint{NM}.  A regression here would silently
+// shift caustic intensity — the kind of thing that only shows
+// up as a bias-vs-variance mismatch against VCM reference.
+// ============================================================
+
+void TestLightToVertexJac_EmptyChain()
+{
+	std::cout << "Testing light-to-vertex Jacobian empty chain returns 0..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, Point3(0,1,0), Point3(0,-1,0), Vector3(0,1,0) );
+	assert( IsClose( det, 0.0 ) );
+}
+
+void TestLightToVertexJac_SingleRefraction_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian single-refraction positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Geometry: shading point above, refractor plane at origin
+	// (normal +Y, eta=1.5), light below.  Symmetric about Y axis
+	// so the Jacobian should be finite and positive.
+	const Point3 shadingPoint( 0.0, 1.0, 0.0 );
+	const Point3 lightPos( 0.0, -1.0, 0.0 );
+	const Vector3 lightNormal( 0.0, 1.0, 0.0 );
+
+	ManifoldVertex v = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	// The Jacobian det should be strictly positive and finite.
+	// Exact value is scene-dependent, but zero or NaN would be a bug.
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLightToVertexJac_SingleReflection_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian single-reflection positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Geometry: shading above, mirror plane at origin (normal +Y),
+	// "light" above-right so reflection reaches it.  For reflection
+	// chain the Jacobian is expected positive and finite.
+	const Point3 shadingPoint( -1.0, 1.0, 0.0 );
+	const Point3 lightPos( 1.0, 1.0, 0.0 );
+	const Vector3 lightNormal( 0.0, -1.0, 0.0 );
+
+	ManifoldVertex v = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.0, /*isReflection=*/true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLightToVertexJac_TwoRefraction_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian k=2 (glass slab) positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Two parallel refractors (entry/exit of a slab).  Back-to-back
+	// eta cancellation means the chain is physically valid with
+	// entry eta=1.5 then exit eta=1/1.5 ≈ 0.667.
+	const Point3 shadingPoint( 0.0, 2.0, 0.0 );
+	const Point3 lightPos( 0.0, -2.0, 0.0 );
+	const Vector3 lightNormal( 0.0, 1.0, 0.0 );
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( MakeVertex(
+		Point3( 0.0, 0.5, 0.0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false ) );
+	chain.push_back( MakeVertex(
+		Point3( 0.0, -0.5, 0.0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.0 / 1.5, /*isReflection=*/false ) );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLastBlockLightJac_NormalIncidence()
+{
+	std::cout << "Testing ComputeLastBlockLightJacobian returns finite Jy..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Single refractor, light directly below.
+	ManifoldVertex vk = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false );
+	Point3 prevPos( 0, 1, 0 );
+	Point3 lightPos( 0, -1, 0 );
+	Vector3 lightNormal( 0, 1, 0 );
+
+	Scalar Jy[4] = { 0, 0, 0, 0 };
+	solver.ComputeLastBlockLightJacobian( vk, prevPos, lightPos, lightNormal, Jy );
+
+	// All four entries should be finite.  Symmetric geometry makes
+	// the off-diagonals 0 to numerical precision, but we don't rely
+	// on that — just require finiteness and non-zero determinant.
+	assert( std::isfinite( Jy[0] ) );
+	assert( std::isfinite( Jy[1] ) );
+	assert( std::isfinite( Jy[2] ) );
+	assert( std::isfinite( Jy[3] ) );
+
+	const Scalar detJy = Jy[0] * Jy[3] - Jy[1] * Jy[2];
+	assert( std::fabs( detJy ) > 1e-12 );
+}
+
+// ============================================================
+// Group 12: ComputeSphericalDerivatives
+// ============================================================
+
+void TestSphericalDeriv_ThetaGradient()
+{
+	std::cout << "Testing spherical derivative theta gradient..." << std::endl;
+	Vector3 s( 1, 0, 0 );
+	Vector3 t( 0, 0, 1 );
+	Vector3 n( 0, 1, 0 );
+	Vector3 dir = Vector3Ops::Normalize( Vector3( 0.3, 0.8, 0.1 ) );
+
+	Vector3 dTheta, dPhi;
+	ManifoldSolver::ComputeSphericalDerivatives( dir, s, t, n, dTheta, dPhi );
+
+	// dTheta should be along the normal direction (only z component in local frame matters)
+	// Specifically: dTheta = (-1/sin(theta)) * normal
+	const Scalar z = Vector3Ops::Dot( dir, n );
+	const Scalar sinTheta = sqrt( 1.0 - z * z );
+	if( sinTheta > 1e-6 )
+	{
+		Vector3 expected( -n.x / sinTheta, -n.y / sinTheta, -n.z / sinTheta );
+		assert( IsVectorClose( dTheta, expected, 1e-8 ) );
+	}
+}
+
+void TestSphericalDeriv_PhiInTangentPlane()
+{
+	std::cout << "Testing spherical derivative phi in tangent plane..." << std::endl;
+	Vector3 s( 1, 0, 0 );
+	Vector3 t( 0, 0, 1 );
+	Vector3 n( 0, 1, 0 );
+	Vector3 dir = Vector3Ops::Normalize( Vector3( 0.5, 0.3, 0.7 ) );
+
+	Vector3 dTheta, dPhi;
+	ManifoldSolver::ComputeSphericalDerivatives( dir, s, t, n, dTheta, dPhi );
+
+	// dPhi should have zero component along normal
+	assert( IsClose( Vector3Ops::Dot( dPhi, n ), 0.0, 1e-8 ) );
+}
+
+void TestSphericalDeriv_FD()
+{
+	std::cout << "Testing spherical derivatives vs FD..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 s( 1, 0, 0 );
+	Vector3 t( 0, 0, 1 );
+	Vector3 n( 0, 1, 0 );
+	Vector3 dir = Vector3Ops::Normalize( Vector3( 0.4, 0.7, 0.3 ) );
+
+	Vector3 dTheta, dPhi;
+	ManifoldSolver::ComputeSphericalDerivatives( dir, s, t, n, dTheta, dPhi );
+
+	// Finite difference: perturb dir in each component
+	const Scalar eps = 1e-6;
+	for( int j = 0; j < 3; j++ )
+	{
+		Vector3 dirP = dir, dirM = dir;
+		Scalar* dpArr = &dirP.x;
+		Scalar* dmArr = &dirM.x;
+		dpArr[j] += eps;
+		dmArr[j] -= eps;
+
+		Point2 spP = solver.DirectionToSpherical( dirP, s, t, n );
+		Point2 spM = solver.DirectionToSpherical( dirM, s, t, n );
+
+		Scalar dTheta_fd = (spP.x - spM.x) / (2.0 * eps);
+		Scalar dPhi_fd = (spP.y - spM.y) / (2.0 * eps);
+
+		Scalar* dtArr = &dTheta.x;
+		Scalar* dpArr2 = &dPhi.x;
+		assert( IsClose( dtArr[j], dTheta_fd, 1e-3 ) );
+		assert( IsClose( dpArr2[j], dPhi_fd, 1e-3 ) );
+	}
+}
+
+// ============================================================
+// Group 13: ComputeSpecularDirectionDerivativeWrtWi
+// ============================================================
+
+void TestDerivWrtWi_Reflection_FD()
+{
+	std::cout << "Testing d(wo)/d(wi) reflection vs FD..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi = Vector3Ops::Normalize( Vector3( 0.4, 0.8, 0.2 ) );
+	Vector3 normal( 0, 1, 0 );
+
+	Scalar analytical[9];
+	ManifoldSolver::ComputeSpecularDirectionDerivativeWrtWi( wi, normal, 1.0, true, analytical );
+
+	const Scalar eps = 1e-6;
+	for( int j = 0; j < 3; j++ )
+	{
+		Vector3 wiP = wi, wiM = wi;
+		Scalar* wpArr = &wiP.x;
+		Scalar* wmArr = &wiM.x;
+		wpArr[j] += eps;
+		wmArr[j] -= eps;
+
+		Vector3 woP, woM;
+		// Use unnormalized reflection: wo = -wi + 2*(wi.n)*n
+		Scalar dP = Vector3Ops::Dot( wiP, normal );
+		woP = Vector3( -wiP.x + 2*dP*normal.x, -wiP.y + 2*dP*normal.y, -wiP.z + 2*dP*normal.z );
+		Scalar dM = Vector3Ops::Dot( wiM, normal );
+		woM = Vector3( -wiM.x + 2*dM*normal.x, -wiM.y + 2*dM*normal.y, -wiM.z + 2*dM*normal.z );
+
+		for( int i = 0; i < 3; i++ )
+		{
+			Scalar* woPArr = &woP.x;
+			Scalar* woMArr = &woM.x;
+			Scalar fd = (woPArr[i] - woMArr[i]) / (2 * eps);
+			assert( IsClose( analytical[i*3+j], fd, 1e-3 ) );
+		}
+	}
+}
+
+void TestDerivWrtWi_Refraction_FD()
+{
+	std::cout << "Testing d(wo)/d(wi) refraction vs FD..." << std::endl;
+	TestableManifoldSolver solver;
+	Vector3 wi = Vector3Ops::Normalize( Vector3( 0.3, 0.9, 0.1 ) );
+	Vector3 normal( 0, 1, 0 );
+	Scalar eta = 1.5;
+
+	Scalar analytical[9];
+	ManifoldSolver::ComputeSpecularDirectionDerivativeWrtWi( wi, normal, eta, false, analytical );
+
+	// Use unnormalized refraction to match the derivative convention
+	const Scalar eps = 1e-6;
+	for( int j = 0; j < 3; j++ )
+	{
+		Vector3 wiP = wi, wiM = wi;
+		Scalar* wpArr = &wiP.x;
+		Scalar* wmArr = &wiM.x;
+		wpArr[j] += eps;
+		wmArr[j] -= eps;
+
+		// Compute unnormalized refracted direction
+		auto refractUnnorm = [&]( const Vector3& w ) -> Vector3
+		{
+			const Scalar ci = Vector3Ops::Dot( w, normal );
+			const Scalar eta_ratio = 1.0 / eta;  // entering
+			const Scalar sin2_t = eta_ratio * eta_ratio * (1.0 - ci * ci);
+			const Scalar cos_t = sqrt( fmax( 1.0 - sin2_t, 0.0 ) );
+			return Vector3(
+				-eta_ratio * w.x + (eta_ratio * ci - cos_t) * normal.x,
+				-eta_ratio * w.y + (eta_ratio * ci - cos_t) * normal.y,
+				-eta_ratio * w.z + (eta_ratio * ci - cos_t) * normal.z );
+		};
+
+		Vector3 woP = refractUnnorm( wiP );
+		Vector3 woM = refractUnnorm( wiM );
+
+		for( int i = 0; i < 3; i++ )
+		{
+			Scalar* woPArr = &woP.x;
+			Scalar* woMArr = &woM.x;
+			Scalar fd = (woPArr[i] - woMArr[i]) / (2 * eps);
+			assert( IsClose( analytical[i*3+j], fd, 1e-3 ) );
+		}
+	}
+}
+
+// ============================================================
+// Group 14: Angle-Difference Analytical vs Numerical Jacobian
+// ============================================================
+
+void TestAngleDiffJacobian_SingleVertex_Reflection()
+{
+	std::cout << "Testing angle-diff Jacobian (single vertex, reflection)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( -1, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 1, 2, 0 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.0, true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobianAngleDiff( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianAngleDiffNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	for( int i = 0; i < 4; i++ )
+	{
+		if( !IsClose( adiag[i], ndiag[i], 5e-2 ) )
+		{
+			std::cout << "  MISMATCH diag[" << i << "]: analytical=" << adiag[i]
+				<< " numerical=" << ndiag[i] << std::endl;
+		}
+		assert( IsClose( adiag[i], ndiag[i], 5e-2 ) );
+	}
+}
+
+void TestAngleDiffJacobian_SingleVertex_Refraction()
+{
+	std::cout << "Testing angle-diff Jacobian (single vertex, refraction)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( 0.3, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( -0.2, -2, 0.1 );
+
+	ManifoldVertex v = MakeVertex( vertPos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobianAngleDiff( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianAngleDiffNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	for( int i = 0; i < 4; i++ )
+	{
+		if( !IsClose( adiag[i], ndiag[i], 5e-2 ) )
+		{
+			std::cout << "  MISMATCH diag[" << i << "]: analytical=" << adiag[i]
+				<< " numerical=" << ndiag[i] << std::endl;
+		}
+		assert( IsClose( adiag[i], ndiag[i], 5e-2 ) );
+	}
+}
+
+void TestAngleDiffJacobian_TwoVertex()
+{
+	std::cout << "Testing angle-diff Jacobian (two vertices)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 prevPos( 0, 2, 0 );
+	Point3 v1Pos( 0.1, 0.1, 0 );
+	Point3 v2Pos( -0.1, -0.1, 0 );
+	Point3 nextPos( 0, -2, 0 );
+
+	ManifoldVertex mv1 = MakeVertex( v1Pos, Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	ManifoldVertex mv2 = MakeVertex( v2Pos, Vector3(0,-1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( mv1 );
+	chain.push_back( mv2 );
+
+	std::vector<Scalar> adiag, aupper, alower;
+	solver.BuildJacobianAngleDiff( chain, prevPos, nextPos, adiag, aupper, alower );
+
+	std::vector<Scalar> ndiag, nupper, nlower;
+	solver.BuildJacobianAngleDiffNumerical( chain, prevPos, nextPos, ndiag, nupper, nlower );
+
+	// Diagonal blocks (8 entries)
+	for( int i = 0; i < 8; i++ )
+		assert( IsClose( adiag[i], ndiag[i], 0.1 ) );
+	// Upper and lower (4 entries each)
+	for( int i = 0; i < 4; i++ )
+	{
+		assert( IsClose( aupper[i], nupper[i], 0.1 ) );
+		assert( IsClose( alower[i], nlower[i], 0.1 ) );
+	}
+}
+
+// ============================================================
+// Group 15: DL-70 chain-level pin -- SnellContinueChain's bEntering
+// on a double-sided dielectric slab caster
+// ============================================================
+
+//////////////////////////////////////////////////////////////////////
+//  DL-70 P2-1: `sms_slab_close_pt_sms_hispp.RISEscene` uses a
+//  double_sided dielectric slab (a rawmesh2 mesh) as its SMS caster.
+//  This pins the underlying mechanism that scene exercises --
+//  `SnellContinueChain`'s `bEntering` classification -- WITHOUT a
+//  render, using the "legacy slabs-from-planes" pattern the function's
+//  own comments name: a slab modelled as TWO SEPARATE double-sided
+//  planar objects (so the `sameObjectAgain` IOR-stack override, which
+//  already protects a SINGLE double-sided object's second crossing,
+//  cannot fire for either -- each plane is pushed/tested under its OWN
+//  IObject*).  That isolates the exact defect DL-70 fixed at this site:
+//  before the fix, `mv.geomNormal` copied the REPORTED `vGeomNormal`,
+//  which a double-sided plane flips to always oppose the incoming ray
+//  on EVERY crossing, so `cosI = Dot(dir, mv.geomNormal)` read negative
+//  ("entering") at BOTH the entry AND the exit face.  After the fix,
+//  `mv.geomNormal = UnflippedGeomNormal()` -- the TRUE, ray-independent
+//  normal -- so the two crossings' `cosI` signs correctly alternate.
+//
+//  Fixture: two double-sided `ClippedPlaneGeometry` quads at z=0 (true
+//  outward normal -Z, wound so the natural cross(dpdu,dpdv) is -Z --
+//  the "entry" face of a slab occupying z in [0, 0.2]) and z=0.2 (true
+//  outward normal +Z -- the "exit" face), both carrying a real
+//  DielectricMaterial (eta=1.5).  A seed chain traced from z=-3 to
+//  z=+3 along +Z crosses both at normal incidence: the entry face
+//  hits front-on (no flip -- reported already agrees with the true
+//  normal there) and the exit face hits back-on (flipped -- reported
+//  and true DISAGREE there), so the fixture isolates the bug to
+//  exactly the second crossing, matching the mechanism above.
+//
+//  RED-PROVED against the pre-DL-70 library, not just a same-tree
+//  consistency pin: run verbatim (unmodified) against an isolated
+//  checkout of `master` `32824325` (the DL-70 slice's own parent
+//  commit, built in a separate worktree under the session scratchpad,
+//  never the shared checkout or this worktree), this exact assertion
+//  FAILS --
+//
+//    Assertion failed: (chain[1].isExiting == true), function
+//    TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates,
+//    file ManifoldSolverTest.cpp (the "MONEY" isExiting assertion below).
+//
+//  -- because that commit's `SnellContinueChain` still copies the RAW
+//  `ri.geometric.vGeomNormal` into `mv.geomNormal`
+//  (`ManifoldSolver.cpp` pre-fix ~:3982), which a double-sided plane
+//  always flips to oppose the ray, so `cosI` reads negative
+//  ("entering") at BOTH crossings and `chain[1].isExiting` comes back
+//  `false` instead of `true`.  On the current (fixed) tree, where
+//  `mv.geomNormal = ri.geometric.UnflippedGeomNormal()`, the same
+//  fixture passes.  The second block below (the `preFix*` locals) is a
+//  from-first-principles restatement of the SAME mechanism kept
+//  in-line so a reader doesn't have to go build the old commit to see
+//  why it fails -- the ACTUAL red-proof is the assertion above it,
+//  confirmed by literally building and running this file against
+//  `32824325`.
+//////////////////////////////////////////////////////////////////////
+static void TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates()
+{
+	std::cout << "Group 15: SnellContinueChain bEntering alternates across a double-sided slab (DL-70 P2-1)" << std::endl;
+
+	// Entry face at z=0: winding gives true normal -Z (cross(dpdu,dpdv)
+	// with dpdu ~ (0,2,0), dpdv ~ (2,0,0) -> (0,0,-4)).
+	const Point3 entryCorners[4] = {
+		Point3( -1, -1, 0.0 ), Point3( -1, 1, 0.0 ), Point3( 1, 1, 0.0 ), Point3( 1, -1, 0.0 )
+	};
+	// Exit face at z=0.2: winding gives true normal +Z (the sub-test-5
+	// pattern from GeomNormalOrientationSitesTest.cpp: dpdu ~ (2,0,0),
+	// dpdv ~ (0,2,0) -> (0,0,4)).
+	const Point3 exitCorners[4] = {
+		Point3( -1, -1, 0.2 ), Point3( 1, -1, 0.2 ), Point3( 1, 1, 0.2 ), Point3( -1, 1, 0.2 )
+	};
+
+	ClippedPlaneGeometry* gEntry = new ClippedPlaneGeometry( entryCorners, /*bDoubleSided*/true );
+	Object* oEntry = new Object( gEntry );  gEntry->release();
+	oEntry->FinalizeTransformations();
+
+	ClippedPlaneGeometry* gExit = new ClippedPlaneGeometry( exitCorners, /*bDoubleSided*/true );
+	Object* oExit = new Object( gExit );  gExit->release();
+	oExit->FinalizeTransformations();
+
+	const Scalar eta = 1.5;
+	UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );  tau->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( eta );  ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );  scat->addref();  // delta pass-through
+	DielectricMaterial* material = new DielectricMaterial( *tau, *ior, *scat, false );
+	material->addref();
+	oEntry->AssignMaterial( *material );
+	oExit->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( oEntry, "slab_entry" );
+	manager->AddItem( oExit,  "slab_exit" );
+
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	std::vector<IShaderOp*> noOps;
+	IShader* pShader = 0;
+	RISE_API_CreateStandardShader( &pShader, noOps );
+	IRayCaster* pICaster = 0;
+	RISE_API_CreateRayCaster( &pICaster, false, 10, *pShader, true );
+
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	const Point3 start( 0, 0, -3 );
+	const Point3 end(   0, 0,  3 );
+	const unsigned int produced = solver.BuildSeedChain(
+		start, end, *scene, *pICaster, chain, /*applyEmitterStop*/true );
+
+	assert( produced == 2 );
+	assert( chain.size() == 2 );
+
+	// POST-fix mechanism, on the chain BuildSeedChain actually produced:
+	// entry face is a true entry, exit face is a true exit.
+	assert( chain[0].isExiting == false );
+	assert( chain[1].isExiting == true );
+
+	// THE MONEY ASSERTION: they differ (alternate), which is exactly
+	// what a raw-`vGeomNormal` (pre-fix) reconstruction could not do --
+	// verified directly below by re-deriving what the PRE-fix `cosI`
+	// sign would have been at each vertex from first principles (the
+	// double-sided flip rule itself, not the fixed helper), using the
+	// same +Z trace direction BuildSeedChain used.
+	assert( chain[0].isExiting != chain[1].isExiting );
+
+	const Vector3 dir( 0, 0, 1 );
+	// A double-sided ClippedPlaneGeometry's REPORTED vGeomNormal always
+	// opposes the ray (that is the entire DL-70 bug): front-face hits
+	// already oppose it by construction, back-face hits get flipped to.
+	// So the PRE-fix `mv.geomNormal` at every crossing on this fixture
+	// would have been exactly `-dir`, regardless of which face.
+	const Vector3 preFixReportedNormal = dir * -1.0;
+	const Scalar preFixCosIEntry = Vector3Ops::Dot( dir, preFixReportedNormal );
+	const Scalar preFixCosIExit  = Vector3Ops::Dot( dir, preFixReportedNormal );
+	const bool preFixEnteringEntry = ( preFixCosIEntry < 0.0 );
+	const bool preFixEnteringExit  = ( preFixCosIExit  < 0.0 );
+	assert( preFixEnteringEntry == true );
+	assert( preFixEnteringExit  == true );   // BUG: pre-fix reads "entering" at the EXIT face too
+	assert( preFixEnteringEntry == preFixEnteringExit );   // pre-fix: constant, does NOT alternate
+
+	safe_release( pICaster );
+	safe_release( pShader );
+	scene->release();
+	manager->release();
+	oEntry->release();
+	oExit->release();
+	material->release();
+	scat->release();
+	ior->release();
+	tau->release();
+
+	std::cout << "  PASS: bEntering alternates true->false across the two crossings (post-fix); "
+		<< "would have been constant true->true pre-fix." << std::endl;
+}
+
+
+// ============================================================
+// Group 16: DL-373 -- the snell seed walk refracts at an EXIT
+// ============================================================
+
+//////////////////////////////////////////////////////////////////////
+//  SMS energy-loss push (DL-373).  `SnellContinueChain` refracted an
+//  exit with `specInfo.ior / currentIOR`; inside the object both are the
+//  object's own index, so every exit was index-matched and the seed left
+//  the caster along its INSIDE direction.  Fixture: the geometry of a
+//  measured DL-373 miss -- two closed ior-1.5 slabs (8 x 0.05 x 8 boxes
+//  at y 1.75 and y 1.0), a seed traced from a diffuser point at y 2.2
+//  toward an emitter point at y 1.5 between them.  The true chain is
+//  k = 2 (the upper slab); the emitter-projection cap ends the walk past
+//  the target.  Pre-fix the walk left the upper slab ~2.3x steeper than
+//  it entered, reached the lower slab inside the cap and seeded k = 4
+//  (Newton then failed on it: 4.0 % of the fixture's suppressed energy).
+//  Asserted: k = 2, and the continuation after the exit is parallel to
+//  the incident direction (a parallel slab), recovered from the two
+//  vertices of a second walk aimed through the lower slab.
+//////////////////////////////////////////////////////////////////////
+static void TestSnellContinueChain_ExitRefraction()
+{
+	std::cout << "Group 16: snell seed walk refracts at an exit (DL-373)" << std::endl;
+
+	UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );  tau->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( 1.5 );  ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );  scat->addref();
+	DielectricMaterial* material = new DielectricMaterial( *tau, *ior, *scat, false );
+	material->addref();
+
+	BoxGeometry* gUpper = new BoxGeometry( 8, 0.05, 8 );
+	Object* oUpper = new Object( gUpper );  gUpper->release();
+	oUpper->SetPosition( Point3( 0, 1.75, 0 ) );
+	oUpper->FinalizeTransformations();
+	oUpper->AssignMaterial( *material );
+	BoxGeometry* gLower = new BoxGeometry( 8, 0.05, 8 );
+	Object* oLower = new Object( gLower );  gLower->release();
+	oLower->SetPosition( Point3( 0, 1.0, 0 ) );
+	oLower->FinalizeTransformations();
+	oLower->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( oUpper, "slab_upper" );
+	manager->AddItem( oLower, "slab_lower" );
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	std::vector<IShaderOp*> noOps;
+	IShader* pShader = 0;
+	RISE_API_CreateStandardShader( &pShader, noOps );
+	IRayCaster* pICaster = 0;
+	RISE_API_CreateRayCaster( &pICaster, false, 10, *pShader, true );
+
+	TestableManifoldSolver solver;
+	const Point3 start( 2.412, 2.2, -0.966 );
+	const Point3 end( 0.498, 1.5, -0.192 );
+	std::vector<ManifoldVertex> chain;
+	const unsigned int produced = solver.BuildSeedChain(
+		start, end, *scene, *pICaster, chain, /*applyEmitterStop*/true );
+	std::cout << "  seed toward the emitter point: k = " << produced << " (true chain k = 2)" << std::endl;
+	assert( produced == 2 );	// pre-fix: 4
+	assert( IsClose( chain[1].etaI, 1.5 ) && IsClose( chain[1].etaT, 1.0 ) );
+
+	// The continuation: aim the walk PAST the lower slab (no cap in reach)
+	// and read the direction between the upper slab's exit and the lower
+	// slab's entry.  A parallel slab returns the incident direction.
+	std::vector<ManifoldVertex> through;
+	const Vector3 d0 = Vector3Ops::Normalize( Vector3Ops::mkVector3( end, start ) );
+	const unsigned int k4 = solver.BuildSeedChain(
+		start, Point3Ops::mkPoint3( start, d0 * 10.0 ), *scene, *pICaster, through, /*applyEmitterStop*/false );
+	assert( k4 == 4 );
+	const Vector3 d2 = Vector3Ops::Normalize( Vector3Ops::mkVector3( through[2].position, through[1].position ) );
+	std::cout << "  exit continuation . incident = " << Vector3Ops::Dot( d0, d2 ) << " (1 = parallel)" << std::endl;
+	assert( Vector3Ops::Dot( d0, d2 ) > 1.0 - 1e-9 );	// pre-fix: the inside direction
+
+	safe_release( pICaster );
+	safe_release( pShader );
+	scene->release();
+	manager->release();
+	oUpper->release();
+	oLower->release();
+	material->release();
+	scat->release();
+	ior->release();
+	tau->release();
+	std::cout << "  PASS" << std::endl;
+}
+
+// ============================================================
+// main
+// ============================================================
+
+// DL-395: the real photon reconstruction invokes both RGB and NM material
+// queries with captured UV/Po, rather than the synthetic record's origin.
+class ContextIndex : public UniformScalarPainter {
+public:
+    ContextIndex() : UniformScalarPainter(1.0) {}
+    ScalarTriple GetValuesAt(const RayIntersectionGeometric& r) const override {
+        return ScalarTriple(1.2 + 0.2*r.ptCoord.x + 0.3*r.ptObjIntersec.y);
+    }
+    Scalar GetValueAtNM(const RayIntersectionGeometric& r, Scalar nm) const override {
+        return GetValuesAt(r)[0] + nm*0.0001;
+    }
+    bool IsPositionIndependent() const override { return false; }
+};
+// Keep the regression buildable against committed pre-DL-395 headers so
+// red proof measures the material query rather than an API compile failure.
+template<class Solver>
+static auto ReconstructPhotonAtNM(Solver& solver, const SMSPhoton& photon,
+    std::vector<ManifoldVertex>& chain, Scalar nm, int)
+    -> decltype(solver.ReversePhotonChainForSeed(photon,chain,nm)) {
+    return solver.ReversePhotonChainForSeed(photon,chain,nm);
+}
+template<class Solver>
+static unsigned int ReconstructPhotonAtNM(Solver& solver, const SMSPhoton& photon,
+    std::vector<ManifoldVertex>& chain, Scalar, long) {
+    return solver.ReversePhotonChainForSeed(photon,chain);
+}
+template<class Vertex>
+static auto CapturedPhotonObjectY(const Vertex& vertex, int)
+    -> decltype(vertex.objectPosition.y) {
+    return vertex.objectPosition.y;
+}
+template<class Vertex>
+static Scalar CapturedPhotonObjectY(const Vertex&, long) { return 0; }
+template<class Vertex>
+static auto CapturedObjectPosition(const Vertex& v,int)->decltype(v.objectPosition) {return v.objectPosition;}
+template<class Vertex>
+static Point3 CapturedObjectPosition(const Vertex&,long) {return Point3(0,0,0);}
+static bool TestPhotonMaterialContext() {
+    bool ok=true;
+    auto* tau=new UniformScalarPainter(1.0);
+    auto* index=new ContextIndex();
+    auto* scatter=new UniformScalarPainter(1000000.0);
+    auto* material=new DielectricMaterial(*tau,*index,*scatter,false);
+    SMSPhoton photon;
+    photon.chainLen=1;
+    photon.chain[0].position=Point3(3,4,5);
+    photon.chain[0].objectPosition=Point3(0.4,0.7,0.2);
+    photon.chain[0].uv=Point2(0.6,0.8);
+    photon.chain[0].normal=Vector3(0,1,0);
+    photon.chain[0].geomNormal=Vector3(0,1,0);
+    photon.chain[0].pMaterial=material;
+    // Attenuation uses the same context-sensitive scalar too.
+    material->SetTransmittance(*index);
+    TestableManifoldSolver solver;
+    for(Scalar nm : {Scalar(0),Scalar(450),Scalar(650)}) {
+        std::vector<ManifoldVertex> chain;
+        const unsigned count=ReconstructPhotonAtNM(solver,photon,chain,nm,0);
+        const Scalar expected=1.53 + nm*0.0001;
+        ok &= count==1 && chain.size()==1;
+        if(chain.size()!=1) continue;
+        ok &= nm==0 ? IsClose(chain[0].attenuation.r,expected) : IsClose(chain[0].eta,expected);
+        ok &= IsClose(chain[0].uv.x,0.6) && IsClose(CapturedPhotonObjectY(chain[0],0),0.7);
+    }
+    material->release();tau->release();index->release();scatter->release();
+    std::cout << "Photon UV/Po RGB and 450/650nm context " << (ok ? "passed" : "FAILED") << std::endl;
+    return ok;
+}
+
+
+// DL-435 adapters keep the committed-master proof executable. The old
+// metadata has no NM slot; its RGB channel fallback exposes the old query
+// contract, while old NM throughput still fails the independent oracles.
+template<class Metadata>
+static auto SpectralAttenuation(const Metadata& v, int) -> decltype(v.attenuationNM) {
+    return v.attenuationNM;
+}
+template<class Metadata>
+static Scalar SpectralAttenuation(const Metadata& v, long) { return v.attenuation.r; }
+template<class Metadata>
+static auto InteriorAttenuation(const Metadata& v, int) -> decltype(v.attenuationIsInteriorTransmittance) {
+    return v.attenuationIsInteriorTransmittance;
+}
+template<class Metadata>
+static bool InteriorAttenuation(const Metadata&, long) { return false; }
+template<class Vertex>
+static auto SetSpectralAttenuation(Vertex& v, Scalar value, bool interior, int)
+    -> decltype(v.attenuationNM = value, void()) {
+    v.attenuationNM = value;
+    v.attenuationIsInteriorTransmittance = interior;
+}
+template<class Vertex>
+static void SetSpectralAttenuation(Vertex& v, Scalar value, bool, long) {
+    v.attenuation = RISEPel(value,value,value);
+}
+template<class Metadata>
+static auto ReflectionAttenuation(const Metadata& v, int) -> decltype(v.attenuationAppliesToReflection) { return v.attenuationAppliesToReflection; }
+template<class Metadata>
+static bool ReflectionAttenuation(const Metadata&, long) { return true; }
+template<class Metadata>
+static auto CustomFresnel(const Metadata& v, int) -> decltype(v.hasCustomSpecularFresnel) { return v.hasCustomSpecularFresnel; }
+template<class Metadata>
+static bool CustomFresnel(const Metadata&, long) { return false; }
+template<class Vertex,class Metadata>
+static auto SetEventMetadata(Vertex& v,const Metadata& info,int)
+    -> decltype(v.attenuationAppliesToReflection=info.attenuationAppliesToReflection,void()) {
+    v.attenuationAppliesToReflection=info.attenuationAppliesToReflection;
+    v.hasCustomSpecularFresnel=info.hasCustomSpecularFresnel;
+}
+template<class Vertex,class Metadata>
+static void SetEventMetadata(Vertex&,const Metadata&,long) {}
+static int TestSpectralAttenuationDL435() {
+    int failures=0, checks=0;
+    auto check=[&](bool ok,const char* label) {
+        ++checks; if(!ok) {++failures; std::cout << "FAIL DL-435 " << label << std::endl;}
+    };
+    TestableManifoldSolver solver;
+    const Point3 start(0,2,0), reflectedEnd(0,2,0), transmittedEnd(0,-2,0);
+    ManifoldVertex v=MakeVertex(Point3(0,0,0),Vector3(0,1,0),Vector3(1,0,0),Vector3(0,0,1),1.5,true);
+    v.canRefract=false;v.attenuation=RISEPel(.25,.25,.25);
+    SetSpectralAttenuation(v,.25,false,0);
+    std::vector<ManifoldVertex> chain(1,v);
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25),"quarter mirror attenuation");
+    chain[0].canRefract=true;chain[0].etaI=1;chain[0].etaT=1.5;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25*.04),"generic boundary extension can tint Fresnel reflection");
+    chain[0].isReflection=false;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.25*.96/2.25),"entering attenuation and radiance rescale");
+    chain[0].isExiting=true;chain[0].etaI=1.5;chain[0].etaT=1;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.25*.96*2.25),"exiting radiance rescale");
+    SetSpectralAttenuation(chain[0],.25,true,0);
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),std::pow(.25,2)*.96*2.25),"two world-unit dielectric transmission");
+    check(IsClose(solver.EvaluateChainThroughput(start,transmittedEnd,chain).r,std::pow(.25,2)*.96*2.25),"RGB dielectric tau uses same distance contract");
+    chain[0].isExiting=false;chain[0].etaI=1;chain[0].etaT=1.5;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.96/2.25),"dielectric entry does not pay interior tau");
+    chain[0].isReflection=true;chain[0].isExiting=true;chain[0].etaI=1.5;chain[0].etaT=1;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.04),"dielectric reflection retains SPF tau convention");
+
+    // This painter supplies independent NM values using the captured UV/Po.
+    // It cannot pass by reading an RGB channel or querying the origin.
+    auto* index=new ContextIndex();
+    auto* eta=new UniformScalarPainter(1.5);
+    auto* scattering=new UniformScalarPainter(1000000.0);
+    class ContextColor final : public UniformColorPainter {
+    public:
+        ContextColor():UniformColorPainter(RISEPel(.3,.3,.3)) {}
+        RISEPel GetColor(const RayIntersectionGeometric& r) const override {
+            const Scalar v=.3+.2*r.ptCoord.x+.3*r.ptObjIntersec.y;
+            return RISEPel(v,v,v);
+        }
+        Scalar GetColorNM(const RayIntersectionGeometric& r,Scalar nm) const override {
+            return GetColor(r).r+nm*.0001;
+        }
+    };
+    auto* color=new ContextColor();
+    auto* mirror=new PerfectReflectorMaterial(*color);
+    auto* refractor=new PerfectRefractorMaterial(*color,*eta);
+    auto* dielectric=new DielectricMaterial(*index,*eta,*scattering,false);
+    RayIntersectionGeometric ri(Ray(Point3(0,2,0),Vector3(0,-1,0)),nullRasterizerState);
+    ri.ptCoord=Point2(.6,.8);ri.ptObjIntersec=Point3(.4,.7,.2);
+    IORStack stack(1.0);
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        const Scalar expected=1.53+nm*.0001;
+        for(const IMaterial* material : {static_cast<const IMaterial*>(mirror),static_cast<const IMaterial*>(refractor),static_cast<const IMaterial*>(dielectric)}) {
+            const SpecularInfo info=material->GetSpecularInfoNM(ri,stack,nm);
+            check(IsClose(SpectralAttenuation(info,0),material==dielectric ? expected : .63+nm*.0001),"direct spectral material query preserves wavelength/UV/Po");
+            check(InteriorAttenuation(info,0)==(material==dielectric),"boundary versus interior transmission metadata");
+        }
+    }
+    // Native refractivity is transmission-only, unlike a generic extension
+    // multiplier. Compare SMS with the real SPF, not a copied Fresnel formula.
+    auto* nativeGeometry=new BoxGeometry(2,2,2);
+    auto* nativeObject=new Object(nativeGeometry);nativeGeometry->release();
+    IORStack nativeStack(1);nativeStack.SetCurrentObject(nativeObject);
+    RandomNumberGenerator nativeRng(435);
+    IndependentSampler nativeSampler(nativeRng);
+    ri.bHit=true;ri.ptIntersection=Point3(0,0,0);
+    ri.vNormal=ri.vGeomNormal=Vector3(0,1,0);ri.onb.CreateFromW(ri.vNormal);
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        const auto info=refractor->GetSpecularInfoNM(ri,stack,nm);
+        check(!ReflectionAttenuation(info,0),"native refractor advertises transmission-only tint");
+        ManifoldVertex native=v;native.canRefract=true;native.etaI=1;native.etaT=1.5;
+        native.isReflection=true;native.isExiting=false;native.pMaterial=refractor;
+        SetSpectralAttenuation(native,SpectralAttenuation(info,0),false,0);
+        SetEventMetadata(native,info,0);
+        ScatteredRayContainer rays;refractor->GetSPF()->ScatterNM(ri,nativeSampler,nm,rays,nativeStack);
+        Scalar reflection=0;bool sawReflection=false;
+        for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) {reflection+=rays[i].krayNM;sawReflection=true;}
+        check(sawReflection && IsClose(reflection,.04),"native SPF reflection ignores transmission painter");
+        check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,{native},nm),reflection),"NM native refractor reflection matches its SPF");
+        native.attenuation=refractor->GetSpecularInfo(ri,stack).attenuation;
+        check(IsClose(solver.EvaluateChainThroughput(start,reflectedEnd,{native}).r,reflection),"RGB native refractor reflection matches its SPF");
+    }
+    // Native TIR also carries no transmission tint.
+    {
+        const Scalar sine=std::sqrt(Scalar(.75));
+        const Point3 eye(-2*sine,-1,0);
+        RayIntersectionGeometric hit(Ray(eye,Vector3(sine,.5,0)),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=Point3(0,0,0);
+        hit.vNormal=hit.vGeomNormal=Vector3(0,1,0);hit.onb.CreateFromW(hit.vNormal);
+        IORStack inside(1);inside.SetCurrentObject(nativeObject);inside.push(1.5);
+        const auto info=refractor->GetSpecularInfoNM(hit,inside,550);
+        ManifoldVertex tir=v;tir.canRefract=true;tir.isReflection=true;tir.isExiting=true;
+        tir.etaI=1.5;tir.etaT=1;tir.pMaterial=refractor;
+        tir.attenuation=refractor->GetSpecularInfo(hit,inside).attenuation;
+        SetSpectralAttenuation(tir,SpectralAttenuation(info,0),false,0);SetEventMetadata(tir,info,0);
+        ScatteredRayContainer rays;refractor->GetSPF()->ScatterNM(hit,nativeSampler,550,rays,inside);
+        Scalar reflection=0;for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+        check(IsClose(reflection,1),"native perfect refractor TIR is uncolored unit reflection");
+        check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,{tir},550),reflection),"NM native TIR does not pay transmission tint");
+        check(IsClose(solver.EvaluateChainThroughput(eye,eye,{tir}).r,reflection),"RGB native TIR does not pay transmission tint");
+    }
+    SMSPhoton photon;photon.chainLen=1;
+    photon.chain[0].position=Point3(3,4,5);photon.chain[0].normal=Vector3(0,1,0);
+    photon.chain[0].geomNormal=Vector3(0,1,0);photon.chain[0].pMaterial=dielectric;
+    photon.chain[0].uv=ri.ptCoord;photon.chain[0].objectPosition=ri.ptObjIntersec;
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,nm,0)==1,"photon chain reconstructed");
+        check(reconstructed.size()==1 && IsClose(SpectralAttenuation(reconstructed[0],0),1.53+nm*.0001),"photon carries wavelength attenuation and captured UV/Po");
+        check(reconstructed.size()==1 && InteriorAttenuation(reconstructed[0],0),"photon retains interior transmission law");
+    }
+    photon.chain[0].pMaterial=refractor;photon.chain[0].flags=2;
+    {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,550,0)==1,"native refractor reflection photon reconstructed");
+        check(reconstructed.size()==1 && !ReflectionAttenuation(reconstructed[0],0),"photon replay retains transmission-only refractance event law");
+    }
+    // Exact neutral fallback avoids a LUT and preserves values above1.
+    // Probe the actual default virtual fallback through a material extension.
+    class RGBOnlyMirror final : public PerfectReflectorMaterial {
+    public:
+        explicit RGBOnlyMirror(const IPainter& p):PerfectReflectorMaterial(p) {}
+        SpecularInfo GetSpecularInfoNM(const RayIntersectionGeometric& r,const IORStack& st,Scalar nm) const override {
+            return IMaterial::GetSpecularInfoNM(r,st,nm);
+        }
+    };
+    auto* grey=new UniformColorPainter(RISEPel(.25,.25,.25));
+    auto* legacy=new RGBOnlyMirror(*grey);
+    check(IsClose(SpectralAttenuation(legacy->GetSpecularInfoNM(ri,stack,550),0),.25),"RGB-only neutral extension fallback");
+    legacy->release();grey->release();
+    auto* tint=new UniformColorPainter(RISEPel(.2,.6,.8),eSpectrumKind_Unbounded);
+    auto* legacyTint=new RGBOnlyMirror(*tint);
+    for(Scalar nm : {Scalar(450),Scalar(650)})
+        check(IsClose(SpectralAttenuation(legacyTint->GetSpecularInfoNM(ri,stack,nm),0),tint->GetColorNM(ri,nm)),"RGB-only colored extension uses spectral uplift rather than red channel");
+    legacyTint->release();tint->release();
+
+    // Real double-sided indexedmesh_geometry, both windings and approach
+    // sides. A two-unit incoming segment independently prices .25^2 on
+    // an exiting transmission, and no tau on entry.
+    auto* neutralTau=new UniformScalarPainter(.25);
+    auto* sheetMaterial=new DielectricMaterial(*neutralTau,*eta,*scattering,false);
+    const Scalar filmIndex=std::sqrt(Scalar(1.5));
+    const Scalar filmK=0,filmThickness=550/(4*filmIndex);
+    auto* coatedMaterial=new DielectricMaterial(*neutralTau,*eta,*scattering,false,&filmIndex,&filmK,&filmThickness,1);
+
+    for(bool flipped : {false,true}) {
+        auto* geometry=new TriangleMeshGeometryIndexed(true,true);
+        geometry->BeginIndexedTriangles();
+        for(const Point3& point : {Point3(-5,0,-5),Point3(5,0,-5),Point3(5,0,5),Point3(-5,0,5)}) geometry->AddVertex(point);
+        for(const Point2& uv : {Point2(0,0),Point2(1,0),Point2(1,1),Point2(0,1)}) geometry->AddTexCoord(uv);
+        geometry->AddNormal(Vector3(0,flipped ? 1 : -1,0));
+        for(int corner : {2,3}) {
+            IndexedTriangle tri;
+            const unsigned vertices[3]={0,static_cast<unsigned>(corner==2 ? 1 : 2),static_cast<unsigned>(corner)};
+            for(unsigned i=0;i<3;++i) {
+                const unsigned source=flipped ? (i==0 ? 0 : 3-i) : i;
+                tri.iVertices[i]=vertices[source];tri.iCoords[i]=vertices[source];tri.iNormals[i]=0;
+            }
+            geometry->AddIndexedTriangle(tri);
+        }
+        geometry->DoneIndexedTriangles();
+        auto* object=new Object(geometry);geometry->release();
+        object->FinalizeTransformations();object->AssignMaterial(*sheetMaterial);
+        auto* manager=new ObjectManager(false,false,4,8);manager->AddItem(object,"attenuation_sheet");
+        auto* scene=new Scene();scene->SetObjectManager(manager);
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;IRayCaster* caster=nullptr;
+        RISE_API_CreateStandardShader(&shader,ops);RISE_API_CreateRayCaster(&caster,false,10,*shader,true);
+        for(bool above : {false,true}) {
+            const Point3 eye(.3,above ? 2 : -2,.2), light(.3,above ? -2 : 2,.2);
+            std::vector<ManifoldVertex> seeded;
+            const unsigned k=solver.BuildSnellBaseSeed(eye,Vector3(0,above ? -1 : 1,0),light,*scene,*caster,seeded,nullptr,nullptr,550);
+            const bool exits=above!=flipped;
+            check(k==1 && seeded.size()==1,"double-sided indexedmesh generates one spectral sheet vertex");
+            if(seeded.size()==1) {
+                check(seeded[0].isExiting==exits,"indexedmesh face determines entry/exit for either winding");
+                check(InteriorAttenuation(seeded[0],0) && IsClose(SpectralAttenuation(seeded[0],0),.25),"indexedmesh seed retains scalar tau and distance law");
+                const Scalar expected=.96*(exits ? 2.25 : 1/2.25)*(exits ? .0625 : 1);
+                check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,550),expected),"indexedmesh spectral exit pays two-unit tau and radiance factor");
+                check(IsClose(solver.EvaluateChainThroughput(eye,light,seeded).r,expected),"indexedmesh RGB uses the same distance contract");
+                // DL-439: reconstruct actual mesh material/side metadata into
+                // dirty output vectors of shorter/same/longer lengths.
+                for(Scalar wavelength : {Scalar(0),Scalar(450),Scalar(650)}) for(unsigned photonLength : {1u,2u}) {
+                    SMSPhoton reusedPhoton;reusedPhoton.chainLen=photonLength;
+                    for(unsigned j=0;j<photonLength;++j) {
+                        auto& pv=reusedPhoton.chain[j];
+                        pv.position=seeded[0].position;pv.normal=seeded[0].normal;pv.geomNormal=seeded[0].geomNormal;
+                        pv.pObject=object;pv.pMaterial=sheetMaterial;pv.eta=seeded[0].eta;
+                        pv.uv=seeded[0].uv;pv.objectPosition=CapturedObjectPosition(seeded[0],0);
+                        pv.flags=exits ? 0 : 1; // photon order reverses transmission side
+                    }
+                    std::vector<ManifoldVertex> fresh;
+                    check(ReconstructPhotonAtNM(solver,reusedPhoton,fresh,wavelength,0)==photonLength,"fresh mesh photon reconstruction");
+                    for(unsigned dirtyLength : {photonLength-1,photonLength,photonLength+1}) {
+                        ManifoldVertex dirty=seeded[0];dirty.etaI=1.33;dirty.etaT=1.6;
+                        dirty.dpdu=dirty.dpdv=dirty.dndu=dirty.dndv=Vector3(7,8,9);
+                        dirty.retainAlphaEndpoint=true;
+                        dirty.alphaEndpoint=std::make_shared<RayIntersection>(Ray(eye,Vector3(0,1,0)),nullRasterizerState);
+                        dirty.alphaEndpointPosition=Point3(7,8,9);dirty.valid=true;
+                        std::vector<ManifoldVertex> reused(dirtyLength,dirty);
+                        check(ReconstructPhotonAtNM(solver,reusedPhoton,reused,wavelength,0)==photonLength && reused.size()==fresh.size(),"dirty output lengths reconstruct exactly");
+                        bool defaults=reused.size()==fresh.size();
+                        for(const auto& item : reused) {
+                            defaults &= item.etaI==1 && item.etaT==1 && !item.retainAlphaEndpoint && !item.alphaEndpoint && !item.valid;
+                            for(const auto& derivative : {item.dpdu,item.dpdv,item.dndu,item.dndv})
+                                defaults &= Vector3Ops::SquaredModulus(derivative)==0;
+                        }
+                        check(defaults,"reused photon discards ordered IOR/derivative/alpha solver state");
+                        if(photonLength==1 && reused.size()==1) {
+                            const Scalar actual=wavelength>0 ? solver.EvaluateChainThroughputNM(eye,light,reused,wavelength)
+                                : solver.EvaluateChainThroughput(eye,light,reused).r;
+                            check(IsClose(actual,expected),"reused mesh photon throughput matches independent air-interface oracle");
+                        }
+                    }
+                }
+            }
+        }
+        // Actual coated indexed mesh, both windings/entry-exit sides. The
+        // independent normal-incidence Airy expression has no ThinFilm helper.
+        object->AssignMaterial(*coatedMaterial);
+        for(bool above : {false,true}) for(Scalar nm : {Scalar(450),Scalar(550),Scalar(650)}) {
+            const Point3 eye(.3,above ? 2 : -2,.2),light(.3,above ? -2 : 2,.2);
+            std::vector<ManifoldVertex> seeded;
+            const unsigned k=solver.BuildSnellBaseSeed(eye,Vector3(0,above ? -1 : 1,0),light,*scene,*caster,seeded,nullptr,nullptr,nm);
+            const bool exits=above!=flipped;
+            check(k==1 && seeded.size()==1,"coated indexedmesh generates spectral sheet seed");
+            if(seeded.size()!=1) continue;
+            auto airy=[&](Scalar wavelength) {
+                const Scalar ni=exits ? 1.5 : 1,nt=exits ? 1 : 1.5;
+                const Scalar a=(ni-filmIndex)/(ni+filmIndex),b=(filmIndex-nt)/(filmIndex+nt);
+                const Scalar cross=2*a*b*std::cos(4*kPi*filmIndex*filmThickness/wavelength);
+                return (a*a+b*b+cross)/(1+a*a*b*b+cross);
+            };
+            check(CustomFresnel(seeded[0],0) && seeded[0].isExiting==exits,"coated mesh carries interface law and side");
+            const Scalar f=airy(nm),scale=(exits ? 2.25*.0625 : 1/2.25);
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,nm),(1-f)*scale,1e-10),"coated NM transmission matches independent Airy/eta/tau oracle");
+            seeded[0].isReflection=true;
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,seeded,nm),f,1e-10),"coated NM reflection matches independent Airy oracle");
+            // Real SPF is a separate consumer of the same material law.
+            IORStack crossing(1);crossing.SetCurrentObject(object);if(exits) crossing.push(1.5);
+            RayIntersectionGeometric hit(Ray(eye,Vector3(0,above ? -1 : 1,0)),nullRasterizerState);
+            hit.bHit=true;hit.ptIntersection=seeded[0].position;
+            hit.vNormal=seeded[0].normal;hit.vGeomNormal=seeded[0].geomNormal;hit.onb.CreateFromW(hit.vNormal);
+            ScatteredRayContainer rays;coatedMaterial->GetSPF()->ScatterNM(hit,nativeSampler,nm,rays,crossing);
+            Scalar reflection=0,transmission=0;
+            for(unsigned i=0;i<rays.Count();++i) {
+                if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+                if(rays[i].type==ScatteredRay::eRayRefraction) transmission+=rays[i].krayNM;
+            }
+            check(IsClose(reflection,f,1e-10),"coated native SPF reflection agrees with independent oracle");
+            seeded[0].isReflection=false;
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,nm),transmission*(exits ? 2.25 : 1/2.25),1e-10),"coated SMS transmission matches native SPF and radiance convention");
+            // RGB uses exactly the SPF's shared representative wavelengths.
+            seeded[0].isReflection=true;
+            const RISEPel rgbReflection=solver.EvaluateChainThroughput(eye,eye,seeded);
+            for(unsigned c=0;c<3;++c)
+                check(IsClose(rgbReflection[c],airy(ScalarPainterRGB::kChannelNM[c]),1e-10),"RGB coating uses native representative channel wavelength");
+        }
+        safe_release(caster);safe_release(shader);scene->release();manager->release();object->release();
+    }
+    // A non-symmetric two-film stack at oblique incidence distinguishes
+    // inside/outside layer order. Compare production SMS with native SPF.
+    const Scalar multiN[2]={1.38,2.1},multiK[2]={0,0},multiT[2]={80,50};
+    auto* multi=new DielectricMaterial(*neutralTau,*eta,*scattering,false,multiN,multiK,multiT,2);
+    for(bool exits : {false,true}) for(Scalar cosine : {Scalar(.82),Scalar(.5)})
+    for(Scalar nm : {Scalar(450),Scalar(550),Scalar(650)}) {
+        const Scalar sine=std::sqrt(1-cosine*cosine);
+        const Vector3 incoming(sine,exits ? cosine : -cosine,0);
+        const Point3 eye(-2*incoming.x,-2*incoming.y,0);
+        RayIntersectionGeometric hit(Ray(eye,incoming),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=Point3(0,0,0);
+        hit.vNormal=hit.vGeomNormal=Vector3(0,1,0);hit.onb.CreateFromW(hit.vNormal);
+        IORStack crossing(1);crossing.SetCurrentObject(nativeObject);if(exits) crossing.push(1.5);
+        const auto info=multi->GetSpecularInfoNM(hit,crossing,nm);
+        ManifoldVertex vertex=v;vertex.canRefract=true;vertex.isReflection=true;vertex.isExiting=exits;
+        vertex.etaI=exits ? 1.5 : 1;vertex.etaT=exits ? 1 : 1.5;vertex.pMaterial=multi;
+        SetSpectralAttenuation(vertex,SpectralAttenuation(info,0),true,0);SetEventMetadata(vertex,info,0);
+        ScatteredRayContainer rays;multi->GetSPF()->ScatterNM(hit,nativeSampler,nm,rays,crossing);
+        Scalar reflection=0;for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+        check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,{vertex},nm),reflection,1e-10),"oriented multilayer coating/TIR reflection matches native SPF");
+    }
+    photon.chain[0].pMaterial=multi;photon.chain[0].flags=3;
+    {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,550,0)==1,"coated reflection photon reconstructed");
+        check(reconstructed.size()==1 && CustomFresnel(reconstructed[0],0),"photon replay retains native coating law");
+    }
+    multi->release();
+    coatedMaterial->release();sheetMaterial->release();neutralTau->release();
+    mirror->release();refractor->release();dielectric->release();
+    nativeObject->release();
+    index->release();color->release();eta->release();scattering->release();
+    std::cout << "DL-435 " << checks-failures << " passed, " << failures << " failed" << std::endl;
+    return failures;
+}
+
+
+static void BenchmarkAttenuationDL435() {
+    TestableManifoldSolver solver;
+    ManifoldVertex v=MakeVertex(Point3(0,0,0),Vector3(0,1,0),Vector3(1,0,0),Vector3(0,0,1),1.5,false);
+    v.etaI=1.5;v.etaT=1;v.isExiting=true;
+    std::vector<ManifoldVertex> chain(1,v);
+    const unsigned count=200000;
+    volatile Scalar sink=0;
+    std::cout<<"DL-435 sizeof SpecularInfo="<<sizeof(SpecularInfo)<<" ManifoldVertex="<<sizeof(ManifoldVertex)<<std::endl;
+    for(bool interior : {false,true}) {
+        SetSpectralAttenuation(chain[0],interior ? .25 : 1,interior,0);
+        for(int trial=0;trial<5;++trial) {
+            const auto begin=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<count;++i) {
+                chain[0].position.x=Scalar(i%31)*.001;
+                sink=solver.EvaluateChainThroughputNM(Point3(0,2,0),Point3(0,-2,0),chain,550);
+            }
+            const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
+            std::cout<<"DL-435 benchmark interior="<<interior<<" trial="<<trial<<" ns/call="<<seconds*1e9/count<<std::endl;
+        }
+    }
+    auto* tau=new UniformScalarPainter(1);
+    auto* index=new UniformScalarPainter(1.5);
+    auto* scattering=new UniformScalarPainter(1000000);
+    const Scalar filmN[8]={1.38,2.1,1.38,2.1,1.38,2.1,1.38,2.1};
+    const Scalar filmK[8]={0,0,0,0,0,0,0,0};
+    const Scalar filmT[8]={80,50,80,50,80,50,80,50};
+    RayIntersectionGeometric ri(Ray(Point3(0,2,0),Vector3(0,-1,0)),nullRasterizerState);
+    IORStack ior(1);
+    for(int layers : {0,1,8}) {
+        auto* material=new DielectricMaterial(*tau,*index,*scattering,false,filmN,filmK,filmT,layers);
+        chain[0].pMaterial=material;
+        chain[0].attenuation=material->GetSpecularInfo(ri,ior).attenuation;
+        const SpecularInfo info=material->GetSpecularInfoNM(ri,ior,550);
+        SetSpectralAttenuation(chain[0],SpectralAttenuation(info,0),true,0);
+        SetEventMetadata(chain[0],info,0);
+        for(bool rgb : {false,true}) for(int trial=0;trial<5;++trial) {
+            const auto begin=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<count;++i) {
+                chain[0].position.x=Scalar(i%31)*.001;
+                sink=rgb ? solver.EvaluateChainThroughput(Point3(0,2,0),Point3(0,-2,0),chain).r
+                         : solver.EvaluateChainThroughputNM(Point3(0,2,0),Point3(0,-2,0),chain,550);
+            }
+            const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
+            std::cout<<"DL-436 benchmark layers="<<layers<<" rgb="<<rgb<<" trial="<<trial<<" ns/call="<<seconds*1e9/count<<std::endl;
+        }
+        chain[0].pMaterial=nullptr;
+        material->release();
+    }
+    tau->release();index->release();scattering->release();
+    std::cout<<"benchmark consumed="<<sink<<std::endl;
+}
+
+int main(int argc, char** argv)
+{
+    if(argc>1 && std::string(argv[1])=="--photon-context-only") return TestPhotonMaterialContext() ? 0 : 1;
+    if(argc>1 && std::string(argv[1])=="--dl435-benchmark") {BenchmarkAttenuationDL435();return 0;}
+    if(argc>1 && std::string(argv[1])=="--dl435-only") return TestSpectralAttenuationDL435() ? 1 : 0;
+    if(TestSpectralAttenuationDL435()!=0) return 1;
+	if(!TestPhotonMaterialContext()) return 1;
+	std::cout << std::endl;
+	std::cout << "========================================" << std::endl;
+	std::cout << "  ManifoldSolver Unit Tests" << std::endl;
+	std::cout << "========================================" << std::endl;
+	std::cout << std::endl;
+
+	// Group 1: 2x2 Block Utilities
+	TestInvert2x2_Identity();
+	TestInvert2x2_Known();
+	TestInvert2x2_Singular();
+	TestInvert2x2_RoundTrip();
+	TestMul2x2_Known();
+	TestMul2x2Vec_Known();
+	TestSub2x2_SelfSubtraction();
+
+	// Group 10: DeriveNormalized
+	TestDeriveNormalized_Perpendicular();
+	TestDeriveNormalized_Parallel();
+	TestDeriveNormalized_ZeroLength();
+	TestDeriveNormalized_FiniteDifference();
+
+	// Group 11: ComputeDielectricFresnel
+	TestFresnel_NormalIncidence();
+	TestFresnel_GrazingAngle();
+	TestFresnel_TIR();
+	TestFresnel_Symmetry();
+
+	// Group 2: ComputeSpecularDirection
+	TestReflection_NormalIncidence();
+	TestReflection_45Degrees();
+	TestRefraction_NormalIncidence();
+	TestRefraction_SnellsLaw();
+	TestRefraction_TIR();
+	TestRefraction_UnitVector();
+
+	// Group 3: Specular Direction Derivative
+	// ComputeSpecularDirectionDerivativeWrtNormal is not called by
+	// the half-vector Jacobian (BuildJacobian) — surface curvature
+	// enters via the Weingarten map (dndu → ds/du) instead.  It would
+	// be needed for an analytical Jacobian of the angle-difference
+	// constraint.  The method also assumes unnormalized wo while
+	// ComputeSpecularDirection returns normalized, so FD validation
+	// requires a DeriveNormalized correction.  Skipped for now.
+	// TestReflectionDerivative_FD();
+	// TestRefractionDerivative_FD();
+
+	// Group 4: DirectionToSpherical
+	TestSpherical_NormalDirection();
+	TestSpherical_TangentU();
+	TestSpherical_TangentV();
+	TestSpherical_NegativeNormal();
+
+	// Group 5: Constraint Functions
+	TestHalfVectorConstraint_AtSolution_Reflection();
+	TestHalfVectorConstraint_NotAtSolution();
+	TestHalfVectorConstraint_AtSolution_Refraction();
+	TestHalfVectorConstraint_AtSolution_NestedDielectric_NormalIncidence();
+	TestHalfVectorConstraint_AtSolution_NestedDielectric_45Deg();
+	TestHalfVectorConstraint_BackCompat_SingleIORInAir();
+	TestAngleDiffConstraint_AtSolution();
+
+	// Group 6: Analytical vs Numerical Jacobian
+	TestJacobian_SingleVertex_Reflection();
+	TestJacobian_SingleVertex_Refraction();
+	TestJacobian_TwoVertex_Agreement();
+	TestJacobian_SingleVertex_WithCurvature();
+
+	// Group 7: Block-Tridiagonal Solver
+	TestTridiag_SingleBlock();
+	TestTridiag_Singular();
+	TestTridiag_Verification();
+
+	// Group 8a: Chain Cosine Product
+	TestCosineProduct_EmptyChain();
+	TestCosineProduct_SingleVertex_NormalIncidence();
+	TestCosineProduct_SingleVertex_ObliqueIncidence();
+	TestCosineProduct_Range();
+
+	// Group 8: Chain Geometry & Throughput
+	TestGeometry_EmptyChain();
+	TestGeometry_SingleVertex();
+	TestGeometry_Positive();
+	TestThroughput_EmptyChain();
+	TestThroughput_NormalIncidence_Refraction();
+	TestThroughput_NormalIncidence_Reflection();
+	TestThroughput_Range();
+
+	// Group 9: Physical Validation
+	TestValidateChain_ValidRefraction();
+	TestValidateChain_InvalidRefraction();
+	TestValidateChain_ValidReflection();
+	TestValidateChain_InvalidReflection();
+
+	// Group 11: Light-to-First-Vertex Jacobian Determinant (SMS geometry)
+	TestLightToVertexJac_EmptyChain();
+	TestLightToVertexJac_SingleRefraction_Positive();
+	TestLightToVertexJac_SingleReflection_Positive();
+	TestLightToVertexJac_TwoRefraction_Positive();
+	TestLastBlockLightJac_NormalIncidence();
+
+	// Group 12: ComputeSphericalDerivatives
+	TestSphericalDeriv_ThetaGradient();
+	TestSphericalDeriv_PhiInTangentPlane();
+	TestSphericalDeriv_FD();
+
+	// Group 13: ComputeSpecularDirectionDerivativeWrtWi
+	TestDerivWrtWi_Reflection_FD();
+	TestDerivWrtWi_Refraction_FD();
+
+	// Group 14: Angle-Difference Analytical vs Numerical Jacobian
+	TestAngleDiffJacobian_SingleVertex_Reflection();
+	TestAngleDiffJacobian_SingleVertex_Refraction();
+	TestAngleDiffJacobian_TwoVertex();
+
+	// Group 15: DL-70 chain-level pin (SnellContinueChain bEntering on a
+	// double-sided slab caster)
+	TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates();
+
+	// Group 16: DL-373 seed-walk exit refraction
+	TestSnellContinueChain_ExitRefraction();
+
+	std::cout << std::endl;
+	std::cout << "========================================" << std::endl;
+	std::cout << "  All ManifoldSolver tests passed!" << std::endl;
+	std::cout << "========================================" << std::endl;
+	std::cout << std::endl;
+
+	return 0;
+}

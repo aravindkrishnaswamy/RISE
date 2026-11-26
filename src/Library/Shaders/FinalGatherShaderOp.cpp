@@ -17,6 +17,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -211,16 +212,31 @@ namespace
 			if( tGrad > kMinHitDistance ) {
 				sample.bHit = true;
 				sample.dDistance = tGrad;
-				sample.cIrradiance = lijGrad * brdf.value( wGrad, shading );
+				// DL-38/DL-157 review round 3 (P2-3): the stateful form,
+				// like the primary gather arm below -- the live stack is
+				// already a parameter of this helper, and a translucent
+				// BSDF's side (and therefore its whole lobe set) is a
+				// function of it.
+				sample.cIrradiance = lijGrad * brdf.valueStateful( wGrad, shading, &ior_stack );
 
 				if( tGrad > kMinTranslationalGradientDistance && pScene && pScene->GetObjects() ) {
 					RayIntersection gradRI( fgGradRay, rast );
 					pScene->GetObjects()->IntersectRay( gradRI, true, true, false );
 
-					if( gradRI.geometric.bHit && gradRI.pObject ) {
+					// Classification probe must describe the already sampled hit.
+                    // Alpha may have skipped the nearest geometric surface;
+                    // a mismatch supplies no translational gradient, not a
+                    // second stochastic traversal of the same radiance ray.
+                    if( gradRI.geometric.bHit && gradRI.pObject &&
+                        fabs(gradRI.geometric.range-tGrad) < 1e-5*r_max(Scalar(1),tGrad) ) {
 						sample.bUsableForTranslation = true;
 						sample.pObject = gradRI.pObject;
-						sample.vNormal = gradRI.geometric.vNormal;
+						// Translational-gradient normal-similarity test
+						// (ClassifyGradientPair below) is a same-physical-
+						// surface continuity check — use the GEOMETRIC
+						// normal so bumpy regions don't reject neighbouring
+						// samples that are actually on the same face.
+						sample.vNormal = gradRI.geometric.vGeomNormal;
 					}
 				}
 			}
@@ -308,7 +324,7 @@ void FinalGatherShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -324,12 +340,12 @@ void FinalGatherShaderOp::PerformOperation(
 	if( rs.type == IRayCaster::RAY_STATE::eRayFinalGather ) {
 		if( pBRDF ) {
 			if( pGM ) {
-				pGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+				pGM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 			}
 
 			if( pGSM ) {
 				RISEPel cs;
-				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF );
+				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF, &ior_stack );
 				c = c + cs;
 			}
 		} else if( pScat ) {
@@ -349,8 +365,16 @@ void FinalGatherShaderOp::PerformOperation(
 				rs2.considerEmission = false;
 				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
 
+				// eta^2 basic-radiance factor (debt 30).  A final-gather ray
+				// is cast FROM the shading point and returns radiance, so
+				// this continuation is radiance mode like any other eye-side
+				// walk.  This branch runs when the hit surface has no BSDF,
+				// i.e. a pure specular / dielectric one, which is exactly
+				// where the factor is not 1.
+				const Scalar etaScale = RadianceEtaScale( ior_stack, scat.ior_stack );
+
 				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
-				c = c + (reflectedPixel * scat.kray);
+				c = c + (reflectedPixel * scat.kray * etaScale);
 			}
 		}
 	}
@@ -371,15 +395,21 @@ void FinalGatherShaderOp::PerformOperation(
 				// If we are in normal rendering pass, look it up in the cache
 				const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 				if( pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
-					// Look it up
+					// Look it up.  The cache key uses the GEOMETRIC normal
+					// so heavily bump-mapped surfaces don't fragment a
+					// single physical surface into many records that
+					// disagree only on bump perturbation.  The rotational-
+					// gradient cross product `Cross(N₁, N₂)` then stays
+					// near-zero on the same physical face, which keeps the
+					// extrapolation accurate.  Insert sites below match.
 					std::vector<IIrradianceCache::CacheElement> results;
-					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
+					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vGeomNormal, results);
 
 					// Avoid trusting isolated cache records. Requiring a few
 					// effective contributors reduces visible record footprints.
 					const bool bInterpolated = FinalGatherInterpolation::TryInterpolate(
 						ri.geometric.ptIntersection,
-						ri.geometric.vNormal,
+						ri.geometric.vGeomNormal,
 						results,
 						weights,
 						bComputeCacheGradients,
@@ -399,7 +429,7 @@ void FinalGatherShaderOp::PerformOperation(
 					// succeed here. If not, populate a denser cache record now.
 					bComputeIrradiance = !pCache->WouldInterpolate(
 						ri.geometric.ptIntersection,
-						ri.geometric.vNormal,
+						ri.geometric.vGeomNormal,
 						min_effective_contributors
 						);
 				}
@@ -493,7 +523,7 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = lij * pBRDF->value( w, ri.geometric );
+									sampleIrradiance = lij * pBRDF->valueStateful( w, ri.geometric, &ior_stack );
 									c = c + sampleIrradiance;
 								}
 							}
@@ -648,7 +678,8 @@ void FinalGatherShaderOp::PerformOperation(
 							pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 						}
 
-						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false );
+						Scalar selectProb;
+						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false, &selectProb );
 						RISEPel sampleIrradiance( 0, 0, 0 );
 
 						if( scat ) {
@@ -656,11 +687,17 @@ void FinalGatherShaderOp::PerformOperation(
 							Scalar t = 0;
 							scat->ray.Advance( kRayBias );
 
+							// Identically 1 in practice -- RandomlySelectDiffuse
+							// returns a DIFFUSE lobe, which never changes
+							// medium -- but written the same way as every
+							// other radiance-mode consumer so the rule is one
+							// rule rather than a case analysis (debt 30).
+							const Scalar etaScale = RadianceEtaScale( ior_stack, scat->ior_stack );
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack ? *scat->ior_stack : ior_stack ) ) {
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = cthis * scat->kray;
+									sampleIrradiance = cthis * scat->kray * (etaScale / selectProb);
 									c = c + sampleIrradiance;
 								}
 							}
@@ -688,7 +725,11 @@ void FinalGatherShaderOp::PerformOperation(
 								irradianceVariationStats.ComputeReuseDecision( c, high_variation_reuse_scale );
 							if( !reuseDecision.bRejectCacheInsert ) {
 								rsum *= reuseDecision.reuseScale;
-								pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+								// Cache key uses GEOMETRIC normal — see Query
+								// site above for rationale.  Bumpy faces
+								// would otherwise fragment one physical
+								// surface into many records.
+								pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vGeomNormal, c, rsum, rotGradient, transGradient1 );
 							}
 						}
 					}
@@ -711,14 +752,51 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
-	Scalar c=0;
-
-	// We do nothing for spectral rendering, yet
-	//! @@ TODO: To be implemented
-
-	return c;
+	// Spectral path: evaluate the full RGB final-gather result (the same
+	// global-photon-map gather / irradiance-cache interpolation the RGB path
+	// does) and uplift the RGB indirect radiance to wavelength `nm` via the
+	// same chroma-preserving JH uplift the RGB painters use for GetColorNM.
+	// The prior `return 0` stub dropped ALL final-gather indirect illumination
+	// under the *_spectral_* rasterizers (pixelintegratingspectral /
+	// pathtracing_spectral / bdpt_spectral / vcm_spectral / mlt_spectral) --
+	// final-gather GI rendered BLACK -- even though the RGB path works.  Same
+	// spectral-stub family as DataDrivenBSDF::valueNM and the two SSS ops.
+	//
+	// Result-uplift, not a true per-wavelength gather: the gather queries the
+	// RGB-resolved global photon map(s), so a per-lambda port would need a
+	// per-wavelength photon-map radiance estimate.  Uplifting the result makes
+	// the spectral render reconstruct the RGB final-gather appearance (the
+	// uplift round-trips through the CMFs); a true spectral final gather is
+	// future work.
+	//
+	// EnsurePositve before the uplift is DEFENSE-IN-DEPTH (redundant today,
+	// kept deliberately).  PerformOperation already returns a non-negative c
+	// on every path reachable here: the compute path clamps at the end of the
+	// gather, and the irradiance-cache interpolation path clamps inside
+	// FinalGatherInterpolation::TryInterpolate (both per-element after the
+	// signed gradient extrapolation and on the final weighted result).  But
+	// unlike the SSS fix -- where c is a sum of non-negative terms, i.e.
+	// non-negative by construction -- c here flows through SIGNED rotational/
+	// translational irradiance gradients, so its non-negativity rests entirely
+	// on those upstream clamps; a refactor dropping one would not be obvious.
+	// And the failure is catastrophic at THIS boundary specifically: a
+	// negative RGB flips the max-channel scale and corrupts
+	// EVERY wavelength -- far worse than the RGB path, where a stray negative
+	// is merely clamped at film resolve.  So clamp at the projection boundary,
+	// where it matters.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is a
+	// COMPUTED RADIANCE leaving this point, not a reflectance-shaped
+	// multiplier.  Unbounded carries no illuminant shape, so the spectral
+	// render's gathered indirect landed on the flat-spectrum chromaticity
+	// (1.20, 0.95, 0.91) instead of on `c`.  Illuminant round-trips: the
+	// film resolves it back to exactly the RGB `c`.
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	ColorMath::EnsurePositve( c );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }

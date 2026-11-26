@@ -7,7 +7,9 @@
 //    - From outside: GGX VNDF reflection (rough) or perfect specular
 //      reflection (smooth).  No refraction ray is emitted; the
 //      integrator handles subsurface entry via BSSRDF sampling.
-//    - From inside: delta Fresnel reflection (rare with BSSRDF).
+//    - From inside: shipped absorbing materials emit no rays. The
+//      standalone non-absorbing fallback emits delta Fresnel reflection
+//      and exit refraction, or reflection alone under total internal reflection.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 21, 2026
@@ -30,42 +32,34 @@ using namespace RISE::Implementation;
 /// Dielectric Fresnel reflectance from cosine of incidence angle and IOR.
 static Scalar DielectricFresnelCos( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
 {
-	const Scalar sinI2 = 1.0 - cosI * cosI;
-	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
-	if( sinT2 >= 1.0 ) return 1.0;
-	const Scalar cosT = sqrt(1.0 - sinT2);
-
-	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
-	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
-	return (rs * rs + rp * rp) * 0.5;
+	return Optics::CalculateDielectricReflectanceCosine( cosI, eta_i, eta_t );
 }
 
 SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
 	const Scalar g_,
 	const Scalar roughness_,
 	const bool bAbsorbBackFace_
 	) :
-  ior( ior_ ),
-  absorption( absorption_ ),
-  scattering( scattering_ ),
+  pIOR( &ior_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ ),
   bAbsorbBackFace( bAbsorbBackFace_ )
 {
-	ior.addref();
-	absorption.addref();
-	scattering.addref();
+	pIOR->addref();
 }
 
 SubSurfaceScatteringSPF::~SubSurfaceScatteringSPF()
 {
-	ior.release();
-	absorption.release();
-	scattering.release();
+	safe_release( pIOR );
+}
+
+void SubSurfaceScatteringSPF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 //=============================================================
@@ -79,8 +73,8 @@ void SubSurfaceScatteringSPF::Scatter(
 	const IORStack& ior_stack
 	) const
 {
-	const RISEPel iorVal = ior.GetColor( ri );
-	const Scalar n = iorVal[0];
+	const ScalarTriple iorVal = pIOR->GetValuesAt( ri );
+	const Scalar n = iorVal.v[0];
 
 	const bool bFromInside = ior_stack.containsCurrent();
 
@@ -120,6 +114,46 @@ void SubSurfaceScatteringSPF::Scatter(
 			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
 			if( nWo <= 1e-10 ) return;
 
+			// Geometric-horizon gate: GlintModifier can tilt the shading normal
+			// up to 60 deg off the true surface, so a wo that validates against
+			// the (tilted) shading normal can still point below the geometric
+			// surface -- the continuation ray then tunnels into the solid.
+			// Orient the geometric normal to the front-face side (ri.onb.w(),
+			// the normal this reflection was sampled around).  Degenerate
+			// vGeomNormal (SquaredModulus guard, matches GlintModifier.cpp)
+			// falls back to the shading normal, making the gate a no-op (the
+			// orientation itself is anchored to ri.ray.Dir(), not to the
+			// shading normal, so a glint tilt cannot flip the gate to the
+			// wrong side).  Drop (no sibling lobe; BSSRDF entry is handled
+			// by the integrator) --
+			// UNLESS the reflection is MANDATORY (R >= 1.0, i.e. TIR at the
+			// entry boundary, reachable when the SSS medium's ambient IOR
+			// exceeds its own): there is no refraction channel here at all
+			// (BSSRDF entry is the integrator's business, not emitted by this
+			// SPF), so dropping would be total, deterministic energy loss.
+			// Fall back to a single delta reflection about the TRUE geometric
+			// normal instead of the VNDF-sampled wo -- guaranteed to satisfy
+			// the gate (no re-check needed): for a ray arriving against geomN,
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always
+			// (up to the measure-zero exact-tangent boundary).
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : ri.onb.w();
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+				if( R >= 1.0 ) {
+					ScatteredRay reflectedRay;
+					reflectedRay.type = ScatteredRay::eRayReflection;
+					reflectedRay.isDelta = true;
+					reflectedRay.pdf = 1.0;
+					reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+					reflectedRay.kray = RISEPel( R, R, R );
+
+					scattered.AddScatteredRay( reflectedRay );
+				}
+				return;
+			}
+
 			// Fresnel at the microfacet normal (not geometric normal)
 			// Must match BSDF evaluation which uses F(OdotH)
 			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
@@ -149,14 +183,59 @@ void SubSurfaceScatteringSPF::Scatter(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			ScatteredRay reflectedRay;
-			reflectedRay.type = ScatteredRay::eRayReflection;
-			reflectedRay.isDelta = true;
-			reflectedRay.pdf = 1.0;
-			reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
-			reflectedRay.kray = RISEPel( R, R, R );
+			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			scattered.AddScatteredRay( reflectedRay );
+			// Geometric-horizon gate: derived-direction delta lobe --
+			// compute the reflection direction first, gate it, and ALWAYS
+			// re-derive on failure.  (Review P2-2: this block used to say
+			// "drop the lobe entirely on failure ... UNLESS the reflection
+			// is MANDATORY (R >= 1.0)".  DL-111 removed that condition --
+			// the code below re-derives unconditionally -- and the reason
+			// the old text gave for the mandatory case applies just as
+			// well to every other: there is no refraction channel here at
+			// all (BSSRDF entry is the integrator's business, not emitted
+			// by this SPF), so a drop is total, deterministic energy loss
+			// at any R, and on a shipped SSS material
+			// (`bAbsorbBackFace = true`) this delta reflection is the ONLY
+			// ray the SPF emits.)  Re-derive the
+			// reflection direction about the TRUE geometric normal instead of
+			// the shading normal -- guaranteed to satisfy the gate (no
+			// re-check needed): for a ray arriving against geomN,
+			// dot(reflect(d,geomN), geomN) = -dot(d,geomN) > 0 -- holds
+			// unconditionally: geomN is ray-anchored, so dot(d,geomN) < 0 always
+			// (up to the measure-zero exact-tangent boundary).
+			// The reflect formula is sign-invariant in its normal argument, so
+			// the reflection physically lands on the incoming ray's side.
+			const Vector3 nRef = ri.onb.w();
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : nRef;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+			// DL-111 (2026-09-17), reflection half of the disposal ruling
+			// (stated in full in DielectricSPF::GenerateScatteredRay):
+			// this re-derivation used to be reserved for a MANDATORY
+			// (R >= 1) reflection and every other wrong-side reflection
+			// was DROPPED.  On a shipped SSS material
+			// (`bAbsorbBackFace = true`) this delta reflection is the ONLY
+			// ray the SPF emits, so the drop was total loss of the
+			// specular response at a tilted shading normal.  A delta lobe
+			// has no distribution to renormalize, so re-derive about the
+			// TRUE geometric normal instead -- the coarse form of Cycles'
+			// `ensure_valid_reflection`.  geomN is ray-anchored, so the
+			// result satisfies the gate unconditionally.
+			if( Vector3Ops::Dot( rvDir, geomN ) <= 0 ) {
+				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
+			}
+			{
+				ScatteredRay reflectedRay;
+				reflectedRay.type = ScatteredRay::eRayReflection;
+				reflectedRay.isDelta = true;
+				reflectedRay.pdf = 1.0;
+				reflectedRay.ray = Ray( ri.ptIntersection, rvDir );
+				reflectedRay.kray = RISEPel( R, R, R );
+
+				scattered.AddScatteredRay( reflectedRay );
+			}
 		}
 	}
 	else
@@ -169,13 +248,16 @@ void SubSurfaceScatteringSPF::Scatter(
 		}
 
 		//
-		// Back face hit (from inside): should not normally occur
-		// with BSSRDF (no volumetric random walk), but handle
-		// gracefully for BDPT light subpaths that may enter the
-		// medium from behind.  Emit delta Fresnel reflection.
+		// Standalone non-absorbing fallback: emit delta reflection and
+		// exit refraction. Shipped SSS materials return above instead;
+		// their subsurface transport is handled by the integrator.
 		//
 
-		const Scalar Nt = ior_stack.top();
+		// Exit optics and the transmitted ray must describe the same
+		// post-pop medium. Reflection retains the original stack.
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		const Scalar Nt = exitStack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -186,17 +268,91 @@ void SubSurfaceScatteringSPF::Scatter(
 		}
 
 		// Delta reflection back into the medium
-		ScatteredRay reflectedRay;
-		reflectedRay.type = ScatteredRay::eRayReflection;
-		reflectedRay.isDelta = true;
-		reflectedRay.pdf = 1.0;
-		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-		reflectedRay.kray = RISEPel( R, R, R );
+		Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		reflectedRay.ior_stack = new IORStack( ior_stack );
-		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// Geometric-horizon gate (sign flip vs the front smooth-reflection
+		// branch: the ray arrives from inside here, so the reflection back
+		// into the medium lands on the -ri.onb.w() side).  ALWAYS re-derive
+		// on failure, never drop (review P2-2: this used to read "Drop on
+		// fail ... UNLESS the reflection is MANDATORY (R >= 1.0)", which
+		// DL-111 superseded -- the code below re-derives unconditionally;
+		// at R >= 1 the exit-refraction lobe is gated off, so a drop there
+		// would be total energy loss, and below 1 it is still an unmatched
+		// loss `ref` is paid to nothing).  Re-derive the reflection direction about the TRUE
+		// geometric normal instead of the shading normal -- guaranteed to
+		// satisfy the gate (no re-check needed): for a ray arriving against
+		// geomNBack, dot(reflect(d,geomNBack), geomNBack) = -dot(d,geomNBack) > 0 --
+		// holds unconditionally: geomNBack is ray-anchored, so dot(d,geomNBack) < 0
+		// always (up to the measure-zero exact-tangent boundary).
+		const Vector3 nRefBack = -ri.onb.w();
+		// DL-111: `HasTrueGeomSide()` (DL-70) added here because this
+		// branch's geometric reference now gates a STACK-CARRYING
+		// transmission, not only a reflection.  It excludes
+		// `HairGeometry`, whose geometric normal is fabricated from the
+		// ray (`bGeomNormalRayDerived`) and so answers no question about
+		// sides; there, as for a degenerate normal, fall back to the
+		// shading normal and both gates become no-ops.  The ray-anchored
+		// composite below is otherwise unchanged (and immune to the
+		// double-sided flip either way).
+		const Vector3 trueGeomBack = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nRefBack;
+		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( trueGeomBack ) > Scalar(1e-12) )
+			? trueGeomBack : nRefBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, ri.ray.Dir() ) < 0 ) ? geomNRawBack : -geomNRawBack;
 
-		scattered.AddScatteredRay( reflectedRay );
+		// DL-111: `exitRay` below carries the POPPED `exitStack` -- it
+		// claims the continuation left the medium -- but its direction was
+		// built from the SHADING normal and had NO geometric gate at all,
+		// while the companion back-reflection has been gated against
+		// `geomNBack` all along.  Under a tilted shading normal the "exit"
+		// can travel back INTO the medium with the stack saying otherwise,
+		// and the next hit on the object is then misclassified.
+		//
+		// Disposal ruling, identical to DielectricSPF's (derivation in
+		// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+		// refraction about the true geometric normal and recompute its
+		// Fresnel there.  Run BEFORE the reflection block below, because
+		// that block reads `R` -- a re-derivation that lands on TIR must
+		// raise `R` to 1 while the reflection still carries it.
+		//
+		// Reachable at a grazing exit off a normal-perturbed silhouette;
+		// refraction into a rarer medium bends AWAY from the normal, so
+		// the tilt and the deviation can add past the horizon.  It is
+		// ALSO reachable, for any index pair, once the tilt carries the
+		// shading normal past the grazing ray (`Dot(d, n_s) > 0`), since
+		// `Optics::CalculateRefractedRay` then flips the normal
+		// internally and refracts about `-n_s` -- the review's P2-1; see
+		// the corrected note in `DielectricSPF::GenerateScatteredRay`.
+		// (An SSS material with `bAbsorbBackFace = true` -- every shipped
+		// one -- returns above and never reaches this branch at all;
+		// cf. DL-51.)
+		if( R < 1.0 && Vector3Ops::Dot( refracted, geomNBack ) >= 0 ) {
+			Vector3 geomRefracted = ri.ray.Dir();
+			if( Optics::CalculateRefractedRay( geomNBack, n, Nt, geomRefracted ) ) {
+				refracted = geomRefracted;
+				R = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, geomNBack, n, Nt );
+			} else {
+				R = 1.0;
+			}
+		}
+
+		// DL-111, reflection half: always re-derive, never drop (see the
+		// front-face branch above for the full note).
+		if( Vector3Ops::Dot( rvDirBack, geomNBack ) <= 0 ) {
+			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
+		}
+		{
+			ScatteredRay reflectedRay;
+			reflectedRay.type = ScatteredRay::eRayReflection;
+			reflectedRay.isDelta = true;
+			reflectedRay.pdf = 1.0;
+			reflectedRay.ray = Ray( ri.ptIntersection, rvDirBack );
+			reflectedRay.kray = RISEPel( R, R, R );
+
+			reflectedRay.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+
+			scattered.AddScatteredRay( reflectedRay );
+		}
 
 		// Also emit exit refraction if possible (for light subpaths
 		// that need to escape the medium)
@@ -209,8 +365,7 @@ void SubSurfaceScatteringSPF::Scatter(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.kray = RISEPel( 1.0-R, 1.0-R, 1.0-R );
 
-			exitRay.ior_stack = new IORStack( ior_stack );
-			exitRay.ior_stack->pop();
+			exitRay.ior_stack = new IORStack( exitStack );
 			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
@@ -230,7 +385,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar n = ior.GetColorNM( ri, nm );
+	const Scalar n = pIOR->GetValueAtNM( ri, nm );
 
 	const bool bFromInside = ior_stack.containsCurrent();
 
@@ -266,6 +421,26 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
 			if( nWo <= 1e-10 ) return;
 
+			// Geometric-horizon gate (mirrors Scatter()'s rough-reflection gate)
+			// -- including the R >= 1.0 mandatory-lobe fallback: no drop when
+			// the reflection is the only channel (entry-side TIR).
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : ri.onb.w();
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+			if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+				if( R >= 1.0 ) {
+					ScatteredRay reflectedRay;
+					reflectedRay.type = ScatteredRay::eRayReflection;
+					reflectedRay.isDelta = true;
+					reflectedRay.pdf = 1.0;
+					reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
+					reflectedRay.krayNM = R;
+
+					scattered.AddScatteredRay( reflectedRay );
+				}
+				return;
+			}
+
 			// Fresnel at the microfacet normal (matching BSDF)
 			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
 			const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, nWo );
@@ -291,14 +466,45 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		else
 		{
 			// Smooth surface: perfect specular reflection (delta)
-			ScatteredRay reflectedRay;
-			reflectedRay.type = ScatteredRay::eRayReflection;
-			reflectedRay.isDelta = true;
-			reflectedRay.pdf = 1.0;
-			reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
-			reflectedRay.krayNM = R;
+			Vector3 rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() );
 
-			scattered.AddScatteredRay( reflectedRay );
+			// Geometric-horizon gate (mirrors Scatter()'s smooth-reflection
+			// gate): NEVER drop -- since DL-111 the direction is
+			// re-derived about the TRUE geometric normal at every R, not
+			// just the mandatory R >= 1.0 case the earlier text described
+			// (review P2-2).  The re-derivation is guaranteed to satisfy
+			// the gate (no re-check needed): geomN is ray-anchored, so the
+			// reflected direction always lands on the incoming ray's side.
+			const Vector3 nRef = ri.onb.w();
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : nRef;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+			// DL-111 (2026-09-17), reflection half of the disposal ruling
+			// (stated in full in DielectricSPF::GenerateScatteredRay):
+			// this re-derivation used to be reserved for a MANDATORY
+			// (R >= 1) reflection and every other wrong-side reflection
+			// was DROPPED.  On a shipped SSS material
+			// (`bAbsorbBackFace = true`) this delta reflection is the ONLY
+			// ray the SPF emits, so the drop was total loss of the
+			// specular response at a tilted shading normal.  A delta lobe
+			// has no distribution to renormalize, so re-derive about the
+			// TRUE geometric normal instead -- the coarse form of Cycles'
+			// `ensure_valid_reflection`.  geomN is ray-anchored, so the
+			// result satisfies the gate unconditionally.
+			if( Vector3Ops::Dot( rvDir, geomN ) <= 0 ) {
+				rvDir = Optics::CalculateReflectedRay( ri.ray.Dir(), geomN );
+			}
+			{
+				ScatteredRay reflectedRay;
+				reflectedRay.type = ScatteredRay::eRayReflection;
+				reflectedRay.isDelta = true;
+				reflectedRay.pdf = 1.0;
+				reflectedRay.ray = Ray( ri.ptIntersection, rvDir );
+				reflectedRay.krayNM = R;
+
+				scattered.AddScatteredRay( reflectedRay );
+			}
 		}
 	}
 	else
@@ -311,7 +517,11 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// Back face hit (from inside): delta reflection + exit refraction
 		//
 
-		const Scalar Nt = ior_stack.top();
+		// Exit optics and the transmitted ray must describe the same
+		// post-pop medium. Reflection retains the original stack.
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		const Scalar Nt = exitStack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -321,17 +531,84 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			R = 1.0;
 		}
 
-		ScatteredRay reflectedRay;
-		reflectedRay.type = ScatteredRay::eRayReflection;
-		reflectedRay.isDelta = true;
-		reflectedRay.pdf = 1.0;
-		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-		reflectedRay.krayNM = R;
+		Vector3 rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() );
 
-		reflectedRay.ior_stack = new IORStack( ior_stack );
-		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+		// Geometric-horizon gate (mirrors Scatter()'s back-face gate):
+		// NEVER drop -- since DL-111 the reflection is re-derived about the
+		// TRUE geometric normal at every R, not only the mandatory
+		// R >= 1.0 case the earlier text described (review P2-2).  The
+		// re-derivation is guaranteed to satisfy the gate (no re-check
+		// needed): geomNBack is ray-anchored, so the reflected direction
+		// always lands on the incoming ray's side.
+		const Vector3 nRefBack = -ri.onb.w();
+		// DL-111: `HasTrueGeomSide()` (DL-70) added here because this
+		// branch's geometric reference now gates a STACK-CARRYING
+		// transmission, not only a reflection.  It excludes
+		// `HairGeometry`, whose geometric normal is fabricated from the
+		// ray (`bGeomNormalRayDerived`) and so answers no question about
+		// sides; there, as for a degenerate normal, fall back to the
+		// shading normal and both gates become no-ops.  The ray-anchored
+		// composite below is otherwise unchanged (and immune to the
+		// double-sided flip either way).
+		const Vector3 trueGeomBack = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nRefBack;
+		const Vector3& geomNRawBack = ( Vector3Ops::SquaredModulus( trueGeomBack ) > Scalar(1e-12) )
+			? trueGeomBack : nRefBack;
+		const Vector3 geomNBack = ( Vector3Ops::Dot( geomNRawBack, ri.ray.Dir() ) < 0 ) ? geomNRawBack : -geomNRawBack;
 
-		scattered.AddScatteredRay( reflectedRay );
+		// DL-111: `exitRay` below carries the POPPED `exitStack` -- it
+		// claims the continuation left the medium -- but its direction was
+		// built from the SHADING normal and had NO geometric gate at all,
+		// while the companion back-reflection has been gated against
+		// `geomNBack` all along.  Under a tilted shading normal the "exit"
+		// can travel back INTO the medium with the stack saying otherwise,
+		// and the next hit on the object is then misclassified.
+		//
+		// Disposal ruling, identical to DielectricSPF's (derivation in
+		// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+		// refraction about the true geometric normal and recompute its
+		// Fresnel there.  Run BEFORE the reflection block below, because
+		// that block reads `R` -- a re-derivation that lands on TIR must
+		// raise `R` to 1 while the reflection still carries it.
+		//
+		// Reachable at a grazing exit off a normal-perturbed silhouette;
+		// refraction into a rarer medium bends AWAY from the normal, so
+		// the tilt and the deviation can add past the horizon.  It is
+		// ALSO reachable, for any index pair, once the tilt carries the
+		// shading normal past the grazing ray (`Dot(d, n_s) > 0`), since
+		// `Optics::CalculateRefractedRay` then flips the normal
+		// internally and refracts about `-n_s` -- the review's P2-1; see
+		// the corrected note in `DielectricSPF::GenerateScatteredRay`.
+		// (An SSS material with `bAbsorbBackFace = true` -- every shipped
+		// one -- returns above and never reaches this branch at all;
+		// cf. DL-51.)
+		if( R < 1.0 && Vector3Ops::Dot( refracted, geomNBack ) >= 0 ) {
+			Vector3 geomRefracted = ri.ray.Dir();
+			if( Optics::CalculateRefractedRay( geomNBack, n, Nt, geomRefracted ) ) {
+				refracted = geomRefracted;
+				R = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, geomNBack, n, Nt );
+			} else {
+				R = 1.0;
+			}
+		}
+
+		// DL-111, reflection half: always re-derive, never drop (see the
+		// front-face branch above for the full note).
+		if( Vector3Ops::Dot( rvDirBack, geomNBack ) <= 0 ) {
+			rvDirBack = Optics::CalculateReflectedRay( ri.ray.Dir(), geomNBack );
+		}
+		{
+			ScatteredRay reflectedRay;
+			reflectedRay.type = ScatteredRay::eRayReflection;
+			reflectedRay.isDelta = true;
+			reflectedRay.pdf = 1.0;
+			reflectedRay.ray = Ray( ri.ptIntersection, rvDirBack );
+			reflectedRay.krayNM = R;
+
+			reflectedRay.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
+
+			scattered.AddScatteredRay( reflectedRay );
+		}
 
 		if( R < 1.0 )
 		{
@@ -342,8 +619,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.krayNM = 1.0 - R;
 
-			exitRay.ior_stack = new IORStack( ior_stack );
-			exitRay.ior_stack->pop();
+			exitRay.ior_stack = new IORStack( exitStack );
 			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
@@ -372,7 +648,14 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 			const Vector3 woNorm = Vector3Ops::Normalize( wo );
 			const Vector3 n = ri.onb.w();
 
-			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
+			// Geometric-horizon gate (MIS consistency with Scatter()'s
+			// sampler-side gate): a wo the sampler can no longer emit
+			// contributes zero density.
+			const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+				? ri.vGeomNormal : n;
+			const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 && Vector3Ops::Dot( woNorm, geomN ) > 0 ) {
 				return MicrofacetUtils::VNDF_Pdf( wi, woNorm, n, alpha );
 			}
 		}

@@ -16,6 +16,7 @@
 #define DIELECTRIC_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "DielectricSPF.h"
 
@@ -23,8 +24,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class DielectricMaterial : 
-			public virtual IMaterial, 
+		class DielectricMaterial :
+			public virtual IMaterial,
 			public virtual Reference
 		{
 		protected:
@@ -36,9 +37,10 @@ namespace RISE
 			}
 
 		public:
-			DielectricMaterial( const IPainter& tau_, const IPainter& ri, const IPainter& scat, const bool hg )
+			DielectricMaterial( const IScalarPainter& tau_, const IScalarPainter& ri, const IScalarPainter& scat, const bool hg,
+				const Scalar* arN = 0, const Scalar* arK = 0, const Scalar* arThickness = 0, int arNLayers = 0 )
 			{
-				pSPF = new DielectricSPF( tau_, ri, scat, hg );
+				pSPF = new DielectricSPF( tau_, ri, scat, hg, arN, arK, arThickness, arNLayers );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -52,6 +54,7 @@ namespace RISE
 			inline IEmitter* GetEmitter() const {	return 0; };
 
 			inline bool CouldLightPassThrough() const { return true; };
+			inline bool TracksInteriorContainment() const { return true; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -68,6 +71,43 @@ namespace RISE
 				) const
 			{
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
+			}
+
+			//! DL-09: the enclosed medium's `ior`, when it is a
+			//! world-position field (see IMaterial::GetGradedIORField).
+			//! Queried live, so an editor rebind of `ior` is honoured.
+			const IScalarPainter* GetGradedIORField() const
+			{
+				const IScalarPainter& ior = pSPF->GetIOR();
+				return ior.IsWorldPositionField() ? &ior : 0;
+			}
+
+			//! Read-back + rebind for the interactive editor.  All
+			//! three Dielectric slots are physical-scalar pipe
+			//! (IScalarPainter) per the docs/ISCALARPAINTER_REFACTOR
+			//! discipline — they carry IOR / transmittance /
+			//! scattering coefficients that must NOT pass through
+			//! JH spectral uplift.
+			inline const IScalarPainter& GetTransmittance() const { return pSPF->GetTransmittance(); }
+			inline const IScalarPainter& GetIOR()           const { return pSPF->GetIOR(); }
+			inline const IScalarPainter& GetScattering()    const { return pSPF->GetScattering(); }
+			//! Baked construction-time scalars read-back for the snapshot
+			//! clone (HG-phase flag + anodization/AR-film params; no setters).
+			inline bool   GetHG()                   const { return pSPF->GetHG(); }
+			inline int           GetARLayerCount()  const { return pSPF->GetARLayerCount(); }
+			inline const Scalar* GetARLayerN()      const { return pSPF->GetARLayerN(); }
+			inline const Scalar* GetARLayerK()      const { return pSPF->GetARLayerK(); }
+			inline const Scalar* GetARLayerT()      const { return pSPF->GetARLayerT(); }
+			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
+			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
+			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetTransmittance().GetPathDependence() |
+					pSPF->GetIOR().GetPathDependence() |
+					pSPF->GetScattering().GetPathDependence();
 			}
 		};
 	}

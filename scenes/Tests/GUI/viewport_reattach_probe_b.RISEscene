@@ -1,0 +1,52 @@
+RISE ASCII SCENE 7
+standard_shader
+{
+name global
+shaderop DefaultPathTracing
+}
+pathtracing_pel_rasterizer
+{
+samples 1
+}
+film
+{
+width 4
+height 4
+}
+pinhole_camera
+{
+location 0 0 5
+lookat 0 0 0
+up 0 1 0
+fov 30.0
+}
+box_geometry
+{
+name geo
+width 1
+height 1
+depth 1
+}
+uniformcolor_painter
+{
+name p
+color 0.8 0.2 0.2
+}
+lambertian_material
+{
+name m
+reflectance p
+}
+standard_object
+{
+name obj
+geometry geo
+material m
+}
+directional_light
+{
+name light
+power 3.14
+color 1.0 1.0 1.0
+direction 0 0 1
+}

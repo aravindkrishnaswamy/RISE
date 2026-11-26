@@ -12,21 +12,98 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Interfaces/IContinuationClosure.h"
+#include <atomic>
+#include <memory>
+#include <cstring>   // review-p2d: std::strcmp for the reserved "environment" solo name
 #include "RayCaster.h"
 #include "LuminaryManager.h"
 #include "EnvironmentSampler.h"
+#include "AOVBuffers.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
+#include "../Utilities/GradedIndexMedium.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
+#include "../Utilities/Optics.h"
+#include "../Utilities/BSSRDFSampling.h"
+#include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/Threads/Threads.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IGeometry.h"
+#include "../Materials/NullBoundaryMaterial.h"
+#include "../Cameras/CameraUtilities.h"
+#include "../Shaders/SSS/SSSContainment.h"
+#include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
+#include "../Objects/CSGObject.h"		// DL-05: the pass-through scan walks CSG operands (un-enumerated)
 
 #define ENABLE_MAX_RECURSION
+
+namespace
+{
+	// DL-315: stack guard for a nested cast.  Every cast recurses in C++
+	// (an SSS continuation nests CastRay -> shader -> integrator -> CastRay;
+	// a legacy shader-op bounce and a medium phase continuation nest too),
+	// so the depth cap alone does not bound the stack: one nested SSS level
+	// measured 13.2 KB at -O3 and 34.5 KB at -O0, a legacy bounce about
+	// 6.2 KB at -O3.  Render workers get 8 MB stacks
+	// (ThreadPool::kWorkerStackBytes); a CALLING thread that also drains
+	// tiles may be smaller (a GUI render thread is a 512 KB std::thread on
+	// macOS).  A cast is refused when less than this much stack remains
+	// below its frame -- the budget for everything the cast runs before
+	// the next nested cast re-checks.  Sized by the DL-315 round-2 review
+	// with a stack-size SWEEP, never one stack size (-O0 library, driver
+	// and workers both at S = 512..640 KB in 16 KB steps, stacks painted
+	// for the high-water mark, a closed room of thick random-walk walls):
+	// the worst excursion below the last allowed cast entry is about 34 KB
+	// at -O0 and riseRemainingStackBytes over-reports by about 12-16 KB
+	// (the guard page), so the smallest safe margin is about 50 KB -- 16 KB
+	// crashed at 6 of the 9 sizes, 32 KB at 1, 48 KB reached the painted
+	// floor.  128 KB is about 2.5x that (3.5x the worst excursion): 64 KB
+	// left at least 35.4 KB and 128 KB at least 94.4 KB at every size, and
+	// every -O0 scene tried at 512 KB survived with it (worst excursions:
+	// PT room 34.2 KB, pt_sss_dragon 36.0, HWSS and PT-spectral rooms 30.6,
+	// BDPT-spectral guiding probe 30.6, legacy hall of mirrors at
+	// max_recursion 200 11.1).  ASan builds were not measured.  See
+	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.  A refusal returns no
+	// radiance, exactly like the depth cap, and is COUNTED
+	// (RayCaster::StackGuardRefusals) and logged.
+	const size_t kCastStackMarginBytes = 128u * 1024u;
+	std::atomic<unsigned long long> sCastStackRefusals( 0 );
+
+	//! True when this thread cannot afford another nested cast.  Logs the
+	//! 1st, 2nd, 4th, 8th, ... refusal so a pathological scene cannot
+	//! flood the log.  The count is PROCESS-WIDE and never reset, so in a
+	//! long-lived process (the GUI) a later render whose refusals fall
+	//! between two powers of two logs nothing; StackGuardRefusals() still
+	//! counts every one.
+	inline bool CastStackExhausted()
+	{
+		const size_t remaining = RISE::Threading::riseRemainingStackBytes();
+		if( remaining >= kCastStackMarginBytes ) {
+			return false;
+		}
+		const unsigned long long n = sCastStackRefusals.fetch_add( 1, std::memory_order_relaxed ) + 1;
+		if( ( n & ( n - 1 ) ) == 0 ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
+				"RayCaster:: refused a nested cast with only %lu bytes of stack left (margin %lu); %llu refusal(s) so far.  That path is truncated (no radiance); render from a thread with a larger stack.",
+				static_cast<unsigned long>( remaining ), static_cast<unsigned long>( kCastStackMarginBytes ), n );
+		}
+		return true;
+	}
+}
+
+unsigned long long RISE::Implementation::RayCaster::StackGuardRefusals()
+{
+	return sCastStackRefusals.load( std::memory_order_relaxed );
+}
 
 //#define ENABLE_TERMINATION_MESSAGES
 
@@ -48,12 +125,282 @@ static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	inline Scalar RayCasterRRSurvivalProbability( const Scalar importance )
+	{
+		return importance < RC_RR_THRESHOLD && importance > 0.0 ?
+			importance / RC_RR_THRESHOLD : 1.0;
+	}
+
+	// Shader-dispatch renderers enter path tracing through RayCaster rather
+	// than PathTracingIntegrator::IntegrateRay. Capture the raw camera
+	// intersection here, before medium sampling, transparency recursion,
+	// alpha continuation, x-ray resolution, or shader dispatch can replace it.
+	// PixelAOV is per camera sample; the first cast wins and all recursive casts
+	// observe primaryDepthCaptured=true.
+	inline void CapturePrimaryAOV(
+		const RuntimeContext& rc,
+		const RayIntersection& ri )
+	{
+		if( !rc.pAOV || rc.pAOV->primaryDepthCaptured ) return;
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) return;
+		rc.pAOV->primaryDepthCaptured = true;
+		Scalar depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+		if( ri.geometric.bHit && ri.geometric.pCamera ) {
+			depth += BDPTCameraUtilities::ComputeNearClipDistance( *ri.geometric.pCamera, ri.geometric.ray.Dir() );
+		}
+		rc.pAOV->depth = depth;
+		if( !ri.geometric.bHit || rc.aovPrefilterMode != OidnPrefilter::Fast ) return;
+
+		// Fast guides describe the same raw surface even if a participating
+		// medium scatters before it. Apply the modifier to a copy so the guide
+		// normal/albedo match eventual surface shading without perturbing the
+		// transport intersection before its normal modifier site.
+		RayIntersectionGeometric aovGeom( ri.geometric );
+		if( ri.pModifier && !ri.pUnresolvedMix ) ri.pModifier->Modify( aovGeom );
+		EvaluateMaterialAOVGuides( ri, aovGeom, false, 0, rc.pAOV->albedo, rc.pAOV->normal );
+		if( rc.pathTracingClayOverride ) {
+			rc.pAOV->albedo = RISEPel( 0.5, 0.5, 0.5 );
+		}
+		rc.pAOV->valid = true;
+	}
+
+	inline void OffsetCapturedPrimaryAOVDepth(
+		const RuntimeContext& rc,
+		const Scalar distance,
+		const bool unresolvedAtEntry
+		)
+	{
+		if( unresolvedAtEntry && rc.pAOV &&
+			rc.pAOV->primaryDepthCaptured && rc.pAOV->depth > 0.0 ) {
+			rc.pAOV->depth += distance;
+		}
+	}
+
+	// Analog no-scatter survival weight (mirrors PathTracingIntegrator's
+	// PTSurvivalWeight).  SampleDistance{,NM} is an ANALOG estimator: reaching
+	// the surface / escaping WITHOUT a scatter event is a stochastic SURVIVAL
+	// outcome whose probability already carries the Beer-Lambert factor.
+	// Multiplying throughput by the full per-channel Tr again would double-count
+	// attenuation (a pure absorber would render exp(-2*sigma_a*d), ~2x too
+	// thick).  The correct weight is Tr / pSurvival, where pSurvival is the
+	// DETERMINISTIC no-scatter survival pdf from
+	// IMedium::EvalDistancePdf( ray, dist, /*scattered=*/false, dist ).
+	//
+	// For a HomogeneousMedium this is byte-identical to the previous
+	// MinValue(Tr) form: EvalDistancePdf(false) returns exp(-sigma_t_max*dist) =
+	// MinValue(EvalTransmittance).  For a HeterogeneousMedium, EvalTransmittance
+	// is a STOCHASTIC ratio-tracking estimate, so MinValue(EvalTransmittance)
+	// would be a random denominator (biased ratio-of-random-estimates);
+	// HeterogeneousMedium overrides EvalDistancePdf with a deterministic Simpson
+	// optical depth, so Tr / pSurvival is the correct unbiased weight there.
+	// A non-positive survival pdf means "no attenuation to apply" -> identity.
+	inline RISE::RISEPel RayCasterSurvivalWeight(
+		const RISE::RISEPel& Tr, const RISE::Scalar pSurvival )
+	{
+		if( pSurvival > 0 ) {
+			return Tr * ( RISE::Scalar( 1 ) / pSurvival );
+		}
+		return RISE::RISEPel( 1, 1, 1 );
+	}
+
+	inline RISE::RISEPel CollisionThermalEmissionPel(
+		const RISE::IMedium& medium,
+		const RISE::Ray& ray,
+		const RISE::Scalar maxDist,
+		const RISE::Scalar t,
+		const bool useExplicitThroughput,
+		const RISE::Scalar combinedPdf
+		)
+	{
+		if( !medium.IsFireMedium() ) return RISE::RISEPel( 0.0 );
+		const RISE::Point3 point = ray.PointAtLength(t);
+		const RISE::MediumCoefficients coeff = medium.GetCoefficients(point);
+		if( RISE::ColorMath::MaxValue(coeff.sigma_t) <= 0.0 ) {
+			return RISE::RISEPel( 0.0 );
+		}
+		const RISE::Scalar pdf = useExplicitThroughput ? combinedPdf :
+			medium.EvalDistancePdf(ray,t,true,maxDist);
+		if( !RISE::PathTransportUtilities::IsPositiveFiniteDensity(pdf) ) {
+			return RISE::RISEPel( 0.0 );
+		}
+		return medium.EvalDeterministicTransmittancePel(ray,t) *
+			medium.GetThermalEmissionPel(point) * (1.0/pdf);
+	}
+
+	inline RISE::Scalar FullSegmentAdditiveEmissionNM(
+		const RISE::IMedium& medium,
+		const RISE::Ray& ray,
+		const RISE::Scalar segmentStart,
+		const RISE::Scalar segmentEnd,
+		const RISE::Scalar nm,
+		const RISE::Scalar uniformXi )
+	{
+		const RISE::Scalar segmentLength = segmentEnd - segmentStart;
+		if( segmentLength <= 0.0 ) return 0.0;
+		if( medium.IsHomogeneous() ) {
+			const RISE::MediumCoefficientsNM coeff = medium.GetCoefficientsNM( ray.origin, nm );
+			if( coeff.emission == 0.0 ) return 0.0;
+			if( coeff.sigma_t > 0.0 ) {
+				const RISE::Scalar transmittanceToStart = exp( -coeff.sigma_t * segmentStart );
+				return transmittanceToStart * coeff.emission *
+					( -expm1( -coeff.sigma_t * segmentLength ) ) / coeff.sigma_t;
+			}
+			return coeff.emission * segmentLength;
+		}
+
+		const RISE::Scalar t = segmentStart + uniformXi * segmentLength;
+		const RISE::MediumCoefficientsNM coeff = medium.GetCoefficientsNM(
+			ray.PointAtLength( t ), nm );
+		if( coeff.emission == 0.0 ) return 0.0;
+		const RISE::Scalar logTr = medium.EvalLogDistancePdfNM(
+			ray, t, false, t, nm );
+		return segmentLength * exp( logTr ) * coeff.emission;
+	}
+
+	inline bool MediumSegmentInterval(
+		const RISE::IMedium& medium,
+		const RISE::Ray& ray,
+		const RISE::Scalar maxDist,
+		RISE::Scalar& segmentStart,
+		RISE::Scalar& segmentEnd )
+	{
+		RISE::Point3 bbMin;
+		RISE::Point3 bbMax;
+		if( !medium.GetBoundingBox( bbMin, bbMax ) ) {
+			segmentStart = 0.0;
+			segmentEnd = maxDist;
+			return segmentEnd > segmentStart;
+		}
+
+		segmentStart = 0.0;
+		segmentEnd = maxDist;
+		for( unsigned int axis = 0; axis < 3; ++axis ) {
+			const RISE::Scalar origin = ray.origin[axis];
+			const RISE::Scalar direction = ray.Dir()[axis];
+			if( fabs( direction ) <= 1e-20 ) {
+				if( origin < bbMin[axis] || origin > bbMax[axis] ) return false;
+				continue;
+			}
+			const RISE::Scalar inverseDirection = 1.0 / direction;
+			RISE::Scalar t0 = (bbMin[axis] - origin) * inverseDirection;
+			RISE::Scalar t1 = (bbMax[axis] - origin) * inverseDirection;
+			if( t0 > t1 ) {
+				const RISE::Scalar temporary = t0;
+				t0 = t1;
+				t1 = temporary;
+			}
+			segmentStart = fmax( segmentStart, t0 );
+			segmentEnd = fmin( segmentEnd, t1 );
+			if( segmentStart >= segmentEnd ) return false;
+		}
+		return segmentEnd > segmentStart;
+	}
+
+	// MIS PARTNER RULE (DL-53; mirrors PathTracingIntegrator's fixed escape
+	// site, see docs/PT_ENV_MIS_DOUBLECOUNT.md "MIS PARTNER RULE").  A
+	// BSDF-sampled ray that escapes to the SAME radiance map env-NEE
+	// imports through (the scene's GLOBAL map, via EnvironmentSampler) is
+	// that strategy's complementary partner and must carry the matching
+	// weight, or the two strategies sum to 1 + w_nee instead of 1.  Callers
+	// must apply this ONLY when the map the escape actually resolved to is
+	// pointer-identical to pScene->GetGlobalRadianceMap() -- a genuinely
+	// per-object/local override map has no NEE partner (nothing importance
+	// samples it) and must keep full weight (i.e. not call this at all).
+	//
+	// envRadiance is the RAW (unweighted) escaped radiance and is consumed
+	// ONLY for optimal-MIS training (trainOptimalMIS==true); pass any value
+	// when training is skipped.  Training is Pel/NM-only, matching the
+	// previous per-callsite behaviour: HWSS applies the weight but never
+	// trained the optimal-MIS accumulator at this site before this fix.
+	inline RISE::Scalar RayCasterEnvEscapeMISWeight(
+		const RISE::Implementation::LightSampler* pLightSampler,
+		const RISE::RuntimeContext& rc,
+		const RISE::RasterizerState& rast,
+		const RISE::Ray& ray,
+		const RISE::IRayCaster::RAY_STATE& rs,
+		const RISE::RISEPel& envRadiance,
+		const bool trainOptimalMIS )
+	{
+		using namespace RISE;
+
+		Scalar w_bsdf = 1.0;
+
+		// DL-74: the two roles of the continuation's density are now
+		// SEPARATE fields (IRayCaster.h).  `bsdfPdf` is the TRUE sampling
+		// density and is what the optimal-MIS second moment must be
+		// divided by; `MisPartnerPdf()` is the nominal MIS-partner density
+		// LightSampler's NEE arms evaluate for the same direction.
+		//
+		// DL-103 corrected what this comment used to claim ("they differ
+		// only where path guiding is active"): at a SURFACE continuation
+		// the partner is the material's AGGREGATE `ISPF::Pdf()` whenever a
+		// non-delta lobe was sampled -- guided or not -- while `bsdfPdf`
+		// is the SELECTED lobe's own density, and those differ at every
+		// multi-lobe SPF.  Guiding additionally blends the guide density
+		// into the partner; the volume continuation below is the third
+		// case, its NEE partner being the raw phase pdf (DL-73).
+		//
+		// A zero partner density means "no MIS partner exists" -- a DELTA
+		// lobe -- and keeps the historical unweighted result.  A non-delta
+		// surface continuation never arrives as zero: where the aggregate
+		// pdf is zero in the traced direction the producer substitutes the
+		// selected lobe's own density (DL-103), and under active guiding
+		// it has already folded `alpha_nom * guide` in (DL-74 round 4).
+		const Scalar misPartnerPdf = rs.MisPartnerPdf();
+		if( !pLightSampler || ( rs.bsdfPdf <= 0 && misPartnerPdf <= 0 ) ) {
+			return w_bsdf;
+		}
+
+		const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
+		if( !pES ) {
+			return w_bsdf;
+		}
+
+		const Scalar envPdf = pES->Pdf( ray.Dir() );
+		if( envPdf <= 0 ) {
+			return w_bsdf;
+		}
+
+		// Optimal MIS training: use full integrand Le * BSDF * cos.
+		// bsdfTimesCos carries RGB BSDF*cos from the scatter site (for NM,
+		// all three channels carry the same scalar value -- see the NM
+		// call site); component-wise multiply with Le then scalarize.
+		if( trainOptimalMIS && rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+		{
+			const Scalar fLum = ColorMath::MaxValue( envRadiance * rs.bsdfTimesCos );
+			const Scalar f2 = fLum * fLum;
+			if( f2 > 0 && rs.bsdfPdf > 0 )
+			{
+				const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->Accumulate(
+					rast.x, rast.y, f2, rs.bsdfPdf, kTechniqueBSDF );
+			}
+		}
+
+		if( misPartnerPdf <= 0 ) {
+			return w_bsdf;
+		}
+
+		if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+		{
+			const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+			w_bsdf = MISWeights::OptimalMIS2Weight( misPartnerPdf, envPdf, alpha );
+		}
+		else
+		{
+			w_bsdf = PathTransportUtilities::PowerHeuristic( misPartnerPdf, envPdf );
+		}
+
+		return w_bsdf;
+	}
+}
+
 RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
 	const IShader& pDefaultShader_,
-	const bool showLuminaires,
-	const bool chooseonlyoneluminaire
+	const bool showLuminaires
 	) :
   pScene( 0 ),
   pDefaultShader( pDefaultShader_ ),
@@ -63,11 +410,36 @@ RayCaster::RayCaster(
   bConsiderRMapAsBackground( seeRadianceMap ),
   nMaxRecursions( maxR ),
   bShowLuminaires( showLuminaires ),
-  bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),
   dPendingLightRRThreshold( 0 ),
-  bPendingUseLightBVH( false )
+  bPendingUseLightBVH( false ),
+  iPendingRISCandidates( -1 ),
+  builtLightGeneration( 0 ),
+  forceLightSamplerRebuild( false ),
+  bTransparentShadows( false ),
+  bSceneHasDeltaPassThrough( false ),
+  dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
+  bWantsWireEdgeInfo( false ),
+  bXrayViewResolve( false ),
+	bFirePelDiagnosticEmitted( false ),
+	bCompetingMediumGuideAlphaNonzero( false ),
+	nCompetingMediumGuideSampleCount( 0 ),
+	bCompetingMediumReachPdfMismatch( false ),
+	bCompetingMediumZeroSurvivalObserved( false ),
+	bCompetingMediumIntermediateSurvivalObserved( false ),
+	bCompetingMediumUnitSurvivalObserved( false ),
+	nMediumContinuationRRMinDepth( 3 ),
+	dMediumContinuationRRThreshold( 0.05 ),
+  bBypassMediumTransport( false ),
+  iPendingSoloKind( 0 ),
+  pendingSoloLight( 0 ),
+  pendingSoloLuminary( 0 )
 {
 	pDefaultShader.addref();
+}
+
+const IShader& RayCaster::SelectShader( const RayIntersection& ri ) const
+{
+	return ri.pShader ? *ri.pShader : pDefaultShader;
 }
 
 RayCaster::~RayCaster( )
@@ -81,9 +453,179 @@ RayCaster::~RayCaster( )
 	safe_release( pLuminaryManager );
 }
 
+namespace {
+	// Diagnostic counter; see RayCaster::GetSamplerRebuildCount in the
+	// header.  Single-threaded — AttachScene runs at the pre-parallel
+	// scene-setup seam, never from inside the rasterize.
+	// Diagnostic counter (atomic: AttachScene normally runs single-threaded
+	// at the scene-setup seam, but two casters/documents could attach
+	// concurrently -- relaxed atomics keep the count race-free). (P2c)
+	std::atomic<unsigned int> s_samplerRebuildCount{ 0 };
+
+	// Read the concrete Scene's light/structure generation (#2b(a)).  The
+	// IScene/IScenePriv abstract interface deliberately does NOT carry this
+	// (adding a virtual there would break new-caller -> old-implementation
+	// vtable ABI — see abi-preserving-api-evolution).  We downcast to the
+	// concrete Scene here at the one call site instead.  An out-of-tree
+	// IScene that isn't a RISE::Implementation::Scene yields 0 (a constant),
+	// so AttachScene's `liveGen != builtLightGeneration` check is never
+	// satisfied for it after the first build — i.e. such a scene keeps the
+	// exact pre-#2b(a) same-pointer fast-path behaviour (no regression).
+	unsigned int SceneLightGeneration( const RISE::IScene* pScene )
+	{
+		const RISE::Implementation::Scene* concrete =
+			dynamic_cast<const RISE::Implementation::Scene*>( pScene );
+		return concrete ? concrete->GetLightTopologyGeneration() : 0u;
+	}
+
+	// Realize-pass dispatch: calls obj.Realize() on each world-visible
+	// object.  Object::Realize() bakes its (deferred) geometry; CSGObject::
+	// Realize() cascades into its world-invisible, un-enumerated operands.
+	// Realize() is const + idempotent; for cheap geometries it is a no-op,
+	// for a DisplacedGeometry it tessellates + bakes its mesh (and cascades
+	// to its base).  This is the Phase-1 root set — objects -> geometry ->
+	// (cascaded) base.  Runs single-threaded inside AttachScene before the
+	// parallel rasterize, the seam at which the scene becomes immutable.
+	class RealizeGeometryDispatch : public RISE::IEnumCallback<RISE::IObject>
+	{
+	public:
+		bool operator()( const RISE::IObject& obj )
+		{
+			obj.Realize();
+			return true;
+		}
+	};
+
+	// DL-05: does any object a ray can hit report a material with a
+	// non-bending delta pass-through?  A CSG composite's hit carries its
+	// OWN material when it has one and an OPERAND's otherwise, and the
+	// operands are world-invisible and not enumerated (the realize pass
+	// above cascades into them the same way), so the scan recurses into
+	// them.  A false positive only costs a walk that finds nothing; a
+	// false negative leaves that material's gap opaque to delta-light
+	// shadow rays -- the pre-DL-05 behaviour, never a double count.
+	bool ObjectHasDeltaPassThrough( const RISE::IObject& obj )
+	{
+		struct DeltaScan : public RISE::IEnumCallback<RISE::IMaterial>
+		{
+			bool found = false;
+			bool operator()( const RISE::IMaterial& mat ) override
+			{
+				if( mat.HasDeltaPassThrough() ) {
+					found = true;
+					return false;
+				}
+				return true;
+			}
+		} scan;
+		obj.EnumerateEffectiveMaterials( scan );
+		return scan.found;
+	}
+
+	class DeltaPassThroughScan : public RISE::IEnumCallback<RISE::IObject>
+	{
+	public:
+		bool found;
+		DeltaPassThroughScan() : found( false ) {}
+		bool operator()( const RISE::IObject& obj )
+		{
+			if( ObjectHasDeltaPassThrough( obj ) ) {
+				found = true;
+				return false;	// stop enumerating
+			}
+			return true;
+		}
+	};
+}
+
 void RayCaster::AttachScene( const IScene* pScene_ )
 {
+	// EXPRESSION MEMO: a (re-)attach means the scene the memo's cached
+	// provider pointers refer to may be a different one entirely, or the
+	// same one with freshly realized geometry.  Drop every thread's
+	// tables (Utilities/ExpressionMemo.h).
+	//
+	// TWICE, and the two halves carry DIFFERENT weight.
+	//
+	// The TRAILING bump, on EVERY exit -- hence the scope guard, and the
+	// realize pass below can throw -- is the load-bearing one: without it
+	// a thread that adopts a mid-function generation could re-fill from
+	// geometry the realize pass has not reached yet and stamp that answer
+	// with a generation nothing will ever drop.
+	//
+	// The ENTRY bump is DEFENCE IN DEPTH.  It used to be justified by "the
+	// realize pass below evaluates painters, and a displacement painter
+	// can be an expression" -- but that mechanism cannot actually read a
+	// stale entry.  Realize-time displacement goes through
+	// GeometryUtilities.cpp's ApplyScalarHeightToObject, which evaluates
+	// with `ri.signals` DEFAULT-constructed (its own comment says so), or
+	// through ApplyDisplacementMapToObject, which takes an IFunction2D and
+	// has no hit record at all -- so neither keys an L1 entry against a
+	// provider; and L2 cannot be stale for them either,
+	// since `m_time` is in the key and a painter's `param`s are folded
+	// into a program whose id is minted fresh by every Finalize.  The bump
+	// is one atomic increment at a seam that is about to rebuild a TLAS,
+	// so it is kept as cover for a future realize-time consumer that DOES
+	// carry a provider -- but nothing today depends on it.
+	// (ExpressionMemo.h's Invalidate() comment is the single account.)
+	ExpressionMemo::Invalidate();
+	const ExpressionMemo::DropOnScopeExit memoDropOnExit;
+
+	// ----------------------------------------------------------------
+	// REALIZE PASS (Phase 1, 2026-06-13).  Single-threaded materialize of
+	// every render-reachable geometry's deferred build work BEFORE the
+	// luminary / light-sampler setup, the spatial-structure build, and the
+	// parallel rasterize.  Root set = the object manager's objects -> their
+	// geometry (which cascades to any displaced base).  The scene is
+	// immutable during the parallel pass, so this is the correct (and only
+	// safe) place to bake — NOT lazily on the const ray-intersect hot path.
+	//
+	// This runs on EVERY AttachScene call, INCLUDING the same-scene-pointer
+	// re-attach below that early-returns.  Reason: an interactive editor can
+	// swap a fresh (unrealized) geometry onto an object and re-render the
+	// SAME scene pointer; the early-return would otherwise skip realizing it,
+	// and the subsequent PrepareForRendering() TLAS build would query an
+	// empty bounding box.  Realize() is idempotent — already-baked
+	// geometries no-op — so the repeated walk is cheap.
+	if( pScene_ ) {
+		const IObjectManager* pObjMan = pScene_->GetObjects();
+		if( pObjMan ) {
+			RealizeGeometryDispatch realizeDispatch;
+			pObjMan->EnumerateObjects( realizeDispatch );
+		}
+	}
+
+	// DL-05: on EVERY attach, like the realize pass -- an in-place
+	// material edit on the same scene pointer (the early-return below)
+	// must not leave the gate stale.
+	bSceneHasDeltaPassThrough = false;
+	if( pScene_ ) {
+		const IObjectManager* pObjMan = pScene_->GetObjects();
+		if( pObjMan ) {
+			DeltaPassThroughScan scan;
+			pObjMan->EnumerateObjects( scan );
+			bSceneHasDeltaPassThrough = scan.found;
+		}
+	}
+
+	// Same Scene pointer: the contents may still have changed IN PLACE
+	// (a restore or an in-place light edit on the live scene — see
+	// Scene::BumpLightTopologyGeneration / RestoreFromSnapshot).  Compare
+	// the live light/structure generation against the one our cached
+	// samplers were built with.  Unchanged -> O(1) fast path (so a
+	// production render that re-attaches every pass pays nothing).
+	// Advanced -> rebuild ONLY the light samplers (the realize pass above
+	// + the caller's PrepareForRendering already refresh geometry/TLAS);
+	// nothing else on the caster needs to change.
 	if( pScene == pScene_ ) {
+		if( pScene ) {
+			const unsigned int liveGen = SceneLightGeneration( pScene );
+			if( forceLightSamplerRebuild || liveGen != builtLightGeneration ) {
+				RebuildLightSamplers();
+				builtLightGeneration = liveGen;
+				forceLightSamplerRebuild = false;
+			}
+		}
 		return;
 	}
 
@@ -93,69 +635,437 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		pScene = pScene_;
 		pScene->addref();
 
-		safe_release( pLuminaryManager );
-
-		LuminaryManager* pConcreteLumMgr = new LuminaryManager( bChooseOnlyOneLuminaire );
-		pLuminaryManager = pConcreteLumMgr;
-		GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
-		pLuminaryManager->AttachScene( pScene );
-
-		if( pLumSampling ) {
-			pLuminaryManager->SetLuminaireSampling( pLumSampling );
-		}
-
-		// Create and prepare the unified light sampler
-		safe_release( pLightSampler );
-		pLightSampler = new LightSampler();
-		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
-
-		// Apply pending settings before Prepare() which builds
-		// internal data structures that depend on them.
-		if( bPendingUseLightBVH )
-		{
-			pLightSampler->SetUseLightBVH( true );
-		}
-
-		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
-
-		// Apply any pending light-sample RR threshold
-		if( dPendingLightRRThreshold > 0 )
-		{
-			pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
-		}
-
-		// Build environment importance sampler if a global radiance map exists
-		const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
-		if( pEnvMap )
-		{
-			EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
-				pEnvMap->GetPainter(),
-				pEnvMap->GetScale(),
-				pEnvMap->GetTransform(),
-				64
-				);
-			GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
-			pEnvSampler->Build();
-
-			if( pEnvSampler->IsValid() )
-			{
-				pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
-				GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
-			}
-			else
-			{
-				GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
-			}
-
-			// LightSampler::SetEnvironmentSampler addrefs if valid, so
-			// release our local reference.
-			safe_release( pEnvSampler );
-		}
+		RebuildLightSamplers();
+		builtLightGeneration = SceneLightGeneration( pScene );
+		forceLightSamplerRebuild = false;
 	}
 }
 
 
-bool RayCaster::CastRay( 
+// Rebuild the cached LuminaryManager / LightSampler / EnvironmentSampler
+// from the currently-attached `pScene`.  Extracted from AttachScene so the
+// first-attach (new scene pointer) and the same-pointer-generation-advanced
+// rebuild paths share ONE implementation and cannot drift.  `pScene` must
+// be non-null and already set by the caller.
+void RayCaster::RebuildLightSamplers()
+{
+	s_samplerRebuildCount.fetch_add( 1, std::memory_order_relaxed );
+
+	safe_release( pLuminaryManager );
+
+	LuminaryManager* pConcreteLumMgr = new LuminaryManager();
+	pLuminaryManager = pConcreteLumMgr;
+	GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
+	pLuminaryManager->AttachScene( pScene );
+
+	if( pLumSampling ) {
+		pLuminaryManager->SetLuminaireSampling( pLumSampling );
+	}
+
+	// Create and prepare the unified light sampler
+	safe_release( pLightSampler );
+	pLightSampler = new LightSampler();
+	GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+
+	// Apply pending settings before Prepare() which builds
+	// internal data structures that depend on them.
+	if( bPendingUseLightBVH )
+	{
+		pLightSampler->SetUseLightBVH( true );
+	}
+
+	pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
+
+	// Apply any pending light-sample RR threshold
+	if( dPendingLightRRThreshold > 0 )
+	{
+		pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
+	}
+
+	// Re-apply any previously-set RIS candidate count so a same-pointer
+	// rebuild doesn't silently drop it (the fresh LightSampler defaults to 0).
+	if( iPendingRISCandidates >= 0 )
+	{
+		pLightSampler->SetRISCandidates( (unsigned int)iPendingRISCandidates );
+	}
+
+	// Re-apply any previously-set light-solo target so a same-pointer
+	// rebuild doesn't silently drop it (the fresh LightSampler defaults to
+	// no solo).  Identity pointers (pendingSoloLight / pendingSoloLuminary)
+	// are stable across the rebuild -- they name scene-owned objects, not
+	// anything the LightSampler itself allocates.
+	if( iPendingSoloKind == 1 )
+	{
+		pLightSampler->SetSoloLight( pendingSoloLight );
+	}
+	else if( iPendingSoloKind == 2 )
+	{
+		pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+	}
+	else if( iPendingSoloKind == 3 )
+	{
+		pLightSampler->SetSoloEnvironment();
+	}
+
+	// Build environment importance sampler if a global radiance map exists
+	const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
+	if( pEnvMap )
+	{
+		// A `> modify rasterizer radiance_scale` override (set via
+		// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
+		// takes precedence over the map's own scale.  Negative means
+		// "no override".  The same override is also pushed into the
+		// radiance map (the direct-view background), keeping NEE and the
+		// background in sync; a direct SetRadianceScale() that skips that
+		// dual-write would drive only NEE — but we resolve from the
+		// member to keep this caster the authoritative source for the
+		// NEE (environment-sampler) scale regardless of attach order.
+		const Scalar dEnvScale =
+			( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
+
+		EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
+			pEnvMap->GetPainter(),
+			dEnvScale,
+			pEnvMap->GetTransform(),
+			64
+			);
+		GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
+		pEnvSampler->Build();
+
+		if( pEnvSampler->IsValid() )
+		{
+			pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
+			GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
+		}
+		else
+		{
+			GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
+		}
+
+		// LightSampler::SetEnvironmentSampler addrefs if valid, so
+		// release our local reference.
+		safe_release( pEnvSampler );
+	}
+}
+
+void RayCaster::AccumulateLightMotionSample()
+{
+	if( pLightSampler && pScene && pLuminaryManager ) {
+		const LuminaryManager* pConcrete = dynamic_cast<const LuminaryManager*>( pLuminaryManager );
+		if( pConcrete ) {
+			pLightSampler->AccumulateMotionSample( *pScene, pConcrete->getLuminaries() );
+		}
+	}
+}
+
+void RayCaster::RefreshLightSamplers()
+{
+	// DL-463: rebuild the selection tables IN PLACE from the scene's
+	// current state (plus any motion sweep).  The luminary list itself is
+	// structural and cannot change mid-animation; the environment sampler
+	// is time-independent and Prepare keeps it.
+	if( pLightSampler && pScene && pLuminaryManager ) {
+		const LuminaryManager* pConcrete = dynamic_cast<const LuminaryManager*>( pLuminaryManager );
+		if( pConcrete ) {
+			pLightSampler->Prepare( *pScene, pConcrete->getLuminaries() );
+		}
+	}
+}
+
+unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
+void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
+
+void RayCaster::ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) const
+{
+	// Original primary ray + origin, needed only if at least one skip
+	// happens (see the total-distance recompute below).
+	const Ray originalRay = ri.geometric.ray;
+	const Point3 originalOrigin = originalRay.origin;
+	bool bAnySkip = false;
+
+	// Adaptive skip epsilon -- FP-representability-based, NOT object- or
+	// camera-scaled (P1 fix).  The minimum offset that reliably escapes
+	// self-intersection at a point is a small multiple of the FP ulp AT
+	// THAT POINT: double precision only represents ~15-17 significant
+	// decimal digits, so the smallest meaningful step away from
+	// `ptIntersection` is proportional to the magnitude of its largest
+	// component, not to any object or camera measurement.
+	//
+	// External review round 4, item 1 (P1): the first cut of this fix used
+	// max-abs-COMPONENT (any of x/y/z, regardless of the ray's direction),
+	// which is TRANSVERSE-coordinate-coupled -- a hit point with a huge
+	// coordinate on an axis the ray barely travels along (e.g. an object
+	// sitting at world X=1e12, hit by a ray travelling along Y or Z) still
+	// picks up a nudge sized off that huge transverse X value, even though
+	// escaping self-intersection along the ray's OWN direction needs almost
+	// nothing.  At (1e12,0,0) with dir (0,1,0), the old formula advances
+	// ~1.4e-2 along Y and skips clean over an opaque layer sitting a mere
+	// 1e-3 behind the glass.  The representability bound only needs to
+	// cover ulp error ALONG THE RAY -- so weight each axis's contribution
+	// by how much the ray actually moves along it:
+	//
+	//   eps0 = max( 1e-12, kUlpFactor * ( |P.x|*|dir.x| + |P.y|*|dir.y| + |P.z|*|dir.z| ) )
+	//   kUlpFactor = 64 * DBL_EPSILON ~= 1.4e-14
+	//
+	// A large TRANSVERSE coordinate (orthogonal to travel) now contributes
+	// ~0 to the nudge, exactly matching how little ulp error a step along
+	// the ray actually needs to clear.  The cases where intersection
+	// arithmetic suffers catastrophic cancellation from that large
+	// transverse coordinate (t-error ~ ulp(bigCoord), independent of the
+	// nudge direction) are NOT this formula's job to cover -- they are
+	// absorbed by the degenerate-re-hit retry-doubling below, whose budget
+	// (`kMaxRetries`) was raised from 12 to 40 for exactly this division of
+	// labor: this seed handles the common (ray-aligned ulp) case exactly,
+	// the doubling ladder absorbs the rarer cancellation-dominated cases by
+	// growing past whatever the transverse cancellation actually needs.
+	//
+	// `curEps` is the nudge actually used for the pending step; it is
+	// recomputed fresh at the start of every NEW step and only carried
+	// over (doubled) across loop iterations that are retries of the SAME
+	// step -- see the degenerate-rehit check below.
+	Scalar curEps = 0;
+	bool bRetryStep = false;
+
+	// Real skips (successful nudge-and-rehit onto a DIFFERENT surface) and
+	// retries (doubling curEps to escape a degenerate self-hit on the SAME
+	// surface) are bounded SEPARATELY.  Previously both consumed the same
+	// 16-iteration budget, so a glass stack that needed a couple of
+	// retries per pane could exhaust the budget before reaching the
+	// opaque backstop.  `kMaxRetries` = 40 (raised from 12 in review round
+	// 4 -- see the eps0 derivation above) lets curEps double up to
+	// ~2^40 ~= 1e12x from its ulp-scale start, comfortably covering the
+	// transverse-cancellation range a large-coordinate hit point can carry
+	// (each retry is one cheap intersection test, and the cap only binds
+	// in pathological scenes), while `kMaxSkips` stays at the original 16.
+	constexpr int kMaxSkips = 16;
+	constexpr int kMaxRetries = 40;
+	constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16; // 64 * DBL_EPSILON
+	int skip = 0;
+	int retry = 0;
+
+	// Recovers the TRUE surface facing from a geometric normal that may
+	// have been oriented to oppose the incoming ray (double-sided triangle
+	// meshes -- see RayIntersectionGeometric::bGeomNormalOrientedToRay's
+	// doc comment).  A raw `Dot(vGeomNormal, dir)` on such a hit is always
+	// negative on BOTH a true entry and a true exit of a double-sided
+	// surface, which collapses the facing test below to the same sign on
+	// both -- exactly the case this facing test exists to distinguish.
+	// Un-flip via the recorded per-hit flag before dotting; geometries
+	// that never flip (the flag stays false) get the raw dot back
+	// unchanged.
+	// (DL-70: now THE shared recovery on the record itself, which also
+	// honours `bGeomNormalRayDerived` -- a hair hit's fabricated normal
+	// has no flip to undo, so the raw facing is returned there.  Hair
+	// cannot reach this walk today, since `HairMaterial` does not report
+	// `CouldLightPassThrough`, but the helper makes that structural
+	// rather than incidental.)
+	auto trueGeomFacing = []( const RayIntersectionGeometric& g, const Vector3& d ) -> Scalar
+	{
+		return g.TrueGeomFacing( d );
+	};
+
+	while( skip < kMaxSkips )
+	{
+		if( !ri.geometric.bHit || !ri.pMaterial || !ri.pMaterial->CouldLightPassThrough() )
+		{
+			break;
+		}
+
+		if( !pScene || !pScene->GetObjects() )
+		{
+			break;
+		}
+
+		const Vector3 dir = ri.geometric.ray.Dir();
+
+		// Facing of the face we are TRYING TO LEAVE, captured before the
+		// continuation cast below -- see the degenerate-self-hit predicate
+		// further down (external review round 6, item 1; recovered via
+		// `trueGeomFacing` since round 7, item 1, to see past the double-
+		// sided orient-to-ray flip -- see that helper's comment above).
+		// `ri` does not change across retries of the same step, so this is
+		// stable for the whole step; recomputing it each iteration is cheap
+		// and keeps the value tied to whichever `ri` is currently live
+		// without a stale carry-over risk.
+		const Scalar prevFacing = trueGeomFacing( ri.geometric, dir );
+
+		if( !bRetryStep )
+		{
+			// Nudge off the surface along the SAME direction (no bending).
+			// Direction-weighted representability -- see the eps0 derivation
+			// above: each axis's contribution to the ulp bound is scaled by
+			// how much the ray actually travels along it, so a large
+			// TRANSVERSE coordinate (one the ray barely moves along) does
+			// NOT inflate the nudge.
+			const Point3& p = ri.geometric.ptIntersection;
+			const Scalar dirWeightedAbs =
+				std::fabs( p.x ) * std::fabs( dir.x ) +
+				std::fabs( p.y ) * std::fabs( dir.y ) +
+				std::fabs( p.z ) * std::fabs( dir.z );
+			// Floor 1e-9, NOT SURFACE_INTERSEC_ERROR (1e-12): Object::
+			// IntersectRay publishes hit points backed off by
+			// SURFACE_INTERSEC_ERROR in OBJECT-LOCAL units, so a
+			// local->world stretch along the ray AMPLIFIES the published
+			// point's standoff from the physical surface (10x scale ->
+			// ~1e-11 world gap; external review r5).  A 1e-9 floor clears
+			// the standoff outright for scales up to ~1e3; larger
+			// stretches are caught by the widened degenerate-re-hit
+			// window below and the retry-doubling ladder.
+			curEps = std::max( Scalar(1e-9), kUlpFactor * dirWeightedAbs );
+		}
+		bRetryStep = false;
+
+		const Point3 origin = Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * curEps );
+
+		RayIntersection next( Ray( origin, dir ), ri.geometric.rast );
+		next.geometric.PropagateCastInputs( ri.geometric );   // wireframe edge requests etc. survive the skip
+		// Screen-space differentials (Landing 2, Igehy 1999) -- external
+		// review P2: a straight-line skip doesn't bend the ray, so the
+		// auxiliary-ray DIRECTION offsets (rxDir/ryDir) carry over exactly,
+		// but the ORIGIN offsets do NOT -- they are ABSOLUTE offsets from
+		// the CENTRAL ray's own origin (RayDifferentials.h), and the
+		// central ray's origin just moved by `t` (the full distance from
+		// ri's ray origin to this nudge point, i.e. its hit range plus the
+		// nudge itself -- NOT just curEps).  First-order transfer along a
+		// straight segment (Igehy 1999 Section 3.1, the same formula PBRT
+		// uses to propagate a RayDifferential through free space): the
+		// auxiliary ray advances by `t` along ITS OWN (offset) direction,
+		// so re-expressed relative to the new central origin,
+		// rxOrigin_new = rxOrigin_old + t * rxDir_old (ditto for ry); the
+		// direction offsets themselves are unchanged by a pure translation.
+		// A verbatim copy (the previous code here) is only correct when
+		// `t` is negligible -- true for a specular bounce's own nudge, but
+		// NOT here, where `t` includes the full hit range, which can be
+		// arbitrarily large.  Without this, textured/normal-mapped geometry
+		// resolved behind x-ray glass would either fall back to
+		// hasDifferentials=false (no transfer at all) or -- worse -- carry
+		// a stale, wrong footprint silently.
+		next.geometric.ray.hasDifferentials = ri.geometric.ray.hasDifferentials;
+		if( next.geometric.ray.hasDifferentials )
+		{
+			const Scalar t = ri.geometric.range + curEps;
+			next.geometric.ray.diffs.rxOrigin =
+				ri.geometric.ray.diffs.rxOrigin + ri.geometric.ray.diffs.rxDir * t;
+			next.geometric.ray.diffs.ryOrigin =
+				ri.geometric.ray.diffs.ryOrigin + ri.geometric.ray.diffs.ryDir * t;
+			next.geometric.ray.diffs.rxDir = ri.geometric.ray.diffs.rxDir;
+			next.geometric.ray.diffs.ryDir = ri.geometric.ray.diffs.ryDir;
+		}
+		next.geometric.bIsCameraRay = ri.geometric.bIsCameraRay;
+		next.geometric.pCamera = pScene->GetCamera();
+		pScene->GetObjects()->IntersectRaySampled( next, alphaSampler );
+
+		if( !next.geometric.bHit )
+		{
+			break;   // keep `ri` -- the last transmissive hit, an honest answer over a black hole
+		}
+
+		// Degenerate re-hit: the continuation ray landed back on the SAME
+		// object at a range shorter than the nudge that was supposed to
+		// clear it -- a grazing-angle / coplanar epsilon straddle, not a
+		// genuine second surface.  Double the nudge and retry the SAME
+		// step (same `ri`) rather than accepting the spurious self-hit.
+		// Retries are bounded by their OWN budget (kMaxRetries), separate
+		// from the real-skip budget (kMaxSkips) -- see the derivation
+		// above -- so exhausting it here just falls through to accept the
+		// current `ri` as the honest answer, same as the black-hole break
+		// above.
+		// Degenerate self-re-hit window: the published-point standoff is
+		// SURFACE_INTERSEC_ERROR in OBJECT-LOCAL units, amplified by the
+		// object's local->world stretch along the ray -- which this caster
+		// cannot see.  So a same-object re-hit can legitimately appear at
+		// range >> curEps and still be the SAME face (external review r5:
+		// 10x-stretched glass box -> ~1e-11 re-hit vs 1e-12 eps, accepted
+		// as a "real" skip and looping to the cap).  Widen generously --
+		// BUT a wide range window alone cannot distinguish "re-hit the same
+		// face we tried to leave" from "hit the object's own genuine exit
+		// face, which happens to sit inside that same window" (external
+		// review round 6, item 1): a shell/box THINNER than the window
+		// (e.g. depth ~1e-7, well under the 1e-6 floor) puts its real exit
+		// face inside `selfHitWindow` too.  Treating that exit as a
+		// self-hit and retrying re-anchors the walk at the ENTRY face with
+		// a DOUBLED eps -- which can leap over both the genuine exit AND an
+		// opaque layer sitting just behind it, silently resolving to
+		// whatever is further back (or nothing).
+		//
+		// Facing test: a true re-hit of the face we tried to leave faces
+		// the SAME way we left it (the nudge landed back on its own front,
+		// or bounced straight back off it) -- `next`'s geometric normal and
+		// `ri`'s (captured in `prevFacing` above, before this cast) both
+		// have a NON-ZERO-magnitude dot with `dir` of the SAME SIGN.  A
+		// genuine exit face of a thin shell faces the OPPOSITE way (the ray
+		// is leaving through the far side, so its outward normal points
+		// backward along `dir` relative to how the entry face's normal
+		// did) -- opposite sign.  So only classify as a degenerate self-hit
+		// when the signs agree; an opposite-signed near hit is a real exit
+		// face and falls through to the normal acceptance path below,
+		// re-anchoring the walk there (a SMALL nudge from the exit next
+		// step) instead of leaping from the entry with a doubled eps.
+		//
+		// (a) Double-sided triangle meshes DO orient `vGeomNormal` toward
+		// the incoming ray on every face -- entry and exit alike -- which
+		// would make the raw dot-product facing test collapse to the same
+		// sign on both (external review round 7, item 1: this was the r6
+		// degradation case, not a hypothetical).  It is now handled
+		// losslessly: those geometries set `bGeomNormalOrientedToRay` at
+		// the same site they flip `vGeomNormal`, and `trueGeomFacing`
+		// above un-flips before dotting, so `prevFacing` / `nextFacing`
+		// carry the REAL surface facing regardless of the orient-to-ray
+		// convention.  The only remaining degradation case is a
+		// hypothetical geometry that flips its geometric normal to face
+		// the ray WITHOUT setting the flag -- that (undetectable from
+		// here) case still degrades to the OLD range-only retry behavior,
+		// same as round 5's fallback and never worse.
+		//
+		// (b) Correction to the round-5 note this replaces: that note
+		// argued misclassifying a genuinely-close SECOND surface as a
+		// self-hit "costs nothing (the walk would skip it anyway)".  That
+		// is only true when the retry's doubled-eps nudge still lands
+		// short of whatever comes next.  For a shell/box thinner than the
+		// nudge, it is NOT free -- the retry re-anchors the origin at the
+		// ENTRY face (not the exit), and the doubled eps can carry the
+		// walk clean past the exit face and past a thin opaque layer
+		// immediately behind it, so the false positive silently discards a
+		// real surface instead of paying for one extra intersection test.
+		// The facing test above closes exactly that gap.
+		const Scalar selfHitWindow = std::max( Scalar(1e-6), curEps * Scalar(16.0) );
+		const Scalar nextFacing = trueGeomFacing( next.geometric, dir );
+		const bool bDegenerateSelfHit =
+			next.pObject == ri.pObject &&
+			next.geometric.range < selfHitWindow &&
+			( prevFacing * nextFacing ) > 0;
+		if( bDegenerateSelfHit )
+		{
+			if( retry < kMaxRetries )
+			{
+				curEps *= 2.0;
+				++retry;
+				bRetryStep = true;
+				continue;
+			}
+			break;
+		}
+
+		bAnySkip = true;
+		ri = next;
+		++skip;
+		retry = 0;   // fresh retry budget for the NEXT step
+	}
+
+	if( bAnySkip )
+	{
+		// Depth (and any other range-reading consumer) must see the TOTAL
+		// distance from the ORIGINAL ray's origin to the resolved hit --
+		// not the resolved hit's own last-segment range, and not a sum of
+		// per-segment ranges.  Restoring the original ray here means every
+		// downstream consumer (shader, depth accumulator, etc.) gets this
+		// for free with no x-ray-specific knowledge.
+		ri.geometric.ray = originalRay;
+		ri.geometric.range = Point3Ops::Distance( ri.geometric.ptIntersection, originalOrigin );
+	}
+}
+
+bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -166,57 +1076,174 @@ bool RayCaster::CastRay(
 			) const
 {
 	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
 	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, ior_stack );
 }
 
 bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
-			const Ray& ray,										///< [in] Ray to cast
+			const Ray& rayIn,										///< [in] Ray to cast
 			RISEPel& c,											///< [out] RISEColor for the ray
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const
 {
+	return CastRayImpl_( rc, rast, rayIn, c, rs, distance, pRadianceMap,
+		ior_stack, false );
+}
+
+bool RayCaster::CastRayImpl_(
+			const RuntimeContext& rc,
+			const RasterizerState& rast,
+			const Ray& rayIn,
+			RISEPel& c,
+			const RAY_STATE& rs,
+			Scalar* distance,
+			const IRadianceMap* pRadianceMap,
+			const IORStack& ior_stack,
+			const bool skipEntryGates,
+			const bool skipEntryRoulette,
+			const bool sourceOnlySegment,
+			RISEPel* sameSegmentMediumSource
+			) const
+{
+	if( sameSegmentMediumSource ) *sameSegmentMediumSource = RISEPel(0.0);
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
+	// Fire Pel transport is an approximate preview.  Diagnose once per caster;
+	// predictive output remains spectral-only.
+	// bBypassMediumTransport: a diagnostic caster traverses a vacuum, so it
+	// takes none of the fire-specific gate deferrals either.
+	const IMedium* entryMedium = bBypassMediumTransport ? 0 :
+		MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	const bool sceneHasFire = !bBypassMediumTransport &&
+		pLightSampler && pLightSampler->SceneHasFireMedia();
+	if( sceneHasFire || ( entryMedium && entryMedium->IsFireMedium() ) ) {
+		bool expected = false;
+		if( bFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyWarning(
+				"RayCaster::CastRay:: fire medium uses the approximate Pel preview; predictive output is spectral-only" );
+		}
+	}
+	bool fireDepthGateDeferredForSource = sourceOnlySegment;
+
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	// DL-315: every nested cast (fire's null-boundary / source-only
+	// continuations included) is refused when the thread's stack is nearly
+	// exhausted; only the depth cap defers to a fire source-only segment.
+	if( CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
 #endif
-
 		return false;
+	}
+	if( !skipEntryGates && rs.depth > MaxRecursions( rc ) )
+	{
+		if( sceneHasFire || (entryMedium && entryMedium->IsFireMedium()) ) {
+			// The ray can begin in vacuum and cross an exact null boundary into
+			// fire.  Keep the same segment alive for source pickup only.
+			fireDepthGateDeferredForSource = true;
+		} else {
+#ifdef ENABLE_TERMINATION_MESSAGES
+			GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
+#endif
+			return false;
+		}
 	}
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
 	// intersection work, compensate the returned radiance after.
 	Scalar rrCompensation = 1.0;
+	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && !skipEntryRoulette && !sourceOnlySegment &&
+		!fireDepthGateDeferredForSource &&
+		rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
-			return false;
+			if( sceneHasFire ) {
+				rrContinuationRejected = true;
+			} else {
+				return false;
+			}
+		} else {
+			rrCompensation = 1.0 / pSurvive;
 		}
-		rrCompensation = 1.0 / pSurvive;
 	}
 #endif
 
 	bool bReturn = false;
 
 	// Cast the ray into the scene
-	RayIntersection	ri( ray, rast );
+	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler, true, true, skipEntryGates);
+	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
+		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): resolve
+	// through transmissive surfaces to the first opaque hit BEFORE medium
+	// transport / the modifier site / shading, so every consumer past
+	// this point (including depth) sees the resolved hit with zero
+	// x-ray-specific knowledge.  Production casters never set the flag.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri, alphaSampler );
+		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit: the check above only ran on the ORIGINAL hit, so an
+		// emitter sitting behind the glass would otherwise escape
+		// eRayView's "hide luminaires" preview setting even though a
+		// directly-visible emitter at the same spot would be suppressed.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
 		}
 	}
 
@@ -225,7 +1252,7 @@ bool RayCaster::CastRay(
 	// participating medium and handle absorption/scattering.
 	//
 	// Resolution order (matching Cycles volume stack):
-	//   1. Check innermost enclosing object (IOR stack top) for
+	//   1. Check innermost object on IORStack's enclosure state for
 	//      interior medium
 	//   2. Fall back to scene's global medium
 	//   3. No medium (vacuum) — skip medium transport entirely
@@ -241,11 +1268,37 @@ bool RayCaster::CastRay(
 	//      - Apply transmittance to surface shading result
 	// ----------------------------------------------------------------
 	const IObject* pMediumObject = 0;
-	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+	// bBypassMediumTransport: a DIAGNOSTIC caster (objectmap identity /
+	// normals / depth / facets / wireframe) traverses a VACUUM, so the flat
+	// data its shader emits reaches the film unmodified -- see the flag's
+	// contract in RayCaster.h.  Production casters leave this false.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR so a GGX conductor shaded via
+	// the RayCaster shader path sees the surrounding medium's IOR rather than
+	// hardcoded air.  Read before SetCurrentObject (which does not push).  Guard
+	// to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale = 1.0;
+	const VolumeEmissionSegmentState incomingVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
 
 	if( pMedium )
 	{
-		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 
 		IndependentSampler mediumSampler( rc.random );
 		bool scattered = false;
@@ -266,18 +1319,23 @@ bool RayCaster::CastRay(
 		// Reference: Kulla, Fajardo, "Importance Sampling Techniques
 		// for Path Tracing in Participating Media", EGSR 2012.
 		// ----------------------------------------------------------------
-		const bool useEquiangularMIS = (pLightSampler &&
-			pLightSampler->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS = !pMedium->IsFireMedium() &&
+			!IsSSSContainmentActive() && pLightSampler &&
+			pLightSampler->IsEquiangularPivotDistributionValid() &&
+			pLightSampler->GetEquiangularPivotEntryCount() > 0;
+		VolumeEmissionPivotState equiangularPivots;
+		const bool equiangularPivotsReady = useEquiangularMIS &&
+			pLightSampler->ResolveVolumeEmissionPivots(
+				mediumSampler, incomingVolumeSegmentState.pivots, equiangularPivots );
 		Scalar combinedPdf = 0;		// Deterministic MIS denominator
 		bool useExplicitThroughput = false;
 		bool equiangularZeroContrib = false;	// True when equiangular strategy samples zero density
 
-		if( useEquiangularMIS )
+		if( equiangularPivotsReady )
 		{
-			// Clip equiangular range to medium bounds.
-			// For bounded media (heterogeneous), use the medium's AABB
-			// to set the integration domain.  For unbounded global media,
-			// use [0, maxDist].
+			// Equiangular sampling requires an explicitly bounded segment.  A
+			// surface hit bounds it directly; otherwise a bounded medium AABB may.
+			bool equiangularSegmentBounded = bHit;
 			Scalar eqTNear = 0;
 			Scalar eqTFar = maxDist;
 			{
@@ -324,35 +1382,31 @@ bool RayCaster::CastRay(
 					{
 						eqTNear = fmax( 0.0, tEntry );
 						eqTFar = fmin( maxDist, tExit );
+						equiangularSegmentBounded = true;
 					}
 				}
 			}
 
-			if( eqTFar <= eqTNear )
+			if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 			{
 				// Medium AABB doesn't intersect ray — fall back to plain delta tracking
 				t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
 			}
 			else
 			{
-				// Select one positional light proportional to exitance
-				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
-				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
-				unsigned int selectedLight = 0;
+				Point3 selectedPivot;
+				Scalar selectedPivotPdf = 0.0;
+				const bool selectedPivotOk = pLightSampler->SampleEquiangularPivot(
+					equiangularPivots, mediumSampler.Get1D(), selectedPivot,
+					selectedPivotPdf );
+				const Scalar xiStrategy = selectedPivotOk ? mediumSampler.Get1D() : 0.0;
+
+				if( !selectedPivotOk )
 				{
-					const Scalar xiLight = mediumSampler.Get1D();
-					Scalar cumulative = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
-						if( xiLight <= cumulative ) { selectedLight = i; break; }
-					}
+					t_m = pMedium->SampleDistance(
+						ray, maxDist, mediumSampler, scattered );
 				}
-				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
-
-				const Scalar xiStrategy = mediumSampler.Get1D();
-
-				if( xiStrategy < 0.5 )
+				else if( xiStrategy < 0.5 )
 				{
 					// Delta tracking strategy
 					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdf(
@@ -369,20 +1423,19 @@ bool RayCaster::CastRay(
 						// comment for rationale.
 						const Scalar pdf_dt = pMedium->EvalDistancePdf(
 							ray, t_m, true, maxDist );
-						Scalar pdf_eq = 0;
-						for( unsigned int i = 0; i < nPosLights; i++ )
-						{
-							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-								/ totalPosExitance;
-							pdf_eq += pSel * EquiangularSampling::Pdf(
-								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, t_m );
-						}
+						const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+							equiangularPivots, ray, eqTNear, eqTFar, true, t_m );
 
 						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 						useExplicitThroughput = true;
 					}
-					// If not scattered: no equiangular counterpart, weight = 1
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						// The survival sites divide by the extra 0.5.
+						noScatterPdfScale = 0.5;
+					}
 				}
 				else
 				{
@@ -394,8 +1447,8 @@ bool RayCaster::CastRay(
 					// NOT fall through to the surface/transmission path.
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
-							ray, lightPos, eqTNear, eqTFar,
-							mediumSampler.Get1D() );
+							ray, selectedPivot, eqTNear, eqTFar,
+							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
 					if( t_m > eqTNear && t_m < maxDist )
@@ -409,15 +1462,8 @@ bool RayCaster::CastRay(
 
 							const Scalar pdf_dt = pMedium->EvalDistancePdf(
 								ray, t_m, true, maxDist );
-							Scalar pdf_eq = 0;
-							for( unsigned int i = 0; i < nPosLights; i++ )
-							{
-								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-									/ totalPosExitance;
-								pdf_eq += pSel * EquiangularSampling::Pdf(
-									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, t_m );
-							}
+							const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+								equiangularPivots, ray, eqTNear, eqTFar, true, t_m );
 
 							combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 							useExplicitThroughput = true;
@@ -469,9 +1515,24 @@ bool RayCaster::CastRay(
 			// roughly in its original travel direction.
 			const Point3 scatterPt = ray.PointAtLength( t_m );
 			const Vector3 wo = ray.Dir();
+			const RISEPel thermalEmission = CollisionThermalEmissionPel(
+				*pMedium,ray,maxDist,t_m,useExplicitThroughput,combinedPdf );
+			static const unsigned int nMaxVolumeBounces = 64;
+			const bool terminalFireSourceOnly = pMedium->IsFireMedium() &&
+				(rs.depth >= MaxRecursions( rc ) ||
+				 rs.volumeBounces >= nMaxVolumeBounces);
+			if( sourceOnlySegment || fireDepthGateDeferredForSource ||
+				rrContinuationRejected || terminalFireSourceOnly ) {
+				c = thermalEmission;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+				if( distance ) *distance = t_m;
+				return ColorMath::MaxValue(c) != 0.0;
+			}
 
 			const MediumCoefficients coeff = pMedium->GetCoefficients( scatterPt );
-			const RISEPel Tr = pMedium->EvalTransmittance( ray, t_m );
+			const RISEPel Tr = pMedium->IsFireMedium() ?
+				pMedium->EvalDeterministicTransmittancePel( ray, t_m ) :
+				pMedium->EvalTransmittance( ray, t_m );
 			RISEPel throughput( 0, 0, 0 );
 
 			if( useExplicitThroughput && combinedPdf > 0 )
@@ -480,9 +1541,22 @@ bool RayCaster::CastRay(
 				// where combined_pdf = 0.5 * pdf_dt + 0.5 * pdf_eq.
 				// Both pdf_dt and pdf_eq are deterministic: pdf_dt uses
 				// majorant transmittance T_bar (DDA), pdf_eq is analytic.
-				// The stochastic Tr in the numerator is correct — it's
-				// the integrand estimate, not a technique density.
+				// Fire uses its deterministic projected transmittance so this
+				// numerator and the labeled density share one coefficient field;
+				// ordinary media retain their historical stochastic integrand.
 				throughput = Tr * coeff.sigma_s * (1.0 / combinedPdf);
+			}
+			else if( pMedium->IsFireMedium() )
+			{
+				// Fire-Pel tracking uses a deterministic projected coefficient field.
+				// Divide by the actual deterministic collision density; reducing a
+				// stochastic ratio-tracking estimate to its minimum channel would form
+				// a biased ratio and can select the wrong channel along chromatic paths.
+				const Scalar collisionPdf = pMedium->EvalDistancePdf(
+					ray,t_m,true,maxDist);
+				if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+					throughput = Tr*coeff.sigma_s*(1.0/collisionPdf);
+				}
 			}
 			else
 			{
@@ -501,27 +1575,50 @@ bool RayCaster::CastRay(
 				}
 			}
 
+			// Retain one collision closure across NEE adapters, continuation,
+			// and guiding.  Pel fire resolves to null until the preview step;
+			// ordinary media borrow their legacy stateless phase.
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pMedium, scatterPt, 0.0, false );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+
 			// 1. NEE at scatter point (in-scattering from lights)
+			// DL-185: this scatter event is itself subject to the
+			// cast-level RR compensation `c` gets multiplied by a few
+			// lines below (`if( rrCompensation != 1.0 ) c = c * rrCompensation;`)
+			// -- fold the SAME local factor into the NEE training
+			// integrand so its trained moment agrees with the BSDF-side
+			// (DL-148).  `rrCompensation` is already in scope in this
+			// function.
+			//
+			// DL-292: the NEE segment's graded-index factor is priced from
+			// THIS walk's stack (`ior_stack`, the same one the phase
+			// continuation below carries and whose first surface hit
+			// Advances from its top).  It has not been advanced to
+			// `scatterPt` -- medium vertices do not Advance -- so the NEE
+			// factor (top/n(light))^2 telescopes over the unpaid piece up to
+			// the scatter point exactly as the continuation's does.  Before
+			// DL-292 this passed no stack: NEE here carried no factor while
+			// the phase-sampled arm did (row M of
+			// GradedIndexInteriorFactorTest: pixelpel/PT 1.10 -> 1.00).
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
-				scatterPt, wo, pMedium, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				scatterPt, wo, pMedium, pPhase, *this, pLightSampler,
+				mediumSampler, rast, pMediumObject, rrCompensation, &ior_stack,
+				&ior_stack );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
 			// depth limit to prevent excessive scattering in dense media.
-			static const unsigned int nMaxVolumeBounces = 64;
-			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			RISEPel Li( 0, 0, 0 );
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
+			if( pPhase && rs.depth < MaxRecursions( rc ) &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
 				// Sample the continuation direction — optionally guided
-				Scalar guidingMISWeight = 1.0;
 				Scalar effectivePdf = 0;
 				wi = pPhase->Sample( wo, mediumSampler );
-				phasePdf = pPhase->Pdf( wo, wi );
+				phasePdf = pPhase->PdfProposal( wo, wi );
 				effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -549,91 +1646,107 @@ bool RayCaster::CastRay(
 						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							// Sample from guiding distribution.
-							// Save phase-sampled state in case guide fails.
-							const Vector3 wi_phase = wi;
-							const Scalar phasePdf_phase = phasePdf;
-
 							Scalar guidePdf = 0;
 							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
 							wi = rc.pGuidingField->SampleVolume( volGuideHandle, xi2D, guidePdf );
 
 							if( guidePdf > 0 )
 							{
-								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
+								phasePdf = pPhase->PdfProposal( wo, wi );
 							}
-							else
-							{
-								// Degenerate guide sample — restore phase direction
-								wi = wi_phase;
-								phasePdf = phasePdf_phase;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, true );
 						}
 						else
 						{
 							// Keep phase-sampled direction, but reweight for combined PDF
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandle, wi );
-							if( guidePdf > 0 && phasePdf > 0 )
-							{
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, false );
 						}
 					}
 				}
 #endif // RISE_ENABLE_OPENPGL
 
-				const Ray scatterRay( scatterPt, wi );
+				if( PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) )
+				{
+					const RISEPel phaseWeight =
+						pPhase->EvaluatePel(wo,wi) * (1.0/effectivePdf);
+					const Ray scatterRay( scatterPt, wi );
 
-				RAY_STATE rs2;
-				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * ColorMath::MaxValue( throughput ) * guidingMISWeight;
-				rs2.considerEmission = true;
-				rs2.type = rs.type;
-				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = phasePdf;
+					RAY_STATE rs2;
+					rs2.depth = rs.depth + 1;
+					rs2.importance = rs.importance *
+						ColorMath::MaxValue( throughput*phaseWeight );
+					rs2.considerEmission = true;
+					rs2.type = rs.type;
+					rs2.volumeBounces = rs.volumeBounces + 1;
+					// DL-73 / DL-74 (master): the MIS-PARTNER role carries the
+					// raw, un-guided proposal density -- the same value
+					// `MediumScatterMaterial::Pdf` (PdfProposal) hands env/area
+					// NEE at this vertex, so w_bsdf + w_nee == 1 -- while
+					// `bsdfPdf` carries the density the direction was really
+					// drawn from (the guided mixture when guiding fired).
+					rs2.bsdfMisPdf = phasePdf;
+					// DL-633: volume NEE excludes no object; an emitter this ray
+					// reaches is weighted by the light-table rule in either op.
+					rs2.pNEESelfObject = 0;
+					rs2.emitterHitFollowsLightTable = true;
+					rs2.bsdfPdf = effectivePdf;
+					// DL-72 round 3: the volume analogue of BSDF*cos is the
+					// phase VALUE at the sampled direction (no cosine in free
+					// space).  Fire closures may be chromatic and their value
+					// need not equal the proposal pdf, so use the evaluated
+					// closure; `bsdfTimesCos / bsdfPdf` is then exactly this
+					// continuation's per-sample weight `phaseWeight`.
+					rs2.bsdfTimesCos = pPhase->EvaluatePel( wo, wi );
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+							rast.x, rast.y, kTechniqueBSDF );
+					}
 
-				Scalar hitDist = 0;
-				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
-					pRadianceMap, ior_stack );
+					Scalar hitDist = 0;
+					CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
+						pRadianceMap, ior_stack );
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Record volume training sample for the guiding field.
 				// Use effectivePdf (= combinedPdf when guiding was applied)
 				// so that weight = luminance / pdf matches the actual
 				// sampling distribution used to generate the direction.
-				if( rc.pGuidingField &&
-					rc.pGuidingField->IsCollectingTrainingSamples() &&
-					effectivePdf > NEARZERO )
-				{
-					const Scalar lum = ColorMath::MaxValue( Li );
-					if( lum > 0 )
+					if( rc.pGuidingField &&
+						rc.pGuidingField->IsCollectingTrainingSamples() &&
+						effectivePdf > NEARZERO )
 					{
-						rc.pGuidingField->AddVolumeSample(
-							scatterPt, wi,
-							hitDist > 0 ? hitDist : 1.0,
-							effectivePdf,
-							lum,
-							false );
+						const Scalar lum = ColorMath::MaxValue( Li );
+						if( lum > 0 )
+						{
+							rc.pGuidingField->AddVolumeSample(
+								scatterPt, wi,
+								hitDist > 0 ? hitDist : 1.0,
+								effectivePdf,
+								lum,
+								false );
+						}
+						else
+						{
+							rc.pGuidingField->AddZeroValueVolumeSample(
+								scatterPt, wi );
+						}
 					}
-					else
-					{
-						rc.pGuidingField->AddZeroValueVolumeSample(
-							scatterPt, wi );
-					}
-				}
 #endif // RISE_ENABLE_OPENPGL
 
-				Li = Li * guidingMISWeight;
+					Li = Li * phaseWeight;
+				}
 			}
 
-			// Combine: throughput * (Ld + Li) + emission
-			c = throughput * (Ld + Li);
+			// Source pickup is outside continuation roulette.  Only the
+			// downstream scattering estimator receives survival compensation.
+			c = thermalEmission + rrCompensation * throughput * (Ld + Li);
+			if( sameSegmentMediumSource ) {
+				*sameSegmentMediumSource = thermalEmission;
+			}
 
 			// Volumetric emission contribution along segment [0, t_m].
 			// The integral is: Le * integral_0^t Tr(0->s) ds
@@ -666,15 +1779,13 @@ bool RayCaster::CastRay(
 					}
 				}
 				c = c + emissionContrib;
+				if( sameSegmentMediumSource ) {
+					*sameSegmentMediumSource = *sameSegmentMediumSource + emissionContrib;
+				}
 			}
 
 			if( distance ) {
 				*distance = t_m;
-			}
-
-			// Apply RR compensation
-			if( rrCompensation != 1.0 ) {
-				c = c * rrCompensation;
 			}
 
 			return true;
@@ -690,7 +1801,7 @@ bool RayCaster::CastRay(
 			// Use midpoint of the segment for coefficient evaluation,
 			// which is a better approximation than ray origin for
 			// heterogeneous media where density varies spatially.
-			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
+			const Scalar segDist = bHit ? maxDist : Scalar(1000.0);
 			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
 			const MediumCoefficients coeff = pMedium->GetCoefficients( midPt );
 			if( ColorMath::MaxValue( coeff.emission ) > 0 )
@@ -714,8 +1825,72 @@ bool RayCaster::CastRay(
 					}
 				}
 				c = c + emissionContrib;
+				if( sameSegmentMediumSource ) {
+					*sameSegmentMediumSource = *sameSegmentMediumSource + emissionContrib;
+				}
 			}
 		}
+	}
+
+	if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) )
+	{
+		const bool downstreamSourceOnly = sourceOnlySegment ||
+			fireDepthGateDeferredForSource || rrContinuationRejected;
+		IORStack nextStack( ior_stack );
+		ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+		const Ray nextRay = ContinueExactNullBoundaryRay(
+			ray, ri.geometric.surfaceRange );
+
+		RISEPel survival( 1, 1, 1 );
+		Scalar noEventProbability = 1.0;
+		if( pMedium ) {
+			noEventProbability = noScatterPdfScale * pMedium->EvalDistancePdf(
+				ray, ri.geometric.surfaceRange, false,
+				ri.geometric.surfaceRange );
+			survival = RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, ri.geometric.surfaceRange ),
+				noEventProbability );
+		}
+		const VolumeEmissionSegmentState downstreamVolumeSegmentState =
+			AdvanceVolumeEmissionSegmentState(
+				incomingVolumeSegmentState,noEventProbability,
+				ri.geometric.surfaceRange);
+		RISEPel downstream( 0, 0, 0 );
+		RISEPel downstreamSameSegmentSource( 0, 0, 0 );
+		Scalar downstreamDistance = 0;
+		bool downstreamHit = false;
+		{
+			const VolumeEmissionSegmentStateScope volumeStateScope(
+				downstreamVolumeSegmentState);
+			downstreamHit = CastRayImpl_(
+				rc, rast, nextRay, downstream, rs, &downstreamDistance,
+				pRadianceMap, nextStack, true, downstreamSourceOnly,
+				downstreamSourceOnly, &downstreamSameSegmentSource );
+		}
+		OffsetCapturedPrimaryAOVDepth(
+			rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+		const RISEPel localSource = pMedium ? c : RISEPel( 0, 0, 0 );
+		const RISEPel sameSegmentSource =
+			localSource + survival*downstreamSameSegmentSource;
+		c = sameSegmentSource + rrCompensation*survival*
+			(downstream-downstreamSameSegmentSource);
+		if( sameSegmentMediumSource ) {
+			*sameSegmentMediumSource = sameSegmentSource;
+		}
+
+		if( distance ) {
+			*distance = downstreamDistance >= RISE_INFINITY
+				? RISE_INFINITY
+				: ri.geometric.surfaceRange + downstreamDistance;
+		}
+		return downstreamHit || ColorMath::MaxValue(sameSegmentSource) != 0.0;
+	}
+
+	if( sourceOnlySegment || fireDepthGateDeferredForSource ||
+		rrContinuationRejected ) {
+		if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+		if( distance ) *distance = 0.0;
+		return ColorMath::MaxValue(c) != 0.0;
 	}
 
 	if( bHit )
@@ -726,19 +1901,73 @@ bool RayCaster::CastRay(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: the hit's object is the current object of the stack the
+		// SHADER sees -- a copy.  This used to write through the caller's
+		// `const IORStack&` (then a `mutable` field), so after PT's SSS
+		// continuation hit an enclosure, the caller's own vertex read the
+		// enclosure as its current object, `containsCurrent()` went true,
+		// and SubSurfaceScatteringSPF::Scatter took its inside/absorb
+		// branch -- an F0-sized loss.  The same leak reached the legacy
+		// shader-op chain: a distribution-tracing / final-gather op re-runs
+		// Scatter per sample on the stack an earlier sample's cast had
+		// rewritten, so a later entry push was keyed on the wrong object.
+		// See
+		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
+		IORStack hitStack( ior_stack );
+
+		// DL-292: the interior-segment graded-index factor (DL-09) for the
+		// segment this cast just traced, paid HERE -- at the one choke point
+		// every shader that shades a RayCaster hit goes through -- instead
+		// of by whichever op happens to Advance.  Before DL-292 only a
+		// `PathTracingShaderOp` in the chain Advanced (inside
+		// IntegrateFromHit) while `DirectLightingShaderOp`, `EmissionShaderOp`
+		// and the distribution / reflection / refraction ops priced the
+		// hit at the entry index, so the legacy chain read the pre-DL-09
+		// 1.65x on a gather inside a graded medium (row N) and a chain
+		// mixing the two families priced its NEE and BSDF arms
+		// differently.  Every op now sees a stack whose top is n(hit) (so
+		// the refraction ops' RadianceEtaScale reads the fresh exit index,
+		// exactly as PT's does), `c` carries (top/n(hit))^2, and a
+		// PathTracingShaderOp's own Advance at the same point is a no-op
+		// (n unchanged -> no factor).  Exactly nothing happens unless the
+		// medium the ray travelled through is graded.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		hitStack.SetCurrentObject( ri.pObject );
+
+		// DL-185: hand the shader a copy of `rs` carrying THIS call's own
+		// cast-level RR compensation, so any NEE done while shading this
+		// hit (`LightSampler::EvaluateDirectLighting{,NM}`, reached via
+		// `DirectLightingShaderOp` / `PathTracingShaderOp`) can fold it
+		// into its optimal-MIS training integrand -- see
+		// `RAY_STATE::castRRCompensation`'s doc.  Never affects the
+		// returned radiance `c`.
+		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
+		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
-		if( ri.pShader ) {
-			ri.pShader->Shade( rc, ri, *this, rs, c, ior_stack );
-		} else {
-			pDefaultShader.Shade( rc, ri, *this, rs, c, ior_stack );
+		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, hitStack );
+		if( gradedScale != Scalar( 1 ) ) {
+			c = c * gradedScale;
 		}
 
-		// Apply medium transmittance to surface shading result
+		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
+		// reaching this surface without a scatter event is a survival outcome
+		// whose probability already carries Beer-Lambert, so weight by
+		// Tr / pSurvival (deterministic no-scatter survival pdf), NOT the full
+		// Tr (which would double-count attenuation).
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, ri.geometric.range );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, ri.geometric.range ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, ri.geometric.range, false, ri.geometric.range ) );
 		}
 
 		if( distance ) {
@@ -749,56 +1978,61 @@ bool RayCaster::CastRay(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
 
-		// Apply medium transmittance for background
+		// DL-53: this explicit map is env-NEE's complementary partner ONLY
+		// when it is the scene's global map (the only map EnvironmentSampler
+		// ever imports through) -- see RayCasterEnvEscapeMISWeight's doc.
+		// Every production pathtracing_* rasterizer's BSSRDF/RW-SSS
+		// continuation forwards its own pRadianceMap (the global map) here
+		// with a positive cosine bsdfPdf; before this fix this branch
+		// always won and the weight below was unreachable, so that
+		// continuation's env escape summed to 1 + w_nee on top of the
+		// entry point's already-weighted env-NEE sample. A genuinely
+		// distinct per-object override map keeps full weight (w_bsdf stays
+		// 1 inside the helper, since it has no NEE partner).
+		// DL-124: apply the medium's escape-segment survival weight
+		// (Tr / pSurvival) BEFORE the MIS-training call below, not after
+		// -- multiplication is commutative, so `c`'s final value here is
+		// unchanged, but the trained moment inside
+		// RayCasterEnvEscapeMISWeight (which reads `envRadiance` == `c`
+		// at the point it is called) now sees the SAME medium
+		// attenuation its NEE partner already carries via
+		// EvalShadowTransmittance, instead of the raw pre-medium
+		// radiance.  See docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's
+		// DL-124 entry.
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
+		}
+
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			// DL-148: fold this cast's own whole-subpath importance-RR
+			// compensation into the TRAINING argument only (the returned
+			// weight `w_bsdf` never reads `envRadiance` outside the
+			// training block, so `c`'s real value is unaffected) -- the
+			// realized-moment rule (DL-84) says the trained numerator is
+			// the post-RR, as-carried contribution, and `rrCompensation`
+			// is exactly the factor `c` itself is compensated by a few
+			// lines below/above every return site in this function.
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs, c * rrCompensation, /*trainOptimalMIS=*/true );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
-		if( pLightSampler && rs.bsdfPdf > 0 )
-		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					// Optimal MIS training: use full integrand Le * BSDF * cos.
-					// bsdfTimesCos carries RGB BSDF*cos from the scatter site;
-					// component-wise multiply with Le then scalarize.
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar fLum = ColorMath::MaxValue( c * rs.bsdfTimesCos );
-						const Scalar f2 = fLum * fLum;
-						if( f2 > 0 && rs.bsdfPdf > 0 )
-						{
-							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-								rast.x, rast.y,
-								f2, rs.bsdfPdf, kTechniqueBSDF );
-						}
-					}
-
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					c = c * w_bsdf;
-				}
-			}
-		}
-
-		// Apply medium transmittance for environment
+		// DL-124: same reorder as the explicit-map branch above.
 		if( pMedium ) {
-			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+			c = c * RayCasterSurvivalWeight(
+				pMedium->EvalTransmittance( ray, RISE_INFINITY ),
+				noScatterPdfScale * pMedium->EvalDistancePdf( ray, RISE_INFINITY, false, RISE_INFINITY ) );
 		}
+
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// (shared with the explicit-map branch above -- see DL-53).
+		// DL-148: see the explicit-map branch's comment above.
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs, c * rrCompensation, /*trainOptimalMIS=*/true );
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
@@ -830,6 +2064,9 @@ bool RayCaster::CastRayNM(
 	) const
 {
 	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
 	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, ior_stack );
 }
 
@@ -838,49 +2075,136 @@ bool RayCaster::CastRayNM(
 bool RayCaster::CastRayNM(
     const RuntimeContext& rc,							///< [in] The runtime context
 	const RasterizerState& rast,						///< [in] Current state of the rasterizer
-	const Ray& ray,										///< [in] Ray to cast
+	const Ray& rayIn,										///< [in] Ray to cast
 	Scalar& c,											///< [out] Amplitude of spectral function for the given wavelength
 	const RAY_STATE& rs,								///< [in] The ray state
 	const Scalar nm,									///< [in] Wavelength to cast
 	Scalar* distance,									///< [in] If there was a hit, how far?
 	const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-	const IORStack& ior_stack							///< [in/out] Index of refraction stack
+	const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 	) const
 {
+	return CastRayNMImpl_( rc, rast, rayIn, c, rs, nm, distance,
+		pRadianceMap, ior_stack, false );
+}
+
+bool RayCaster::CastRayNMImpl_(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& rayIn,
+	Scalar& c,
+	const RAY_STATE& rs,
+	const Scalar nm,
+	Scalar* distance,
+	const IRadianceMap* pRadianceMap,
+	const IORStack& ior_stack,
+	const bool skipEntryGates,
+	const bool skipEntryRoulette,
+	const bool sourceOnlySegment,
+	Scalar* sameSegmentMediumSource
+	) const
+{
+	if( sameSegmentMediumSource ) *sameSegmentMediumSource = 0.0;
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
+	bool depthGateDeferredForEmission = sourceOnlySegment;
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	// DL-315: a nested cast with too little stack left is refused outright;
+	// only the depth cap defers to source pickup.
+	if( CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
 #endif
 		return false;
 	}
+	if( !skipEntryGates && rs.depth > MaxRecursions( rc ) )
+	{
+		// The current ray may begin in vacuum and cross an exact null boundary
+		// into a source-carrying enclosure.  Intersect before terminating so
+		// that same-segment enclosure transitions remain observable.
+		depthGateDeferredForEmission = true;
+	}
 #endif
 
-	// Unbiased Russian roulette: decide before the expensive
-	// intersection work, compensate the returned radiance after.
-	Scalar rrCompensation = 1.0;
+	// Decide continuation roulette before the expensive intersection work,
+	// but keep any medium-source score outside that estimator.  A rejected
+	// continuation still samples and scores a finite emission event.
+	Scalar rrContinuationCompensation = 1.0;
+	bool rrContinuationRejected = false;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && !skipEntryRoulette && !sourceOnlySegment &&
+		!depthGateDeferredForEmission &&
+		rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
-		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
+		const Scalar pSurvive = RayCasterRRSurvivalProbability(rs.importance);
 		if( rc.random.CanonicalRandom() >= pSurvive ) {
-			return false;
+			// As with the depth gate, a source can begin only after an exact
+			// null-boundary transition.  Defer the rejected continuation until
+			// the first real downstream vertex.
+			rrContinuationRejected = true;
+		} else {
+			rrContinuationCompensation = 1.0 / pSurvive;
 		}
-		rrCompensation = 1.0 / pSurvive;
 	}
 #endif
 
 	// Cast the ray into the scene
-	RayIntersection	ri( ray, rast );
+	RayIntersection	ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler, true, true, skipEntryGates);
+	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
+		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): see
+	// CastRay's identical call site for the rationale.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri, alphaSampler );
+		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit -- see CastRay's identical call site for the rationale.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
 		}
 	}
 
@@ -888,25 +2212,73 @@ bool RayCaster::CastRayNM(
 
 	// Medium transport (spectral variant)
 	const IObject* pMediumObject = 0;
-	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+	// bBypassMediumTransport: a DIAGNOSTIC caster traverses a vacuum -- see
+	// the flag's contract in RayCaster.h.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+
+	// G6: stamp the ambient (incident-medium) IOR (per-wavelength n(λ) in NM) so
+	// a GGX conductor shaded via the RayCaster spectral shader path uses the
+	// surrounding medium's IOR rather than hardcoded air.  Read before
+	// SetCurrentObject (which does not push).  Guard to air (1.0).
+	{
+		const Scalar ambIOR = ior_stack.top();
+		ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+	}
+
+	// Strategy-selection factor for a no-scatter outcome (see the EQ-MIS block
+	// below).  Declared in the outer scope because the survival sites that
+	// consume it (surface-hit / escape) live outside the if(pMedium) block.
+	// 0.5 only in the DT no-scatter branch under equiangular MIS; 1.0 otherwise.
+	Scalar noScatterPdfScale_NM = 1.0;
+	Scalar additiveEmissionNM = 0.0;
+	const VolumeEmissionSegmentState incomingVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
 
 	if( pMedium )
 	{
-		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 
 		IndependentSampler mediumSampler( rc.random );
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( MediumSegmentInterval(
+			*pMedium, ray, maxDist, segmentStart, segmentEnd ) ) {
+			// Homogeneous integration is exact and consumes no random number.
+			// A heterogeneous source can start anywhere on the segment, so its
+			// independent uniform draw must never be gated by one point query.
+			const Scalar additiveXi = pMedium->IsHomogeneous()
+				? 0.0 : rc.random.CanonicalRandom();
+			additiveEmissionNM = FullSegmentAdditiveEmissionNM(
+				*pMedium, ray, segmentStart, segmentEnd, nm, additiveXi );
+			IndependentSampler chemSampler( rc.random );
+			additiveEmissionNM += pMedium->EstimateChemEmissionSegmentNM(
+				ray, segmentStart, segmentEnd, nm, chemSampler );
+		}
 		bool scattered = false;
 		Scalar t_m = 0;
 
 		// Equiangular MIS (spectral variant, see RGB path for details)
-		const bool useEquiangularMIS_NM = (pLightSampler &&
-			pLightSampler->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS_NM = !IsSSSContainmentActive() && pLightSampler &&
+			pLightSampler->IsEquiangularPivotDistributionValid() &&
+			pLightSampler->GetEquiangularPivotEntryCount() > 0;
+		VolumeEmissionPivotState equiangularPivots_NM;
+		const bool equiangularPivotsReady_NM = useEquiangularMIS_NM &&
+			pLightSampler->ResolveVolumeEmissionPivots(
+				mediumSampler, incomingVolumeSegmentState.pivots,
+				equiangularPivots_NM );
 		Scalar combinedPdf_NM = 0;
 		bool useExplicitThroughput_NM = false;
 		bool equiangularZeroContrib_NM = false;
+		Scalar logCombinedPdf_NM = 0.0;
 
-		if( useEquiangularMIS_NM )
+		if( equiangularPivotsReady_NM )
 		{
+			bool equiangularSegmentBounded = bHit;
 			Scalar eqTNear = 0;
 			Scalar eqTFar = maxDist;
 			{
@@ -945,33 +2317,30 @@ bool RayCaster::CastRayNM(
 					if( aabbHit && tEntry < tExit ) {
 						eqTNear = fmax( 0.0, tEntry );
 						eqTFar = fmin( maxDist, tExit );
+						equiangularSegmentBounded = true;
 					}
 				}
 			}
 
-			if( eqTFar <= eqTNear )
+			if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 			{
 				t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
 			}
 			else
 			{
-				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
-				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
-				unsigned int selectedLight = 0;
+				Point3 selectedPivot;
+				Scalar selectedPivotPdf = 0.0;
+				const bool selectedPivotOk = pLightSampler->SampleEquiangularPivot(
+					equiangularPivots_NM, mediumSampler.Get1D(), selectedPivot,
+					selectedPivotPdf );
+				const Scalar xiStrategy = selectedPivotOk ? mediumSampler.Get1D() : 0.0;
+
+				if( !selectedPivotOk )
 				{
-					const Scalar xiLight = mediumSampler.Get1D();
-					Scalar cumulative = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
-						if( xiLight <= cumulative ) { selectedLight = i; break; }
-					}
+					t_m = pMedium->SampleDistanceNM(
+						ray, maxDist, nm, mediumSampler, scattered );
 				}
-				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
-
-				const Scalar xiStrategy = mediumSampler.Get1D();
-
-				if( xiStrategy < 0.5 )
+				else if( xiStrategy < 0.5 )
 				{
 					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdfNM(
 						ray, maxDist, nm, mediumSampler );
@@ -982,25 +2351,30 @@ bool RayCaster::CastRayNM(
 					{
 						const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 							ray, t_m, true, maxDist, nm );
-						Scalar pdf_eq = 0;
-						for( unsigned int i = 0; i < nPosLights; i++ )
-						{
-							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-								/ totalPosExitance;
-							pdf_eq += pSel * EquiangularSampling::Pdf(
-								ray, pLightSampler->GetPositionalLightPosition( i ),
-								eqTNear, eqTFar, t_m );
-						}
+						const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+							equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+						const MISWeights::LogDensity logDensity =
+							pLightSampler->EvaluateVolumeEmissionDistanceLogDensityNM(
+								*pMedium,ray,maxDist,bHit,&equiangularPivots_NM,
+								nm,t_m,true);
+						logCombinedPdf_NM = logDensity.hasSupport ?
+							logDensity.value : -RISE_INFINITY;
 						useExplicitThroughput_NM = true;
+					}
+					else
+					{
+						// No-scatter outcome under equiangular MIS: reachable only
+						// via this delta-tracking strategy (chosen with prob 0.5).
+						noScatterPdfScale_NM = 0.5;
 					}
 				}
 				else
 				{
 					EquiangularSampling::Sample eqSample =
 						EquiangularSampling::SampleDistance(
-							ray, lightPos, eqTNear, eqTFar,
-							mediumSampler.Get1D() );
+							ray, selectedPivot, eqTNear, eqTFar,
+							true, mediumSampler.Get1D() );
 					t_m = eqSample.t;
 
 					if( t_m > eqTNear && t_m < maxDist )
@@ -1014,17 +2388,16 @@ bool RayCaster::CastRayNM(
 
 							const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 								ray, t_m, true, maxDist, nm );
-							Scalar pdf_eq = 0;
-							for( unsigned int i = 0; i < nPosLights; i++ )
-							{
-								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
-									/ totalPosExitance;
-								pdf_eq += pSel * EquiangularSampling::Pdf(
-									ray, pLightSampler->GetPositionalLightPosition( i ),
-									eqTNear, eqTFar, t_m );
-							}
+							const Scalar pdf_eq = pLightSampler->EquiangularDistancePdf(
+								equiangularPivots_NM, ray, eqTNear, eqTFar, true, t_m );
 
 							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+							const MISWeights::LogDensity logDensity =
+								pLightSampler->EvaluateVolumeEmissionDistanceLogDensityNM(
+									*pMedium,ray,maxDist,bHit,&equiangularPivots_NM,
+									nm,t_m,true);
+							logCombinedPdf_NM = logDensity.hasSupport ?
+								logDensity.value : -RISE_INFINITY;
 							useExplicitThroughput_NM = true;
 						}
 						else
@@ -1044,12 +2417,13 @@ bool RayCaster::CastRayNM(
 			t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
 		}
 
-		if( equiangularZeroContrib_NM )
-		{
-			if( distance ) *distance = 0;
-			if( rrCompensation != 1.0 ) c = c * rrCompensation;
-			return false;
-		}
+			if( equiangularZeroContrib_NM )
+			{
+				c = additiveEmissionNM;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+				if( distance ) *distance = 0;
+				return c != 0.0;
+			}
 
 		if( scattered )
 		{
@@ -1060,6 +2434,55 @@ bool RayCaster::CastRayNM(
 			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( scatterPt, nm );
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, t_m, nm );
 			Scalar throughput = 0;
+			Scalar thermalEmission = 0.0;
+			if( pMedium->IsFireMedium() && coeff.sigma_t > 0.0 ) {
+				const Scalar epsilonThermal = pMedium->GetThermalEmissionNM( scatterPt, nm );
+				if( epsilonThermal != 0.0 ) {
+					if( useExplicitThroughput_NM ) {
+						const Scalar logPdfDt = pMedium->EvalLogDistancePdfNM(
+							ray, t_m, true, maxDist, nm );
+						const Scalar logTrDet = logPdfDt - log( coeff.sigma_t );
+						thermalEmission = epsilonThermal *
+							exp( logTrDet - logCombinedPdf_NM );
+					} else {
+						// Pure per-wavelength delta tracking: p=sigma_t*T,
+						// so epsilon*T/p cancels analytically before division.
+						thermalEmission = epsilonThermal / coeff.sigma_t;
+					}
+				}
+			}
+			if( thermalEmission != 0.0 &&
+				incomingVolumeSegmentState.competitionAvailable ) {
+				const Scalar logDistancePdf = useExplicitThroughput_NM ?
+					logCombinedPdf_NM : pMedium->EvalLogDistancePdfNM(
+						ray,t_m,true,maxDist,nm);
+				const MISWeights::LogDensity logPMarch =
+					MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+						incomingVolumeSegmentState,logDistancePdf,t_m);
+				const Scalar pV = pLightSampler ?
+					pLightSampler->VolumeEmissionPdf(*pMedium,scatterPt) : 0.0;
+				const MISWeights::LogDensity logPV = MISWeights::MakeLogDensity(pV);
+				thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+					logPMarch,logPV,
+					incomingVolumeSegmentState.competitionAvailable,
+					incomingVolumeSegmentState.continuationSingular);
+			}
+
+			// Score medium sources before recursion-depth and RR termination.
+			// Those gates suppress surface/scattering continuation, not the
+			// existence of this finite-event source sample.
+			if( rrContinuationRejected ) {
+				c = additiveEmissionNM + thermalEmission;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+				if( distance ) *distance = t_m;
+				return c != 0.0;
+			}
+			if( depthGateDeferredForEmission ) {
+				c = additiveEmissionNM + thermalEmission;
+				if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+				if( distance ) *distance = t_m;
+				return c != 0.0;
+			}
 
 			if( useExplicitThroughput_NM && combinedPdf_NM > 0 )
 			{
@@ -1074,19 +2497,77 @@ bool RayCaster::CastRayNM(
 				throughput = coeff.sigma_s / coeff.sigma_t;
 			}
 
+			static const unsigned int nMaxVolumeBounces = 64;
+			const bool volumeNEECompetes = !IsSSSContainmentActive() && pLightSampler &&
+				pLightSampler->GetVolumeEmissionMediumCount() > 0 &&
+				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+					*pMedium);
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+				0.0 : rc.guidingAlpha;
+			if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+				bCompetingMediumGuideAlphaNonzero.store(
+					true,std::memory_order_relaxed);
+			}
+#endif
+			const MediumContinuationAvailability mediumAvailability =
+				ResolveMediumContinuationAvailability(
+					rs.depth < MaxRecursions( rc ),rs.volumeBounces,nMaxVolumeBounces);
+
+			// A competing vertex acquires its exact continuation factory only
+			// after the closed exact-type preflight.  Preview-style unsupported
+			// vertices retain the legacy closure with volume NEE disabled.
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pMedium, scatterPt, nm, true, volumeNEECompetes );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+			const Scalar counterfactualRRSurvival =
+				PathTransportUtilities::RussianRouletteSurvivalProbability(
+					rs.depth > 0 ? rs.depth-1 : 0,
+					nMediumContinuationRRMinDepth,dMediumContinuationRRThreshold,
+					rs.importance*throughput,rs.importance);
+			if( volumeNEECompetes && pPhase && mediumAvailability.vertexAllowed ) {
+				if( counterfactualRRSurvival == 0.0 ) {
+					bCompetingMediumZeroSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				} else if( counterfactualRRSurvival == 1.0 ) {
+					bCompetingMediumUnitSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				} else {
+					bCompetingMediumIntermediateSurvivalObserved.store(
+						true,std::memory_order_relaxed);
+				}
+			}
+			VolumeEmissionVertexSample volumeVertexSample;
+			bool volumeEndpointAttempted = false;
+			Scalar volumeLd = 0.0;
+			if( volumeNEECompetes && pPhase ) {
+				pLightSampler->SampleVolumeEmissionVertex(
+					mediumSampler,volumeVertexSample);
+				volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
+				volumeLd = pLightSampler->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+					scatterPt,wo,*pPhase,mediumAvailability,
+					counterfactualRRSurvival,nm,volumeVertexSample,pMedium,
+					pMediumObject,&ior_stack);
+			}
+
 			// NEE at scatter point
+			// DL-185 -- see the RGB twin's comment above.
+			// DL-292 -- see the RGB twin's comment above.
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-				scatterPt, wo, pMedium, nm, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject );
+				scatterPt, wo, pMedium, pPhase, nm, *this, pLightSampler,
+				mediumSampler, rast, pMediumObject, rrContinuationCompensation,
+				&ior_stack, &ior_stack );
+			Ld += volumeLd;
 
 			// Phase-function continuation
-			static const unsigned int nMaxVolumeBounces = 64;
-			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			Scalar Li = 0;
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
-				rs.volumeBounces < nMaxVolumeBounces )
+			const bool marchAllowed = volumeNEECompetes ?
+				mediumAvailability.marchAllowed :
+				(rs.depth < MaxRecursions( rc ) &&
+					rs.volumeBounces < nMaxVolumeBounces);
+			if( pPhase && marchAllowed )
 			{
 				Scalar guidingMISWeight = 1.0;
 				Scalar effectivePdf = 0;
@@ -1096,8 +2577,9 @@ bool RayCaster::CastRayNM(
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Volume guiding (spectral): one-sample MIS
-				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-					rc.guidingAlpha > 0 &&
+				if( rc.pGuidingField &&
+					rc.pGuidingField->IsTrained() &&
+					volumeGuidingAlpha > 0 &&
 					rs.depth < rc.maxGuidingDepth )
 				{
 					static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandleNM;
@@ -1115,12 +2597,12 @@ bool RayCaster::CastRayNM(
 						}
 
 						const Scalar xiG = mediumSampler.Get1D();
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
-						{
-							// Save phase-sampled state in case guide fails
-							const Vector3 wi_phase = wi;
-							const Scalar phasePdf_phase = phasePdf;
-
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+					{
+						if( volumeNEECompetes ) {
+							nCompetingMediumGuideSampleCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
 							Scalar guidePdf = 0;
 							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
 							wi = rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
@@ -1128,122 +2610,228 @@ bool RayCaster::CastRayNM(
 							if( guidePdf > 0 )
 							{
 								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
 							}
-							else
-							{
-								// Degenerate guide sample — restore phase direction
-								wi = wi_phase;
-								phasePdf = phasePdf_phase;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, true );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 						else
 						{
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
-							if( guidePdf > 0 && phasePdf > 0 )
-							{
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
-								guidingMISWeight = phasePdf / combinedPdf;
-								effectivePdf = combinedPdf;
-							}
+							effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+								alpha, guidePdf, phasePdf, false );
+							guidingMISWeight = effectivePdf > 0 ? phasePdf / effectivePdf : 0;
 						}
 					}
 				}
 #endif // RISE_ENABLE_OPENPGL
 
-				const Ray scatterRay( scatterPt, wi );
+				if( PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) )
+				{
+					const Ray scatterRay( scatterPt, wi );
 
-				RAY_STATE rs2;
-				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * throughput * guidingMISWeight;
-				rs2.considerEmission = true;
-				rs2.type = rs.type;
-				rs2.volumeBounces = rs.volumeBounces + 1;
-				rs2.bsdfPdf = phasePdf;
+					RAY_STATE rs2;
+					rs2.depth = rs.depth + 1;
+					rs2.importance = rs.importance * throughput * guidingMISWeight;
+					rs2.considerEmission = true;
+					rs2.type = rs.type;
+					rs2.volumeBounces = rs.volumeBounces + 1;
+					// DL-73 (STRUCK, ruled NOT a debt) + DL-74 (this pass): NM
+					// sibling of the RGB volume-continuation note above -- the
+					// MIS-PARTNER density is deliberately the raw, un-combined
+					// `phasePdf`, matching env-NEE's
+					// `MediumScatterMaterial::Pdf` at the same vertex;
+					// substituting `combinedPdf` would double-apply the guiding
+					// correction (already folded into `rs2.importance` via
+					// `guidingMISWeight`) and break the w_bsdf + w_nee == 1
+					// partition.  The TRUE sampling density goes in `bsdfPdf`
+					// so the moment estimator divides by what the direction
+					// really came from (DL-74 P2-5).  See the RGB copy's
+					// comment for the full derivation.
+					rs2.bsdfMisPdf = phasePdf;
+					// DL-633: volume NEE excludes no object; an emitter this ray
+					// reaches is weighted by the light-table rule in either op.
+					rs2.pNEESelfObject = 0;
+					rs2.emitterHitFollowsLightTable = true;
+					rs2.bsdfPdf = effectivePdf;
+					// DL-72 (round 3, this pass): NM sibling of the RGB
+					// volume-continuation fix above -- same derivation
+					// (`IPhaseFunction::Pdf() == Evaluate()`, no separate
+					// cosine term for a volume vertex), same paired
+					// `AccumulateCount`. `rc.pOptimalMIS` is Pel-only at
+					// runtime (spectral renders never construct one), so this
+					// NM copy is a structural no-op in practice -- kept
+					// symmetric with the RGB copy per the audit-by-bug-pattern
+					// sibling rule rather than left to silently diverge if a
+					// future change ever does construct one for NM.
+					// DL-84 round 7 (the REALIZED-MOMENT convention): audited
+					// and UNCHANGED.  This file applies no Russian roulette of
+					// its own between the count above and the escape arm that
+					// accumulates the moment -- `RayCaster.cpp` contains no
+					// `EvaluateRussianRoulette` call at all -- so the quantity
+					// trained here already IS the realized one.  (The
+					// cast-level importance roulette at `CastRay`'s entry is a
+					// SEPARATE, whole-subpath survival applied to every
+					// technique below it alike; it is recorded as DL-148, not
+					// folded in here.)
+					rs2.bsdfTimesCos = RISEPel( phasePdf, phasePdf, phasePdf );
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+							rast.x, rast.y, kTechniqueBSDF );
+					}
 
-				Scalar hitDist = 0;
-				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
-					pRadianceMap, ior_stack );
+					Scalar continuationCompensation = 1.0;
+					bool continuationSurvived = true;
+					if( volumeNEECompetes && mediumAvailability.vertexAllowed &&
+						counterfactualRRSurvival < 1.0 ) {
+						continuationSurvived = rc.random.CanonicalRandom() <
+							counterfactualRRSurvival;
+						if( continuationSurvived && counterfactualRRSurvival > 0.0 ) {
+							continuationCompensation = 1.0/counterfactualRRSurvival;
+						}
+					}
+
+					Scalar hitDist = 0;
+					if( continuationSurvived ) {
+						const Scalar marchDirectionPdf =
+							mediumAvailability.vertexAllowed ?
+								phasePdf*counterfactualRRSurvival : phasePdf;
+						if( volumeNEECompetes ) {
+							const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+							const Scalar expectedReachPdf =
+								mediumAvailability.vertexAllowed ?
+									retainedPhasePdf*counterfactualRRSurvival :
+									retainedPhasePdf;
+							if( retainedPhasePdf != phasePdf ||
+								marchDirectionPdf != expectedReachPdf ) {
+								bCompetingMediumReachPdfMismatch.store(
+									true,std::memory_order_relaxed);
+							}
+						}
+						const VolumeEmissionSegmentState downstreamVolumeState(
+							volumeEndpointAttempted,false,
+							volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
+								&volumeVertexSample.Pivots() : 0,
+							marchDirectionPdf,0.0,0.0);
+						const VolumeEmissionSegmentStateScope volumeStateScope(
+							downstreamVolumeState);
+						CastRayNMImpl_( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
+							pRadianceMap, ior_stack, false,
+							volumeNEECompetes,
+							volumeNEECompetes && !mediumAvailability.vertexAllowed );
+						Li *= continuationCompensation;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Record volume training sample (spectral path).
 				// Use effectivePdf (= combinedPdf when guiding was applied)
 				// so that weight = luminance / pdf matches the actual
 				// sampling distribution.
-				if( rc.pGuidingField &&
-					rc.pGuidingField->IsCollectingTrainingSamples() &&
-					effectivePdf > NEARZERO )
-				{
-					if( Li > 0 )
+					if( !volumeNEECompetes && rc.pGuidingField &&
+						rc.pGuidingField->IsCollectingTrainingSamples() &&
+						effectivePdf > NEARZERO )
 					{
-						rc.pGuidingField->AddVolumeSample(
-							scatterPt, wi,
-							hitDist > 0 ? hitDist : 1.0,
-							effectivePdf,
-							Li,
-							false );
+						if( Li > 0 )
+						{
+							rc.pGuidingField->AddVolumeSample(
+								scatterPt, wi,
+								hitDist > 0 ? hitDist : 1.0,
+								effectivePdf,
+								Li,
+								false );
+						}
+						else
+						{
+							rc.pGuidingField->AddZeroValueVolumeSample(
+								scatterPt, wi );
+						}
 					}
-					else
-					{
-						rc.pGuidingField->AddZeroValueVolumeSample(
-							scatterPt, wi );
-					}
-				}
 #endif // RISE_ENABLE_OPENPGL
 
-				Li = Li * guidingMISWeight;
+					Li = Li * guidingMISWeight;
+				}
 			}
 
-			c = throughput * (Ld + Li);
-
-			// Volumetric emission: use effective optical depth
-			if( coeff.emission > 0 )
-			{
-				if( Tr < 1.0 - 1e-10 )
-				{
-					const Scalar tau = -log( fmax( Tr, 1e-30 ) );
-					c += coeff.emission * (1.0 - Tr) * t_m / tau;
-				}
-				else
-				{
-					c += coeff.emission * t_m;
-				}
+			c = additiveEmissionNM + thermalEmission +
+				rrContinuationCompensation * throughput * (Ld + Li);
+			if( sameSegmentMediumSource ) {
+				*sameSegmentMediumSource = additiveEmissionNM + thermalEmission;
 			}
 
 			if( distance ) {
 				*distance = t_m;
 			}
 
-			if( rrCompensation != 1.0 ) {
-				c = c * rrCompensation;
-			}
-
 			return true;
 		}
-		// Non-scatter path: accumulate volumetric emission along segment
-		if( !scattered )
-		{
-			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
-			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
-			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( midPt, nm );
-			if( coeff.emission > 0 )
-			{
-				const Scalar Tr_seg = pMedium->EvalTransmittanceNM( ray, segDist, nm );
-				if( Tr_seg < 1.0 - 1e-10 )
-				{
-					const Scalar tau = -log( fmax( Tr_seg, 1e-30 ) );
-					c += coeff.emission * (1.0 - Tr_seg) * segDist / tau;
-				}
-				else
-				{
-					c += coeff.emission * segDist;
-				}
+	}
+
+	if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) )
+	{
+		const bool downstreamSourceOnly = sourceOnlySegment ||
+			depthGateDeferredForEmission || rrContinuationRejected;
+		IORStack nextStack( ior_stack );
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				ray, ri.geometric.surfaceRange );
+
+			Scalar survival = 1.0;
+			Scalar noEventProbability = 1.0;
+			if( pMedium ) {
+				noEventProbability = noScatterPdfScale_NM *
+					pMedium->EvalDistancePdfNM(
+						ray, ri.geometric.surfaceRange, false,
+						ri.geometric.surfaceRange, nm );
+				survival = PathTransportUtilities::NMNoEventSurvivalWeight(
+					noScatterPdfScale_NM);
 			}
-		}
+			const VolumeEmissionSegmentState downstreamVolumeSegmentState =
+				AdvanceVolumeEmissionSegmentState(
+					incomingVolumeSegmentState,noEventProbability,
+					ri.geometric.surfaceRange);
+			Scalar downstream = 0.0;
+			Scalar downstreamSameSegmentSource = 0.0;
+			Scalar downstreamDistance = 0.0;
+			bool downstreamHit = false;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(
+					downstreamVolumeSegmentState);
+				downstreamHit = CastRayNMImpl_(
+					rc, rast, nextRay, downstream, rs, nm, &downstreamDistance,
+					pRadianceMap, nextStack, true, downstreamSourceOnly,
+					downstreamSourceOnly, &downstreamSameSegmentSource );
+			}
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+			const Scalar localSameSegmentSource = additiveEmissionNM +
+				survival * downstreamSameSegmentSource;
+			c = localSameSegmentSource +
+				rrContinuationCompensation * survival *
+					( downstream - downstreamSameSegmentSource );
+			if( sameSegmentMediumSource ) {
+				*sameSegmentMediumSource = localSameSegmentSource;
+			}
+			if( distance ) {
+				*distance = downstreamDistance >= RISE_INFINITY
+					? RISE_INFINITY
+					: ri.geometric.surfaceRange + downstreamDistance;
+			}
+			return downstreamHit || additiveEmissionNM != 0.0;
+	}
+
+	if( rrContinuationRejected ) {
+		c = additiveEmissionNM;
+		if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+		if( distance ) *distance = 0.0;
+		return additiveEmissionNM != 0.0;
+	}
+
+	if( depthGateDeferredForEmission ) {
+		c = additiveEmissionNM;
+		if( sameSegmentMediumSource ) *sameSegmentMediumSource = c;
+		if( distance ) *distance = 0.0;
+		return additiveEmissionNM != 0.0;
 	}
 
 	if( bHit ) {
@@ -1253,19 +2841,48 @@ bool RayCaster::CastRayNM(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
 
-		// Apply shade by calling the appropriate shader
-		if( ri.pShader ) {
-			c = ri.pShader->ShadeNM( rc, ri, *this, rs, nm, ior_stack );
-		} else {
-			c = pDefaultShader.ShadeNM( rc, ri, *this, rs, nm, ior_stack );
+		// DL-292 -- see the RGB CastRay's identical site.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		hitStack.SetCurrentObject( ri.pObject );
+
+		// DL-185 -- see the RGB CastRay's identical call site above.
+		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
+		rsForShade.castRRCompensation = rrContinuationCompensation;
+
+		// A non-null interface ends the originating medium-march strategy.
+		// Recursive surface continuations start a fresh family; carrying the
+		// phase density, pivots, or competition bit across this boundary would
+		// assign support to a march that the straight volume connection cannot
+		// follow.
+		{
+			const VolumeEmissionSegmentState resetVolumeState;
+			const VolumeEmissionSegmentStateScope volumeStateScope(
+				resetVolumeState);
+			// Apply shade by calling the appropriate shader
+			c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, hitStack );
+		}
+		if( gradedScale != Scalar( 1 ) ) {
+			c = c * gradedScale;
 		}
 
-		// Apply medium transmittance to surface shading result
+		// Scalar NM analog no-scatter survival: T_det is already carried by the
+		// sampled no-event atom, so the physical T_det cancels exactly.  Only the
+		// distance-strategy selection mass remains.
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
 		}
 
 		if( distance ) {
@@ -1276,54 +2893,47 @@ bool RayCaster::CastRayNM(
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
 
+		// Exact scalar NM no-scatter cancellation; see the surface-hit case.
+		// DL-53: see RayCasterEnvEscapeMISWeight's doc / the RGB CastRay
+		// call site above -- apply the env-NEE complementary weight ONLY
+		// when this explicit map is pointer-identical to the scene's
+		// global map (the SSS/RW-SSS continuation case); a genuinely
+		// distinct per-object override map keeps full weight.
+		// DL-124: apply the medium's escape-segment survival weight
+		// (Tr / pSurvival) BEFORE the MIS-training call below, not after
+		// -- see the RGB CastRay reorder above for the derivation; `c`'s
+		// final value is unchanged (multiplication is commutative), but
+		// the training call now sees the medium-attenuated radiance.
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
+		}
+
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			// DL-148: fold this cast's own importance-RR compensation
+			// into the training argument only -- see the RGB CastRay
+			// call site's comment for the derivation.
+			c = c * RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( c, c, c ) * rrContinuationCompensation, /*trainOptimalMIS=*/true );
 		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE (spectral)
-		if( pLightSampler && rs.bsdfPdf > 0 )
-		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					// Optimal MIS training (spectral env BSDF-hit): use
-					// full integrand Le * BSDF * cos.  For NM, all channels
-					// of bsdfTimesCos carry the same scalar value.
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar fVal = c * rs.bsdfTimesCos.r;
-						const Scalar f2 = fVal * fVal;
-						if( f2 > 0 && rs.bsdfPdf > 0 )
-						{
-							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-								rast.x, rast.y,
-								f2, rs.bsdfPdf, kTechniqueBSDF );
-						}
-					}
-
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					c = c * w_bsdf;
-				}
-			}
-		}
-
+		// DL-124: same reorder as the explicit-map branch above.  Exact
+		// scalar NM no-scatter cancellation; see the surface-hit case.
 		if( pMedium ) {
-			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+			c = c * PathTransportUtilities::NMNoEventSurvivalWeight(
+				noScatterPdfScale_NM);
 		}
+
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// (spectral; shared with the explicit-map branch above -- see DL-53).
+		// DL-148: see the explicit-map branch's comment above.
+		c = c * RayCasterEnvEscapeMISWeight(
+			pLightSampler, rc, rast, ray, rs,
+			RISEPel( c, c, c ) * rrContinuationCompensation, /*trainOptimalMIS=*/true );
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
@@ -1332,13 +2942,18 @@ bool RayCaster::CastRayNM(
 		bReturn = bConsiderRMapAsBackground;
 	}
 
-	// Apply RR compensation to the returned radiance so the caller's
-	// estimator (throughput * c) remains unbiased.
-	if( rrCompensation != 1.0 ) {
-		c = c * rrCompensation;
+	// Roulette applies only to surface/background continuation.  The arbitrary
+	// additive source is an independent full-segment estimate and is neither
+	// gated nor reweighted by the continuation decision.
+	if( rrContinuationCompensation != 1.0 ) {
+		c = c * rrContinuationCompensation;
+	}
+	c += additiveEmissionNM;
+	if( sameSegmentMediumSource ) {
+		*sameSegmentMediumSource = additiveEmissionNM;
 	}
 
-	return bReturn;
+	return bReturn || additiveEmissionNM != 0.0;
 }
 
 bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
@@ -1347,12 +2962,642 @@ bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
 		GlobalLog()->PrintSourceError( "RayCaster::CastRay_IntersectionOnly:: No scene", __FILE__, __LINE__ );
 		return false;
 	}
-	
-	return pScene->GetObjects()->IntersectShadowRay( ray, dHowFar, true, true );
+
+	// Walk closest hits so an exact NullBoundaryMaterial is transparent by
+	// class even when its object authors casts_shadows=TRUE.  Ordinary objects
+	// retain the historical casts_shadows behavior.  The absolute-parameter
+	// progress rule has no crossing cap and cannot silently darken a valid
+	// chain of null enclosures.
+	Scalar segmentStart = 0.0;
+	for( ;; )
+	{
+		if( !(segmentStart < dHowFar) ) return false;
+		const Ray segmentRay( ray.PointAtLength( segmentStart ), ray.Dir() );
+		RayIntersection ri( segmentRay, nullRasterizerState );
+		ri.geometric.minimumSurfaceRange =
+			std::nextafter( segmentStart, dHowFar ) - segmentStart;
+		ri.geometric.bExactBoundaryOrigin = segmentStart > 0;
+		pScene->GetObjects()->IntersectRay( ri, true, true, true );
+		if( !ri.geometric.bHit || ri.geometric.surfaceRange >= dHowFar - segmentStart ) {
+			return false;
+		}
+
+		const Scalar boundary = segmentStart + ri.geometric.surfaceRange;
+		if( !std::isfinite( boundary ) || !(boundary > segmentStart) ) {
+			GlobalLog()->PrintEasyError(
+				"RayCaster::CastShadowRay: malformed or non-progressing boundary hit" );
+			return true;
+		}
+
+		if( !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pObject && ri.pObject->DoesCastShadows() ) {
+			return true;
+		}
+		segmentStart = boundary;
+	}
+}
+
+bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
+{
+	if( !pScene ) {
+		GlobalLog()->PrintSourceError( "RayCaster::CastOcclusionRay:: No scene", __FILE__, __LINE__ );
+		return false;
+	}
+
+	return pScene->GetObjects()->IntersectOcclusionRay( ray, dHowFar, true, true );
+}
+
+// ================================================================
+// CastShadowRayTransmittance — TRANSPARENT (Fresnel-attenuated)
+// shadow ray.
+//
+// Walks the shadow segment hit-by-hit.  At each interface that is a
+// PERFECT-SPECULAR TRANSMISSIVE DIELECTRIC, the ray passes STRAIGHT
+// through (no refractive bend) and the running transmittance is
+// multiplied by the per-interface Fresnel transmittance (1 - F) (and
+// the dielectric's per-channel transmittance tint, which is 1 for
+// clear glass).  Any other shadow-casting hit fully blocks (a hit on
+// an object that casts no shadow is stepped over -- see
+// WalkShadowSegment).
+//
+// APPROXIMATION — this is the industry-standard "transparent shadow"
+// shortcut (Arnold / RenderMan / Cycles `transparent` shadow path):
+//   * Propagation is STRAIGHT — refractive bending of the shadow ray
+//     is ignored, so the light's apparent position is not displaced.
+//   * Internal MULTI-BOUNCE (rays that would reflect inside the shell
+//     and re-emerge) is ignored; only the direct (1-F)-per-interface
+//     transmission is accounted for.
+//   * One REPRESENTATIVE eta per interface is used (see below).
+// It is the only PT estimator of a DELTA light (omni / spot /
+// directional) seen through a clear dielectric -- no BSDF-sampled
+// continuation can hit a delta light -- so for those lights it lights a
+// surface under a thin transparent shell (e.g. a watch dial under a
+// sapphire crystal) that binary NEE would leave black.  DL-344: it is
+// NOT used for area / env lights (the continuation already reaches them
+// through the shell at MIS weight 1, so it would count the path twice),
+// nor at a point where SMS was evaluated for the same light.  Used ONLY by the
+// unidirectional PT integrator; BDPT / VCM / MLT keep binary shadows.
+//
+// eta source:
+//   * NM path  (bNM == true):  the hero-wavelength IOR reported by
+//     IMaterial::GetSpecularInfoNM(...).ior — exact per-wavelength
+//     dispersion at the sampled wavelength.
+//   * RGB path (bNM == false): the scalar IOR reported by
+//     IMaterial::GetSpecularInfo(...).ior, which is the v[0] channel
+//     of the material's IOR painter — the same representative scalar a
+//     primary RGB ray uses for its (non-dispersive) Fresnel split.
+//
+// The entering-vs-exiting side is taken from the sign of
+// dot(rayDir, geometricNormal): entering air->medium uses
+// (Ni=outerIOR, Nt=mediumIOR); exiting medium->air uses the swap.
+// A local IOR stack is maintained so NESTED dielectrics (e.g. a
+// double-domed crystal, or glass-in-glass) get the right relative eta
+// at each crossing.  Total internal reflection (no real transmitted
+// direction) blocks that path (transmittance -> 0 -> fully occluded).
+//
+// DL-05: the same walk also carries the EXACT delta pass-through of a
+// `transmission thin` weave's gap (see WalkShadowSegment and
+// CastShadowRayAuto) -- but only for a delta light's shadow ray, which
+// this entry point (the opt-in dielectric walk, called with no light
+// kind) is not told about, so it keeps the dielectric-only behaviour.
+// ================================================================
+bool RayCaster::CastShadowRayTransmittance(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance
+	) const
+{
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false, 0, 0 );
+}
+
+// ================================================================
+// WalkShadowSegment -- the shared hit-by-hit shadow walk.
+//
+// @a bDielectrics: pass a CLEAR dielectric straight through at its
+//   per-interface Fresnel transmittance (the `transparent_shadows`
+//   approximation documented above).
+// @a bDeltaPassThrough (DL-05): pass a material reporting
+//   IMaterial::HasDeltaPassThrough (a thin weave's gap) at
+//   ISPF::DeltaPassThroughTransmittance{,NM}.  EXACT, unlike the
+//   dielectric case: the gap lobe continues along exactly the incoming
+//   direction, so the straight shadow segment IS the path the SPF's gap
+//   draw carries, and its expectation is the factor applied here.
+//   Symmetric in direction (the gap is the same aperture from either
+//   side, and every forwarding wrapper's attenuation is a product of
+//   two identical single-crossing arms), so walking from the shading
+//   point toward the light prices the light-to-shading-point transport.
+//   No sign-sensitive decision is made, so the DL-70 ray-relative
+//   normal question does not arise; no IOR stack change either (the gap
+//   ray carries none -- a thin weave has no interior).
+//
+// Any other hit that CASTS SHADOWS blocks.  A hit on an object with
+// DoesCastShadows() false is stepped over with no attenuation -- the
+// binary CastShadowRay (IntersectShadowRay) ignores such objects, and a
+// walk entered because that binary test reported a DIFFERENT occluder
+// must not then block on one it skipped.
+// ================================================================
+bool RayCaster::WalkShadowSegment(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance,
+	const bool bDielectrics,
+	const bool bDeltaPassThrough,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd,
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+	unsigned int* pPassThroughCrossings,
+	Scalar* pPassThroughProb
+	) const
+{
+	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	if( pPassThroughCrossings ) {
+		*pPassThroughCrossings = 0;
+	}
+	if( pPassThroughProb ) {
+		*pPassThroughProb = 1;
+	}
+
+	// DL-292: every "reached the light" return goes through here, so the
+	// graded-index track (if any) is priced up to the light point exactly
+	// when the segment is NOT occluded.
+	auto reachedLight = [pGradedTrack, pSegmentEnd]() -> bool {
+		if( pGradedTrack && pSegmentEnd ) {
+			pGradedTrack->Finish( *pSegmentEnd );
+		}
+		return false;
+	};
+
+	if( !pScene ) {
+		GlobalLog()->PrintSourceError( "RayCaster::WalkShadowSegment:: No scene", __FILE__, __LINE__ );
+		// Conservative: treat as occluded so we never leak unshadowed light.
+		return true;
+	}
+
+	// Cap on interface crossings; past this, conservatively report
+	// blocked rather than spend unbounded work on a pathological stack
+	// of nested dielectrics.
+	// (counts interface CROSSINGS, not objects: a meniscus shell is 2,
+	// nested glass-in-glass 4; 32 leaves headroom before the safe-but-
+	// darkening conservative block kicks in.)  The last iteration is the
+	// reach-the-light check, so at most kShadowWalkMaxCrossings (31)
+	// surfaces are crossed (IRayCaster.h; DL-330 reads the same pair).
+	static const unsigned int kMaxCrossings = kShadowWalkMaxIterations;
+
+	// Small step-off so the next IntersectRay does not re-hit the
+	// surface we just crossed.  Matches the order of magnitude of the
+	// shadow-ray end epsilon (dist - 0.001) used at the NEE call sites.
+	static const Scalar kStepEps = 1.0e-4;
+
+	const Vector3 dir = ray.Dir();
+
+	// Local IOR stack so nested dielectrics resolve the correct
+	// relative eta per crossing.  Starts in air (1.0); the
+	// GetSpecularInfo IOR-side logic uses containsCurrent() so we keep
+	// the stack's current-object pointer in sync as we cross.
+	IORStack ior_stack( 1.0 );
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() && pScene ) {
+		IORStackSeeding::SeedFromPoint( ior_stack, ray.origin, *pScene );
+	}
+
+	Point3 origin = ray.origin;
+	Scalar remaining = dHowFar;
+    Scalar sampledStart = 0;
+    const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : dHowFar;
+	// Fire: after an exact null-boundary transition the next (non-alpha)
+	// query starts exactly ON that boundary and rejects its zero-distance root.
+	bool rejectZeroDistanceBoundary = false;
+
+	for( unsigned int crossing = 0; crossing < kMaxCrossings; )
+	{
+		Ray segRay( origin, dir );
+		RayIntersection ri( segRay, nullRasterizerState );
+		ri.geometric.pCamera = pScene->GetCamera();
+		if (alphaSampler) {
+            ri = RayIntersection(ray, nullRasterizerState);
+            ri.geometric.pCamera = pScene->GetCamera();
+            pScene->GetObjects()->IntersectRaySampled(ri, *alphaSampler, true, true, false,
+                physicalEnd, true, boundaries, false, dHowFar, occlusionStart, sampledStart);
+        }
+        else {
+			if( rejectZeroDistanceBoundary ) {
+				ri.geometric.minimumSurfaceRange = 0.0;
+			}
+			pScene->GetObjects()->IntersectRay(
+				ri, true, true, rejectZeroDistanceBoundary );
+		}
+		rejectZeroDistanceBoundary = false;
+
+        if( !ri.geometric.bHit || ri.geometric.range >= (alphaSampler ? dHowFar : remaining) )
+		{
+			// Reached the light with no further occluder along the
+			// remaining segment — the accumulated transmittance is final.
+			return reachedLight();
+		}
+
+		// There is a hit strictly before the light.  Decide whether it
+		// is a perfect-specular transmissive dielectric we can pass
+		// through, a delta pass-through (DL-05), an object that casts no
+		// shadow, or an occluder that fully blocks.
+
+		// Scale-relative step-off max(kStepEps, range*1e-5): stays above
+		// floating-point hit-position error at any scene scale (a fixed
+		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
+		// covers small scenes.  Far below the thinnest real feature.
+		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
+		const Scalar advance = alphaSampler ? std::nextafter(ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range, RISE_INFINITY) :
+            ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+
+		// Fire: an exact null boundary is transparent to every shadow walk
+		// (pass-through-only included) independent of its casts_shadows flag;
+		// it changes only the walk's medium enclosure.  Without an alpha
+		// sampler the walk re-anchors EXACTLY on the boundary and rejects its
+		// zero-distance root; the alpha-sampled walk steps one ulp past it in
+		// original-ray coordinates, as for every other step-over here.
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, ior_stack );
+			if( alphaSampler ) {
+				origin = ray.PointAtLength(advance);
+				sampledStart = advance;
+				remaining = physicalEnd - advance;
+			} else {
+				const Scalar boundary = ri.geometric.surfaceRange;
+				origin = segRay.PointAtLength( boundary );
+				remaining -= boundary;
+				rejectZeroDistanceBoundary = true;
+			}
+			if( remaining <= 0.0 ) {
+				return reachedLight();
+			}
+			continue;
+		}
+
+		// Not a shadow caster: the binary test never saw it -- step over.
+		if( ri.pObject && !ri.pObject->DoesCastShadows() )
+		{
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
+			if( remaining <= 0.0 ) {
+				return reachedLight();
+			}
+			continue;
+		}
+
+		// DL-05: a non-bending delta pass-through (a thin weave's gap).
+		if( bDeltaPassThrough && ri.pMaterial && ri.pMaterial->HasDeltaPassThrough() )
+		{
+			const ISPF* pSPF = ri.pMaterial->GetSPF();
+			if( !pSPF ) {
+				transmittance = RISEPel( 0, 0, 0 );
+				return true;
+			}
+			// The material sees the hit exactly as PT/BDPT shade it: the
+			// intersection modifier (bump / relief) is applied first.
+			if( ri.pModifier ) {
+				ri.pModifier->Modify( ri.geometric );
+			}
+			if( bNM ) {
+				const Scalar t = pSPF->DeltaPassThroughTransmittanceNM( ri.geometric, nm );
+				transmittance = transmittance * t;
+				if( pPassThroughProb ) {
+					*pPassThroughProb *= t;
+				}
+			} else {
+				const RISEPel t = pSPF->DeltaPassThroughTransmittance( ri.geometric );
+				transmittance = transmittance * t;
+				if( pPassThroughProb ) {
+					*pPassThroughProb *= ColorMath::MaxValue( t );
+				}
+			}
+			if( pPassThroughCrossings ) {
+				( *pPassThroughCrossings )++;
+			}
+			if( !( ColorMath::MaxValue( transmittance ) > NEARZERO ) )
+			{
+				transmittance = RISEPel( 0, 0, 0 );
+				return true;
+			}
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
+			if( remaining <= 0.0 ) {
+				return reachedLight();
+			}
+			continue;
+		}
+
+		if( !bDielectrics )
+		{
+			// Pass-through-only walk: anything else blocks.
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		ior_stack.SetCurrentObject( ri.pObject );
+
+		SpecularInfo info;
+		if( ri.pMaterial )
+		{
+			info = bNM
+				? ri.pMaterial->GetSpecularInfoNM( ri.geometric, ior_stack, nm )
+				: ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
+		}
+
+		// Capability test.  Only a CLEAR transmissive dielectric boundary
+		// (light enters a NON-scattering medium and exits the far side) may
+		// pass a shadow ray straight through.  info.clearTransmission is set
+		// by DielectricSPF / PerfectRefractorSPF and index-matched rough
+		// dielectric interfaces. It is false for the
+		// default IMaterial/ISPF (valid=false: opaque/diffuse/rough), for
+		// pure mirrors (canRefract=false), for PolishedSPF (a coat over a
+		// substrate that refracted light hits -> must block), and for smooth
+		// SubSurface/SSS materials (isSpecular && canRefract are true for the
+		// boundary, but the volume behind it scatters -> must block, NOT pass
+		// with bare Fresnel).  The clearTransmission gate closes that
+		// SSS/coat false-positive that isSpecular && canRefract alone allowed.
+		const bool bTransmissiveDielectric =
+			info.valid && info.isSpecular && info.canRefract && info.clearTransmission;
+
+		if( !bTransmissiveDielectric )
+		{
+			// Opaque / diffuse / rough / mirror occluder — fully blocks.
+			return true;
+		}
+
+		// --- Per-interface Fresnel transmittance (straight-through) ---
+		//
+		// cosI is measured against the GEOMETRIC normal.  Entering when
+		// the ray travels into the surface (dot < 0), exiting otherwise.
+		//
+		// DL-70: against the TRUE, ray-INDEPENDENT geometric normal --
+		// `UnflippedGeomNormal()`, the same recovery this file's own
+		// `trueGeomFacing` self-hit classifier already used.  A
+		// double-sided mesh (and ClippedPlane / BezierPatch on a
+		// back-face hit) reports a `vGeomNormal` that opposes the ray at
+		// EVERY crossing, so the raw dot read "entering" on a genuine
+		// EXIT face too and the (Ni, Nt) pair below became glass->glass
+		// (matched indices, F = 0, T = 1) instead of glass->air: a
+		// double-sided pane transmitted ONE interface's Fresnel instead
+		// of two, and the IOR stack grew a second push instead of
+		// popping.  Note `fresnelNormal` below is unaffected either way
+		// (the two spellings agree on it by construction); only the
+		// (Ni, Nt) selection and the stack update were wrong.  The
+		// recovery is a no-op on every geometry that does not flip.
+		//
+		// DL-70 P3-g: deliberately NOT a `HasTrueGeomSide()` skip here,
+		// unlike the two medium-stack walks (`LightSampler.cpp`,
+		// `BDPTIntegrator.cpp`).  Those walks skip a hair crossing
+		// because a medium push/pop is a STATE-MACHINE balance question
+		// with no answer for a 1-D curve.  This site instead computes a
+		// per-crossing Fresnel TRANSMITTANCE, and a hair strand carrying
+		// a `clearTransmission` dielectric material (unusual but not
+		// forbidden -- geometry and material are independently
+		// assignable) DOES have a real first interface: on the first
+		// crossing `UnflippedGeomNormal()` is the IDENTITY for a
+		// ray-derived normal (see the type's own contract), so
+		// `bEntering` reads correctly and the real air->fiber Fresnel
+		// loss is applied.  Skipping outright, as the medium walks do,
+		// would DROP that correct first-interface attenuation entirely
+		// -- a regression for the common single-fiber-crossing case, not
+		// an improvement.  The residual imprecision is on the SECOND (and
+		// any later) crossing of the same or another fiber: the
+		// ray-derived normal still opposes the ray there too, so
+		// `bEntering` again reads "entering" instead of alternating, Ni
+		// and Nt both read the fiber's own IOR (matched, F = 0, T = 1),
+		// and the IOR stack gets an extra unpaired push per fiber instead
+		// of a pop.  This under-attenuates the true exit interface (which
+		// should also lose some light to Fresnel) but is benign in the
+		// sense that it introduces no negative/NaN/divide-by-zero and the
+		// dominant, physically real entry loss is still applied; hair
+		// scenes dense enough in transmissive fibers to grow the IOR
+		// stack toward its capacity are not a case this engine's fur/hair
+		// materials (which do not set `clearTransmission`) produce.
+		const Vector3 geomN = ri.geometric.UnflippedGeomNormal();
+		const Scalar cosRaw = Vector3Ops::Dot( dir, geomN );
+		const bool bEntering = ( cosRaw < 0.0 );
+
+		const Scalar mediumIOR = info.ior > NEARZERO ? info.ior : Scalar(1.0);
+
+		// Relative IORs for this crossing.  On entry: outside -> medium;
+		// on exit: medium -> outside (outside taken from the stack just
+		// below the current object, falling back to air).
+		Scalar Ni, Nt;
+		// DL-345: a PROVABLY OPEN sheet is crossed by its face (the sign test
+		// above, which this walk already used) AND its far side is resolved
+		// the way the transmissive SPFs resolve it -- an unpushed exit pops
+		// the sibling sheet the walk entered a slab through unless that
+		// object encloses the crossing (IORStackSeeding::
+		// ResolveOpenSheetCrossing).  `openSheetStack` is the stack after
+		// the crossing, committed below.
+		std::unique_ptr<IORStack> openSheetStack;
+		if( ri.geometric.bProvablyNoInterior ) {
+			openSheetStack.reset( new IORStack( ior_stack ) );
+			const IORStackSeeding::OpenSheetCrossing c =
+				IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, mediumIOR, *openSheetStack, 0, bNM ? nm : 0 );
+			Ni = c.etaFrom;
+			Nt = c.etaTo;
+		}
+		else if( bEntering )
+		{
+			Ni = ior_stack.top();		// current outside medium (air, or an enclosing dielectric)
+			Nt = mediumIOR;
+		}
+		else
+		{
+			Ni = mediumIOR;
+			// Outside IOR after we leave this medium: peek the stack with
+			// the current object popped.  Guard the pop on containsCurrent()
+			// so a shadow ray that ORIGINATES inside a dielectric (the
+			// entry face was never crossed by this walk) cleanly reads air
+			// as the outside medium instead of logging a spurious
+			// underflow warning.
+			IORStack peek( ior_stack );
+			if( peek.containsCurrent() ) {
+				peek.pop();
+			}
+			Nt = peek.top();
+		}
+
+		// Straight-through Fresnel: compute the would-be refracted
+		// direction (Snell) purely to obtain cos(theta_t) for the
+		// unpolarized dielectric reflectance.  TIR (no real transmitted
+		// direction) means the light cannot pass straight through this
+		// interface — block it.
+		const Vector3 fresnelNormal = bEntering ? geomN : -geomN;
+		Vector3 vRefr = dir;
+		Scalar F;
+		if( Optics::CalculateRefractedRay( fresnelNormal, Ni, Nt, vRefr ) )
+		{
+			F = Optics::CalculateDielectricReflectance( dir, vRefr, fresnelNormal, Ni, Nt );
+		}
+		else
+		{
+			// Total internal reflection: no transmitted path.
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		const Scalar T = 1.0 - F;
+		if( T <= 0.0 )
+		{
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		// Per-interface Fresnel transmittance T = 1 - F only.  We do NOT
+		// fold the dielectric's tau tint here: the BSDF path applies tau as
+		// Beer-Lambert pow(tau, in-medium-distance), whereas a flat per-
+		// interface tau would be applied twice (entry + exit) with no path-
+		// length term -- wrong for tinted glass and inconsistent between the
+		// RGB and NM paths.  Matching Arnold / RenderMan / Cycles transparent
+		// shadows, attenuate by Fresnel only (exact for clear glass, tau=1);
+		// colored-glass shadow tint is a documented non-goal.  RGB == NM.
+		transmittance = transmittance * T;
+
+		// Early-out once the segment is effectively opaque to avoid
+		// pointless further intersection work.
+		if( ColorMath::MaxValue( transmittance ) <= NEARZERO )
+		{
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		// Maintain the IOR stack across the crossing so the next
+		// interface sees the correct enclosing medium.  The exit pop is
+		// guarded on containsCurrent() for the originates-inside-a-
+		// dielectric case (see the exit-peek note above).
+		if( openSheetStack ) {
+			ior_stack = *openSheetStack;
+		} else if( bEntering ) {
+			ior_stack.push( mediumIOR );
+		} else if( ior_stack.containsCurrent() ) {
+			ior_stack.pop();
+		}
+
+		// DL-292: mirror this crossing onto the graded-index track, which
+		// starts from the SHADING POINT's walk stack (this walk's own
+		// Fresnel stack starts in air, deliberately -- see above -- so it
+		// cannot say which medium the light is in).  A weave gap or a
+		// non-shadow-caster above is not a crossing and does not reach
+		// here.
+		if( pGradedTrack ) {
+			pGradedTrack->Crossing( ri.geometric.ptIntersection, ri.pObject, bEntering, mediumIOR );
+		}
+
+		// Advance past this interface and continue toward the light.
+		// Step the origin to the hit point plus a small epsilon along
+		// the (unchanged) travel direction (`advance`, computed above);
+		// shrink the remaining range accordingly.
+		origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+        sampledStart = advance;
+        remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
+
+		if( remaining <= 0.0 )
+		{
+			// Stepped at or past the light — nothing more occludes.
+			return reachedLight();
+		}
+		++crossing;
+	}
+
+	// Crossing cap reached — conservatively report blocked.
+	return true;
+}
+
+// ================================================================
+// CastShadowRayAuto — flag-aware NEE shadow occlusion.
+//
+// One source of truth for "shadow test that honors transparent_shadows":
+// when the flag is on AND the caller is a DELTA light (DL-344), walk the
+// segment with the Fresnel-transmittance test (clear dielectrics attenuate
+// rather than block); otherwise the binary test.
+// Used by BOTH the LightSampler NEE evaluators (omni / spot / area) and the
+// directional / ambient Step-1 lights, so the flag applies uniformly across
+// light types.
+//
+// DL-05: also the one place a DELTA light's shadow ray is let through a
+// non-bending delta pass-through (a thin weave's gap) -- see the header
+// comment on CastShadowRayAuto for why delta lights only, and
+// docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.  It is geometry-agnostic: it forwards to the same closest-hit
+// traversal that analytic primitives and SDFs both use, so primitive and SDF
+// dielectrics occlude (flag off) or transmit (flag on) identically.
+// ================================================================
+bool RayCaster::CastShadowRayAuto(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance,
+	const bool bDeltaLight,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd,
+	const bool bSMSCoversLight
+	) const
+{
+	// DL-05: may this shadow ray see through a delta pass-through?  Only
+	// a DELTA light's (no BSDF-sampled strategy can ever reach it, so this
+	// ray is the path's sole estimator), only when the scene has such a
+	// material at all (a cost gate), and not while a radiance-carrying
+	// photon map exists: the legacy caustic / global / translucent gather
+	// ops already estimate light-through-a-delta-lobe transport (a gap
+	// ray is `eRayRefraction`, which the caustic tracer follows), so
+	// adding it here too would count it twice in those chains.
+	const bool bPassThrough = bDeltaLight && bSceneHasDeltaPassThrough && pScene &&
+		!pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
+		!pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
+		!pScene->GetGlobalSpectralMap();
+
+	// DL-344: the `transparent_shadows` dielectric walk, like DL-05's
+	// pass-through, sees through only for a DELTA light.  An area or env
+	// light is already reached THROUGH a clear dielectric by PT's
+	// BSDF-sampled continuation at MIS weight 1 (its partner is reset at
+	// the delta vertex), so letting this arm through as well counts the
+	// path twice (an index-1.0 box read 1.14x open air, an area emitter
+	// 1.98x).  Where SMS was evaluated at the SAME point for this light
+	// (PT's PART-2 surface NEE with a manifold solver; LightSampler's delta
+	// arm says so), SMS estimates its light through the caster and the walk
+	// is off for this ray; everywhere else -- volume in-scattering, the
+	// BSSRDF entry NEE, a directional light SMS never samples -- the walk is
+	// the light's only estimator.  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
+	const bool bDielectrics = DielectricShadowWalk( bDeltaLight, bSMSCoversLight );
+	if( bDielectrics ) {
+		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
+	}
+	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	// The binary any-hit test first: a clear segment costs exactly what it
+	// always did.
+	if( !CastShadowRay( ray, dHowFar ) ) {
+		return false;
+	}
+	if( !bPassThrough ) {
+		return true;
+	}
+	// Something blocks.  If anything OTHER than a pass-through surface
+	// does, the answer is fully occluded -- one more any-hit traversal,
+	// not a closest-hit walk.  Only a segment blocked by pass-through
+	// surfaces alone reaches the walk that multiplies their
+	// transmittances (and there every hit it finds is one of them, up to
+	// the walk's own step-over of non-shadow-casters).
+	if( pScene->GetObjects()->IntersectShadowRayOpaque( ray, dHowFar, true, true ) ) {
+		transmittance = RISEPel( 0, 0, 0 );
+		return true;
+	}
+	// DL-292: a clear binary test above returned WITHOUT a walk, which
+	// leaves the track un-Finish()ed -- the caller then prices the
+	// crossing-free segment with ConnectionScaleToPoint.
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true, pGradedTrack, pSegmentEnd );
 }
 
 void RayCaster::SetRISCandidates( const unsigned int M )
 {
+	// Retain so a same-pointer sampler rebuild (#2b(a)) re-applies it; see
+	// iPendingRISCandidates.
+	iPendingRISCandidates = (int)M;
 	if( pLightSampler )
 	{
 		pLightSampler->SetRISCandidates( M );
@@ -1377,6 +3622,193 @@ void RayCaster::SetUseLightBVH( const bool enable )
 	}
 }
 
+namespace
+{
+	// GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"): collects
+	// every enumerated name into a ", "-joined, quoted list for an honest
+	// "unresolved name" error -- same shape as AgentSession's `view`
+	// resolution NameCollector.
+	struct NameJoinCollector : public IEnumCallback<const char*>
+	{
+		std::string* out;
+		bool operator()( const char* const& n ) override
+		{
+			if( !out->empty() ) *out += ", ";
+			*out += "\"";
+			*out += ( n ? n : "" );
+			*out += "\"";
+			return true;
+		}
+	};
+}
+
+bool RayCaster::SetSoloLightByName( const char* name, std::string* pAvailableNames )
+{
+	if( !name || !*name )
+	{
+		ClearSoloLight();
+		return true;
+	}
+
+	if( !pScene )
+	{
+		if( pAvailableNames ) *pAvailableNames = "";
+		return false;
+	}
+
+	// Try an explicit (non-mesh) light first -- ILightManager::GetItem is
+	// an exact-name lookup, so any match (zero- or nonzero-exitance) wins
+	// outright.
+	if( const ILightManager* pLightMgr = pScene->GetLights() )
+	{
+		if( ILightPriv* pLight = pLightMgr->GetItem( name ) )
+		{
+			iPendingSoloKind = 1;
+			pendingSoloLight = pLight;
+			pendingSoloLuminary = 0;
+			if( pLightSampler )
+			{
+				pLightSampler->SetSoloLight( pendingSoloLight );
+			}
+			return true;
+		}
+	}
+
+	// Fall back to a named mesh object whose material is emissive (a
+	// luminary).  A named object that exists but is NOT emissive falls
+	// through to the "unresolved" branch below -- naming a non-light
+	// object is not a valid solo target, and silently treating it as one
+	// would render a scene with EVERY light off rather than the honest
+	// "unknown name" failure.
+	if( const IObjectManager* pObjMgr = pScene->GetObjects() )
+	{
+		if( IObjectPriv* pObj = pObjMgr->GetItem( name ) )
+		{
+			if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() )
+			{
+				iPendingSoloKind = 2;
+				pendingSoloLight = 0;
+				pendingSoloLuminary = pObj;
+				if( pLightSampler )
+				{
+					pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+				}
+				return true;
+			}
+		}
+	}
+
+	// Reserved name: the ENVIRONMENT is a light source, and light solo's
+	// correctness property is the partition identity
+	// solo(A) + solo(B) == all -- which is unstatable without a way to
+	// name the env half.  Resolved LAST, so an authored light or emissive
+	// object literally named "environment" always wins; only a scene that
+	// actually HAS a radiance map accepts it, so the name fails honestly
+	// (with the available list) on scenes where there is no environment to
+	// solo.
+	if( pScene->GetGlobalRadianceMap() && std::strcmp( name, "environment" ) == 0 )
+	{
+		iPendingSoloKind = 3;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = 0;
+		if( pLightSampler )
+		{
+			pLightSampler->SetSoloEnvironment();
+		}
+		return true;
+	}
+
+	// Unresolved: build the honest available-name list (every light name
+	// UNION every emissive object name, plus the reserved "environment"
+	// when the scene has a radiance map) for the caller's error message.
+	if( pAvailableNames )
+	{
+		pAvailableNames->clear();
+		NameJoinCollector collector;
+		collector.out = pAvailableNames;
+		if( const ILightManager* pLightMgr = pScene->GetLights() )
+		{
+			pLightMgr->EnumerateItemNames( collector );
+		}
+		if( const IObjectManager* pObjMgr = pScene->GetObjects() )
+		{
+			struct EmissiveNameCollector : public IEnumCallback<const char*>
+			{
+				const IObjectManager* pObjMgr;
+				std::string* out;
+				bool operator()( const char* const& n ) override
+				{
+					if( IObjectPriv* pObj = pObjMgr->GetItem( n ) )
+					{
+						if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() )
+						{
+							if( !out->empty() ) *out += ", ";
+							*out += "\"";
+							*out += ( n ? n : "" );
+							*out += "\"";
+						}
+					}
+					return true;
+				}
+			} emissiveCollector;
+			emissiveCollector.pObjMgr = pObjMgr;
+			emissiveCollector.out = pAvailableNames;
+			pObjMgr->EnumerateItemNames( emissiveCollector );
+		}
+		if( pScene->GetGlobalRadianceMap() )
+		{
+			if( !pAvailableNames->empty() ) *pAvailableNames += ", ";
+			*pAvailableNames += "\"environment\"";
+		}
+	}
+
+	return false;
+}
+
+void RayCaster::ClearSoloLight()
+{
+	iPendingSoloKind = 0;
+	pendingSoloLight = 0;
+	pendingSoloLuminary = 0;
+	if( pLightSampler )
+	{
+		pLightSampler->ClearSolo();
+	}
+}
+
+// review-p2d P3-5: restore a snapshot taken by CaptureSoloState.  The kind
+// switch MUST enumerate every SoloKind -- a missing case here silently
+// downgrades to "no solo", which is precisely the enum-translation trap this
+// codebase has been bitten by before, so it is written as an exhaustive
+// switch with a default that clears rather than a chain of ifs.
+void RayCaster::RestoreSoloState( const SoloStateSnapshot& snap )
+{
+	switch( snap.kind )
+	{
+	case 1:
+		iPendingSoloKind = 1;
+		pendingSoloLight = snap.light;
+		pendingSoloLuminary = 0;
+		if( pLightSampler ) pLightSampler->SetSoloLight( pendingSoloLight );
+		break;
+	case 2:
+		iPendingSoloKind = 2;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = snap.luminary;
+		if( pLightSampler ) pLightSampler->SetSoloLuminary( pendingSoloLuminary );
+		break;
+	case 3:
+		iPendingSoloKind = 3;
+		pendingSoloLight = 0;
+		pendingSoloLuminary = 0;
+		if( pLightSampler ) pLightSampler->SetSoloEnvironment();
+		break;
+	default:
+		ClearSoloLight();
+		break;
+	}
+}
+
 // ================================================================
 // CastRayHWSS — HWSS wavelength bundle ray casting.
 //
@@ -1394,7 +3826,7 @@ void RayCaster::SetUseLightBVH( const bool enable )
 bool RayCaster::CastRayHWSS(
 	const RuntimeContext& rc,
 	const RasterizerState& rast,
-	const Ray& ray,
+	const Ray& rayIn,
 	Scalar c[SampledWavelengths::N],
 	const RAY_STATE& rs,
 	SampledWavelengths& swl,
@@ -1403,19 +3835,56 @@ bool RayCaster::CastRayHWSS(
 	const IORStack& ior_stack
 	) const
 {
+	if( pLightSampler && pLightSampler->SceneHasNullBoundaries() &&
+		pScene && !ior_stack.topObject() ) {
+		IORStack seededStack( ior_stack );
+		IORStackSeeding::SeedFromPoint( seededStack, rayIn.origin, *pScene );
+		return CastRayHWSSImpl_( rc, rast, rayIn, c, rs, swl, distance,
+			pRadianceMap, seededStack, false );
+	}
+	return CastRayHWSSImpl_( rc, rast, rayIn, c, rs, swl, distance,
+		pRadianceMap, ior_stack, false );
+}
+
+bool RayCaster::CastRayHWSSImpl_(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& rayIn,
+	Scalar c[SampledWavelengths::N],
+	const RAY_STATE& rs,
+	SampledWavelengths& swl,
+	Scalar* distance,
+	const IRadianceMap* pRadianceMap,
+	const IORStack& ior_stack,
+	const bool skipEntryGates
+	) const
+{
+	const SMSLegacyModeScope smsMode(rc, true);
+	const bool primaryAOVUnresolvedAtEntry =
+		rc.pAOV && !rc.pAOV->primaryDepthCaptured;
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		c[i] = 0;
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	// DL-315: refuse a nested cast with too little stack left.  The depth
+	// cap itself is applied after the medium fallback below, which owns
+	// its own gates (fire source pickup survives the depth cap there).
+	if( CastStackExhausted() )
 		return false;
 #endif
 
-	// Check for participating medium BEFORE Russian roulette.
-	// CastRayNM performs its own RR internally, so we must not
-	// apply RR here and then again inside CastRayNM.
-	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
-	if( pMedium )
+	// Check for participating medium before recursion and Russian-roulette
+	// gates.  The per-wavelength fallback owns both gates and keeps a local
+	// fire-source score ahead of continuation termination.
+	// bBypassMediumTransport (see RayCaster.h) short-circuits the whole
+	// per-wavelength CastRayNM fallback, keeping a diagnostic caster on ONE
+	// code path whether or not the scene declares a medium.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	const bool sceneHasFire = !bBypassMediumTransport &&
+		pLightSampler && pLightSampler->SceneHasFireMedia();
+	if( sceneHasFire || pMedium )
 	{
 		bool anyHit = false;
 		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
@@ -1423,20 +3892,26 @@ bool RayCaster::CastRayHWSS(
 			c[i] = 0;
 			if( !swl.terminated[i] )
 			{
-				bool hit = CastRayNM( rc, rast, ray, c[i], rs,
-					swl.lambda[i], distance, pRadianceMap, ior_stack );
+				bool hit = CastRayNMImpl_( rc, rast, rayIn, c[i], rs,
+					swl.lambda[i], distance, pRadianceMap, ior_stack,
+					skipEntryGates );
 				if( hit ) anyHit = true;
 			}
 		}
 		return anyHit;
 	}
 
+#ifdef ENABLE_MAX_RECURSION
+	if( !skipEntryGates && rs.depth > MaxRecursions( rc ) )
+		return false;
+#endif
+
 	// Russian roulette using hero importance (applied only on the
 	// non-medium path — medium fallback delegates to CastRayNM
 	// which does its own RR).
 	Scalar rrCompensation = 1.0;
 #ifdef ENABLE_RAYCASTER_RR
-	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	if( !skipEntryGates && rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
 		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
 		if( rc.random.CanonicalRandom() >= pSurvive )
@@ -1446,36 +3921,132 @@ bool RayCaster::CastRayHWSS(
 #endif
 
 	// Single scene intersection shared by all wavelengths
-	RayIntersection ri( ray, rast );
+	RayIntersection ri( rayIn, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+	ri.geometric.bIsCameraRay = ( rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1 && rs.volumeBounces == 0 );
+	ri.geometric.pCamera = pScene->GetCamera();
+	if( skipEntryGates ) ri.geometric.minimumSurfaceRange = 0.0;
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+	// DL-408: a contact launch is first cast against its target alone, from
+	// behind the shared face; a launch that does not meet it at the launch
+	// point falls back to the ordinary scene cast of the GIVEN ray (the
+	// exit's own offset ray, outside the launching body), never from the
+	// backed-off origin.  `ray` below is whichever ray the hit lies on.
+	Ray contactRay;
+	bool bContactHit = false;
+	if( rs.pContactTarget ) {
+		contactRay = BSSRDFSampling::ContactRay( rs.contactPoint, rayIn.Dir() );
+		RayIntersection riContact( contactRay, rast );
+		riContact.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+		riContact.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
+		riContact.geometric.pCamera = pScene->GetCamera();
+		bContactHit = BSSRDFSampling::IntersectContactRay(
+			*pScene->GetObjects(), rs.pContactTarget, rs.pContactSource, riContact, &alphaSampler );
+		if( bContactHit ) {
+			ri = riContact;
+		}
+	}
+	if( !bContactHit ) {
+		pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler, true, true, skipEntryGates);
+	}
+	const Ray& ray = bContactHit ? contactRay : rayIn;
+	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
 
 	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
-		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+		if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+			ri.pMaterial->GetEmitter() ) {
 			bHit = bShowLuminaires;
+		}
+	}
+
+	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): same
+	// pre-shade structure as CastRay/CastRayNM, so the resolve is wired
+	// here too for completeness -- though in practice no HWSS caster is
+	// ever a view-mode/preview caster (those are Pel-only), so
+	// bXrayViewResolve is never set on a caster that reaches this path.
+	if( bXrayViewResolve && bHit ) {
+		ResolveXrayView_( ri, alphaSampler );
+		bHit = ri.geometric.bHit;
+
+		// Re-apply the same luminaire-suppression check to the RESOLVED
+		// hit -- see CastRay's identical call site for the rationale.
+		if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+			if( ri.pMaterial && !IsExactNullBoundaryMaterial( ri.pMaterial ) &&
+				ri.pMaterial->GetEmitter() ) {
+				bHit = bShowLuminaires;
+			}
 		}
 	}
 
 	bool bReturn = false;
 
 	if( bHit ) {
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) )
+		{
+			IORStack nextStack( ior_stack );
+			ApplyExactNullBoundaryTransition( ri.pMaterial, ri.pObject, nextStack );
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				ray, ri.geometric.surfaceRange );
+
+			Scalar downstream[SampledWavelengths::N];
+			Scalar downstreamDistance = 0.0;
+			const bool downstreamHit = CastRayHWSSImpl_(
+				rc, rast, nextRay, downstream, rs, swl, &downstreamDistance,
+				pRadianceMap, nextStack, true );
+			OffsetCapturedPrimaryAOVDepth(
+				rc, ri.geometric.surfaceRange, primaryAOVUnresolvedAtEntry );
+			for( unsigned int i = 0; i < SampledWavelengths::N; ++i ) {
+				c[i] = downstream[i] * rrCompensation;
+			}
+			if( distance ) {
+				*distance = downstreamDistance >= RISE_INFINITY
+					? RISE_INFINITY
+					: ri.geometric.surfaceRange + downstreamDistance;
+			}
+			return downstreamHit;
+		}
+
 		// Intersection modifier
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// IOR stack (shared geometry)
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
+
+		// DL-292 -- see the RGB CastRay's identical site.  The graded field
+		// is a single scalar (IsWorldPositionField), so every lane pays the
+		// same factor.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		hitStack.SetCurrentObject( ri.pObject );
+
+		// DL-185 -- see RGB CastRay's identical call site above.  (The
+		// per-wavelength medium fallback above already delegates to
+		// CastRayNM, which applies its own copy of this fix.)
+		RAY_STATE rsForShade( rs );
+		// DL-408: the contact launch was THIS cast's; the hit carries its
+		// partner, and nothing the shader casts may inherit it.
+		rsForShade.pContactTarget = 0;
+		rsForShade.pContactSource = 0;
+		rsForShade.castRRCompensation = rrCompensation;
 
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
-		if( ri.pShader ) {
-			ri.pShader->ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
-		} else {
-			pDefaultShader.ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
+		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, hitStack );
+		if( gradedScale != Scalar( 1 ) ) {
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= gradedScale;
+			}
 		}
 
 		if( distance ) {
@@ -1490,6 +4061,22 @@ bool RayCaster::CastRayHWSS(
 				c[i] = pRadianceMap->GetRadianceNM( ray, rast, swl.lambda[i] );
 			}
 		}
+
+		// DL-53: see RayCasterEnvEscapeMISWeight's doc / the RGB CastRay
+		// call site above -- apply the env-NEE complementary weight ONLY
+		// when this explicit map is pointer-identical to the scene's
+		// global map; a genuinely distinct per-object override map keeps
+		// full weight. No optimal-MIS training here, matching the
+		// pre-existing HWSS global-map branch (never trained at this site).
+		if( pRadianceMap == pScene->GetGlobalRadianceMap() )
+		{
+			const Scalar w_bsdf = RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( 0, 0, 0 ), /*trainOptimalMIS=*/false );
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= w_bsdf;
+			}
+		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		// Global radiance map (environment): per wavelength with
 		// MIS weights using the hero's BSDF pdf.
@@ -1500,31 +4087,16 @@ bool RayCaster::CastRayHWSS(
 			}
 		}
 
-		// Environment MIS: use hero's bsdfPdf for the balance
-		// heuristic (all wavelengths share the same geometric
-		// direction, so the same PDF applies).
-		if( pLightSampler && rs.bsdfPdf > 0 )
+		// Environment MIS: use hero's bsdfPdf for the balance heuristic
+		// (all wavelengths share the same geometric direction, so the same
+		// PDF applies; shared with the explicit-map branch above -- see
+		// DL-53).
 		{
-			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
-			if( pES )
-			{
-				const Scalar envPdf = pES->Pdf( ray.Dir() );
-				if( envPdf > 0 )
-				{
-					Scalar w_bsdf;
-					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-					{
-						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
-					}
-					else
-					{
-						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
-					}
-					for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
-						c[i] *= w_bsdf;
-					}
-				}
+			const Scalar w_bsdf = RayCasterEnvEscapeMISWeight(
+				pLightSampler, rc, rast, ray, rs,
+				RISEPel( 0, 0, 0 ), /*trainOptimalMIS=*/false );
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= w_bsdf;
 			}
 		}
 
@@ -1558,3 +4130,36 @@ void RayCaster::SetLuminaireSampling(
 	}
 }
 
+bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
+{
+    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart, pScene->GetCamera());
+}
+bool RayCaster::DeltaPassThroughShadowsActive() const
+{
+    return bSceneHasDeltaPassThrough && pScene &&
+        !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
+        !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
+        !pScene->GetGlobalSpectralMap();
+}
+
+bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
+    unsigned int* pPassThroughCrossings, Scalar* pPassThroughProb) const
+{
+    if (pPassThroughCrossings) *pPassThroughCrossings = 0;
+    if (pPassThroughProb) *pPassThroughProb = 1;
+    if (boundaries) boundaries->clear();
+    const bool passThrough = deltaLight && DeltaPassThroughShadowsActive();
+    // DL-344: dielectrics see-through for DELTA lights, except where SMS
+    // was evaluated at this point for this light (see CastShadowRayAuto).
+    const bool dielectrics = DielectricShadowWalk(deltaLight, smsCoversLight);
+    if (dielectrics || passThrough)
+        return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
+            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart,
+            pPassThroughCrossings, pPassThroughProb);
+    // DL-292: the binary test leaves the track un-Finish()ed -- the caller
+    // prices the crossing-free segment with ConnectionScaleToPoint.
+    transmittance = RISEPel(1,1,1);
+    return CastShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
+}

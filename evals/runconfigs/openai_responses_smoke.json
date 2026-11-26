@@ -1,0 +1,12 @@
+{
+  "//": "OpenAI Responses API smoke: one inexpensive edit cell on both GPT-5.6 tiers.",
+  "scenarios": [
+    "evals/scenarios/param_edit.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-sol", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 1,
+  "runDir": "evals/runs/openai_responses_smoke"
+}

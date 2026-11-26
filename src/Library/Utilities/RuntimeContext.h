@@ -22,6 +22,7 @@
 #include "RandomNumbers.h"
 #include "ISampler.h"
 #include "StabilityConfig.h"
+#include "OidnConfig.h"
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 #include <cstdint>
@@ -36,6 +37,16 @@ namespace RISE { namespace Implementation { class PathGuidingField; } }
 
 namespace RISE
 {
+	struct PixelAOV;	// First-hit albedo/normal AOV side-data (AOVBuffers.h)
+
+	//! The path tracer's default path-vertex cap (PathTracingIntegrator's
+	//! loop bound, `SetMaxPathDepth`'s 0 fallback).  DL-315: also the depth
+	//! cap of every RayCaster an integrator owns (PT / Auto / BDPT / VCM /
+	//! MLT, all built in Job.cpp) -- a nested continuation cast shades
+	//! through the scene's PathTracingShaderOp, whose integrator already
+	//! stops at this depth, so the caster must never stop it sooner.
+	static const unsigned int kDefaultPathTracingMaxDepth = 128;
+
 	// Per-thread rendering state, allocated and owned by each rasterizer thread.
 	// Not part of the shared scene graph — mutable fields here are correct because
 	// each thread has its own RuntimeContext instance.
@@ -58,6 +69,58 @@ namespace RISE
 		/// (lobe selection, Russian roulette, etc.).
 		/// Lifetime is managed by the rasterizer; not ref-counted here.
 		mutable ISampler*										pSampler;
+
+		/// Interactive-preview mode signal.
+		///
+		/// When true, the current render is the interactive viewport
+		/// preview path; expensive shader ops should swap to a coarse
+		/// fallback that completes in milliseconds instead of seconds
+		/// so the cancel-restart loop stays responsive.  This is the
+		/// principled hook for "render less correct pixels fast" —
+		/// each shader op decides what fast-preview means for its
+		/// computation:
+		///
+		///   • SSS shader ops (SubSurfaceScattering, DonnerJensenSkin,
+		///     diffusion-approximation): skip the irradiance point-set
+		///     build (which can be 200K shade calls per object) and
+		///     the per-pixel octree evaluation.  Delegate to the
+		///     embedded irradiance-capture shader for a fast direct-
+		///     lighting fallback.
+		///
+		///   • Future heavy shader ops (path-guiding lookups, photon-
+		///     map gathers in shaders, irradiance-cache fills) can
+		///     check the same flag.
+		///
+		/// Set by the rasterizer's PrepareRuntimeContext override —
+		/// InteractivePelRasterizer flips it true; production
+		/// rasterizers leave the default false for full-fidelity
+		/// rendering.  Mutable for the same reason as pSampler — the
+		/// PrepareRuntimeContext path takes a non-const reference but
+		/// the flag is read through const refs in the shader-op call
+		/// chain.
+		mutable bool											bFastPreview;
+
+		// Scoped transport provenance: HWSS and its nested NM shader/SSS
+		// fallbacks must keep legacy SMS until lane ownership is implemented.
+		mutable bool smsForceLegacy = false;
+
+		// Radiance provenance for opaque recursive shader returns. A return
+		// containing reference SMS must remain unclamped at its SSS caller.
+		mutable bool smsReferenceRadiance = false;
+
+		/// Optional per-render transport settings supplied by an ephemeral
+		/// PathTracingPelRasterizer.  Unlike mutating a scene-owned default
+		/// shader, these values travel with each worker context, so an SSS
+		/// continuation dispatched through an arbitrary supplied shader chain
+		/// observes the same depth/lighting/material mode as the root path.
+		bool											hasPathTracingVariantConfig;
+		unsigned int									pathTracingMaxDepth;
+		bool											pathTracingIndirectOnly;
+		bool											pathTracingClayOverride;
+
+		// Native PT SSS continuations inherit this cap through recursive casts.
+		// Null for standalone legacy rasterizers; their configured behaviour stays local.
+		const unsigned int* pNativePTSubsurfaceBounceCap;
 
 		/// Production stability controls (clamps, RR tuning, bounce
 		/// limits, glossy filtering).  Set by the rasterizer before
@@ -83,12 +146,51 @@ namespace RISE
 		/// is disabled.
 		unsigned int											totalProgressiveSPP;
 
+		/// OIDN aux-buffer source mode.  Read by integrators that
+		/// inline-accumulate AOVs to decide where along the path to
+		/// record the first sample:
+		///
+		///   Fast (default) — record at the camera ray's first hit.
+		///       Cheap, deterministic per sample, fully matches the
+		///       existing retrace behaviour.  cleanAux=true on the
+		///       OIDN filter.  Returns white at glass / mirror
+		///       (NULL-BSDF) surfaces.
+		///
+		///   Accurate — skip past delta-only scatters and record at
+		///       the first vertex where the shader sampled a
+		///       non-delta direction (probabilistic per sample via
+		///       `ScatteredRay::isDelta`).  Glass / mirror walked
+		///       through naturally; rough dielectrics record at
+		///       their surface or behind it depending on each
+		///       sample's Fresnel decision.  Aux is now noisy →
+		///       OIDN runs a prefilter pass on each aux channel
+		///       before the beauty filter.
+		///
+		/// MLT cannot attach this to splat-chain samples, so requested guides
+		/// are collected by its bounded post-render fallback using the same
+		/// Fast/Accurate rule.
+		OidnPrefilter											aovPrefilterMode;
+
+		/// Per-pixel-sample inline AOV sink for the SHADER-DISPATCH spectral
+		/// path (pixelintegratingspectral_rasterizer).  That path reaches the
+		/// integrator through CastRayNM/CastRayHWSS -> the shader chain ->
+		/// PathTracingShaderOp::PerformOperationNM/HWSS, whose signatures carry
+		/// no PixelAOV*.  Rather than widen the IShaderOp virtual (≈25
+		/// implementers), the rasterizer parks the sample's PixelAOV here
+		/// before the cast and the shader op forwards it into
+		/// IntegrateFromHitNM/HWSS — exactly the per-thread-state idiom that
+		/// pSampler already uses.  NULL outside that path (the pure-integrator
+		/// PathTracingSpectralRasterizer and the Pel rasterizer pass PixelAOV*
+		/// explicitly), so it never perturbs them.
+		mutable PixelAOV*										pAOV;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
 		/// is disabled or not yet initialized.
 		mutable Implementation::PathGuidingField*				pGuidingField;
 		Scalar													guidingAlpha;
+		bool													guidingLearnedAlpha;
 		unsigned int											maxGuidingDepth;
 		GuidingSamplingType										guidingSamplingType;
 		unsigned int											guidingRISCandidates;
@@ -121,13 +223,22 @@ namespace RISE
 		  pass( pass_ ),
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 ),
+		  bFastPreview( false ),
+		  hasPathTracingVariantConfig( false ),
+		  pathTracingMaxDepth( kDefaultPathTracingMaxDepth ),
+		  pathTracingIndirectOnly( false ),
+		  pathTracingClayOverride( false ),
+		  pNativePTSubsurfaceBounceCap( 0 ),
 		  pStabilityConfig( 0 ),
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),
-		  totalProgressiveSPP( 0 )
+		  totalProgressiveSPP( 0 ),
+		  aovPrefilterMode( OidnPrefilter::Fast ),
+		  pAOV( 0 )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )
+		  ,guidingLearnedAlpha( true )
 		  ,maxGuidingDepth( 0 )
 		  ,guidingSamplingType( eGuidingOneSampleMIS )
 		  ,guidingRISCandidates( 2 )
@@ -150,25 +261,28 @@ namespace RISE
 			const IReference* pObj,
 			const RISEPel& c, 
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool referenceRadiance = false, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
 			StateCacheMapType::iterator it = stateCaches.find( pObj );
 			if( it == stateCaches.end() ) {
 				pCache = new RasterizerStateCache();
+                stateCaches[pObj] = pCache;
 			} else {
 				pCache = it->second;
 			}
 
-			pCache->SetState( c, pObject, rast );
+			pCache->SetState( c, pObject, rast, referenceRadiance, mode );
 		}
 
 		bool StateCache_HasStateChanged(
 			const IReference* pObj,
 			RISEPel& c,
 			const IObject* pObject,
-			const RasterizerState& rast
+			const RasterizerState& rast,
+            bool* referenceRadiance = nullptr, unsigned mode = 0
 			) const
 		{
 			RasterizerStateCache* pCache = 0;
@@ -181,10 +295,34 @@ namespace RISE
 				pCache = it->second;
 			}
 
-			return pCache->HasStateChanged( c, pObject, rast );
+			return pCache->HasStateChanged( c, pObject, rast, referenceRadiance, mode );
 		}
+	};
+	// RuntimeContext is worker-local. Restore the caller's mode on every exit,
+	// including nested casts and exceptions; do not copy its owning caches.
+	class SMSReferenceRadianceScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		explicit SMSReferenceRadianceScope(const RuntimeContext& rc) :
+			context(rc), previous(rc.smsReferenceRadiance) { context.smsReferenceRadiance = false; }
+		bool HasReferenceRadiance() const { return context.smsReferenceRadiance; }
+		~SMSReferenceRadianceScope() { context.smsReferenceRadiance = previous || context.smsReferenceRadiance; }
+		SMSReferenceRadianceScope(const SMSReferenceRadianceScope&) = delete;
+		SMSReferenceRadianceScope& operator=(const SMSReferenceRadianceScope&) = delete;
+	};
+	class SMSLegacyModeScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		SMSLegacyModeScope(const RuntimeContext& rc, bool force) :
+			context(rc), previous(rc.smsForceLegacy) { context.smsForceLegacy = previous || force; }
+		~SMSLegacyModeScope() { context.smsForceLegacy = previous; }
+		SMSLegacyModeScope(const SMSLegacyModeScope&) = delete;
+		SMSLegacyModeScope& operator=(const SMSLegacyModeScope&) = delete;
 	};
 }
 
 #endif
-

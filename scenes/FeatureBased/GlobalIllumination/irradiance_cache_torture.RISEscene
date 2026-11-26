@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -18,28 +18,16 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-finalgather_shaderop
-{
-	name			fg
-	cachegradients	TRUE
-	min_effective_contributors	4
-	high_variation_reuse_scale	0.25
-	samples			512
-}
-
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
-	shaderop	fg
-	shaderop	DefaultEmission
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator bdpt, legacy-deprecation Phase 2).
+bdpt_pel_rasterizer
 {
-	max_recursion		3
-	samples				16
-	lum_samples			4
+	samples				64
 }
 
 file_rasterizeroutput
@@ -54,13 +42,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			800
+	height			800
+}
+
 pinhole_camera
 {
 	location			0 1.7 5.3
 	lookat				0 1.35 -1.35
 	up					0 1 0
-	width				800
-	height				800
 	fov					46.0
 }
 
@@ -68,7 +60,141 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -422,33 +548,4 @@ standard_object
 	geometry			cool_light_geom
 	position			-2.15 3.45 -1.35
 	material			light_cool
-}
-
-##################################################
-# Global illumination settings
-##################################################
-
-global_pel_photonmap
-{
-	num					250000
-	max_recursion		3
-	min_importance		0.01
-	branch				FALSE
-}
-
-global_pel_gather
-{
-	max_photons			500
-	radius				0.30
-	ellipse_ratio		0.05
-}
-
-irradiance_cache
-{
-	size				80
-	tolerance			0.08
-	min_spacing			0.18
-	max_spacing			0.90
-	query_threshold_scale	1.0
-	neighbor_spacing_scale	5.0
 }

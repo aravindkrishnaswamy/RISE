@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -22,18 +22,19 @@ hdr_painter
 standard_shader
 {
 	name			global
-	shaderop		DefaultReflection
+	shaderop		DefaultPathTracing
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples			64
+	samples				64
 	pixel_filter		tent
 	pixel_filter_width	2
 	pixel_filter_height	2
 	radiance_map		pnt_rad
 	radiance_background	TRUE
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -48,13 +49,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			500
+	height			500
+}
+
 fisheye_camera
 {
 	location			0 -55 650
 	lookat				0 -55 0
 	up					0 1 0
-	width				500
-	height				500
 	scale				1.6
 }
 
@@ -62,23 +67,217 @@ fisheye_camera
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
 
-iridescent_painter
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_orangered
+	color		1.0 0.25 0.0 
+}
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_slateblue
+	color		0.0 0.498039 1.0 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_light_purple
+	color		0.87 0.58 0.98 
+}
+
+
+# Legacy phase 2 slice B2: was iridescent_painter (colora `color_light_purple`, colorb `color_slateblue`, bias 0); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.6667; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_iri
-	colora				color_light_purple
-	colorb				color_slateblue
+	color				0.29 0.52536 0.99333
+	colorspace			Rec709RGB_Linear
 }
 
 ##################################################
 # Materials
 ##################################################
 
-perfectreflector_material
+# Legacy phase 2 slice B2: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				tf_Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Legacy phase 2 slice B2: was perfectreflector_material; perfectreflector with iridescent `pnt_iri` -> near-mirror (alpha 0.01) TiO2 film 150 nm over titanium, thickness matching its normal-incidence colour 0 0.498 1.
+ggx_material
 {
 	name				iridescent_mirror
-	reflectance			pnt_iri
+	rd					none
+	rs					pnt_tf_white
+	alphax				0.01
+	alphay				0.01
+	fresnel_mode		thinfilm
+	ior					tf_Ti_n
+	extinction			tf_Ti_k
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		150
 }
 
 perfectreflector_material
@@ -123,3 +322,5 @@ standard_object
 	orientation			-90.0 0.0 -45.0
 	material			iridescent_mirror
 }
+
+

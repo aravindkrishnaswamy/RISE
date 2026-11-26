@@ -1,0 +1,48 @@
+SOURCE_SINGLE_CANONICAL_CARRY cells=64 source_bits=1 diagnostics_bits=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=reconstruction_not_invocable identity_gate_calls=0 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=unsealed_before_carry atomic_refusal=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_0 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_2 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_3 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=pilot_ledger_mutation_0 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=pilot_ledger_mutation_1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=pilot_ledger_mutation_2 passed=1
+SOURCE_SINGLE_CANONICAL_PILOT nonzero_distinct_cells=24 bits_equal=1 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=0 nonzero_cells=40 omission_refused=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_2 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_3 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_4 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_5 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_0_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=1 nonzero_cells=0 omission_refused=0 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_2 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_3 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_4 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_5 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_1_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=2 nonzero_cells=0 omission_refused=0 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_2_3 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_2_4 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_2_5 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_2_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_2_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=3 nonzero_cells=40 omission_refused=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_3_4 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_3_5 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_3_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_3_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=4 nonzero_cells=0 omission_refused=0 passed=0
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_4_5 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_4_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_4_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=5 nonzero_cells=24 omission_refused=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_5_6 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_5_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=6 nonzero_cells=24 omission_refused=1 passed=1
+SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_6_7 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER field=7 nonzero_cells=64 omission_refused=1 passed=1
+SOURCE_SINGLE_CANONICAL_LEDGER_ALL fields=8 swaps=28 bits_equal=1 passed=0

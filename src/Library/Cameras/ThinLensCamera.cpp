@@ -12,39 +12,251 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "ThinLensCamera.h"
+#include <string_view>
+#include <limits>
+#include "../Utilities/FiniteMath.h"
+#include "CameraUtilities.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "CameraTransforms.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
 
+#include <cmath>
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	// Landing 5: photographic exposure compensation.  Mirrors the
+	// formula in PinholeCamera.cpp's local ComputeExposureCompensationEV;
+	// kept duplicated here (rather than promoted to a shared header)
+	// because the two cameras are otherwise independent and the helper
+	// is ~15 lines.  See ICamera.h::GetExposureCompensationEV for the
+	// derivation and stacking semantics.
+	inline RISE::Scalar ComputeExposureCompensationEV(
+		const RISE::Scalar iso,
+		const RISE::Scalar fstop,
+		const RISE::Scalar shutterSeconds,
+		const char*        cameraTag )
+	{
+		if( iso <= RISE::Scalar( 0 ) ) {
+			return RISE::Scalar( 0 );
+		}
+		if( fstop <= RISE::Scalar( 0 ) || shutterSeconds <= RISE::Scalar( 0 ) ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Error,
+				"%s:: iso > 0 requires fstop > 0 (given %g) and shutter (`exposure`) > 0 (given %g) "
+				"for physical exposure computation.  Falling back to no exposure compensation.",
+				cameraTag, fstop, shutterSeconds );
+			return RISE::Scalar( 0 );
+		}
+		const RISE::Scalar EV100 = std::log2( fstop * fstop * RISE::Scalar( 100 ) / ( iso * shutterSeconds ) );
+		return -std::log2( RISE::Scalar( 1.2 ) ) - EV100;
+	}
+}
+
+namespace
+{
+	// Sample a point inside the aperture, returning the 2D position on
+	// the lens plane.  Encapsulates polygonal-blade and anamorphic
+	// shaping so both GenerateRay paths share one implementation.
+	//
+	// For a regular n-gon, naive sampling (theta uniform in [0,2pi),
+	// r = sqrt(u_y) * rMax(theta)) gives joint Cartesian density
+	// 1 / (pi * rMax(theta)^2), which is angle-dependent — corners
+	// (rMax = halfAperture) are under-sampled by cos^2(pi/n) relative
+	// to edge midpoints.  At 6 blades that's a 25% bokeh-density bias.
+	//
+	// To get UNIFORM area density we sample theta with density
+	// proportional to rMax(theta)^2.  By symmetry, blades are
+	// equiprobable; within one blade rMax^2 = c^2 / cos^2(theta_rel)
+	// (c = halfAperture * cos(pi/n)), so density ∝ sec^2(theta_rel).
+	// The inverse CDF of sec^2 on [-pi/n, +pi/n] is closed-form:
+	//     theta_rel = atan( (2*u - 1) * tan(pi/n) )
+	// and the resulting joint density in (x,y) is exactly
+	// 1 / A_polygon = 1 / ((n/2) * sin(2*pi/n) * halfAperture^2).
+	//
+	// Continuity in uv (required for PSSMLT): atan is C-infinity on
+	// each blade, and across blade seams the mapping is C0 by
+	// construction — at u_x' = 1- of blade k, theta lands on
+	// (k+1) * bladeArc, exactly where u_x' = 0+ of blade k+1 lands.
+	inline Point2 SampleAperture(
+		Scalar halfAperture,
+		unsigned int blades,
+		Scalar rotation,
+		Scalar squeeze,
+		const Point2& uv )
+	{
+		Point2 sample;
+
+		if( blades < 3 ) {
+			// Disk path — preserves the historical primary-ray
+			// distribution exactly when blades == 0 and squeeze == 1.
+			sample = GeometricUtilities::PointOnDisk( halfAperture, uv );
+		} else {
+			// Uniform-area sampling on a regular n-gon inscribed in
+			// the aperture circle.  See header comment for derivation.
+			const Scalar n         = Scalar( blades );
+			const Scalar bladeHalf = PI / n;                      // pi / n
+			const Scalar bladeArc  = 2.0 * bladeHalf;             // 2*pi / n
+			const Scalar tanHalf   = tan( bladeHalf );
+
+			// Decompose uv.x into a blade index k and a within-blade
+			// coordinate uxIn ∈ [0, 1).  Using floor is preferred over
+			// (unsigned int)(uv.x * n) because it stays well-defined
+			// for the (out-of-spec but observable in PSSMLT mutation
+			// edge cases) value uv.x = 1.0 exactly.
+			const Scalar scaled    = uv.x * n;
+			const Scalar kFloor    = floor( scaled );
+			const Scalar uxIn      = scaled - kFloor;             // ∈ [0, 1]
+
+			// Inverse-CDF for theta_rel ∈ [-bladeHalf, +bladeHalf]
+			// with density ∝ sec^2(theta_rel).
+			const Scalar thetaRel  = atan( ( 2.0 * uxIn - 1.0 ) * tanHalf );
+
+			// Global theta covers [0, 2*pi) as k sweeps 0..n-1.  At
+			// uxIn=0 thetaRel=-bladeHalf so theta=k*bladeArc; at uxIn=1
+			// thetaRel=+bladeHalf so theta=(k+1)*bladeArc — matches
+			// the next blade's uxIn=0 entry, hence C0 across seams.
+			const Scalar theta     = ( kFloor + 0.5 ) * bladeArc + thetaRel;
+
+			const Scalar rMax      = halfAperture * cos( bladeHalf ) / cos( thetaRel );
+			const Scalar r         = sqrt( uv.y ) * rMax;
+			const Scalar a         = theta + rotation;
+			sample = Point2( r * cos(a), r * sin(a) );
+		}
+
+		// Anamorphic squeeze applies as an x-axis scale on the lens
+		// plane.  squeeze == 1.0 is the no-op fast-path.
+		if( squeeze != 1.0 ) {
+			sample.x *= squeeze;
+		}
+		return sample;
+	}
+}
+
 void ThinLensCamera::Recompute( const unsigned int width, const unsigned int height )
 {
-	// For a non-distorting, regular (non-fisheye) lens, the angle of view is given by:
-	// Angle of View = 2 * ArcTan(Film Dimension / (2 * Focal Length * (1 + Magnification)))
-	// http://www.colloquial.com/photo/formats.html
-	// Thus, to compute focal length from FOV:
-	// Focal Length = Film Dimension / (2 * tan( Angle of View / 2 ) )
-	// Also, relationship between F-Stop and aperture size:
-	// F-Stop = Focal Length / Aperture Diameter, thus:
-	// Aperture Diameter = Focal Length / F-Stop
+	// Convert mm-input lens params to scene units so the lens
+	// equation v = f·u/(u-f) is unit-consistent with focusDistance
+	// (which is already in scene units).  Conversion factor:
+	//   1 mm = 0.001 m,    1 scene unit = sceneUnitMeters m
+	//   ⇒ 1 mm = 0.001 / sceneUnitMeters scene units.
+	// For default (metres scene, sceneUnitMeters=1): 35 mm = 0.035
+	// scene units.  For mm scene (sceneUnitMeters=0.001): 35 mm = 35
+	// scene units.  Both the editor and the parser keep the user-
+	// facing values in mm; this conversion lives entirely inside
+	// the camera so the rest of the pipeline doesn't need to know.
+	const Scalar mm_to_scene  = 0.001 / sceneUnitMeters;
+	const Scalar sensor_scene = sensorSize  * mm_to_scene;
+	const Scalar focal_scene  = focalLength * mm_to_scene;
+	const Scalar shiftX_scene = shiftX      * mm_to_scene;
+	const Scalar shiftY_scene = shiftY      * mm_to_scene;
 
-	halfAperture = 0.5*aperture;
+	// Derive the field of view from sensor + focal.
+	//
+	// Convention (matches Cycles `sensor_fit = HORIZONTAL` and the
+	// Cycles `sensor_fit = AUTO` resolution when the image's aspect
+	// ratio is wider than the sensor's): `sensorSize` is the sensor's
+	// HORIZONTAL extent in millimetres.  The image is fit horizontally
+	// — i.e. the rendered image's full width shows the entire sensor
+	// width, and the vertical extent shows a proportionally scaled
+	// slice of the sensor.
+	//
+	// `fov` is stored as the VERTICAL field of view so the `sy =
+	// 2·filmDist·tan(fov/2)/height` formula below is dimensionally
+	// correct: tan(vfov/2)·filmDist gives the half-height of the
+	// sensor at the focal plane, dividing by `height` pixels gives the
+	// per-pixel vertical step in scene units.  `sx = -sy` keeps pixels
+	// square in the sensor; non-square pixel aspect is folded in via
+	// `ComputeScaleFromAR` which pre-stretches the camera's X axis by
+	// `pixelAR` (so `pixelAR=1` for square pixels is a no-op).
+	//
+	// Pre-fix (before 2026-05-26 adversarial review on the
+	// sine_tadpoles scene), `fov` was computed as the HORIZONTAL FOV
+	// directly from `sensor_scene / focal_scene` and then used as if
+	// it were vertical in the sy formula.  For non-square images this
+	// inflated the apparent horizontal FOV by `width/height·sensor_v/
+	// sensor_h` — a 1920×1080 / 36×24 / 50mm setup that should match
+	// Cycles' 39.6° hFOV rendered at 65° hFOV in RISE (1.64× wider).
+	// Subject size shrank correspondingly, making DOF look weaker too
+	// (same aperture diameter, smaller blur disc on screen).
+	//
+	// `ComputeScaleFromAR` later pre-stretches the camera's X axis by
+	// `pixelAR`, so the DISPLAY-space horizontal extent is
+	// `width * sx * pixelAR`.  For the sensor's horizontal extent to
+	// equal `sensor_scene` after that stretch, the image aspect used
+	// here must include `pixelAR`: `imageAspect = width * pixelAR /
+	// height`.  Without this factor, non-square-pixel renders (NTSC
+	// pixel_aspect ≈ 0.91, anamorphic 2:1, etc.) get a corresponding
+	// FOV error — adversarial review round 8, P2.
+	const Scalar imageAspect = ( height > 0 )
+		? ( Scalar( width ) * pixelAR / Scalar( height ) )
+		: Scalar( 1.0 );
+	const Scalar effective_sensor_v = ( imageAspect > 0 )
+		? ( sensor_scene / imageAspect )
+		: sensor_scene;
+	fov = 2.0 * atan( effective_sensor_v / (2.0 * focal_scene) );
+
+	// Derive physical aperture from f-stop, in scene units.
+	//   f-number = focal / aperture_diameter
+	// so aperture_diameter = focal / fstop, radius = focal / (2 * fstop).
+	aperture     = focal_scene / fstop;
+	halfAperture = aperture * 0.5;
 
 	dx = -0.5 * Scalar(width);
 	dy = -0.5 * Scalar(height);
 
-	const Scalar filmDistance = focusDistance * focalLength / (focusDistance - focalLength);
-	const Scalar f_over_d_minus_f = focalLength / (filmDistance - focalLength);
+	// Lens equation: image plane is at -filmDistance along the optical
+	// axis (sensor behind the lens, lens at origin).  Per-pixel sx/sy
+	// converts pixel coordinates into image-plane scene units, with
+	// `sx = -sy` for square sensor pixels (non-square pixel aspect
+	// goes through ComputeScaleFromAR).
+	filmDistance = focusDistance * focal_scene / (focusDistance - focal_scene);
+	sy = -2.0 * filmDistance * tan( fov / 2.0 ) / Scalar(height);
+	sx = -sy;
 
-	const Scalar sy = - 2.0 * filmDistance * tan(fov / 2.0) / Scalar(height);
-	const Scalar sx = -sy;
-	f_over_d_minus_f_sx = f_over_d_minus_f * sx;
-	f_over_d_minus_f_sy = f_over_d_minus_f * sy;
-	f_over_d_minus_f_d = f_over_d_minus_f * filmDistance;
+	// Cache the scene-unit shift values for GenerateRay; the per-ray
+	// path is hot, so we don't redo the unit conversion there.  These
+	// member variables override the mm-named `shiftX`/`shiftY` for the
+	// generation hot path; the mm values stay as the user-facing
+	// source-of-truth (used by the editor and keyframe handling).
+	//
+	// X shift is pre-divided by `pixelAR` so the subsequent
+	// `ComputeScaleFromAR` stretch (which multiplies camera-space X by
+	// `pixelAR` — see line ~420) reproduces the user's intended
+	// physical shift in display space.  Without the division an
+	// anamorphic 2:1 pixelAR would double the apparent horizontal
+	// shift (adversarial review round 9, P2).  pixelAR = 1 (square
+	// pixels) is a no-op.  Y shift doesn't need this treatment —
+	// ComputeScaleFromAR leaves Y alone.
+	const Scalar pixelAR_safe = ( pixelAR > 0 ) ? pixelAR : Scalar( 1 );
+	shiftX_sceneUnits = shiftX_scene / pixelAR_safe;
+	shiftY_sceneUnits = shiftY_scene;
+	pixelARInv        = Scalar( 1 ) / pixelAR_safe;
+
+	// Focal-plane equation cache for tilt-shift (Phase 1.1).  The
+	// focal plane passes through the on-axis focus point
+	// (0, 0, focusDistance) and has normal n in camera-local coords.
+	// Without tilt: n = (0, 0, 1), so n·P = z-component, kFocus =
+	// focusDistance.  Tilt rotates n: tiltY around y rotates the
+	// normal toward x, tiltX around x rotates it toward y.  The
+	// canonical Scheimpflug rotation (R_y * R_x applied to (0,0,1)):
+	//   n.x =  sin(tiltY) * cos(tiltX)
+	//   n.y = -sin(tiltX)
+	//   n.z =  cos(tiltY) * cos(tiltX)
+	// kFocus = n · (0,0,focusDistance) = n.z * focusDistance, so the
+	// plane equation in camera-local coords is n·P = kFocus.
+	const Scalar cTx = cos( tiltX );
+	const Scalar sTx = sin( tiltX );
+	const Scalar cTy = cos( tiltY );
+	const Scalar sTy = sin( tiltY );
+	nFocusX =  sTy * cTx;
+	nFocusY = -sTx;
+	nFocusZ =  cTy * cTx;
+	kFocus  =  nFocusZ * focusDistance;
 
 	// Construct an OrthoNormalBasis that lines up with the viewing co-ordinates
 	if( from_onb ) {
@@ -65,42 +277,74 @@ void ThinLensCamera::Recompute( const unsigned int width, const unsigned int hei
 	}
 
 	mxTrans = frame.GetTransformationMatrix( ) * ComputeScaleFromAR( );
+	// Cached for RasterFromLensPoint (the t==1 light-tracing inverse
+	// projection), which would otherwise invert a 4x4 per splat.
+	// This is the ONLY site that assigns mxTrans for this camera.
+	mxTransInv = Matrix4Ops::Inverse( mxTrans );
 }
 
 ThinLensCamera::ThinLensCamera(
 	const Point3& vPosition_,
 	const Point3& vLookAt_,
 	const Vector3& vUp_,
-	const Scalar fov_,
+	const Scalar sensorSize_,
+	const Scalar focalLength_,
+	const Scalar fstop_,
+	const Scalar focusDistance_,
+	const Scalar sceneUnitMeters_,
 	const unsigned int width,
 	const unsigned int height,
-	const Scalar pixelAR_,				///< [in] Pixel aspect ratio
-	const Scalar exposure_,				///< [in] Exposure time of the camera
-	const Scalar scanningRate,			///< [in] Scanning rate of the camera
-	const Scalar pixelRate,				///< [in] Pixel rate of the camera
-	const Vector3& orientation_,		///< [in] Orientation (Pitch,Roll,Yaw)
-	const Vector2& target_orientation_,	///< [in] Orientation relative to a target
-	const Scalar dAperture_,
-	const Scalar focalLength_,
-	const Scalar focusDistance_
-	) : 
+	const Scalar pixelAR_,
+	const Scalar exposure_,
+	const Scalar scanningRate,
+	const Scalar pixelRate,
+	const Vector3& orientation_,
+	const Vector2& target_orientation_,
+	const unsigned int apertureBlades_,
+	const Scalar apertureRotation_,
+	const Scalar anamorphicSqueeze_,
+	const Scalar tiltX_,
+	const Scalar tiltY_,
+	const Scalar shiftX_,
+	const Scalar shiftY_,
+	const Scalar iso
+	) :
   CameraCommon(
 	  vPosition_,
-	  vLookAt_, 
+	  vLookAt_,
 	  vUp_,
 	  pixelAR_,
-	  exposure_, 
+	  exposure_,
 	  scanningRate,
 	  pixelRate,
 	  orientation_,
 	  target_orientation_ ),
-  fov( fov_ ),
-  aperture( dAperture_ ),
-  halfAperture( 0.5*dAperture_ ),
+  sensorSize( sensorSize_ ),
   focalLength( focalLength_ ),
+  fstop( fstop_ ),
   focusDistance( focusDistance_ ),
-  filmWidth( 35 ),
-  filmHeight( 35 )
+  sceneUnitMeters( sceneUnitMeters_ ),
+  apertureBlades( apertureBlades_ ),
+  apertureRotation( apertureRotation_ ),
+  anamorphicSqueeze( anamorphicSqueeze_ ),
+  tiltX( ClampTilt( tiltX_ ) ),
+  tiltY( ClampTilt( tiltY_ ) ),
+  shiftX( shiftX_ ),
+  shiftY( shiftY_ ),
+  fov( 0 ),
+  aperture( 0 ),
+  halfAperture( 0 ),
+  iso_( iso ),
+  evCompensation_( ComputeExposureCompensationEV( iso, fstop_, exposure_, "ThinLensCamera" ) ),
+  filmDistance( 0 ),
+  sx( 0 ),
+  sy( 0 ),
+  shiftX_sceneUnits( 0 ),
+  shiftY_sceneUnits( 0 ),
+  nFocusX( 0 ),
+  nFocusY( 0 ),
+  nFocusZ( 1 ),
+  kFocus( 0 )
 {
 	Recompute( width, height );
 }
@@ -109,22 +353,262 @@ ThinLensCamera::~ThinLensCamera( )
 {
 }
 
+void ThinLensCamera::RegenerateData()
+{
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+	// Geometric state first.
+	CameraCommon::RegenerateData();
+
+	// Landing 5: refresh the photographic exposure cache.  fstop and
+	// exposureTime are SHARED between the geometric and photographic
+	// sides of this camera (one f-number drives both DOF and EV; one
+	// shutter time drives both motion blur and EV), so any edit to
+	// either invalidates evCompensation_.  iso_ also feeds in.
+	evCompensation_ = ComputeExposureCompensationEV( iso_, fstop, exposureTime, "ThinLensCamera" );
+}
+
+Vector3 ThinLensCamera::ComputeWorldDirection(
+	const Point3& ptOnLens, const Scalar screenX, const Scalar screenY ) const
+{
+	// Image-plane sample (with optional shift, Phase 1.1).  Sensor
+	// sits at z = -filmDistance in camera-local coords; sx/sy
+	// convert pixel coords to scene-units on the sensor.  Shift
+	// values are mm in the editor / scene-file but are cached in
+	// scene-units by Recompute (Phase 1.2 unit-correction work).
+	//
+	// Shift sign convention (matches Blender Cycles, which is the
+	// dominant photographer-friendly reference):
+	//   shift_x > 0 → lens shifts RIGHT (along +U) → camera "looks
+	//                 right", image content moves LEFT in frame.
+	//   shift_y > 0 → lens shifts UP (along +V)    → camera "looks
+	//                 up",    image content moves DOWN in frame.
+	const Scalar x_pix = screenX + dx;
+	const Scalar y_pix = screenY + dy;
+	const Scalar x_img = x_pix * sx - shiftX_sceneUnits;
+	const Scalar y_img = y_pix * sy - shiftY_sceneUnits;
+
+	// Chief-ray intersection with the (possibly tilted) focal plane.
+	// Ray P(t) = (1-t)·p_sensor passes through origin at t=1; on
+	// the plane n·P = kFocus, so (1-t) = kFocus / (n·p_sensor).
+	// For tilt=(0,0): n=(0,0,1), kFocus=focusDistance, p_sensor.z =
+	// -filmDistance, so (1-t) = -focusDistance/filmDistance — the
+	// standard perpendicular-focus-plane formula.
+	const Scalar n_dot_p   = nFocusX * x_img + nFocusY * y_img + nFocusZ * (-filmDistance);
+	const Scalar oneMinusT = kFocus / n_dot_p;
+	const Point3 focus( oneMinusT * x_img, oneMinusT * y_img, oneMinusT * (-filmDistance) );
+
+	return Vector3Ops::Normalize(
+		Vector3Ops::Transform( mxTrans, Vector3Ops::mkVector3( focus, ptOnLens ) ) );
+}
+
+void ThinLensCamera::EmitRayThroughLens(
+	Ray& r, const Point3& ptOnLens, const Point2& ptOnScreen ) const
+{
+	const Vector3 d = ComputeWorldDirection( ptOnLens, ptOnScreen.x, ptOnScreen.y );
+
+	r.Set( Point3Ops::Transform( mxTrans, ptOnLens ), d );
+
+	// Ray differentials, PBRT-v4 `PerspectiveCamera::
+	// GenerateRayDifferential` thin-lens convention: the +x / +y
+	// auxiliary rays leave the SAME point on the lens as the main
+	// ray and are refocused through the plane of focus in exactly
+	// the same way — only the film sample moves, by one FULL pixel
+	// (Igehy's convention; the per-sample jitter is spatial
+	// integration, not footprint shrinkage).  Re-entering
+	// ComputeWorldDirection rather than re-deriving the geometry is
+	// what makes the auxiliaries inherit the lens shift, the
+	// anamorphic squeeze, the focal-plane tilt and the blade shaping
+	// automatically — a hand-rolled offset would silently drift from
+	// the main ray the next time any of those grows a term.
+	//
+	// What the resulting footprint MEANS, since a thin lens has no
+	// single "pixel cone":
+	//   - At the plane of focus the main ray and its auxiliary land on
+	//     the film sample's conjugate points, which by the definition
+	//     of focus do not depend on which lens point they left from —
+	//     so the FOOTPRINT there is the pinhole footprint for the same
+	//     fov / film, for EVERY lens sample, and it is the true pixel
+	//     footprint.  (The direction offsets themselves do vary with
+	//     the lens point; only at the lens centre are they numerically
+	//     the pinhole's.)  TextureFootprintTest 14b pins the closed
+	//     form and 14b2 the lens-sample invariance.
+	//   - Away from it, the differential measures the pixel footprint
+	//     of the PINHOLE SITTING AT THIS LENS POINT.  That is the
+	//     standard choice (PBRT, Mitsuba): defocus blur is produced
+	//     by integrating many lens samples per pixel, NOT by
+	//     inflating each sample's texture filter.  Widening the
+	//     footprint by the circle of confusion instead would
+	//     double-count the blur and over-filter the texture.
+	//   - With aperture radius 0 every sample lands on ptOnLens
+	//     (0, 0, 0) and the result is identical to PinholeCamera's
+	//     differentials at matched fov / film (TextureFootprintTest
+	//     Test14a pins that at 1e-12).
+	//
+	// Origin offsets stay zero: the auxiliaries share the lens point
+	// with the main ray by construction.  Must follow `r.Set`, which
+	// clears hasDifferentials.
+	const Vector3 dAuxX = ComputeWorldDirection( ptOnLens, ptOnScreen.x + Scalar( 1 ), ptOnScreen.y );
+	const Vector3 dAuxY = ComputeWorldDirection( ptOnLens, ptOnScreen.x, ptOnScreen.y + Scalar( 1 ) );
+	r.diffs.rxOrigin = Vector3( 0, 0, 0 );
+	r.diffs.ryOrigin = Vector3( 0, 0, 0 );
+	r.diffs.rxDir = dAuxX - d;
+	r.diffs.ryDir = dAuxY - d;
+	r.hasDifferentials = true;
+	ApplyNearClip( r );
+}
+
 bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const
 {
-	const Point2 xy = GeometricUtilities::PointOnDisk( halfAperture, Point2( rc.random.CanonicalRandom(), rc.random.CanonicalRandom() ) );
+	const Point2 uv( rc.random.CanonicalRandom(), rc.random.CanonicalRandom() );
+	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
 
-	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
+	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc.
+	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
 
-	const Scalar x = ptOnScreen.x + dx;
-	const Scalar y = ptOnScreen.y + dy;
+	EmitRayThroughLens( r, ptOnLens, ptOnScreen );
+	return true;
+}
 
-	const Point3		focus(  -x *  f_over_d_minus_f_sx,
-								-y *  f_over_d_minus_f_sy,
-								f_over_d_minus_f_d );
+bool ThinLensCamera::GenerateRayWithLensSample(
+	const RuntimeContext& /*rc*/, Ray& r,
+	const Point2& ptOnScreen, const Point2& lensSample ) const
+{
+	// Identical to GenerateRay except we take the aperture sample
+	// directly from lensSample rather than pulling two canonical
+	// randoms from rc.random.  This is the entry point MLT calls so
+	// that PSSMLT mutations of lensSample translate into continuous
+	// aperture moves — without it, small Markov mutations jumped
+	// the aperture to completely unrelated points (because the lens
+	// was a PRNG-seeded function, not a direct function, of the
+	// primary sample) and thin-lens MLT could not converge for DOF.
+	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, lensSample );
 
-	r.Set( 
-		Point3Ops::Transform(mxTrans,ptOnLens),
-		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans, Vector3Ops::mkVector3(focus, ptOnLens))) );
+	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc
+	// and GenerateRay above.
+	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
+
+	EmitRayThroughLens( r, ptOnLens, ptOnScreen );
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Finite-aperture surface for bidirectional transport (debt 28).
+// Contracts and rationale are on the declarations in ThinLensCamera.h.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ThinLensCamera::GetApertureWorldArea() const
+{
+	if( halfAperture <= 0 ) {
+		return 0;
+	}
+
+	// Area of the shape SampleAperture draws uniformly over.  The disk
+	// path is the inscribing circle; the n-gon path is the inscribed
+	// regular polygon, whose area is (n/2) * sin(2*pi/n) * r^2 -- the
+	// same constant the sec^2 inverse-CDF derivation in SampleAperture
+	// normalises against.
+	Scalar shapeArea;
+	if( apertureBlades < 3 ) {
+		shapeArea = PI * halfAperture * halfAperture;
+	} else {
+		const Scalar n = Scalar( apertureBlades );
+		shapeArea = Scalar( 0.5 ) * n * sin( Scalar( 2 ) * PI / n ) * halfAperture * halfAperture;
+	}
+
+	// The squeeze scales x on the lens plane, so it scales the area.
+	// pixelARInv (applied by SampleLensPoint) and mxTrans's
+	// Stretch(pixelAR,1,1) cancel, so neither appears here.
+	return shapeArea * fabs( anamorphicSqueeze );
+}
+
+Point3 ThinLensCamera::SampleLensPoint( const Point2& uv ) const
+{
+	// Must stay byte-for-byte the same construction GenerateRay /
+	// GenerateRayWithLensSample use, or the light-traced bokeh would
+	// not be the eye-traced one.
+	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
+	return Point3( xy.x * pixelARInv, xy.y, 0.0 );
+}
+
+Point3 ThinLensCamera::LensPointToWorld( const Point3& ptOnLens ) const
+{
+	return Point3Ops::Transform( mxTrans, ptOnLens );
+}
+
+Scalar ThinLensCamera::GetImagePlanePixelDensity() const
+{
+	const Scalar pixelAreaLocal = fabs( sx * sy );
+	const Scalar pixelAR_safe = ( pixelAR > 0 ) ? pixelAR : Scalar( 1 );
+	if( pixelAreaLocal < NEARZERO ) {
+		return 0;
+	}
+	return ( filmDistance * filmDistance ) / ( pixelAreaLocal * pixelAR_safe );
+}
+
+bool ThinLensCamera::RasterFromLensPoint(
+	const Point3& worldPoint,
+	const Point3& ptOnLens,
+	Point2& rasterOut ) const
+{
+	// Camera-local coordinates.  `mxTransInv` undoes both the frame
+	// rotation/translation and the Stretch(pixelAR,1,1), landing in the
+	// same space `ptOnLens` and `ComputeWorldDirection`'s `focus` live in.
+	const Point3 q = Point3Ops::Transform( mxTransInv, worldPoint );
+
+	// Ray from the aperture point toward the world point.  ptOnLens.z
+	// is 0 by construction, so d.z is the world point's axial depth.
+	const Vector3 d = Vector3Ops::mkVector3( q, ptOnLens );
+	if( d.z < NEARZERO ) {
+		return false;	// behind the lens plane
+	}
+
+	// Intersect with the (possibly tilted) plane of focus n.P = kFocus.
+	const Scalar nDotD = nFocusX * d.x + nFocusY * d.y + nFocusZ * d.z;
+	if( fabs( nDotD ) < NEARZERO ) {
+		return false;	// ray parallel to the focal plane
+	}
+	const Scalar nDotL = nFocusX * ptOnLens.x + nFocusY * ptOnLens.y;	// ptOnLens.z == 0
+	const Scalar tFocus = ( kFocus - nDotL ) / nDotD;
+	if( tFocus <= 0 ) {
+		return false;	// focal plane is behind the lens along this ray
+	}
+
+	const Point3 focus(
+		ptOnLens.x + tFocus * d.x,
+		ptOnLens.y + tFocus * d.y,
+		tFocus * d.z );
+
+	// Project the focus-plane point back through the lens CENTRE onto
+	// the sensor at z = -filmDistance.  ComputeWorldDirection builds
+	// `focus` as oneMinusT * p_sensor, so the sensor point is
+	// focus / oneMinusT with oneMinusT recovered from the z components.
+	if( filmDistance < NEARZERO ) {
+		return false;
+	}
+	const Scalar oneMinusT = focus.z / ( -filmDistance );
+	if( fabs( oneMinusT ) < NEARZERO ) {
+		return false;
+	}
+	const Scalar x_img = focus.x / oneMinusT;
+	const Scalar y_img = focus.y / oneMinusT;
+
+	if( fabs( sx ) < NEARZERO || fabs( sy ) < NEARZERO ) {
+		return false;
+	}
+
+	// Invert  x_img = (screenX + dx) * sx - shiftX_sceneUnits.
+	const Scalar screenX = ( x_img + shiftX_sceneUnits ) / sx - dx;
+	const Scalar screenY = ( y_img + shiftY_sceneUnits ) / sy - dy;
+
+	const Scalar width  = Scalar( frame.GetWidth() );
+	const Scalar height = Scalar( frame.GetHeight() );
+	// DL-294: film membership is the splat film's decision (see
+	// BDPTCameraUtilities::InRasterGuardBand).
+	if( !BDPTCameraUtilities::InRasterGuardBand( screenX, screenY, width, height ) ) {
+		return false;
+	}
+
+	rasterOut = Point2( screenX, screenY );
 	return true;
 }
 
@@ -133,25 +617,50 @@ Matrix4 ThinLensCamera::ComputeScaleFromAR( ) const
 	return Matrix4Ops::Stretch( Vector3( pixelAR, 1.0, 1.0 ) );
 }
 
-static const unsigned int FOV_ID = 100;
-static const unsigned int APERTURE_ID = 101;
-static const unsigned int FOCAL_ID = 102;
-static const unsigned int FOCUS_ID = 103;
+static const unsigned int SENSOR_ID            = 100;
+static const unsigned int FOCAL_ID             = 101;
+static const unsigned int FSTOP_ID             = 102;
+static const unsigned int FOCUS_ID             = 103;
+static const unsigned int APERTURE_BLADES_ID   = 104;
+static const unsigned int APERTURE_ROTATION_ID = 105;
+static const unsigned int ANAMORPHIC_ID        = 106;
+static const unsigned int TILT_X_ID            = 107;
+static const unsigned int TILT_Y_ID            = 108;
+static const unsigned int SHIFT_X_ID           = 109;
+static const unsigned int SHIFT_Y_ID           = 110;
 
 IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, const String& value )
 {
 	IKeyframeParameter* p = CameraCommon::KeyframeFromParameters( name, value );
 
 	if( !p ) {
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) return nullptr;
+		const std::string_view field( name.c_str() );
 		// Check the name and see if its something we recognize
-		if( name == "fov" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOV_ID );
-		} else if( name == "aperture" ) {
-			p = new Parameter<Scalar>( value.toDouble(), APERTURE_ID );
-		} else if( name == "focal" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOCAL_ID );
-		} else if( name == "focus" ) {
-			p = new Parameter<Scalar>( value.toDouble(), FOCUS_ID );
+		if( field == "sensor_size" ) {
+			p = new Parameter<Scalar>( parsed, SENSOR_ID );
+		} else if( field == "focal_length" ) {
+			p = new Parameter<Scalar>( parsed, FOCAL_ID );
+		} else if( field == "fstop" ) {
+			p = new Parameter<Scalar>( parsed, FSTOP_ID );
+		} else if( field == "focus_distance" ) {
+			p = new Parameter<Scalar>( parsed, FOCUS_ID );
+		} else if( field == "aperture_blades" ) {
+			if( parsed < 0 || parsed > std::numeric_limits<unsigned int>::max() ) return nullptr;
+			p = new Parameter<Scalar>( parsed, APERTURE_BLADES_ID );
+		} else if( field == "aperture_rotation" ) {
+			p = new Parameter<Scalar>( parsed, APERTURE_ROTATION_ID );
+		} else if( field == "anamorphic_squeeze" ) {
+			p = new Parameter<Scalar>( parsed, ANAMORPHIC_ID );
+		} else if( field == "tilt_x" ) {
+			p = new Parameter<Scalar>( parsed, TILT_X_ID );
+		} else if( field == "tilt_y" ) {
+			p = new Parameter<Scalar>( parsed, TILT_Y_ID );
+		} else if( field == "shift_x" ) {
+			p = new Parameter<Scalar>( parsed, SHIFT_X_ID );
+		} else if( field == "shift_y" ) {
+			p = new Parameter<Scalar>( parsed, SHIFT_Y_ID );
 		} else {
 			return 0;
 		}
@@ -164,31 +673,63 @@ IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, 
 
 void ThinLensCamera::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	CameraCommon::SetIntermediateValue( val );
 
 	switch( val.getID() )
 	{
-	case FOV_ID:
-		{
-			fov = *(Scalar*)val.getValue() * DEG_TO_RAD;
-		}
-		break;
-	case APERTURE_ID:
-		{
-			aperture = *(Scalar*)val.getValue();
-		}
+	case SENSOR_ID:
+		sensorSize = *(Scalar*)val.getValue();
 		break;
 	case FOCAL_ID:
-		{
-			focalLength = *(Scalar*)val.getValue();
-		}
+		focalLength = *(Scalar*)val.getValue();
+		break;
+	case FSTOP_ID:
+		fstop = *(Scalar*)val.getValue();
 		break;
 	case FOCUS_ID:
+		focusDistance = *(Scalar*)val.getValue();
+		break;
+	case APERTURE_BLADES_ID:
+		// Stored as Scalar in the keyframe pipeline; truncate to int
+		// at apply time.  Continuous interpolation between integer
+		// blade counts produces non-physical bokeh shapes, so callers
+		// should keyframe blade count with STEP interpolation.
 		{
-			focusDistance = *(Scalar*)val.getValue();
+			const Scalar blades = *static_cast<const Scalar*>( val.getValue() );
+			if( IsFiniteDouble(blades) && blades >= 0 && blades <= std::numeric_limits<unsigned int>::max() )
+				apertureBlades = static_cast<unsigned int>(blades);
 		}
+		break;
+	case APERTURE_ROTATION_ID:
+		// Keyframed values are typed in the same unit as the parser
+		// scene-file value (degrees); storage is radians.  Mirroring
+		// the FOV_ID conversion that PinholeCamera uses for its
+		// degree-typed angular parameter.
+		apertureRotation = *(Scalar*)val.getValue() * DEG_TO_RAD;
+		break;
+	case ANAMORPHIC_ID:
+		// Route through the validated setter -- a keyframed squeeze can
+		// interpolate through <= 0 without the parser ever seeing it;
+		// see SetAnamorphicSqueeze's own comment.
+		SetAnamorphicSqueeze( *(Scalar*)val.getValue() );
+		break;
+	case TILT_X_ID:
+		// Parser/editor surface tilt in degrees; storage is radians.
+		tiltX = *(Scalar*)val.getValue() * DEG_TO_RAD;
+		break;
+	case TILT_Y_ID:
+		tiltY = *(Scalar*)val.getValue() * DEG_TO_RAD;
+		break;
+	case SHIFT_X_ID:
+		// Shift is in MM (Phase 1.2 unit convention).  The camera's
+		// Recompute() converts mm → scene-units before consumption,
+		// so the keyframe value passes through as raw mm — no
+		// conversion here.
+		shiftX = *(Scalar*)val.getValue();
+		break;
+	case SHIFT_Y_ID:
+		shiftY = *(Scalar*)val.getValue();
 		break;
 	}
 }
-
-

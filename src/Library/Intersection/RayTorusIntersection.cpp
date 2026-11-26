@@ -52,8 +52,42 @@ namespace RISE
 		C[3] = 2.0*m*u - q*l;
 		C[4] = u*u - q*t;
 
+		// Self-intersection deflation.
+		//
+		// When the ray origin sits on (or essentially on) the torus
+		// surface — typical for shadow / continuation rays — the
+		// implicit torus equation
+		//   F(O) = (|O|² + R² − r²)² − 4 R² (Ox² + Oz²)
+		// is mathematically zero, which drives C[4] = u² − q·t to zero
+		// too.  In floating point, C[4] lands at noise level (FP
+		// cancellation in u² − q·t plus the SURFACE_INTERSEC_ERROR
+		// nudge applied by Object::IntersectRay when it reports the
+		// surface point).  The OQS solver then returns a "self" root
+		// near t = 0 that is positive and above NEARZERO — passing the
+		// downstream gate as a spurious self-shadow.
+		//
+		// Mathematically the correct fix is to factor out the known
+		// t = 0 root and solve the deflated cubic.  Detect "origin on
+		// surface" by comparing |C[4]| against a relative scale derived
+		// from u² and q·t: surface-resident origins have |C[4]| many
+		// orders of magnitude smaller than max(|u²|, |q·t|), whereas
+		// off-surface origins have |C[4]| at the same order as both.
+		// A relative threshold of 1e-10 leaves FP noise in deflation
+		// territory while keeping every off-surface origin (including
+		// rays that pass close to the surface) on the quartic path.
 		Scalar s[4];
-		int n = Polynomial::SolveQuartic( C, s );
+		int n;
+		const Scalar quartScale = fabs(u*u) + fabs(q*t);
+		if( fabs(C[4]) <= quartScale * 1e-10 ) {
+			// Root at t = 0 is the self-intersection — drop it and solve
+			// the deflated cubic for the remaining real roots.
+			Scalar cubicC[4] = { C[0], C[1], C[2], C[3] };
+			Scalar cubicSol[3];
+			n = Polynomial::SolveCubic( cubicC, cubicSol );
+			for( int i = 0; i < n; i++ ) s[i] = cubicSol[i];
+		} else {
+			n = Polynomial::SolveQuartic( C, s );
+		}
 
 		if( n > 0 )
 		{

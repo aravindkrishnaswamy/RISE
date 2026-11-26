@@ -1,0 +1,1229 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SceneEditor.h - The only sanctioned mutator of a loaded scene.
+//    Owns three responsibilities:
+//      1. Enforces the post-mutation invariant chain (FinalizeTrans-
+//         formations -> ResetRuntimeData -> InvalidateSpatialStruct-
+//         ure) on every transform edit so platform code can never
+//         forget a step.
+//      2. Records every mutation as a value-typed SceneEdit into an
+//         EditHistory for undo/redo.
+//      3. Tags a "dirty scope" enum that the render orchestrator
+//         (SceneEditController) consults to decide between cheap
+//         re-render and expensive photon regen.
+//
+//  This is the SceneEditor + SceneEdit value-record design from
+//  docs/INTERACTIVE_EDITOR_PLAN.md §4.3.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RISE_SCENEEDITOR_
+#define RISE_SCENEEDITOR_
+
+#include "SceneEdit.h"
+#include "EditHistory.h"
+#include "../Interfaces/IJobPriv.h"   // RISE::CstBatchUndoOp (2026-10-16)
+#include "DirtyTracker.h"
+#include "../Interfaces/IScenePriv.h"
+#include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <set>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <utility>
+
+namespace RISE
+{
+	namespace Implementation { class CameraCommon; }
+	class IObjectPriv;
+	class IJob;
+
+	//! 87: does `param` name a `standard_object` surface binding that a
+	//! CONTAINER node (a pure transform with no geometry) cannot carry?
+	//! Defined ONCE, in SceneEditor.cpp, and shared with
+	//! SceneEditController's agent-commit gate -- two copies of the list is
+	//! how the next binding param ends up gated on one path and not the other.
+	bool IsObjectSurfaceBindingParamName( const String& param );
+
+	class SceneEditor
+	{
+	public:
+		//! Coarse "what kind of change happened" enum.  The render
+		//! orchestrator consults LastDirtyScope() to decide how much
+		//! work the next render needs to redo.
+		enum DirtyScope
+		{
+			Dirty_None,
+			Dirty_ObjectTransform,   ///< spatial structure invalidated
+			Dirty_Camera,            ///< no spatial invalidation
+			Dirty_Time,              ///< photons MAY need regen on production
+			Dirty_TimeAndPhotons     ///< photons definitely need regen
+		};
+
+		SceneEditor( IScenePriv& scene );
+		~SceneEditor();
+
+		//! Optional manager hooks installed by `SceneEditController` so
+		//! Phase-3 object property edits (`SetObjectMaterial` /
+		//! `SetObjectShader`) can resolve names through the right
+		//! manager.  Null managers cause those ops to fail at Apply
+		//! time — the editor degrades to "transform / camera ops only"
+		//! mode used by Phase-1/2 unit tests that pass IScenePriv only.
+		void SetMaterialManager( class IMaterialManager* mgr ) { mMaterialManager = mgr; }
+		void SetShaderManager( class IShaderManager* mgr ) { mShaderManager = mgr; }
+
+		//! Painter manager hooks for `SceneEdit::SetMaterialProperty`.
+		//! Apply uses these to resolve the painter-name string the
+		//! panel sends into the actual IPainter*/IScalarPainter*
+		//! to bind on the material.  Null managers cause material
+		//! property edits to fail at Apply (matching the material /
+		//! shader degradation pattern).
+		void SetPainterManager( class IPainterManager* mgr ) { mPainterManager = mgr; }
+		void SetScalarPainterManager( class IScalarPainterManager* mgr ) { mScalarPainterManager = mgr; }
+
+		//! Optional Job pointer installed by SceneEditController so
+		//! Phase-1-unlock object property edits (currently
+		//! `SetObjectInteriorMedium`) can resolve medium names through
+		//! `IJob::GetMedium` and recover prev-state via
+		//! `IJob::EnumerateMediumNames`.  Null Job causes those ops to
+		//! fail at Apply time — the editor stays usable for transform /
+		//! material / shader / shadow / camera / light ops without it.
+		void SetJob( IJob* job )
+		{
+			const bool initialBinding = ( mJob != job );
+			mJob = job;
+			if( initialBinding ) {
+				// Only initial attachment establishes a clean baseline. A D2
+				// re-derive rebinds the SAME Job after committing a new head;
+				// treating that as a fresh bind would baseline an unsaved edit.
+				CaptureSavedHeadVersion_();
+			} else {
+				// Same-Job rebind: retain the saved baseline and refresh the
+				// derived floor against the new live head.
+				RecomputeHeadDiffers_();
+				RecomputeHasUnsavedChangesCached_();
+			}
+		}
+
+		//! Re-point the editor at the Job's CURRENT scene after a whole-scene rebuild (e.g. a scene_variant
+		//! re-derive ClearAll's + recreates the Scene + managers); call ALONGSIDE the SetXManager setters,
+		//! otherwise mScene + the cached managers dangle into freed storage.
+		void RebindScene( IScenePriv& scene ) { mScene = &scene; mScenePhotonsExist = ComputeScenePhotonsExist(); mSceneScale = 0; }   // also refresh the scene-derived caches
+
+		//! Apply an edit.  On success, runs the invariant chain,
+		//! pushes the edit (with its prevTransform/prevTime captured
+		//! before the mutation) onto the history, and updates
+		//! LastDirtyScope().  Returns false if the edit references
+		//! an unknown object or is otherwise invalid; the scene is
+		//! not modified in that case.
+		bool Apply( const SceneEdit& edit );
+
+		//! Pop the most recent edit and apply its inverse.  Returns
+		//! false if the undo stack is empty or the edit's target
+		//! object has gone away.
+		bool Undo();
+
+		//! Re-apply an edit that was previously undone.
+		bool Redo();
+
+		//! Open a composite group.  Subsequent Apply() calls between
+		//! BeginComposite/EndComposite collapse to one undo entry.
+		void BeginComposite( const char* label );
+		void EndComposite();
+
+		//! Force the open-composite depth back to zero WITHOUT pushing a
+		//! CompositeEnd marker.  Used by the controller's transactional
+		//! rollback (feature/gui-snapshot-prototype #2b(b)): a rollback
+		//! can fire mid-gesture, after BeginComposite opened a group and
+		//! the gesture's history (including the unmatched CompositeBegin)
+		//! has just been reverted by SceneEditor::Undo's seq-walk + ClearRedo.  If the
+		//! tool's later EndComposite still saw depth>0 it would push an
+		//! ORPHAN CompositeEnd against the discarded history, corrupting
+		//! the next Undo's composite walk.  Resetting the depth makes
+		//! that EndComposite a safe no-op.  No-op when already at zero.
+		void ForceCompositeDepthZero() { if( mCompositeDepth > 0 ) mCompositeDepth = 0; }
+
+		//! True while a BeginComposite group is open (mCompositeDepth > 0).
+		//! The controller's BeginTransaction refuses to open a transaction
+		//! mid-composite: the baseline depth would land INSIDE the group
+		//! and a single composite Undo() during rollback would walk PAST
+		//! it, consuming the pre-baseline CompositeBegin and corrupting
+		//! the surrounding undo history (re-review finding A).
+		bool IsCompositeOpen() const { return mCompositeDepth > 0; }
+
+		//! F7: snapshot / restore ALL dirty state so a transactional
+		//! rollback can return it to its pre-transaction baseline (Undo
+		//! re-marks dirty; created entities are never un-marked).
+		//! Captures the DirtyTracker channels (four sets + the CST-head
+		//! boolean) PLUS the additional set
+		//! mScaleFromAnchorSet (BUG-2: it lives outside DirtyTracker, so a
+		//! plain State copy missed it -> a rolled-back scale-gizmo gesture
+		//! still reported unsaved changes).  Restore also fires the dirty-
+		//! changed listener (BUG-1: a silent dirty->clean left the Save button
+		//! stale).  Note the CST-head boolean is NOT restored by plain
+		//! value: DirtyTracker::RestoreState OR-merges it -- but that
+		//! belt-and-braces covers ONLY the UNCATEGORIZED/empty-kind
+		//! agent-mark channel (KNOWN kinds mark the per-entity sets,
+		//! which restore by plain copy); the real mid-transaction guard
+		//! is ApplyAgentParamEdit's mTxnOpen refusal, which rejects
+		//! agent commits while a transaction is open (see the F7 doc
+		//! in DirtyTracker.h).
+		struct DirtySnapshot {
+			DirtyTracker::State              tracker;
+			std::unordered_set<std::string> scaleFromAnchor;
+		};
+		DirtySnapshot CaptureDirtyState() const {
+			DirtySnapshot s; s.tracker = mDirtyTracker.CaptureState(); s.scaleFromAnchor = mScaleFromAnchorSet; return s;
+		}
+		void RestoreDirtyState( const DirtySnapshot& s ) {
+			mDirtyTracker.RestoreState( s.tracker );
+			mScaleFromAnchorSet = s.scaleFromAnchor;
+			FireDirtyChangedIfTransitioned();
+		}
+
+		DirtyScope LastDirtyScope() const { return mLastScope; }
+
+		//! True if the scene had at least one populated photon map
+		//! at construction.  The controller uses this to decide
+		//! whether SetSceneTime needs to run before a production
+		//! render after a scrub.
+		bool ScenePhotonsExist() const { return mScenePhotonsExist; }
+
+		//! Most recently applied scene time via SetSceneTime ops.
+		//! Defaults to 0 (the implicit scene time before any scrub).
+		//! The controller reads this so it can run a full
+		//! `IScene::SetSceneTime(t)` (with photon regen) before a
+		//! production render — the preview path uses
+		//! SetSceneTimeForPreview which deliberately skips photon
+		//! regen and would leave caustics from the pre-scrub time.
+		Scalar LastSceneTime() const
+		{
+			return mLastSetTime.load( std::memory_order_acquire );
+		}
+
+		//! Characteristic length of the scene — the diagonal of the
+		//! axis-aligned union of all object bounding boxes (or a
+		//! sensible fallback if the scene is empty / unbounded).
+		//! Used by the camera-control math to scale pan / zoom rates
+		//! by overall scene size, so a small scene gets small absolute
+		//! changes per pixel and a large scene gets large ones,
+		//! independent of where the camera is positioned.  Lazily
+		//! computed on first use; cached thereafter.
+		Scalar SceneScale() const;
+
+		//! P3a slice 3 (N-up per-pane fly): the CANONICAL camera-op math --
+		//! orbit / pan / zoom / roll pixel-deltas onto a CameraCommon --
+		//! exposed so SceneEditController can apply the SAME transform to a
+		//! pane's realized standalone override camera that Apply() uses for
+		//! the scene camera.  Exposing the one canonical implementation
+		//! beats re-deriving the math (drift class); the definition stays
+		//! in SceneEditor.cpp.
+		static void ApplyCameraOpToCamera(
+			Implementation::CameraCommon& cam,
+			const SceneEdit& e,
+			Scalar sceneScale );
+
+		//! The undo/redo record.  Historically an input to round-trip
+		//! save (Phase 6 / Phase A byte-splice); since the Slice-6d
+		//! deletion save no longer reads it — consumers are undo/redo
+		//! and the controller's transactional-rollback machinery.
+		const EditHistory& History() const { return mHistory; }
+		EditHistory&       History()       { return mHistory; }
+
+		//! Dirty-since-load tracker (origin: Phase 6.3,
+		//! docs/ROUND_TRIP_SAVE_PLAN.md §7.1).  Populated by Apply /
+		//! Undo / Redo (and the agent path via MarkCstHeadDirty).
+		//! Historically the Phase 6.4 byte-splice save engine read it
+		//! to decide which objects to compare against the loaded
+		//! snapshot; since the Slice-6d byte-splice deletion the
+		//! channels only feed HasUnsavedChanges() / the GUI
+		//! Save-button state — the save engine's sole tracker
+		//! interaction is Clear() after a successful save.
+		const DirtyTracker& Dirty() const { return mDirtyTracker; }
+		DirtyTracker&       Dirty()       { return mDirtyTracker; }
+
+		//! Object names that received a `ScaleObjectFromAnchor` op
+		//! since the last load.  Historically the Phase 6.4 §9.2
+		//! forceMatrixOverride gate consulted this so SFA-touched
+		//! objects always serialized as `matrix` overrides (pinned
+		//! 2.8); since the Slice-6d byte-splice deletion it feeds
+		//! HasUnsavedChanges() and the F7 CaptureDirtyState /
+		//! RestoreDirtyState transaction snapshot.  The production
+		//! save path (SceneEditController::RequestSave) hands the
+		//! engine a local COPY of this set; the member itself is
+		//! cleared by the controller's mEditor.ClearDirtyState()
+		//! call on a successful save.
+		const std::unordered_set<std::string>& ScaleFromAnchorSet() const { return mScaleFromAnchorSet; }
+		void ClearDirtyState()
+		{
+			mDirtyTracker.Clear();
+			mScaleFromAnchorSet.clear();
+			// Document-first ADR phase 1: a successful save makes the CURRENT
+			// head the clean baseline for the derived-dirty comparison.
+			CaptureSavedHeadVersion_();
+			FireDirtyChangedIfTransitioned();
+		}
+
+		//! F5 slice 1b: mark the editor dirty for an AGENT commit that
+		//! mutated the retained CST head DIRECTLY (via
+		//! Job::ApplyCstParamEdit), bypassing SceneEditor::Apply.  The
+		//! GUI path marks dirty inside Apply (MarkEditEntityDirty); the
+		//! agent path does not, so without this call a live agent edit
+		//! leaves HasUnsavedChanges() FALSE — the Save button stays
+		//! disabled and a close-without-prompt path can silently LOSE
+		//! the edit.
+		//!
+		//! `entityKind` is the CST chunk kind of the edited entity
+		//! (e.g. "standard_object", "material", "*_light", "camera",
+		//! "*_medium").  KNOWN kinds route to their per-category dirty
+		//! channel (mirroring MarkEditEntityDirty), so the mark matches
+		//! the GUI's channel for the common cases.  UNKNOWN kinds (the
+		//! agent can edit painters / functions / rasterizer params /
+		//! shaders — kinds the tracker's categories don't cover) set
+		//! the tracker's first-class CST-head boolean channel
+		//! (DirtyTracker::MarkCstHeadDirty) so HasAnyDirty() still
+		//! flips true without parking uncategorized names in the
+		//! object-transform set.  Either mark is SAFE: SaveEngine::Save
+		//! has NO dirty gate — it serializes the whole Document
+		//! unconditionally (NoOp on byte-equality) and never
+		//! byte-splices per entity; the aggregate dirty bit gates only
+		//! the GUI Save-button enable — and both channels are cleared
+		//! by DirtyTracker::Clear() on a successful save.
+		//!
+		//! Fires FireDirtyChangedIfTransitioned() so the Save-button
+		//! listener runs on the clean→dirty transition.  The listener
+		//! runs on the CALLING thread (a future background-transport
+		//! agent must marshal it to the UI dispatch queue — a 1c
+		//! concern, not this fix).  An empty `entityName` is tolerated:
+		//! it sets the same CST-head boolean channel, whose set is
+		//! UNCONDITIONAL (no name to validate), so the mark can NEVER
+		//! silently no-op — this is a data-loss guard.
+		void MarkCstHeadDirty( const char* entityName, const char* entityKind )
+		{
+			const std::string name = entityName ? entityName : std::string();
+			const std::string kind = entityKind ? entityKind : std::string();
+
+			// Map KNOWN CST chunk kinds to their per-category channel so
+			// the agent mark mirrors the GUI's MarkEditEntityDirty for
+			// the common cases.  ClassifyCstEntityKind (below) is the
+			// SINGLE shared classifier -- see its own doc for why this
+			// used to be an independent copy of the same vocabulary.
+			EntityCategory category;
+			const bool isKnown = ClassifyCstEntityKind( kind, category );
+
+			// An empty name would make MarkEntityDirty a SILENT NO-OP
+			// (DirtyTracker ignores empty names), so set the CST-head
+			// boolean channel BEFORE the category dispatch regardless of
+			// kind -- the boolean set is unconditional, so the mark
+			// always flips HasAnyDirty() by construction (data-loss
+			// guard).  Empty names are a LIVE case, not just defence:
+			// the agent chunk-CRUD path (SceneEditController::
+			// ApplyAgentChunkCrud_) legitimately passes an empty name for
+			// an UNNAMED inserted chunk (film / rasterizer / camera-class),
+			// and any future caller must not re-open the hole either.
+			if( name.empty() ) {
+				mDirtyTracker.MarkCstHeadDirty();
+			} else if( isKnown ) {
+				mDirtyTracker.MarkEntityDirty( category, name );
+			} else {
+				// UNKNOWN / uncategorized kind (function, rasterizer,
+				// shader -- e.g. advanced_shader): set the first-class
+				// CST-head boolean channel -- a coarse "the retained
+				// Document changed" mark that keeps uncategorized names
+				// OUT of the object-transform set (the pre-A1 semantic
+				// overload parked them in mNames).  Painters are NOT an
+				// example of this case since doc 88 S4:
+				// ClassifyCstEntityKind's painter arm (below) classifies
+				// them as KNOWN, so they land in the per-entity
+				// EntityCategory::Painter channel above instead.
+				mDirtyTracker.MarkCstHeadDirty();
+			}
+			FireDirtyChangedIfTransitioned();
+		}
+
+		//! Shared-undo follow-up (agent emissive-material light-gen bump):
+		//! resolve whether an agent-originated CST param edit touched a
+		//! MATERIAL, and if so, bump the light-topology generation iff that
+		//! material is emissive (BumpSceneLightGenerationIfMaterialEmits).
+		//! This closes the same gap MarkEditEntityDirty's SetMaterialProperty
+		//! arm covers for the GUI property panel (SceneEditor.cpp ~910-924),
+		//! but for the agent path -- which never routes through that switch
+		//! (its forward commit lands via SceneEditController::
+		//! ApplyAgentParamEdit, its Undo/Redo arms via ApplyRevertMutation /
+		//! ApplyForwardMutation's dedicated SetAgentCstParam branches).
+		//! Without this bump, editing an emissive material's exitance/scale
+		//! through the agent (or undoing/redoing that edit) never advances
+		//! Scene::mLightTopologyGeneration, so a reused RayCaster's
+		//! LightSampler alias table keeps the STALE selection weight from
+		//! before the edit -- light SELECTION stays biased even though
+		//! per-sample Le is still read live (the estimator itself is
+		//! unbiased; only convergence rate suffers).  Bites ONLY on a
+		//! code-1 incremental apply -- a D2 full re-derive (codes 2/3)
+		//! rebuilds the Scene from scratch and gets a fresh alias table via
+		//! RebindEditorToJob, so bumping there too is harmless, just moot.
+		//!
+		//! `entityKind` uses the SAME kind-string vocabulary as
+		//! MarkCstHeadDirty ("material" / "*_material" for materials; other
+		//! known CST kinds -- "standard_object", "*_light", "*_camera",
+		//! camera, "*_medium" -- for everything else the agent can target).
+		//! Resolution rule, by design NARROWER than MarkCstHeadDirty's full
+		//! dispatch (this call only needs "is this a material"):
+		//!   - kind == "material" or kind ends with "_material": look the
+		//!     entity up by name in mMaterialManager and bump iff it's
+		//!     emissive (GetEmitter() != null).  A rename/retarget mid-edit
+		//!     that fails to resolve is treated as non-emissive (no bump) --
+		//!     symmetric with BumpSceneLightGenerationIfMaterialEmits's own
+		//!     null-tolerant contract.
+		//!   - kind is EMPTY or any other UNRECOGNIZED string (the agent can
+		//!     target painters, functions, rasterizer params, shaders --
+		//!     kinds outside the GUI's Category taxonomy, and also passes
+		//!     empty kind on some call shapes): bump CONSERVATIVELY.  A
+		//!     spurious bump costs one alias-table rebuild on the next
+		//!     render (cheap); a MISSED bump on an actually-emissive target
+		//!     is a rendering-correctness bug (stale light selection) --
+		//!     the tradeoff is deliberately asymmetric in favour of
+		//!     correctness.
+		//!   - kind is a KNOWN NON-material CST kind ("standard_object",
+		//!     "*_light", "*_camera"/camera, "*_medium"): no bump here.  A
+		//!     spatial edit on an emissive OBJECT is covered by
+		//!     BumpSceneLightGenerationIfEmitterSetChanged /
+		//!     BumpSceneLightGenerationIfMaterialEmits at the transform-op
+		//!     call sites (MarkEditEntityDirty's own dispatch); a light
+		//!     PROPERTY edit is covered by the SetLightProperty Undo arm's
+		//!     existing BumpSceneLightGeneration() call.  Those are
+		//!     DIFFERENT SceneEdit ops (SetObjectGeometry/SetLightProperty,
+		//!     not SetAgentCstParam) with their own bump call sites already
+		//!     in place -- this helper only needs to cover the
+		//!     SetAgentCstParam / ApplyAgentParamEdit surface.
+		//! Defined out-of-line in SceneEditor.cpp: the body calls
+		//! mMaterialManager->GetItem(), which needs IMaterialManager's full
+		//! definition -- this header only forward-declares that type (see
+		//! `class IMaterialManager* mMaterialManager` below), matching how
+		//! BumpSceneLightGenerationIfMaterialEmits is declared here / defined
+		//! in the .cpp.
+		void BumpSceneLightGenerationForAgentParamEdit(
+			const char* entityName, const char* entityKind );
+
+		//! Shared-undo U1: push an EditHistory record for an agent PARAM commit
+		//! that has ALREADY been applied to the retained Document (via
+		//! Job::ApplyCstParamEditChecked -- see
+		//! SceneEditController::ApplyAgentParamEdit).  Unlike every other
+		//! SceneEdit op, the FORWARD mutation for this first apply happens
+		//! BEFORE this call, not inside it -- this method only records the
+		//! (entityName, entityKind, param, newValue, prevValue-or-absent)
+		//! tuple so a later Undo/Redo can revert/redo it through the ordinary
+		//! ApplyRevertMutation/ApplyForwardMutation machinery (RouteCstParamEdit_ /
+		//! RouteCstParamRemove_ — the SAME routing the GUI property panel uses).
+		//!
+		//! Does NOT call MarkEditEntityDirty or FireDirtyChangedIfTransitioned
+		//! or touch mLastScope -- the caller (ApplyAgentParamEdit) already calls
+		//! MarkCstHeadDirty for the dirty side effect (which fires the listener
+		//! itself), and mLastScope has no agent-path reader.  Does NOT run
+		//! CaptureForApply (there is nothing to capture — the caller already
+		//! captured `prevValue`/`prevValueWasAbsent` from the Document under the
+		//! same lock as the apply) and does NOT call ApplyForwardMutation (the
+		//! mutation already happened).
+		//!
+		//! `entityKind` may be empty (agents can target CST kinds outside the
+		//! GUI's Category taxonomy).  Clears the redo stack (ordinary new-edit
+		//! semantics — Push does this).
+		//!
+		//! doc 88 S4b: `occ` records WHICH occurrence of `param` the forward
+		//! mutation wrote (0 = first, the convention Cst writes and reads with),
+		//! and `occAddressed` records that the edit was addressed BY OCCURRENCE
+		//! (a repeatable param's `<role>[<index>]` row) and therefore arms the
+		//! undo/redo drift guard — see SceneEdit::cstParamOcc /
+		//! cstParamOccAddressed.  Both DEFAULT to the pre-S4b meaning, so every
+		//! existing call site keeps its exact behaviour.
+		void PushAgentCstParamEdit(
+			const String& entityName, const String& entityKind, const String& param,
+			const String& newValue, const String& prevValue, bool prevValueWasAbsent,
+			int occ = 0, bool occAddressed = false,
+			const std::string& ownerPreText = std::string(), const std::string& ownerPostText = std::string() );
+
+		//! Shared-undo U2: push an EditHistory record for an agent chunk-CRUD commit (insert OR remove) that
+		//! has ALREADY been applied to the retained Document (via Job::ApplyCstInsertChunk /
+		//! Job::ApplyCstRemoveChunk -- see SceneEditController::ApplyAgentChunkCrud_).  Same shape as
+		//! PushAgentCstParamEdit: the forward mutation already happened, so this only records what a later
+		//! Undo/Redo needs to revert/redo it.
+		//!
+		//! `isInsert` selects AgentInsertChunk / AgentRemoveChunk.  `chunkName`/`chunkKind` are the chunk's
+		//! resolved name/keyword (echoed by the Job call).  `chunkBytes` is: for an insert, the EXACT chunk
+		//! text the agent supplied (Redo replays it through Job::ApplyCstInsertChunk again); for a remove, the
+		//! EXACT verbatim bytes the CALLER captured from the Document immediately BEFORE the erase (the
+		//! concatenation of every top-level item Cst::DocEraseChunkTidy actually dropped) -- Undo splices this
+		//! back at `docIndex` via Job::ApplyCstRestoreChunkAt.  `docIndex` is meaningful for BOTH ops: for an
+		//! insert, the top-level index ApplyCstInsertChunk's [leadSep][chunk][trailSep] triple landed at
+		//! (captured by the CALLER immediately AFTER the insert) -- Undo removes exactly those 3 items at that
+		//! index via Job::ApplyCstRemoveItemsAt; for a remove, the index the chunk occupied at capture time
+		//! (BEFORE the erase) -- Undo restores at that index via Job::ApplyCstRestoreChunkAt.  `wasRasterizer`
+		//! is meaningful ONLY for a remove (ignored for an insert): whether the removed chunk was itself a
+		//! `*_rasterizer` chunk (see AgentRemoveChunk's doc).
+		//!
+		//! Does NOT call MarkEditEntityDirty / FireDirtyChangedIfTransitioned or touch mLastScope -- the caller
+		//! already calls MarkCstHeadDirty for the dirty side effect, matching PushAgentCstParamEdit.  Clears the
+		//! redo stack (ordinary new-edit semantics -- Push does this).
+		void PushAgentChunkCrudEdit(
+			bool isInsert, const String& chunkName, const String& chunkKind, const String& chunkBytes,
+			int docIndex, bool wasRasterizer );
+
+		//! R1a (2026-08-09, batched remove_chunks): push the ONE EditHistory record that represents a WHOLE
+		//! agent batch remove already applied to the retained Document (via Job::ApplyCstRemoveChunks -- see
+		//! SceneEditController::ApplyAgentRemoveChunks).  Same "forward already happened" shape as
+		//! PushAgentChunkCrudEdit; one record, so one Cmd-Z restores every removed chunk.
+		//!
+		//! `displayTargets` is the comma-joined target list used for logs only (it is NOT an addressable
+		//! entity name -- see the AgentRemoveChunks op doc); `priorDocText` is the byte-exact Cst::SerializeCst
+		//! of the Document captured immediately BEFORE the erase (the Undo payload); `redoTargetLines` is the
+		//! `kind\tname`-per-line redo descriptor; `anyWasRasterizer` is true iff ANY removed chunk was a
+		//! `*_rasterizer` chunk.  Does NOT mark dirty or fire notifications -- the caller already calls
+		//! MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentRemoveChunksEdit(
+			const String& displayTargets, const String& priorDocText, const String& redoTargetLines,
+			bool anyWasRasterizer );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): push the ONE EditHistory record that represents a WHOLE
+		//! agent composite geometry replacement already applied to the retained Document (via
+		//! Job::ApplyCstReplaceDocumentText -- see SceneEditController::ApplyAgentReplaceGeometry).  Same
+		//! "forward already happened" shape as PushAgentRemoveChunksEdit; one record, so one Cmd-Z restores the
+		//! byte-exact pre-call document and one Cmd-Shift-Z reinstalls the byte-exact post-call one.
+		//!
+		//! `objectName` is the rebound `standard_object`'s name (a REAL addressable entity here, unlike the
+		//! batch remove's display-only list, so the record also carries `cstEntityKind` = "standard_object");
+		//! `priorDocText` / `postDocText` are the byte-exact Cst::SerializeCst of the Document immediately
+		//! BEFORE and AFTER the composite.  Does NOT mark dirty or fire notifications -- the caller already
+		//! calls MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentReplaceGeometryEdit(
+			const String& objectName, const String& priorDocText, const String& postDocText );
+
+		//! doc-88 Phase 3 S20 (docs/gui/NODE_GRAPH_CANVAS.md sect. 6): push the ONE EditHistory record that
+		//! represents the node-graph canvas's POSITIONED Duplicate-node fork, already applied to the retained
+		//! Document (via Job::ApplyCstReplaceDocumentText -- see SceneEditController::DuplicateGraphNode).
+		//! Same "forward already happened" shape as PushAgentReplaceGeometryEdit, and the same byte-exact
+		//! prior/post document pair -- the ONLY inverse a POSITIONED splice has, since AgentInsertChunk's
+		//! redo would re-run Job::ApplyCstInsertChunk's tier heuristic and land the copy somewhere else.
+		//!
+		//! `copyName` / `copyKeyword` are the COPY's resolved name and chunk keyword (both real and
+		//! addressable, so the record carries a per-entity dirty channel unlike the batch remove's
+		//! display-only list); `priorDocText` / `postDocText` are the byte-exact Cst::SerializeCst of the
+		//! Document immediately BEFORE and AFTER the splice.  Does NOT mark dirty or fire notifications --
+		//! the caller already calls MarkCstHeadDirty, matching PushAgentChunkCrudEdit.
+		void PushAgentDuplicateNodeEdit(
+			const String& copyName, const String& copyKeyword,
+			const String& priorDocText, const String& postDocText );
+
+		//! Batched agent edits (2026-10-16): push the ONE EditHistory record (SceneEdit::AgentEditBatch) for
+		//! a whole agent edit batch already applied via SceneEditController::ApplyAgentEditBatch.  The record
+		//! holds the landed elements' OPERATION-LEVEL inverses in landing order (see the op doc).  `label` is
+		//! display-only; `landedRasterizerInsert` = the batch landed a `*_rasterizer` insert.  Does NOT mark
+		//! dirty -- the caller does.
+		void PushAgentEditBatchEdit(
+			const String& label, const std::vector<RISE::CstBatchUndoOp>& ops, bool landedRasterizerInsert );
+
+		//! Review round 3: a user-facing notice set when an Undo/Redo of an agent batch edit was REFUSED (the record
+		//! stays in the history, as every refused record does).  Returns it and clears it ("" when none).
+		std::string ConsumeHistoryNotice();
+		//! Clear any pending notice (the controller does this as each Undo/Redo starts, so a notice only ever
+		//! describes the immediately preceding call).
+		void ClearHistoryNotice();
+
+		//! True when anything MAY need saving since the last load /
+		//! save.  Conservative: it can be true when a Save would NoOp
+		//! (e.g. edit→undo re-marks dirty; Save then NoOps on
+		//! byte-equality of the serialized Document).  Drives the
+		//! GUI's "Save" button enable state on both platform shells.
+		//! Cheap O(1).
+		//! Mutation sites publish every TRANSIENT dirty channel via
+		//! DirtyTracker::HasAnyDirty() — object transforms (Phase 6),
+		//! property-shaped edits on objects / cameras / lights /
+		//! materials / media (Phase B), created-pending entities
+		//! (Phase C), and the CST-head boolean (Model-B F5) — plus the
+		//! scale-from-anchor set.
+		//! Document-first ADR phase 1: the REVISION-DIFF term is the derived
+		//! floor -- a Document commit after the last save ALWAYS reads dirty,
+		//! regardless of tracker bookkeeping (kills the false-clean class
+		//! permanently).  The tracker + scale-anchor terms persist as safe
+		//! (false-dirty-only) supplements for live-only pending state and
+		//! legacy scenes.  Known asymmetry: undo-back-to-saved still reads
+		//! dirty (revision moved) -- a safe false-positive (ADR SS3.3).
+		bool HasUnsavedChanges() const
+		{
+			return mHasUnsavedChangesCached.load( std::memory_order_acquire );
+		}
+
+		//! Notification channel for the platform GUI to update its
+		//! Save-button enable state.  COALESCED transition semantics
+		//! (document-first phase 1 + round-5): the listener reports the
+		//! CURRENT `HasUnsavedChanges()` whenever it DIFFERS from the last
+		//! report, delivered from the post-unlock drain with NO lock held.
+		//! A clean->dirty->clean burst between drains nets to NO callback --
+		//! the final state was already correct; consumers must key on the
+		//! reported VALUE, never count calls.  Listener runs on whichever
+		//! thread drained; bridges should marshal to their UI queue.
+		//!
+		//! Set once before the editor starts receiving edits;
+		//! re-setting clears the previous listener.  Pass `nullptr`
+		//! to detach.
+		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
+		using DirtyChangedPtr = std::shared_ptr<DirtyChangedFn>;
+		//! Atomically replace the listener and wait for any shared previous
+		//! callback to quiesce, but RETURN its owning pointer instead of releasing
+		//! it.  The callable itself is allocated before locking, and the mutex only
+		//! copies/swaps shared_ptrs: arbitrary callable copy/destructor code never
+		//! runs under the notification mutex.  Controller teardown uses the returned
+		//! owner to postpone capture destructors until terminal gates are established.
+	private:
+		friend class SceneEditController;
+		DirtyChangedPtr ExchangeDirtyChangedListener( DirtyChangedFn fn )
+		{
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			DirtyChangedPtr incoming;
+			if( fn ) incoming = std::make_shared<DirtyChangedFn>( std::move( fn ) );
+			DirtyChangedPtr retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				// A std::function target's copy/final destructor is an arbitrary user
+				// callout.  Only shared ownership moves while this mutex is held.
+				if( !state->registrationClosed )
+				{
+					retired.swap( state->listener );
+					state->listener.swap( incoming );
+				}
+				else
+				{
+					// A registration racing terminal close is rejected, but its
+					// arbitrary capture destructor needs the same scoped retirement
+					// as an installed listener rather than running at function exit.
+					retired.swap( incoming );
+				}
+				// Replacing/detaching is a quiescence barrier for the PREVIOUS
+				// callback.  Platform listeners capture raw bridge userData, so
+				// returning while another thread still invokes its copied
+				// std::function would let bridge teardown free that pointer first.
+				// A callback may detach/re-enter this listener surface; that same
+				// callback thread must not wait for its own return.  Controller
+				// lifecycle destruction is rejected until callback-copy retirement.
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
+			}
+			// Don't fire on attach — the bridge already knows the
+			// initial state (it can call HasUnsavedChanges()).
+			return retired;
+		}
+
+		//! Terminal detach used by controller/editor teardown.  Closing
+		//! registration and removing the stored listener happen under the same
+		//! mutex, so an in-flight callback cannot install a replacement while
+		//! this call releases the mutex inside its quiescence wait.  The retired
+		//! target is returned for release at the caller's safe lifecycle point.
+		DirtyChangedPtr CloseDirtyChangedListener()
+		{
+			const std::shared_ptr<DirtyNotificationState> state = mDirtyNotificationState;
+			DirtyChangedPtr retired;
+			{
+				std::unique_lock<std::mutex> lk( state->mutex );
+				state->registrationClosed = true;
+				retired.swap( state->listener );
+				if( state->callbacksInFlight != 0
+				 && state->callbackThread != std::this_thread::get_id() ) {
+					state->callbackCV.wait( lk, [&] {
+						return state->callbacksInFlight == 0;
+					} );
+				}
+			}
+			return retired;
+		}
+
+	public:
+		//! Replace/detach through the scoped retirement implementation.  The final
+		//! target release remains under dirty-callback lifecycle TLS even when a
+		//! different thread owned the in-flight snapshot or registration was closed.
+		void SetDirtyChangedListener( DirtyChangedFn fn );
+
+	private:
+		//! Advance the live Scene's light/structure generation so a render
+		//! reusing a cached RayCaster rebuilds its LightSampler /
+		//! LuminaryManager / environment sampler instead of taking the
+		//! same-Scene-pointer fast path (feature/gui-snapshot-prototype
+		//! #2b(a)).  Call after any in-place LIGHT mutation (energy / colour
+		//! / direction / cone).  No-op if mScene isn't a concrete
+		//! RISE::Implementation::Scene (out-of-tree IScenePriv).  Keeps the
+		//! Scene generation in lockstep with editor light edits — the
+		//! engine-side counterpart of Scene::RestoreFromSnapshot's own bump.
+		void BumpSceneLightGeneration();
+
+		//! Bump the live Scene's light-topology generation iff a material-
+		//! BINDING change affects the emitter set — i.e. either the old or
+		//! the new material is emissive (`IMaterial::GetEmitter() != null`).
+		//! A `SetObjectMaterial` edit that binds an object to/from (or
+		//! between) emissive materials changes which objects the
+		//! LuminaryManager treats as area lights, so a reused RayCaster
+		//! must rebuild its LightSampler — otherwise a cached luminary
+		//! pointing at a now-non-emissive material would later deref a NULL
+		//! emitter (the in-place light-edit path already bumps; this is the
+		//! object-material-binding counterpart).  No-op when neither
+		//! material is emissive (a plain reflectance-only swap leaves the
+		//! emitter set unchanged).  Either pointer may be null (a missing /
+		//! unresolved material is treated as non-emissive).
+		void BumpSceneLightGenerationIfEmitterSetChanged(
+			const class IMaterial* prevMat, const class IMaterial* newMat );
+
+		//! Bump the light-topology generation iff `mat` is emissive
+		//! (`GetEmitter() != null`).  For edits that change an existing
+		//! luminaire's cached sampler state WITHOUT changing the emitter SET:
+		//! a SPATIAL edit on an emissive object (its area / world position
+		//! feed the LightSampler alias-table weight + representative point,
+		//! baked at Prepare()) and a material-SLOT edit on an emissive
+		//! material (its exitance feeds the same weight).  Stale state biases
+		//! light SELECTION only -- the estimator stays unbiased (per-sample
+		//! area / Le are read live) -- but a reused RayCaster must rebuild to
+		//! converge (re-review finding B).  No-op for null / non-emissive mat.
+		void BumpSceneLightGenerationIfMaterialEmits( const class IMaterial* mat );
+
+		//! Model-B F2 S3 fix round (P3-a): the SINGLE source of truth for
+		//! "which EntityCategory does this CST chunk-kind string belong
+		//! to" -- shared by MarkCstHeadDirty (above, in the public section)
+		//! and BumpSceneLightGenerationForAgentParamEdit (SceneEditor.cpp),
+		//! which used to carry two independently-maintained copies of the
+		//! same suffix-matching `endsWith` vocabulary ("standard_object" /
+		//! "camera" or "*_camera" / "*_light" / "material" or "*_material" /
+		//! "*_medium").  Drift risk: a future new CST kind (or a renamed
+		//! suffix) added to one classifier and not the other would silently
+		//! desync the agent's dirty-marking from its light-regen bump.  ONE
+		//! helper, called from both, makes that structurally impossible.
+		//!
+		//! Returns true and fills `outCategory` when `kind` matches a KNOWN
+		//! CST entity kind; returns false (outCategory untouched) for an
+		//! empty or unrecognized kind (painter / function / rasterizer /
+		//! shader / any future uncategorized chunk) -- callers each apply
+		//! their OWN policy for the unknown case (MarkCstHeadDirty falls
+		//! back to the coarse CST-head boolean channel; the light-regen
+		//! bump conservatively bumps).
+		static bool ClassifyCstEntityKind( const std::string& kind, EntityCategory& outCategory );
+
+		IScenePriv*  mScene;   // borrowed; re-pointable via RebindScene after a whole-scene rebuild
+		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
+		class IShaderManager*         mShaderManager;         // borrowed; nullable
+		class IPainterManager*        mPainterManager;        // borrowed; nullable (Phase 4)
+		class IScalarPainterManager*  mScalarPainterManager;  // borrowed; nullable (Phase 4)
+		IJob*                         mJob;                   // borrowed; nullable
+		std::string                   mHistoryNotice;         // review round 2: see ConsumeHistoryNotice
+		void NoteHistoryRefusal_( const SceneEdit& edit, bool forward, const std::string& why, bool fixable );
+		EditHistory  mHistory;
+		DirtyScope   mLastScope;
+		int          mCompositeDepth;
+		bool         mScenePhotonsExist;
+		// IScene exposes SetSceneTime but no GetSceneTime, so we
+		// track the most-recently-applied time locally.  Used to
+		// capture prevTime for undo on SetSceneTime ops.
+		// Read by platform production-render handoff threads while the UI
+		// may scrub/undo time. A scalar atomic is the authoritative snapshot;
+		// live Scene mutation remains serialized by the controller mutex.
+		std::atomic<Scalar> mLastSetTime;
+		// Cached scene scale (bbox-union diagonal).  0 = uncomputed;
+		// `SceneScale()` lazy-computes on first call.  `mutable`
+		// because `SceneScale` is `const`-qualified so camera-op
+		// code can call it from forward / inverse paths.
+		mutable Scalar mSceneScale;
+
+		// Phase 6.3: dirty-since-load channels.  Historically the
+		// byte-splice save engine read them to decide which entities
+		// to compare against their loaded baselines; that mechanism
+		// went with the Slice-6d deletion.  Today the channels only
+		// feed HasUnsavedChanges() / the GUI Save-button state (save
+		// is a whole-Document SerializeCst), plus the F7
+		// CaptureDirtyState / RestoreDirtyState transactional
+		// snapshot.  Cleared by ClearDirtyState() after a
+		// successful save.
+		DirtyTracker  mDirtyTracker;
+
+		// Phase 6.3 (pinned 2.8 / R2 §7): names that have received any
+		// ScaleObjectFromAnchor op since the last load.  Historically
+		// the byte-splice save engine's forceMatrixOverride gate (§9.2)
+		// consulted this so SFA-touched objects always serialized as
+		// matrix-form overrides; that gate went with the Slice-6d
+		// deletion.  Today it only feeds HasUnsavedChanges() (plus the
+		// F7 dirty-state capture/restore); cleared by ClearDirtyState()
+		// after a successful save.
+		std::unordered_set<std::string> mScaleFromAnchorSet;
+
+		// P5 Slice 3 expansion (object transform): objects whose live transform changed since the last
+		// CommitPendingCstObjectTransforms.  Populated by transform ops on a CST scene; flushed to the `matrix`
+		// param by the controller at a parked boundary.  UI-thread-only.
+		std::unordered_set<std::string> mPendingCstObjMatrix;
+		// ...the subset of them noted by a FORWARD op (Apply / Redo) -- the rest were noted only by an Undo.
+		std::unordered_set<std::string> mPendingCstObjForward;
+
+		// Undo fidelity (2026-10-17): per object, the owner chunk's exact text before and after each FORWARD
+		// `matrix` commit, most recent last.  A transform commit re-spells the pose as `matrix`; when an Undo then
+		// restores the pose, RestoreCstObjectSpelling_ swaps the latest entry's `pre` text back instead of writing
+		// another `matrix`, so the chunk returns to the bytes it had -- which an older record (an agent insert's
+		// exact-bytes inverse) depends on.  Every swap is VERIFIED (the re-derived local matrix must equal the
+		// restored live one), so an entry that does not belong to the step being undone is never trusted; capped.
+		// Each entry also records `prePose`: the object's local matrix (FormatMatrix16) when its first forward op of
+		// the flush window ran -- the pose `pre` derives to.  A swap is attempted only for an entry whose `prePose`
+		// equals the pose the Undo restored, so a commit that wrote an unchanged pose (pre == post) can never
+		// vouch for itself, and a mismatched entry costs no derive.
+		struct CstTransformSpelling_ { std::string pre; std::string post; std::string prePose; };
+		std::unordered_map< std::string, std::vector<CstTransformSpelling_> > mCstTransformSpellings;
+		static constexpr std::size_t kCstTransformSpellingCap = 32;          // entries per object
+		static constexpr std::size_t kCstTransformSpellingObjectCap = 256;   // objects (the whole map resets past it)
+		// The local matrix of each object at its FIRST forward transform op since the last flush (see prePose).
+		std::unordered_map< std::string, std::string > mPendingCstObjPrePose;
+
+		// P5 Slice 3 expansion (camera drag): the active camera's name if a camera-drag op changed its pose since
+		// the last CommitPendingCstCameraPose (empty = none).  Flushed to the camera chunk's pose params by the
+		// controller at a parked boundary.  UI-thread-only.  Intentionally a SINGLE name, not a set (unlike
+		// mPendingCstObjMatrix): a drag gesture targets the ONE active camera, so a composite is single-camera.
+		// If a future path ever drags multiple cameras in one composite, convert this to an unordered_set + a
+		// snapshot-before-route pass (mirroring the object commit).
+		std::string mPendingCstCameraName;
+
+		// P5 Slice 3 expansion (object transform): the last object whose transform edit was REFUSED on a CST scene
+		// for lacking a `matrix` param (csg_object).  Used to log the refusal once per distinct object instead of
+		// per gizmo drag-frame.  UI-thread-only.
+		std::string mLastNonRoutableTransformObj;
+		//! Objects whose world-space transform op has already been refused (the
+		//! parent chain is singular or too ill-conditioned to invert).  PER
+		//! INSTANCE and under this editor's own serialization, NOT a function-local
+		//! static: a static would be shared by every SceneEditor in the process and
+		//! mutated without a lock, and RISE_API_CreateSceneEditController is public
+		//! surface for exactly the multi-instance embedding that makes that a data
+		//! race.  Exists to stop a gizmo drag emitting the same error ~60 times a
+		//! second.
+		std::set<std::string> mWorldOpRefusalWarned;
+
+		// Model-B (code-3 re-render fix): "did a CST re-derive during the LAST Apply CHANGE the live scene?", i.e.
+		// did any route helper see Job::DeriveEditedCstDocument_ return a mutating code (1 incremental / 2 replaced-
+		// clean / 3 replaced-DIAGNOSED)?  This is DECOUPLED from Apply's success bool: a code-3 re-derive REPLACED
+		// the Scene+managers (managers rebuilt from the mutated Document, best-effort) but reports FAILURE (the route
+		// helpers return false) -- yet the viewport MUST re-render to show the replaced scene, else the user sees
+		// STALE pre-edit pixels.  Reset to false ONLY at Apply's top; the route helpers OR-in true on code != 0.  The
+		// controller reads it after Apply (CstLiveSceneChangedInLastApply) and kicks the render on `ok || changed`.
+		// UI-thread-only, same discipline as mPendingCst*.  (Standalone CommitPendingCst* callers -- OnPointerUp,
+		// Undo/Redo -- kick unconditionally and don't consult this; it is meaningful only right after Apply.)
+		bool mCstLiveSceneChanged = false;
+
+		//! Deferred-notification state lives independently of SceneEditor's
+		//! storage so concurrent owner teardown can quiesce safely. Drain keeps
+		//! a shared reference, and SceneEditor::~SceneEditor marks the owner dead;
+		//! the drain then touches only this surviving state.
+		struct DirtyNotificationState
+		{
+			DirtyChangedPtr  listener;
+			bool             registrationClosed = false;
+			bool             prevHasUnsavedChanges = false;
+			std::atomic<bool> currentHasUnsavedChanges{ false };
+			std::atomic<bool> pending{ false };
+			std::atomic<bool> delivering{ false };
+			std::atomic<bool> ownerAlive{ true };
+			std::atomic<unsigned int> deferDepth{ 0 };
+			std::mutex        mutex;
+			std::condition_variable callbackCV;
+			unsigned int      callbacksInFlight = 0;
+			std::thread::id   callbackThread;
+		};
+		std::shared_ptr<DirtyNotificationState> mDirtyNotificationState;
+
+		//! State-only drain used by the public drain and the deferral token. It
+		//! never dereferences SceneEditor.  Lifecycle deletion from the listener
+		//! itself is rejected until both invocation and copied-target retirement
+		//! finish; concurrent owner teardown waits on callbacksInFlight.
+		static bool DrainDirtyNotificationState_(
+			const std::shared_ptr<DirtyNotificationState>& state );
+
+		//! Round-5 review P1: the derived-dirty floor is served from this CACHED
+		//! atomic, recomputed at every mutation's Fire (under the mutator's own
+		//! lock -> the Job head read is race-free) and by the controller's
+		//! per-frame RefreshDerivedDirty catch-all.  The lock-free C-API dirty
+		//! query then never reads the non-atomic head/saved versions directly
+		//! (the round-4 wiring did, a torn-read UB).
+		std::atomic<bool> mHeadDiffersCached{ false };
+
+		//! Complete lock-free dirty answer. DirtyTracker and
+		//! mScaleFromAnchorSet are mutable containers written under the
+		//! controller mutex, so public/ABI readers must never inspect them
+		//! directly. Mutation sites publish their combined value here.
+		std::atomic<bool> mHasUnsavedChangesCached{ false };
+
+		//! Document-first ADR phase 1: the head version at bind / last
+		//! successful save -- the clean baseline for derived dirty.
+		RISE::Cst::CstHeadVersion mSavedHeadVersion;
+
+		//! Capture the CURRENT head version as the clean baseline (bind +
+		//! save success).
+		void CaptureSavedHeadVersion_();
+
+		//! Derived-dirty floor: serves mHeadDiffersCached (lock-free).
+		bool HeadDiffersFromSaved_() const { return mHeadDiffersCached.load( std::memory_order_acquire ); }
+
+		//! Recompute the cached floor from the live head + saved baseline.
+		//! REQUIRES a stable Document (the caller's mutation lock, or a
+		//! single-threaded context) -- see mHeadDiffersCached's doc.
+		void RecomputeHeadDiffers_();
+
+		//! Publish the complete dirty answer from the stable tracker,
+		//! scale-anchor set, and cached revision floor.
+		void RecomputeHasUnsavedChangesCached_();
+
+	public:
+		//! Defers dirty delivery across a composite public controller call.
+		//! Nested mutation helpers may each attempt to drain; while this
+		//! token lives those drains only leave the notification pending.
+		//! The last token's destructor performs the state-only drain after
+		//! all controller work has completed.
+		class DirtyNotificationDeferral
+		{
+		public:
+			DirtyNotificationDeferral( DirtyNotificationDeferral&& other ) noexcept
+				: mState( std::move( other.mState ) ) {}
+			~DirtyNotificationDeferral();
+
+			DirtyNotificationDeferral( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( const DirtyNotificationDeferral& ) = delete;
+			DirtyNotificationDeferral& operator=( DirtyNotificationDeferral&& ) = delete;
+
+		private:
+			friend class SceneEditor;
+			explicit DirtyNotificationDeferral(
+				const std::shared_ptr<DirtyNotificationState>& state )
+				: mState( state ) {}
+			std::shared_ptr<DirtyNotificationState> mState;
+		};
+
+		DirtyNotificationDeferral DeferDirtyNotifications();
+
+		//! Document-first ADR phase 1 (fire -> pending + drain): mutation
+		//! entry points (Apply success, Undo, Redo, ClearDirtyState, the
+		//! marks) call THIS, which only records "dirty may have changed" --
+		//! it never invokes the listener, so it is safe under any lock.  The
+		//! CONTROLLER drains after releasing its mutex
+		//! (DrainDirtyNotification), so the listener always runs OUTSIDE
+		//! controller locks; a missed drain site degrades to a one-frame
+		//! delay (RefreshProperties drains as a per-frame catch-all), never
+		//! a deadlock or a missed transition.  Kept public for the RAII
+		//! helper in SceneEditor.cpp; safe to call from anywhere.
+		void FireDirtyChangedIfTransitioned();
+
+		//! Drain the pending dirty notification: if a mutation flagged a
+		//! possible change, read the atomically-published complete dirty
+		//! value and fire the listener iff it transitioned since the last
+		//! fire. MUST be called with no controller locks held. Thread-safe
+		//! (leaf mutex serializes concurrent drains); synchronous re-entry is
+		//! coalesced into the active deliverer's loop. Listener exceptions are
+		//! logged and contained at this notification boundary, including drains
+		//! triggered from noexcept RAII deferral destructors.
+		//! Returns false when concurrent owner teardown marked the editor dead.
+		//! Callers that have more member work after a drain must return immediately.
+		bool DrainDirtyNotification();
+
+		//! True while this thread is invoking this editor's dirty listener OR
+		//! retiring the copied listener target immediately after invocation.
+		//! Controller lifecycle teardown must be retried by the owner after this
+		//! callback boundary returns.
+		bool IsInDirtyChangedCallbackOnThisThread() const;
+
+		//! Round-5 review P1: recompute the cached derived-dirty floor.  Call
+		//! ONLY while the Document is stable (the controller calls it inside
+		//! its RefreshProperties mMutex try_lock region as a per-frame
+		//! self-heal for any mutation path that missed its Fire).
+		void RefreshDerivedDirty()
+		{
+			RecomputeHeadDiffers_();
+			RecomputeHasUnsavedChangesCached_();
+			const std::shared_ptr<DirtyNotificationState> state =
+				mDirtyNotificationState;
+			state->currentHasUnsavedChanges.store(
+				mHasUnsavedChangesCached.load( std::memory_order_acquire ),
+				std::memory_order_release );
+			state->pending.store( true, std::memory_order_release );
+		}
+
+		//! P5 Slice 3 expansion (object transform): the CONTROLLER calls these at a render-thread-PARKED boundary
+		//! (drag-end / panel transform edit / undo / redo) to commit object transforms accumulated by the
+		//! per-frame edits as the authoritative standard_object `matrix` param.  Committing re-derives (a variant
+		//! scene ClearAll's), so it MUST run parked -- hence it is the controller's job, not auto-flushed here.
+		bool HasPendingCstObjectTransforms() const { return !mPendingCstObjMatrix.empty(); }
+		bool CommitPendingCstObjectTransforms();
+		bool HasPendingCstCameraPose() const { return !mPendingCstCameraName.empty(); }
+		bool CommitPendingCstCameraPose();
+
+		//! Model-B (code-3 re-render fix): did the LAST Apply's CST re-derive CHANGE the live scene (raw code
+		//! 1/2/3), decoupled from Apply's success bool?  A code-3 re-derive REPLACED the Scene+managers (so the
+		//! viewport must re-render) but Apply returns false (the edit is diagnosed/failed).  The controller kicks
+		//! the render on `ApplyResult || CstLiveSceneChangedInLastApply()` so a diagnosed edit still repaints the
+		//! replaced scene instead of leaving stale pixels.  Valid only immediately after Apply (reset at Apply top).
+		bool CstLiveSceneChangedInLastApply() const { return mCstLiveSceneChanged; }
+
+	private:
+		//! Look up an object by name on the live ObjectManager and
+		//! return its IObjectPriv*.  Returns null if the object is
+		//! not found or does not implement IObjectPriv (which would
+		//! indicate a non-mutable Object subclass — in practice
+		//! every concrete Object inherits IObjectPriv).
+		IObjectPriv* FindObject( const String& name ) const;
+
+		//! Apply a forward transform op to an object.  Caller has
+		//! already captured prevTransform.
+		//! `isReplay` -- see ApplyForwardMutation.  TRUE suppresses the 87
+		//! container gates, which are CREATION rules and must not refuse a
+		//! history replay.  NOTE those three gates are currently UNREACHABLE
+		//! with a container: on a retained-CST scene every binding op returns
+		//! at ApplyForwardMutation's routing block above this function, and on
+		//! a legacy scene nothing can turn a leaf INTO a container mid-session
+		//! (SetObjectGeometry only ever binds a NAMED geometry; there is no
+		//! clear-geometry op).  They are future-proofing, not load-bearing.
+		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit, bool isReplay );   ///< P1: false if a binding op's forward target no longer resolves
+
+		//! Restore an object's transform from a captured matrix.
+		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );
+
+		//! F4: resolve the camera an edit TARGETS (by recorded name) so
+		//! Undo/Redo restore the edited camera, not the active-later one.
+		//! Falls back to the active camera for legacy edits with no name.
+		class ICamera* ResolveEditedCamera( const SceneEdit& e );
+		// P1: serial of the entity whose STATE the op restores (object/camera/material/
+		// light), for remove+re-add identity detection.  0 = op tracks no identity.
+		unsigned long long ResolveTargetSerial( const SceneEdit& e ) const;
+
+		//! F1: rebind a material slot to a named painter -- shared by the
+		//! SetMaterialProperty single-edit AND composite-walk undo/redo arms.
+		bool ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName );
+
+		//! P5 Slice 3: re-point this editor's cached scene + managers at the Job's CURRENT ones after a CST
+		//! D2 full re-derive (Job::ApplyCstParamEdit result 2 or 3 ClearAll'd the Job, freeing the old ones).
+		void RebindToJob_();
+
+		//! P5 Slice 3 expansion: route a property edit through the retained CST (Job::ApplyCstParamEdit) instead
+		//! of the direct manager mutation, so the Document stays complete (a later material D2 can't lose it).
+		//! Self-rebinds on a D2 full re-derive (result >=2).  Returns false (caller fails the edit) on a reject
+		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
+		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
+
+		//! Light-colour CST composite (2026-09-02, round 2).  THE PROBLEM: a CST-routed light `color` edit
+		//! writes the PROPERTY PANEL's value, which is a LINEAR RISEPel read straight off
+		//! `ILight::emissionColor()`.  When the chunk still carries `colorspace sRGB` -- every scene
+		//! `tools/migrate_scenes_light_colorspace.py` touched -- the re-derive gamma-DECODES those
+		//! already-linear digits a SECOND time, so a small nudge in the colour well lands somewhere far
+		//! darker than the user asked for.  THE FIX: the edit writes BOTH `colorspace Rec709RGB_Linear` and
+		//! the new colour digits, as ONE ATOMIC Document edit (Job::ApplyCstParamEdits -- one copy, one
+		//! validation pass over both params, one derive), so the digits the panel writes mean what the panel
+		//! means by them.  If ANY part is refused, NOTHING changes: no write, no derive, no re-render, no
+		//! history entry -- the caller reports a clean failure.
+		//!
+		//! FULLY UNDOABLE.  `LightColorCompositeState_` reads the chunk's ORIGINAL `color` and `colorspace`
+		//! TEXT (raw, out of the Document) at capture time into the SceneEdit; the revert arm writes both
+		//! back VERBATIM in one atomic edit, so after Undo the chunk is byte-identical to what it was (the
+		//! `colorspace sRGB` spelling restored) and the light is back at its original decoded value.  Redo
+		//! re-applies the pair.  That byte-identity is not cosmetic: an AGENT history entry captures RAW
+		//! CHUNK TEXT (SceneEditController::CaptureAgentPriorParamValue_), so if Undo left the chunk linear,
+		//! an older agent entry would replay sRGB digits under a linear chunk and land the light ~6x too
+		//! bright.  Shared undo (agent + user, LIFO) only works if each entry restores the convention it was
+		//! captured under.  (The restore re-emits the value's tokens single-space separated, so a chunk that
+		//! aligned `color` with tabs or double spaces comes back normalised -- values and line positions are
+		//! preserved exactly; only intra-value padding is not.  One further exception: a chunk that carried
+		//! `colorspace` with NO `color` line gains an explicit `color 0 0 0` -- the descriptor default it was
+		//! relying on, and a fixed point of every colour space, so the LIGHT is restored exactly.)
+		//!
+		//! A chunk that spells `colorspace` TWICE is refused by Job::ApplyCstParamEdits' duplicate-occurrence
+		//! guard (the derive reads the LAST occurrence while the write addresses the first, so the write would
+		//! be a silent no-op) -- the refusal is logged naming the parameter, and the fix is to delete the dead
+		//! `colorspace` line.  The same applies to a doubled `color`.  Round-3 P3 fix: `LightColorCompositeState_`
+		//! now checks this itself (`Cst::ParamOccurrenceCount` on both params) rather than relying on that
+		//! downstream guard -- it captures its original-text pair at occurrence 0, but the presence/convention
+		//! test just above it reads the LAST occurrence, so a doubled line would have captured a DEAD line's
+		//! digits as what Undo restores.  Self-sufficient: FALSE here, before either capture runs, is always
+		//! safe to fall through on for THIS case specifically, because the fall-through single-param write
+		//! lands on the very same duplicated param and Job's guard still refuses it cleanly.
+		//!
+		//! `LightColorCompositeState_` answers "does this edit need the composite" and, when it does, hands
+		//! back the two ORIGINAL value texts.  FALSE (and the plain single-param route stands, unchanged) for
+		//! any role but `color`, for a chunk whose `colorspace` is absent or already `Rec709RGB_Linear`, for a
+		//! light with no resolvable chunk, on a legacy (no-Document) scene, and for the duplicate-occurrence
+		//! case above.  `outRefuse` is a SEPARATE signal from the FALSE return: it is set (still returning
+		//! FALSE) only when the composite is NEEDED (chunk is non-linear, no duplicate lines) but the original
+		//! text came back unexpectedly empty -- there the single-param fall-through is NOT safe (nothing
+		//! downstream would catch it), so both callers must refuse the whole edit instead of silently writing
+		//! `color` alone under the still non-linear `colorspace`, which is exactly the double-decode bug this
+		//! composite exists to close.
+		bool LightColorCompositeState_( const char* lightName, const String& propertyName,
+		                                String& outPrevColorText, String& outPrevColorSpaceText,
+		                                bool& outRefuse ) const;
+
+		//! The atomic write half of the composite above: `colorspace` + `color` in ONE Job::ApplyCstParamEdits
+		//! call (one Document copy, one derive, all-or-nothing).  Same rebind-on-D2 / mCstLiveSceneChanged
+		//! bookkeeping as RouteCstParamEdit_; returns false -- with the Document untouched -- when the batch
+		//! was refused or the re-derive diagnosed.
+		bool RouteCstLightColorComposite_( const char* lightName, const char* colorValue, const char* colorSpaceValue );
+
+		//! Shared-undo U1: inverse of an agent param edit that INSERTED a previously-absent param -- removes it
+		//! instead of re-setting a nonexistent prior value.  See SceneEditor.cpp for the full rationale.
+		//! P1-2 fix (round 1): `occ` selects which occurrence to remove (0 = first).
+		//! P1-3 fix (round 1): the bool return is keyed on MUTATION (r>=1), not cleanliness (r==1||2) -- a
+		//! code-3 diagnosed re-derive still mutated + rebound the Document, so it must read as "the revert
+		//! happened" for the caller's history-stack bookkeeping.  `outDiagnosed` (may be null) reports the
+		//! code-3 case for callers that need to log it. See SceneEditor.cpp for the full rationale.
+		bool RouteCstParamRemove_( const char* entityName, const char* entityKind, const char* role, int occ, bool* outDiagnosed = nullptr );
+
+		//! Shared-undo U1: full-derivability-gated twin of RouteCstParamEdit_, used ONLY by SetAgentCstParam's
+		//! Undo/Redo -- see SceneEditor.cpp for why the agent op cannot safely share the ungated GUI-property route.
+		//! P1-3 fix (round 1): same mutation-keyed return + `outDiagnosed` as RouteCstParamRemove_ above.
+		//! doc 88 S4b: `occ` selects which occurrence to write (0 = first) -- the argument position mirrors
+		//! RouteCstParamRemove_'s so the two inverse halves of one edit read the same way at their call sites.
+		bool RouteCstParamEditChecked_( const char* entityName, const char* entityKind, const char* role, const char* value, int occ, bool* outDiagnosed = nullptr );
+		//! Undo fidelity (2026-10-17): SetAgentCstParam's verbatim owner-chunk swap (see the definition's doc).
+		//! -1 = does not apply (caller replays values), 0 = would not derive (nothing changed), 1 = landed.
+		int RouteCstParamOwnerRestore_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
+
+		//! doc 88 S4b (occurrence-addressed undo/redo DRIFT GUARD).  Answers: is `edit`'s occurrence STILL the
+		//! line this direction is entitled to overwrite?  Two independent checks against the CURRENT retained
+		//! Document, resolving the entity EXACTLY as the coming write will:
+		//!   (a) EXISTENCE -- the chunk still resolves and still carries an `edit.cstParamOcc`-th occurrence of
+		//!       `edit.propertyName` (Cst::ParamOccurrenceCount);
+		//!   (b) IDENTITY -- that occurrence's CURRENT value still equals `expectedValue`, i.e. the value this
+		//!       direction last wrote there (Undo expects the edit's post-value; Redo expects the prior value
+		//!       Undo restored).  Compared on a whitespace-NORMALISED copy (token-split + single-space rejoin,
+		//!       not merely ends-trimmed -- round-1 P1 fix): a write always re-tokenises and single-space-joins
+		//!       the value, so INTERIOR separators (a column-aligned scene, a slider commit that resends the
+		//!       untouched tokens verbatim) are never preserved by any write path and cannot carry drift
+		//!       information; only the TOKENS matter.  See NormalizeParamValueWs_ in SceneEditor.cpp.
+		//! Returns true when both hold, or when `edit.cstParamOccAddressed` is false (every pre-S4b edit --
+		//! unguarded, exactly as before).  On a mismatch it LOGS which check failed and what it found, and
+		//! returns false so the caller refuses; the caller's refusal leaves the history entry in place.
+		//! `direction` is a diagnostics-only label ("Undo" / "Redo").
+		//!
+		//! This is the U2 lesson (an index captured at edit time is not a promise about the document later)
+		//! applied to a param LINE rather than a document item: an agent chunk-CRUD verb leaves no history
+		//! record at all, so nothing invalidates this entry when the occurrence layout moves underneath it.
+		bool OccurrenceEditStillAddressable_( const SceneEdit& edit, const char* expectedValue, const char* direction ) const;
+
+		//! Shared-undo U2: route a chunk-CRUD Undo/Redo through Job's chunk-CRUD primitives.  `forInsertOp`
+		//! selects which op's inverse/redo table applies (AgentInsertChunk vs AgentRemoveChunk); `forward`
+		//! selects Redo-shape (re-apply the original verb) vs Undo-shape (apply its inverse).  Same
+		//! mutation-keyed return + `outDiagnosed` convention as RouteCstParamRemove_/RouteCstParamEditChecked_
+		//! above (r>=1 -- including a diagnosed code-3 -- reads as "the mutation landed" for the history-stack
+		//! bookkeeping).  See SceneEditor.cpp for the per-shape dispatch (insert-Undo = remove by name;
+		//! insert-Redo = re-insert captured bytes; remove-Undo = ApplyCstRestoreChunkAt at the captured index;
+		//! remove-Redo = re-remove by name).
+		bool RouteAgentChunkCrud_( const SceneEdit& edit, bool forInsertOp, bool forward, bool* outDiagnosed = nullptr );
+
+		//! R1a (2026-08-09, batched remove_chunks): the AgentRemoveChunks sibling of RouteAgentChunkCrud_.
+		//! `forward` false = Undo (Job::ApplyCstReplaceDocumentText on the captured pre-batch document text);
+		//! `forward` true = Redo (Job::ApplyCstRemoveChunks over the recorded `kind\tname` lines).  Same
+		//! mutation-keyed return + `outDiagnosed` convention as RouteAgentChunkCrud_.  Kept SEPARATE from that
+		//! helper rather than folded into it: the two directions consume entirely different fields and call
+		//! entirely different Job primitives, so a shared four-way branch would only obscure both.
+		bool RouteAgentRemoveChunksBatch_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
+
+		//! R2 (2026-08-10, replace_geometry_scaffold): the whole-document prior/post text-swap route, the
+		//! AgentReplaceGeometry sibling of
+		//! RouteAgentRemoveChunksBatch_.  BOTH directions are the SAME primitive on DIFFERENT recorded bytes --
+		//! `forward` false = Undo (Job::ApplyCstReplaceDocumentText on `propertyValue`, the pre-composite
+		//! document), `forward` true = Redo (the SAME call on `prevPropertyValue`, the post-composite one).
+		//! Same mutation-keyed return + `outDiagnosed` convention as RouteAgentChunkCrud_.
+		bool RouteAgentDocumentSwap_( const SceneEdit& edit, bool forward, bool* outDiagnosed = nullptr );
+
+		//! P5 Slice 3 expansion (object): route a SetObjectShadowFlags edit to the standard_object
+		//! casts_shadows / receives_shadows bool params (bit0 = casts, bit1 = receives).  Two CST re-derives.
+		bool RouteObjectShadowFlagsToCst_( const String& objectName, int flags );
+
+		//! P5 Slice 3 expansion (object transform): note an object whose transform changed for a deferred
+		//! `matrix`-param commit; route ONE object's net transform (rebinds on a D2).
+		//! `revert` = noted by an UNDO (ApplyRevertMutation); a name noted by any forward op in the same flush
+		//! commits as forward.
+		void NoteCstObjectTransform_( const String& name, bool revert = false );
+		//! Undo fidelity (2026-10-17): commit object `name`'s UNDONE transform by swapping its chunk back to the
+		//! exact text the last forward commit replaced (mCstTransformSpellings), verified against the restored live
+		//! `matrix16`.  False = did not apply (the caller writes `matrix16` as before); true = landed, `routed` set.
+		bool RestoreCstObjectSpelling_( const std::string& name, const std::string& matrix16, bool& routed );
+		void NoteCstCameraDrag_( const String& camName );
+		bool ApplyCstObjectMatrix_( const std::string& name, const std::string& matrix16 );
+		bool ApplyCstObjectComponents_( const std::string& name, const std::string& position, const std::string& orientation );
+
+		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
+		//! IS the single-edit body; the composite walk-loops call them per
+		//! inner edit so the single and composite paths can NEVER drift (the
+		//! F1/F4/F5 bug class lived in that drift).  Both set mLastScope per
+		//! op; composite callers override it with the aggregate scope after
+		//! the loop.  Forward uses propertyValue / the new transform; revert
+		//! restores the captured prev* state.  Return false only on a
+		//! resolve/validation miss (target gone), matching the prior bodies.
+		//! `isReplay` = "this is a Redo or a composite-undo roll-forward, NOT a
+		//! new edit".  It suppresses the 87 container gates and ONLY those: a
+		//! creation rule must not be applied to a history replay, because a
+		//! refused replay pushes its record back and re-fails forever, stranding
+		//! everything older.  See the block comment above ApplyRevertMutation
+		//! for the full argument and the sequence that proved it.
+		//! NOT defaulted, deliberately: a replay-shaped caller that forgets the
+		//! flag silently re-creates the wedge this exists to prevent, and the
+		//! compiler is the only reviewer guaranteed to be present.
+		bool ApplyForwardMutation( const SceneEdit& edit, bool isReplay );   // Redo direction
+		bool ApplyRevertMutation( const SceneEdit& edit );    // Undo direction
+
+		//! H2 Stage 3 (finishes P-WALK): the capture/validate HALF of a
+		//! first Apply -- resolve the target, run every rejection gate, and
+		//! record the prev* state into `edit`.  Returns false (reject, no
+		//! mutation, no history) on a validation miss.  Apply = this +
+		//! ApplyForwardMutation + push, so the forward MUTATION now lives in
+		//! exactly one place (ApplyForwardMutation), shared by Apply/Redo.
+		bool CaptureForApply( SceneEdit& edit );
+
+		//! H2 (P-WALK finish): fold the composite walk's per-op-category saw-
+		//! flags into one scope -- shared by composite Undo AND Redo so the
+		//! aggregation lives in one place.  NOTE the deliberate asymmetry vs the
+		//! single-edit dispatchers: a SINGLE object *property* op (material /
+		//! shader) scopes to Dirty_ObjectTransform (every IsObjectOp does), but
+		//! the SAME op inside a composite lands in sawPropertyOp -> here ->
+		//! Dirty_Camera.  Both force a re-render, and OpNeedsSpatialRebuild (not
+		//! the scope) gates the actual BVH rebuild, so the divergence is
+		//! conservative and harmless.
+		DirtyScope AggregateCompositeScope( bool sawObjectOp, bool sawCameraOp, bool sawTimeOp, bool sawPropertyOp ) const;
+
+		//! Run the post-mutation invariant chain on a single object
+		//! and on the manager.
+		void RunObjectInvariantChain( IObjectPriv& obj );
+
+		//! Phase B: route a property-shaped edit (camera / light /
+		//! material / medium property, or object material / shader /
+		//! shadow / interior-medium binding) into the DirtyTracker's
+		//! per-category channel.  Called from Apply / Undo / Redo.
+		//! Transform ops are NOT handled here — they mark the object-
+		//! transform channel inline.  Over-marking a mutation that DID
+		//! land is harmless: the channels only feed HasUnsavedChanges(),
+		//! and save is an unconditional whole-Document SerializeCst that
+		//! NoOps on byte-equality (the byte-splice engine's property pass
+		//! that diffed marked entities went with Slice 6d), so a
+		//! marked-but-unchanged entity at worst lights the Save button.
+		//!
+		//! P3-e fix (round 1): that "harmless" reasoning does NOT extend to
+		//! marking a mutation that was REFUSED.  Undo()/Redo() call this
+		//! ONLY after ApplyRevertMutation/ApplyForwardMutation actually
+		//! succeeds -- never on a refusal (e.g. the S4b occurrence drift
+		//! guard) -- because a refused revert changes nothing in the
+		//! Document, and lighting the Save button for it is not a harmless
+		//! over-mark, it is HasUnsavedChanges() reporting a real falsehood
+		//! (and, at quit time, an unsaved-changes prompt over a Document
+		//! that is in fact byte-identical to what was last saved).
+		void MarkEditEntityDirty( const SceneEdit& edit );
+
+		//! Compute whether the loaded scene has any populated photon map.
+		bool ComputeScenePhotonsExist() const;
+	};
+}
+
+#endif

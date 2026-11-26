@@ -12,11 +12,14 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "SphereGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -30,9 +33,160 @@ SphereGeometry::~SphereGeometry( )
 {
 }
 
-void SphereGeometry::GenerateMesh( )
+bool SphereGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	// DL-116.  The north (j=0) and south (j=nV) pole ROWS collapse to a
+	// single 3D position with a single normal: `atPole` below canonicalizes
+	// u=0 for every column, so every vertex in a pole row is BIT-IDENTICAL
+	// to every other one in that row (not merely numerically close) --
+	// position, normal, and texcoord all agree, so there is nothing a
+	// second, third, ... index at that row could ever distinguish.  The
+	// pre-fix code nonetheless emitted nU+1 separate (coincident) vertex
+	// indices per pole row, which turns the pole's triangle fan into nU
+	// wedges whose two "radiating" edges are each used by only ONE
+	// neighbouring wedge instead of two under an index-keyed edge-manifold
+	// check -- a genuinely closed sphere then reads as an OPEN SHEET
+	// purely as an artifact of the tessellator's own pole indexing.  Fix:
+	// emit ONE shared vertex per pole (below) and skip the wedge triangle
+	// that pole vertex would make degenerate (in the assembly loop below);
+	// the surviving fan triangle at each pole wedge is unchanged from
+	// before.
+	//
+	// The general u=0 / u=1 SEAM on every OTHER row is a different
+	// situation and is deliberately left duplicated: its two sides carry
+	// genuinely different texcoords (u=0 vs u=1, a real discontinuity).
+	// Any residual seam-only "boundary edge" a watertightness check
+	// reports on a tessellated sphere/torus/cylinder is a job for that
+	// check's own position weld (tolerance or topology aware), not for
+	// this tessellator -- see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md.
+	//
+	// IMPORTANT: this weld MUST keep vertices[]/normals[]/coords[] a
+	// single combined (position, normal, texcoord) record per index --
+	// `GeometryUtilities::ApplyDisplacementMapToObject` /
+	// `ApplyScalarHeightToObject` (DisplacedGeometry's per-vertex
+	// displacement) look up `vCoords[poly.iVertices[j]]`, i.e. they
+	// assume the SAME index into all three arrays.  That is exactly why
+	// only the POLE rows can be welded here: their texcoord is already
+	// canonicalized to the same (0, v) for every column (see the
+	// `atPole` comment below), so collapsing them to one shared index
+	// loses no (position, normal, uv) information.  The general seam
+	// cannot be welded the same way -- its two texcoords genuinely
+	// differ -- without a SEPARATE per-corner coord index, which would
+	// break that same-index assumption; that is a larger, separate
+	// change and out of this row's scope.
+	unsigned int northPoleIdx = 0;
+	unsigned int southPoleIdx = 0;
+
+	// Parameterization matches GeometricUtilities::SphereTextureCoord(vUp=Y, vForward=-X):
+	//   phi   = v * PI   (0 at north pole (+Y), PI at south pole (-Y))
+	//   theta = u * 2*PI (0 at -X, going through +Z, +X, -Z)
+	// Position on unit sphere:
+	//   dir = (-sin(phi)*cos(theta), cos(phi), sin(phi)*sin(theta))
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v      = Scalar(j) / Scalar(nV);
+		const Scalar phi    = v * PI;
+		const Scalar sinPhi = sin(phi);
+		const Scalar cosPhi = cos(phi);
+
+		// At the poles (j=0 north, j=nV south) every i-vertex collapses to the same
+		// 3D position with the same normal.  If we let u vary across pole vertices,
+		// a non-constant displacement function evaluates to different heights per
+		// pole vertex and the cap triangles fan out into radial spikes.  Collapse
+		// u to a canonical value at the poles so every pole vertex gets the same
+		// displacement and the cap stays closed.
+		const bool atPole = (j == 0) || (j == nV);
+
+		if( atPole ) {
+			// DL-116: one shared (position, normal, texcoord) entry for the
+			// WHOLE row, instead of rowStride coincident ones -- u is
+			// already forced to 0 for every column here, so no information
+			// is lost.
+			const Scalar u        = 0.0;
+			const Scalar theta    = 0.0;
+			const Scalar sinTheta = sin(theta);
+			const Scalar cosTheta = cos(theta);
+
+			const Vector3 dir( -sinPhi * cosTheta, cosPhi, sinPhi * sinTheta );
+			const Point3  pos( m_dRadius * dir.x, m_dRadius * dir.y, m_dRadius * dir.z );
+
+			const unsigned int poleIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( pos );
+			normals.push_back( dir );
+			coords.push_back( Point2( u, v ) );
+			if( j == 0 ) { northPoleIdx = poleIdx; } else { southPoleIdx = poleIdx; }
+			continue;
+		}
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u        = Scalar(i) / Scalar(nU);
+			const Scalar theta    = u * TWO_PI;
+			const Scalar sinTheta = sin(theta);
+			const Scalar cosTheta = cos(theta);
+
+			const Vector3 dir( -sinPhi * cosTheta, cosPhi, sinPhi * sinTheta );
+			const Point3  pos( m_dRadius * dir.x, m_dRadius * dir.y, m_dRadius * dir.z );
+
+			vertices.push_back( pos );
+			normals.push_back( dir );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	// Combined (position, normal, texcoord) index for (row j, column i):
+	// the pole rows collapse to their single shared entry regardless of
+	// i; every other row keeps the ORIGINAL per-column indexing
+	// (rowStride wide), offset by the two pole rows now contributing one
+	// entry each instead of rowStride.
+	const auto Index = [&]( unsigned int j, unsigned int i ) -> unsigned int {
+		if( j == 0 )  { return northPoleIdx; }
+		if( j == nV ) { return southPoleIdx; }
+		// Row 0 contributed exactly one entry; rows 1..(j-1) contributed a
+		// full rowStride each.
+		return baseIdx + 1 + ( j - 1 ) * rowStride + i;
+	};
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = Index( j,   i     );
+			const unsigned int b = Index( j,   i + 1 );
+			const unsigned int c = Index( j+1, i     );
+			const unsigned int d = Index( j+1, i + 1 );
+
+			// At the north pole row (j==0) a==b (the shared pole entry), so
+			// the first triangle (a, c, b) is now fully degenerate (two
+			// corners at the identical index) -- it always contributed zero
+			// area; skip emitting it instead of relying on a downstream
+			// degenerate-triangle filter.  Symmetric at the south pole row
+			// (j+1==nV), where c==d makes the SECOND triangle degenerate
+			// instead.  Away from the poles this is exactly the original
+			// two-triangles-per-wedge assembly.
+			const bool bNorthPoleWedge = ( j == 0 );
+			const bool bSouthPoleWedge = ( j + 1 == nV );
+
+			if( !bNorthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			}
+			if( !bSouthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+			}
+		}
+	}
+
+	return true;
 }
 
 void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -62,10 +216,12 @@ void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHit
 	{
 		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 		ri.vNormal = Vector3Ops::Normalize(Vector3Ops::mkVector3( ri.ptIntersection, Point3(0,0,0) ));
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 
 		if( bComputeExitInfo ) {
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
 			ri.vNormal2 = Vector3Ops::Normalize(Vector3Ops::mkVector3( ri.ptExit, Point3(0,0,0) ));
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		// Calculate UV co-ordinates using spherical mapping
@@ -73,6 +229,53 @@ void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHit
 			Vector3( 0.0, 1.0, 0.0 ),
 			Vector3( -1.0, 0.0, 0.0 ), 
 			ri.vNormal, ri.ptCoord );
+
+		// PHASE-1 GEOMETRY-DERIVED SHADING SIGNALS
+		// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.4).  Publish the genuine
+		// closed-form Weingarten map this primitive already knows how to
+		// compute, so consumers reading `ri.derivatives` -- the expression VM's
+		// `curv`, NormalMap's UV-aligned tangent frame, SMS's Newton Jacobian --
+		// get an EXACT curvature/tangent frame here instead of the honest zero
+		// (or the ONB / finite-difference fallback) an unpopulated record used
+		// to force.  UNGATED: this is a handful of trig calls on data the hit
+		// already produced, closed-form and exact.  Contrast the SDF family's
+		// direct curvature, which costs ~18 extra field evaluations per hit and
+		// IS gated on SurfaceCurvatureDemand.
+		//
+		// `scaleHint` (the dimensionless `curv`'s normalizer) is the ONE part
+		// that IS gated -- nothing but `curv` reads it, and
+		// Object::IntersectRay folds the world scale into it afterward.
+		{
+			const SurfaceDerivatives sd = ComputeSurfaceDerivatives( ri.ptIntersection, ri.vNormal );
+			if( sd.valid ) {
+				ri.derivatives.dpdu = sd.dpdu;
+				ri.derivatives.dpdv = sd.dpdv;
+				ri.derivatives.dndu = sd.dndu;
+				ri.derivatives.dndv = sd.dndv;
+				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a genuine
+				// surface parameterization with no discontinuous fallback
+				// branch (unlike the mesh sites), so hand it to the shading
+				// ONB unconditionally on sd.valid.
+				ri.bShadingTangentFromGeometry = true;
+				ri.vShadingTangent             = sd.dpdu;	// object space
+				ri.bHasShadingTangent          = true;
+			}
+		}
 	}
 }
 
@@ -171,6 +374,27 @@ SurfaceDerivatives SphereGeometry::ComputeSurfaceDerivatives( const Point3& objS
 	sd.uv = Point2( phi, theta );
 	sd.valid = true;
 
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  `IntersectRay` stamps ptCoord from
+	// GeometricUtilities::SphereTextureCoord( vUp = +Y, vForward = -X ),
+	// whose algebra reduces -- on BOTH sides of its N.z sign branch --
+	// to
+	//     s = (PI - phi) / (2*PI),    t = theta / PI
+	// with the same phi = atan2(z, x) and theta = acos(y/r) recovered
+	// above.  (The branch computes acos(-cos phi) = PI - |phi| and then
+	// mirrors for phi < 0; both cases collapse to the single affine
+	// expression, which is why there is no seam-side case here.)  The
+	// azimuth therefore runs BACKWARDS relative to the derivative
+	// parameter -- s = 0 sits at -X and increases toward +Z -- so dsdu
+	// is negative, and 2*pi / pi are the scale factors that were
+	// missing when the solve published radians as though they were
+	// [0, 1] texture coordinates.
+	sd.dsdu = -1.0 / TWO_PI;
+	sd.dsdv = 0.0;
+	sd.dtdu = 0.0;
+	sd.dtdv = 1.0 / PI;
+	sd.texChartValid = true;
+
 	return sd;
 }
 
@@ -193,6 +417,7 @@ IKeyframeParameter* SphereGeometry::KeyframeFromParameters( const String& name, 
 
 void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case RADIUS_ID:
@@ -200,6 +425,7 @@ void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 			m_dRadius = *(Scalar*)val.getValue();
 			m_dOVRadius = (m_dRadius != 0) ? 1.0/m_dRadius : 0;
 			m_dSqrRadius = m_dRadius*m_dRadius;
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -207,4 +433,65 @@ void SphereGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void SphereGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+	BumpShapeRevision();
+}
+
+//! IGeometry::DistanceToSurface -- EXACT outside, and 0 everywhere inside.
+//!
+//! The sphere is centred at the object-space origin, so the signed field is
+//! `|p| - R` and the exact distance to the SURFACE from OUTSIDE is that
+//! value.  It is CLAMPED AT ZERO rather than passed through `fabs`, and the
+//! difference is the signal's contract, not a detail: `proximity` reads
+//! INTERPENETRATION AS CONTACT (design §2), so every point inside the solid
+//! answers 0 -- `fabs` would instead report the depth, which for a point
+//! near the centre of a large neighbour is a large number and would read as
+//! "nothing nearby" at the very place contact is deepest.  The clamp costs
+//! nothing: the signed field's own sign is the inside test.
+bool SphereGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar r = Vector3Ops::Magnitude( Vector3( ptObject.x, ptObject.y, ptObject.z ) );
+	// CLAMPED AT ZERO, not fabs: a point INSIDE the sphere reads 0, because
+	// the signal's contract is "interpenetration IS contact"
+	// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 2), not "how far inside".  The
+	// signed field's own sign is the inside test, so this costs nothing.
+	const Scalar signed_ = r - m_dRadius;
+	const Scalar d = ( signed_ > Scalar( 0 ) ) ? signed_ : Scalar( 0 );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}
+
+//! IGeometry::SignedDistanceLower -- the SAME field, UNCLAMPED.
+//!
+//! `|p| - R` is the exact signed distance to the sphere on both sides, so
+//! for this family -- as for the box, the capped cylinder and the torus --
+//! "lower bound" and "the distance" coincide, and the exactness flag says
+//! so.  That is what lets a CSG composite's
+//! BOUNDARY ARM admit a landing exactly on a sphere operand's surface
+//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+//!
+//! A ZERO OR NEGATIVE RADIUS REFUSES rather than answering `|p|` with the
+//! flag set: a degenerate operand's closure is lower-dimensional, the
+//! composite renders nothing there, and the boundary arm's closure
+//! argument needs interior points near the landing.
+bool SphereGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	(void)maxDistObject;
+	outExact = false;
+	if( !( m_dRadius > Scalar( 0 ) ) ) {
+		return false;
+	}
+	const Scalar r = Vector3Ops::Magnitude( Vector3( ptObject.x, ptObject.y, ptObject.z ) );
+	const Scalar sgn = r - m_dRadius;
+	if( !RISE::IsFiniteDouble( (double)sgn ) ) {
+		return false;
+	}
+	outSigned = sgn;
+	outExact  = true;
+	return true;
 }

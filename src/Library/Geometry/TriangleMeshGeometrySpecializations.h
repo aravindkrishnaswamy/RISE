@@ -29,6 +29,19 @@ namespace RISE
 		return bbTri;
 	}
 
+	bool TriangleMeshGeometry::GetFloatTriangleVertices(
+		const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const
+	{
+		// Tier 1 §4: extract triangle vertices in float for the BVH leaf
+		// float-Möller-Trumbore filter.  Same pattern as the indexed
+		// mesh override.
+		const Triangle& tri = *elem;
+		v0[0] = (float)tri.vertices[0].x; v0[1] = (float)tri.vertices[0].y; v0[2] = (float)tri.vertices[0].z;
+		v1[0] = (float)tri.vertices[1].x; v1[1] = (float)tri.vertices[1].y; v1[2] = (float)tri.vertices[1].z;
+		v2[0] = (float)tri.vertices[2].x; v2[1] = (float)tri.vertices[2].y; v2[2] = (float)tri.vertices[2].z;
+		return true;
+	}
+
 	bool TriangleMeshGeometry::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 	{
 		const Triangle&	p = *elem;
@@ -132,20 +145,230 @@ namespace RISE
 		{
 			RayTriangleIntersection( ri.ray, h, thisTri.vertices[0], vEdgeA, vEdgeB );
 
-			// I don't think the range check is necessary, but I could be wrong...
-			if( h.bHit /* && h.dRange > 0.01*/ ) {
+			// Cleanup §1: native closest-hit check.  See indexed-mesh
+			// equivalent in TriangleMeshGeometryIndexedSpecializations.h
+			// for the rationale.
+			if( h.bHit && h.dRange < ri.range ) {
 				ri.bHit = true;
 				ri.range = h.dRange;
+
+				// Wireframe view-mode closest-edge info -- see the indexed
+				// specialization for the full rationale; only the data
+				// access differs (by-value .vertices here).
+				if( ri.bWantsWireEdgeInfo ) {
+					ri.ptWireNearestEdge = WireClosestPointOnTriangleEdges(
+						ri.ray.PointAtLength( h.dRange ),
+						thisTri.vertices[0],
+						thisTri.vertices[1],
+						thisTri.vertices[2] );
+					ri.bHasWireEdgeInfo = true;
+				}
 
 				const Scalar&	a = h.alpha;
 				const Scalar&	b = h.beta;
 
+                // Native primitive provenance is independent of shading-signal
+                // support. No provider/bake is advertised by this mesh.
+                ri.signals.pProvider = nullptr;
+                ri.signals.primId = static_cast<int>(elem-polygons.data());
+                ri.signals.baryA = a;
+                ri.signals.baryB = b;
+
 				ri.vNormal = thisTri.normals[0]+
 					(thisTri.normals[1]-thisTri.normals[0])*a+
 					(thisTri.normals[2]-thisTri.normals[0])*b;
+				// Geometric (face) normal — see indexed specialization.
+				{
+					Vector3 fn = Vector3Ops::Normalize( vFaceNormal );
+					if( Vector3Ops::Dot( fn, ri.vNormal ) < 0 ) {
+						fn = Vector3( -fn.x, -fn.y, -fn.z );
+					}
+					ri.vGeomNormal = fn;
+				}
 				ri.ptCoord = Point2Ops::mkPoint2( thisTri.coords[0],
 					Vector2Ops::mkVector2(thisTri.coords[1],thisTri.coords[0])*a+
 					Vector2Ops::mkVector2(thisTri.coords[2],thisTri.coords[0])*b );
+
+				// L12.D: non-indexed meshes don't carry TEXCOORD_1 (no
+				// per-vertex side-table to interpolate from).  Mirror
+				// pCoord into pCoord1 so painters wrapped to sample
+				// UV1 degrade gracefully to UV0 instead of reading
+				// uninitialised memory.  bHasTexCoord1 stays FALSE
+				// from the ri constructor's default.
+				ri.ptCoord1 = ri.ptCoord;
+
+				// Landing 2: populate surface derivatives + texture
+				// footprint so this path participates in mip-LOD
+				// sampling on parity with the indexed mesh path.
+				// Ported from TriangleMeshGeometryIndexedSpecializations.h;
+				// the math is identical, only the data access differs
+				// (non-indexed Triangle stores .vertices / .normals /
+				// .coords by value; indexed PointerTriangle stores
+				// .pVertices / .pNormals / .pCoords by pointer).
+				// See the indexed-mesh implementation for the full
+				// derivation and design notes; the duplicated comments
+				// kept short here to stay readable.
+				//
+				// Per-vertex color and tangent interpolation are NOT
+				// ported — those rely on a per-vertex side-table
+				// addressed by pointer arithmetic into a shared
+				// vertex pool, which non-indexed meshes don't have.
+				// Hand-built / RAW meshes that need vertex colors or
+				// glTF-style tangents should be loaded as indexed.
+				const Vector3 shadingNormal = Vector3Ops::Normalize( ri.vNormal );
+				const Vector3 e1 = Vector3Ops::mkVector3( thisTri.vertices[1], thisTri.vertices[0] );
+				const Vector3 e2 = Vector3Ops::mkVector3( thisTri.vertices[2], thisTri.vertices[0] );
+
+				// UV deltas.  Non-indexed Triangle always carries
+				// coords by value, so the "no UV data" fall-back from
+				// the indexed path (null pCoords pointer) doesn't
+				// apply — only the singular-Jacobian fall-back does.
+				const Scalar duA = thisTri.coords[1].x - thisTri.coords[0].x;
+				const Scalar duB = thisTri.coords[2].x - thisTri.coords[0].x;
+				const Scalar dvA = thisTri.coords[1].y - thisTri.coords[0].y;
+				const Scalar dvB = thisTri.coords[2].y - thisTri.coords[0].y;
+				const Scalar uvDet = duA * dvB - duB * dvA;
+				const bool useUVJacobian = ( fabs( uvDet ) > NEARZERO );
+
+				// Compute ∂P/∂u, ∂P/∂v.
+				Vector3 dpdu, dpdv;
+				if( useUVJacobian ) {
+					const Scalar invDet = 1.0 / uvDet;
+					dpdu = Vector3(
+						( e1.x * dvB - e2.x * dvA ) * invDet,
+						( e1.y * dvB - e2.y * dvA ) * invDet,
+						( e1.z * dvB - e2.z * dvA ) * invDet );
+					dpdv = Vector3(
+						( e2.x * duA - e1.x * duB ) * invDet,
+						( e2.y * duA - e1.y * duB ) * invDet,
+						( e2.z * duA - e1.z * duB ) * invDet );
+				} else {
+					// Degenerate UV mapping (collinear or zero-area UV
+					// triangle); fall back to barycentric edge frame.
+					dpdu = e1;
+					dpdv = e2;
+				}
+
+				// Project onto shading-normal tangent plane (gate kept
+				// in lock-step with the indexed-mesh implementation).
+#define MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE 1
+#if MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE
+				const Scalar dpdu_dot_n = Vector3Ops::Dot( dpdu, shadingNormal );
+				const Scalar dpdv_dot_n = Vector3Ops::Dot( dpdv, shadingNormal );
+				dpdu = Vector3(
+					dpdu.x - shadingNormal.x * dpdu_dot_n,
+					dpdu.y - shadingNormal.y * dpdu_dot_n,
+					dpdu.z - shadingNormal.z * dpdu_dot_n );
+				dpdv = Vector3(
+					dpdv.x - shadingNormal.x * dpdv_dot_n,
+					dpdv.y - shadingNormal.y * dpdv_dot_n,
+					dpdv.z - shadingNormal.z * dpdv_dot_n );
+#endif
+
+				// Compute ∂N/∂u, ∂N/∂v from per-vertex normals.
+				const Vector3 dNraw_dA(
+					thisTri.normals[1].x - thisTri.normals[0].x,
+					thisTri.normals[1].y - thisTri.normals[0].y,
+					thisTri.normals[1].z - thisTri.normals[0].z );
+				const Vector3 dNraw_dB(
+					thisTri.normals[2].x - thisTri.normals[0].x,
+					thisTri.normals[2].y - thisTri.normals[0].y,
+					thisTri.normals[2].z - thisTri.normals[0].z );
+
+				Vector3 dNraw_du, dNraw_dv;
+				if( useUVJacobian ) {
+					const Scalar invDet = 1.0 / uvDet;
+					dNraw_du = Vector3(
+						( dNraw_dA.x * dvB - dNraw_dB.x * dvA ) * invDet,
+						( dNraw_dA.y * dvB - dNraw_dB.y * dvA ) * invDet,
+						( dNraw_dA.z * dvB - dNraw_dB.z * dvA ) * invDet );
+					dNraw_dv = Vector3(
+						( dNraw_dB.x * duA - dNraw_dA.x * duB ) * invDet,
+						( dNraw_dB.y * duA - dNraw_dA.y * duB ) * invDet,
+						( dNraw_dB.z * duA - dNraw_dA.z * duB ) * invDet );
+				} else {
+					dNraw_du = dNraw_dA;
+					dNraw_dv = dNraw_dB;
+				}
+
+				const Scalar nrawLen = Vector3Ops::Magnitude( ri.vNormal );
+				const Scalar invLen = (nrawLen > NEARZERO) ? 1.0 / nrawLen : 0.0;
+				const Scalar du_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_du );
+				const Scalar dv_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_dv );
+				Vector3 dndu(
+					(dNraw_du.x - shadingNormal.x * du_dot_n) * invLen,
+					(dNraw_du.y - shadingNormal.y * du_dot_n) * invLen,
+					(dNraw_du.z - shadingNormal.z * du_dot_n) * invLen );
+				Vector3 dndv(
+					(dNraw_dv.x - shadingNormal.x * dv_dot_n) * invLen,
+					(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
+					(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
+
+				// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord
+				// chart map").  On the useUVJacobian path dpdu/dpdv ARE the
+				// derivatives with respect to the stored per-vertex texture
+				// coordinate that ri.ptCoord interpolates, so the map is the
+				// identity -- this is the one geometry family for which the
+				// two charts coincide, and why the mesh path was correct
+				// before the map existed.  On the barycentric-edge FALLBACK
+				// (degenerate or absent UV triangle) dpdu/dpdv are edge
+				// vectors with no relation to ptCoord at all, so the map is
+				// left INVALID and SolveFootprintUV declines rather than
+				// publishing an edge-chart Jacobian as a texcoord one.
+				ri.derivatives.dsdu = 1.0; ri.derivatives.dsdv = 0.0;
+				ri.derivatives.dtdu = 0.0; ri.derivatives.dtdv = 1.0;
+				ri.derivatives.texChartValid = useUVJacobian;
+
+				// Enforce right-handedness against shading normal.
+				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
+				const bool bMirroredUV = ( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 );
+				if( bMirroredUV ) {
+					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
+					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+					// dpdv now points down -d/dv, so the chart map must say so:
+					// t decreases as the derivative parameter increases.  Mip
+					// LOD squares and would not notice; the finite-difference
+					// oracle in tests/TextureFootprintTest.cpp does.
+					ri.derivatives.dtdv = -1.0;
+				}
+				ri.derivatives.dpdu = dpdu;
+				ri.derivatives.dpdv = dpdv;
+				ri.derivatives.dndu = dndu;
+				ri.derivatives.dndv = dndv;
+				ri.derivatives.valid = true;
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: hand the shading ONB a
+				// COHERENT, UV-derived tangent instead of the arbitrary
+				// per-triangle-discontinuous axis CreateFromW would pick.
+				// Non-indexed meshes have no TANGENT accessor, so this is
+				// useUVJacobian-only (no bHasTangent branch -- see the
+				// indexed specialization for that).  When the UV Jacobian
+				// is degenerate (useUVJacobian false), dpdu is the
+				// discontinuous edge-frame fallback above -- writing THAT
+				// into vShadingTangent would be worse than doing nothing,
+				// so we deliberately write nothing and Object::IntersectRay
+				// falls through to CreateFromW, byte-identical to before
+				// this fix existed.
+				if( useUVJacobian ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = dpdu;	// object space
+					const Scalar sign              = bMirroredUV ? -1.0 : 1.0;
+					ri.shadingBitangentSign        = sign;
+					ri.bitangentSign               = sign;
+					ri.bHasShadingTangent          = true;
+				}
+				// Phase-1 geometry-derived shading signals
+				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
+				// characteristic length that makes the expression VM's
+				// dimensionless `curv` scale-free -- this mesh's own BVH root
+				// box, read through the shared bbox-diagonal convention.  GATED:
+				// nothing but `curv` reads scaleHint, and this is a (cheap, but
+				// not free) sqrt on the per-hit path.  Object::IntersectRay folds
+				// the object's world scale in afterward, which is what makes
+				// `curv` per-INSTANCE correct across two instances of this one
+				// shared geometry placed at different world scales.
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
 			}
 		}
 	}
@@ -157,6 +380,21 @@ namespace RISE
 
 	bool TriangleMeshGeometry::RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 	{
+		// Originating-primitive exclusion for ray-traced AO (Cycles ray.self.prim
+		// parity): only active while testing `pSelf`'s own geometry inside
+		// `SurfaceSignalInfo::AmbientOcclusion`.  Gated by a single relaxed atomic
+		// load so non-AO shadow rays never touch TLS.
+		if( SurfaceSignalSelfExclusionActive() ) {
+			const SelfPrimExclusionState& selfExcl = SurfaceSignalSelfExclusion();
+			if( selfExcl.activeForCurrentGeometry &&
+				selfExcl.pProvider == 0 &&
+				selfExcl.primIdPlusOne > 0 &&
+				static_cast<int>( elem - polygons.data() ) + 1 == selfExcl.primIdPlusOne )
+			{
+				return false;
+			}
+		}
+
 		const Triangle&	thisTri = *elem;
 
 		// Early rejection is based on whether we are to consider front facing triangles or 

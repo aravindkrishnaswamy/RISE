@@ -1,0 +1,947 @@
+{
+  "all_steps": [
+    {
+      "device_ms": 8319.432124029845,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.109625049,
+          "wall_ms": 0.5089159999999999
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 8189.802124631,
+          "wall_ms": 9168.944166
+        },
+        "OwnerRun": {
+          "device_ms": 0.018500024,
+          "wall_ms": 9.235041
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 4.709210000000001
+        },
+        "Prepare": {
+          "device_ms": 3.393999999,
+          "wall_ms": 96.764166
+        },
+        "Project": {
+          "device_ms": 0.668499154,
+          "wall_ms": 12.578793000000001
+        },
+        "ProjectionAdapter": {
+          "device_ms": 117.925625296,
+          "wall_ms": 154.069458
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.043708132999999996,
+          "wall_ms": 2.933249
+        },
+        "Residual": {
+          "device_ms": 0.7332917299999999,
+          "wall_ms": 2.67625
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 9.123956
+        },
+        "TerminalPublication": {
+          "device_ms": 6.736750016,
+          "wall_ms": 15.080167
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.012917000000000001
+        }
+      },
+      "repeat": 1,
+      "step": 1,
+      "wall_ms": 9584.0975
+    },
+    {
+      "device_ms": 10466.2641659379,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.10229158299999999,
+          "wall_ms": 0.465125
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10317.454416305001,
+          "wall_ms": 11538.410418
+        },
+        "OwnerRun": {
+          "device_ms": 0.017749844,
+          "wall_ms": 8.010792
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 7.487126999999999
+        },
+        "Prepare": {
+          "device_ms": 1.683499897,
+          "wall_ms": 91.151791
+        },
+        "Project": {
+          "device_ms": 0.6330837490000001,
+          "wall_ms": 14.291253000000001
+        },
+        "ProjectionAdapter": {
+          "device_ms": 138.578541807,
+          "wall_ms": 182.03337299999998
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.058415815,
+          "wall_ms": 3.71154
+        },
+        "Residual": {
+          "device_ms": 1.0773753759999998,
+          "wall_ms": 3.67775
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.403917
+        },
+        "TerminalPublication": {
+          "device_ms": 6.658791564,
+          "wall_ms": 12.751542
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.012709000000000002
+        }
+      },
+      "repeat": 1,
+      "step": 2,
+      "wall_ms": 11942.331375
+    },
+    {
+      "device_ms": 10410.423502326012,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.10800035599999999,
+          "wall_ms": 0.471541
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10259.976500411001,
+          "wall_ms": 11478.513830999998
+        },
+        "OwnerRun": {
+          "device_ms": 0.018541701,
+          "wall_ms": 8.284416
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 7.25333
+        },
+        "Prepare": {
+          "device_ms": 1.689333236,
+          "wall_ms": 91.004708
+        },
+        "Project": {
+          "device_ms": 0.7761679590000001,
+          "wall_ms": 14.765460999999998
+        },
+        "ProjectionAdapter": {
+          "device_ms": 140.06395847500002,
+          "wall_ms": 183.695247
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.057958531,
+          "wall_ms": 3.7465010000000003
+        },
+        "Residual": {
+          "device_ms": 1.082291594,
+          "wall_ms": 3.5893330000000003
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.614501
+        },
+        "TerminalPublication": {
+          "device_ms": 6.65075006,
+          "wall_ms": 14.599959
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.012168
+        }
+      },
+      "repeat": 1,
+      "step": 3,
+      "wall_ms": 11887.098083
+    },
+    {
+      "device_ms": 8355.48095870763,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.108083244,
+          "wall_ms": 0.6325000000000001
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 8224.226458696,
+          "wall_ms": 9214.917209
+        },
+        "OwnerRun": {
+          "device_ms": 0.01733331,
+          "wall_ms": 8.430043
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 5.041708000000001
+        },
+        "Prepare": {
+          "device_ms": 3.217125079,
+          "wall_ms": 95.500375
+        },
+        "Project": {
+          "device_ms": 0.67841704,
+          "wall_ms": 13.127289000000001
+        },
+        "ProjectionAdapter": {
+          "device_ms": 120.094541928,
+          "wall_ms": 158.366292
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.04395796300000001,
+          "wall_ms": 2.881749
+        },
+        "Residual": {
+          "device_ms": 0.7496664780000001,
+          "wall_ms": 2.8389570000000006
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 13.327539999999999
+        },
+        "TerminalPublication": {
+          "device_ms": 6.345374975,
+          "wall_ms": 15.170125
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.01246
+        }
+      },
+      "repeat": 2,
+      "step": 1,
+      "wall_ms": 9631.755333
+    },
+    {
+      "device_ms": 10441.616581985727,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.104416627,
+          "wall_ms": 0.483125
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10293.257791781998,
+          "wall_ms": 11510.182248
+        },
+        "OwnerRun": {
+          "device_ms": 0.01745834,
+          "wall_ms": 7.597125
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 6.577831000000001
+        },
+        "Prepare": {
+          "device_ms": 1.765333349,
+          "wall_ms": 90.957417
+        },
+        "Project": {
+          "device_ms": 0.6340830580000001,
+          "wall_ms": 13.53763
+        },
+        "ProjectionAdapter": {
+          "device_ms": 137.90374947799998,
+          "wall_ms": 181.499915
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.05779089399999999,
+          "wall_ms": 3.6456280000000003
+        },
+        "Residual": {
+          "device_ms": 1.082791713,
+          "wall_ms": 3.4960440000000004
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.517040999999999
+        },
+        "TerminalPublication": {
+          "device_ms": 6.793166744,
+          "wall_ms": 14.134458
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.012372000000000001
+        }
+      },
+      "repeat": 2,
+      "step": 2,
+      "wall_ms": 11912.239125
+    },
+    {
+      "device_ms": 10436.778584728017,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.106833176,
+          "wall_ms": 0.501791
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10288.282708498002,
+          "wall_ms": 11507.737164999997
+        },
+        "OwnerRun": {
+          "device_ms": 0.01720828,
+          "wall_ms": 7.645335
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 8.17179
+        },
+        "Prepare": {
+          "device_ms": 1.742749941,
+          "wall_ms": 92.684791
+        },
+        "Project": {
+          "device_ms": 0.7756671389999998,
+          "wall_ms": 14.170377
+        },
+        "ProjectionAdapter": {
+          "device_ms": 138.052708935,
+          "wall_ms": 181.860291
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.189750219,
+          "wall_ms": 4.123836000000001
+        },
+        "Residual": {
+          "device_ms": 1.5102501479999997,
+          "wall_ms": 4.181793
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.691417000000001
+        },
+        "TerminalPublication": {
+          "device_ms": 6.100708386,
+          "wall_ms": 12.108333
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.012168
+        }
+      },
+      "repeat": 2,
+      "step": 3,
+      "wall_ms": 11912.380209
+    },
+    {
+      "device_ms": 8347.341957967728,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.467750011,
+          "wall_ms": 0.8314999999999999
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 8218.574458034002,
+          "wall_ms": 9190.775461
+        },
+        "OwnerRun": {
+          "device_ms": 0.017374987,
+          "wall_ms": 8.492209
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 5.092372999999999
+        },
+        "Prepare": {
+          "device_ms": 3.328541759,
+          "wall_ms": 96.538625
+        },
+        "Project": {
+          "device_ms": 0.9593756399999999,
+          "wall_ms": 11.001076
+        },
+        "ProjectionAdapter": {
+          "device_ms": 116.80937418600001,
+          "wall_ms": 153.50037700000001
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.044208484000000006,
+          "wall_ms": 2.842999
+        },
+        "Residual": {
+          "device_ms": 0.739416572,
+          "wall_ms": 2.551751
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.515459
+        },
+        "TerminalPublication": {
+          "device_ms": 6.401458289,
+          "wall_ms": 14.672667
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.011834
+        }
+      },
+      "repeat": 3,
+      "step": 1,
+      "wall_ms": 9598.176541
+    },
+    {
+      "device_ms": 10434.671957744285,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.108416658,
+          "wall_ms": 0.503207
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10284.488916862,
+          "wall_ms": 11514.886707999998
+        },
+        "OwnerRun": {
+          "device_ms": 0.016749837,
+          "wall_ms": 8.398167
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 8.090089
+        },
+        "Prepare": {
+          "device_ms": 1.803499879,
+          "wall_ms": 91.485542
+        },
+        "Project": {
+          "device_ms": 0.662875128,
+          "wall_ms": 16.292289
+        },
+        "ProjectionAdapter": {
+          "device_ms": 139.554125023,
+          "wall_ms": 185.93358500000002
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.057749452,
+          "wall_ms": 3.886209
+        },
+        "Residual": {
+          "device_ms": 1.0777083219999999,
+          "wall_ms": 3.8307070000000003
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 8.876916999999999
+        },
+        "TerminalPublication": {
+          "device_ms": 6.901916582,
+          "wall_ms": 12.950875
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.011875
+        }
+      },
+      "repeat": 3,
+      "step": 2,
+      "wall_ms": 11926.966875
+    },
+    {
+      "device_ms": 10456.301915226504,
+      "exclusive_phases": {
+        "AlphaResidual": {
+          "device_ms": 0.107499771,
+          "wall_ms": 0.610249
+        },
+        "BuildStageProducerGroup": {
+          "device_ms": 10306.459208021,
+          "wall_ms": 11534.576081000001
+        },
+        "OwnerRun": {
+          "device_ms": 0.016374979,
+          "wall_ms": 7.887001
+        },
+        "PicardIteration": {
+          "device_ms": 0.0,
+          "wall_ms": 7.532457000000001
+        },
+        "Prepare": {
+          "device_ms": 1.726541668,
+          "wall_ms": 91.072041
+        },
+        "Project": {
+          "device_ms": 1.0813751729999999,
+          "wall_ms": 14.774003
+        },
+        "ProjectionAdapter": {
+          "device_ms": 138.723083538,
+          "wall_ms": 183.189625
+        },
+        "ReadOpenClass": {
+          "device_ms": 0.058874023000000004,
+          "wall_ms": 3.681164
+        },
+        "Residual": {
+          "device_ms": 1.560583013,
+          "wall_ms": 4.291707
+        },
+        "SolveStage": {
+          "device_ms": 0.0,
+          "wall_ms": 9.347916
+        },
+        "TerminalPublication": {
+          "device_ms": 6.568375044,
+          "wall_ms": 12.118
+        },
+        "TerminalVerification": {
+          "device_ms": 0.0,
+          "wall_ms": 0.0135
+        }
+      },
+      "repeat": 3,
+      "step": 3,
+      "wall_ms": 11940.25625
+    }
+  ],
+  "coverage": "Per-kernel counters cover producer-translation-unit encoders. Force RHS, projection internals, blits and gaps are named but not kernel-resolved here. Kernel intervals are inclusive and can overlap; only their union is additive. Wall-device residual is elapsed overhead, not measured CPU utilization.",
+  "device_p95_step": {
+    "device_ms": 10466.2641659379,
+    "exclusive_phases": {
+      "AlphaResidual": {
+        "device_ms": 0.10229158299999999,
+        "wall_ms": 0.465125
+      },
+      "BuildStageProducerGroup": {
+        "device_ms": 10317.454416305001,
+        "wall_ms": 11538.410418
+      },
+      "OwnerRun": {
+        "device_ms": 0.017749844,
+        "wall_ms": 8.010792
+      },
+      "PicardIteration": {
+        "device_ms": 0.0,
+        "wall_ms": 7.487126999999999
+      },
+      "Prepare": {
+        "device_ms": 1.683499897,
+        "wall_ms": 91.151791
+      },
+      "Project": {
+        "device_ms": 0.6330837490000001,
+        "wall_ms": 14.291253000000001
+      },
+      "ProjectionAdapter": {
+        "device_ms": 138.578541807,
+        "wall_ms": 182.03337299999998
+      },
+      "ReadOpenClass": {
+        "device_ms": 0.058415815,
+        "wall_ms": 3.71154
+      },
+      "Residual": {
+        "device_ms": 1.0773753759999998,
+        "wall_ms": 3.67775
+      },
+      "SolveStage": {
+        "device_ms": 0.0,
+        "wall_ms": 8.403917
+      },
+      "TerminalPublication": {
+        "device_ms": 6.658791564,
+        "wall_ms": 12.751542
+      },
+      "TerminalVerification": {
+        "device_ms": 0.0,
+        "wall_ms": 0.012709000000000002
+      }
+    },
+    "inclusive_stages": [
+      {
+        "child_observer_wall_ms": 0.027542,
+        "count_scope": "inclusive",
+        "device_sum_ms": 3504.139915807,
+        "exclusive_device_sum_ms": 0.0,
+        "exclusive_wall_ms": 2.348167,
+        "iteration_kind": "bootstrap",
+        "owner_commits": 28,
+        "parent": 1,
+        "phase": "SolveStage",
+        "projection_invocations": 5,
+        "raw_iteration": 4294967295,
+        "scope": 3,
+        "stage": 0,
+        "wall_minus_device_ms": 435.243959193,
+        "wall_ms": 3939.383875
+      },
+      {
+        "child_observer_wall_ms": 0.021834,
+        "count_scope": "inclusive",
+        "device_sum_ms": 3501.770958537,
+        "exclusive_device_sum_ms": 0.0,
+        "exclusive_wall_ms": 3.557875,
+        "iteration_kind": "bootstrap",
+        "owner_commits": 28,
+        "parent": 1,
+        "phase": "SolveStage",
+        "projection_invocations": 5,
+        "raw_iteration": 4294967295,
+        "scope": 36,
+        "stage": 1,
+        "wall_minus_device_ms": 433.570375463,
+        "wall_ms": 3935.341334
+      },
+      {
+        "child_observer_wall_ms": 0.023791,
+        "count_scope": "inclusive",
+        "device_sum_ms": 3451.993250288,
+        "exclusive_device_sum_ms": 0.0,
+        "exclusive_wall_ms": 2.497875,
+        "iteration_kind": "bootstrap",
+        "owner_commits": 27,
+        "parent": 1,
+        "phase": "SolveStage",
+        "projection_invocations": 5,
+        "raw_iteration": 4294967295,
+        "scope": 69,
+        "stage": 2,
+        "wall_minus_device_ms": 432.345582712,
+        "wall_ms": 3884.338833
+      }
+    ],
+    "repeat": 1,
+    "step": 2,
+    "wall_ms": 11942.331375
+  },
+  "inputs": {
+    "attested_repeat1.log": {
+      "path": "attested_repeat1.log",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 478190,
+        "root_sha256": "94671fc38e28d337cfd54dd50a44e21ab95e0d63ff038405f5ed6d4d9174db4e"
+      },
+      "sha256": "e8ac7e9f2e764885a9f5cb970ab14871b7d565242b851a1310d885eacbad4e54"
+    },
+    "attested_repeat1/budgets/maximum_velocity_trajectory.csv": {
+      "path": "attested_repeat1/budgets/maximum_velocity_trajectory.csv",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 2164,
+        "root_sha256": "68d08bcb76529f35c3b7c288af676bdc0d89920ffca65e78d7482bbd93ce648b"
+      },
+      "sha256": "a1d9c16261f77deb5a4d21391d5a961a07d8a69cccc04ed49ba965b5ed47a4fe"
+    },
+    "attested_repeat1/diagnostic_prefix_outcome.v1": {
+      "path": "attested_repeat1/diagnostic_prefix_outcome.v1",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "b828b7f8a15672c591f4e7e5ddfe52842371aae1a724ba44806f33297bcff648"
+      },
+      "sha256": "7c391d70fa58a3ee2de4594d2fbc5afb427aec49f99e36f2b9b3dd6f41ca09ee"
+    },
+    "attested_repeat2.log": {
+      "path": "attested_repeat2.log",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 478262,
+        "root_sha256": "bbc725e81970f3f45a2c3cb390e0f8b938299d6ae70b6297ade65d76395011a7"
+      },
+      "sha256": "6f0b84c18fcd4226bb14c6fba97e573693caa7997de0b5faac5911216c84a118"
+    },
+    "attested_repeat2/budgets/maximum_velocity_trajectory.csv": {
+      "path": "attested_repeat2/budgets/maximum_velocity_trajectory.csv",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 2165,
+        "root_sha256": "18f20542a2066a1a36eb2abae3cd9edf97133ab503184928d7cf04685bf02e47"
+      },
+      "sha256": "6db2236011b5ff578010edf2aa7f5a1ebcec4c96bd83d52a35234956b56a3c37"
+    },
+    "attested_repeat2/diagnostic_prefix_outcome.v1": {
+      "path": "attested_repeat2/diagnostic_prefix_outcome.v1",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "da4a56ddf0b241ce584f2d17153547309dec4852048ff4aaf9e3fd41f95f46d5"
+      },
+      "sha256": "655487308e7a9e0b01c3b9c0e3cf09aabfb4f186b877b62e5d283fb970beea81"
+    },
+    "attested_repeat3.log": {
+      "path": "attested_repeat3.log",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 478196,
+        "root_sha256": "72e778ce0448ed411246583512065a9cdbb35407a8c2d5e07a1d188e290bed9f"
+      },
+      "sha256": "8b58479c87b2e5b6fe9469e1fe95f3577559b5e6853a2efbdff40fca1235289b"
+    },
+    "attested_repeat3/budgets/maximum_velocity_trajectory.csv": {
+      "path": "attested_repeat3/budgets/maximum_velocity_trajectory.csv",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 2156,
+        "root_sha256": "bd5eaff4f61c687b2ec6736888e2c6e9ccd5be18955a13f84a74a954cb22d8c9"
+      },
+      "sha256": "5699c28fe0c9f16206e4947fbb38ffd050664a0ab753f2b1a0cf7d9d1caef097"
+    },
+    "attested_repeat3/diagnostic_prefix_outcome.v1": {
+      "path": "attested_repeat3/diagnostic_prefix_outcome.v1",
+      "payload_v2": {
+        "chunk_bytes": 4096,
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "98c8a2a33878de3474f86a0a2efcf46ff86286214a0e4a847b97ac825c43c149"
+      },
+      "sha256": "c21ea9d401e8eeffdc60b8ea0a1eb515f8e2cc608d4876a02a75d9116c1bb7b6"
+    }
+  },
+  "inventory_sha256": "294b13cd3c5ba6608526b4f916db07d4ec38c6d046777da9e77eec809ada5a05",
+  "producer_command_ms": 86382.52258324064,
+  "producer_encoder_union_ms": 86195.25470800001,
+  "producer_kernels": {
+    "compose_resident_flux_pair": {
+      "calls": 126,
+      "inclusive_ms": 114.71920900000002,
+      "mean_per_call_ms": 0.9104699126984128,
+      "mean_per_step_ms": 12.74657877777778
+    },
+    "consume_resident_target": {
+      "calls": 252,
+      "inclusive_ms": 0.9842909999999996,
+      "mean_per_call_ms": 0.003905916666666665,
+      "mean_per_step_ms": 0.10936566666666662
+    },
+    "evaluate_resident_advective_pair": {
+      "calls": 126,
+      "inclusive_ms": 920.9929950000001,
+      "mean_per_call_ms": 7.309468214285714,
+      "mean_per_step_ms": 102.33255500000001
+    },
+    "evaluate_resident_eos_candidate": {
+      "calls": 126,
+      "inclusive_ms": 69980.647239,
+      "mean_per_call_ms": 555.4019622142857,
+      "mean_per_step_ms": 7775.627471
+    },
+    "evaluate_resident_physical_flux": {
+      "calls": 126,
+      "inclusive_ms": 150.27737699999997,
+      "mean_per_call_ms": 1.192677595238095,
+      "mean_per_step_ms": 16.69748633333333
+    },
+    "evaluate_resident_target_terms": {
+      "calls": 126,
+      "inclusive_ms": 14283.653749,
+      "mean_per_call_ms": 113.36233134126984,
+      "mean_per_step_ms": 1587.0726387777777
+    },
+    "evaluate_resident_transport": {
+      "calls": 126,
+      "inclusive_ms": 59.95220699999999,
+      "mean_per_call_ms": 0.47581116666666656,
+      "mean_per_step_ms": 6.661356333333332
+    },
+    "fct_build_face_alpha": {
+      "calls": 84,
+      "inclusive_ms": 23.660711,
+      "mean_per_call_ms": 0.28167513095238095,
+      "mean_per_step_ms": 2.628967888888889
+    },
+    "fct_build_ratios": {
+      "calls": 84,
+      "inclusive_ms": 307.97787099999994,
+      "mean_per_call_ms": 3.6664032261904755,
+      "mean_per_step_ms": 34.21976344444444
+    },
+    "fct_commit_scalar": {
+      "calls": 84,
+      "inclusive_ms": 16.899042,
+      "mean_per_call_ms": 0.20117907142857144,
+      "mean_per_step_ms": 1.8776713333333335
+    },
+    "fct_compatible_stage_rate": {
+      "calls": 168,
+      "inclusive_ms": 86.77699899999999,
+      "mean_per_call_ms": 0.5165297559523809,
+      "mean_per_step_ms": 9.641888777777776
+    },
+    "fct_extract_gas_density": {
+      "calls": 126,
+      "inclusive_ms": 5.137876,
+      "mean_per_call_ms": 0.040776793650793654,
+      "mean_per_step_ms": 0.5708751111111111
+    },
+    "finalize_resident_advective_high": {
+      "calls": 126,
+      "inclusive_ms": 56.020165,
+      "mean_per_call_ms": 0.4446044841269841,
+      "mean_per_step_ms": 6.224462777777777
+    },
+    "finalize_resident_eos_candidate": {
+      "calls": 252,
+      "inclusive_ms": 0.8561959999999995,
+      "mean_per_call_ms": 0.0033976031746031725,
+      "mean_per_step_ms": 0.09513288888888884
+    },
+    "finalize_resident_target": {
+      "calls": 252,
+      "inclusive_ms": 1.4289159999999996,
+      "mean_per_call_ms": 0.005670301587301586,
+      "mean_per_step_ms": 0.1587684444444444
+    },
+    "identify_resident_eos": {
+      "calls": 126,
+      "inclusive_ms": 0.3747900000000002,
+      "mean_per_call_ms": 0.002974523809523811,
+      "mean_per_step_ms": 0.04164333333333335
+    },
+    "identify_resident_frozen_source": {
+      "calls": 126,
+      "inclusive_ms": 0.4384080000000001,
+      "mean_per_call_ms": 0.003479428571428572,
+      "mean_per_step_ms": 0.048712000000000005
+    },
+    "identify_resident_owner_endpoint_class": {
+      "calls": 126,
+      "inclusive_ms": 0.46500200000000014,
+      "mean_per_call_ms": 0.0036904920634920645,
+      "mean_per_step_ms": 0.0516668888888889
+    },
+    "identify_resident_physical_flux": {
+      "calls": 126,
+      "inclusive_ms": 0.5645799999999999,
+      "mean_per_call_ms": 0.004480793650793649,
+      "mean_per_step_ms": 0.0627311111111111
+    },
+    "identify_resident_target": {
+      "calls": 126,
+      "inclusive_ms": 0.40708000000000016,
+      "mean_per_call_ms": 0.003230793650793652,
+      "mean_per_step_ms": 0.04523111111111113
+    },
+    "identify_resident_transport": {
+      "calls": 126,
+      "inclusive_ms": 0.6940009999999999,
+      "mean_per_call_ms": 0.005507944444444444,
+      "mean_per_step_ms": 0.0771112222222222
+    },
+    "issue_resident_projection_consumer": {
+      "calls": 252,
+      "inclusive_ms": 0.9104149999999995,
+      "mean_per_call_ms": 0.0036127579365079344,
+      "mean_per_step_ms": 0.10115722222222218
+    },
+    "owner_average_flux": {
+      "calls": 42,
+      "inclusive_ms": 33.923497,
+      "mean_per_call_ms": 0.8077023095238095,
+      "mean_per_step_ms": 3.769277444444444
+    },
+    "owner_bind_averaged_flux": {
+      "calls": 42,
+      "inclusive_ms": 0.15542000000000003,
+      "mean_per_call_ms": 0.003700476190476191,
+      "mean_per_step_ms": 0.017268888888888893
+    },
+    "owner_bind_candidate": {
+      "calls": 126,
+      "inclusive_ms": 0.5221659999999999,
+      "mean_per_call_ms": 0.004144174603174603,
+      "mean_per_step_ms": 0.058018444444444435
+    },
+    "owner_bind_transport": {
+      "calls": 126,
+      "inclusive_ms": 0.8133309999999999,
+      "mean_per_call_ms": 0.006455007936507936,
+      "mean_per_step_ms": 0.0903701111111111
+    },
+    "owner_compose_target": {
+      "calls": 126,
+      "inclusive_ms": 7.025301000000001,
+      "mean_per_call_ms": 0.05575635714285715,
+      "mean_per_step_ms": 0.7805890000000001
+    },
+    "owner_gas_source": {
+      "calls": 126,
+      "inclusive_ms": 17.025577,
+      "mean_per_call_ms": 0.13512362698412697,
+      "mean_per_step_ms": 1.8917307777777777
+    },
+    "owner_heun_momentum": {
+      "calls": 84,
+      "inclusive_ms": 7.725586999999999,
+      "mean_per_call_ms": 0.0919712738095238,
+      "mean_per_step_ms": 0.8583985555555554
+    },
+    "owner_identify_target": {
+      "calls": 126,
+      "inclusive_ms": 0.42742500000000005,
+      "mean_per_call_ms": 0.0033922619047619053,
+      "mean_per_step_ms": 0.047491666666666675
+    },
+    "owner_issue_stage_seal": {
+      "calls": 126,
+      "inclusive_ms": 0.4087050000000001,
+      "mean_per_call_ms": 0.003243690476190477,
+      "mean_per_step_ms": 0.04541166666666668
+    },
+    "owner_pack_faces": {
+      "calls": 378,
+      "inclusive_ms": 51.65570899999997,
+      "mean_per_call_ms": 0.13665531481481474,
+      "mean_per_step_ms": 5.7395232222222194
+    },
+    "owner_predict_momentum": {
+      "calls": 42,
+      "inclusive_ms": 2.0995039999999996,
+      "mean_per_call_ms": 0.049988190476190464,
+      "mean_per_step_ms": 0.23327822222222216
+    },
+    "produce_resident_frozen_source": {
+      "calls": 126,
+      "inclusive_ms": 4.15779,
+      "mean_per_call_ms": 0.03299833333333334,
+      "mean_per_step_ms": 0.4619766666666667
+    },
+    "validate_resident_physical_flux": {
+      "calls": 126,
+      "inclusive_ms": 116.005113,
+      "mean_per_call_ms": 0.9206755,
+      "mean_per_step_ms": 12.889457
+    }
+  },
+  "producer_uncaptured_ms": 187.2678752406391,
+  "schema": "rise.fire.whole-owner-decomposition.v1",
+  "scope": "nine cold-prefix steps; not an onset or whole-window projection",
+  "units": "milliseconds"
+}

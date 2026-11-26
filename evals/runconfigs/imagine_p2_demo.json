@@ -1,0 +1,15 @@
+{
+ "//": "Arc-77 Phase 2 LIVE DEMO (user request 2026-08-11): ONE run, gemini, figure subject, full imagination mechanism active -- the first live exercise of the provider image API (the one thing mocked tests cannot verify). Expected fingerprints: gate refusal names BOTH requirements (or proactive compliance), imagine_scene fires against live Gemini, sceneTarget blocks + [target|render] composites on every full-frame production render. If the live image API shape differs from the encoded one, the imagine requirement disarms with a factual note and the run proceeds plan-only -- that outcome is the API-shape verdict, not a failure of the run.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_p2_demo"
+}

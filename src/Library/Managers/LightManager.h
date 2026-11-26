@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ILightManager.h"
 #include "GenericManager.h"
+#include <functional>
 
 namespace RISE
 {
@@ -29,6 +30,12 @@ namespace RISE
 			virtual ~LightManager();
 
 			LightsList cachedLights;
+
+			//! H3 (P-INVALIDATE): fired on add/remove so the Scene self-invalidates
+			//! its light-topology generation -- no light mutator (incl. future ones)
+			//! has to remember to bump.  Installed by Job when it wires the manager
+			//! to the Scene.
+			std::function<void()> mOnLightSetChanged;
 
 			void RebuildCachedLightsList()
 			{
@@ -42,12 +49,16 @@ namespace RISE
 		public:
 			LightManager();
 
+			//! H3 (P-INVALIDATE): install the self-invalidation callback (Scene bump).
+			void SetOnLightSetChanged( std::function<void()> cb ) { mOnLightSetChanged = std::move( cb ); }
+
 			// Override AddItem/RemoveItem to keep cachedLights in sync
 			bool AddItem( ILightPriv* pItem, const char* szName )
 			{
 				bool ret = GenericManager<ILightPriv>::AddItem( pItem, szName );
 				if( ret ) {
 					RebuildCachedLightsList();
+					if( mOnLightSetChanged ) mOnLightSetChanged();   // H3: self-invalidate
 				}
 				return ret;
 			}
@@ -57,6 +68,7 @@ namespace RISE
 				bool ret = GenericManager<ILightPriv>::RemoveItem( szName );
 				if( ret ) {
 					RebuildCachedLightsList();
+					if( mOnLightSetChanged ) mOnLightSetChanged();   // H3: self-invalidate
 				}
 				return ret;
 			}

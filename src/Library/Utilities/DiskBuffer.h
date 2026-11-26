@@ -16,7 +16,9 @@
 
 #include "../Interfaces/IBuffer.h"
 #include "Reference.h"
-#include <stdio.h>
+#include <cstdio>
+#include <string>
+#include <memory>
 
 #ifndef DISK_BUFFER_
 #define DISK_BUFFER_
@@ -25,26 +27,32 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class DiskBuffer : public virtual IBuffer, public virtual Reference
+		class DiskBuffer : public virtual IBuffer, public virtual Reference, public IBuffer64
 		{
 		public:
 			//
 			// These methods are to satisfy the IBuffer interface
 			//
-			virtual unsigned int HowFarToEnd( ) const;
-			virtual unsigned int Size( ) const;
-			virtual bool EndOfBuffer( ) const;
+			unsigned int HowFarToEnd( ) const override;
+			unsigned int Size( ) const override;
+			bool EndOfBuffer( ) const override;
 
-			virtual bool seek( const eSeek type, const int amount );
-			virtual unsigned int getCurPos( ) const;
+			bool seek( const eSeek type, const int amount ) override;
+			unsigned int getCurPos( ) const override;
+			std::uint64_t Size64() const override;
+			std::uint64_t getCurPos64() const override;
+			bool seek64( eSeek type, std::int64_t amount ) override;
 
 		protected:
 			// Default destructor
 			DiskBuffer();
-			virtual ~DiskBuffer();
+			~DiskBuffer() override;
 
-			FILE*		hFile;				///< Handle to the file on disk
-			char		szFileName[1024];	///< Name of the file
+			struct CloseFile {
+				void operator()( FILE* file ) const { std::fclose( file ); }
+			};
+			std::unique_ptr<FILE, CloseFile> hFile;
+			std::string filename;			///< Name of the file
 		};
 	}
 }

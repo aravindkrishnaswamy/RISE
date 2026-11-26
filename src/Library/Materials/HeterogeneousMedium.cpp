@@ -14,14 +14,815 @@
 
 #include "pch.h"
 #include "HeterogeneousMedium.h"
+#include "HenyeyGreensteinPhaseFunction.h"
+#include "../Intersection/RayIntersectionGeometric.h"
+#include "../Utilities/FiniteMath.h"
+#include "../Utilities/PlanckRadiance.h"
+#include "../Utilities/GaussLegendreQuadrature.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/RISECBOR64.h"
+#include "../Utilities/FireSequence.h"
+#include "../Utilities/ThreadPool.h"
+#include "../Utilities/Color/ColorUtils.h"
+#include "../Volume/Volume.h"
+#include "../Volume/VolumeAccessor_TRI.h"
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <limits>
 #include <math.h>
 
 using namespace RISE;
 
-/// Maximum number of delta tracking steps before giving up.
-/// This prevents infinite loops in degenerate cases.
-static const unsigned int nMaxDeltaTrackingSteps = 1024;
+namespace
+{
+	class SequenceBootstrapScalarPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		Scalar value_;
+	public:
+		explicit SequenceBootstrapScalarPainter( const Scalar value ) : value_(value) {}
+		~SequenceBootstrapScalarPainter() override = default;
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ) const override
+		{
+			return ScalarTriple(value_);
+		}
+	};
+
+	static const IScalarPainter& SequenceZeroPainter()
+	{
+		static SequenceBootstrapScalarPainter painter(0.0);
+		return painter;
+	}
+
+	static const IScalarPainter& SequenceTemperaturePainter()
+	{
+		static SequenceBootstrapScalarPainter painter(300.0);
+		return painter;
+	}
+
+	class SequenceUnitSpectralFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+	public:
+		~SequenceUnitSpectralFunction() override = default;
+		Scalar Evaluate( const Scalar ) const override { return 1.0; }
+	};
+
+	static const IFunction1D& SequenceUnitSPD()
+	{
+		static SequenceUnitSpectralFunction function;
+		return function;
+	}
+
+	static unsigned long long NextOpticsEpoch()
+	{
+		static std::atomic<unsigned long long> counter( 0 );
+		return ++counter;
+	}
+
+	static IVolumeAccessor* DenseSequenceAccessor(
+		const Implementation::FireSequenceDenseChannel& channel )
+	{
+		if( channel.vectorValues || channel.dimensions[0] > 0x7fffffffu ||
+			channel.dimensions[1] > 0x7fffffffu || channel.dimensions[2] > 0x7fffffffu ) return nullptr;
+		const unsigned int width = static_cast<unsigned int>(channel.dimensions[0]);
+		const unsigned int height = static_cast<unsigned int>(channel.dimensions[1]);
+		const unsigned int depth = static_cast<unsigned int>(channel.dimensions[2]);
+		const std::size_t count = static_cast<std::size_t>(width)*height*depth;
+		if( channel.values.size() != count ) return nullptr;
+		Volume<Scalar>* volume = new Volume<Scalar>(width,height,depth);
+		if( volume->Width() != width || volume->Height() != height || volume->Depth() != depth ) {
+			safe_release(volume);
+			return nullptr;
+		}
+		const int halfWidth = static_cast<int>(width)/2;
+		const int halfHeight = static_cast<int>(height)/2;
+		const int halfDepth = static_cast<int>(depth)/2;
+		for( unsigned int z=0; z<depth; ++z ) for( unsigned int y=0; y<height; ++y ) {
+			for( unsigned int x=0; x<width; ++x ) {
+				volume->SetValue(static_cast<int>(x)-halfWidth,
+					static_cast<int>(y)-halfHeight,static_cast<int>(z)-halfDepth,
+					channel.values[static_cast<std::size_t>(x)+static_cast<std::size_t>(width)*
+						(static_cast<std::size_t>(y)+static_cast<std::size_t>(height)*z)]);
+			}
+		}
+		IVolumeAccessor* accessor = new VolumeAccessor_TRI();
+		accessor->BindVolume(volume);
+		safe_release(volume);
+		return accessor;
+	}
+
+	struct RatioTrackingTestState
+	{
+		bool active = false;
+		Scalar fixedRandom = 0.5;
+		unsigned long long* candidateSteps = 0;
+	};
+
+	thread_local RatioTrackingTestState g_ratioTrackingTestState;
+
+	static Scalar RatioTrackingRandom( RandomNumberGenerator& rng )
+	{
+		if( g_ratioTrackingTestState.active ) {
+			if( g_ratioTrackingTestState.candidateSteps ) {
+				++*g_ratioTrackingTestState.candidateSteps;
+			}
+			return g_ratioTrackingTestState.fixedRandom;
+		}
+		return rng.CanonicalRandom();
+	}
+
+	static Scalar EvaluateCubic(
+		const Scalar (&coeff)[4],
+		const Scalar x
+		)
+	{
+		return ((coeff[0]*x + coeff[1])*x + coeff[2])*x + coeff[3];
+	}
+
+	static bool CubicValueIsNumericalZero(
+		const Scalar (&coeff)[4],
+		const Scalar x,
+		const Scalar value
+		)
+	{
+		const Scalar ax = fabs(x);
+		const Scalar scale = fabs(coeff[0])*ax*ax*ax +
+			fabs(coeff[1])*ax*ax + fabs(coeff[2])*ax + fabs(coeff[3]);
+		return fabs(value) <= 64.0*std::numeric_limits<Scalar>::epsilon()*scale;
+	}
+
+	static void AppendDerivativeRoots(
+		const Scalar (&coeff)[4],
+		std::vector<Scalar>& partition
+		)
+	{
+		const Scalar a = 3.0*coeff[0];
+		const Scalar b = 2.0*coeff[1];
+		const Scalar c = coeff[2];
+		if( a == 0.0 ) {
+			if( b != 0.0 ) {
+				const Scalar root = -c/b;
+				if( root > 0.0 && root < 1.0 ) partition.push_back(root);
+			}
+			return;
+		}
+
+		Scalar discriminant = b*b - 4.0*a*c;
+		const Scalar discriminantScale = b*b + fabs(4.0*a*c);
+		if( discriminant < 0.0 &&
+			-discriminant <= 64.0*std::numeric_limits<Scalar>::epsilon()*discriminantScale ) {
+			discriminant = 0.0;
+		}
+		if( discriminant < 0.0 ) return;
+
+		const Scalar rootDisc = sqrt(discriminant);
+		const Scalar q = -0.5*(b + copysign(rootDisc,b));
+		if( q == 0.0 ) {
+			const Scalar root = -b/(2.0*a);
+			if( root > 0.0 && root < 1.0 ) partition.push_back(root);
+			return;
+		}
+		const Scalar root0 = q/a;
+		const Scalar root1 = c/q;
+		if( root0 > 0.0 && root0 < 1.0 ) partition.push_back(root0);
+		if( root1 > 0.0 && root1 < 1.0 ) partition.push_back(root1);
+	}
+
+	static void SortUniqueUnitIntervalValues( std::vector<Scalar>& values )
+	{
+		std::sort( values.begin(), values.end() );
+		std::vector<Scalar>::iterator out = values.begin();
+		for( std::vector<Scalar>::const_iterator it = values.begin();
+			it != values.end(); ++it ) {
+			if( out == values.begin() || *it != *(out-1) ) {
+				*out++ = *it;
+			}
+		}
+		values.erase( out, values.end() );
+	}
+
+	static void AppendCubicLevelCrossings(
+		const Scalar (&temperature)[4],
+		const Scalar threshold,
+		const Scalar tBegin,
+		const Scalar tEnd,
+		std::vector<Scalar>& breakpoints
+		)
+	{
+		// Recover the cubic in u from four equally spaced values.  Using
+		// the dimensionless cell parameter keeps the solve independent of
+		// scene scale and avoids powers of a potentially large ray distance.
+		const Scalar thirdDifference = temperature[3] - 3.0*temperature[2] +
+			3.0*temperature[1] - temperature[0];
+		const Scalar a = 4.5*thirdDifference;
+		const Scalar secondDifference = temperature[2] -
+			2.0*temperature[1] + temperature[0];
+		const Scalar b = 4.5*secondDifference - a;
+		const Scalar c = 3.0*(temperature[1]-temperature[0]) - a/9.0 - b/3.0;
+		Scalar coeff[4] = { a, b, c, temperature[0] - threshold };
+
+		std::vector<Scalar> partition;
+		partition.reserve(4);
+		partition.push_back(0.0);
+		AppendDerivativeRoots( coeff, partition );
+		partition.push_back(1.0);
+		SortUniqueUnitIntervalValues(partition);
+
+		for( size_t i = 0; i < partition.size(); ++i ) {
+			const Scalar u = partition[i];
+			const Scalar value = EvaluateCubic(coeff,u);
+			if( u > 0.0 && u < 1.0 &&
+				CubicValueIsNumericalZero(coeff,u,value) ) {
+				breakpoints.push_back( tBegin + u*(tEnd-tBegin) );
+			}
+		}
+
+		for( size_t i = 0; i + 1 < partition.size(); ++i ) {
+			Scalar lo = partition[i];
+			Scalar hi = partition[i+1];
+			Scalar flo = EvaluateCubic(coeff,lo);
+			const Scalar fhi = EvaluateCubic(coeff,hi);
+			if( CubicValueIsNumericalZero(coeff,lo,flo) ||
+				CubicValueIsNumericalZero(coeff,hi,fhi) ||
+				(flo < 0.0) == (fhi < 0.0) ) continue;
+
+			for( unsigned int iteration = 0; iteration < 64u; ++iteration ) {
+				const Scalar middle = 0.5*(lo+hi);
+				if( middle == lo || middle == hi ) break;
+				const Scalar fmiddle = EvaluateCubic(coeff,middle);
+				if( CubicValueIsNumericalZero(coeff,middle,fmiddle) ) {
+					lo = hi = middle;
+					break;
+				}
+				if( (flo < 0.0) != (fmiddle < 0.0) ) {
+					hi = middle;
+				} else {
+					lo = middle;
+					flo = fmiddle;
+				}
+			}
+			const Scalar root = 0.5*(lo+hi);
+			if( root > 0.0 && root < 1.0 ) {
+				breakpoints.push_back( tBegin + root*(tEnd-tBegin) );
+			}
+		}
+	}
+
+	static Scalar StablePositiveProduct(
+		const std::initializer_list<Scalar>& factors
+		)
+	{
+		Scalar mantissa = 1.0;
+		int exponent = 0;
+		for( const Scalar factor : factors ) {
+			if( RISE::IsZeroDouble(factor) ) return 0.0;
+			if( factor < 0.0 || !RISE::IsFiniteDouble(factor) ) {
+				return -1.0;
+			}
+			int factorExponent = 0;
+			const Scalar factorMantissa = std::frexp( factor, &factorExponent );
+			int adjustment = 0;
+			mantissa = std::frexp( mantissa*factorMantissa, &adjustment );
+			exponent += factorExponent + adjustment;
+		}
+		const Scalar result = std::ldexp( mantissa, exponent );
+		return RISE::IsZeroDouble(result) ? -1.0 : result;
+	}
+
+	static unsigned int HalfOpenBinIndex(
+		const Scalar value,
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binCount
+		)
+	{
+		if( value >= maximum ) return binCount - 1u;
+		unsigned int lower = 0u;
+		unsigned int upper = binCount;
+		while( lower + 1u < upper ) {
+			const unsigned int middle = lower + (upper-lower)/2u;
+			const Scalar boundary = minimum + Scalar(middle)*binSize;
+			if( value < boundary ) upper = middle;
+			else lower = middle;
+		}
+		return lower;
+	}
+
+	static Scalar SampleHalfOpenBinCoordinate(
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binIndex,
+		const unsigned int binCount,
+		const Scalar sample
+		)
+	{
+		const Scalar lower = minimum + Scalar(binIndex)*binSize;
+		const Scalar upper = binIndex + 1u == binCount ? maximum :
+			minimum + Scalar(binIndex+1u)*binSize;
+		Scalar coordinate = lower + sample*(upper-lower);
+		if( coordinate < lower ) coordinate = lower;
+		if( binIndex + 1u < binCount && coordinate >= upper ) {
+			coordinate = std::nextafter( upper, lower );
+		}
+		if( coordinate > maximum ) coordinate = maximum;
+		return coordinate;
+	}
+
+	static bool HasRepresentableBinInteriors(
+		const Scalar minimum,
+		const Scalar maximum,
+		const Scalar binSize,
+		const unsigned int binCount
+		)
+	{
+		Scalar previous = minimum;
+		for( unsigned int i = 1u; i <= binCount; ++i ) {
+			const Scalar boundary = i == binCount ? maximum :
+				minimum + Scalar(i)*binSize;
+			if( !(boundary > previous) ||
+				!(std::nextafter(previous,boundary) < boundary) ) return false;
+			previous = boundary;
+		}
+		return true;
+	}
+
+	static Scalar RepresentedBinVolume(
+		const Point3& minimum,
+		const Point3& maximum,
+		const Vector3& binSize,
+		const unsigned int x,
+		const unsigned int y,
+		const unsigned int z,
+		const unsigned int nx,
+		const unsigned int ny,
+		const unsigned int nz
+		)
+	{
+		const Scalar x0 = minimum.x + Scalar(x)*binSize.x;
+		const Scalar y0 = minimum.y + Scalar(y)*binSize.y;
+		const Scalar z0 = minimum.z + Scalar(z)*binSize.z;
+		const Scalar x1 = x + 1u == nx ? maximum.x :
+			minimum.x + Scalar(x+1u)*binSize.x;
+		const Scalar y1 = y + 1u == ny ? maximum.y :
+			minimum.y + Scalar(y+1u)*binSize.y;
+		const Scalar z1 = z + 1u == nz ? maximum.z :
+			minimum.z + Scalar(z+1u)*binSize.z;
+		return StablePositiveProduct( {x1-x0,y1-y0,z1-z0} );
+	}
+
+	class ConstituentHGPhaseClosure :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+		const Scalar m_hotWeight;
+		const Scalar m_coolWeight;
+		const Scalar m_condWeight;
+		const Scalar m_hotG;
+		const Scalar m_coolG;
+		const Scalar m_condG;
+
+	protected:
+		~ConstituentHGPhaseClosure() override = default;
+
+	public:
+		ConstituentHGPhaseClosure(
+			const Scalar hotScattering,
+			const Scalar coolScattering,
+			const Scalar condScattering,
+			const Scalar hotG,
+			const Scalar coolG,
+			const Scalar condG
+			) :
+		  m_hotWeight( hotScattering / (hotScattering + coolScattering + condScattering) ),
+		  m_coolWeight( coolScattering / (hotScattering + coolScattering + condScattering) ),
+		  m_condWeight( condScattering / (hotScattering + coolScattering + condScattering) ),
+		  m_hotG( hotG ),
+		  m_coolG( coolG ),
+		  m_condG( condG )
+		{
+		}
+
+		Scalar Evaluate( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			return m_hotWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_hotG ) +
+				m_coolWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+					cosTheta, m_coolG ) +
+				m_condWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG(
+					cosTheta, m_condG );
+		}
+
+		Vector3 Sample( const Vector3& wi, ISampler& sampler ) const override
+		{
+			const Scalar select = sampler.Get1D();
+			const Scalar g = select < m_hotWeight ? m_hotG :
+				(select < m_hotWeight + m_coolWeight ? m_coolG : m_condG);
+			return HenyeyGreensteinPhaseFunction::SampleWithG( wi, sampler, g );
+		}
+
+		Scalar Pdf( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return Evaluate( wi, wo );
+		}
+
+		Scalar GetMeanCosine() const override
+		{
+			return m_hotWeight * m_hotG + m_coolWeight * m_coolG +
+				m_condWeight * m_condG;
+		}
+	};
+
+	static RISEPel FirePelResponse( const Scalar nm )
+	{
+		XYZPel xyz;
+		if( !ColorUtils::XYZFromNM( xyz, nm ) ) return RISEPel( 0.0 );
+		static const Scalar yIntegral =
+			ColorUtils::CIE_Y_Integral( 380.0, 780.0 );
+		if( !RISE::IsFiniteDouble(yIntegral) || yIntegral <= 0.0 ) {
+			return RISEPel( 0.0 );
+		}
+		return ColorUtils::XYZtoRec709RGBMatrixOnly( xyz ) * (1.0/yIntegral);
+	}
+
+	static RISEPel IntegrateFirePelResponsePower( const Scalar exponent )
+	{
+		RISEPel result( 0.0 );
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			result[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[exponent,channel]( const Scalar nm ) {
+					return FirePelResponse(nm)[channel] *
+						pow( Scalar(633.0)/nm, exponent );
+				} );
+		}
+		return result;
+	}
+
+	static Scalar IntegrateFireSamplingPower( const Scalar exponent )
+	{
+		return GaussLegendre21::IntegrateVisibleBand(
+			[exponent]( const Scalar nm ) {
+				XYZPel xyz;
+				if( !ColorUtils::XYZFromNM( xyz, nm ) ) return Scalar(0.0);
+				const Scalar weight = xyz.X + xyz.Y + xyz.Z;
+				return weight * pow( Scalar(633.0)/nm, exponent );
+			} );
+	}
+
+	class ConstituentHGPelPhaseClosure :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+		RISEPel m_hotWeight;
+		RISEPel m_coolWeight;
+		RISEPel m_condWeight;
+		Scalar m_hotProposalWeight;
+		Scalar m_coolProposalWeight;
+		Scalar m_condProposalWeight;
+		const Scalar m_hotG;
+		const Scalar m_coolG;
+		const Scalar m_condG;
+
+	protected:
+		~ConstituentHGPelPhaseClosure() override = default;
+
+	public:
+		ConstituentHGPelPhaseClosure(
+			const RISEPel& hotScattering,
+			const RISEPel& coolScattering,
+			const RISEPel& condScattering,
+			const Scalar hotProposal,
+			const Scalar coolProposal,
+			const Scalar condProposal,
+			const Scalar hotG,
+			const Scalar coolG,
+			const Scalar condG
+			) :
+		  m_hotWeight( 0.0 ),
+		  m_coolWeight( 0.0 ),
+		  m_condWeight( 0.0 ),
+		  m_hotProposalWeight( hotProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_coolProposalWeight( coolProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_condProposalWeight( condProposal/(hotProposal+coolProposal+condProposal) ),
+		  m_hotG( hotG ),
+		  m_coolG( coolG ),
+		  m_condG( condG )
+		{
+			for( unsigned int channel = 0; channel < 3u; ++channel ) {
+				const Scalar total = hotScattering[channel] +
+					coolScattering[channel] + condScattering[channel];
+				if( total > 0.0 ) {
+					m_hotWeight[channel] = hotScattering[channel]/total;
+					m_coolWeight[channel] = coolScattering[channel]/total;
+					m_condWeight[channel] = condScattering[channel]/total;
+				}
+			}
+		}
+
+		Scalar Evaluate( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return PdfProposal( wi, wo );
+		}
+
+		RISEPel EvaluatePel( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			const Scalar hot = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_hotG );
+			const Scalar cool = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_coolG );
+			const Scalar cond = HenyeyGreensteinPhaseFunction::EvaluateWithG(
+				cosTheta, m_condG );
+			return m_hotWeight*hot + m_coolWeight*cool + m_condWeight*cond;
+		}
+
+		Vector3 Sample( const Vector3& wi, ISampler& sampler ) const override
+		{
+			const Scalar select = sampler.Get1D();
+			const Scalar g = select < m_hotProposalWeight ? m_hotG :
+				(select < m_hotProposalWeight + m_coolProposalWeight ?
+					m_coolG : m_condG);
+			return HenyeyGreensteinPhaseFunction::SampleWithG( wi, sampler, g );
+		}
+
+		Scalar Pdf( const Vector3& wi, const Vector3& wo ) const override
+		{
+			return PdfProposal( wi, wo );
+		}
+
+		Scalar PdfProposal( const Vector3& wi, const Vector3& wo ) const override
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wi, wo );
+			return m_hotProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_hotG) +
+				m_coolProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_coolG) +
+				m_condProposalWeight *
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(cosTheta,m_condG);
+		}
+
+		Scalar GetMeanCosine() const override
+		{
+			return m_hotProposalWeight*m_hotG + m_coolProposalWeight*m_coolG +
+				m_condProposalWeight*m_condG;
+		}
+	};
+
+	static Scalar SmoothHotFraction(
+		const Scalar temperature,
+		const Scalar minimumTemperature,
+		const Scalar maximumTemperature
+		)
+	{
+		if( temperature <= minimumTemperature ) return 0.0;
+		if( temperature >= maximumTemperature ) return 1.0;
+		const Scalar x = (temperature-minimumTemperature)/
+			(maximumTemperature-minimumTemperature);
+		return x * x * (3.0 - 2.0 * x);
+	}
+
+	static Scalar HotAbsorptionMass633(
+		const Scalar sootEm,
+		const Scalar sootDensity
+		)
+	{
+		if( !RISE::IsFiniteDouble( sootEm ) ||
+			!RISE::IsFiniteDouble( sootDensity ) ||
+			sootEm < 0.0 || sootDensity <= 0.0 ) return 0.0;
+		const Scalar lambdaMeters = 633.0e-9;
+		return 6.0 * PI * sootEm * 1.0e-3 / (lambdaMeters * sootDensity);
+	}
+
+	static Scalar TrackingSigmaTVisible(
+		const Scalar sceneUnitMeters,
+		const FireOpticsPreset& optics
+		)
+	{
+		if( !RISE::IsFiniteDouble( sceneUnitMeters ) ||
+			sceneUnitMeters <= 0.0 || !optics.IsValid() ) {
+			return 0.0;
+		}
+		return sceneUnitMeters * optics.MaximumExtinctionMassVisible();
+	}
+
+	class MultichannelExtinctionAccessor :
+		public virtual IVolumeAccessor,
+		public virtual Implementation::Reference
+	{
+	protected:
+		const IVolumeAccessor* m_carbon;
+		const IVolumeAccessor* m_temperature;
+		const IVolumeAccessor* m_condensed;
+		Scalar m_hotExtinctionMass;
+		Scalar m_coolExtinctionMass;
+		Scalar m_condExtinctionMass;
+		Scalar m_massMajorant;
+		Scalar m_hotFractionMinK;
+		Scalar m_hotFractionMaxK;
+
+		virtual ~MultichannelExtinctionAccessor()
+		{
+			safe_release( m_carbon );
+			safe_release( m_temperature );
+			safe_release( m_condensed );
+		}
+
+		Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
+		{
+			if( m_massMajorant <= 0.0 ) return 0.0;
+			const Scalar carbon = m_carbon->GetValue( x, y, z );
+			const Scalar phi = SmoothHotFraction(
+				m_temperature->GetValue(x,y,z),m_hotFractionMinK,m_hotFractionMaxK );
+			const Scalar massExtinction =
+				phi * m_hotExtinctionMass + (1.0 - phi) * m_coolExtinctionMass;
+			const Scalar condensed = m_condensed ? m_condensed->GetValue( x, y, z ) : 0.0;
+			return (carbon * massExtinction + condensed * m_condExtinctionMass) /
+				m_massMajorant;
+		}
+
+	public:
+		MultichannelExtinctionAccessor(
+			const IVolumeAccessor& carbon,
+			const IVolumeAccessor& temperature,
+			const IVolumeAccessor* condensed,
+			const Scalar hotExtinctionMass,
+			const Scalar coolExtinctionMass,
+			const Scalar condExtinctionMass,
+			const Scalar hotFractionMinK,
+			const Scalar hotFractionMaxK
+			) :
+		  m_carbon( &carbon ),
+		  m_temperature( &temperature ),
+		  m_condensed( condensed ),
+		  m_hotExtinctionMass( hotExtinctionMass ),
+		  m_coolExtinctionMass( coolExtinctionMass ),
+		  m_condExtinctionMass( condExtinctionMass ),
+		  m_massMajorant( fmax( hotExtinctionMass,
+			fmax( coolExtinctionMass, condExtinctionMass ) ) ),
+		  m_hotFractionMinK( hotFractionMinK ),
+		  m_hotFractionMaxK( hotFractionMaxK )
+		{
+			m_carbon->addref();
+			m_temperature->addref();
+			if( m_condensed ) m_condensed->addref();
+		}
+
+		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const override
+		{
+			return Evaluate( x, y, z );
+		}
+
+		Scalar GetValue( int x, int y, int z ) const override
+		{
+			return Evaluate( Scalar(x), Scalar(y), Scalar(z) );
+		}
+
+		void BindVolume( const IVolume* ) override
+		{
+			// Derived from the two immutable baked channel accessors.
+		}
+	};
+
+	class SummedConcentrationAccessor :
+		public virtual IVolumeAccessor,
+		public virtual Implementation::Reference
+	{
+		const IVolumeAccessor* m_carbon;
+		const IVolumeAccessor* m_condensed;
+
+	protected:
+		~SummedConcentrationAccessor() override
+		{
+			safe_release( m_carbon );
+			safe_release( m_condensed );
+		}
+
+		Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
+		{
+			return m_carbon->GetValue( x, y, z ) +
+				(m_condensed ? m_condensed->GetValue( x, y, z ) : 0.0);
+		}
+
+	public:
+		SummedConcentrationAccessor(
+			const IVolumeAccessor& carbon,
+			const IVolumeAccessor* condensed
+			) :
+		  m_carbon( &carbon ),
+		  m_condensed( condensed )
+		{
+			m_carbon->addref();
+			if( m_condensed ) m_condensed->addref();
+		}
+
+		Scalar GetValue( Scalar x, Scalar y, Scalar z ) const override
+		{
+			return Evaluate( x, y, z );
+		}
+
+		Scalar GetValue( int x, int y, int z ) const override
+		{
+			return Evaluate( Scalar(x), Scalar(y), Scalar(z) );
+		}
+
+		void BindVolume( const IVolume* ) override
+		{
+			// Derived from immutable baked concentration accessors.
+		}
+	};
+
+	static IVolumeAccessor* BakeScalarChannel(
+		const IScalarPainter& painter,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int depth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const char* channelName,
+		const bool requirePositive,
+		Scalar* maximumValue = 0
+		)
+	{
+		if( maximumValue ) *maximumValue = 0.0;
+		Volume<Scalar>* volume = new Volume<Scalar>( width, height, depth );
+		if( volume->Width() != width || volume->Height() != height || volume->Depth() != depth ) {
+			safe_release( volume );
+			return 0;
+		}
+
+		const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
+		const int halfW = static_cast<int>( width ) / 2;
+		const int halfH = static_cast<int>( height ) / 2;
+		const int halfD = static_cast<int>( depth ) / 2;
+
+		for( int z = -halfD; z < static_cast<int>( depth ) - halfD; ++z ) {
+			const Scalar nz = (Scalar(z + halfD) + 0.5) / Scalar(depth);
+			for( int y = -halfH; y < static_cast<int>( height ) - halfH; ++y ) {
+				const Scalar ny = (Scalar(y + halfH) + 0.5) / Scalar(height);
+				for( int x = -halfW; x < static_cast<int>( width ) - halfW; ++x ) {
+					const Scalar nx = (Scalar(x + halfW) + 0.5) / Scalar(width);
+					const Point3 worldPt(
+						bboxMin.x + nx * extent.x,
+						bboxMin.y + ny * extent.y,
+						bboxMin.z + nz * extent.z );
+					const Ray dummyRay( worldPt, Vector3( 0, 1, 0 ) );
+					RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+					ri.ptIntersection = worldPt;
+					ri.ptObjIntersec = worldPt;
+					ri.ptCoord = Point2( nx, ny );
+					const Scalar value = painter.GetValuesAt( ri ).v[0];
+					if( !RISE::IsFiniteDouble( value ) ||
+						( requirePositive ? value <= 0.0 : value < 0.0 ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"MultichannelHeterogeneousMedium:: `%s` painter produced an out-of-domain or non-finite value at (%g,%g,%g)",
+							channelName, worldPt.x, worldPt.y, worldPt.z );
+						safe_release( volume );
+						return 0;
+					}
+					volume->SetValue( x, y, z, value );
+					if( maximumValue ) *maximumValue = fmax(*maximumValue,value);
+				}
+			}
+		}
+
+		IVolumeAccessor* accessor = new VolumeAccessor_TRI();
+		accessor->BindVolume( volume );
+		safe_release( volume );
+		return accessor;
+	}
+
+	// Volume emission is a SOURCE term (Stage C slice 2): uplift it as
+	// the reference illuminant so the NM path carries the same D65 shape
+	// every emitter / light / radiance map now carries.  EnsurePositve
+	// first -- FromRGB scales by the max channel, so a negative component
+	// (an author typo) would flip the scale and corrupt every wavelength.
+	inline RGBIlluminantSpectrum MakeEmissionSpectrum( const RISEPel& emission )
+	{
+		RISEPel c = emission;
+		ColorMath::EnsurePositve( c );
+		return RGBIlluminantSpectrum::FromRGB( c );
+	}
+}
+
+
+// DL-283 / fire merge note: master capped delta tracking at 1024 steps and
+// asserted 2 * cap <= IMedium::kMaxSampleDistanceDraws, the per-event draw
+// budget BDPT's stream blocks are sized from.  The fire branch removed that
+// cap (a truncated walk is a biased "no collision" answer), so
+// SampleDistance{,NM} here draw two values per step with NO fixed upper
+// bound: a pathologically long walk (> 1024 null collisions in one call)
+// runs past its own stream block into the next event's.  That correlates
+// sampler dimensions in those rare walks; it does not change the estimator's
+// expectation.  Revisit if BDPT stream-isolation tests flag it.
 
 
 HeterogeneousMedium::HeterogeneousMedium(
@@ -39,9 +840,11 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_max_sigma_s( max_sigma_s ),
   m_max_sigma_t( max_sigma_a + max_sigma_s ),
   m_emission( 0, 0, 0 ),
+  m_emissionSpectrum( MakeEmissionSpectrum( RISEPel( 0, 0, 0 ) ) ),
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
+  m_pMajorantGrid( 0 ),
   m_bboxMin( bboxMin ),
   m_bboxMax( bboxMax ),
   m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
@@ -78,9 +881,11 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_max_sigma_s( max_sigma_s ),
   m_max_sigma_t( max_sigma_a + max_sigma_s ),
   m_emission( emission ),
+  m_emissionSpectrum( MakeEmissionSpectrum( emission ) ),
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
+  m_pMajorantGrid( 0 ),
   m_bboxMin( bboxMin ),
   m_bboxMax( bboxMax ),
   m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
@@ -98,6 +903,58 @@ HeterogeneousMedium::HeterogeneousMedium(
 	m_pMajorantGrid = new MajorantGrid(
 		accessor, volWidth, volHeight, volDepth,
 		bboxMin, bboxMax, m_sigma_t_majorant,
+		gridX, gridY, gridZ );
+}
+
+HeterogeneousMedium::HeterogeneousMedium(
+	const Scalar trackingSigmaT,
+	const IPhaseFunction& phase,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax
+	) :
+  m_max_sigma_a( trackingSigmaT, trackingSigmaT, trackingSigmaT ),
+  m_max_sigma_s( 0, 0, 0 ),
+  m_max_sigma_t( trackingSigmaT, trackingSigmaT, trackingSigmaT ),
+  m_emission( 0, 0, 0 ),
+  m_sigma_t_majorant( trackingSigmaT ),
+  m_pPhase( &phase ),
+  m_pAccessor( 0 ),
+  m_pMajorantGrid( 0 ),
+  m_bboxMin( bboxMin ),
+  m_bboxMax( bboxMax ),
+  m_bboxExtent( Vector3Ops::mkVector3( bboxMax, bboxMin ) ),
+  m_volWidth( volWidth ),
+  m_volHeight( volHeight ),
+  m_volDepth( volDepth )
+{
+	m_pPhase->addref();
+}
+
+void HeterogeneousMedium::InitializeTrackingAccessor( IVolumeAccessor& accessor )
+{
+	InitializeTrackingAccessor( accessor, accessor );
+}
+
+void HeterogeneousMedium::InitializeTrackingAccessor(
+	IVolumeAccessor& accessor,
+	IVolumeAccessor& majorantAccessor
+	)
+{
+	delete m_pMajorantGrid;
+	m_pMajorantGrid = 0;
+	safe_release( m_pAccessor );
+	m_pAccessor = &accessor;
+	m_pAccessor->addref();
+
+	unsigned int gridX, gridY, gridZ;
+	MajorantGrid::DefaultGridResolution( m_volWidth, m_volHeight, m_volDepth,
+		gridX, gridY, gridZ );
+	m_pMajorantGrid = new MajorantGrid(
+		majorantAccessor, m_volWidth, m_volHeight, m_volDepth,
+		m_bboxMin, m_bboxMax, m_sigma_t_majorant,
 		gridX, gridY, gridZ );
 }
 
@@ -235,8 +1092,25 @@ MediumCoefficientsNM HeterogeneousMedium::GetCoefficientsNM(
 	MediumCoefficientsNM c;
 	c.sigma_t = ColorMath::Luminance( m_max_sigma_t ) * density;
 	c.sigma_s = ColorMath::Luminance( m_max_sigma_s ) * density;
-	c.emission = ColorMath::Luminance( m_emission );
+	// Emission uplifted as the reference illuminant and evaluated at
+	// `nm` (cached at construction -- see m_emissionSpectrum).  This
+	// used to be `ColorMath::Luminance`, one flat scalar reused at
+	// every wavelength, which made a coloured emissive volume
+	// spectrally grey.  sigma_t / sigma_s above stay on the
+	// luminance fallback: they are physical MAGNITUDES (1/m), not
+	// source terms, and carry no illuminant shape.
+	c.emission = m_emissionSpectrum.Eval( nm );
 	return c;
+}
+
+Scalar HeterogeneousMedium::SpectralTrackingMajorant( const Scalar ) const
+{
+	return ColorMath::Luminance( m_max_sigma_t );
+}
+
+Scalar HeterogeneousMedium::PelTrackingMajorant() const
+{
+	return m_sigma_t_majorant;
 }
 
 const IPhaseFunction* HeterogeneousMedium::GetPhaseFunction() const
@@ -289,23 +1163,24 @@ Scalar HeterogeneousMedium::SampleDistance(
 	const HeterogeneousMedium* self = this;
 	const Ray& rayRef = ray;
 	ISampler& samplerRef = sampler;
-	const Scalar sigma_t_max_channel = ColorMath::MaxValue( m_max_sigma_t );
+	const Scalar pelMajorant = PelTrackingMajorant();
+	const Scalar majorantRatio = m_sigma_t_majorant > 0.0 ?
+		pelMajorant/m_sigma_t_majorant : 1.0;
 	Scalar scatterDist = 0;
 	bool didScatter = false;
-	unsigned int totalSteps = 0;
 
 	struct DeltaTrackingVisitor
 	{
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		ISampler* pSampler;
-		Scalar sigma_t_max_channel;
+		Scalar majorantRatio;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
-		unsigned int* pTotalSteps;
 
-		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorantBase )
 		{
+			const Scalar cellMajorant = cellMajorantBase*majorantRatio;
 			// Skip empty cells (zero majorant)
 			if( cellMajorant <= 0 )
 				return true;  // Continue to next cell
@@ -313,10 +1188,8 @@ Scalar HeterogeneousMedium::SampleDistance(
 			const Scalar invCellMaj = 1.0 / cellMajorant;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
 				// Sample exponential free-flight distance with local majorant
 				const Scalar xi = pSampler->Get1D();
 				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
@@ -326,11 +1199,13 @@ Scalar HeterogeneousMedium::SampleDistance(
 				if( t >= tCellExit )
 					return true;
 
-				// Evaluate local density at sample point
+				// Evaluate the actual projected local extinction.  For ordinary
+				// heterogeneous media this reduces exactly to max_sigma_t*density;
+				// fire media are not separable in one density channel.
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_max_channel * density;
+				const Scalar sigma_t_local = ColorMath::MaxValue(
+					self->GetCoefficients(samplePt).sigma_t );
 
 				// Accept/reject with local majorant
 				const Scalar xi2 = pSampler->Get1D();
@@ -343,7 +1218,6 @@ Scalar HeterogeneousMedium::SampleDistance(
 				}
 				// Null collision — continue
 			}
-			return false;  // Exceeded max steps, stop
 		}
 	};
 
@@ -351,10 +1225,9 @@ Scalar HeterogeneousMedium::SampleDistance(
 	visitor.self = self;
 	visitor.pRay = &rayRef;
 	visitor.pSampler = &samplerRef;
-	visitor.sigma_t_max_channel = sigma_t_max_channel;
+	visitor.majorantRatio = majorantRatio;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
-	visitor.pTotalSteps = &totalSteps;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
 
@@ -376,7 +1249,7 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	bool& scattered
 	) const
 {
-	const Scalar sigma_t_majorant_nm = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar sigma_t_majorant_nm = SpectralTrackingMajorant( nm );
 
 	if( sigma_t_majorant_nm <= 0.0 )
 	{
@@ -397,18 +1270,16 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	ISampler& samplerRef = sampler;
 	Scalar scatterDist = 0;
 	bool didScatter = false;
-	unsigned int totalSteps = 0;
 
 	struct DeltaTrackingVisitorNM
 	{
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		ISampler* pSampler;
-		Scalar sigma_t_majorant_nm;
 		Scalar majorantRatio;
+		Scalar nm;
 		Scalar* pScatterDist;
 		bool* pDidScatter;
-		unsigned int* pTotalSteps;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -420,10 +1291,8 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 			const Scalar invCellMaj = 1.0 / cellMajNM;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
 				const Scalar xi = pSampler->Get1D();
 				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
 				t += dt;
@@ -433,8 +1302,7 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_majorant_nm * density;
+				const Scalar sigma_t_local = self->GetCoefficientsNM( samplePt, nm ).sigma_t;
 
 				const Scalar xi2 = pSampler->Get1D();
 				if( xi2 < sigma_t_local * invCellMaj )
@@ -444,7 +1312,6 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 					return false;
 				}
 			}
-			return false;
 		}
 	};
 
@@ -452,11 +1319,10 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 	visitor.self = self;
 	visitor.pRay = &rayRef;
 	visitor.pSampler = &samplerRef;
-	visitor.sigma_t_majorant_nm = sigma_t_majorant_nm;
 	visitor.majorantRatio = majorantRatio;
+	visitor.nm = nm;
 	visitor.pScatterDist = &scatterDist;
 	visitor.pDidScatter = &didScatter;
-	visitor.pTotalSteps = &totalSteps;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
 
@@ -509,50 +1375,64 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 	// Reference: Novak et al. 2014, "Residual Ratio Tracking for
 	// Estimating Attenuation in Participating Media".
 
-	// Thread-local RNG for stochastic sampling.
-	// Each thread gets its own Mersenne Twister to avoid contention.
-	static thread_local RandomNumberGenerator tl_rng;
+	// DL-628: per-tile / per-row / per-sample RNG when inside a parallel
+	// render scope (`ScopedMediumTileSeed`), falling back to a per-thread
+	// `ThreadLocalSeed()` generator outside render scopes.
+	RandomNumberGenerator& rng = ActiveMediumRNG();
 
 	RISEPel w( 1, 1, 1 );
 	const HeterogeneousMedium* self = this;
-	unsigned int totalSteps = 0;
-
+	const Scalar pelMajorant = PelTrackingMajorant();
+	const Scalar majorantRatio = m_sigma_t_majorant > 0.0 ?
+		pelMajorant/m_sigma_t_majorant : 1.0;
 	struct RatioTrackingVisitor
 	{
 		const HeterogeneousMedium* self;
 		const Ray* pRay;
 		RandomNumberGenerator* pRng;
 		RISEPel* pW;
-		RISEPel max_sigma_t;
-		unsigned int* pTotalSteps;
+		Scalar majorantRatio;
 
-		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorantBase )
 		{
+			const Scalar cellMajorant = cellMajorantBase*majorantRatio;
 			if( cellMajorant <= 0 )
 				return true;  // Skip empty cells
 
 			const Scalar invCellMaj = 1.0 / cellMajorant;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
-				const Scalar xi = pRng->CanonicalRandom();
-				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
-				t += dt;
+				Scalar xi = RatioTrackingRandom( *pRng );
+				if( xi <= 0.0 ) {
+					// The continuous exponential law has no atom at zero.  Retry
+					// the discrete RNG endpoint instead of creating a zero step.
+					continue;
+				}
+				xi = std::fmin( xi, std::nextafter( Scalar(1.0), Scalar(0.0) ) );
+				const Scalar dt = -std::log1p( -xi ) * invCellMaj;
+				const Scalar nextT = t + dt;
+				if( !(nextT > t) ) {
+					GlobalLog()->PrintEasyError(
+						"HeterogeneousMedium::EvalTransmittance: finite ratio-tracking step cannot advance the ray parameter" );
+					*pW = RISEPel( -1.0, -1.0, -1.0 );
+					return false;
+				}
+				t = nextT;
 
 				if( t >= tCellExit )
 					return true;  // Next cell
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
+				const MediumCoefficients coefficients =
+					self->GetCoefficients( samplePt );
 
 				// Per-channel ratio tracking weight
 				for( int ch = 0; ch < 3; ch++ )
 				{
-					const Scalar sigma_t_ch = max_sigma_t[ch] * density;
+					const Scalar sigma_t_ch = coefficients.sigma_t[ch];
 					(*pW)[ch] *= fmax( 0.0, 1.0 - sigma_t_ch * invCellMaj );
 				}
 
@@ -564,7 +1444,7 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 				if( wMax < 0.1 )
 				{
 					const Scalar pSurvive = fmax( wMax, 1e-6 );
-					if( pRng->CanonicalRandom() >= pSurvive )
+					if( RatioTrackingRandom( *pRng ) >= pSurvive )
 					{
 						*pW = RISEPel( 0, 0, 0 );
 						return false;
@@ -572,21 +1452,32 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 					*pW = *pW * (1.0 / pSurvive);
 				}
 			}
-			return false;
 		}
 	};
 
 	RatioTrackingVisitor visitor;
 	visitor.self = self;
 	visitor.pRay = &ray;
-	visitor.pRng = &tl_rng;
+	visitor.pRng = &rng;
 	visitor.pW = &w;
-	visitor.max_sigma_t = m_max_sigma_t;
-	visitor.pTotalSteps = &totalSteps;
+	visitor.majorantRatio = majorantRatio;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
 
 	return w;
+}
+
+RISEPel HeterogeneousMedium::EvalDeterministicTransmittancePel(
+	const Ray& ray,
+	const Scalar dist
+	) const
+{
+	RISEPel transmittance;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		transmittance[channel] = exp(
+			-EvalDeterministicOpticalDepthPelChannel(ray,dist,channel) );
+	}
+	return transmittance;
 }
 
 Scalar HeterogeneousMedium::EvalTransmittanceNM(
@@ -595,7 +1486,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	const Scalar nm
 	) const
 {
-	const Scalar sigma_t_max_nm = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar sigma_t_max_nm = SpectralTrackingMajorant( nm );
 
 	if( sigma_t_max_nm <= 0.0 )
 	{
@@ -607,11 +1498,10 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	const Scalar majorantRatio = (m_sigma_t_majorant > 0)
 		? sigma_t_max_nm / m_sigma_t_majorant : 1.0;
 
-	static thread_local RandomNumberGenerator tl_rng_nm;
+	RandomNumberGenerator& rng_nm = ActiveMediumRNG_NM();
 
 	Scalar w = 1.0;
 	const HeterogeneousMedium* self = this;
-	unsigned int totalSteps = 0;
 
 	struct RatioTrackingVisitorNM
 	{
@@ -619,9 +1509,8 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 		const Ray* pRay;
 		RandomNumberGenerator* pRng;
 		Scalar* pW;
-		Scalar sigma_t_max_nm;
 		Scalar majorantRatio;
-		unsigned int* pTotalSteps;
+		Scalar nm;
 
 		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
 		{
@@ -632,21 +1521,29 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 			const Scalar invCellMaj = 1.0 / cellMajNM;
 			Scalar t = tCellEntry;
 
-			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			for( ;; )
 			{
-				(*pTotalSteps)++;
-
-				const Scalar xi = pRng->CanonicalRandom();
-				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
-				t += dt;
+				Scalar xi = RatioTrackingRandom( *pRng );
+				if( xi <= 0.0 ) {
+					continue;
+				}
+				xi = std::fmin( xi, std::nextafter( Scalar(1.0), Scalar(0.0) ) );
+				const Scalar dt = -std::log1p( -xi ) * invCellMaj;
+				const Scalar nextT = t + dt;
+				if( !(nextT > t) ) {
+					GlobalLog()->PrintEasyError(
+						"HeterogeneousMedium::EvalTransmittanceNM: finite ratio-tracking step cannot advance the ray parameter" );
+					*pW = -1.0;
+					return false;
+				}
+				t = nextT;
 
 				if( t >= tCellExit )
 					return true;
 
 				const Point3 samplePt = Point3Ops::mkPoint3(
 					pRay->origin, pRay->Dir() * t );
-				const Scalar density = self->LookupDensity( samplePt );
-				const Scalar sigma_t_local = sigma_t_max_nm * density;
+				const Scalar sigma_t_local = self->GetCoefficientsNM( samplePt, nm ).sigma_t;
 
 				*pW *= fmax( 0.0, 1.0 - sigma_t_local * invCellMaj );
 
@@ -654,7 +1551,7 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 				if( *pW < 0.1 )
 				{
 					const Scalar pSurvive = fmax( *pW, 1e-6 );
-					if( pRng->CanonicalRandom() >= pSurvive )
+					if( RatioTrackingRandom( *pRng ) >= pSurvive )
 					{
 						*pW = 0;
 						return false;
@@ -669,11 +1566,10 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 	RatioTrackingVisitorNM visitor;
 	visitor.self = self;
 	visitor.pRay = &ray;
-	visitor.pRng = &tl_rng_nm;
+	visitor.pRng = &rng_nm;
 	visitor.pW = &w;
-	visitor.sigma_t_max_nm = sigma_t_max_nm;
 	visitor.majorantRatio = majorantRatio;
-	visitor.pTotalSteps = &totalSteps;
+	visitor.nm = nm;
 
 	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
 
@@ -708,7 +1604,6 @@ IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdf(
 	DistanceSample ds;
 	ds.t = SampleDistance( ray, maxDist, sampler, ds.scattered );
 	ds.pdf = EvalDistancePdf( ray, ds.t, ds.scattered, maxDist );
-	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 	return ds;
 }
 
@@ -722,7 +1617,6 @@ IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdfNM(
 	DistanceSample ds;
 	ds.t = SampleDistanceNM( ray, maxDist, nm, sampler, ds.scattered );
 	ds.pdf = EvalDistancePdfNM( ray, ds.t, ds.scattered, maxDist, nm );
-	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 	return ds;
 }
 
@@ -732,6 +1626,253 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 	const Scalar sigma_t_eff
 	) const
 {
+	return EvalDeterministicOpticalDepthImpl(
+		ray, targetDist, sigma_t_eff, false, 0.0, -1 );
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthNM(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar nm
+	) const
+{
+	return EvalDeterministicOpticalDepthImpl(
+		ray, targetDist, 1.0, true, nm, -1 );
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthPelChannel(
+	const Ray& ray,
+	const Scalar targetDist,
+	const unsigned int channel
+	) const
+{
+	return EvalDeterministicOpticalDepthImpl(
+		ray,targetDist,1.0,false,0.0,static_cast<int>(channel) );
+}
+
+Scalar HeterogeneousMedium::InterpolationAccessorOffset(
+	const unsigned int dimension
+	) const
+{
+	return 0.5*Scalar(dimension);
+}
+
+void HeterogeneousMedium::AppendOpticalDepthBreakpoints(
+	const Ray&,
+	const Scalar,
+	const Scalar,
+	std::vector<Scalar>&
+	) const
+{
+}
+
+namespace
+{
+	static const Scalar kGLNodes7[7] = {
+		-0.949107912342758524526189684048,
+		-0.741531185599394439863864773281,
+		-0.405845151377397166906606412077,
+		 0.0,
+		 0.405845151377397166906606412077,
+		 0.741531185599394439863864773281,
+		 0.949107912342758524526189684048 };
+	static const Scalar kGLWeights7[7] = {
+		0.129484966168869693270611432679,
+		0.279705391489276667901467771424,
+		0.381830050505118944950369775489,
+		0.417959183673469387755102040816,
+		0.381830050505118944950369775489,
+		0.279705391489276667901467771424,
+		0.129484966168869693270611432679 };
+
+	/// Amanatides-Woo walk over the accessor knot planes.  Resumable: the
+	/// optical-depth cache keeps one per cached ray and extends it on demand.
+	struct KnotWalker
+	{
+		Scalar t, tExit;
+		int cx, cy, cz;
+		int stepX, stepY, stepZ;
+		Scalar tMaxX, tMaxY, tMaxZ;
+		Scalar tDeltaX, tDeltaY, tDeltaZ;
+		int minCx, maxCx, minCy, maxCy, minCz, maxCz;
+		bool done;
+
+		void Init(
+			const Ray& ray, const Scalar tEntry, const Scalar tEnd,
+			const Point3& bboxMin, const Vector3& bboxExtent,
+			const unsigned int volWidth, const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Scalar offsetW, const Scalar offsetH, const Scalar offsetD )
+		{
+			// Voxel cell size in world space: the spacing between knot
+			// planes equals extent/volDim regardless of parity.
+			const Scalar cellSzX = bboxExtent.x / Scalar(volWidth);
+			const Scalar cellSzY = bboxExtent.y / Scalar(volHeight);
+			const Scalar cellSzZ = bboxExtent.z / Scalar(volDepth);
+			const Scalar invCellSzX = Scalar(volWidth)  / bboxExtent.x;
+			const Scalar invCellSzY = Scalar(volHeight) / bboxExtent.y;
+			const Scalar invCellSzZ = Scalar(volDepth)  / bboxExtent.z;
+
+			// Starting point (nudge slightly inside to avoid landing on face)
+			const Point3 startPt = ray.PointAtLength( tEntry + 1e-10 );
+			cx = (int)floor( (startPt.x - bboxMin.x) * invCellSzX - offsetW );
+			cy = (int)floor( (startPt.y - bboxMin.y) * invCellSzY - offsetH );
+			cz = (int)floor( (startPt.z - bboxMin.z) * invCellSzZ - offsetD );
+
+			// Valid accessor-space cells over [-offset, dimension-offset].
+			minCx = (int)floor( -offsetW );
+			maxCx = (int)ceil( Scalar(volWidth)-offsetW ) - 1;
+			minCy = (int)floor( -offsetH );
+			maxCy = (int)ceil( Scalar(volHeight)-offsetH ) - 1;
+			minCz = (int)floor( -offsetD );
+			maxCz = (int)ceil( Scalar(volDepth)-offsetD ) - 1;
+
+			if( cx < minCx ) cx = minCx;  if( cx > maxCx ) cx = maxCx;
+			if( cy < minCy ) cy = minCy;  if( cy > maxCy ) cy = maxCy;
+			if( cz < minCz ) cz = minCz;  if( cz > maxCz ) cz = maxCz;
+
+			stepX = (ray.Dir().x >= 0) ? 1 : -1;
+			stepY = (ray.Dir().y >= 0) ? 1 : -1;
+			stepZ = (ray.Dir().z >= 0) ? 1 : -1;
+
+			// tMax: ray parameter to reach the next knot plane in each axis.
+			// Knot plane at accessor integer n maps to world:
+			//   world_x = (n + offsetW) * cellSzX + bboxMin.x
+			if( fabs( ray.Dir().x ) > 1e-20 )
+			{
+				const int nextN = (stepX > 0) ? cx + 1 : cx;
+				const Scalar nextFaceX = bboxMin.x + (Scalar(nextN) + offsetW) * cellSzX;
+				tMaxX = (nextFaceX - ray.origin.x) / ray.Dir().x;
+				tDeltaX = fabs( cellSzX / ray.Dir().x );
+			}
+			else { tMaxX = RISE_INFINITY; tDeltaX = RISE_INFINITY; }
+
+			if( fabs( ray.Dir().y ) > 1e-20 )
+			{
+				const int nextN = (stepY > 0) ? cy + 1 : cy;
+				const Scalar nextFaceY = bboxMin.y + (Scalar(nextN) + offsetH) * cellSzY;
+				tMaxY = (nextFaceY - ray.origin.y) / ray.Dir().y;
+				tDeltaY = fabs( cellSzY / ray.Dir().y );
+			}
+			else { tMaxY = RISE_INFINITY; tDeltaY = RISE_INFINITY; }
+
+			if( fabs( ray.Dir().z ) > 1e-20 )
+			{
+				const int nextN = (stepZ > 0) ? cz + 1 : cz;
+				const Scalar nextFaceZ = bboxMin.z + (Scalar(nextN) + offsetD) * cellSzZ;
+				tMaxZ = (nextFaceZ - ray.origin.z) / ray.Dir().z;
+				tDeltaZ = fabs( cellSzZ / ray.Dir().z );
+			}
+			else { tMaxZ = RISE_INFINITY; tDeltaZ = RISE_INFINITY; }
+
+			t = tEntry;
+			tExit = tEnd;
+			done = false;
+		}
+
+		/// End of the current cell, clipped to tExit.
+		Scalar PeekEnd() const
+		{
+			Scalar tNext = fmin( fmin( tMaxX, tMaxY ), tMaxZ );
+			return fmin( tNext, tExit );
+		}
+
+		bool Finished() const { return done || !( t < tExit ); }
+
+		/// Advance past the current cell (whose end is `tNext`).
+		void Advance( const Scalar tNext )
+		{
+			if( tMaxX <= tMaxY && tMaxX <= tMaxZ ) { cx += stepX; tMaxX += tDeltaX; }
+			else if( tMaxY <= tMaxZ ) { cy += stepY; tMaxY += tDeltaY; }
+			else { cz += stepZ; tMaxZ += tDeltaZ; }
+			t = tNext;
+			// Out of accessor-space voxel range?  (Safety bound with
+			// 1-cell margin; the tExit clamp is the true limiter.)
+			if( cx < minCx - 1 || cx > maxCx + 1 ||
+				cy < minCy - 1 || cy > maxCy + 1 ||
+				cz < minCz - 1 || cz > maxCz + 1 )
+				done = true;
+		}
+	};
+
+	/// Cached cumulative mass integrals along one ray.  Cells are the
+	/// non-empty knot cells walked so far, in order.  Shared by all
+	/// wavelengths: the integrals do not depend on nm.
+	struct OpticalDepthRayCache
+	{
+		struct CellRecord
+		{
+			Scalar tBegin, tEnd;
+			Scalar before[3], after[3];		///< cumulative integrals at tBegin / tEnd
+			int cx, cy, cz;
+		};
+		unsigned long long epoch;
+		Scalar ox, oy, oz, dx, dy, dz;
+		KnotWalker walker;
+		Scalar total[3];					///< cumulative integrals up to walker.t
+		std::vector<CellRecord> cells;
+	};
+}
+
+Scalar HeterogeneousMedium::IntegrateOpticalDepthCellGL(
+	const Ray& ray,
+	const Scalar tBegin,
+	const Scalar tEnd,
+	const bool spectral,
+	const Scalar nm,
+	const int pelChannel
+	) const
+{
+	// Reused per thread: this runs per cell per ray.
+	static thread_local std::vector<Scalar> panels;
+	panels.clear();
+	panels.push_back(tBegin);
+	AppendOpticalDepthBreakpoints( ray, tBegin, tEnd, panels );
+	panels.push_back(tEnd);
+	std::sort( panels.begin(), panels.end() );
+	Scalar opticalDepth = 0;
+	for( size_t panel = 0; panel + 1 < panels.size(); ++panel ) {
+		const Scalar panelBegin = panels[panel];
+		const Scalar panelEnd = panels[panel+1];
+		if( panelEnd <= panelBegin ) continue;
+		const Scalar halfLen = 0.5*(panelEnd-panelBegin);
+		const Scalar midPt = 0.5*(panelBegin+panelEnd);
+		Scalar segIntegral = 0.0;
+		for( unsigned int q = 0; q < 7u; ++q ) {
+			const Scalar tq = midPt + halfLen*kGLNodes7[q];
+			const Point3 samplePt = Point3Ops::mkPoint3(
+				ray.origin, ray.Dir()*tq );
+			Scalar dq = 0.0;
+			if( spectral ) {
+				dq = GetCoefficientsNM( samplePt, nm ).sigma_t;
+			} else {
+				const RISEPel sigmaT = GetCoefficients(samplePt).sigma_t;
+				dq = pelChannel >= 0 ? sigmaT[pelChannel] :
+					ColorMath::MaxValue(sigmaT);
+			}
+			segIntegral += kGLWeights7[q]*dq;
+		}
+		opticalDepth += halfLen*segIntegral;
+	}
+	return opticalDepth;
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepthImpl(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar,
+	const bool spectral,
+	const Scalar nm,
+	const int pelChannel
+	) const
+{
+	if( spectral )
+	{
+		Scalar fastTau = 0;
+		if( EvalDeterministicOpticalDepthNMFast( ray, targetDist, nm, fastTau ) )
+			return fastTau;
+	}
+
 	// Deterministic optical depth via voxel-lattice DDA + Gauss-
 	// Legendre quadrature.
 	//
@@ -740,7 +1881,7 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 	// interpolation stencil changes.  All three supported accessors
 	// (NNB, trilinear, tricubic Catmull-Rom) switch stencils at
 	// integer accessor coordinates.  Within each interval between
-	// consecutive knot planes, 5-point Gauss-Legendre quadrature
+	// consecutive knot planes, 7-point Gauss-Legendre quadrature
 	// integrates the density exactly:
 	//
 	//   Nearest-neighbor ('n'): piecewise constant (degree 0)
@@ -748,17 +1889,22 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 	//   Tricubic Catmull-Rom ('c'):  degree 9 along ray per cell
 	//     (3D tensor product of cubics, each axis linear in t)
 	//
-	// 5-point GL is exact for polynomials up to degree 2*5-1 = 9.
+	// 7-point GL is exact for polynomials up to degree 2*7-1 = 13.
+	// Fire media add the roots of T(t)-700/900 as sub-panel boundaries,
+	// making carbon*phi(T) polynomial (degree at most 12) on each panel.
 	//
 	// COORDINATE MAPPING:
-	//   LookupDensity maps world → accessor via:
+	//   Legacy LookupDensity maps world → accessor via:
 	//     vx = ((world_x - bboxMin.x) / extent.x - 0.5) * volWidth
 	//   Knot planes are at integer vx = n.  Solving for world_x:
 	//     world_x = (n/volWidth + 0.5) * extent.x + bboxMin.x
 	//             = (n + volWidth/2.0) * cellSzX + bboxMin.x
 	//   For even volWidth, this coincides with bboxMin + k*cellSz.
-	//   For odd volWidth, there is a half-voxel offset; the DDA
-	//   must use the knot planes, not the naively subdivided AABB.
+	//   For odd volWidth, there is a half-voxel offset.  Painter-baked
+	//   fire channels use floor(volWidth/2)+1/2 because integer samples
+	//   denote voxel centres.  The virtual accessor offset keeps both
+	//   mappings on their actual knot planes rather than naively splitting
+	//   the AABB.
 	//
 	// DDA cell indices are in accessor space (floor of accessor
 	// coordinate), not 0-based voxel indices.
@@ -772,165 +1918,36 @@ Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
 		return 0;
 
 	tEntry = fmax( tEntry, 0.0 );
-	tExit = fmin( tExit, targetDist );
-	if( tEntry >= tExit )
+	const Scalar tClip = fmin( tExit, targetDist );
+	if( tEntry >= tClip )
 		return 0;
 
-	// Voxel cell size in world space (same as before — the spacing
-	// between knot planes equals extent/volDim regardless of parity)
-	const Scalar cellSzX = m_bboxExtent.x / Scalar(m_volWidth);
-	const Scalar cellSzY = m_bboxExtent.y / Scalar(m_volHeight);
-	const Scalar cellSzZ = m_bboxExtent.z / Scalar(m_volDepth);
-	const Scalar invCellSzX = Scalar(m_volWidth)  / m_bboxExtent.x;
-	const Scalar invCellSzY = Scalar(m_volHeight) / m_bboxExtent.y;
-	const Scalar invCellSzZ = Scalar(m_volDepth)  / m_bboxExtent.z;
+	// Accessor-coordinate offsets.  Ordinary volume accessors use dim/2;
+	// painter-baked fire channels use floor(dim/2)+1/2 because their
+	// integer samples denote voxel centres.
+	const Scalar offsetW = InterpolationAccessorOffset(m_volWidth);
+	const Scalar offsetH = InterpolationAccessorOffset(m_volHeight);
+	const Scalar offsetD = InterpolationAccessorOffset(m_volDepth);
 
-	// Accessor-space half-widths for the centered coordinate mapping
-	const Scalar halfW = Scalar(m_volWidth)  * 0.5;
-	const Scalar halfH = Scalar(m_volHeight) * 0.5;
-	const Scalar halfD = Scalar(m_volDepth)  * 0.5;
-
-	// Starting point (nudge slightly inside to avoid landing on face)
-	const Point3 startPt = ray.PointAtLength( tEntry + 1e-10 );
-
-	// Map start point to accessor coordinates and take floor to get
-	// the cell index.  Accessor coord:
-	//   vx = (world_x - bboxMin.x) * invCellSzX - halfW
-	// Cell index = floor(vx).
-	int cx = (int)floor( (startPt.x - m_bboxMin.x) * invCellSzX - halfW );
-	int cy = (int)floor( (startPt.y - m_bboxMin.y) * invCellSzY - halfH );
-	int cz = (int)floor( (startPt.z - m_bboxMin.z) * invCellSzZ - halfD );
-
-	// Valid accessor-space cell range: floor(-halfW) .. ceil(halfW)-1
-	// (the AABB spans accessor coords [-halfW, halfW])
-	const int minCx = (int)floor( -halfW );
-	const int maxCx = (int)ceil( halfW ) - 1;
-	const int minCy = (int)floor( -halfH );
-	const int maxCy = (int)ceil( halfH ) - 1;
-	const int minCz = (int)floor( -halfD );
-	const int maxCz = (int)ceil( halfD ) - 1;
-
-	if( cx < minCx ) cx = minCx;  if( cx > maxCx ) cx = maxCx;
-	if( cy < minCy ) cy = minCy;  if( cy > maxCy ) cy = maxCy;
-	if( cz < minCz ) cz = minCz;  if( cz > maxCz ) cz = maxCz;
-
-	// DDA step directions
-	const int stepX = (ray.Dir().x >= 0) ? 1 : -1;
-	const int stepY = (ray.Dir().y >= 0) ? 1 : -1;
-	const int stepZ = (ray.Dir().z >= 0) ? 1 : -1;
-
-	// tMax: ray parameter to reach the next knot plane in each axis.
-	// Knot plane at accessor integer n maps to world:
-	//   world_x = (n + halfW) * cellSzX + bboxMin.x
-	// Next face from cell cx in +x direction: n = cx + 1
-	// Next face from cell cx in -x direction: n = cx
-	Scalar tMaxX, tMaxY, tMaxZ;
-	Scalar tDeltaX, tDeltaY, tDeltaZ;
-
-	if( fabs( ray.Dir().x ) > 1e-20 )
 	{
-		const int nextN = (stepX > 0) ? cx + 1 : cx;
-		const Scalar nextFaceX = m_bboxMin.x + (Scalar(nextN) + halfW) * cellSzX;
-		tMaxX = (nextFaceX - ray.origin.x) / ray.Dir().x;
-		tDeltaX = fabs( cellSzX / ray.Dir().x );
-	}
-	else
-	{
-		tMaxX = RISE_INFINITY;
-		tDeltaX = RISE_INFINITY;
-	}
-
-	if( fabs( ray.Dir().y ) > 1e-20 )
-	{
-		const int nextN = (stepY > 0) ? cy + 1 : cy;
-		const Scalar nextFaceY = m_bboxMin.y + (Scalar(nextN) + halfH) * cellSzY;
-		tMaxY = (nextFaceY - ray.origin.y) / ray.Dir().y;
-		tDeltaY = fabs( cellSzY / ray.Dir().y );
-	}
-	else
-	{
-		tMaxY = RISE_INFINITY;
-		tDeltaY = RISE_INFINITY;
-	}
-
-	if( fabs( ray.Dir().z ) > 1e-20 )
-	{
-		const int nextN = (stepZ > 0) ? cz + 1 : cz;
-		const Scalar nextFaceZ = m_bboxMin.z + (Scalar(nextN) + halfD) * cellSzZ;
-		tMaxZ = (nextFaceZ - ray.origin.z) / ray.Dir().z;
-		tDeltaZ = fabs( cellSzZ / ray.Dir().z );
-	}
-	else
-	{
-		tMaxZ = RISE_INFINITY;
-		tDeltaZ = RISE_INFINITY;
-	}
-
-	// Walk the voxel lattice along accessor knot planes
-	Scalar opticalDepth = 0;
-	Scalar t = tEntry;
-
-	while( t < tExit )
-	{
-		// Next knot-plane crossing or segment end
-		Scalar tNext = fmin( fmin( tMaxX, tMaxY ), tMaxZ );
-		tNext = fmin( tNext, tExit );
-
-		if( tNext > t + 1e-15 )
+		// Walk every cell up to min(bbox exit, target).
+		KnotWalker walker;
+		walker.Init( ray, tEntry, tClip, m_bboxMin, m_bboxExtent,
+			m_volWidth, m_volHeight, m_volDepth, offsetW, offsetH, offsetD );
+		Scalar opticalDepth = 0;
+		while( !walker.Finished() )
 		{
-			// 5-point Gauss-Legendre: exact for polynomials up to
-			// degree 9, covering all supported accessor types.
-			//
-			// Nodes on [-1,1]:  ±0.90618, ±0.53847, 0
-			// Weights:          0.23693,  0.47863,  0.56889
-			static const Scalar glNodes[5] = {
-				-0.906179845938664, -0.538469310105683, 0.0,
-				 0.538469310105683,  0.906179845938664 };
-			static const Scalar glWeights[5] = {
-				0.236926885056189, 0.478628670499366, 0.568888888888889,
-				0.478628670499366, 0.236926885056189 };
-
-			const Scalar halfLen = 0.5 * (tNext - t);
-			const Scalar midPt  = 0.5 * (t + tNext);
-			Scalar segIntegral = 0;
-			for( int q = 0; q < 5; q++ )
+			const Scalar tBegin = walker.t;
+			const Scalar tNext = walker.PeekEnd();
+			if( tNext > tBegin + 1e-15 )
 			{
-				const Scalar tq = midPt + halfLen * glNodes[q];
-				const Scalar dq = LookupDensity(
-					Point3Ops::mkPoint3( ray.origin, ray.Dir() * tq ) );
-				segIntegral += glWeights[q] * dq;
+				opticalDepth += IntegrateOpticalDepthCellGL(
+					ray, tBegin, tNext, spectral, nm, pelChannel );
 			}
-			opticalDepth += sigma_t_eff * halfLen * segIntegral;
+			walker.Advance( tNext );
 		}
-
-		// Advance DDA: step the axis with the smallest tMax
-		if( tMaxX <= tMaxY && tMaxX <= tMaxZ )
-		{
-			cx += stepX;
-			tMaxX += tDeltaX;
-		}
-		else if( tMaxY <= tMaxZ )
-		{
-			cy += stepY;
-			tMaxY += tDeltaY;
-		}
-		else
-		{
-			cz += stepZ;
-			tMaxZ += tDeltaZ;
-		}
-
-		t = tNext;
-
-		// Out of accessor-space voxel range?  (Safety bound with
-		// 1-cell margin; the tExit clamp is the true limiter.)
-		if( cx < minCx - 1 || cx > maxCx + 1 ||
-			cy < minCy - 1 || cy > maxCy + 1 ||
-			cz < minCz - 1 || cz > maxCz + 1 )
-			break;
+		return opticalDepth;
 	}
-
-	return opticalDepth;
 }
 
 
@@ -948,8 +1965,9 @@ Scalar HeterogeneousMedium::EvalDistancePdf(
 	//   no scatter: T_real(0,tEnd)
 	// where T_real = exp(-integral sigma_t ds) is the real transmittance.
 	//
-	// We compute T_real deterministically via Simpson quadrature over
-	// the DDA cells (see EvalDeterministicOpticalDepth).  This avoids
+	// We compute T_real deterministically via knot-aligned, root-split
+	// 7-point Gauss-Legendre panels (see EvalDeterministicOpticalDepth).
+	// This avoids
 	// the stochastic ratio-tracking path through EvalTransmittance,
 	// which would randomize the MIS balance-heuristic denominator.
 	//
@@ -957,21 +1975,37 @@ Scalar HeterogeneousMedium::EvalDistancePdf(
 	// sampler: MaxValue(m_max_sigma_t) for RGB.
 	//
 	// Reference: Miller, Georgiev, Jarosz, SIGGRAPH 2019 §3.3
-	const Scalar sigma_t_eff = m_sigma_t_majorant;  // = MaxValue(m_max_sigma_t)
 	const Scalar targetDist = scattered ? t : maxDist;
-	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar tau = EvalDeterministicOpticalDepth(
+		ray, targetDist, PelTrackingMajorant() );
 	const Scalar T_real = exp( -tau );
 
 	if( scattered )
 	{
 		const Point3 pt = ray.PointAtLength( t );
-		const Scalar density = LookupDensity( pt );
-		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+		return ColorMath::MaxValue(GetCoefficients(pt).sigma_t) * T_real;
 	}
 	else
 	{
-		return fmax( T_real, 1e-30 );
+		return T_real;
 	}
+}
+
+Scalar HeterogeneousMedium::EvalLogDistancePdfNM(
+	const Ray& ray,
+	const Scalar t,
+	const bool scattered,
+	const Scalar maxDist,
+	const Scalar nm
+	) const
+{
+	const Scalar targetDist = scattered ? t : maxDist;
+	const Scalar tau = EvalDeterministicOpticalDepthNM( ray, targetDist, nm );
+	if( !scattered ) return -tau;
+
+	const Scalar localSigmaT = GetCoefficientsNM(
+		ray.PointAtLength( t ), nm ).sigma_t;
+	return localSigmaT > 0.0 ? log( localSigmaT ) - tau : -RISE_INFINITY;
 }
 
 Scalar HeterogeneousMedium::EvalDistancePdfNM(
@@ -983,22 +2017,18 @@ Scalar HeterogeneousMedium::EvalDistancePdfNM(
 	) const
 {
 	// Deterministic technique density — see EvalDistancePdf comment.
-	// sigma_t_eff for NM is Luminance(m_max_sigma_t), matching
-	// the scalar majorant used by SampleDistanceNM.
-	const Scalar sigma_t_eff = ColorMath::Luminance( m_max_sigma_t );
 	const Scalar targetDist = scattered ? t : maxDist;
-	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar tau = EvalDeterministicOpticalDepthNM( ray, targetDist, nm );
 	const Scalar T_real = exp( -tau );
 
 	if( scattered )
 	{
 		const Point3 pt = ray.PointAtLength( t );
-		const Scalar density = LookupDensity( pt );
-		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+		return GetCoefficientsNM( pt, nm ).sigma_t * T_real;
 	}
 	else
 	{
-		return fmax( T_real, 1e-30 );
+		return T_real;
 	}
 }
 
@@ -1010,4 +2040,2224 @@ bool HeterogeneousMedium::GetBoundingBox(
 	bbMin = m_bboxMin;
 	bbMax = m_bboxMax;
 	return true;
+}
+
+
+Scalar MultichannelHeterogeneousMedium::ComputeHotAbsorptionMass633(
+	Scalar sootEm,
+	Scalar sootDensity
+	)
+{
+	return HotAbsorptionMass633( sootEm, sootDensity );
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const IPhaseFunction& phase
+	) :
+  MultichannelHeterogeneousMedium(
+	  carbonPainter, temperaturePainter, 0,
+	  volWidth, volHeight, volDepth, bboxMin, bboxMax, sceneUnitMeters,
+	  sootEm, sootDensity, sootAlbedoHot, sootGHot,
+	  smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+	  0.0, 0.0, 0.0, 0.0, phase )
+{
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const IScalarPainter* condensedPainter,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const Scalar smokeKmCond,
+	const Scalar smokeNCond,
+	const Scalar smokeAlbedoCond,
+	const Scalar smokeGCond,
+	const IPhaseFunction& phase
+	) :
+	MultichannelHeterogeneousMedium(
+		carbonPainter, temperaturePainter, condensedPainter,
+		0, 0, 0, 0, 0, 0,
+		0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+		volWidth, volHeight, volDepth, bboxMin, bboxMax, sceneUnitMeters,
+		sootEm, sootDensity, sootAlbedoHot, sootGHot,
+		smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+		smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond, phase )
+{
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const IScalarPainter* condensedPainter,
+	const IScalarPainter* chemCHPainter,
+	const IScalarPainter* chemC2Painter,
+	const IScalarPainter* chemCO2Painter,
+	const IFunction1D* chemCHSPD,
+	const IFunction1D* chemC2SPD,
+	const IFunction1D* chemCO2SPD,
+	const Scalar chemCHIntervalMin,
+	const Scalar chemCHIntervalMax,
+	const Scalar chemC2IntervalMin,
+	const Scalar chemC2IntervalMax,
+	const Scalar chemCO2IntervalMin,
+	const Scalar chemCO2IntervalMax,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const Scalar sootEm,
+	const Scalar sootDensity,
+	const Scalar sootAlbedoHot,
+	const Scalar sootGHot,
+	const Scalar smokeKmCarbon,
+	const Scalar smokeNCarbon,
+	const Scalar smokeAlbedoCarbon,
+	const Scalar smokeGCarbon,
+	const Scalar smokeKmCond,
+	const Scalar smokeNCond,
+	const Scalar smokeAlbedoCond,
+	const Scalar smokeGCond,
+	const IPhaseFunction& phase
+	) :
+	MultichannelHeterogeneousMedium(
+		carbonPainter, temperaturePainter, condensedPainter,
+		chemCHPainter, chemC2Painter, chemCO2Painter,
+		chemCHSPD, chemC2SPD, chemCO2SPD,
+		chemCHIntervalMin, chemCHIntervalMax,
+		chemC2IntervalMin, chemC2IntervalMax,
+		chemCO2IntervalMin, chemCO2IntervalMax,
+		volWidth, volHeight, volDepth, bboxMin, bboxMax, sceneUnitMeters,
+		FireOpticsPreset::CreateExplicitSyntheticFixture(
+			sootEm, sootDensity, sootAlbedoHot, sootGHot,
+			smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+			smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond ),
+		phase )
+{
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const IScalarPainter& carbonPainter,
+	const IScalarPainter& temperaturePainter,
+	const IScalarPainter* condensedPainter,
+	const IScalarPainter* chemCHPainter,
+	const IScalarPainter* chemC2Painter,
+	const IScalarPainter* chemCO2Painter,
+	const IFunction1D* chemCHSPD,
+	const IFunction1D* chemC2SPD,
+	const IFunction1D* chemCO2SPD,
+	const Scalar chemCHIntervalMin,
+	const Scalar chemCHIntervalMax,
+	const Scalar chemC2IntervalMin,
+	const Scalar chemC2IntervalMax,
+	const Scalar chemCO2IntervalMin,
+	const Scalar chemCO2IntervalMax,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const FireOpticsPreset& optics,
+	const IPhaseFunction& phase
+	) :
+  HeterogeneousMedium(
+	  TrackingSigmaTVisible( sceneUnitMeters, optics ),
+	  phase, volWidth, volHeight, volDepth, bboxMin, bboxMax ),
+  m_pCarbonAccessor( 0 ),
+  m_pTemperatureAccessor( 0 ),
+	  m_pCondensedAccessor( 0 ),
+	  m_pChemAccessor{ 0, 0, 0 },
+	  m_pChemSPD{ 0, 0, 0 },
+	  m_chemIntervalMin{ chemCHIntervalMin, chemC2IntervalMin, chemCO2IntervalMin },
+	  m_chemIntervalMax{ chemCHIntervalMax, chemC2IntervalMax, chemCO2IntervalMax },
+	  m_chemSPDArea{ 0.0, 0.0, 0.0 },
+	  m_optics( optics ),
+	  m_hasNonzeroCondensedInventory( false ),
+  m_sceneUnitMeters( sceneUnitMeters ),
+  m_sootEm( optics.PelApproximateEffectiveAbsorption633() ),
+  m_sootDensity( optics.SootDensityKgM3() ),
+  m_sootAlbedoHot( optics.PelApproximateHotAlbedo() ),
+  m_sootGHot( optics.PelApproximateHotG() ),
+  m_smokeKmCarbon( optics.PelApproximateCoolKm633() ),
+  m_smokeNCarbon( optics.PelApproximateCoolExponent() ),
+  m_smokeAlbedoCarbon( optics.PelApproximateCoolAlbedo() ),
+  m_smokeGCarbon( optics.PelApproximateCoolG() ),
+	  m_smokeKmCond( optics.PelApproximateCondensedKm633() ),
+	  m_smokeNCond( optics.PelApproximateCondensedExponent() ),
+	  m_smokeAlbedoCond( optics.PelApproximateCondensedAlbedo() ),
+	  m_smokeGCond( optics.PelApproximateCondensedG() ),
+  m_hotAbsorptionMass633( optics.HotAbsorptionMass(633.0) ),
+  m_hotExtinctionMass633( optics.HotExtinctionMass(633.0) ),
+	  m_coolExtinctionMass633( optics.CoolExtinctionMass(633.0) ),
+	  m_condExtinctionMass633( optics.CondensedExtinctionMass(633.0) ),
+	  m_pelResponseMass( 0.0 ),
+	  m_pelHotMean( 0.0 ),
+	  m_pelCoolMean( 0.0 ),
+	  m_pelCondMean( 0.0 ),
+	  m_samplingHotMass( 0.0 ),
+	  m_samplingCoolMass( 0.0 ),
+	  m_samplingCondMass( 0.0 ),
+	  m_effectiveAbsorptionAblation( NoEffectiveAbsorptionAblation ),
+	  m_emissionBinSize( 0, 0, 0 ),
+	  m_thermalEmissionImportance( 0.0 ),
+  m_minPositiveThermalEmissionPdf( 0.0 ),
+	  m_fireMajorantGeneration( 0 ),
+	  m_fireEmissionGeneration( 0 ),
+	  m_flatCurrent( false ),
+	  m_opticsEpoch( NextOpticsEpoch() ),
+	  m_fireDerivedStructuresCurrent( false ),
+	  m_forTestBlockFireDerivedRebuild( false ),
+	  m_valid( false ),
+	  m_sequenceBacked( false )
+{
+	const IScalarPainter* chemPainters[3] = {
+		chemCHPainter, chemC2Painter, chemCO2Painter };
+	const IFunction1D* chemSPDs[3] = { chemCHSPD, chemC2SPD, chemCO2SPD };
+	const bool hasAnyChem = chemPainters[0] || chemPainters[1] || chemPainters[2] ||
+		chemSPDs[0] || chemSPDs[1] || chemSPDs[2];
+	const bool hasAllChem = chemPainters[0] && chemPainters[1] && chemPainters[2] &&
+		chemSPDs[0] && chemSPDs[1] && chemSPDs[2];
+	const Vector3 extent = Vector3Ops::mkVector3( bboxMax, bboxMin );
+	const bool validDimensions = volWidth >= 2 && volHeight >= 2 && volDepth >= 2 &&
+		volWidth <= 0x7fffffffu && volHeight <= 0x7fffffffu && volDepth <= 0x7fffffffu;
+	const bool validBounds =
+		RISE::IsFiniteDouble( bboxMin.x ) && RISE::IsFiniteDouble( bboxMin.y ) &&
+		RISE::IsFiniteDouble( bboxMin.z ) && RISE::IsFiniteDouble( bboxMax.x ) &&
+		RISE::IsFiniteDouble( bboxMax.y ) && RISE::IsFiniteDouble( bboxMax.z ) &&
+		RISE::IsFiniteDouble( extent.x ) && RISE::IsFiniteDouble( extent.y ) &&
+		RISE::IsFiniteDouble( extent.z ) &&
+		extent.x > 0.0 && extent.y > 0.0 && extent.z > 0.0;
+	const bool validOptics =
+		RISE::IsFiniteDouble( sceneUnitMeters ) &&
+		sceneUnitMeters > 0.0 && optics.IsValid() &&
+		m_sootEm >= 0.0 && m_sootDensity > 0.0 &&
+		m_sootAlbedoHot >= 0.0 && m_sootAlbedoHot < 1.0 &&
+		m_sootGHot > -1.0 && m_sootGHot < 1.0 &&
+		m_smokeKmCarbon >= 0.0 && m_smokeNCarbon >= 0.0 &&
+		m_smokeAlbedoCarbon >= 0.0 && m_smokeAlbedoCarbon <= 1.0 &&
+		m_smokeGCarbon > -1.0 && m_smokeGCarbon < 1.0 &&
+		(!condensedPainter ||
+			(m_smokeKmCond >= 0.0 && m_smokeNCond >= 0.0 &&
+			m_smokeAlbedoCond >= 0.0 && m_smokeAlbedoCond <= 1.0 &&
+			m_smokeGCond > -1.0 && m_smokeGCond < 1.0)) &&
+		(!hasAnyChem || hasAllChem);
+	if( !validDimensions || !validBounds || !validOptics ||
+		carbonPainter.HasPerChannelVariation() || temperaturePainter.HasPerChannelVariation() ||
+		(condensedPainter && condensedPainter->HasPerChannelVariation()) ||
+		(hasAllChem && (chemPainters[0]->HasPerChannelVariation() ||
+			chemPainters[1]->HasPerChannelVariation() ||
+			chemPainters[2]->HasPerChannelVariation())) ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: invalid lattice, bbox, scalar channel, or constituent optical parameter" );
+		return;
+	}
+
+	m_pelResponseMass = IntegrateFirePelResponsePower( 0.0 );
+	const RISEPel hotIntegral = IntegrateFirePelResponsePower( 1.0 );
+	const RISEPel coolIntegral = IntegrateFirePelResponsePower( m_smokeNCarbon );
+	const RISEPel condIntegral = condensedPainter ?
+		IntegrateFirePelResponsePower( m_smokeNCond ) : m_pelResponseMass;
+	bool validPelProjection = true;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		const Scalar responseMass = m_pelResponseMass[channel];
+		assert( RISE::IsFiniteDouble(responseMass) && responseMass > 0.0 );
+		if( !RISE::IsFiniteDouble(responseMass) || responseMass <= 0.0 ) {
+			validPelProjection = false;
+			continue;
+		}
+		m_pelHotMean[channel] = hotIntegral[channel]/responseMass;
+		m_pelCoolMean[channel] = coolIntegral[channel]/responseMass;
+		m_pelCondMean[channel] = condIntegral[channel]/responseMass;
+		const Scalar projectedHotSigmaA =
+			m_hotAbsorptionMass633*m_pelHotMean[channel];
+		const Scalar projectedHotSigmaS = projectedHotSigmaA *
+			m_sootAlbedoHot/(1.0-m_sootAlbedoHot);
+		const Scalar projectedCoolSigmaA = m_coolExtinctionMass633 *
+			(1.0-m_smokeAlbedoCarbon)*m_pelCoolMean[channel];
+		const Scalar projectedCoolSigmaS = m_coolExtinctionMass633 *
+			m_smokeAlbedoCarbon*m_pelCoolMean[channel];
+		const Scalar projectedCondSigmaA = m_condExtinctionMass633 *
+			(1.0-m_smokeAlbedoCond)*m_pelCondMean[channel];
+		const Scalar projectedCondSigmaS = m_condExtinctionMass633 *
+			m_smokeAlbedoCond*m_pelCondMean[channel];
+		assert( projectedHotSigmaA >= 0.0 && projectedHotSigmaS >= 0.0 &&
+			projectedCoolSigmaA >= 0.0 && projectedCoolSigmaS >= 0.0 &&
+			projectedCondSigmaA >= 0.0 && projectedCondSigmaS >= 0.0 );
+		if( !RISE::IsFiniteDouble(projectedHotSigmaA) || projectedHotSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedHotSigmaS) || projectedHotSigmaS < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCoolSigmaA) || projectedCoolSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCoolSigmaS) || projectedCoolSigmaS < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCondSigmaA) || projectedCondSigmaA < 0.0 ||
+			!RISE::IsFiniteDouble(projectedCondSigmaS) || projectedCondSigmaS < 0.0 ) {
+			validPelProjection = false;
+		}
+	}
+	if( !validPelProjection ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: Pel response mass or projected extinction is non-positive" );
+		return;
+	}
+	m_samplingHotMass = IntegrateFireSamplingPower( 1.0 );
+	m_samplingCoolMass = IntegrateFireSamplingPower( m_smokeNCarbon );
+	m_samplingCondMass = condensedPainter ?
+		IntegrateFireSamplingPower( m_smokeNCond ) : 0.0;
+	if( !RISE::IsFiniteDouble(m_samplingHotMass) || m_samplingHotMass <= 0.0 ||
+		!RISE::IsFiniteDouble(m_samplingCoolMass) || m_samplingCoolMass <= 0.0 ||
+		(condensedPainter &&
+			(!RISE::IsFiniteDouble(m_samplingCondMass) || m_samplingCondMass <= 0.0)) ) {
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: nonnegative Pel phase-sampling response is invalid" );
+		return;
+	}
+
+	m_pCarbonAccessor = BakeScalarChannel(
+		carbonPainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "carbon", false );
+	if( !m_pCarbonAccessor ) return;
+
+	m_pTemperatureAccessor = BakeScalarChannel(
+		temperaturePainter, volWidth, volHeight, volDepth, bboxMin, bboxMax, "temperature", true );
+	if( !m_pTemperatureAccessor ) return;
+	if( condensedPainter ) {
+		Scalar maximumCondensed = 0.0;
+		m_pCondensedAccessor = BakeScalarChannel(
+			*condensedPainter, volWidth, volHeight, volDepth,
+			bboxMin, bboxMax, "condensed", false, &maximumCondensed );
+		if( !m_pCondensedAccessor ) return;
+		m_hasNonzeroCondensedInventory = maximumCondensed > 0.0;
+	}
+	if( hasAllChem ) {
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_pChemSPD[band] = chemSPDs[band];
+			m_pChemSPD[band]->addref();
+		}
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_chemSPDArea[band] = NormalizeChemSPD(
+				*m_pChemSPD[band], m_chemIntervalMin[band],
+				m_chemIntervalMax[band] );
+			if( m_chemSPDArea[band] <= 0.0 ) {
+				GlobalLog()->PrintEasyError(
+					"MultichannelHeterogeneousMedium:: chem SPD interval or 1 nm trapezoid normalization is invalid" );
+				return;
+			}
+		}
+		static const char* chemNames[3] = { "chem_CH", "chem_C2", "chem_CO2" };
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			m_pChemAccessor[band] = BakeScalarChannel(
+				*chemPainters[band], volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, chemNames[band], false );
+			if( !m_pChemAccessor[band] ) return;
+		}
+	}
+
+	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
+		*m_pCarbonAccessor, *m_pTemperatureAccessor, m_pCondensedAccessor,
+		m_hotExtinctionMass633, m_coolExtinctionMass633,
+		m_condExtinctionMass633, m_optics.HotFractionMinK(),
+		m_optics.HotFractionMaxK() );
+	// The local tracking accessor evaluates carbon * k(phi(T)).  Building
+	// a majorant from that nonlinear product's corner samples can miss an
+	// interior maximum when carbon and temperature gradients oppose each
+	// other.  Build the grid from carbon alone and scale it by the global
+	// max of every constituent mass extinction (already in
+	// m_sigma_t_majorant).  Carbon + condensed is trilinear on the shared
+	// lattice, so its per-cell corner maximum is conservative.
+	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
+		*m_pCarbonAccessor, m_pCondensedAccessor );
+	BuildFlatGrids();
+	InitializeTrackingAccessor( *trackingAccessor, *majorantAccessor );
+	++m_fireMajorantGeneration;
+	safe_release( trackingAccessor );
+	safe_release( majorantAccessor );
+	m_previewFidelity = m_optics.EvaluateFidelity(
+		false, m_hasNonzeroCondensedInventory, hasAllChem );
+	m_predictiveFidelity = m_optics.EvaluateFidelity(
+		true, m_hasNonzeroCondensedInventory, hasAllChem );
+	m_valid = true;
+	if( !BuildThermalEmissionImportance() ) {
+		m_valid = false;
+		GlobalLog()->PrintEasyError(
+			"MultichannelHeterogeneousMedium:: failed to build finite thermal-emission importance" );
+	} else {
+		++m_fireEmissionGeneration;
+		m_fireDerivedStructuresCurrent = true;
+	}
+}
+
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const Implementation::FireSequencePreparedFrame& frame,
+	const std::array<std::array<double,2>,3>& chemNormalizationIntervalsNM,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const FireOpticsPreset& optics,
+	const IPhaseFunction& phase
+	) :
+	MultichannelHeterogeneousMedium(
+		SequenceZeroPainter(),SequenceTemperaturePainter(),
+		frame.channels.count("condensed") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CH") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_C2") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CO2") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CH") ? &SequenceUnitSPD() : nullptr,
+		frame.channels.count("chem_C2") ? &SequenceUnitSPD() : nullptr,
+		frame.channels.count("chem_CO2") ? &SequenceUnitSPD() : nullptr,
+		chemNormalizationIntervalsNM[0][0],chemNormalizationIntervalsNM[0][1],
+		chemNormalizationIntervalsNM[1][0],chemNormalizationIntervalsNM[1][1],
+		chemNormalizationIntervalsNM[2][0],chemNormalizationIntervalsNM[2][1],
+		volWidth,volHeight,volDepth,bboxMin,bboxMax,sceneUnitMeters,optics,phase )
+{
+	m_sequenceBacked = true;
+	if( m_valid && !InstallPreparedFireSequenceFrame(frame) ) m_valid = false;
+}
+
+MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
+{
+	safe_release( m_pCarbonAccessor );
+	safe_release( m_pTemperatureAccessor );
+	safe_release( m_pCondensedAccessor );
+	for( unsigned int band = 0; band < 3u; ++band ) {
+		safe_release( m_pChemAccessor[band] );
+		safe_release( m_pChemSPD[band] );
+	}
+}
+
+// Move the complete sampling state together. Swapping twice restores the exact
+// previous generation without rebuilding an accessor, majorant or emission CDF.
+struct MultichannelHeterogeneousMedium::FrameStorage
+{
+	decltype(m_pCarbonAccessor) pCarbonAccessor{};
+	decltype(m_pTemperatureAccessor) pTemperatureAccessor{};
+	decltype(m_pCondensedAccessor) pCondensedAccessor{};
+	decltype(m_pChemAccessor) pChemAccessor{};
+	decltype(m_hasNonzeroCondensedInventory) hasNonzeroCondensedInventory{};
+	decltype(m_pAccessor) pAccessor{};
+	decltype(m_pMajorantGrid) pMajorantGrid{};
+	decltype(m_fireMajorantGeneration) fireMajorantGeneration{};
+	decltype(m_fireEmissionGeneration) fireEmissionGeneration{};
+	decltype(m_fireDerivedStructuresCurrent) fireDerivedStructuresCurrent{};
+	decltype(m_opticsEpoch) opticsEpoch{};
+	decltype(m_emissionCellAlias) emissionCellAlias{};
+	decltype(m_emissionCells) emissionCells{};
+	decltype(m_emissionBinWeights) emissionBinWeights{};
+	decltype(m_emissionBinProbabilities) emissionBinProbabilities{};
+	decltype(m_emissionBinSize) emissionBinSize{};
+	decltype(m_thermalEmissionImportance) thermalEmissionImportance{};
+	decltype(m_minPositiveThermalEmissionPdf) minPositiveThermalEmissionPdf{};
+	decltype(m_flat) flat{};
+	decltype(m_flatChem) flatChem{};
+	decltype(m_flatCellOccupied) flatCellOccupied{};
+	decltype(m_flatCellChemOccupied) flatCellChemOccupied{};
+	decltype(m_flatCurrent) flatCurrent{};
+	~FrameStorage()
+	{
+		delete pMajorantGrid;
+		safe_release(pAccessor);
+		safe_release(pCarbonAccessor);
+		safe_release(pTemperatureAccessor);
+		safe_release(pCondensedAccessor);
+		for( auto& accessor : pChemAccessor ) safe_release(accessor);
+	}
+	void Swap(MultichannelHeterogeneousMedium& medium) noexcept
+	{
+		using std::swap;
+		swap(pCarbonAccessor,medium.m_pCarbonAccessor);
+		swap(pTemperatureAccessor,medium.m_pTemperatureAccessor);
+		swap(pCondensedAccessor,medium.m_pCondensedAccessor);
+		swap(pChemAccessor,medium.m_pChemAccessor);
+		swap(hasNonzeroCondensedInventory,medium.m_hasNonzeroCondensedInventory);
+		swap(pAccessor,medium.m_pAccessor);
+		swap(pMajorantGrid,medium.m_pMajorantGrid);
+		swap(fireMajorantGeneration,medium.m_fireMajorantGeneration);
+		swap(fireEmissionGeneration,medium.m_fireEmissionGeneration);
+		swap(fireDerivedStructuresCurrent,medium.m_fireDerivedStructuresCurrent);
+		swap(opticsEpoch,medium.m_opticsEpoch);
+		swap(emissionCellAlias,medium.m_emissionCellAlias);
+		swap(emissionCells,medium.m_emissionCells);
+		swap(emissionBinWeights,medium.m_emissionBinWeights);
+		swap(emissionBinProbabilities,medium.m_emissionBinProbabilities);
+		swap(emissionBinSize,medium.m_emissionBinSize);
+		swap(thermalEmissionImportance,medium.m_thermalEmissionImportance);
+		swap(minPositiveThermalEmissionPdf,medium.m_minPositiveThermalEmissionPdf);
+		swap(flat,medium.m_flat);
+		swap(flatChem,medium.m_flatChem);
+		swap(flatCellOccupied,medium.m_flatCellOccupied);
+		swap(flatCellChemOccupied,medium.m_flatCellChemOccupied);
+		swap(flatCurrent,medium.m_flatCurrent);
+	}
+};
+
+bool MultichannelHeterogeneousMedium::InstallPreparedFireSequenceFrame(
+	const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback )
+{
+	const auto carbon = frame.channels.find("carbon");
+	const auto temperature = frame.channels.find("temperature");
+	const auto condensed = frame.channels.find("condensed");
+	const auto chemCH = frame.channels.find("chem_CH");
+	const auto chemC2 = frame.channels.find("chem_C2");
+	const auto chemCO2 = frame.channels.find("chem_CO2");
+	const bool anyChem=chemCH!=frame.channels.end() || chemC2!=frame.channels.end() ||
+		chemCO2!=frame.channels.end();
+	const bool allChem=chemCH!=frame.channels.end() && chemC2!=frame.channels.end() &&
+		chemCO2!=frame.channels.end();
+	if( !m_valid || carbon == frame.channels.end() || temperature == frame.channels.end() ||
+		carbon->second.dimensions[0] != m_volWidth ||
+		carbon->second.dimensions[1] != m_volHeight ||
+		carbon->second.dimensions[2] != m_volDepth ||
+		temperature->second.dimensions != carbon->second.dimensions ||
+		(condensed != frame.channels.end() && condensed->second.dimensions != carbon->second.dimensions) ||
+		(anyChem && !allChem) || (allChem && (!m_pChemSPD[0] || !m_pChemSPD[1] || !m_pChemSPD[2])) ||
+		(allChem && (chemCH->second.dimensions!=carbon->second.dimensions ||
+			chemC2->second.dimensions!=carbon->second.dimensions ||
+			chemCO2->second.dimensions!=carbon->second.dimensions)) ) return false;
+
+	// Construct the rollback closure before mutating any field. While derived
+	// tables are being built, retain every old allocation for an exact swap.
+	auto previous = std::make_shared<FrameStorage>();
+	std::function<void()> restore = [this,previous] { previous->Swap(*this); };
+	previous->Swap(*this);
+	try {
+		m_fireMajorantGeneration = previous->fireMajorantGeneration;
+		m_fireEmissionGeneration = previous->fireEmissionGeneration;
+		m_pCarbonAccessor = DenseSequenceAccessor(carbon->second);
+		m_pTemperatureAccessor = DenseSequenceAccessor(temperature->second);
+		m_pCondensedAccessor = condensed == frame.channels.end() ? nullptr : DenseSequenceAccessor(condensed->second);
+		if( allChem ) {
+			m_pChemAccessor[0] = DenseSequenceAccessor(chemCH->second);
+			m_pChemAccessor[1] = DenseSequenceAccessor(chemC2->second);
+			m_pChemAccessor[2] = DenseSequenceAccessor(chemCO2->second);
+		}
+		m_hasNonzeroCondensedInventory = condensed != frame.channels.end() && condensed->second.maximum > 0.0;
+		m_opticsEpoch = NextOpticsEpoch();
+		if( !m_pCarbonAccessor || !m_pTemperatureAccessor || (condensed != frame.channels.end() && !m_pCondensedAccessor) ||
+			(allChem && (!m_pChemAccessor[0] || !m_pChemAccessor[1] || !m_pChemAccessor[2])) ||
+			!RebuildFireDerivedStructuresForRender() ) {
+			restore();
+			return false;
+		}
+	} catch(...) {
+		restore();
+		throw;
+	}
+	if( rollback ) *rollback = std::move(restore);
+	return true;
+}
+
+bool MultichannelHeterogeneousMedium::BindSequencePreparationController(
+	Implementation::FireSequencePreparationController& controller,
+	const std::string& installerIdentity, std::string& error )
+{
+	return controller.SetReversibleFrameInstaller(
+		[this](const Implementation::FireSequencePreparedFrame& frame, std::function<void()>* rollback) {
+			return InstallPreparedFireSequenceFrame(frame,rollback);
+		},installerIdentity,error);
+}
+
+bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(
+	const EffectiveAbsorptionAblation ablation
+	)
+{
+	if( ablation < NoEffectiveAbsorptionAblation || ablation > PresetTiltOnly ) {
+		return false;
+	}
+	m_effectiveAbsorptionAblation = ablation;
+	m_opticsEpoch = NextOpticsEpoch();
+	InvalidateFireDerivedStructures();
+	return true;
+}
+
+Scalar HeterogeneousMedium::ForTest_EvalTransmittanceNMWithFixedRandom(
+	const Ray& ray,
+	const Scalar dist,
+	const Scalar nm,
+	const Scalar fixedRandom,
+	unsigned long long& candidateSteps
+	) const
+{
+	if( !RISE::IsFiniteDouble(fixedRandom) || fixedRandom <= 0.0 || fixedRandom >= 1.0 ) {
+		return -1.0;
+	}
+	struct Restore
+	{
+		RatioTrackingTestState saved;
+		Restore() : saved(g_ratioTrackingTestState) {}
+		~Restore() { g_ratioTrackingTestState = saved; }
+	} restore;
+	candidateSteps = 0;
+	g_ratioTrackingTestState.active = true;
+	g_ratioTrackingTestState.fixedRandom = fixedRandom;
+	g_ratioTrackingTestState.candidateSteps = &candidateSteps;
+	return EvalTransmittanceNM(ray,dist,nm);
+}
+
+RISEPel HeterogeneousMedium::ForTest_EvalTransmittanceWithFixedRandom(
+	const Ray& ray,
+	const Scalar dist,
+	const Scalar fixedRandom,
+	unsigned long long& candidateSteps
+	) const
+{
+	if( !RISE::IsFiniteDouble(fixedRandom) || fixedRandom <= 0.0 || fixedRandom >= 1.0 ) {
+		return RISEPel(-1.0,-1.0,-1.0);
+	}
+	struct Restore
+	{
+		RatioTrackingTestState saved;
+		Restore() : saved(g_ratioTrackingTestState) {}
+		~Restore() { g_ratioTrackingTestState = saved; }
+	} restore;
+	candidateSteps = 0;
+	g_ratioTrackingTestState.active = true;
+	g_ratioTrackingTestState.fixedRandom = fixedRandom;
+	g_ratioTrackingTestState.candidateSteps = &candidateSteps;
+	return EvalTransmittance(ray,dist);
+}
+
+bool MultichannelHeterogeneousMedium::RebuildFireDerivedStructuresForRender()
+{
+	m_fireDerivedStructuresCurrent = false;
+	if( m_forTestBlockFireDerivedRebuild || !m_valid ||
+		!m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
+	BuildFlatGrids();
+	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
+		*m_pCarbonAccessor, *m_pTemperatureAccessor, m_pCondensedAccessor,
+		m_hotExtinctionMass633, m_coolExtinctionMass633,
+		m_condExtinctionMass633, m_optics.HotFractionMinK(),
+		m_optics.HotFractionMaxK() );
+	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
+		*m_pCarbonAccessor, m_pCondensedAccessor );
+	InitializeTrackingAccessor(*trackingAccessor,*majorantAccessor);
+	++m_fireMajorantGeneration;
+	safe_release(trackingAccessor);
+	safe_release(majorantAccessor);
+	if( !BuildThermalEmissionImportance() ) return false;
+	++m_fireEmissionGeneration;
+	m_fireDerivedStructuresCurrent = true;
+	return true;
+}
+
+bool MultichannelHeterogeneousMedium::BuildBakedChannelRecord(
+	std::vector<unsigned char>& recordBytes
+	) const
+{
+	recordBytes.clear();
+	if( !m_valid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
+	using RISECBOR64::Value;
+	Value::Values channels;
+	const auto appendChannel = [this,&channels](
+		const char* name, const IVolumeAccessor* accessor ) {
+		if( !accessor ) return true;
+		Value::Values values;
+		values.reserve(static_cast<std::size_t>(m_volWidth)*m_volHeight*m_volDepth);
+		const int halfW = static_cast<int>(m_volWidth/2u);
+		const int halfH = static_cast<int>(m_volHeight/2u);
+		const int halfD = static_cast<int>(m_volDepth/2u);
+		for( int z=-halfD; z<static_cast<int>(m_volDepth)-halfD; ++z ) {
+			for( int y=-halfH; y<static_cast<int>(m_volHeight)-halfH; ++y ) {
+				for( int x=-halfW; x<static_cast<int>(m_volWidth)-halfW; ++x ) {
+					const Scalar sample = accessor->GetValue(x,y,z);
+					if( !RISE::IsFiniteDouble(sample) ) return false;
+					values.push_back(Value::Float(sample));
+				}
+			}
+		}
+		channels.push_back(Value::MapValue({
+			{ "name", Value::String(name) },
+			{ "values_z_y_x", Value::ArrayValue(values) }
+		}));
+		return true;
+	};
+	if( !appendChannel("carbon",m_pCarbonAccessor) ||
+		!appendChannel("temperature",m_pTemperatureAccessor) ||
+		!appendChannel("condensed",m_pCondensedAccessor) ||
+		!appendChannel("chem_ch",m_pChemAccessor[0]) ||
+		!appendChannel("chem_c2",m_pChemAccessor[1]) ||
+		!appendChannel("chem_co2",m_pChemAccessor[2]) ) return false;
+	const Value record = Value::MapValue({
+		{ "channels", Value::ArrayValue(channels) },
+		{ "dimensions", Value::ArrayValue({
+			Value::Unsigned(m_volWidth), Value::Unsigned(m_volHeight),
+			Value::Unsigned(m_volDepth) }) },
+		{ "record_kind", Value::String("static_fire_medium_bakes_v1") },
+		{ "schema_version", Value::Unsigned(1) }
+	});
+	std::string error;
+	return RISECBOR64::Encode(record,recordBytes,&error);
+}
+
+Scalar MultichannelHeterogeneousMedium::AblatedHotAbsorptionMass(
+	const Scalar nm
+	) const
+{
+	if( m_effectiveAbsorptionAblation == NoEffectiveAbsorptionAblation ) {
+		return m_optics.HotAbsorptionMass(nm);
+	}
+	const FireOpticsPreset& predictive = FireOpticsPreset::PredictiveV1();
+	const FireOpticsPreset& fixture = FireOpticsPreset::SyntheticRegressionV1();
+	Scalar effectiveAbsorption = fixture.EffectiveAbsorption(nm);
+	if( m_effectiveAbsorptionAblation == PresetMagnitudeOnly ) {
+		effectiveAbsorption = predictive.EffectiveAbsorption(550.0);
+	} else if( m_effectiveAbsorptionAblation == PresetTiltOnly ) {
+		effectiveAbsorption = fixture.EffectiveAbsorption(550.0) *
+			predictive.EffectiveAbsorption(nm) /
+			predictive.EffectiveAbsorption(550.0);
+	}
+	const Scalar volumeFractionPerGM3 = 1.0e-3/m_optics.SootDensityKgM3();
+	return 6.0*PI*effectiveAbsorption*volumeFractionPerGM3/(nm*1.0e-9);
+}
+
+Scalar MultichannelHeterogeneousMedium::NormalizeChemSPD(
+	const IFunction1D& curve,
+	const Scalar intervalMin,
+	const Scalar intervalMax
+	)
+{
+	if( !RISE::IsFiniteDouble(intervalMin) ||
+		!RISE::IsFiniteDouble(intervalMax) || intervalMax <= intervalMin ) {
+		return 0.0;
+	}
+	Scalar x = intervalMin;
+	Scalar left = curve.Evaluate(x);
+	if( !RISE::IsFiniteDouble(left) || left < 0.0 ) return 0.0;
+	Scalar integral = 0.0;
+	while( x < intervalMax ) {
+		const Scalar next = fmin( x + 1.0, intervalMax );
+		if( next <= x ) return 0.0;
+		const Scalar right = curve.Evaluate(next);
+		if( !RISE::IsFiniteDouble(right) || right < 0.0 ) return 0.0;
+		integral += 0.5*(left+right)*(next-x);
+		if( !RISE::IsFiniteDouble(integral) ) return 0.0;
+		x = next;
+		left = right;
+	}
+	return integral > 0.0 ? integral : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupChemBand(
+	const unsigned int band,
+	const Point3& worldPt
+	) const
+{
+	if( band >= 3u || !m_pChemAccessor[band] ) return 0.0;
+	Scalar bands[3];
+	if( FetchFlatChem( worldPt, bands ) ) return bands[band];
+	return LookupChannel( *m_pChemAccessor[band], worldPt );
+}
+
+Scalar MultichannelHeterogeneousMedium::NormalizedChemSPD(
+	const unsigned int band,
+	const Scalar nm
+	) const
+{
+	if( band >= 3u || !m_pChemSPD[band] || m_chemSPDArea[band] <= 0.0 ||
+		!RISE::IsFiniteDouble(nm) || nm < 380.0 || nm > 780.0 ||
+		nm < m_chemIntervalMin[band] || nm > m_chemIntervalMax[band] ) {
+		return 0.0;
+	}
+	const Scalar value = m_pChemSPD[band]->Evaluate(nm);
+	assert( RISE::IsFiniteDouble(value) && value >= 0.0 );
+	return RISE::IsFiniteDouble(value) && value > 0.0
+		? value/m_chemSPDArea[band] : 0.0;
+}
+
+void MultichannelHeterogeneousMedium::AppendChemPanelBreakpoints(
+	const Ray& ray,
+	const Scalar segmentStart,
+	const Scalar segmentEnd,
+	std::vector<Scalar>& breakpoints
+	) const
+{
+	const Scalar origins[3] = { ray.origin.x, ray.origin.y, ray.origin.z };
+	const Scalar directions[3] = { ray.Dir().x, ray.Dir().y, ray.Dir().z };
+	const Scalar bounds[3] = { m_bboxMin.x, m_bboxMin.y, m_bboxMin.z };
+	const Scalar extents[3] = { m_bboxExtent.x, m_bboxExtent.y, m_bboxExtent.z };
+	const unsigned int dimensions[3] = { m_volWidth, m_volHeight, m_volDepth };
+	for( unsigned int axis = 0; axis < 3u; ++axis ) {
+		if( directions[axis] == 0.0 ) continue;
+		const Scalar scale = Scalar(dimensions[axis])/extents[axis];
+		const Scalar offset = InterpolationAccessorOffset(dimensions[axis]);
+		const Scalar base = (origins[axis]-bounds[axis])*scale-offset;
+		const Scalar slope = directions[axis]*scale;
+		const Scalar u0 = base+slope*segmentStart;
+		const Scalar u1 = base+slope*segmentEnd;
+		long long first = static_cast<long long>(ceil(fmin(u0,u1)));
+		long long last = static_cast<long long>(floor(fmax(u0,u1)));
+		const long long latticeFirst = static_cast<long long>(ceil(-offset));
+		const long long latticeLast = static_cast<long long>(
+			floor(Scalar(dimensions[axis])-offset) );
+		first = std::max(first,latticeFirst);
+		last = std::min(last,latticeLast);
+		for( long long knot = first; knot <= last; ++knot ) {
+			const Scalar t = (Scalar(knot)-base)/slope;
+			if( t > segmentStart && t < segmentEnd ) breakpoints.push_back(t);
+		}
+	}
+}
+
+Scalar MultichannelHeterogeneousMedium::ChemPanelSupport(
+	const Ray& ray,
+	const Scalar panelStart,
+	const Scalar panelEnd
+	) const
+{
+	const Point3 middle = ray.PointAtLength(0.5*(panelStart+panelEnd));
+	const Scalar nx = (middle.x-m_bboxMin.x)/m_bboxExtent.x;
+	const Scalar ny = (middle.y-m_bboxMin.y)/m_bboxExtent.y;
+	const Scalar nz = (middle.z-m_bboxMin.z)/m_bboxExtent.z;
+	const int ix = static_cast<int>(floor(
+		nx*Scalar(m_volWidth)-InterpolationAccessorOffset(m_volWidth)));
+	const int iy = static_cast<int>(floor(
+		ny*Scalar(m_volHeight)-InterpolationAccessorOffset(m_volHeight)));
+	const int iz = static_cast<int>(floor(
+		nz*Scalar(m_volDepth)-InterpolationAccessorOffset(m_volDepth)));
+	Scalar maxima[3] = { 0.0, 0.0, 0.0 };
+	if( m_flatCurrent && !m_flatChem.empty() ) {
+		const int hw = static_cast<int>( m_volWidth/2u );
+		const int hh = static_cast<int>( m_volHeight/2u );
+		const int hd = static_cast<int>( m_volDepth/2u );
+		// lo corner in [-1,dim-1] array coordinates is inside the padded lattice
+		if( ix+hw >= -1 && ix+hw <= int(m_volWidth)-1 &&
+			iy+hh >= -1 && iy+hh <= int(m_volHeight)-1 &&
+			iz+hd >= -1 && iz+hd <= int(m_volDepth)-1 ) {
+			const std::size_t cw = std::size_t(m_volWidth) + 1u;
+			const std::size_t ch = std::size_t(m_volHeight) + 1u;
+			const std::size_t cell = std::size_t(ix+hw+1) +
+				cw*(std::size_t(iy+hh+1) + ch*std::size_t(iz+hd+1));
+			if( !m_flatCellChemOccupied[cell] ) return 0.0;
+			const std::size_t pw = std::size_t(m_volWidth) + 2u;
+			const std::size_t ph = std::size_t(m_volHeight) + 2u;
+			const std::size_t base = std::size_t(ix+hw+1) +
+				pw*(std::size_t(iy+hh+1) + ph*std::size_t(iz+hd+1));
+			const std::size_t offsets[8] = { 0, 1, pw, pw+1, pw*ph, pw*ph+1, pw*ph+pw, pw*ph+pw+1 };
+			for( unsigned int corner = 0; corner < 8u; ++corner ) {
+				const FlatChemVoxel& voxel = m_flatChem[base+offsets[corner]];
+				for( unsigned int band = 0; band < 3u; ++band ) {
+					maxima[band] = fmax( maxima[band], voxel.band[band] );
+				}
+			}
+			return maxima[0]+maxima[1]+maxima[2];
+		}
+	}
+	for( int dz = 0; dz <= 1; ++dz ) {
+		for( int dy = 0; dy <= 1; ++dy ) {
+			for( int dx = 0; dx <= 1; ++dx ) {
+				for( unsigned int band = 0; band < 3u; ++band ) {
+					maxima[band] = fmax( maxima[band],
+						m_pChemAccessor[band]->GetValue(ix+dx,iy+dy,iz+dz) );
+				}
+			}
+		}
+	}
+	return maxima[0]+maxima[1]+maxima[2];
+}
+
+unsigned int MultichannelHeterogeneousMedium::EmissionBinIndex(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	return z * m_volWidth * m_volHeight + y * m_volWidth + x;
+}
+
+bool MultichannelHeterogeneousMedium::EmissionBinAtPoint(
+	const Point3& point,
+	unsigned int& x,
+	unsigned int& y,
+	unsigned int& z
+	) const
+{
+	if( !RISE::IsFiniteDouble( point.x ) || !RISE::IsFiniteDouble( point.y ) ||
+		!RISE::IsFiniteDouble( point.z ) ) return false;
+	if( point.x < m_bboxMin.x || point.x > m_bboxMax.x ||
+		point.y < m_bboxMin.y || point.y > m_bboxMax.y ||
+		point.z < m_bboxMin.z || point.z > m_bboxMax.z ) return false;
+
+	x = HalfOpenBinIndex( point.x, m_bboxMin.x, m_bboxMax.x,
+		m_emissionBinSize.x, m_volWidth );
+	y = HalfOpenBinIndex( point.y, m_bboxMin.y, m_bboxMax.y,
+		m_emissionBinSize.y, m_volHeight );
+	z = HalfOpenBinIndex( point.z, m_bboxMin.z, m_bboxMax.z,
+		m_emissionBinSize.z, m_volDepth );
+	return true;
+}
+
+Scalar MultichannelHeterogeneousMedium::EmissionBinUpperBound(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	Scalar maxCarbon = 0.0;
+	Scalar maxTemperature = 0.0;
+	Scalar maxCondensed = 0.0;
+	const int halfW = static_cast<int>(m_volWidth / 2u);
+	const int halfH = static_cast<int>(m_volHeight / 2u);
+	const int halfD = static_cast<int>(m_volDepth / 2u);
+	if( m_flatCurrent ) {
+		// Array coordinate x+dx maps to padded slot x+dx+1, always inside the
+		// padded lattice for dx in [-1,1].
+		const std::size_t pw = std::size_t(m_volWidth) + 2u;
+		const std::size_t ph = std::size_t(m_volHeight) + 2u;
+		for( std::size_t dz = 0; dz < 3u; ++dz ) {
+			for( std::size_t dy = 0; dy < 3u; ++dy ) {
+				for( std::size_t dx = 0; dx < 3u; ++dx ) {
+					const FlatVoxel& voxel = m_flat[(x+dx) + pw*((y+dy) + ph*(z+dz))];
+					maxCarbon = fmax( maxCarbon, voxel.carbon );
+					maxTemperature = fmax( maxTemperature, voxel.temperature );
+					if( m_pCondensedAccessor ) {
+						maxCondensed = fmax( maxCondensed, voxel.condensed );
+					}
+				}
+			}
+		}
+	} else
+	for( int dz = -1; dz <= 1; ++dz ) {
+		for( int dy = -1; dy <= 1; ++dy ) {
+			for( int dx = -1; dx <= 1; ++dx ) {
+				const int ix = static_cast<int>(x) + dx - halfW;
+				const int iy = static_cast<int>(y) + dy - halfH;
+				const int iz = static_cast<int>(z) + dz - halfD;
+				maxCarbon = fmax( maxCarbon,
+					m_pCarbonAccessor->GetValue( ix, iy, iz ) );
+				maxTemperature = fmax( maxTemperature,
+					m_pTemperatureAccessor->GetValue( ix, iy, iz ) );
+				if( m_pCondensedAccessor ) {
+					maxCondensed = fmax( maxCondensed,
+						m_pCondensedAccessor->GetValue( ix, iy, iz ) );
+				}
+			}
+		}
+	}
+	if( (maxCarbon <= 0.0 && maxCondensed <= 0.0) || maxTemperature <= 0.0 ) return 0.0;
+
+	const Scalar hotAbsorptionMax = m_optics.MaximumHotAbsorptionMassVisible();
+	const Scalar coolAbsorptionMax = m_optics.MaximumCoolAbsorptionMassVisible();
+	const Scalar carbonAbsorptionMax = fmax( hotAbsorptionMax, coolAbsorptionMax );
+	const Scalar condAbsorptionMax = m_optics.MaximumCondensedAbsorptionMassVisible();
+
+	// Wien's displacement gives the maximum of B_lambda(T) on the band.
+	// Clamp that analytic peak to [380,780]; separating the absorption and
+	// Planck maxima is intentionally conservative.
+	const Scalar wienPeakNM = 2.897771955e6 / maxTemperature;
+	const Scalar planckPeakNM = fmax( Scalar(380.0), fmin( Scalar(780.0), wienPeakNM ) );
+	const Scalar planckMax = PlanckSpectralRadianceNM(
+		planckPeakNM, maxTemperature );
+	const Scalar binVolume = RepresentedBinVolume(
+		m_bboxMin, m_bboxMax, m_emissionBinSize,
+		x, y, z, m_volWidth, m_volHeight, m_volDepth );
+	const Scalar carbonUpper = StablePositiveProduct( {
+		binVolume, Scalar(400.0), m_sceneUnitMeters,
+		maxCarbon, carbonAbsorptionMax, planckMax } );
+	const Scalar condensedUpper = StablePositiveProduct( {
+		binVolume, Scalar(400.0), m_sceneUnitMeters,
+		maxCondensed, condAbsorptionMax, planckMax } );
+	if( carbonUpper < 0.0 || condensedUpper < 0.0 ) return -1.0;
+	return carbonUpper + condensedUpper;
+}
+
+bool MultichannelHeterogeneousMedium::BuildThermalEmissionImportance()
+{
+	if( !m_pMajorantGrid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) {
+		return false;
+	}
+	m_emissionBinSize = Vector3(
+		m_bboxExtent.x / Scalar(m_volWidth),
+		m_bboxExtent.y / Scalar(m_volHeight),
+		m_bboxExtent.z / Scalar(m_volDepth) );
+	m_thermalEmissionImportance = 0.0;
+	m_minPositiveThermalEmissionPdf = 0.0;
+	if( !RISE::IsFiniteDouble(m_emissionBinSize.x) || m_emissionBinSize.x <= 0.0 ||
+		!RISE::IsFiniteDouble(m_emissionBinSize.y) || m_emissionBinSize.y <= 0.0 ||
+		!RISE::IsFiniteDouble(m_emissionBinSize.z) || m_emissionBinSize.z <= 0.0 ) {
+		return false;
+	}
+	if( !HasRepresentableBinInteriors( m_bboxMin.x, m_bboxMax.x,
+		m_emissionBinSize.x, m_volWidth ) ||
+		!HasRepresentableBinInteriors( m_bboxMin.y, m_bboxMax.y,
+		m_emissionBinSize.y, m_volHeight ) ||
+		!HasRepresentableBinInteriors( m_bboxMin.z, m_bboxMax.z,
+		m_emissionBinSize.z, m_volDepth ) ) return false;
+
+	const unsigned int binCount = m_volWidth * m_volHeight * m_volDepth;
+	m_emissionBinWeights.assign( binCount, 0.0 );
+	m_emissionBinProbabilities.assign( binCount, 0.0 );
+	const unsigned int cellCount = m_pMajorantGrid->GetGridX() *
+		m_pMajorantGrid->GetGridY() * m_pMajorantGrid->GetGridZ();
+	m_emissionCells.clear();
+	m_emissionCells.resize( cellCount );
+	std::vector<std::vector<double> > cellWeights( cellCount );
+
+	static const Scalar spatialNodes[2] = {
+		Scalar(0.5) * (Scalar(1.0) - Scalar(1.0) / sqrt(Scalar(3.0))),
+		Scalar(0.5) * (Scalar(1.0) + Scalar(1.0) / sqrt(Scalar(3.0)))
+	};
+	static const Scalar supportMix = Scalar(1.0) / Scalar(1024.0);
+
+	// Pass 1: per-bin weights.  Every bin is independent and writes only its
+	// own m_emissionBinWeights slot, so z-slabs run in parallel.
+	std::atomic<bool> weightsOk( true );
+	Implementation::GlobalThreadPool().ParallelFor( m_volDepth,
+		[&]( const unsigned int z ) {
+		if( !weightsOk.load() ) return;
+		for( unsigned int y = 0; y < m_volHeight; ++y ) {
+			for( unsigned int x = 0; x < m_volWidth; ++x ) {
+				const Point3 binMin(
+					m_bboxMin.x + Scalar(x) * m_emissionBinSize.x,
+					m_bboxMin.y + Scalar(y) * m_emissionBinSize.y,
+					m_bboxMin.z + Scalar(z) * m_emissionBinSize.z );
+				const Point3 binMax(
+					x + 1u == m_volWidth ? m_bboxMax.x :
+						m_bboxMin.x + Scalar(x+1u) * m_emissionBinSize.x,
+					y + 1u == m_volHeight ? m_bboxMax.y :
+						m_bboxMin.y + Scalar(y+1u) * m_emissionBinSize.y,
+					z + 1u == m_volDepth ? m_bboxMax.z :
+						m_bboxMin.z + Scalar(z+1u) * m_emissionBinSize.z );
+				const Vector3 representedSize = Vector3Ops::mkVector3( binMax, binMin );
+				const Scalar binVolume = RepresentedBinVolume(
+					m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+					m_volWidth, m_volHeight, m_volDepth );
+				if( !RISE::IsFiniteDouble(binVolume) || binVolume <= 0.0 ) {
+					weightsOk = false; return;
+				}
+				Scalar proposalAverage = 0.0;
+				for( unsigned int gz = 0; gz < 2; ++gz ) {
+					for( unsigned int gy = 0; gy < 2; ++gy ) {
+						for( unsigned int gx = 0; gx < 2; ++gx ) {
+							const Point3 samplePoint(
+								binMin.x + spatialNodes[gx] * representedSize.x,
+								binMin.y + spatialNodes[gy] * representedSize.y,
+								binMin.z + spatialNodes[gz] * representedSize.z );
+							// Fetch the point's state once; the 21 wavelength
+							// nodes reuse it.
+							Scalar carbon, temperature, condensed;
+							FetchCarbonTemperatureCondensed(
+								samplePoint, carbon, temperature, condensed );
+							proposalAverage += GaussLegendre21::IntegrateVisibleBand(
+								[&]( const Scalar nm ) {
+									return ThermalEmissionFromState(
+										carbon, temperature, condensed, nm );
+								} ) / Scalar(8.0);
+						}
+					}
+				}
+				const Scalar proposal = proposalAverage > 0.0 ?
+					StablePositiveProduct( {binVolume,proposalAverage} ) : 0.0;
+				const Scalar upper = EmissionBinUpperBound( x, y, z );
+				const Scalar weight = (Scalar(1.0) - supportMix) * proposal +
+					supportMix * upper;
+				if( !RISE::IsFiniteDouble( proposal ) || proposal < 0.0 ||
+					!RISE::IsFiniteDouble( upper ) || upper < 0.0 ||
+					!RISE::IsFiniteDouble( weight ) || weight < 0.0 ||
+					((proposal > 0.0 || upper > 0.0) && RISE::IsZeroDouble(weight)) ) {
+					weightsOk = false; return;
+				}
+				m_emissionBinWeights[EmissionBinIndex( x, y, z )] = static_cast<double>( weight );
+			}
+		}
+		} );
+	if( !weightsOk.load() ) return false;
+
+	// Pass 2 (serial, z-y-x order as before): bucket bins into emission cells.
+	for( unsigned int z = 0; z < m_volDepth; ++z ) {
+		for( unsigned int y = 0; y < m_volHeight; ++y ) {
+			for( unsigned int x = 0; x < m_volWidth; ++x ) {
+				const Point3 binMin(
+					m_bboxMin.x + Scalar(x) * m_emissionBinSize.x,
+					m_bboxMin.y + Scalar(y) * m_emissionBinSize.y,
+					m_bboxMin.z + Scalar(z) * m_emissionBinSize.z );
+				const Point3 binMax(
+					x + 1u == m_volWidth ? m_bboxMax.x :
+						m_bboxMin.x + Scalar(x+1u) * m_emissionBinSize.x,
+					y + 1u == m_volHeight ? m_bboxMax.y :
+						m_bboxMin.y + Scalar(y+1u) * m_emissionBinSize.y,
+					z + 1u == m_volDepth ? m_bboxMax.z :
+						m_bboxMin.z + Scalar(z+1u) * m_emissionBinSize.z );
+				const Vector3 representedSize = Vector3Ops::mkVector3( binMax, binMin );
+				const unsigned int binIndex = EmissionBinIndex( x, y, z );
+				const Point3 center(
+					binMin.x + Scalar(0.5) * representedSize.x,
+					binMin.y + Scalar(0.5) * representedSize.y,
+					binMin.z + Scalar(0.5) * representedSize.z );
+				unsigned int cx = 0, cy = 0, cz = 0;
+				if( !m_pMajorantGrid->WorldToCell( center, cx, cy, cz ) ) return false;
+				const unsigned int cellIndex = cz * m_pMajorantGrid->GetGridX() *
+					m_pMajorantGrid->GetGridY() + cy * m_pMajorantGrid->GetGridX() + cx;
+				m_emissionCells[cellIndex].binIndices.push_back( binIndex );
+				cellWeights[cellIndex].push_back( m_emissionBinWeights[binIndex] );
+			}
+		}
+	}
+
+	std::vector<double> topWeights( cellCount, 0.0 );
+	for( unsigned int i = 0; i < cellCount; ++i ) {
+		m_emissionCells[i].binAlias.Build( cellWeights[i] );
+		topWeights[i] = m_emissionCells[i].binAlias.TotalWeight();
+	}
+	m_emissionCellAlias.Build( topWeights );
+	m_thermalEmissionImportance = static_cast<Scalar>(
+		m_emissionCellAlias.TotalWeight() );
+	if( !RISE::IsFiniteDouble( m_thermalEmissionImportance ) ||
+		m_thermalEmissionImportance < 0.0 ) return false;
+	if( m_thermalEmissionImportance > 0.0 ) {
+		for( unsigned int i = 0; i < binCount; ++i ) {
+			m_emissionBinProbabilities[i] = m_emissionBinWeights[i] /
+				static_cast<double>(m_thermalEmissionImportance);
+			if( m_emissionBinWeights[i] > 0.0 &&
+				m_emissionBinProbabilities[i] <= 0.0 ) return false;
+			const unsigned int xy = m_volWidth * m_volHeight;
+			const unsigned int z = i / xy;
+			const unsigned int rem = i - z*xy;
+			const unsigned int y = rem / m_volWidth;
+			const unsigned int x = rem - y*m_volWidth;
+			const Scalar binVolume = RepresentedBinVolume(
+				m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+				m_volWidth, m_volHeight, m_volDepth );
+			const Scalar density = static_cast<Scalar>(
+				m_emissionBinProbabilities[i] ) / binVolume;
+			if( !RISE::IsFiniteDouble(density) || density < 0.0 ||
+				(m_emissionBinProbabilities[i] > 0.0 && density <= 0.0) ) return false;
+			if( density > 0.0 &&
+				(m_minPositiveThermalEmissionPdf <= 0.0 ||
+				density < m_minPositiveThermalEmissionPdf) ) {
+				m_minPositiveThermalEmissionPdf = density;
+			}
+		}
+		if( m_minPositiveThermalEmissionPdf <= 0.0 ) return false;
+	}
+	return true;
+}
+
+void MultichannelHeterogeneousMedium::BuildFlatGrids()
+{
+	m_flatCurrent = false;
+	m_opticsEpoch = NextOpticsEpoch();
+	m_flat.clear();
+	m_flatChem.clear();
+	m_flatCellOccupied.clear();
+	m_flatCellChemOccupied.clear();
+	if( !m_pCarbonAccessor || !m_pTemperatureAccessor ) return;
+	const bool hasChem = m_pChemAccessor[0] && m_pChemAccessor[1] && m_pChemAccessor[2];
+	const std::size_t pw = std::size_t(m_volWidth) + 2u;
+	const std::size_t ph = std::size_t(m_volHeight) + 2u;
+	const std::size_t pd = std::size_t(m_volDepth) + 2u;
+	const FlatVoxel zero = { 0.0, 0.0, 0.0, 0.0 };
+	m_flat.assign( pw*ph*pd, zero );
+	if( hasChem ) {
+		const FlatChemVoxel zeroChem = { { 0.0, 0.0, 0.0 }, 0.0 };
+		m_flatChem.assign( pw*ph*pd, zeroChem );
+	}
+	const int halfW = static_cast<int>( m_volWidth/2u );
+	const int halfH = static_cast<int>( m_volHeight/2u );
+	const int halfD = static_cast<int>( m_volDepth/2u );
+	// One slab per task; every task writes only its own slab.  The padding
+	// ring is sampled too, so it carries whatever the accessor returns out
+	// of range (zero).
+	Implementation::GlobalThreadPool().ParallelFor( static_cast<unsigned int>(pd),
+		[&]( unsigned int zi ) {
+			const int az = static_cast<int>(zi) - 1 - halfD;
+			for( std::size_t yi = 0; yi < ph; ++yi ) {
+				const int ay = static_cast<int>(yi) - 1 - halfH;
+				for( std::size_t xi = 0; xi < pw; ++xi ) {
+					const int ax = static_cast<int>(xi) - 1 - halfW;
+					const std::size_t index = xi + pw*(yi + ph*zi);
+					FlatVoxel& voxel = m_flat[index];
+					voxel.carbon = m_pCarbonAccessor->GetValue( ax, ay, az );
+					voxel.temperature = m_pTemperatureAccessor->GetValue( ax, ay, az );
+					voxel.condensed = m_pCondensedAccessor
+						? m_pCondensedAccessor->GetValue( ax, ay, az ) : 0.0;
+					if( hasChem ) {
+						FlatChemVoxel& chem = m_flatChem[index];
+						for( unsigned int band = 0; band < 3u; ++band ) {
+							chem.band[band] = m_pChemAccessor[band]->GetValue( ax, ay, az );
+						}
+					}
+				}
+			}
+		} );
+	// Occupancy of each interpolation cell (lo corner in [-1,dim-1] on each
+	// axis, stored at lo+1): zero unless some corner carries carbon or
+	// condensed mass (or, for the chem map, any chem band).  A cell with no
+	// mass has sigma_t == 0 everywhere inside it.
+	const std::size_t cw = std::size_t(m_volWidth) + 1u;
+	const std::size_t ch = std::size_t(m_volHeight) + 1u;
+	const std::size_t cd = std::size_t(m_volDepth) + 1u;
+	m_flatCellOccupied.assign( cw*ch*cd, 0 );
+	if( hasChem ) m_flatCellChemOccupied.assign( cw*ch*cd, 0 );
+	Implementation::GlobalThreadPool().ParallelFor( static_cast<unsigned int>(cd),
+		[&]( unsigned int zi ) {
+			for( std::size_t yi = 0; yi < ch; ++yi ) {
+				for( std::size_t xi = 0; xi < cw; ++xi ) {
+					bool occupied = false, chemOccupied = false;
+					for( std::size_t dz = 0; dz < 2u; ++dz ) {
+						for( std::size_t dy = 0; dy < 2u; ++dy ) {
+							for( std::size_t dx = 0; dx < 2u; ++dx ) {
+								const std::size_t index = (xi+dx) + pw*((yi+dy) + ph*(zi+dz));
+								const FlatVoxel& voxel = m_flat[index];
+								if( !(voxel.carbon == 0.0) || !(voxel.condensed == 0.0) ) occupied = true;
+								if( hasChem ) {
+									const FlatChemVoxel& chem = m_flatChem[index];
+									if( !(chem.band[0] == 0.0) || !(chem.band[1] == 0.0) ||
+										!(chem.band[2] == 0.0) ) chemOccupied = true;
+								}
+							}
+						}
+					}
+					const std::size_t cell = xi + cw*(yi + ch*zi);
+					m_flatCellOccupied[cell] = occupied ? 1 : 0;
+					if( hasChem ) m_flatCellChemOccupied[cell] = chemOccupied ? 1 : 0;
+				}
+			}
+		} );
+	m_flatCurrent = true;
+}
+
+void MultichannelHeterogeneousMedium::ForTest_SetFlatGridsEnabled( const bool enabled )
+{
+	if( enabled ) {
+		BuildFlatGrids();
+	} else {
+		m_flatCurrent = false;
+		m_opticsEpoch = NextOpticsEpoch();
+	}
+}
+
+bool MultichannelHeterogeneousMedium::FlatCellEmpty(
+	const int cx,
+	const int cy,
+	const int cz
+	) const
+{
+	if( !m_flatCurrent ) return false;
+	// Accessor-space cell index c <-> array index c+dim/2 <-> occupancy slot c+dim/2+1.
+	const long long ix = static_cast<long long>(cx) + static_cast<long long>(m_volWidth/2u) + 1;
+	const long long iy = static_cast<long long>(cy) + static_cast<long long>(m_volHeight/2u) + 1;
+	const long long iz = static_cast<long long>(cz) + static_cast<long long>(m_volDepth/2u) + 1;
+	const long long cw = static_cast<long long>(m_volWidth) + 1;
+	const long long ch = static_cast<long long>(m_volHeight) + 1;
+	const long long cd = static_cast<long long>(m_volDepth) + 1;
+	if( ix < 0 || iy < 0 || iz < 0 || ix >= cw || iy >= ch || iz >= cd ) return false;
+	return m_flatCellOccupied[ static_cast<std::size_t>(ix + cw*(iy + ch*iz)) ] == 0;
+}
+
+namespace
+{
+	/// Panel-split cubic level crossings of the along-ray temperature, same as
+	/// the generic quadrature, skipped for levels the cell cannot span.
+	static const Scalar kCellGLNodes[7] = {
+		-0.949107912342758524526189684048,
+		-0.741531185599394439863864773281,
+		-0.405845151377397166906606412077,
+		 0.0,
+		 0.405845151377397166906606412077,
+		 0.741531185599394439863864773281,
+		 0.949107912342758524526189684048 };
+	static const Scalar kCellGLWeights[7] = {
+		0.129484966168869693270611432679,
+		0.279705391489276667901467771424,
+		0.381830050505118944950369775489,
+		0.417959183673469387755102040816,
+		0.381830050505118944950369775489,
+		0.279705391489276667901467771424,
+		0.129484966168869693270611432679 };
+}
+
+void MultichannelHeterogeneousMedium::CellMassIntegrals(
+	const Ray& ray,
+	const Scalar tBegin,
+	const Scalar tEnd,
+	const int cx,
+	const int cy,
+	const int cz,
+	Scalar (&integrals)[3]
+	) const
+{
+	integrals[0] = integrals[1] = integrals[2] = 0.0;
+	const int hw = static_cast<int>( m_volWidth/2u );
+	const int hh = static_cast<int>( m_volHeight/2u );
+	const int hd = static_cast<int>( m_volDepth/2u );
+	const int lx = cx + hw, ly = cy + hh, lz = cz + hd;	// array coordinate of the low corner
+	// A cell outside the padded lattice lies outside the bounding box, where
+	// the field is zero.
+	if( lx < -1 || lx > int(m_volWidth)-1 || ly < -1 || ly > int(m_volHeight)-1 ||
+		lz < -1 || lz > int(m_volDepth)-1 ) return;
+	if( FlatCellEmpty( cx, cy, cz ) ) return;	// carbon and condensed vanish over the whole cell
+
+	const std::size_t pw = std::size_t(m_volWidth) + 2u;
+	const std::size_t ph = std::size_t(m_volHeight) + 2u;
+	const std::size_t sz = pw*ph;
+	const std::size_t base = std::size_t(lx+1) + pw*(std::size_t(ly+1) + ph*std::size_t(lz+1));
+	const std::size_t offsets[8] = { 0, 1, pw, pw+1, sz, sz+1, sz+pw, sz+pw+1 };
+	// Corner order matches BlendCorners: llA lhA hlA hhA llB lhB hlB hhB.
+	Scalar corner[3][8];
+	Scalar temperatureMin = RISE_INFINITY, temperatureMax = -RISE_INFINITY;
+	for( unsigned int i = 0; i < 8u; ++i ) {
+		const FlatVoxel& voxel = m_flat[base+offsets[i]];
+		corner[0][i] = voxel.carbon;
+		corner[1][i] = voxel.temperature;
+		corner[2][i] = voxel.condensed;
+		temperatureMin = fmin( temperatureMin, voxel.temperature );
+		temperatureMax = fmax( temperatureMax, voxel.temperature );
+	}
+	const bool hasCondensed = m_pCondensedAccessor != 0;
+
+	const Scalar offW = InterpolationAccessorOffset(m_volWidth);
+	const Scalar offH = InterpolationAccessorOffset(m_volHeight);
+	const Scalar offD = InterpolationAccessorOffset(m_volDepth);
+	// Fractional position inside the cell is affine in t: u_axis(t) = A + B*t.
+	const Scalar scaleX = Scalar(m_volWidth)/m_bboxExtent.x;
+	const Scalar scaleY = Scalar(m_volHeight)/m_bboxExtent.y;
+	const Scalar scaleZ = Scalar(m_volDepth)/m_bboxExtent.z;
+	const Scalar Ax = (ray.origin.x - m_bboxMin.x)*scaleX - offW - Scalar(cx);
+	const Scalar Ay = (ray.origin.y - m_bboxMin.y)*scaleY - offH - Scalar(cy);
+	const Scalar Az = (ray.origin.z - m_bboxMin.z)*scaleZ - offD - Scalar(cz);
+	const Scalar Bx = ray.Dir().x*scaleX;
+	const Scalar By = ray.Dir().y*scaleY;
+	const Scalar Bz = ray.Dir().z*scaleZ;
+
+	const auto blend = []( const Scalar (&c)[8], const Scalar ut, const Scalar vt, const Scalar wt ) {
+		const Scalar omut = 1.0 - ut;
+		const Scalar omvt = 1.0 - vt;
+		const Scalar omwt = 1.0 - wt;
+		const Scalar front = (c[0] * (omut * omvt)
+			+ c[2] * (omut * vt)
+			+ c[1] * (ut * omvt)
+			+ c[3] * (ut * vt));
+		const Scalar back = (c[4] * (omut * omvt)
+			+ c[6] * (omut * vt)
+			+ c[5] * (ut * omvt)
+			+ c[7] * (ut * vt));
+		return front * omwt + back * wt;
+	};
+
+	// Panels: split at the temperature roots of the two hot-fraction levels,
+	// skipping levels the cell's corner temperatures cannot span.
+	static thread_local std::vector<Scalar> panels;
+	panels.clear();
+	panels.push_back( tBegin );
+	const Scalar levelMin = m_optics.HotFractionMinK();
+	const Scalar levelMax = m_optics.HotFractionMaxK();
+	const bool spansMin = !(temperatureMin > levelMin) && !(temperatureMax < levelMin);
+	const bool spansMax = !(temperatureMin > levelMax) && !(temperatureMax < levelMax);
+	if( spansMin || spansMax ) {
+		Scalar temperature[4];
+		for( unsigned int sample = 0; sample < 4u; ++sample ) {
+			const Scalar u = Scalar(sample)/3.0;
+			const Scalar t = tBegin + u*(tEnd-tBegin);
+			temperature[sample] = blend( corner[1], Ax + Bx*t, Ay + By*t, Az + Bz*t );
+		}
+		if( spansMin ) AppendCubicLevelCrossings( temperature, levelMin, tBegin, tEnd, panels );
+		if( spansMax ) AppendCubicLevelCrossings( temperature, levelMax, tBegin, tEnd, panels );
+		panels.push_back( tEnd );
+		std::sort( panels.begin(), panels.end() );
+		panels.erase( std::unique(panels.begin(),panels.end()), panels.end() );
+	} else {
+		panels.push_back( tEnd );
+		std::sort( panels.begin(), panels.end() );
+	}
+
+	// When no corner temperature is inside the hot-fraction ramp, phi is a
+	// constant over the cell, the integrands are cubic in t (trilinear carbon
+	// and condensed), and 2-point Gauss-Legendre (exact through degree 3)
+	// integrates them exactly; otherwise the 7-point rule is exact through
+	// the degree-12 smoothstep-of-trilinear product.
+	const bool constantPhi = temperatureMax <= levelMin || temperatureMin >= levelMax;
+	const Scalar constantPhiValue = temperatureMax <= levelMin ? 0.0 : 1.0;
+	static const Scalar kGL2Node = 0.577350269189625764509148780502;	// 1/sqrt(3)
+	const unsigned int nodeCount = constantPhi ? 2u : 7u;
+
+	Scalar cool = 0.0, hot = 0.0, condensedIntegral = 0.0;
+	for( size_t panel = 0; panel + 1 < panels.size(); ++panel ) {
+		const Scalar panelBegin = panels[panel];
+		const Scalar panelEnd = panels[panel+1];
+		if( panelEnd <= panelBegin ) continue;
+		const Scalar halfLen = 0.5*(panelEnd-panelBegin);
+		const Scalar midPt = 0.5*(panelBegin+panelEnd);
+		Scalar coolSum = 0.0, hotSum = 0.0, condSum = 0.0;
+		for( unsigned int q = 0; q < nodeCount; ++q ) {
+			const Scalar node = constantPhi ? (q == 0 ? -kGL2Node : kGL2Node) : kCellGLNodes[q];
+			const Scalar weight = constantPhi ? 1.0 : kCellGLWeights[q];
+			const Scalar tq = midPt + halfLen*node;
+			const Scalar ut = Ax + Bx*tq, vt = Ay + By*tq, wt = Az + Bz*tq;
+			const Scalar carbon = blend( corner[0], ut, vt, wt );
+			const Scalar phi = constantPhi ? constantPhiValue
+				: m_optics.HotFraction( blend( corner[1], ut, vt, wt ) );
+			hotSum += weight*(carbon*phi);
+			coolSum += weight*(carbon*(1.0 - phi));
+			if( hasCondensed ) condSum += weight*blend( corner[2], ut, vt, wt );
+		}
+		hot += halfLen*hotSum;
+		cool += halfLen*coolSum;
+		condensedIntegral += halfLen*condSum;
+	}
+	integrals[0] = cool;
+	integrals[1] = hot;
+	integrals[2] = condensedIntegral;
+}
+
+bool MultichannelHeterogeneousMedium::EvalDeterministicOpticalDepthNMFast(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar nm,
+	Scalar& tau
+	) const
+{
+	tau = 0.0;
+	if( !m_flatCurrent ) return false;
+	if( !m_valid ) return true;			// GetCoefficientsNM is identically zero
+	const NMOptics optics = OpticsAtNM( nm );
+	if( !optics.supported ) return true;
+
+	Scalar tEntry = 0, tExit = 0;
+	if( !IntersectBBox( ray, tEntry, tExit ) ) return true;
+	tEntry = fmax( tEntry, 0.0 );
+	const Scalar tClip = fmin( tExit, targetDist );
+	if( tEntry >= tClip ) return true;
+
+	// sigma_t(nm) = unit*( coolExt*carbon*(1-phi) + hotExt*carbon*phi + condExt*condensed ),
+	// the extinction (absorption + scattering) of each constituent.
+	const Scalar hotExtinctionMass = optics.hotAbsorptionMass/optics.oneMinusHotAlbedo;
+	const auto combine = [&]( const Scalar (&j)[3] ) {
+		return m_sceneUnitMeters*( optics.coolExtinctionMass*j[0] +
+			hotExtinctionMass*j[1] + optics.condExtinctionMass*j[2] );
+	};
+
+	const Scalar offsetW = InterpolationAccessorOffset(m_volWidth);
+	const Scalar offsetH = InterpolationAccessorOffset(m_volHeight);
+	const Scalar offsetD = InterpolationAccessorOffset(m_volDepth);
+
+	// The per-ray cumulative mass integrals are asked for at several
+	// distances and wavelengths (event pdf, additive emission, MIS
+	// densities, hero + companion lanes); each cell's integrals are kept so
+	// a further query only walks new cells plus one partial cell.
+	static const unsigned int kCacheSlots = 8;
+	static thread_local OpticalDepthRayCache caches[kCacheSlots];
+	static thread_local unsigned int nextSlot = 0;
+	OpticalDepthRayCache* cache = 0;
+	for( unsigned int i = 0; i < kCacheSlots; ++i ) {
+		OpticalDepthRayCache& c = caches[i];
+		if( c.epoch == m_opticsEpoch &&
+			c.ox == ray.origin.x && c.oy == ray.origin.y && c.oz == ray.origin.z &&
+			c.dx == ray.Dir().x && c.dy == ray.Dir().y && c.dz == ray.Dir().z ) {
+			cache = &c;
+			break;
+		}
+	}
+	if( !cache ) {
+		cache = &caches[nextSlot];
+		nextSlot = (nextSlot + 1u) % kCacheSlots;
+		cache->epoch = m_opticsEpoch;
+		cache->ox = ray.origin.x; cache->oy = ray.origin.y; cache->oz = ray.origin.z;
+		cache->dx = ray.Dir().x; cache->dy = ray.Dir().y; cache->dz = ray.Dir().z;
+		cache->cells.clear();
+		cache->total[0] = cache->total[1] = cache->total[2] = 0.0;
+		cache->walker.Init( ray, tEntry, tExit, m_bboxMin, m_bboxExtent,
+			m_volWidth, m_volHeight, m_volDepth, offsetW, offsetH, offsetD );
+	}
+
+	KnotWalker& walker = cache->walker;
+	// Complete every cell that ends at or before the target.
+	while( !walker.Finished() )
+	{
+		const Scalar tNext = walker.PeekEnd();
+		if( tNext > tClip ) break;
+		const Scalar tBegin = walker.t;
+		if( tNext > tBegin + 1e-15 )
+		{
+			Scalar cell[3];
+			CellMassIntegrals( ray, tBegin, tNext, walker.cx, walker.cy, walker.cz, cell );
+			if( cell[0] != 0.0 || cell[1] != 0.0 || cell[2] != 0.0 ) {
+				OpticalDepthRayCache::CellRecord record;
+				record.tBegin = tBegin; record.tEnd = tNext;
+				for( unsigned int k = 0; k < 3u; ++k ) {
+					record.before[k] = cache->total[k];
+					record.after[k] = cache->total[k] + cell[k];
+					cache->total[k] = record.after[k];
+				}
+				record.cx = walker.cx; record.cy = walker.cy; record.cz = walker.cz;
+				cache->cells.push_back( record );
+			}
+		}
+		walker.Advance( tNext );
+	}
+
+	if( !walker.done && walker.t < tClip )
+	{
+		// The target lies inside the walker's pending cell: partial cell.
+		Scalar total[3] = { cache->total[0], cache->total[1], cache->total[2] };
+		if( tClip > walker.t + 1e-15 ) {
+			Scalar partial[3];
+			CellMassIntegrals( ray, walker.t, tClip, walker.cx, walker.cy, walker.cz, partial );
+			for( unsigned int k = 0; k < 3u; ++k ) total[k] += partial[k];
+		}
+		tau = combine( total );
+		return true;
+	}
+
+	// The target lies in the already-walked region.
+	const std::vector<OpticalDepthRayCache::CellRecord>& cells = cache->cells;
+	size_t lo = 0, hi = cells.size();	// first record with tBegin >= tClip
+	while( lo < hi ) {
+		const size_t mid = (lo + hi) / 2;
+		if( cells[mid].tBegin < tClip ) lo = mid + 1; else hi = mid;
+	}
+	if( lo == 0 ) return true;
+	const OpticalDepthRayCache::CellRecord& record = cells[lo-1];
+	if( tClip >= record.tEnd ) {
+		tau = combine( record.after );
+		return true;
+	}
+	Scalar total[3] = { record.before[0], record.before[1], record.before[2] };
+	if( tClip > record.tBegin + 1e-15 ) {
+		Scalar partial[3];
+		CellMassIntegrals( ray, record.tBegin, tClip, record.cx, record.cy, record.cz, partial );
+		for( unsigned int k = 0; k < 3u; ++k ) total[k] += partial[k];
+	}
+	tau = combine( total );
+	return true;
+}
+
+namespace
+{
+	// Trilinear blend with the exact operation order of VolumeAccessor_TRI so
+	// the flat fetch reproduces the accessor value.
+	template<typename Getter>
+	inline Scalar BlendCorners(
+		const Getter& get,
+		const std::size_t base, const std::size_t sy, const std::size_t sz,
+		const Scalar ut, const Scalar vt, const Scalar wt )
+	{
+		const Scalar llA = get( base );
+		const Scalar lhA = get( base + 1u );
+		const Scalar hlA = get( base + sy );
+		const Scalar hhA = get( base + sy + 1u );
+		const Scalar llB = get( base + sz );
+		const Scalar lhB = get( base + sz + 1u );
+		const Scalar hlB = get( base + sz + sy );
+		const Scalar hhB = get( base + sz + sy + 1u );
+		const Scalar omut = 1.0 - ut;
+		const Scalar omvt = 1.0 - vt;
+		const Scalar omwt = 1.0 - wt;
+		const Scalar front = (llA * (omut * omvt)
+			+ hlA * (omut * vt)
+			+ lhA * (ut * omvt)
+			+ hhA * (ut * vt));
+		const Scalar back = (llB * (omut * omvt)
+			+ hlB * (omut * vt)
+			+ lhB * (ut * omvt)
+			+ hhB * (ut * vt));
+		return front * omwt + back * wt;
+	}
+}
+
+bool MultichannelHeterogeneousMedium::FetchFlat(
+	const Point3& worldPt,
+	Scalar& carbon,
+	Scalar& temperature,
+	Scalar& condensed
+	) const
+{
+	carbon = temperature = condensed = 0.0;
+	if( worldPt.x < m_bboxMin.x || worldPt.x > m_bboxMax.x ||
+		worldPt.y < m_bboxMin.y || worldPt.y > m_bboxMax.y ||
+		worldPt.z < m_bboxMin.z || worldPt.z > m_bboxMax.z ) {
+		return true;
+	}
+	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
+	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
+	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
+	const Scalar ux = nx*Scalar(m_volWidth) - InterpolationAccessorOffset(m_volWidth);
+	const Scalar uy = ny*Scalar(m_volHeight) - InterpolationAccessorOffset(m_volHeight);
+	const Scalar uz = nz*Scalar(m_volDepth) - InterpolationAccessorOffset(m_volDepth);
+	const Scalar flx = floor( ux ), fly = floor( uy ), flz = floor( uz );
+	const Scalar ut = ux - flx, vt = uy - fly, wt = uz - flz;
+	const int hw = static_cast<int>( m_volWidth/2u );
+	const int hh = static_cast<int>( m_volHeight/2u );
+	const int hd = static_cast<int>( m_volDepth/2u );
+	// lo corner in accessor coordinates, kept inside the padded lattice
+	const int ix = static_cast<int>( fmin( fmax( flx, Scalar(-1-hw) ), Scalar(int(m_volWidth)-1-hw) ) );
+	const int iy = static_cast<int>( fmin( fmax( fly, Scalar(-1-hh) ), Scalar(int(m_volHeight)-1-hh) ) );
+	const int iz = static_cast<int>( fmin( fmax( flz, Scalar(-1-hd) ), Scalar(int(m_volDepth)-1-hd) ) );
+	const std::size_t pw = std::size_t(m_volWidth) + 2u;
+	const std::size_t ph = std::size_t(m_volHeight) + 2u;
+	const std::size_t sz = pw*ph;
+	const std::size_t base = std::size_t(ix+hw+1) + pw*(std::size_t(iy+hh+1) + ph*std::size_t(iz+hd+1));
+	const FlatVoxel* grid = m_flat.data();
+	carbon = BlendCorners( [grid]( std::size_t i ) { return grid[i].carbon; }, base, pw, sz, ut, vt, wt );
+	temperature = BlendCorners( [grid]( std::size_t i ) { return grid[i].temperature; }, base, pw, sz, ut, vt, wt );
+	if( m_pCondensedAccessor ) {
+		condensed = BlendCorners( [grid]( std::size_t i ) { return grid[i].condensed; }, base, pw, sz, ut, vt, wt );
+	}
+	return true;
+}
+
+bool MultichannelHeterogeneousMedium::FetchFlatChem(
+	const Point3& worldPt,
+	Scalar (&bands)[3]
+	) const
+{
+	bands[0] = bands[1] = bands[2] = 0.0;
+	if( !m_flatCurrent || m_flatChem.empty() ) return false;
+	if( worldPt.x < m_bboxMin.x || worldPt.x > m_bboxMax.x ||
+		worldPt.y < m_bboxMin.y || worldPt.y > m_bboxMax.y ||
+		worldPt.z < m_bboxMin.z || worldPt.z > m_bboxMax.z ) {
+		return true;
+	}
+	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
+	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
+	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
+	const Scalar ux = nx*Scalar(m_volWidth) - InterpolationAccessorOffset(m_volWidth);
+	const Scalar uy = ny*Scalar(m_volHeight) - InterpolationAccessorOffset(m_volHeight);
+	const Scalar uz = nz*Scalar(m_volDepth) - InterpolationAccessorOffset(m_volDepth);
+	const Scalar flx = floor( ux ), fly = floor( uy ), flz = floor( uz );
+	const Scalar ut = ux - flx, vt = uy - fly, wt = uz - flz;
+	const int hw = static_cast<int>( m_volWidth/2u );
+	const int hh = static_cast<int>( m_volHeight/2u );
+	const int hd = static_cast<int>( m_volDepth/2u );
+	const int ix = static_cast<int>( fmin( fmax( flx, Scalar(-1-hw) ), Scalar(int(m_volWidth)-1-hw) ) );
+	const int iy = static_cast<int>( fmin( fmax( fly, Scalar(-1-hh) ), Scalar(int(m_volHeight)-1-hh) ) );
+	const int iz = static_cast<int>( fmin( fmax( flz, Scalar(-1-hd) ), Scalar(int(m_volDepth)-1-hd) ) );
+	const std::size_t pw = std::size_t(m_volWidth) + 2u;
+	const std::size_t ph = std::size_t(m_volHeight) + 2u;
+	const std::size_t sz = pw*ph;
+	const std::size_t base = std::size_t(ix+hw+1) + pw*(std::size_t(iy+hh+1) + ph*std::size_t(iz+hd+1));
+	const FlatChemVoxel* grid = m_flatChem.data();
+	for( unsigned int band = 0; band < 3u; ++band ) {
+		bands[band] = BlendCorners( [grid,band]( std::size_t i ) { return grid[i].band[band]; },
+			base, pw, sz, ut, vt, wt );
+	}
+	return true;
+}
+
+void MultichannelHeterogeneousMedium::FetchCarbonTemperatureCondensed(
+	const Point3& worldPt,
+	Scalar& carbon,
+	Scalar& temperature,
+	Scalar& condensed
+	) const
+{
+	if( m_flatCurrent ) {
+		FetchFlat( worldPt, carbon, temperature, condensed );
+		return;
+	}
+	carbon = LookupCarbon( worldPt );
+	temperature = LookupTemperature( worldPt );
+	condensed = LookupCondensed( worldPt );
+}
+
+MultichannelHeterogeneousMedium::NMOptics MultichannelHeterogeneousMedium::OpticsAtNM(
+	const Scalar nm
+	) const
+{
+	// Wavelength-dependent constants are spectrum evaluations; a path asks
+	// for the same few wavelengths thousands of times.  Per-thread, direct
+	// mapped, keyed by the medium's unique optics epoch and the exact nm.
+	struct Entry
+	{
+		unsigned long long epoch;
+		Scalar nm;
+		NMOptics optics;
+	};
+	static const unsigned int kEntries = 64;
+	static thread_local Entry cache[kEntries];
+	std::uint64_t bits = 0;
+	static_assert( sizeof(bits) == sizeof(nm), "Scalar must be 64-bit" );
+	std::memcpy( &bits, &nm, sizeof(bits) );
+	const unsigned int slot = static_cast<unsigned int>(
+		((bits ^ (bits >> 29) ^ (m_opticsEpoch*0x9E3779B97F4A7C15ull)) * 0xBF58476D1CE4E5B9ull) >> 58 );
+	Entry& entry = cache[slot % kEntries];
+	if( entry.epoch == m_opticsEpoch && entry.nm == nm && entry.epoch != 0 ) {
+		return entry.optics;
+	}
+	NMOptics optics;
+	optics.supported = m_optics.SupportsWavelengthRange( nm, nm );
+	if( optics.supported ) {
+		optics.hotAbsorptionMass = AblatedHotAbsorptionMass( nm );
+		optics.oneMinusHotAlbedo = 1.0 - m_optics.HotAlbedo( nm );
+		optics.coolExtinctionMass = m_optics.CoolExtinctionMass( nm );
+		optics.coolAlbedo = m_optics.CoolAlbedo( nm );
+		optics.condExtinctionMass = m_optics.CondensedExtinctionMass( nm );
+		optics.condAlbedo = m_optics.CondensedAlbedo( nm );
+	} else {
+		optics.hotAbsorptionMass = optics.oneMinusHotAlbedo = optics.coolExtinctionMass =
+			optics.coolAlbedo = optics.condExtinctionMass = optics.condAlbedo = 0.0;
+	}
+	entry.epoch = m_opticsEpoch;
+	entry.nm = nm;
+	entry.optics = optics;
+	return optics;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupChannel(
+	const IVolumeAccessor& accessor,
+	const Point3& worldPt
+	) const
+{
+	if( worldPt.x < m_bboxMin.x || worldPt.x > m_bboxMax.x ||
+		worldPt.y < m_bboxMin.y || worldPt.y > m_bboxMax.y ||
+		worldPt.z < m_bboxMin.z || worldPt.z > m_bboxMax.z ) {
+		return 0.0;
+	}
+
+	const Scalar nx = (worldPt.x - m_bboxMin.x) / m_bboxExtent.x;
+	const Scalar ny = (worldPt.y - m_bboxMin.y) / m_bboxExtent.y;
+	const Scalar nz = (worldPt.z - m_bboxMin.z) / m_bboxExtent.z;
+	return accessor.GetValue(
+		nx*Scalar(m_volWidth) - InterpolationAccessorOffset(m_volWidth),
+		ny*Scalar(m_volHeight) - InterpolationAccessorOffset(m_volHeight),
+		nz*Scalar(m_volDepth) - InterpolationAccessorOffset(m_volDepth) );
+}
+
+Scalar MultichannelHeterogeneousMedium::InterpolationAccessorOffset(
+	const unsigned int dimension
+	) const
+{
+	return Scalar(dimension/2u) + 0.5;
+}
+
+void MultichannelHeterogeneousMedium::AppendOpticalDepthBreakpoints(
+	const Ray& ray,
+	const Scalar tBegin,
+	const Scalar tEnd,
+	std::vector<Scalar>& breakpoints
+	) const
+{
+	Scalar temperature[4];
+	for( unsigned int sample = 0; sample < 4u; ++sample ) {
+		const Scalar u = Scalar(sample)/3.0;
+		const Scalar t = tBegin + u*(tEnd-tBegin);
+		const Point3 point = Point3Ops::mkPoint3( ray.origin, ray.Dir()*t );
+		temperature[sample] = LookupTemperature(point);
+	}
+	AppendCubicLevelCrossings(
+		temperature, m_optics.HotFractionMinK(), tBegin, tEnd, breakpoints );
+	AppendCubicLevelCrossings(
+		temperature, m_optics.HotFractionMaxK(), tBegin, tEnd, breakpoints );
+	std::sort( breakpoints.begin(), breakpoints.end() );
+	breakpoints.erase( std::unique(breakpoints.begin(),breakpoints.end()),
+		breakpoints.end() );
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupCarbon( const Point3& worldPt ) const
+{
+	if( m_flatCurrent ) {
+		Scalar c, t, k;
+		FetchFlat( worldPt, c, t, k );
+		return c;
+	}
+	return m_pCarbonAccessor ? LookupChannel( *m_pCarbonAccessor, worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupTemperature( const Point3& worldPt ) const
+{
+	if( m_flatCurrent ) {
+		Scalar c, t, k;
+		FetchFlat( worldPt, c, t, k );
+		return t;
+	}
+	return m_pTemperatureAccessor ? LookupChannel( *m_pTemperatureAccessor, worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::LookupCondensed( const Point3& worldPt ) const
+{
+	if( m_flatCurrent ) {
+		Scalar c, t, k;
+		FetchFlat( worldPt, c, t, k );
+		return k;
+	}
+	return m_pCondensedAccessor ? LookupChannel( *m_pCondensedAccessor, worldPt ) : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::HotOpticsFraction( const Point3& worldPt ) const
+{
+	return m_optics.HotFraction( LookupTemperature(worldPt) );
+}
+
+Scalar MultichannelHeterogeneousMedium::HotSootVolumeFraction( const Point3& worldPt ) const
+{
+	return HotOpticsFraction( worldPt ) * 1.0e-3 * LookupCarbon( worldPt ) /
+		m_optics.SootDensityKgM3();
+}
+
+const char* MultichannelHeterogeneousMedium::GetFireRenderFidelityStatus(
+	const bool predictiveRequested
+	) const
+{
+	return (predictiveRequested ? m_predictiveFidelity : m_previewFidelity).
+		renderFidelityStatus.c_str();
+}
+
+unsigned int MultichannelHeterogeneousMedium::GetFireRenderReasonCodeCount(
+	const bool predictiveRequested
+	) const
+{
+	return static_cast<unsigned int>((predictiveRequested ?
+		m_predictiveFidelity : m_previewFidelity).reasonCodes.size());
+}
+
+const char* MultichannelHeterogeneousMedium::GetFireRenderReasonCode(
+	const bool predictiveRequested,
+	const unsigned int index
+	) const
+{
+	const std::vector<std::string>& reasons = (predictiveRequested ?
+		m_predictiveFidelity : m_previewFidelity).reasonCodes;
+	return index < reasons.size() ? reasons[index].c_str() : 0;
+}
+
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAt( const Point3& worldPt ) const
+{
+	if( !m_pMajorantGrid ) return 0.0;
+	unsigned int x = 0, y = 0, z = 0;
+	if( !m_pMajorantGrid->WorldToCell( worldPt, x, y, z ) ) return 0.0;
+	return m_pMajorantGrid->GetCellMajorant( x, y, z );
+}
+
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtPel(
+	const Point3& worldPt
+	) const
+{
+	const Scalar majorant633 = TrackingMajorantAt(worldPt);
+	return m_sigma_t_majorant > 0.0 ?
+		majorant633*PelTrackingMajorant()/m_sigma_t_majorant : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::SpectralTrackingMajorant(
+	const Scalar
+	) const
+{
+	return m_sigma_t_majorant;
+}
+
+Scalar MultichannelHeterogeneousMedium::PelTrackingMajorant() const
+{
+	Scalar projectedMassMaximum = 0.0;
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_hotExtinctionMass633*m_pelHotMean[channel] );
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_coolExtinctionMass633*m_pelCoolMean[channel] );
+		projectedMassMaximum = fmax( projectedMassMaximum,
+			m_condExtinctionMass633*m_pelCondMean[channel] );
+	}
+	return m_sceneUnitMeters*projectedMassMaximum;
+}
+
+Scalar MultichannelHeterogeneousMedium::TrackingMajorantAtNM(
+	const Point3& worldPt,
+	const Scalar nm
+	) const
+{
+	const Scalar majorant633 = TrackingMajorantAt( worldPt );
+	if( majorant633 <= 0.0 || m_sigma_t_majorant <= 0.0 ) return 0.0;
+	return majorant633 * SpectralTrackingMajorant( nm ) / m_sigma_t_majorant;
+}
+
+MediumCoefficients MultichannelHeterogeneousMedium::GetCoefficients(
+	const Point3& pt
+	) const
+{
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar hotAbsorption633 = carbon * phi * m_hotAbsorptionMass633;
+	const Scalar hotScattering633 = hotAbsorption633 *
+		m_sootAlbedoHot / (1.0 - m_sootAlbedoHot);
+	const Scalar coolExtinction633 = carbon * (1.0 - phi) *
+		m_coolExtinctionMass633;
+	const Scalar coolScattering633 = coolExtinction633 * m_smokeAlbedoCarbon;
+	const Scalar condExtinction633 = LookupCondensed( pt ) * m_condExtinctionMass633;
+	const Scalar condScattering633 = condExtinction633 * m_smokeAlbedoCond;
+
+	const RISEPel sigmaA = m_sceneUnitMeters *
+		(m_pelHotMean*hotAbsorption633 +
+		 m_pelCoolMean*(coolExtinction633-coolScattering633) +
+		 m_pelCondMean*(condExtinction633-condScattering633));
+	const RISEPel sigmaS = m_sceneUnitMeters *
+		(m_pelHotMean*hotScattering633 +
+		 m_pelCoolMean*coolScattering633 +
+		 m_pelCondMean*condScattering633);
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		assert( sigmaA[channel] >= 0.0 && sigmaS[channel] >= 0.0 );
+	}
+
+	MediumCoefficients c;
+	c.sigma_t = sigmaA + sigmaS;
+	c.sigma_s = sigmaS;
+	// Thermal emission has its own collision-estimator source API, matching
+	// GetThermalEmissionNM.  MediumCoefficients::emission remains the distinct
+	// absorption-independent additive source contract.
+	c.emission = RISEPel( 0.0 );
+	return c;
+}
+
+MediumCoefficientsNM MultichannelHeterogeneousMedium::GetCoefficientsNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	MediumCoefficientsNM c;
+	c.sigma_t = 0.0;
+	c.sigma_s = 0.0;
+	c.emission = 0.0;
+	if( !m_valid ) return c;
+	const NMOptics optics = OpticsAtNM( nm );
+	if( !optics.supported ) return c;
+
+	Scalar carbon, temperature, condensed;
+	FetchCarbonTemperatureCondensed( pt, carbon, temperature, condensed );
+	const Scalar phi = m_optics.HotFraction( temperature );
+	const Scalar hotAbsorption = carbon * phi * optics.hotAbsorptionMass;
+	const Scalar hotExtinction = hotAbsorption/optics.oneMinusHotAlbedo;
+	const Scalar hotScattering = hotExtinction-hotAbsorption;
+	const Scalar coolExtinction = carbon * (1.0 - phi) *
+		optics.coolExtinctionMass;
+	const Scalar coolScattering = coolExtinction * optics.coolAlbedo;
+	const Scalar condExtinction = condensed * optics.condExtinctionMass;
+	const Scalar condScattering = condExtinction * optics.condAlbedo;
+	const Scalar sigmaA = m_sceneUnitMeters *
+		(hotAbsorption + coolExtinction - coolScattering +
+		 condExtinction - condScattering);
+	const Scalar sigmaS = m_sceneUnitMeters *
+		(hotScattering + coolScattering + condScattering);
+	c.sigma_t = sigmaA + sigmaS;
+	c.sigma_s = sigmaS;
+	return c;
+}
+
+const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosure(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid ) return 0;
+	const NMOptics optics = OpticsAtNM( nm );
+	if( !optics.supported ) return 0;
+
+	Scalar carbon, temperature, condensed;
+	FetchCarbonTemperatureCondensed( pt, carbon, temperature, condensed );
+	const Scalar phi = m_optics.HotFraction( temperature );
+	const Scalar hotExtinction = carbon * phi * optics.hotAbsorptionMass/
+		optics.oneMinusHotAlbedo;
+	const Scalar hotScattering = m_sceneUnitMeters * hotExtinction *
+		m_optics.HotAlbedo(nm);
+	const Scalar coolExtinction = carbon * (1.0 - phi) *
+		optics.coolExtinctionMass;
+	const Scalar coolScattering = m_sceneUnitMeters * coolExtinction *
+		optics.coolAlbedo;
+	const Scalar condExtinction = condensed *
+		optics.condExtinctionMass;
+	const Scalar condScattering = m_sceneUnitMeters * condExtinction *
+		optics.condAlbedo;
+	const Scalar totalScattering = hotScattering + coolScattering + condScattering;
+	if( !RISE::IsFiniteDouble( totalScattering ) || totalScattering <= 0.0 ) return 0;
+
+	return new ConstituentHGPhaseClosure(
+		hotScattering, coolScattering, condScattering,
+		m_optics.HotG(nm), m_optics.CoolG(nm), m_optics.CondensedG(nm) );
+}
+
+const IPhaseFunction* MultichannelHeterogeneousMedium::MakePhaseClosurePel(
+	const Point3& pt
+	) const
+{
+	if( !m_valid ) return 0;
+
+	const Scalar carbon = LookupCarbon( pt );
+	const Scalar phi = HotOpticsFraction( pt );
+	const Scalar hotScattering633 = carbon*phi*m_hotAbsorptionMass633 *
+		m_sootAlbedoHot/(1.0-m_sootAlbedoHot);
+	const Scalar coolScattering633 = carbon*(1.0-phi)*
+		m_coolExtinctionMass633*m_smokeAlbedoCarbon;
+	const Scalar condScattering633 = LookupCondensed(pt)*
+		m_condExtinctionMass633*m_smokeAlbedoCond;
+	const RISEPel hotScattering = m_pelHotMean*hotScattering633;
+	const RISEPel coolScattering = m_pelCoolMean*coolScattering633;
+	const RISEPel condScattering = m_pelCondMean*condScattering633;
+	const Scalar hotProposal = hotScattering633*m_samplingHotMass;
+	const Scalar coolProposal = coolScattering633*m_samplingCoolMass;
+	const Scalar condProposal = condScattering633*m_samplingCondMass;
+	const Scalar totalProposal = hotProposal+coolProposal+condProposal;
+	if( !RISE::IsFiniteDouble(totalProposal) || totalProposal <= 0.0 ) return 0;
+	return new ConstituentHGPelPhaseClosure(
+		hotScattering,coolScattering,condScattering,
+		hotProposal,coolProposal,condProposal,
+		m_sootGHot,m_smokeGCarbon,m_smokeGCond );
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid ) return 0.0;
+	Scalar carbon, temperature, condensed;
+	FetchCarbonTemperatureCondensed( pt, carbon, temperature, condensed );
+	return ThermalEmissionFromState( carbon, temperature, condensed, nm );
+}
+
+Scalar MultichannelHeterogeneousMedium::ThermalEmissionFromState(
+	const Scalar carbon,
+	const Scalar temperature,
+	const Scalar condensed,
+	const Scalar nm
+	) const
+{
+	// Same arithmetic as GetCoefficientsNM for the absorption part, from an
+	// already fetched (carbon, temperature, condensed) state.
+	if( !m_valid ) return 0.0;
+	if( carbon == 0.0 && condensed == 0.0 ) return 0.0;	// sigma_t == 0 exactly
+	const NMOptics optics = OpticsAtNM( nm );
+	if( !optics.supported ) return 0.0;
+	const Scalar phi = m_optics.HotFraction( temperature );
+	const Scalar hotAbsorption = carbon * phi * optics.hotAbsorptionMass;
+	const Scalar hotExtinction = hotAbsorption/optics.oneMinusHotAlbedo;
+	const Scalar hotScattering = hotExtinction-hotAbsorption;
+	const Scalar coolExtinction = carbon * (1.0 - phi) *
+		optics.coolExtinctionMass;
+	const Scalar coolScattering = coolExtinction * optics.coolAlbedo;
+	const Scalar condExtinction = condensed * optics.condExtinctionMass;
+	const Scalar condScattering = condExtinction * optics.condAlbedo;
+	const Scalar sigmaA = m_sceneUnitMeters *
+		(hotAbsorption + coolExtinction - coolScattering +
+		 condExtinction - condScattering);
+	const Scalar sigmaS = m_sceneUnitMeters *
+		(hotScattering + coolScattering + condScattering);
+	const Scalar sigmaT = sigmaA + sigmaS;
+	const Scalar sigmaAbsorption = sigmaT - sigmaS;
+	return sigmaAbsorption > 0.0
+		? sigmaAbsorption * PlanckSpectralRadianceNM( nm, temperature )
+		: 0.0;
+}
+
+RISEPel MultichannelHeterogeneousMedium::GetThermalEmissionPel(
+	const Point3& pt
+	) const
+{
+	if( !m_valid ) return RISEPel( 0.0 );
+	RISEPel emission( 0.0 );
+	for( unsigned int channel = 0; channel < 3u; ++channel ) {
+		emission[channel] = GaussLegendre21::IntegrateVisibleBand(
+			[this,&pt,channel]( const Scalar nm ) {
+				const MediumCoefficientsNM coeff = GetCoefficientsNM(pt,nm);
+				const Scalar sigmaA = coeff.sigma_t-coeff.sigma_s;
+				return sigmaA > 0.0 ? FirePelResponse(nm)[channel]*sigmaA*
+					PlanckSpectralRadianceNM(nm,LookupTemperature(pt)) : 0.0;
+			} );
+	}
+	return emission;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetChemEmissionNM(
+	const Point3& pt,
+	const Scalar nm
+	) const
+{
+	if( !m_valid || !m_pChemAccessor[0] ) return 0.0;
+	Scalar sourceSI = 0.0;
+	Scalar bands[3];
+	if( FetchFlatChem( pt, bands ) ) {
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			sourceSI += bands[band]*NormalizedChemSPD(band,nm);
+		}
+	} else {
+		for( unsigned int band = 0; band < 3u; ++band ) {
+			sourceSI += LookupChemBand(band,pt)*NormalizedChemSPD(band,nm);
+		}
+	}
+	return sourceSI > 0.0
+		? m_sceneUnitMeters*sourceSI/FOUR_PI : 0.0;
+}
+
+Scalar MultichannelHeterogeneousMedium::EstimateChemEmissionSegmentNM(
+	const Ray& ray,
+	const Scalar segmentStart,
+	const Scalar segmentEnd,
+	const Scalar nm,
+	ISampler& sampler
+	) const
+{
+	if( !m_valid || !m_pChemAccessor[0] ||
+		!RISE::IsFiniteDouble(segmentStart) ||
+		!RISE::IsFiniteDouble(segmentEnd) || segmentEnd <= segmentStart ) {
+		return 0.0;
+	}
+
+	std::vector<Scalar> boundaries;
+	boundaries.reserve(16);
+	boundaries.push_back(segmentStart);
+	AppendChemPanelBreakpoints(ray,segmentStart,segmentEnd,boundaries);
+	boundaries.push_back(segmentEnd);
+	std::sort(boundaries.begin(),boundaries.end());
+	boundaries.erase(std::unique(boundaries.begin(),boundaries.end()),boundaries.end());
+	if( boundaries.size() < 2u ) return 0.0;
+
+	std::vector<Scalar> support;
+	support.reserve(boundaries.size()-1u);
+	Scalar totalWeight = 0.0;
+	for( size_t panel = 0; panel+1u < boundaries.size(); ++panel ) {
+		const Scalar length = boundaries[panel+1u]-boundaries[panel];
+		const Scalar bound = length > 0.0
+			? ChemPanelSupport(ray,boundaries[panel],boundaries[panel+1u]) : 0.0;
+		const Scalar weight = bound > 0.0
+			? StablePositiveProduct({length,bound}) : 0.0;
+		if( weight < 0.0 ) return 0.0;
+		support.push_back(weight);
+		totalWeight += weight;
+		if( !RISE::IsFiniteDouble(totalWeight) ) return 0.0;
+	}
+
+	const Scalar segmentLength = segmentEnd-segmentStart;
+	Scalar sampleT = 0.0;
+	if( totalWeight > 0.0 && sampler.Get1D() >= 0.5 ) {
+		const Scalar target = sampler.Get1D()*totalWeight;
+		Scalar cumulative = 0.0;
+		size_t selected = support.size()-1u;
+		for( size_t panel = 0; panel < support.size(); ++panel ) {
+			cumulative += support[panel];
+			if( target < cumulative ) {
+				selected = panel;
+				break;
+			}
+		}
+		sampleT = boundaries[selected] + sampler.Get1D()*
+			(boundaries[selected+1u]-boundaries[selected]);
+	} else {
+		sampleT = segmentStart+sampler.Get1D()*segmentLength;
+	}
+
+	Scalar reactionDensity = 0.0;
+	if( totalWeight > 0.0 ) {
+		for( size_t panel = 0; panel < support.size(); ++panel ) {
+			const bool contains = sampleT >= boundaries[panel] &&
+				(panel+1u == support.size()
+					? sampleT <= boundaries[panel+1u]
+					: sampleT < boundaries[panel+1u]);
+			if( contains ) {
+				const Scalar length = boundaries[panel+1u]-boundaries[panel];
+				reactionDensity = length > 0.0
+					? (support[panel]/totalWeight)/length : 0.0;
+				break;
+			}
+		}
+	}
+	const Scalar proposalDensity = totalWeight > 0.0
+		? 0.5/segmentLength+0.5*reactionDensity : 1.0/segmentLength;
+	if( !RISE::IsFiniteDouble(proposalDensity) || proposalDensity <= 0.0 ) {
+		return 0.0;
+	}
+	const Scalar epsilon = GetChemEmissionNM(ray.PointAtLength(sampleT),nm);
+	if( epsilon <= 0.0 ) return 0.0;
+	const Scalar tau = EvalDeterministicOpticalDepthNM(ray,sampleT,nm);
+	return exp(-tau)*epsilon/proposalDensity;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionPowerProxy() const
+{
+	if( m_sceneUnitMeters <= 0.0 || m_thermalEmissionImportance <= 0.0 ) return 0.0;
+	int sceneExponent = 0;
+	int importanceExponent = 0;
+	const Scalar sceneMantissa = std::frexp( m_sceneUnitMeters, &sceneExponent );
+	const Scalar importanceMantissa = std::frexp(
+		m_thermalEmissionImportance, &importanceExponent );
+	int productExponent = 0;
+	const Scalar productMantissa = std::frexp(
+		FOUR_PI * sceneMantissa * sceneMantissa * importanceMantissa,
+		&productExponent );
+	return std::ldexp( productMantissa,
+		2*sceneExponent + importanceExponent + productExponent );
+}
+
+bool MultichannelHeterogeneousMedium::SampleThermalEmission(
+	ISampler& sampler,
+	Point3& point,
+	Scalar& pdf
+	) const
+{
+	pdf = 0.0;
+	if( !m_valid || !m_emissionCellAlias.IsValid() ||
+		m_thermalEmissionImportance <= 0.0 ) return false;
+
+	const unsigned int cellIndex = m_emissionCellAlias.Sample( sampler.Get1D() );
+	if( cellIndex >= m_emissionCells.size() ) return false;
+	const EmissionCell& cell = m_emissionCells[cellIndex];
+	if( !cell.binAlias.IsValid() || cell.binIndices.empty() ) return false;
+	const unsigned int localBin = cell.binAlias.Sample( sampler.Get1D() );
+	if( localBin >= cell.binIndices.size() ) return false;
+	const unsigned int binIndex = cell.binIndices[localBin];
+	const unsigned int xy = m_volWidth * m_volHeight;
+	const unsigned int z = binIndex / xy;
+	const unsigned int rem = binIndex - z * xy;
+	const unsigned int y = rem / m_volWidth;
+	const unsigned int x = rem - y * m_volWidth;
+	point = Point3(
+		SampleHalfOpenBinCoordinate( m_bboxMin.x, m_bboxMax.x,
+			m_emissionBinSize.x, x, m_volWidth, sampler.Get1D() ),
+		SampleHalfOpenBinCoordinate( m_bboxMin.y, m_bboxMax.y,
+			m_emissionBinSize.y, y, m_volHeight, sampler.Get1D() ),
+		SampleHalfOpenBinCoordinate( m_bboxMin.z, m_bboxMax.z,
+			m_emissionBinSize.z, z, m_volDepth, sampler.Get1D() ) );
+	pdf = ThermalEmissionPdf( point );
+	return pdf > 0.0 && RISE::IsFiniteDouble( pdf );
+}
+
+Scalar MultichannelHeterogeneousMedium::ThermalEmissionPdf(
+	const Point3& point
+	) const
+{
+	if( !m_valid || m_thermalEmissionImportance <= 0.0 ) return 0.0;
+	unsigned int x = 0, y = 0, z = 0;
+	if( !EmissionBinAtPoint( point, x, y, z ) ) return 0.0;
+	// Divide the pre-normalized q_v by V_v.  Keeping q_v as constructed state
+	// prevents fast-math reassociation back into weight/(W_m*V_v), whose
+	// denominator can underflow for a tiny but otherwise valid finite bbox.
+	const Scalar binVolume = RepresentedBinVolume(
+		m_bboxMin, m_bboxMax, m_emissionBinSize, x, y, z,
+		m_volWidth, m_volHeight, m_volDepth );
+	return static_cast<Scalar>(
+		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] ) / binVolume;
+}
+
+Scalar MultichannelHeterogeneousMedium::GetThermalEmissionBinProbability(
+	const unsigned int x,
+	const unsigned int y,
+	const unsigned int z
+	) const
+{
+	if( x >= m_volWidth || y >= m_volHeight || z >= m_volDepth ||
+		m_thermalEmissionImportance <= 0.0 ) return 0.0;
+	return static_cast<Scalar>(
+		m_emissionBinProbabilities[EmissionBinIndex( x, y, z )] );
 }

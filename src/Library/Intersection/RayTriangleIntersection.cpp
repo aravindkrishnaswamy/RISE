@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
 #include "../Utilities/Profiling.h"
+#include <algorithm>		// std::max (self-hit floor's largest-vertex coordinate scale)
 
 namespace RISE
 {
@@ -58,7 +59,35 @@ namespace RISE
 
 		hit.dRange = Vector3Ops::Dot( vEdgeB, qvec ) * oodet;
 
-		if( hit.dRange >= NEARZERO ) {
+		// Scale-relative self-intersection floor -- same mechanism and
+		// same floor as RayBilinearPatchIntersection (debt 21) and
+		// RaySphereIntersection (see its note).  A ray published from a
+		// hit on this triangle (1e-12 back-off along the incoming ray)
+		// that crosses it has its self root at t = 1e-12 * |cos in| /
+		// |cos out|, which the fixed NEARZERO gate let through; and at
+		// coordinates ~1e3 the hit's own round-off puts the published
+		// point on either side.  Measured 2026-09-05 (docs/CLOTH_FABRIC_
+		// DESIGN.md section 15, debt 25 sibling audit): a two-triangle
+		// PLY quad carrying a full-sphere transmissive weave lit from
+		// behind read PT 1/157 of BDPT at unit scale; a Lambertian
+		// tessellated sphere at radius 1000 read PT 3-8 % dark.  The
+		// coordinate scale is the origin's plus the LARGEST of the three
+		// vertices' -- vPt1, vPt1+vEdgeA, vPt1+vEdgeB.  a8bef210 charged
+		// vPt1's alone, which is only the largest by accident of which corner
+		// the mesh happened to store first: a sliver whose far corner sits at
+		// 1e4 while vPt1 sits at the origin got a unit-scale floor, exactly
+		// the under-estimate this floor exists to prevent (adversarial review
+		// of a8bef210, P2-2 -- the commit's own comment already said "the
+		// vertex's", which reads as the triangle's extent).  Matches
+		// RayBilinearPatchIntersection, which maxes over all four corners.
+		const Scalar oL1 = fabs( ray.origin.x ) + fabs( ray.origin.y ) + fabs( ray.origin.z );
+		const Scalar v1L1 = fabs( vPt1.x ) + fabs( vPt1.y ) + fabs( vPt1.z );
+		const Scalar v2L1 = fabs( vPt1.x + vEdgeA.x ) + fabs( vPt1.y + vEdgeA.y ) + fabs( vPt1.z + vEdgeA.z );
+		const Scalar v3L1 = fabs( vPt1.x + vEdgeB.x ) + fabs( vPt1.y + vEdgeB.y ) + fabs( vPt1.z + vEdgeB.z );
+		const Scalar coordScale = oL1 + std::max( v1L1, std::max( v2L1, v3L1 ) );
+		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
+		if( hit.dRange >= tMin ) {
 			hit.dRange2 = hit.dRange;
 			hit.bHit = true;
 			hit.alpha = a;

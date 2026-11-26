@@ -1,0 +1,369 @@
+// SceneEditorSuggestionsTest — exercises the scene grammar, cursor
+// context resolver, and suggestion engine.  Asserts the core contract:
+// all 187 chunk keywords are enumerable, context resolution picks the
+// right scope in representative scene fragments, and the suggestion
+// engine returns chunk keywords at scene root and rejects already-
+// authored non-repeatable parameters inside a block.  (Bump the count
+// assertions below when adding a chunk; the EXPECT lines carry the full
+// per-addition history.)
+//
+// Standalone executable (matches tests/ convention).  No framework.
+
+#include <cassert>
+#include <cstring>
+#include <iostream>
+#include <string>
+
+#include "../src/Library/SceneEditorSuggestions/SceneGrammar.h"
+#include "../src/Library/SceneEditorSuggestions/CompletionContext.h"
+#include "../src/Library/SceneEditorSuggestions/NameIndex.h"
+#include "../src/Library/SceneEditorSuggestions/SuggestionEngine.h"
+
+using namespace RISE;
+using namespace RISE::SceneEditorSuggestions;
+
+static int g_fails = 0;
+
+#define EXPECT(cond) do { if(!(cond)) { std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << " " #cond << std::endl; ++g_fails; } } while(0)
+
+void TestGrammarCoverage()
+{
+	std::cout << "GrammarCoverage\n";
+	const SceneGrammar& g = SceneGrammar::Instance();
+	const auto& kws = g.AllChunkKeywords();
+	// The parser registry holds 187 chunk keyword entries (the mis_pathtracing_shaderop alias counts); the EXPECT below carries the
+	// full per-addition history.  Bump this count when adding new chunks; the
+	// registration in CreateAllChunkParsers() is the source of truth.
+	// Includes channel_painter (64ca16bcc), which was omitted from the count.
+	// Master is 177 (176 plus rough_dielectric_material, whose commit did not bump the count); the fire branch adds three chunks on top: null_boundary_material,
+	// multichannel_heterogeneous_medium, fire_medium.
+	EXPECT( kws.size() == 187 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object; 2026-06 auto-rasterizer dispatcher: + auto_rasterizer (Phase 1); 2026-06 auto-rasterizer Phase 1b: + auto_spectral_rasterizer; 2026-06 SDF geometry: + sdf_geometry; 2026-06 procedural general sweeps: + sweep_geometry + path_instances_geometry; 2026-06 temper-comparison: + function2d_painter; 2026-06 general patterning: + expression_function2d + cartesian_disk_geometry (retired guilloche_disk_geometry AND guilloche_oxide_painter: dials are an expression_function2d displaced onto cartesian_disk_geometry, and the oxide heat-tint is in-scene expression_function2d math); 2026-06 named animation paths: + animation (the named-animation grouping chunk); 2026-06 CST v6->v7 migrator: + global_medium (the v7 form of `> set global_medium`); 2026-06 scene variants: + scene_variant + active_scene_variant; 2026-06 CST v6->v7 cutover: + light_rr_threshold; 2026-07 discrete-facet glints: + glint_modifier; 2026-08 arc-83 slice 3 one-chunk area light: + rect_light; 2026-08 arc-83 slice 4 solid area light: + shape_light; 2026-08-14 arc-85 C1 joint-graph creature flesh: + skeleton_geometry; 2026-08-18 arc-85 C3 surface of revolution: + lathe_geometry; 2026-08-19 doc-88 P1 S2 texture-expression VM colour pipe: + expression_painter (scalar_painter's `expression` form is a new FIELD on an existing chunk, not a new keyword); 2026-08-19 doc-88 S3 P2.2 universal scalar->colour remap: + ramp_painter (P2.1's scalar_painter{painter} bridge is a new FIELD on an existing chunk, not a new keyword); 2026-08-20 doc-88 S7 P2.3 domain mapping wrapper: + mapping_painter (P2.4 blend_painter `mode` and P2.5 voronoi3d_painter `space` are new FIELDs on existing chunks, not new keywords); 2026-08-20 doc-88 P3 S8 stochastic richness: + stochastic_tile_painter + scatter_painter; 2026-08-22 doc-89 slice B ruled/billowed membrane between two rails: + skin_geometry; 2026-08-25 hair arc slices B and D: + hair_material + hair_geometry (BOTH landed WITHOUT bumping this count, so it sat two short from ce22a7a2/bddb2307 until this line was written -- the suite was red on exactly these two EXPECTs before the guides work began); 2026-08-27 hair Phase 2 slice P2-A authored guide strands: + hair_guides; 2026-08-31 WETNESS_COAT_DESIGN.md Phase 2 (`coated_material` triad): + coated_material; 2026-09-02 CLOTH_FABRIC_DESIGN.md Phase 1 (`fabric_material` triad): + fabric_material; 2026-09-03 CLOTH_FABRIC_DESIGN.md Phase 2 slice P2-A (`weave_material` triad): + weave_material; 2026-09-05 RELIEF_MODIFIER_DESIGN.md Phase 1 (painter-driven micro-relief): + relief_modifier; 2026-09-06 RELIEF_MODIFIER_DESIGN.md Phase 2 (modifier composition): + modifier_stack; 2026-09-06 RELIEF_MODIFIER_DESIGN.md Phase B (bumpmap_modifier REMOVED, its chunk parser and registry entry deleted; a scene still carrying one is refused by Cst.cpp's kRetiredChunks table, which names relief_modifier and tools/migrate_scenes_relief.py): - bumpmap_modifier; 2026-11-16 native single-scattering rough dielectric (658e3958a, landed WITHOUT bumping this count): + rough_dielectric_material; fire branch: + null_boundary_material + multichannel_heterogeneous_medium + fire_medium (sequence-backed §8 binding); 2026-11-23 simulation M3b: + simulated_mesh_geometry; 2026-11-23 simulation M4: + cloth_simulation + fire_simulation + simulation_cache; 2026-11 Phase 3 normal blend: + blended_modifier; 2026-11 Wave D: + mix_material + diffuse_transmission_material
+
+	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
+	// Describe() is pure-virtual, so every registered parser has its own
+	// implementation).  No fallback to an empty placeholder is allowed.
+	std::size_t chunks_with_keyword    = 0;
+	std::size_t chunks_with_parameters = 0;
+	for( const ChunkDescriptor* d : g.AllChunks() ) {
+		if( !d->keyword.empty() )     ++chunks_with_keyword;
+		if( !d->parameters.empty() )  ++chunks_with_parameters;
+	}
+	// 186 unique descriptors -- 187 keyword entries, but the mis_pathtracing_shaderop alias shares a
+	// parser with pathtracing_shaderop and therefore the same descriptor;
+	// both appear in AllChunks() as two entries pointing at one descriptor).
+	EXPECT( chunks_with_keyword == kws.size() );
+	// Every parser's descriptor lists at least one parameter.
+	EXPECT( chunks_with_parameters == kws.size() );
+
+	// A handful of specific keywords that must be present.
+	bool has_pt = false, has_bdpt = false, has_mat = false, has_light = false, has_alias = false;
+	for( const std::string& k : kws ) {
+		if( k == "pathtracing_pel_rasterizer" ) has_pt = true;
+		if( k == "bdpt_pel_rasterizer" )         has_bdpt = true;
+		if( k == "lambertian_material" )         has_mat = true;
+		if( k == "ambient_light" )               has_light = true;
+		if( k == "mis_pathtracing_shaderop" )    has_alias = true;
+	}
+	EXPECT( has_pt );
+	EXPECT( has_bdpt );
+	EXPECT( has_mat );
+	EXPECT( has_light );
+	EXPECT( has_alias );
+
+	// Alias lookup resolves to the same descriptor as the primary keyword.
+	const ChunkDescriptor* primary = g.FindChunk( "pathtracing_shaderop" );
+	const ChunkDescriptor* aliased = g.FindChunk( "mis_pathtracing_shaderop" );
+	EXPECT( primary != nullptr );
+	EXPECT( aliased != nullptr );
+	if( primary && aliased ) {
+		EXPECT( primary == aliased );
+	}
+
+	// FindChunk round-trip for AmbientLight (fully populated descriptor).
+	const ChunkDescriptor* d = g.FindChunk( "ambient_light" );
+	EXPECT( d != nullptr );
+	if( d ) {
+		EXPECT( d->keyword == "ambient_light" );
+		EXPECT( d->category == ChunkCategory::Light );
+		bool has_name = false, has_power = false, has_color = false;
+		for( const ParameterDescriptor& p : d->parameters ) {
+			if( p.name == "name" )  has_name = true;
+			if( p.name == "power" ) has_power = true;
+			if( p.name == "color" ) has_color = true;
+		}
+		EXPECT( has_name );
+		EXPECT( has_power );
+		EXPECT( has_color );
+	}
+
+	// Every chunk category referenced in the grammar yields a non-empty
+	// display name.  This catches a new ChunkCategory enum value being
+	// added without updating the display-name switch.
+	for( const ChunkDescriptor* cd : g.AllChunks() ) {
+		const char* cat = g.CategoryDisplayName( cd->category );
+		EXPECT( cat != nullptr );
+		if( cat ) EXPECT( cat[0] != '\0' );
+	}
+}
+
+void TestContextSceneRoot()
+{
+	std::cout << "ContextSceneRoot\n";
+	const std::string buf = "RISE ASCII SCENE 7\n\npng_pain";
+	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
+	EXPECT( c.scope == Scope::SceneRoot );
+	EXPECT( c.partialToken == "png_pain" );
+}
+
+void TestContextInBlockParamName()
+{
+	std::cout << "ContextInBlockParamName\n";
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"ambient_light\n"
+		"{\n"
+		"\tpow";
+	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
+	EXPECT( c.scope == Scope::InBlockParamName );
+	EXPECT( c.chunkKeyword == "ambient_light" );
+	EXPECT( c.partialToken == "pow" );
+}
+
+void TestContextInBlockParamValue()
+{
+	std::cout << "ContextInBlockParamValue\n";
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"ambient_light\n"
+		"{\n"
+		"\tpower 1";
+	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
+	EXPECT( c.scope == Scope::InBlockParamValue );
+	EXPECT( c.chunkKeyword == "ambient_light" );
+	EXPECT( c.paramNameOnLine == "power" );
+}
+
+void TestContextInComment()
+{
+	std::cout << "ContextInComment\n";
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"# ambient_lig";
+	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
+	EXPECT( c.scope == Scope::InComment );
+}
+
+void TestSuggestChunkKeywordsAtRoot()
+{
+	std::cout << "SuggestChunkKeywordsAtRoot\n";
+	SuggestionEngine engine;
+	const std::string buf = "RISE ASCII SCENE 7\n\n";
+	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	EXPECT( sugs.size() == 187 );	// kept in lockstep with TestGrammarCoverage's kws.size() count above; see its per-addition history, + 2026-08-19 doc-88 S3: + ramp_painter; 2026-08-20 doc-88 S7: + mapping_painter; 2026-08-20 doc-88 P3 S8: + stochastic_tile_painter + scatter_painter; 2026-08-22 doc-89 slice B: + skin_geometry; 2026-08-25 hair slices B/D (retroactively counted): + hair_material + hair_geometry; 2026-08-27 hair P2-A: + hair_guides; 2026-08-31 WETNESS_COAT_DESIGN.md Phase 2: + coated_material; 2026-09-02 CLOTH_FABRIC_DESIGN.md Phase 1: + fabric_material; 2026-09-03 CLOTH_FABRIC_DESIGN.md Phase 2 slice P2-A: + weave_material; 2026-09-05 RELIEF_MODIFIER_DESIGN.md Phase 1: + relief_modifier; 2026-09-06 RELIEF_MODIFIER_DESIGN.md Phase 2: + modifier_stack; 2026-09-06 RELIEF_MODIFIER_DESIGN.md Phase B: - bumpmap_modifier (removed); 2026-11-16 native single-scattering rough dielectric (658e3958a, landed WITHOUT bumping this count): + rough_dielectric_material; fire branch: + null_boundary_material + multichannel_heterogeneous_medium + fire_medium; 2026-11-23 simulation M3b: + simulated_mesh_geometry; 2026-11-23 simulation M4: + cloth_simulation + fire_simulation + simulation_cache; 2026-11 Phase 3 normal blend: + blended_modifier; 2026-11 Wave D: + mix_material + diffuse_transmission_material
+	bool found_ambient = false;
+	for( const Suggestion& s : sugs ) {
+		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }
+	}
+	EXPECT( found_ambient );
+}
+
+void TestSuggestParametersInAmbientLight()
+{
+	std::cout << "SuggestParametersInAmbientLight\n";
+	SuggestionEngine engine;
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"ambient_light\n"
+		"{\n"
+		"\t";
+	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	// AmbientLight has name/power/color.  Display text is the bare
+	// parameter name; insert text adds a value placeholder for context-
+	// menu mode (verified separately in TestParameterContextMenuIncludesValuePlaceholder).
+	EXPECT( sugs.size() >= 3 );
+	bool has_name = false, has_power = false, has_color = false;
+	for( const Suggestion& s : sugs ) {
+		if( s.displayText == "name" )  has_name = true;
+		if( s.displayText == "power" ) has_power = true;
+		if( s.displayText == "color" ) has_color = true;
+	}
+	EXPECT( has_name );
+	EXPECT( has_power );
+	EXPECT( has_color );
+}
+
+void TestNonRepeatableParameterFilteredAfterUse()
+{
+	std::cout << "NonRepeatableParameterFilteredAfterUse\n";
+	SuggestionEngine engine;
+	// `name` is already present — should be suppressed from the suggestions
+	// at the next line's start (not currently being typed).
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"ambient_light\n"
+		"{\n"
+		"\tname my_light\n"
+		"\t";
+	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	bool has_name = false;
+	for( const Suggestion& s : sugs ) {
+		if( s.displayText == "name" ) { has_name = true; break; }
+	}
+	EXPECT( !has_name );
+}
+
+void TestInlineCompletionShowsAuthoredNonRepeatable()
+{
+	std::cout << "InlineCompletionShowsAuthoredNonRepeatable\n";
+	SuggestionEngine engine;
+	// `samples` is already authored on a previous line of a
+	// pixelpel_rasterizer block.  ContextMenu mode hides it (the
+	// right-click menu is "what could I add here?", and a duplicate
+	// is not a useful insertion).  InlineCompletion mode MUST still
+	// surface it so the user can finish typing the parameter name —
+	// hiding the only `s*` ExactPrefix candidate while the user is
+	// spelling it out makes the parameter impossible to type.
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"pixelpel_rasterizer\n"
+		"{\n"
+		"\tsamples\t4\n"
+		"\ts";
+
+	auto inline_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::InlineCompletion );
+	bool inline_has_samples = false;
+	for( const Suggestion& s : inline_sugs ) {
+		if( s.displayText == "samples" ) { inline_has_samples = true; break; }
+	}
+	EXPECT( inline_has_samples );
+
+	auto menu_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	bool menu_has_samples = false;
+	for( const Suggestion& s : menu_sugs ) {
+		if( s.displayText == "samples" ) { menu_has_samples = true; break; }
+	}
+	EXPECT( !menu_has_samples );
+}
+
+void TestNameIndexSkipsCommentedOutNames()
+{
+	std::cout << "NameIndexSkipsCommentedOutNames\n";
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname real_mat\n"
+		"}\n"
+		"/*\n"
+		"lambertian_material\n"
+		"{\n"
+		"\tname commented_mat\n"
+		"}\n"
+		"*/\n"
+		"lambertian_material\n"
+		"{\n"
+		"\t# name also_commented\n"
+		"\tname hash_commented_should_lose\n"
+		"}\n";
+	NameIndex idx( buf );
+	bool has_real = false, has_commented = false;
+	for( const DefinedName& dn : idx.AllNames() ) {
+		if( dn.name == "real_mat" )                        has_real = true;
+		if( dn.name == "commented_mat" )                   has_commented = true;
+		if( dn.name == "also_commented" )                  has_commented = true;
+	}
+	EXPECT( has_real );
+	EXPECT( !has_commented );
+}
+
+void TestAliasShowsAsItsOwnSuggestion()
+{
+	std::cout << "AliasShowsAsItsOwnSuggestion\n";
+	SuggestionEngine engine;
+	const std::string buf = "RISE ASCII SCENE 7\n\n";
+	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	std::size_t pathtracing = 0, alias = 0;
+	for( const Suggestion& s : sugs ) {
+		if( s.insertText == "pathtracing_shaderop" )    ++pathtracing;
+		if( s.insertText == "mis_pathtracing_shaderop" ) ++alias;
+	}
+	// The alias must appear as a separately-insertable choice, AND
+	// the primary must not be duplicated.
+	EXPECT( pathtracing == 1 );
+	EXPECT( alias       == 1 );
+}
+
+void TestParameterContextMenuIncludesValuePlaceholder()
+{
+	std::cout << "ParameterContextMenuIncludesValuePlaceholder\n";
+	SuggestionEngine engine;
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"ambient_light\n"
+		"{\n"
+		"\t";
+	auto ctx_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	bool name_with_value = false, color_with_value = false;
+	for( const Suggestion& s : ctx_sugs ) {
+		if( s.displayText == "name"  && s.insertText.find("name ")  == 0 && s.insertText.size() > 5 ) name_with_value = true;
+		if( s.displayText == "color" && s.insertText.find("color ") == 0 && s.insertText.size() > 6 ) color_with_value = true;
+	}
+	// Right-click insertions embed a value placeholder so the inserted
+	// line is `name noname` / `color 0 0 0`, not just the bare keyword.
+	EXPECT( name_with_value );
+	EXPECT( color_with_value );
+
+	// Inline-completion mode should NOT embed the placeholder so
+	// typing `na` and accepting completes to just `name`, not
+	// `name noname`.
+	auto inline_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::InlineCompletion );
+	bool name_bare = false;
+	for( const Suggestion& s : inline_sugs ) {
+		if( s.displayText == "name" && s.insertText == "name" ) name_bare = true;
+	}
+	EXPECT( name_bare );
+}
+
+void TestUnambiguousCompletionMarked()
+{
+	std::cout << "UnambiguousCompletionMarked\n";
+	SuggestionEngine engine;
+	// Typing `lum_sa` inside a pixelpel_rasterizer should match exactly one
+	// parameter (lum_samples) by prefix, so that candidate should
+	// be marked as the unambiguous ghost-text completion.
+	const std::string buf =
+		"RISE ASCII SCENE 7\n"
+		"pixelpel_rasterizer\n"
+		"{\n"
+		"\tlum_sa";
+	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::InlineCompletion );
+	EXPECT( !sugs.empty() );
+	if( !sugs.empty() ) {
+		EXPECT( sugs[0].insertText == "lum_samples" );
+		EXPECT( sugs[0].isUnambiguousCompletion );
+	}
+}
+
+int main()
+{
+	TestGrammarCoverage();
+	TestContextSceneRoot();
+	TestContextInBlockParamName();
+	TestContextInBlockParamValue();
+	TestContextInComment();
+	TestSuggestChunkKeywordsAtRoot();
+	TestSuggestParametersInAmbientLight();
+	TestNonRepeatableParameterFilteredAfterUse();
+	TestInlineCompletionShowsAuthoredNonRepeatable();
+	TestNameIndexSkipsCommentedOutNames();
+	TestAliasShowsAsItsOwnSuggestion();
+	TestParameterContextMenuIncludesValuePlaceholder();
+	TestUnambiguousCompletionMarked();
+
+	if( g_fails ) {
+		std::cerr << g_fails << " failure(s)\n";
+		return 1;
+	}
+	std::cout << "All tests passed\n";
+	return 0;
+}

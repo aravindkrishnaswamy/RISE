@@ -1,0 +1,166 @@
+{
+  "schema": "rise.fire.r246.preview-snapshot-gate.v1",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "results": [
+    {
+      "name": "actual_prepare",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "78be5e6ed99f9dd083d8887ce3fd245dfc992fc4e38d279322157005c7d8f1a0"
+    },
+    {
+      "name": "actual_inspect",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "492f9fc2f51794e603c19cbd209ba74bc578288a9d416b7e0a378dd65c73f913"
+    },
+    {
+      "name": "runtime_between_read",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "d04b5f3f254c26e26f8b9614856d9c97a451df417758b4b4621d962dfa7cf1be"
+    },
+    {
+      "name": "occupied_output",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "14828a1bf064b794a5d23932dbbbae1c2538f86fcc7cb898a3c63c09d22b355a"
+    },
+    {
+      "name": "pair_capture",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "d71f130ca2bfc41c2756eee719a94bdd50511cac9d06575b50d9dc04596447b5"
+    },
+    {
+      "name": "missing_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "748d5abaa033300d2739e7975e64134f90d43f603a2c94fb684c1fb40c86d4fe"
+    },
+    {
+      "name": "aliased_seal",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "748d5abaa033300d2739e7975e64134f90d43f603a2c94fb684c1fb40c86d4fe"
+    },
+    {
+      "name": "pending_regular",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "748d5abaa033300d2739e7975e64134f90d43f603a2c94fb684c1fb40c86d4fe"
+    },
+    {
+      "name": "pending_dangling",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "748d5abaa033300d2739e7975e64134f90d43f603a2c94fb684c1fb40c86d4fe"
+    },
+    {
+      "name": "aliased_payload",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "2028ceb28c8827444d54cc12740488437880293336e00c785e0be434312d532a"
+    },
+    {
+      "name": "consistently_resealed_csv",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "2028ceb28c8827444d54cc12740488437880293336e00c785e0be434312d532a"
+    },
+    {
+      "name": "changed_scene",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "2028ceb28c8827444d54cc12740488437880293336e00c785e0be434312d532a"
+    },
+    {
+      "name": "retargeted_frames",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "2028ceb28c8827444d54cc12740488437880293336e00c785e0be434312d532a"
+    },
+    {
+      "name": "global_pending",
+      "exit_code": 98,
+      "expected": 98,
+      "log_sha256": "aba652871ba4632dfa5491fdb58d12c0343e9893c0e69c5a58d3c2b9d0910387"
+    },
+    {
+      "name": "restored_inspect",
+      "exit_code": 0,
+      "expected": 0,
+      "log_sha256": "492f9fc2f51794e603c19cbd209ba74bc578288a9d416b7e0a378dd65c73f913"
+    }
+  ],
+  "artifacts": {
+    "frame_times.csv": {
+      "sha256": "3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8",
+      "seal_sha256": "27eb02213111494204cfe79b8f8cf9f87fec0a325cc6a5ede0a27cafcf0d2cb3"
+    },
+    "sequence_manifest.rise-fire.cbor": {
+      "sha256": "f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1",
+      "seal_sha256": "7337482671ad2d62e3ef35cf78469f450fc57d80e2c7bd39ad3d5d779bc65644"
+    },
+    "snapshot_receipt.json": {
+      "sha256": "9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+      "seal_sha256": "e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e"
+    },
+    "source_scene.RISEscene": {
+      "sha256": "93e970210ea2da14a3beb0c22124e8f43cef2d45aedf2d22ce9a518d7ac7849c",
+      "seal_sha256": "60c029ccb0a9a8bf226c2a20ccac9f48f9312ad007880537c1b7e3ab7dc60cdd"
+    }
+  },
+  "executable_sha256": "c26f0efdb1bc7c89b8d46bffdc2b83c364e53d2e5cc1b57bf998dd0cd3a082d9",
+  "completed_utc": "2026-10-04T07:31:38.187988+00:00",
+  "status": "accepted_prepared_preview_prerequisite",
+  "implementation_sha256": "8cff0b3c07e59164fb654dcc61b7c21b51b875ca34c1cdd8baaa73ea6c1af701",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot.v7.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_runtime.v8",
+  "controls_script": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_runtime.v8/controls.py",
+  "controls_script_sha256": "4535fb13e771d0a6a76ded960ccb8fd06e7cfcfc9a20457a991eb90a1e971fd5",
+  "merkle_verifier_sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf",
+  "external_report": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_validation.v8/controls.json",
+  "external_report_sha256": "af3b387746c7548ac25adfe656288676bf65f4136573d911193ced093f0d9af8",
+  "snapshot_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8",
+  "embedded_revision": "0f3789625127a3f2bf84504578759c37a64d6d0f",
+  "embedded_dirty_state": "dirty",
+  "portable_fixture": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_validation.v8/portable_snapshot.cpp",
+  "portable_fixture_sha256": "01d2411e49a27de56f10a7d995de6925741cb9e01071644e4b5827253b1d6be8",
+  "portable_compile_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_validation.v8/portable_compile_final.log",
+  "portable_compile_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "portable_scope": "Extracted exact new pure scene/snapshot/runtime helpers compile with __APPLE__ undefined after host system includes; not a full Linux/Windows cross-build.",
+  "round1_findings": [
+    {
+      "severity": "P1",
+      "finding": "Pure scene generator was Apple-guarded while new snapshot callers were unconditional.",
+      "repair": "Pure text generator moved outside the Apple guard; extracted non-Apple helper syntax gate passes."
+    },
+    {
+      "severity": "P2",
+      "finding": "Transient renderer-consumed B restored to A evades pre/post metadata path checks.",
+      "repair": "Each verified primary render pair must report captured manifest sequence_id, selected frame and whole-file digest before copying/publication. Shared checker also serves existing spectrum verifier. Canonical metadata-loader A-to-B-to-A fixture has old_unbound_green=1/bound_red=1."
+    }
+  ],
+  "limitations": [
+    "No native VDB preflight/load or rendering performed; retained checkpoint decoding still occurs for strict admission.",
+    "Recovered rendering CLI and full command/publication composition remain pending.",
+    "Runtime fixture exercises the same canonical metadata loader and synthetic emitted identity; it does not fabricate rendered provenance.",
+    "Snapshot receipt issuer/recovery publication binding remains for the forthcoming wrapper.",
+    "Full recovery, signed budgets and physical/canonical acceptance false."
+  ],
+  "round2_findings": [
+    {
+      "severity": "P2",
+      "finding": "Verified render bytes were reopened by copy_file before numbered pair publication.",
+      "repair": "Write verified captured buffers; bind all four numbered buffers by retained hashes on final pair publication. Byte-only between-capture/write discriminator proves old B versus bound A and altered numbered RED."
+    }
+  ],
+  "unaccepted_fixture": {
+    "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_snapshot_validation.v7",
+    "reason": "Runtime copied before link completion; old binary entered default harness for unknown new flag. Stopped; fresh v8 copied after successful build and exact digest equality."
+  },
+  "reviewed_head": "d1f6ba5b2"
+}

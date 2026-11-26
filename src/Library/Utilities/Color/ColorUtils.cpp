@@ -15,6 +15,7 @@
 #include "Color.h"
 #include "ColorUtils.h"
 #include "CIE_xyY.h"
+#include "../FiniteMath.h"
 
 using namespace RISE;
 
@@ -277,10 +278,7 @@ bool InterpSPDIndices(
 	const int wavelength_step				///< [in] Increment interval for the table
 	)
 {
-	if( nm < min_wavelength ) {
-		return false;
-	}
-	if( nm > max_wavelength ) {
+	if( !(nm >= min_wavelength && nm <= max_wavelength) ) {
 		return false;
 	}
 
@@ -322,6 +320,29 @@ bool ColorUtils::XYZFromNM( XYZPel& p, const Scalar nm )
 		return true;
 	}
 	return false;
+}
+
+Scalar ColorUtils::CIE_Y_Integral( const Scalar lambda_begin, const Scalar lambda_end )
+{
+	// Integrate the piecewise-linear table, including partial boundary cells.
+	// Reject nonfinite endpoints before comparisons or integer conversions.
+	if( !IsFiniteDouble(lambda_begin) || !IsFiniteDouble(lambda_end) ) return 0;
+	using namespace CIE_DATA;
+	const Scalar lo = std::max(lambda_begin,Scalar(min_wavelength));
+	const Scalar hi = std::min(lambda_end,Scalar(max_wavelength));
+	if( hi <= lo ) return 0;
+	const Scalar step = Scalar(wavelength_step);
+	Scalar sum = 0;
+	for( int i=0; i<(max_wavelength-min_wavelength)/wavelength_step; ++i ) {
+		const Scalar left = min_wavelength+i*step;
+		const Scalar a = std::max(lo,left), b = std::min(hi,left+step);
+		if( b <= a ) continue;
+		const Scalar slope = (y_2[i+1]-y_2[i])/step;
+		const Scalar ya = y_2[i]+slope*(a-left);
+		const Scalar yb = y_2[i]+slope*(b-left);
+		sum += Scalar(.5)*(ya+yb)*(b-a);
+	}
+	return sum;
 }
 
 void ColorUtils::MoveXYZIntoRec709RGBGamut( XYZPel& p )

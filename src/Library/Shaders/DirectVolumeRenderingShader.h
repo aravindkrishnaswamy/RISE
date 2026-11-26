@@ -64,6 +64,11 @@ namespace RISE
 				const IShader* pISOShader
 				);
 
+			const IShader* ISOShaderForSSSClassification() const
+			{
+				return pISOShader;
+			}
+
 			DirectVolumeRenderingShader(
 				const char* szVolumeFilePattern,
 				const unsigned int width,
@@ -88,7 +93,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [out] RISEPel value at the point
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -99,14 +104,14 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const { return pISOShader ? pISOShader->HasRuntimeData() : false; }
 		};
 	}
 }
 
 #endif
-

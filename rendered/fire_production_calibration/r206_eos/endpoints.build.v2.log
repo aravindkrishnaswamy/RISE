@@ -1,0 +1,12 @@
+Compiling strict calibration owner: ../../../tests/FireSequenceTest.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionAdvection.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionForce.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionProjection.cpp
+Compiling strict fp64 calibration mirror: ../../../tests/fire_production_fp64/FireProductionTransport.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionAdvection.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionForce.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionProjection.cpp
+Compiling strict roundoff trace: ../../../tests/fire_production_trace/FireProductionTransport.cpp
+Compiling (safe fp32): ../../../src/Library/Utilities/FireProductionTransport.cpp
+Compiling: ../../../src/Library/Job.cpp
+Linking ../../../bin/tests/FireSequenceTest

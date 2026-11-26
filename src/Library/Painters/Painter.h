@@ -16,12 +16,28 @@
 
 #include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Observable.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class Painter : public virtual IPainter, public virtual Reference
+		//! DL-396 / DL-464: the linear Rec.709 projection of a physical
+		//! spectrum given as a callback `eval(ctx, nm)` -- the same
+		//! computation as the IFunction1D overload declared in
+		//! Function1DSpectralPainter.h (1 nm over 380-780 nm; SOURCE view
+		//! `Int F cmf / Int ybar` when `bAsRadiance`, else REFLECTANCE under
+		//! the Y-normalised D65).  Defined in Painter.cpp.
+		RISEPel ProjectPhysicalSpectrumToRGB( Scalar (*eval)( const void* ctx, const Scalar nm ), const void* ctx, const bool bAsRadiance );
+
+		// Painter is the concrete base for in-tree painters.  It also acts as
+		// an Observable subject — painters whose state changes per keyframe
+		// (e.g. GerstnerWavePainter's `time`) call NotifyObservers() so that
+		// downstream consumers (e.g. DisplacedGeometry, which baked a mesh
+		// from displacement.Evaluate at construction) can refresh.
+		// Consumers reach the mixin via dynamic_cast<Observable*>; painters
+		// that don't change per frame simply never fire.
+		class Painter : public virtual IPainter, public virtual Reference, public Observable
 		{
 		protected:
 			SpectralPacket dummy_spectrum;

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   SMS Multi-Object Chain Test: Mixed reflection/refraction chain.
 #   Three spheres in a line: mirror, glass, mirror.
@@ -18,11 +18,7 @@ bdpt_pel_rasterizer
 	max_eye_depth		8
 	max_light_depth		6
 	samples				256
-	sms_enabled			TRUE
-	sms_max_iterations	20
-	sms_threshold		1e-5
-	sms_max_chain_depth	10
-	sms_biased			TRUE
+	pixel_filter                  box
 }
 
 file_rasterizeroutput
@@ -33,13 +29,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			500
+	height			500
+}
+
 pinhole_camera
 {
 	location			0 4 8
 	lookat				0 0.5 0
 	up					0 1 0
-	width				500
-	height				500
 	fov					45.0
 }
 
@@ -104,9 +104,9 @@ perfectreflector_material
 dielectric_material
 {
 	name				glass_mat
-	tau					pnt_glass_tau
+	tau			0.999
 	ior					1.5
-	scattering			pnt_scatter
+	scattering			100000
 }
 
 # Geometry

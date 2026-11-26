@@ -1,0 +1,70 @@
+RISE ASCII SCENE 7
+# Performance comparison: textured Avocado, RGB path tracing.
+# Matched spp/recursion/lights with perf_avocado_spectral_hwss.RISEscene.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+}
+
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
+{
+	samples				16
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.063662
+	radiance_background		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/perf_avocado_rgb
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			512
+	height			512
+}
+
+pinhole_camera
+{
+	location			0.06 0.04 0.10
+	lookat				0 0.025 0
+	up					0 1 0
+	fov					40.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/Avocado.glb
+	name_prefix			avocado_perf_rgb
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.7 0.5
+}

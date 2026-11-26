@@ -20,6 +20,7 @@
 #include "../Interfaces/ILog.h"
 #include "LambertianBRDF.h"
 #include "LambertianSPF.h"
+#include "../Interfaces/IContinuationClosure.h"
 
 namespace RISE
 {
@@ -48,14 +49,58 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {			return pBRDF; };
+			inline IBSDF* GetBSDF() const override {			return pBRDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
+
+			//! DL-471: every lobe is the diffuse one (IMaterial::ConnectionScatterTypes).
+			inline unsigned int ConnectionScatterTypes() const override { return 1u << ScatteredRay::eRayDiffuse; }
+
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
 
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack&,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateLambertianContinuationClosurePel(
+					ri,ReflectanceColor(pBRDF->GetReflectance(),ri),pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack&, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateLambertianContinuationClosureNM(
+					ri,ReflectanceColorNM(pBRDF->GetReflectance(),ri,nm),pathState);
+			}
+
+			//! Read-back accessor for the interactive editor's
+			//! `MaterialIntrospection`.  Returns the painter the BRDF
+			//! was constructed with — reverse-lookup against the
+			//! IPainterManager gives the user-visible name.
+			inline const IPainter& GetReflectance() const { return pBRDF->GetReflectance(); }
+
+			//! Rebind the reflectance painter on BOTH the BRDF and
+			//! the SPF in lockstep — they MUST point at the same
+			//! painter instance for the rasterizer's BRDF-shaded and
+			//! SPF-scattered paths to agree.  Caller is responsible
+			//! for the cancel-and-park gate against the render
+			//! thread; see `MaterialIntrospection::SetSlot` and the
+			//! controller's Material SetProperty branch.
+			inline void SetReflectance( const IPainter& reflectance ) {
+				pBRDF->SetReflectance( reflectance );
+				pSPF->SetReflectance( reflectance );
+			}
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() | pBRDF->GetReflectance().GetPathDependence();
+			}
 		};
 	}
 }

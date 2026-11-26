@@ -17,6 +17,7 @@
 #include "IReference.h"
 #include "IRadianceMap.h"
 #include "IMedium.h"
+#include "../Utilities/RString.h"
 
 namespace RISE
 {
@@ -28,6 +29,8 @@ namespace RISE
 	class IShadowPhotonMap;
 	class IAnimator;
 	class ICamera;
+	class ICameraManager;
+	class IFilm;
 	class IIrradianceCache;
 
 	class IScene : public virtual IReference
@@ -43,8 +46,21 @@ namespace RISE
 		/// \return The light manager
 		virtual const ILightManager*		GetLights( )	const = 0;
 
-		/// \return The currently assigned camera
+		/// \return The currently active camera (the one the rasterizer
+		/// will render through).  A scene can hold many cameras keyed
+		/// by name in the camera manager — see GetCameras() — and
+		/// designate one as active via IScenePriv::SetActiveCamera.
+		/// Returns NULL when no cameras have been added yet.
 		virtual const ICamera*				GetCamera( )	const = 0;
+
+		/// \return The camera manager (may be NULL on a scene that
+		/// hasn't been initialised).  Holds every camera that
+		/// AddCamera has registered, keyed by name.
+		virtual const ICameraManager*		GetCameras( )	const = 0;
+
+		/// \return The name under which the currently active camera was
+		/// registered, or empty string if no camera is active.
+		virtual String						GetActiveCameraName( ) const = 0;
 
 		/// \return The global radiance map
 		virtual const IRadianceMap*			GetGlobalRadianceMap() const = 0;
@@ -80,8 +96,43 @@ namespace RISE
 		/// \return The global participating medium (NULL if vacuum)
 		virtual const IMedium*				GetGlobalMedium() const = 0;
 
-		/// Tells the scene a new time is set 
+		/// Tells the scene a new time is set
 		virtual void						SetSceneTime( const Scalar time ) const = 0;
+
+		/// Like SetSceneTime, but skips photon-map regeneration
+		/// (and the irradiance-cache clear that's tied to global-map
+		/// regen).  Valid only for interactive preview rendering with
+		/// non-photon rasterizers (typically the InteractivePelRasterizer).
+		///
+		/// The caller MUST invoke the full SetSceneTime() exactly once
+		/// before any production render of a scene that uses photon
+		/// maps, otherwise photons will be stale at the scrubbed time.
+		///
+		/// See docs/INTERACTIVE_EDITOR_PLAN.md §7 (Timeline Scrubbing).
+		virtual void						SetSceneTimeForPreview( const Scalar time ) const = 0;
+
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended after this point so that any
+		// in-tree consumer compiled against an older version of this
+		// header keeps the same vtable slot indices for the methods
+		// it knows about (insertions in the middle would shift every
+		// subsequent slot, miscompiling stale .obj files).
+
+		/// \return The active Film — the pixel-grid descriptor (width,
+		/// height, pixelAR) the rasterizer will produce.  A scene
+		/// always has a Film once Job::InitializeContainers has run
+		/// (the default is qHD 960x540 with square pixels); a `film`
+		/// chunk in the scene file or a CLI override replaces it.
+		/// Rasterizers MUST query the film here for grid dimensions
+		/// rather than reading them off the camera.
+		virtual const IFilm*				GetFilm( )		const = 0;
+
+		/// Fire renders hold all animation state at the coordinator-evaluated
+		/// nominal time. Per-sample consumers query this before mutating the
+		/// shared animator. Defaulted and appended for ABI stability.
+		virtual void SetFireTemporalHold( const bool hold ) { (void)hold; }
+		virtual bool FireTemporalHold() const { return false; }
+		virtual bool HasTimeVaryingMedia() const { return false; }
 	};
 }
 
@@ -91,7 +142,8 @@ namespace RISE
 #include "IPhotonMap.h"
 #include "IAnimator.h"
 #include "ICamera.h"
+#include "ICameraManager.h"
+#include "IFilm.h"
 #include "IIrradianceCache.h"
 
 #endif
-

@@ -15,12 +15,15 @@
 //       verify kray * pdf == BRDF::value(wo,ri) * cos(theta_o).
 //
 //  Build (from project root):
-//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include \
-//        -O3 -ffast-math -funroll-loops -Wall -pedantic \
-//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53 \
-//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING \
+//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include
+//        -O3 -ffast-math -fno-finite-math-only -funroll-loops -Wall -pedantic
+//        (-fno-finite-math-only is REQUIRED to match production since
+//         2026-07-29; without it std::isfinite/isnan fold to constants
+//         and NaN-sentinel assertions silently pass -- see CLAUDE.md.)
+//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53
+//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING
 //        -c tests/SPFBSDFConsistencyTest.cpp -o tests/SPFBSDFConsistencyTest.o
-//    c++ -arch arm64 -o tests/spf_bsdf_test tests/SPFBSDFConsistencyTest.o \
+//    c++ -arch arm64 -o tests/spf_bsdf_test tests/SPFBSDFConsistencyTest.o
 //        bin/librise.a -L/opt/homebrew/lib -lpng -lz
 //
 //  Author: Aravind Krishnaswamy
@@ -47,9 +50,22 @@
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include "DataDrivenTestTables.h"
+#include <cstdio>
+#ifdef _WIN32
+#include <process.h>
+#ifndef getpid
+#define getpid _getpid
+#endif
+#else
+#include <unistd.h>
+#endif
 #include "../src/Library/Materials/OrenNayarSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"
@@ -59,6 +75,13 @@
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/PolishedSPF.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/FabricMaterial.h"
+#include "WeaveTestFixture.h"
+#include "../src/Library/Materials/SheenBRDF.h"
+#include "../src/Library/Materials/SheenSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
 #include "../src/Library/Materials/PerfectReflectorSPF.h"
@@ -100,6 +123,21 @@ static const double DELTA_DIR_TOL       = 1e-6;     // Angular tolerance for del
 // ============================================================
 //  Stub object for IOR stack operations
 // ============================================================
+
+//! DL-176 (review round 1, P3-c).  Every `RandomNumberGenerator` in
+//! this file used to be default-constructed, i.e. seeded from an
+//! un-`srand`ed libc `rand()` -- reproducible only by accident (C says
+//! `rand()` behaves as if `srand(1)`), which is exactly the fragility
+//! DL-176 was filed for in `SPFPdfConsistencyTest`.  It matters more
+//! here since DL-177 tightened this file's two Ward furnace tolerances
+//! 25x (0.25 -> 0.01) and DL-127 tightened Schlick's 15x, so the
+//! headroom a stale seed could eat is much smaller than it was.
+//!
+//! `g_seedBase` is the one knob; `RISE_SPFBSDF_SEED` in the environment
+//! overrides it, which is how the multi-seed sweep quoted in
+//! docs/DL177_WARD_DENSITY_AND_KRAY.md section 5.1 was run without
+//! making every ordinary run 8x longer.
+static unsigned int g_seedBase = 424242u;
 
 static StubObject* g_stubObject = 0;
 
@@ -151,7 +189,7 @@ static FurnaceResult FurnaceTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 1u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -198,7 +236,13 @@ static FurnaceResult FurnaceTest(
         }
     }
 
-    result.mcEstimate = (mcCount > 0) ? mcSum / mcCount : 0;
+    // Divide by EVERY attempt, not by the attempts that emitted: E[sum kray]
+    // over all Scatter calls is the integral, and an SPF that legitimately
+    // emits nothing on some calls (a sub-density -- e.g. coated_material's
+    // refracted-frame substrate draw trapped by total internal reflection,
+    // DL-388) would otherwise be over-read by 1 / P(emit).
+    (void)mcCount;
+    result.mcEstimate = mcSum / double( FURNACE_MC_SAMPLES );
 
     // ---- Numerical quadrature via BRDF::value() ----
     // Integrate MaxValue( BRDF::value(wo, ri) ) * cos(theta_o) * sin(theta) * dtheta * dphi
@@ -288,7 +332,7 @@ static PointwiseResult PointwiseTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 2u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -307,7 +351,16 @@ static PointwiseResult PointwiseTest(
 
         Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
         double cosO = Vector3Ops::Dot( wo, normal );
-        if( cosO <= 0 ) continue;
+        // R9 P2: `cosO == 0` (grazing, degenerate) is skipped either way;
+        // `cosO < 0` is a legitimate draw from a full-sphere material's
+        // TRANSMISSION branch (`ScattersFullSphere()`, e.g. a
+        // `transmission thin` weave) and must be tested with `fabs(cosO)`,
+        // not rejected -- an ordinary reflect-only SPF's `Scatter()` never
+        // emits a `cosO < 0` ray in the first place (cosine-hemisphere
+        // sampling about the ray-facing normal), so this is a strict
+        // superset of the old behaviour: unreached, hence unchanged, for
+        // every pre-existing row.
+        if( cosO == 0 ) continue;
 
         result.numSamples++;
 
@@ -315,10 +368,12 @@ static PointwiseResult PointwiseTest(
         double krayMax = ColorMath::MaxValue( scat.kray );
         double spfProduct = krayMax * scat.pdf;
 
-        // BRDF side: BRDF::value(wo, ri) * cos(theta_o)
+        // BRDF side: BRDF::value(wo, ri) * cos(theta_o) -- |cos| so a
+        // transmission-branch draw (cosO < 0) compares against the
+        // diffuse-transmit lobe's own magnitude rather than its sign.
         RISEPel brdfVal = brdf.value( wo, ri );
         double brdfMax = ColorMath::MaxValue( brdfVal );
-        double brdfProduct = brdfMax * cosO;
+        double brdfProduct = brdfMax * fabs( cosO );
 
         // Compare
         double denom = r_max( fabs(spfProduct), fabs(brdfProduct) );
@@ -346,6 +401,259 @@ static PointwiseResult PointwiseTest(
     double failRate = (result.numSamples > 0) ? (double)result.numFailures / result.numSamples : 0;
     result.passed = (failRate <= 0.01);
 
+    return result;
+}
+
+// ============================================================
+//  Test 2b: HELMHOLTZ RECIPROCITY  f(a->b) == f(b->a)
+//
+//  Added 2026-08-31 with `coated_material`, and it exists because
+//  NOTHING ELSE IN THIS FILE CAN SEE A NON-RECIPROCAL BRDF.
+//  Part C integrates the BRDF and compares against the SPF; Part D
+//  compares kray*pdf against BRDF*cos.  Both compare a material
+//  against ITSELF, so both hold perfectly for a BRDF that answers
+//  differently depending on which direction you call "the light".
+//
+//  The defect that motivated it: `coated_material`'s layer factor
+//  carries the substrate's directional albedo, and the first cut read
+//  it from `IBSDF::albedo`, which is the OIDN AOV and legitimately
+//  VIEW-dependent (it reads ri.ray).  f(a->b) therefore carried R(b)
+//  while f(b->a) carried R(a) -- ~28 % apart at grazing on a GGX
+//  substrate.  That is a direct error on NEE and BDPT/VCM connection
+//  weights, i.e. exactly the path Phase 2 of
+//  docs/WETNESS_COAT_DESIGN.md exists to make correct.  Fixed by
+//  routing the term through `IBSDF::hemisphericalAlbedo`, whose
+//  contract forbids reading ri.ray.
+//
+//  The sweep is over ORDERED PAIRS of directions rather than the
+//  usual single incident angle, because reciprocity is a statement
+//  about a pair and a one-angle fixture cannot express it.
+// ============================================================
+
+static const double RECIPROCITY_TOL = 1e-6;		// relative; the property is exact, not statistical
+
+//! Intersection whose VIEW direction (toward the viewer) is `view`.
+//! The existing MakeIntersection fixes the view from a polar angle in
+//! the x-z plane; reciprocity needs arbitrary pairs, so this builds
+//! the same fixture (flat +z normal, vGeomNormal left zero so the
+//! horizon gate degenerates to the shading-hemisphere test) from a
+//! full direction vector.
+static RayIntersectionGeometric MakeIntersectionFromView( const Vector3& view )
+{
+    const Vector3 inDir = -view;					// ray travels INTO the surface
+    Ray inRay( Point3( view.x, view.y, view.z ), inDir );
+    RasterizerState rs = {0, 0};
+    RayIntersectionGeometric ri( inRay, rs );
+
+    ri.bHit = true;
+    ri.range = 1.0;
+    ri.ptIntersection = Point3(0, 0, 0);
+    ri.vNormal = Vector3(0, 0, 1);
+    ri.onb.CreateFromW( Vector3(0, 0, 1) );
+    ri.ptCoord = Point2(0.5, 0.5);
+
+    return ri;
+}
+
+struct ReciprocityResult {
+    std::string name;
+    int    numPairs;
+    int    numFailures;
+    double maxRelError;			// RGB
+    double maxRelErrorNM;		// spectral
+    bool   passed;
+};
+
+static ReciprocityResult ReciprocityTest( const std::string& name, IBSDF& brdf )
+{
+    ReciprocityResult result;
+    result.name = name;
+    result.numPairs = 0;
+    result.numFailures = 0;
+    result.maxRelError = 0;
+    result.maxRelErrorNM = 0;
+
+    // A spread of polar angles (including grazing, where the defect
+    // this test was written for was largest) crossed with azimuths, so
+    // pairs differ in BOTH angles rather than only in elevation.
+    static const double thetaDeg[] = { 10.0, 25.0, 40.0, 55.0, 70.0, 85.0 };
+    static const double phiDeg[]   = { 0.0, 60.0, 140.0, 230.0, 310.0 };
+
+    std::vector<Vector3> dirs;
+    for( double t : thetaDeg ) {
+        for( double p : phiDeg ) {
+            const double th = t * DEG_TO_RAD, ph = p * DEG_TO_RAD;
+            dirs.push_back( Vector3Ops::Normalize(
+                Vector3( sin(th) * cos(ph), sin(th) * sin(ph), cos(th) ) ) );
+        }
+    }
+
+    const double kNM = 550.0;
+
+    for( size_t i = 0; i < dirs.size(); i++ )
+    {
+        for( size_t j = i + 1; j < dirs.size(); j++ )
+        {
+            const Vector3& a = dirs[i];
+            const Vector3& b = dirs[j];
+
+            // f(a -> b): viewer at b, light at a.   value(vLightIn, ri)
+            // takes the light direction and reads the view off ri.ray.
+            RayIntersectionGeometric riB = MakeIntersectionFromView( b );
+            RayIntersectionGeometric riA = MakeIntersectionFromView( a );
+
+            // MAX-CHANNEL, not per-channel: reciprocity is a
+            // statement about the BRDF, and a defect that moved only
+            // one channel would still move the max unless it moved the
+            // channels by exactly compensating amounts in opposite
+            // directions -- which no view-dependence bug does, because
+            // the view term multiplies all three channels through the
+            // same layer factor.  Max-channel also matches how every
+            // other comparison in this file reduces a RISEPel, so the
+            // tolerances are on the same footing.
+            const double fab = ColorMath::MaxValue( brdf.value( a, riB ) );
+            const double fba = ColorMath::MaxValue( brdf.value( b, riA ) );
+
+            const double fabNM = brdf.valueNM( a, riB, kNM );
+            const double fbaNM = brdf.valueNM( b, riA, kNM );
+
+            result.numPairs++;
+
+            const double den   = r_max( fabs(fab),   fabs(fba)   );
+            const double denNM = r_max( fabs(fabNM), fabs(fbaNM) );
+
+            const double rel   = ( den   > 1e-12 ) ? fabs(fab   - fba  ) / den   : 0.0;
+            const double relNM = ( denNM > 1e-12 ) ? fabs(fabNM - fbaNM) / denNM : 0.0;
+
+            if( rel   > result.maxRelError   ) result.maxRelError   = rel;
+            if( relNM > result.maxRelErrorNM ) result.maxRelErrorNM = relNM;
+
+            if( rel > RECIPROCITY_TOL || relNM > RECIPROCITY_TOL ) {
+                result.numFailures++;
+            }
+        }
+    }
+
+    result.passed = ( result.numFailures == 0 );
+    return result;
+}
+
+// ============================================================
+//  Part E2 (P2-B, docs/CLOTH_FABRIC_DESIGN.md 10): reciprocity for a
+//  FULL-SPHERE material's TRANSMISSION lobes -- `f(i->o) == f(o->i)`
+//  where `i` and `o` are on OPPOSITE sides of the shading normal.
+//
+//  `MakeIntersectionFromView`'s normal is the fixed `(0,0,1)` `ri.onb`
+//  BEFORE `WeaveBRDF::ResolveWeave`'s own ray-facing flip, and that
+//  flip is what makes reusing `ReciprocityTest`'s machinery correct
+//  here: it re-orients `p.n` to `(0, 0, sign(view.z))`, so `wo` (`-ray.
+//  Dir()`) lands on `p.n`'s positive side FOR EITHER VIEW HEMISPHERE,
+//  and a direction pair straddling `z = 0` in WORLD space is exactly a
+//  pair straddling the shading normal in the material's OWN frame --
+//  the transmission configuration.  `ReciprocityTest` itself never
+//  reaches this: its fixed `thetaDeg` set (10-85) keeps every direction
+//  on the SAME (+Z) side.
+//
+//  WHAT THIS DOES AND DOES NOT PROVE (R8 P3-4).  The shipped diffuse
+//  transmission lobe, `f_t,d,k = (1-gap)*transmit_k*T_k/pi`, has NO
+//  directional dependence beyond the hemisphere-crossing gate itself --
+//  it is a flat value once `i`/`o` straddle the normal.  Combined with
+//  this harness's single fixed shading point (`MakeIntersectionFromView`
+//  always uses `ptCoord = (0.5, 0.5)`), `f(a->b)` and `f(b->a)` are
+//  computed from LITERALLY IDENTICAL inputs to the same flat expression
+//  -- which is why the measured error is exactly `0.000e+00`, not
+//  merely small.  This is STRUCTURAL, not an empirical demonstration of
+//  reciprocity: it is a regression tripwire that will catch a future
+//  change which accidentally introduces a directional asymmetry (e.g. a
+//  specular transmission lobe, or a `Q`-style view-only normaliser), not
+//  evidence that today's flat lobe is "reciprocal" in any sense beyond
+//  "the same formula evaluated twice returns the same number."
+// ============================================================
+
+static ReciprocityResult ReciprocityTestCrossHemisphere( const std::string& name, IBSDF& brdf )
+{
+    ReciprocityResult result;
+    result.name = name;
+    result.numPairs = 0;
+    result.numFailures = 0;
+    result.maxRelError = 0;
+    result.maxRelErrorNM = 0;
+
+    // theta spans BOTH hemispheres (10 deg past each pole down to 10
+    // deg short of the equator on each side), crossed with the same
+    // azimuth spread `ReciprocityTest` uses.
+    static const double thetaDeg[] = { 10.0, 40.0, 70.0, 110.0, 140.0, 170.0 };
+    static const double phiDeg[]   = { 0.0, 60.0, 140.0, 230.0, 310.0 };
+
+    std::vector<Vector3> dirs;
+    for( double t : thetaDeg ) {
+        for( double p : phiDeg ) {
+            const double th = t * DEG_TO_RAD, ph = p * DEG_TO_RAD;
+            dirs.push_back( Vector3Ops::Normalize(
+                Vector3( sin(th) * cos(ph), sin(th) * sin(ph), cos(th) ) ) );
+        }
+    }
+
+    const double kNM = 550.0;
+
+    //! Largest magnitude any straddling pair produced -- the
+    //! non-degeneracy guard at the bottom of this function.
+    double liveMax = 0.0;
+
+    for( size_t i = 0; i < dirs.size(); i++ )
+    {
+        for( size_t j = i + 1; j < dirs.size(); j++ )
+        {
+            const Vector3& a = dirs[i];
+            const Vector3& b = dirs[j];
+
+            // Only pairs that straddle the equator exercise the
+            // transmission lobe at all; same-side pairs are already
+            // covered by `ReciprocityTest` and would just re-measure
+            // the (unaffected) reflect-side lobes here.
+            if( ( a.z > 0 ) == ( b.z > 0 ) ) continue;
+
+            RayIntersectionGeometric riB = MakeIntersectionFromView( b );
+            RayIntersectionGeometric riA = MakeIntersectionFromView( a );
+
+            const double fab = ColorMath::MaxValue( brdf.value( a, riB ) );
+            const double fba = ColorMath::MaxValue( brdf.value( b, riA ) );
+            const double fabNM = brdf.valueNM( a, riB, kNM );
+            const double fbaNM = brdf.valueNM( b, riA, kNM );
+
+            result.numPairs++;
+
+            const double den   = r_max( fabs(fab),   fabs(fba)   );
+            const double denNM = r_max( fabs(fabNM), fabs(fbaNM) );
+            const double rel   = ( den   > 1e-12 ) ? fabs(fab   - fba  ) / den   : 0.0;
+            const double relNM = ( denNM > 1e-12 ) ? fabs(fabNM - fbaNM) / denNM : 0.0;
+
+            if( den   > liveMax ) liveMax = den;
+            if( denNM > liveMax ) liveMax = denNM;
+
+            if( rel   > result.maxRelError   ) result.maxRelError   = rel;
+            if( relNM > result.maxRelErrorNM ) result.maxRelErrorNM = relNM;
+
+            if( rel > RECIPROCITY_TOL || relNM > RECIPROCITY_TOL ) {
+                result.numFailures++;
+            }
+        }
+    }
+
+    // A row with zero pairs would silently "pass" without ever having
+    // exercised the transmission lobe at all -- assert there IS
+    // cross-hemisphere coverage, not just that none of it failed.
+    //
+    // AND A ROW THAT IS IDENTICALLY ZERO IS THE SAME HOLE ONE LEVEL DOWN
+    // (R8 P1.1).  `0 == 0` is perfectly reciprocal, so a material whose
+    // transmission had been extinguished -- exactly what
+    // `fabric_material` did to a sheer weave until 2026-09-04, debt 22 --
+    // would post `pairs=225 failures=0 maxRelErr=0` and read as a clean
+    // pass.  Require that at least one straddling pair actually carried
+    // a value, so the check is about a LIVE transmission lobe.
+    result.passed = ( result.numFailures == 0 )
+                 && ( result.numPairs > 0 )
+                 && ( liveMax > 1e-12 );
     return result;
 }
 
@@ -383,7 +691,7 @@ static DeltaResult DeltaDirectionTest(
     result.pdfIsZero = true;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 3u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -474,7 +782,7 @@ static SanityResult SanityTest(
     result.belowHemisphere = 0;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
-    RandomNumberGenerator rng;
+    RandomNumberGenerator rng( g_seedBase + 4u );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -511,7 +819,14 @@ static SanityResult SanityTest(
 
 int main()
 {
+    // DL-176 P3-c: one explicit, overridable seed -- see g_seedBase.
+    {
+        const char* sd = getenv( "RISE_SPFBSDF_SEED" );
+        if( sd ) g_seedBase = (unsigned int)atoi( sd );
+    }
     std::cout << "===== SPF-BSDF Consistency Test =====" << std::endl;
+    std::cout << "Seed base: " << g_seedBase
+              << "  (override with RISE_SPFBSDF_SEED)" << std::endl;
     std::cout << "Furnace MC samples: " << FURNACE_MC_SAMPLES << std::endl;
     std::cout << "Furnace quadrature: " << FURNACE_QUAD_THETA << " x " << FURNACE_QUAD_PHI << std::endl;
     std::cout << "Pointwise samples: " << POINTWISE_SAMPLES << std::endl;
@@ -545,51 +860,304 @@ int main()
     UniformColorPainter* polishScat = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();
     UniformColorPainter* sssAbsorb  = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat    = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
-    UniformColorPainter* zeroExt    = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
     UniformColorPainter* one        = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  one->addref();
+
+    // Scalar twins of the numeric values that drive the consistency
+    // test — IScalarPainter slots (physical scalars), no JH spectral
+    // uplift.  Declared BEFORE the SPF/BRDF construction so they are
+    // visible to every consumer in this block.
+    UniformScalarPainter* tauScalar      = new UniformScalarPainter( 0.9 );    tauScalar->addref();
+    UniformScalarPainter* iorScalar      = new UniformScalarPainter( 1.5 );    iorScalar->addref();
+    UniformScalarPainter* scatScalar     = new UniformScalarPainter( 0.3 );    scatScalar->addref();
+    UniformScalarPainter* polishScatSc   = new UniformScalarPainter( 20.0 );   polishScatSc->addref();
+    UniformScalarPainter* roughnessSc    = new UniformScalarPainter( 0.3 );    roughnessSc->addref();
+    UniformScalarPainter* highExpSc      = new UniformScalarPainter( 50.0 );   highExpSc->addref();
+    UniformScalarPainter* ashNuSc        = new UniformScalarPainter( 100.0 );  ashNuSc->addref();
+    UniformScalarPainter* ashNvSc        = new UniformScalarPainter( 50.0 );   ashNvSc->addref();
+    UniformScalarPainter* alphaSmallSc   = new UniformScalarPainter( 0.2 );    alphaSmallSc->addref();
+    UniformScalarPainter* alphaSmallYSc  = new UniformScalarPainter( 0.3 );    alphaSmallYSc->addref();
+    UniformScalarPainter* isotropySc     = new UniformScalarPainter( 0.8 );    isotropySc->addref();
+    UniformScalarPainter* lowSc          = new UniformScalarPainter( 0.1 );    lowSc->addref();
+    UniformScalarPainter* extinctionSc   = new UniformScalarPainter( 0.0 );    extinctionSc->addref();
+    UniformScalarPainter* phongNSc       = new UniformScalarPainter( 10.0 );   phongNSc->addref();
+    UniformScalarPainter* scatFactorSc   = new UniformScalarPainter( 0.3 );    scatFactorSc->addref();
 
     // ---- Construct SPFs ----
     std::cout << "Constructing SPFs..." << std::flush;
     LambertianSPF* lambertianSPF = new LambertianSPF( *white );  lambertianSPF->addref();
-    OrenNayarSPF* orenNayarSPF = new OrenNayarSPF( *white, *roughness );  orenNayarSPF->addref();
-    IsotropicPhongSPF* phongSPF = new IsotropicPhongSPF( *gray, *spec, *highExp );  phongSPF->addref();
-    CookTorranceSPF* cookTorranceSPF = new CookTorranceSPF( *gray, *spec, *low, *ior, *extinction );  cookTorranceSPF->addref();
-    GGXSPF* ggxIsoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoSPF->addref();
-    GGXSPF* ggxAnisoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoSPF->addref();
-    SchlickSPF* schlickSPF = new SchlickSPF( *gray, *spec, *roughness, *isotropy );  schlickSPF->addref();
-    WardIsotropicGaussianSPF* wardIsoSPF = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmall );  wardIsoSPF->addref();
-    WardAnisotropicEllipticalGaussianSPF* wardAnisoSPF = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoSPF->addref();
-    AshikminShirleyAnisotropicPhongSPF* ashikminSPF = new AshikminShirleyAnisotropicPhongSPF( *ashNu, *ashNv, *gray, *spec );  ashikminSPF->addref();
-    TranslucentSPF* translucentSPF = new TranslucentSPF( *gray, *trans, *extinction, *phongN, *scatFactor );  translucentSPF->addref();
-    PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauPainter, *ior, *polishScat, false );  polishedSPF->addref();
-    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sssSPF->addref();
+    OrenNayarSPF* orenNayarSPF = new OrenNayarSPF( *white, *roughnessSc );  orenNayarSPF->addref();
+    IsotropicPhongSPF* phongSPF = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phongSPF->addref();
+    CookTorranceSPF* cookTorranceSPF = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalar, *extinctionSc );  cookTorranceSPF->addref();
+    GGXSPF* ggxIsoSPF = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );  ggxIsoSPF->addref();
+    GGXSPF* ggxAnisoSPF = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc );  ggxAnisoSPF->addref();
+    SchlickSPF* schlickSPF = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc );  schlickSPF->addref();
+    WardIsotropicGaussianSPF* wardIsoSPF = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmallSc );  wardIsoSPF->addref();
+    WardAnisotropicEllipticalGaussianSPF* wardAnisoSPF = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoSPF->addref();
+    AshikminShirleyAnisotropicPhongSPF* ashikminSPF = new AshikminShirleyAnisotropicPhongSPF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminSPF->addref();
+    TranslucentSPF* translucentSPF = new TranslucentSPF( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  translucentSPF->addref();
+    PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polishedSPF->addref();
+    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sssSPF->addref();
     LambertianSPF* lambertian2SPF = new LambertianSPF( *spec );  lambertian2SPF->addref();
-    CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *zeroExt );  compositeSPF->addref();
+    CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *extinctionSc );  compositeSPF->addref();
+
+    // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2).  Unlike
+    // every other entry in this file the coated triad is built through
+    // its MATERIAL, because CoatedSPF is the importance sampler FOR a
+    // specific CoatedBRDF and holds a reference to it -- which is the
+    // structural reason `kray * pdf == value * cos` holds exactly here
+    // (see CoatedSPF.h).  Two substrates from the allowlist: a plain
+    // Lambertian, and a GGX (the multi-lobe case, which is where a
+    // naive layered sampler's value/Scatter agreement usually breaks).
+    UniformScalarPainter* coatWeightSc = new UniformScalarPainter( 1.0 );   coatWeightSc->addref();
+    UniformScalarPainter* coatIorSc    = new UniformScalarPainter( 1.33 );  coatIorSc->addref();
+    UniformScalarPainter* coatRoughSc  = new UniformScalarPainter( 0.05 );  coatRoughSc->addref();
+    UniformScalarPainter* coatZeroSc   = new UniformScalarPainter( 0.0 );   coatZeroSc->addref();
+
+    LambertianMaterial* coatBaseLambMat = new LambertianMaterial( *white );  coatBaseLambMat->addref();
+    GGXMaterial* coatBaseGgxMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );
+    coatBaseGgxMat->addref();
+
+    CoatedMaterial* coatedLambMat = new CoatedMaterial(
+        *coatBaseLambMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedLambMat->addref();
+    CoatedMaterial* coatedGgxMat = new CoatedMaterial(
+        *coatBaseGgxMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedGgxMat->addref();
+
+    // A fixture that lights up EVERY term at once -- partial coverage,
+    // a real Beer-Lambert thickness and absorption, and a saturated
+    // tint -- for the reciprocity sweep.  The A_in * A_out product is
+    // symmetric under a wi/wo swap by construction, so this is not
+    // where a defect is expected; it is swept anyway because "by
+    // construction" is exactly the claim the previous round's
+    // view-dependent albedo also had, and it was wrong.  Cheap to
+    // check, and it covers the tint and absorption code paths that the
+    // two neutral fixtures above never enter.
+    UniformScalarPainter* coatHalfSc  = new UniformScalarPainter( 0.5 );   coatHalfSc->addref();
+    UniformScalarPainter* coatThickSc = new UniformScalarPainter( 0.05 );  coatThickSc->addref();
+    UniformScalarPainter* coatAbsSc   = new UniformScalarPainter( 1.8 );   coatAbsSc->addref();
+    UniformColorPainter*  coatAmber   = new UniformColorPainter( RISEPel(0.92, 0.55, 0.18) );  coatAmber->addref();
+
+    CoatedMaterial* coatedFullMat = new CoatedMaterial(
+        *coatBaseGgxMat, *coatHalfSc, *coatIorSc, *coatRoughSc,
+        *coatThickSc, *coatAbsSc, *coatAmber );
+    coatedFullMat->addref();
+
+    ISPF*  coatedLambSPF  = coatedLambMat->GetSPF();
+    IBSDF* coatedLambBRDF = coatedLambMat->GetBSDF();
+    ISPF*  coatedGgxSPF   = coatedGgxMat->GetSPF();
+    IBSDF* coatedGgxBRDF  = coatedGgxMat->GetBSDF();
+
+    // fabric_material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.9 gate
+    // 5a).  Built through the MATERIAL for the same structural reason
+    // the coated triad is: FabricSPF is the importance sampler FOR a
+    // specific FabricBRDF and holds a reference to it, which is what
+    // makes `kray * pdf == value * cos` hold exactly (FabricSPF.h).
+    //
+    // Two substrates, chosen to make the RECIPROCITY sweep
+    // discriminating rather than decorative:
+    //   * over a LAMBERTIAN, where the sheen lobe, its symmetric
+    //     normaliser and the product scaling factor are the only
+    //     l/v-coupled terms, so any asymmetry in any of them is
+    //     unmasked;
+    //   * over an ANISOTROPIC GGX with a NON-ZERO weave_rotation, which
+    //     is the configuration where a frame handed to the substrate
+    //     inconsistently between the two directions of the swap would
+    //     show up -- and 9.5's whole mechanism is exactly such a frame
+    //     hand-off.
+    UniformScalarPainter* fabAlphaSc = new UniformScalarPainter( 0.3 );  fabAlphaSc->addref();
+    UniformScalarPainter* fabWeaveSc = new UniformScalarPainter( 0.7853981633974483 );  fabWeaveSc->addref();
+    UniformScalarPainter* fabZeroSc  = new UniformScalarPainter( 0.0 );  fabZeroSc->addref();
+
+    GGXMaterial* fabBaseAnisoMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc, eFresnelSchlickF0 );
+    fabBaseAnisoMat->addref();
+
+    FabricMaterial* fabricLambMat = new FabricMaterial(
+        *coatBaseLambMat, *one, *fabAlphaSc, *fabZeroSc );
+    fabricLambMat->addref();
+    FabricMaterial* fabricAnisoMat = new FabricMaterial(
+        *fabBaseAnisoMat, *gray, *fabAlphaSc, *fabWeaveSc );
+    fabricAnisoMat->addref();
+
+    ISPF*  fabricLambSPF   = fabricLambMat->GetSPF();
+    IBSDF* fabricLambBRDF  = fabricLambMat->GetBSDF();
+    ISPF*  fabricAnisoSPF  = fabricAnisoMat->GetSPF();
+    IBSDF* fabricAnisoBRDF = fabricAnisoMat->GetBSDF();
+
+    // weave_material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+    //
+    // RECIPROCITY IS THE GATE THIS MATERIAL WAS SHAPED AROUND, and the
+    // shaping is visible in what it does NOT implement.  Sadeghi et al.
+    // 2013 normalise their two-family mixture by a factor Q (his
+    // Eq. 15) that reads the VIEW direction and nothing else -- that
+    // form cannot be reciprocal, so `WeaveBRDF` replaces it with a
+    // direction-independent gap scalar and keeps only the parts of his
+    // Eq. 7-15 that are symmetric under an i/o swap (the masking blend,
+    // whose two arms exchange).  Every other term was chosen the same
+    // way: `Mp` is symmetric in its two directions by construction, the
+    // trimmed logistic is EVEN in phi_d, and the Kim 2002 Fresnel
+    // argument cos(theta_d) cos(phi_d/2) is even in both angles, each of
+    // which flips sign under the swap.
+    //
+    // "By construction" is exactly the claim `coated_material`'s first
+    // cut also made before it was measured at ~28 % asymmetry at
+    // grazing.  Hence these rows.
+    //
+    // TWO PRESETS, chosen to make the sweep discriminating:
+    //   * `denim` with a NON-ZERO weave_rotation and zero tilt -- the
+    //     row that fails if the two families' frames are built
+    //     asymmetrically, since the rotation is a frame change and
+    //     nothing else;
+    //   * `satin` with the shipped NON-ZERO OPPOSITE TILTS, which is
+    //     the configuration where each family's fibre frame leans out
+    //     of the surface plane and its cross-section basis has to be
+    //     re-derived per family.  An asymmetry in that derivation --
+    //     e.g. projecting one direction in the tilted frame and the
+    //     other in the flat one -- shows up here and essentially
+    //     nowhere else.
+    RISE::WeaveTest::PresetWeave weaveDenim( "denim", 0.7853981633974483 );
+    RISE::WeaveTest::PresetWeave weaveSatin( "satin" );
+    ISPF*  weaveDenimSPF  = weaveDenim.SPF();
+    IBSDF* weaveDenimBRDF = weaveDenim.BSDF();
+    ISPF*  weaveSatinSPF  = weaveSatin.SPF();
+    IBSDF* weaveSatinBRDF = weaveSatin.BSDF();
+
+    // P2-B (docs/CLOTH_FABRIC_DESIGN.md 10).  `transmission thin`, both
+    // families' `transmit` nonzero -- the diffuse transmission lobe
+    // this file's new cross-hemisphere reciprocity block (Part E2)
+    // exercises.  Non-zero tilts (satin's shipped values) so the
+    // reciprocity check also covers a tilted fibre frame's transmit
+    // side, not only the untilted case.
+    RISE::WeaveTest::PresetWeave weaveSatinThin( "satin", 0.0, -1, false, /*thin=*/true );
+    IBSDF* weaveSatinThinBRDF = weaveSatinThin.BSDF();
+
+    // R9 P2 (REVIEW_P2R9.md): Part D's pointwise `kray*pdf == BRDF*cos`
+    // table never exercised WeaveSPF's TRANSMISSION branch -- only the
+    // BRDF half of a thin weave was ever constructed above, and only
+    // Part E2's reciprocity check (structural, not this magnitude check)
+    // used it.  Two sheer LINEN configurations, both `transmission thin`:
+    // `gap 0` (continuum only -- every drawn ray lands in the diffuse-
+    // transmit branch once it crosses the hemisphere, no delta lobe to
+    // skip) and `gap 0.2` (the shipped showcase's own value, so the
+    // delta lobe IS present and must be excluded the same way every
+    // other row here already is -- `PointwiseTest`'s own
+    // `if (scat.isDelta) continue`, not a special case for these rows).
+    RISE::WeaveTest::PresetWeave weaveLinenThinGap0(  "linen", 0.0, -1, false, /*thin=*/true, -1, -1, /*gapOverride=*/0.0 );
+    RISE::WeaveTest::PresetWeave weaveLinenThinGap02( "linen", 0.0, -1, false, /*thin=*/true, -1, -1, /*gapOverride=*/0.2 );
+    ISPF*  weaveLinenThinGap0SPF   = weaveLinenThinGap0.SPF();
+    IBSDF* weaveLinenThinGap0BRDF  = weaveLinenThinGap0.BSDF();
+    ISPF*  weaveLinenThinGap02SPF  = weaveLinenThinGap02.SPF();
+    IBSDF* weaveLinenThinGap02BRDF = weaveLinenThinGap02.BSDF();
+
+    // R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME two
+    // sheer linens WRAPPED IN A FABRIC.  Until 2026-09-04 the wrapper
+    // returned 0 for every opposite-hemisphere pair and zeroed every
+    // transmit-side sample, so `fabric_material` over a sheer curtain
+    // was 100 % opaque -- and neither of the two checks these feed could
+    // see it, because both compare a material against ITSELF and the
+    // wrapper was self-consistently zero.  They ARE the guard now that
+    // the transmission is nonzero:
+    //
+    //   Part D2  -- `kray * pdf == value * |cos|` on the transmit side.
+    //               This is what catches the two arms of the Kulla-Conty
+    //               scale being applied on one side of the estimator and
+    //               not the other: `FabricSPF` reprices against its own
+    //               `Pdf`, but `FabricBRDF::value` is an independent
+    //               body, so a mismatch between them cannot cancel.
+    //   Part E2  -- reciprocity ACROSS the surface.  The transmit scale
+    //               is a product of two arms that exchange under an l/v
+    //               swap; a one-armed form (glTF's own, which the banner
+    //               rejects for the reflect side) would fail here.
+    //
+    // `gap 0` and `gap 0.2` for the same reason the bare rows use both:
+    // the second has a live delta lobe, which `PointwiseTest` skips via
+    // its existing `isDelta` guard -- so between them the two rows prove
+    // the wrapper handles a substrate with and without one.
+    UniformScalarPainter* fabThinAlphaSc = new UniformScalarPainter( 0.3 );  fabThinAlphaSc->addref();
+    FabricMaterial* fabricThinGap0Mat = new FabricMaterial(
+        *weaveLinenThinGap0.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricThinGap0Mat->addref();
+    FabricMaterial* fabricThinGap02Mat = new FabricMaterial(
+        *weaveLinenThinGap02.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricThinGap02Mat->addref();
+    ISPF*  fabricThinGap0SPF   = fabricThinGap0Mat->GetSPF();
+    IBSDF* fabricThinGap0BRDF  = fabricThinGap0Mat->GetBSDF();
+    ISPF*  fabricThinGap02SPF  = fabricThinGap02Mat->GetSPF();
+    IBSDF* fabricThinGap02BRDF = fabricThinGap02Mat->GetBSDF();
+
+    // A wrapped `transmission thin` SATIN for Part E2, matching the bare
+    // `weaveSatinThin` row above so the two are directly comparable --
+    // tilted fibre frames on the transmit side, under the fuzz layer.
+    FabricMaterial* fabricSatinThinMat = new FabricMaterial(
+        *weaveSatinThin.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricSatinThinMat->addref();
+    IBSDF* fabricSatinThinBRDF = fabricSatinThinMat->GetBSDF();
+
+    // DL-23 P2-1: `coated_material` OVER a `transmission thin` weave --
+    // directly, and through the fabric layer above -- for Part E2's
+    // cross-hemisphere reciprocity sweep.  Reuses the coated triad's own
+    // neutral fixtures (`coatWeightSc`=1, `coatIorSc`, `coatRoughSc`,
+    // `coatZeroSc` thickness/absorption, `one` tint) so this is the
+    // SAME coat configuration `coatedLambMat`/`coatedGgxMat` already use
+    // above, over the two `weaveSatinThin`-rooted substrates Part E2
+    // already builds -- "Coated_Weave_thin" wraps the bare weave,
+    // "Coated_Fabric" wraps the fabric-over-weave twin, so a defect
+    // specific to double-wrapping (coat -> fabric -> weave) cannot hide
+    // behind the single-wrap row passing.  CoatedBRDF's below-horizon
+    // branch (CoatedBRDF.cpp's "TRANSMISSION THROUGH THE COAT" section)
+    // multiplies the substrate's OWN (already-reciprocal, per Part E2's
+    // header comment) flat transmit value by `K*weight + (1-weight)`,
+    // where `K = Ain*Aout*rec*(Tin*Tout/eta^2)` is symmetric under an
+    // i/o swap by construction (Ain/Tin and Aout/Tout simply exchange
+    // roles) and `weight`/`rec`/`eta` do not depend on direction at
+    // all -- so the composite is reciprocal PROVIDED the substrate call
+    // it wraps is, which is exactly what these two rows check rather
+    // than assume.
+    CoatedMaterial* coatedWeaveSatinThinMat = new CoatedMaterial(
+        *weaveSatinThin.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedWeaveSatinThinMat->addref();
+    IBSDF* coatedWeaveSatinThinBRDF = coatedWeaveSatinThinMat->GetBSDF();
+
+    CoatedMaterial* coatedFabricSatinThinMat = new CoatedMaterial(
+        *fabricSatinThinMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedFabricSatinThinMat->addref();
+    IBSDF* coatedFabricSatinThinBRDF = coatedFabricSatinThinMat->GetBSDF();
+
+    // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
+    // this is a PRE-EXISTING HOLE this phase closes as a matter of
+    // course: SheenBRDF has never been in the reciprocity sweep, even
+    // though it is the lobe fabric_material is built on, so a
+    // non-reciprocity there would have surfaced first as a fabric
+    // failure with no way to tell which layer owned it.
+    SheenBRDF* bareSheenBRDF = new SheenBRDF( *one, *fabAlphaSc );  bareSheenBRDF->addref();
 
     std::cout << " done." << std::endl;
 
     // Delta SPFs
     std::cout << "Constructing delta SPFs..." << std::flush;
     PerfectReflectorSPF* perfReflSPF = new PerfectReflectorSPF( *one );  perfReflSPF->addref();
-    PerfectRefractorSPF* perfRefrSPF = new PerfectRefractorSPF( *one, *ior );  perfRefrSPF->addref();
-    DielectricSPF* dielectricSPF = new DielectricSPF( *tauPainter, *ior, *scatFactor, false );  dielectricSPF->addref();
+    PerfectRefractorSPF* perfRefrSPF = new PerfectRefractorSPF( *one, *iorScalar );  perfRefrSPF->addref();
+
+    DielectricSPF* dielectricSPF = new DielectricSPF( *tauScalar, *iorScalar, *scatScalar, false );  dielectricSPF->addref();
 
     std::cout << " done." << std::endl;
 
     // ---- Construct BRDFs (paired with SPFs) ----
     std::cout << "Constructing BRDFs..." << std::flush;
     LambertianBRDF* lambertianBRDF = new LambertianBRDF( *white );  lambertianBRDF->addref();
-    OrenNayarBRDF* orenNayarBRDF = new OrenNayarBRDF( *white, *roughness );  orenNayarBRDF->addref();
-    IsotropicPhongBRDF* phongBRDF = new IsotropicPhongBRDF( *gray, *spec, *highExp );  phongBRDF->addref();
-    CookTorranceBRDF* cookTorranceBRDF = new CookTorranceBRDF( *gray, *spec, *low, *ior, *extinction );  cookTorranceBRDF->addref();
-    GGXBRDF* ggxIsoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoBRDF->addref();
-    GGXBRDF* ggxAnisoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoBRDF->addref();
-    SchlickBRDF* schlickBRDF = new SchlickBRDF( *gray, *spec, *roughness, *isotropy );  schlickBRDF->addref();
-    WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmall );  wardIsoBRDF->addref();
-    WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoBRDF->addref();
-    AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNu, *ashNv, *gray, *spec );  ashikminBRDF->addref();
-    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongN );  translucentBSDF->addref();
-    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sssBSDF->addref();
+    OrenNayarBRDF* orenNayarBRDF = new OrenNayarBRDF( *white, *roughnessSc );  orenNayarBRDF->addref();
+    IsotropicPhongBRDF* phongBRDF = new IsotropicPhongBRDF( *gray, *spec, *highExpSc );  phongBRDF->addref();
+    CookTorranceBRDF* cookTorranceBRDF = new CookTorranceBRDF( *gray, *spec, *lowSc, *iorScalar, *extinctionSc );  cookTorranceBRDF->addref();
+    GGXBRDF* ggxIsoBRDF = new GGXBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );  ggxIsoBRDF->addref();
+    GGXBRDF* ggxAnisoBRDF = new GGXBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc );  ggxAnisoBRDF->addref();
+    SchlickBRDF* schlickBRDF = new SchlickBRDF( *gray, *spec, *roughnessSc, *isotropySc );  schlickBRDF->addref();
+    WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmallSc );  wardIsoBRDF->addref();
+    WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoBRDF->addref();
+    AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminBRDF->addref();
+    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongNSc, *extinctionSc, *scatFactorSc );  // DL-157: the BSDF prices the interior lobes too, so it now needs ext/scat  translucentBSDF->addref();
+    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *iorScalar, 0.8, 0.3 );  sssBSDF->addref();
 
     std::cout << " done." << std::endl;
 
@@ -611,6 +1179,22 @@ int main()
     // evaluation diverges at grazing angles, these two estimates can
     // disagree significantly even when the code is correct.
 
+    // DL-325: datadriven_material (a tabulated BRDF).  It used to have a BSDF
+    // and NO SPF, so no row here could exist; DataDrivenSPF samples the table
+    // cosine-weighted and prices kray from DataDrivenBSDF itself.  Two
+    // synthetic tables: a constant one (a Lambertian 0.4) and a chromatic
+    // direction-dependent one (so a kray that disagreed with the table in
+    // SHAPE could not hide behind a flat function).
+    char ddPathConst[128], ddPathVaried[128];
+    std::snprintf( ddPathConst,  sizeof( ddPathConst ),  "spfbsdf_dd_const_%d.bdf",  (int)getpid() );
+    std::snprintf( ddPathVaried, sizeof( ddPathVaried ), "spfbsdf_dd_varied_%d.bdf", (int)getpid() );
+    DataDrivenTestTables::WriteConstant( ddPathConst, 0.4 );
+    DataDrivenTestTables::WriteVaried( ddPathVaried );
+    DataDrivenMaterial* ddConstMat  = new DataDrivenMaterial( ddPathConst );   ddConstMat->addref();
+    DataDrivenMaterial* ddVariedMat = new DataDrivenMaterial( ddPathVaried );  ddVariedMat->addref();
+    std::remove( ddPathConst );
+    std::remove( ddPathVaried );
+
     struct PairedEntry {
         std::string name;
         ISPF* spf;
@@ -626,57 +1210,154 @@ int main()
         { "CookTorrance",                      cookTorranceSPF, cookTorranceBRDF,   false, FURNACE_TOL },
         { "GGX_Isotropic",                     ggxIsoSPF,       ggxIsoBRDF,         false, FURNACE_TOL },
         { "GGX_Anisotropic",                   ggxAnisoSPF,     ggxAnisoBRDF,       false, FURNACE_TOL },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  ddConstMat->GetBSDF(),  true,  FURNACE_TOL },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), ddVariedMat->GetBSDF(), true,  FURNACE_TOL },
 
         //--------------------------------------------------------------
         // Schlick BRDF (Schlick 1994 approximation)
         //
-        // At grazing incidence (60°+) the denominator in the specular
-        // term  Z = r / (r·t² + 1 - t²)²  shrinks, amplifying the
-        // specular lobe relative to the SPF importance sampling weights.
-        // The quadrature integral then overshoots the MC estimate by
-        // ~13%.  This is a known limitation of the Schlick approximation
-        // at grazing angles, not a sampling bug.
+        // DL-127 (CLOSED 2026-09-18,
+        // docs/DL127_SCHLICK_KRAY_VS_BRDF.md).  This entry used to carry
+        // a 15% tolerance and this explanation: "At grazing incidence
+        // (60+) the denominator in the specular term Z shrinks,
+        // amplifying the specular lobe relative to the SPF importance
+        // sampling weights ... a known limitation of the Schlick
+        // approximation at grazing angles, not a sampling bug.
+        // Observed: 2.1% @ 30, 12.7% @ 60."  It WAS a sampling bug:
+        // `SchlickSPF`'s specular `kray` was Schlick's sampling weight
+        // rather than that lobe's own `f_S cos / p_S`, so the MC sum and
+        // the quadrature were integrating two different BRDFs.  With
+        // `kray` fixed the two agree at the level of every other
+        // well-behaved material here.
         //
-        // Observed: 2.1% @ 30°, 12.7% @ 60°.  Tolerance set to 15%
-        // to cover 60° with headroom.
+        // Observed after: 0.1253% @ 30, 0.1578% @ 60.  Tolerance 1%,
+        // ~6x headroom over the measured worst case -- deliberately not
+        // tighter, since the grazing tail this integrand now carries
+        // (DL-177) makes the MC arm the noisiest of the paired entries.
         //--------------------------------------------------------------
-        { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.15 },
+        { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.01 },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian BRDF (Ward 1992)
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992)
         //
-        // The Ward model is *not energy-conserving* by design.  Its
-        // specular term  1/sqrt(n·r × n·v) × exp(-tan²h / α²)
-        // diverges as either n·r or n·v → 0 (grazing geometry).
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  These two entries used
+        // to carry a 25% tolerance and this explanation: "The Ward model
+        // is *not energy-conserving* by design.  Its specular term
+        // 1/sqrt(n·r × n·v) × exp(-tan²h / α²) diverges as either n·r or
+        // n·v → 0 ... the MC sum saturates near the albedo (kray is
+        // clamped by the diffuse+specular reflectance painters) while
+        // quadrature under-integrates the sharp specular peak on a
+        // finite grid.  Observed: 8.3% @ 30°, 19.3% @ 60°" (isotropic;
+        // 10.0% / 20.2% anisotropic).
         //
-        // Because the SPF importance-samples the exponential lobe while
-        // the quadrature evaluates the full BRDF (including the
-        // divergent 1/sqrt term), the two estimates disagree.
-        // The MC sum saturates near the albedo (kray is clamped by
-        // the diffuse+specular reflectance painters) while quadrature
-        // under-integrates the sharp specular peak on a finite grid.
+        // THAT DIAGNOSIS WAS WRONG ON BOTH HALVES, and the isolated
+        // before/after is what says so rather than an argument.  The MC
+        // arm did not "saturate near the albedo" because of any
+        // divergence -- `kray` literally WAS the reflectance painter's
+        // colour, a constant, instead of that lobe's own
+        // `f_S cos / p_S`, so the two arms were integrating two
+        // different functions by construction; and the quadrature did
+        // not "under-resolve" anything, since it is unchanged by the fix
+        // and the MC arm moved onto it.  The model's own grazing
+        // behaviour is real but is NOT what these rows were measuring:
+        // at the α = 0.2 / 0.3 they run at, the corrected weight's whole
+        // per-draw range is bounded by `Rs/sqrt(n·v)` = 1.15 Rs at 30°
+        // and 1.41 Rs at 60°.
         //
-        // Observed: 8.3% @ 30°, 19.3% @ 60°.  Tolerance set to 25%
-        // to cover grazing-angle divergence.
+        // Observed after, at the default seed (g_seedBase 424242, re-measured
+        // on master after the debt-dl176 merge; the earlier figures here were
+        // taken before the explicit seed existed): 0.0017% @ 30°, 0.0345%
+        // @ 60° (isotropic); 0.0103% @ 30°, 0.0151% @ 60°
+        // (anisotropic).  Tolerance 0.25 -> 0.01, matching the Schlick
+        // entry above.
+        //
+        // A 25x tightening deserves more than one seed, and until the
+        // DL-176 review this file had ONLY one (an un-`srand`ed libc
+        // `rand()`, i.e. silently seed 1).  Swept over 8 seeds via
+        // `RISE_SPFBSDF_SEED`: worst Ward relErr **0.0757%** (isotropic
+        // @ 60°) and worst over EVERY row in the file 0.1288% (Schlick
+        // @ 60°), 0 failures at every seed.  So the 1% band carries
+        // ~13x headroom over the worst Ward reading actually observed,
+        // not the ~36x the single default seed suggests -- deliberately
+        // not tightened further, because the MC arm now carries the
+        // model's real grazing tail (DL-212) and these are Monte Carlo
+        // estimators.
         //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.25 },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian BRDF (Ward 1992)
-        //
-        // Same energy-conservation limitation as the isotropic variant
-        // above, compounded by anisotropic roughness (αx ≠ αy) which
-        // produces a narrower, taller specular lobe in one tangent
-        // direction.  The quadrature grid under-resolves this elliptical
-        // peak more severely than the isotropic case.
-        //
-        // Observed: 10.0% @ 30°, 20.2% @ 60°.  Tolerance set to 25%.
-        //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.25 },
+        { "WardIsotropicGaussian",             wardIsoSPF,      wardIsoBRDF,        false, 0.01 },
+        { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    wardAnisoBRDF,      false, 0.01 },
 
         { "AshikminShirleyAnisotropicPhong",   ashikminSPF,     ashikminBRDF,       false, FURNACE_TOL },
         { "Translucent",                       translucentSPF,  translucentBSDF,    false, FURNACE_TOL },
         { "SubSurfaceScattering",              sssSPF,          sssBSDF,            true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2.
+        //
+        // The coated triad's whole reason for existing (7.1) is that its
+        // BSDF IS the layered response, so it can be paired.  (These
+        // used to be "the entries `polished_material` could never
+        // have", because its GetBSDF() was a bare LambertianBRDF; since
+        // DL-285 it has its own PolishedBRDF and is paired below.)
+        //
+        // singleLobe = TRUE for both, including the GGX substrate.
+        // That is not an approximation: CoatedSPF emits one ray per
+        // Scatter with kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // regardless of which mixture component drew it (CoatedSPF.h).
+        // Part D therefore checks the layered value <-> Scatter
+        // agreement POINTWISE, not just in the hemispherical integral.
+        //
+        // Default 5 % furnace tolerance -- the layer adds no model
+        // limitation of its own to the SPF/BRDF comparison; both sides
+        // read the same closed form.
+        //--------------------------------------------------------------
+        { "Coated_Lambertian",                 coatedLambSPF,   coatedLambBRDF,     true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // polished_material -- DL-285 (2026-09-28).  Its BSDF is now the
+        // SPF's own PolishedBRDF (the function the SPF samples lobe by
+        // lobe), so it pairs here.  NOT single-lobe: the coat and the
+        // substrate are two overlapping emitted rays, each carrying its
+        // own f_I cos / p_I, so Part D's kray * pdf == value * cos does
+        // not hold per ray (value is the SUM of both lobes); the furnace
+        // is the check.  tests/PolishedBRDFConsistencyTest.cpp gates the
+        // per-lobe identity, the shape, reciprocity and the density.
+        //--------------------------------------------------------------
+        { "Polished",                          polishedSPF,     &polishedSPF->GetBRDF(), false, FURNACE_TOL },
+        { "Coated_GGX",                        coatedGgxSPF,    coatedGgxBRDF,      true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // fabric_material -- docs/CLOTH_FABRIC_DESIGN.md Phase 1.
+        //
+        // singleLobe = TRUE for both, for the same reason as the coated
+        // rows and with the same force: FabricSPF emits one ray per
+        // Scatter carrying kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // REGARDLESS OF WHICH BRANCH DREW IT.  Part D therefore checks
+        // 9.2's sample-then-reprice recipe POINTWISE.  This is the check
+        // that fails if `Scatter` ever reports a branch-local density
+        // instead of the full mixture -- the one mistake the delta-lobe
+        // convention would invite.
+        //--------------------------------------------------------------
+        { "Fabric_Lambertian",                 fabricLambSPF,   fabricLambBRDF,     true,  FURNACE_TOL },
+        { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  fabricAnisoBRDF,    true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // weave_material -- docs/CLOTH_FABRIC_DESIGN.md Phase 2.
+        //
+        // singleLobe = TRUE: `WeaveSPF` emits ONE ray per Scatter
+        // carrying kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // REGARDLESS OF WHICH OF THE FOUR LOBES DREW IT.  Part D
+        // therefore checks the sample-then-reprice recipe POINTWISE,
+        // which is the check that fails if `Scatter` ever reports a
+        // branch-local density instead of the full mixture -- the one
+        // mistake Zhu 2024 5.1's `f/(p_a p_l)` phrasing would invite if
+        // it were taken literally for lobes whose supports overlap.
+        //--------------------------------------------------------------
+        { "Weave_denim_rot45",                 weaveDenimSPF,   weaveDenimBRDF,     true,  FURNACE_TOL },
+        { "Weave_satin_tilted",                weaveSatinSPF,   weaveSatinBRDF,     true,  FURNACE_TOL },
     };
     const int numPaired = sizeof(pairedMaterials) / sizeof(pairedMaterials[0]);
 
@@ -707,6 +1388,8 @@ int main()
         { "CookTorrance",                      cookTorranceSPF, false },
         { "GGX_Isotropic",                     ggxIsoSPF,       false },
         { "GGX_Anisotropic",                   ggxAnisoSPF,     false },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  false },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), false },
         { "Schlick",                           schlickSPF,      false },
         { "WardIsotropicGaussian",             wardIsoSPF,      false },
         { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    false },
@@ -715,6 +1398,12 @@ int main()
         { "Polished",                          polishedSPF,     false },
         { "SubSurfaceScattering",              sssSPF,          false },
         { "Composite",                         compositeSPF,    false },
+        { "Coated_Lambertian",                 coatedLambSPF,   false },
+        { "Coated_GGX",                        coatedGgxSPF,    false },
+        { "Fabric_Lambertian",                 fabricLambSPF,   false },
+        { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  false },
+        { "Weave_denim_rot45",                 weaveDenimSPF,   false },
+        { "Weave_satin_tilted",                weaveSatinSPF,   false },
         { "PerfectReflector",                  perfReflSPF,     true  },
         { "PerfectRefractor",                  perfRefrSPF,     true  },
         { "Dielectric",                        dielectricSPF,   true  },
@@ -885,6 +1574,328 @@ int main()
     std::cout << std::endl;
 
     // ================================================================
+    //  Part D2 (R9 P2, REVIEW_P2R9.md): Pointwise kray*pdf vs BRDF*cos,
+    //  TRANSMISSION-direction rows for a `transmission thin` weave.
+    //
+    //  A DEDICATED loop, not two more `pairedMaterials[]` entries: that
+    //  array also feeds Part C's furnace test (`FurnaceTest`, a
+    //  REFLECT-HEMISPHERE-only quadrature never audited against a
+    //  full-sphere material's transmitted energy) -- adding rows there
+    //  would risk a spurious Part C failure unrelated to what this block
+    //  exists to check.  This loop reuses `PointwiseTest` exactly as
+    //  Part D does (same function, same `POINTWISE_TOL`, same delta-lobe
+    //  exclusion via `scat.isDelta`), at the SAME `incomingAngles`
+    //  (30/60 degrees) Part D already uses -- NOT a steeper "transmission
+    //  angle" of its own. `WeaveBRDF::ResolveWeave`'s `FlipW` re-orients
+    //  the shading normal to the ray-facing side, so which absolute
+    //  hemisphere the VIEW sits in is not what selects the transmit
+    //  branch; `WeaveSPF::ScatterImpl` picks reflect-surface,
+    //  reflect-volume or diffuse-transmit stochastically at ANY view
+    //  angle (the `(1-w)` bucket splits between reflect-volume and
+    //  diffuse-transmit by `transmit_k` regardless of `w`), so a plain
+    //  10000-sample draw at the existing angles already lands a solid
+    //  fraction of samples on the transmit side -- exactly the samples
+    //  the extended `cosO < 0 -> fabs(cosO)` handling above now tests
+    //  instead of silently discarding.
+    //
+    //  Two sheer LINEN configurations: `gap 0` (continuum only, no delta
+    //  lobe present at all) and `gap 0.2` (the shipped showcase's own
+    //  value -- the delta lobe IS present here and is excluded by
+    //  `PointwiseTest`'s existing `isDelta` skip, not a special case).
+    //  If `WeaveSPF` ever applied `transmit_k` twice (once in its own
+    //  density, once more via a stray repricing) `kray*pdf` would still
+    //  reproduce whatever `WeaveSPF::Pdf` used, but `BRDF::value()` would
+    //  not move with it -- so a double-application shows up here as a
+    //  systematic, non-noise-shaped `kray*pdf > BRDF*|cos|` skew, exactly
+    //  the class of defect REVIEW_P2R9.md's from-scratch MC probe (linear
+    //  in `transmit`, not the `transmit^2` a double-application would
+    //  give) already ruled out by a different method -- this is the
+    //  permanent regression harness for that same claim.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part D2: Pointwise, transmission direction (P2-B)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    struct TransmissionPairedEntry { std::string name; ISPF* spf; IBSDF* brdf; };
+    TransmissionPairedEntry transmissionPaired[] = {
+        { "Weave_linen_thin_gap0 (transmission)",   weaveLinenThinGap0SPF,  weaveLinenThinGap0BRDF  },
+        { "Weave_linen_thin_gap0.2 (transmission)", weaveLinenThinGap02SPF, weaveLinenThinGap02BRDF },
+        // R8 P1.1 / debt 22: the same two, WRAPPED.  See the construction
+        // site for what each catches.  `singleLobe` stays TRUE below --
+        // `FabricSPF` emits at most one ray per Scatter call over a weave
+        // substrate exactly as it does over every other allowlisted one.
+        { "Fabric/Weave_linen_thin_gap0 (transmission)",   fabricThinGap0SPF,  fabricThinGap0BRDF  },
+        { "Fabric/Weave_linen_thin_gap0.2 (transmission)", fabricThinGap02SPF, fabricThinGap02BRDF },
+    };
+
+    for( int a = 0; a < 2; a++ )
+    {
+        std::cout << "--- Incoming angle: " << angleNames[a] << " ---" << std::endl;
+        for( const TransmissionPairedEntry& e : transmissionPaired )
+        {
+            std::string fullName = e.name + " @ " + angleNames[a];
+            std::cout << "  Testing " << fullName << "..." << std::flush;
+
+            PointwiseResult pr = PointwiseTest( fullName, *e.spf, *e.brdf,
+                                                incomingAngles[a], /*singleLobe=*/true );
+            pointwiseResults.push_back( pr );
+
+            std::cout << " samples=" << pr.numSamples
+                      << " failures=" << pr.numFailures
+                      << " maxErr=" << std::setprecision(4) << pr.maxRelError * 100 << "%"
+                      << " avgErr=" << pr.avgRelError * 100 << "%";
+
+            if( pr.passed )
+                std::cout << " -> PASS" << std::endl;
+            else
+            {
+                std::cout << " -> FAIL" << std::endl;
+                numFailed++;
+            }
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  Part E: Helmholtz reciprocity  f(a->b) == f(b->a)
+    //
+    //  Run on the LAYERED materials, which are the ones whose shared
+    //  layer terms can silently pick up a view dependence, plus their
+    //  bare substrates as controls -- if a control ever fails, the
+    //  defect is in the substrate, not in the coat.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part E: Reciprocity f(a->b) == f(b->a)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    struct ReciprocityEntry { std::string name; IBSDF* brdf; };
+    ReciprocityEntry reciprocityMaterials[] = {
+        { "Lambertian (control)",              lambertianBRDF },
+        { "GGX_Isotropic (control)",           ggxIsoBRDF     },
+        { "Coated_Lambertian",                 coatedLambBRDF },
+        { "Coated_GGX",                        coatedGgxBRDF  },
+        { "Coated_GGX_tinted_absorbing_c0.5",  coatedFullMat->GetBSDF() },
+        // 9.9 gate 5(a).  `Sheen (Charlie)` is the pre-existing hole:
+        // the lobe has been shipping since 2026-04 and has never been in
+        // this sweep.  The two fabric rows are the layered form -- 9.2's
+        // scaling factor is a PRODUCT of two arms that exchange under an
+        // l/v swap, divided by a direction-independent denominator, and
+        // the sheen lobe's normaliser is a MAX of the same two arms, so
+        // both are symmetric BY CONSTRUCTION.  "By construction" is
+        // exactly the claim coated_material's first cut also made before
+        // it was measured at ~28 % asymmetry at grazing.
+        { "Sheen (Charlie, pre-existing hole)", bareSheenBRDF   },
+        { "Fabric_Lambertian",                  fabricLambBRDF  },
+        { "Fabric_GGXaniso_weave45",            fabricAnisoBRDF },
+        // Phase 2.  See the construction site above for why these two
+        // configurations, and for the list of terms whose symmetry the
+        // model depends on.
+        { "Weave_denim_rot45",                  weaveDenimBRDF  },
+        { "Weave_satin_tilted",                 weaveSatinBRDF  },
+    };
+
+    for( const ReciprocityEntry& e : reciprocityMaterials )
+    {
+        ReciprocityResult rr = ReciprocityTest( e.name, *e.brdf );
+
+        std::cout << "  " << e.name << ": pairs=" << rr.numPairs
+                  << " failures=" << rr.numFailures
+                  << " maxRelErr(RGB)=" << std::scientific << std::setprecision(3) << rr.maxRelError
+                  << " maxRelErr(NM)=" << rr.maxRelErrorNM << std::fixed;
+
+        if( rr.passed )
+            std::cout << " -> PASS" << std::endl;
+        else
+        {
+            std::cout << " -> FAIL" << std::endl;
+            numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  Part E2 (P2-B): reciprocity across the surface, for the
+    //  TRANSMISSION lobes -- `transmission thin` materials only, since
+    //  every other row here returns 0 for a cross-hemisphere pair by
+    //  construction (its `ScattersFullSphere()` is false) and would
+    //  just add a zero-vs-zero pass that proves nothing.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part E2: Cross-hemisphere reciprocity (P2-B transmission)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    ReciprocityEntry crossHemisphereMaterials[] = {
+        { "Weave_satin_thin (transmission)",          weaveSatinThinBRDF },
+        // R8 P1.1 / debt 22.  The wrapped twin of the row above: the
+        // fabric layer's transmit scale is
+        // `(1-m*Ehat(|n.v|))(1-m*Ehat(|n.l|)) / (1-m*Ebar)`, whose two
+        // arms EXCHANGE under an l/v swap, so this row is what proves
+        // the wrapper did not reach for glTF's one-armed form (which the
+        // FabricBRDF banner rejects for the reflect side for exactly
+        // this reason) on the way through the surface.
+        { "Fabric/Weave_satin_thin (transmission)",   fabricSatinThinBRDF },
+        // DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material` newly
+        // admits fabric_material/weave_material substrates and forwards
+        // their transmission (CoatedBRDF.cpp's below-horizon branch) --
+        // these two rows are that branch's OWN reciprocity check, not a
+        // re-measure of the rows above.  "Coated_Weave_thin" wraps the
+        // bare weave directly; "Coated_Fabric" wraps the fabric-over-
+        // weave twin, so a defect specific to the coat sitting on TOP OF
+        // an already-wrapped substrate cannot hide behind the simpler
+        // row passing.
+        { "Coated_Weave_thin (transmission)",         coatedWeaveSatinThinBRDF },
+        { "Coated_Fabric (transmission)",             coatedFabricSatinThinBRDF },
+    };
+
+    for( const ReciprocityEntry& e : crossHemisphereMaterials )
+    {
+        ReciprocityResult rr = ReciprocityTestCrossHemisphere( e.name, *e.brdf );
+
+        std::cout << "  " << e.name << ": pairs=" << rr.numPairs
+                  << " failures=" << rr.numFailures
+                  << " maxRelErr(RGB)=" << std::scientific << std::setprecision(3) << rr.maxRelError
+                  << " maxRelErr(NM)=" << rr.maxRelErrorNM << std::fixed;
+
+        if( rr.passed )
+            std::cout << " -> PASS" << std::endl;
+        else
+        {
+            std::cout << " -> FAIL" << std::endl;
+            numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  Part F (DL-112 review P1-1/P1-2): TILTED translucent entry
+    //  front-reflection lobe -- SPF sampler vs BSDF evaluator.
+    //
+    //  Every other translucent row in this file (Part C's furnace, Part
+    //  A's sanity) uses `MakeIntersection`, whose shading normal IS the
+    //  geometric normal, so `P(valid) == 1` and the whole horizon-clip
+    //  mechanism is invisible to it.  DL-112 renormalized the SAMPLER
+    //  and `Pdf()` by `1/P(valid)`; this row is what proves
+    //  `TranslucentBSDF::value` was renormalized WITH them.
+    //
+    //  The invariant is the one the two techniques must agree on:
+    //  over the SPF's own draws,
+    //
+    //      E[ kray ]  ==  E[ value(wo, ri) * |cos(wo, vNormal)| / pdf ]
+    //
+    //  -- the left side is what a BSDF-sampled continuation carries,
+    //  the right side is what PT's NEE (`LightSampler.cpp`, which
+    //  multiplies `brdf.value` by `Dot(vToLight, ri.vNormal)`) and
+    //  BDPT/VCM's connections pay for the same direction.  A ratio != 1
+    //  means two estimators of one integral disagree, and any MIS of
+    //  them is biased (the DL-74 lesson).
+    //
+    //  The NM column (added by the round-3 review, 2026-09-17) is the
+    //  same invariant asked of `valueNM` against `ScatterNM`'s own
+    //  `krayNM`, and it is what proved the NM branch was NOT the twin
+    //  its comment claimed: it carried `GetReflectedSide`'s Phong
+    //  `pow(sd, exponent)` factor, which the RGB branch does not have
+    //  and which the SPF's cosine-density front lobe does not describe.
+    //  Pre-fix the two columns read 1.00000 (RGB) against
+    //  6.05071 / 6.63664 / 11.67190 / 104.08390 / 116.17059 / 26.92116
+    //  (NM) at these six tilts, at this row's own 40000 trials.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part F: Tilted translucent front lobe (SPF vs BSDF)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    {
+        const double tiltsDeg[] = { 0.0, 30.0, 45.0, 60.0, 75.0, 89.0 };
+        const int    numTilts   = 6;
+        const int    kTrials    = 40000;
+        const double kProbeNM   = 550.0;
+
+        for( int mode = 0; mode < 2; mode++ )
+        {
+        const bool bNM = ( mode == 1 );
+        std::cout << "  -- " << ( bNM ? "NM (ScatterNM / valueNM)" : "RGB (Scatter / value)" ) << std::endl;
+        for( int t = 0; t < numTilts; t++ )
+        {
+            const double tiltRad = tiltsDeg[t] * PI / 180.0;
+            const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+            // MakeClosedEntry's shape (TransmissionPushGateTest): an
+            // analytic primitive struck from outside, true outward +Z,
+            // shading normal tilted in the XZ plane.
+            Ray inRay( Point3(0,0,2), Vector3(0,0,-1) );
+            RasterizerState rs = {0, 0};
+            RayIntersectionGeometric ri( inRay, rs );
+            ri.bHit = true;
+            ri.range = 2.0;
+            ri.ptIntersection = Point3(0,0,0);
+            ri.vNormal = n;
+            ri.onb.CreateFromW( n );
+            ri.vGeomNormal = Vector3(0,0,1);
+            ri.ptCoord = Point2(0.5, 0.5);
+
+            RandomNumberGenerator rng( 4242 );
+            Implementation::IndependentSampler sampler( rng );
+            IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+            double sumKray = 0, sumBsdf = 0;
+            int emitted = 0;
+            for( int i = 0; i < kTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                if( bNM ) translucentSPF->ScatterNM( ri, sampler, kProbeNM, scattered, iorStack );
+                else      translucentSPF->Scatter( ri, sampler, scattered, iorStack );
+
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    // The entry front-reflection lobe is the only
+                    // eRayDiffuse this branch emits (the transmission is
+                    // eRayTranslucent).
+                    if( s.type != ScatteredRay::eRayDiffuse ) continue;
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    const double cosO = fabs( Vector3Ops::Dot( wo, ri.vNormal ) );
+                    if( s.pdf <= 0 ) continue;
+                    if( bNM ) {
+                        sumKray += s.krayNM;
+                        sumBsdf += translucentBSDF->valueNM( wo, ri, kProbeNM ) * cosO / s.pdf;
+                    } else {
+                        sumKray += ColorMath::MaxValue( s.kray );
+                        sumBsdf += ColorMath::MaxValue( translucentBSDF->value( wo, ri ) ) * cosO / s.pdf;
+                    }
+                    emitted++;
+                }
+            }
+
+            const double meanKray = sumKray / (double)kTrials;
+            const double meanBsdf = sumBsdf / (double)kTrials;
+            const double ratio    = ( meanBsdf > 0 ) ? meanKray / meanBsdf : 0.0;
+            // The closed form the pre-fix mismatch took, printed so a
+            // regression is self-diagnosing: 1/P(valid), P = (1+cos phi)/2.
+            const double oneOverP = 2.0 / ( 1.0 + cos(tiltRad) );
+
+            std::cout << "    tilt " << std::setprecision(0) << std::fixed << tiltsDeg[t] << " deg:"
+                      << "  E[kray]=" << std::setprecision(5) << meanKray
+                      << "  E[value*cos/pdf]=" << meanBsdf
+                      << "  ratio=" << ratio
+                      << "  (1/P(valid)=" << oneOverP << ", emitted=" << emitted << "/" << kTrials << ")";
+
+            const bool ok = ( emitted == kTrials ) && ( fabs( ratio - 1.0 ) < 0.002 );
+            if( ok )
+                std::cout << " -> PASS" << std::endl;
+            else
+            {
+                std::cout << " -> FAIL" << std::endl;
+                numFailed++;
+            }
+        }
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
     //  Summary
     // ================================================================
 
@@ -910,6 +1921,43 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    // DL-23 P2-1: the two coat-over-transmissive-substrate wrappers,
+    // released before the substrates they addref'd (fabricSatinThinMat,
+    // weaveSatinThin's own material) -- same ownership discipline as the
+    // coated triad below.
+    safe_release( coatedFabricSatinThinMat );
+    safe_release( coatedWeaveSatinThinMat );
+
+    // Fabric triad: same ownership discipline as the coated one below --
+    // the MATERIAL owns the BRDF/SPF the tables above borrowed.
+    safe_release( bareSheenBRDF );
+    safe_release( fabricSatinThinMat );
+    safe_release( fabricThinGap02Mat );
+    safe_release( fabricThinGap0Mat );
+    safe_release( fabThinAlphaSc );
+    safe_release( fabricAnisoMat );
+    safe_release( fabricLambMat );
+    safe_release( fabBaseAnisoMat );
+    safe_release( fabZeroSc );
+    safe_release( fabWeaveSc );
+    safe_release( fabAlphaSc );
+
+    // Coated triad: release the materials (which own the BRDF/SPF the
+    // tables above borrowed) before their substrates and painters.
+    safe_release( coatedFullMat );
+    safe_release( coatAmber );
+    safe_release( coatAbsSc );
+    safe_release( coatThickSc );
+    safe_release( coatHalfSc );
+    safe_release( coatedGgxMat );
+    safe_release( coatedLambMat );
+    safe_release( coatBaseGgxMat );
+    safe_release( coatBaseLambMat );
+    safe_release( coatZeroSc );
+    safe_release( coatRoughSc );
+    safe_release( coatIorSc );
+    safe_release( coatWeightSc );
 
     g_stubObject->release();
 

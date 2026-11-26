@@ -1,0 +1,14 @@
+{
+  "//": "epoch-8: batch insert_chunks + scenario-render skill with the lighting render elevated to must-not-skip. Two providers: gpt-5.6-terra (does lighting recover while efficiency holds?) + gemini-3.5-flash (does the batch cost drop generalize?). Family x3.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [
+    { "provider": "openai", "model": "gpt-5.6-terra",    "keyEnvVar": "OPENAI_API_KEY" },
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_e8"
+}

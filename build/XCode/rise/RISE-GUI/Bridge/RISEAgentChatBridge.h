@@ -1,0 +1,468 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RISEAgentChatBridge.h - Pure-Objective-C interface to the C++
+//    AgentChatLoop (Facet 5 slice B2: the LLM chat panel).
+//
+//    Wraps the sans-IO chat-loop core (src/Library/Agent/
+//    AgentChatLoop.h) for the Swift driver.  The bridge OWNS one
+//    AgentChatLoop and is PURE STATE — it performs no I/O, holds no
+//    pointers into the viewport bridge / controller / job, and never
+//    touches the network.  The Swift ChatViewModel drives the loop:
+//
+//        bridge.addUserMessage(text)
+//        repeat {
+//            let req  = bridge.buildRequest(apiKey: key)   // Swift does HTTP
+//            let step = bridge.handleResponse(status:body:)
+//            step.toolCalls are opaque tokens: for each, the driver
+//            asks toolCallToJsonRpcLine, executes it via the viewport
+//            bridge's agentHandleToolCall — the autonomy-routed
+//            dispatcher, main thread — and hands the response line back
+//            through addToolResult.  (agentHandleLine is a SEPARATE,
+//            administrative session; a tool call must not go there, or
+//            `render` and `read_image` land on different per-session
+//            image caches.)
+//        } while step.kind == toolCalls
+//
+//    THREADING: single-threaded, like the loop it wraps.  Every method
+//    must be called from the same thread — in practice Swift's
+//    @MainActor (the main thread).  The HTTP round-trip itself happens
+//    off-main inside URLSession; only the build/handle bookkeeping
+//    runs here.
+//
+//    LIFETIME: owned by the Swift ChatViewModel (app-lifetime, since
+//    provider/model selection outlives any one scene).  The loop holds
+//    NO pointers into the per-scene controller/dispatcher, so there is
+//    no teardown ORDER constraint against the viewport bridge — the
+//    constraint is on the DRIVER: it must stop calling into the viewport
+//    bridge's agent dispatchers once the scene closes (ChatViewModel
+//    cancels its in-flight turn Task on clearScene) and reset this
+//    bridge so the stale-scene conversation doesn't leak into the next
+//    scene.
+//
+//    SECRET HYGIENE: the API key is passed INTO buildRequest per call
+//    and appears only in the returned request's auth header (the C++
+//    contract).  Nothing here logs or retains it.
+//
+//////////////////////////////////////////////////////////////////////
+
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// Mirrors RISE::Agent::ChatProvider.
+typedef NS_ENUM(NSInteger, RISEAgentChatProvider) {
+    RISEAgentChatProviderAnthropic = 0,
+    RISEAgentChatProviderGemini    = 1,
+    RISEAgentChatProviderOpenAI    = 2,
+    RISEAgentChatProviderXAI       = 3,
+    RISEAgentChatProviderLocal     = 4,
+};
+
+/// Mirrors RISE::Agent::ChatStepResult::Kind.
+typedef NS_ENUM(NSInteger, RISEAgentChatStepKind) {
+    RISEAgentChatStepKindToolCalls     = 0,  ///< execute step.toolCalls, then loop
+    RISEAgentChatStepKindFinalText     = 1,  ///< turn complete; show step.finalText
+    RISEAgentChatStepKindProviderError = 2,  ///< branch on step.errorKind
+};
+
+/// Mirrors RISE::Agent::ChatErrorKind.  The Swift driver's per-kind
+/// UX contract (from AgentChatCodecs.h / AgentChatLoop.h):
+///   Http         — retriable (offer Retry; repeated HTTP 400s should
+///                  offer "Reset conversation" — honest poison scoping)
+///   Parse        — hostile/garbled body; nothing recorded; show error
+///   Provider     — degenerate/unexpected turn; nothing recorded
+///   Refusal      — surface the refusal text; do not auto-retry
+///   MaxTokens    — truncated reply DISCARDED; a verbatim retry will
+///                  likely truncate again — user must rephrase/narrow
+///                  (NEVER auto-retry)
+///   IterationCap — per-turn tool-round cap; continuing requires a NEW
+///                  user message (which resets the counter)
+///   Misuse       — driver-contract violation; should not happen (log
+///                  to stderr, show a generic error)
+typedef NS_ENUM(NSInteger, RISEAgentChatErrorKind) {
+    RISEAgentChatErrorKindNone         = 0,
+    RISEAgentChatErrorKindHttp         = 1,
+    RISEAgentChatErrorKindParse        = 2,
+    RISEAgentChatErrorKindProvider     = 3,
+    RISEAgentChatErrorKindRefusal      = 4,
+    RISEAgentChatErrorKindMaxTokens    = 5,
+    RISEAgentChatErrorKindIterationCap = 6,
+    RISEAgentChatErrorKindMisuse       = 7,
+    RISEAgentChatErrorKindMalformedToolCall = 8,
+};
+
+/// Mirrors RISE::Agent::ChatTranscriptEntry::Role.
+///
+/// `DriverNote` is a message the LOOP injected into the conversation (today
+/// only the blind-edit nudge).  It rides the wire as ordinary user content
+/// but is NOT something the human said, so a driver must not render it as a
+/// user bubble — see Role::DriverNote's doc in AgentChatLoop.h.  This app's
+/// driver keeps its own display list rather than rendering the transcript,
+/// so it surfaces the note via `driverNoteCount` / `lastDriverNoteText`
+/// below instead of through these accessors.
+typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
+    RISEAgentChatRoleUser        = 0,
+    RISEAgentChatRoleAssistant   = 1,
+    RISEAgentChatRoleToolResults = 2,
+    RISEAgentChatRoleDriverNote  = 3,
+};
+
+/// One user-supplied reference image attachment (Model-B F5 chat image
+/// attachments) — mirrors RISE::Agent::ChatAttachment.  `mimeType` MUST
+/// be one of the four the provider APIs accept (image/png, image/jpeg,
+/// image/gif, image/webp) — the driver rejects anything else BEFORE
+/// constructing this (see ChatViewModel's attach flow); the C++ core
+/// passes an unrecognized mimeType through rather than gating on it
+/// (documented in AgentChatCodecs.h).  `base64Data` carries NO data-URL
+/// prefix.  NEVER LOG either field.
+@interface RISEAgentChatAttachment : NSObject
+- (instancetype)initWithMimeType:(NSString *)mimeType
+                       base64Data:(NSString *)base64Data;
+@property (nonatomic, readonly, copy) NSString *mimeType;
+@property (nonatomic, readonly, copy) NSString *base64Data;
+@end
+
+/// One tool call the model requested — an OPAQUE token.  The Swift
+/// driver reads `name` (for the "→ propose_patch …" activity line)
+/// and passes the token back verbatim to toolCallToJsonRpcLine: /
+/// addToolResult:.  The token privately carries the full C++
+/// ChatToolCall (args + id-synthesis flag), so round-tripping through
+/// it preserves everything the loop needs for result matching.
+@interface RISEAgentChatToolCall : NSObject
+@property (nonatomic, readonly, copy) NSString *callId;
+@property (nonatomic, readonly, copy) NSString *name;
+/// The call's arguments, as sent (mirrors RISE::Agent::ChatToolCall::argsJson) --
+/// GUI stage 2: exposed for the transcript row's expandable detail view
+/// (argsJson + the eventual result line), alongside `outcomeLine`.
+@property (nonatomic, readonly, copy) NSString *argsJson;
+@end
+
+/// A fully-described HTTP request the Swift driver performs.
+/// `isEmpty` mirrors the loop's empty-request convention (url == ""
+/// when the transcript is empty) — an empty request MUST NOT be sent.
+@interface RISEAgentChatRequest : NSObject
+@property (nonatomic, readonly, copy) NSString *url;
+/// Header name → value.  Includes content-type and the auth header.
+/// (The C++ side emits unique header names, so a dictionary is a
+/// faithful carrier.)
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *headers;
+@property (nonatomic, readonly, copy) NSString *body;
+@property (nonatomic, readonly) BOOL isEmpty;
+@end
+
+/// The outcome of one chat step (one HTTP round-trip).
+@interface RISEAgentChatStep : NSObject
+@property (nonatomic, readonly) RISEAgentChatStepKind kind;
+/// Non-empty iff kind == ToolCalls; the pending set, in order.
+@property (nonatomic, readonly, copy) NSArray<RISEAgentChatToolCall *> *toolCalls;
+/// Filled iff kind == FinalText (possibly empty, e.g. a thinking-only turn).
+@property (nonatomic, readonly, copy) NSString *finalText;
+/// Filled iff kind == ProviderError.
+@property (nonatomic, readonly, copy) NSString *errorMessage;
+/// Set on every ProviderError; None otherwise.
+@property (nonatomic, readonly) RISEAgentChatErrorKind errorKind;
+/// The model's interim narration for THIS turn — filled for BOTH
+/// ToolCalls (text alongside the calls, possibly empty) and FinalText
+/// (== finalText).  Empty on ProviderError.
+@property (nonatomic, readonly, copy) NSString *assistantDisplayText;
+/// GUI stage 2: the model's reasoning/thinking text for THIS turn —
+/// mirrors RISE::Agent::ChatStepResult::reasoningText (see its doc).
+/// Filled for BOTH ToolCalls and FinalText; "" when the provider
+/// exposes no reasoning for this turn (every Gemini turn, a plain
+/// gpt-family turn, or any ProviderError).  DISPLAY-ONLY.
+@property (nonatomic, readonly, copy) NSString *reasoningText;
+/// E4 retry parity: mirrors RISE::Agent::ChatStepResult::
+/// retryDegenerateTurn — true ONLY on a ProviderError whose errorKind is
+/// Provider, when the provider returned HTTP 200 with an empty/
+/// whitespace final answer and no tool calls (a serving-side artifact
+/// observed on local qwen3-thinking backends, not a considered refusal).
+/// The driver's REQUIRED reaction: re-issue the SAME round ONCE — no
+/// request change is needed, since nothing was recorded for a
+/// ProviderError (BuildRequest at the top of the next iteration rebuilds
+/// from the unchanged transcript) — before falling back to the ordinary
+/// ProviderError handling.  ALSO true on errorKind MalformedToolCall while
+/// the C++ loop's per-turn corrective budget (2) lasts: the loop has
+/// queued a corrective user message that the next buildRequest appends,
+/// so the driver just re-issues (NOT gated by the retry-once rule; the
+/// loop bounds it) and, once the budget is spent, the flag is false and
+/// the error surfaces.  Always false for every other kind/case.
+@property (nonatomic, readonly) BOOL retryDegenerateTurn;
+@end
+
+/// Durable document snapshots: one coherent (document text, head-version)
+/// read, returned by a `RISEAgentChatDocumentSnapshotProvider` block --
+/// mirrors the non-`hasDocument` half of
+/// RISE::Agent::AgentSession::AgentDocumentSnapshot.  A value object
+/// (not raw out-pointers) so the Swift closure reads naturally; `nil`
+/// (never an instance with empty text) is how the provider spells "no
+/// document to save".
+@interface RISEAgentChatDocumentSnapshot : NSObject
+- (instancetype)initWithText:(NSString *)text
+                     headUuid:(uint64_t)headUuid
+                 headRevision:(uint64_t)headRevision;
+@property (nonatomic, readonly, copy) NSString *text;
+@property (nonatomic, readonly) uint64_t headUuid;
+@property (nonatomic, readonly) uint64_t headRevision;
+@end
+
+/// Fired synchronously wherever RISE::Agent::AgentChatLoop::
+/// SetDocumentSnapshotProvider's doc says the C++ core calls its
+/// provider (the agent RPC thread; CAN BLOCK while a render owns the
+/// scene) -- see -setDocumentSnapshotProvider: below.  Returns nil when
+/// there is no document to save.
+typedef RISEAgentChatDocumentSnapshot * _Nullable (^RISEAgentChatDocumentSnapshotProvider)(void);
+
+@interface RISEAgentChatBridge : NSObject
+
+/// Constructs with the ChatGPT/OpenAI provider + its default model
+/// (mirrors AgentChatLoop's default construction).
+- (instancetype)init;
+
+/// Clear the transcript, pending tool state, and the per-turn round
+/// counter.  Provider/model selection AND the skill index are kept.
+- (void)reset;
+
+/// Select the provider (and optionally a model id; empty/nil = the
+/// provider's default).  RESETS THE TRANSCRIPT — assistant turns are
+/// provider-native JSON and cannot cross providers; the rule holds
+/// even when re-selecting the current provider (uniform, so the GUI
+/// can state it plainly and confirm before switching mid-conversation).
+- (void)setProvider:(RISEAgentChatProvider)provider
+            modelId:(NSString * _Nullable)modelId;
+
+@property (nonatomic, readonly) RISEAgentChatProvider provider;
+@property (nonatomic, readonly, copy) NSString *modelId;
+
+/// The provider's built-in default model id (for placeholder text in
+/// the settings UI).  Pure function.
++ (NSString *)defaultModelIdForProvider:(RISEAgentChatProvider)provider;
+
+/// Mirrors AgentChatLoop::kMaxToolRoundsPerTurn (tool rounds allowed
+/// per conversation-turn before IterationCap trips).  For UX copy.
+@property (class, nonatomic, readonly) NSInteger maxToolRoundsPerTurn;
+
+/// Mirrors AgentChatLoop::kMaxLiveUserImages (user-attached reference
+/// images kept live across the whole conversation before the oldest is
+/// elided — see AgentChatLoop.h "USER IMAGE RETENTION").  For UX copy
+/// and for the panel's own per-message attach-count cap.
+@property (class, nonatomic, readonly) NSInteger maxLiveUserImages;
+
+/// Mirrors AgentChatLoop::CompactedEntryCount() — how many transcript
+/// entries span compaction has dropped this conversation.
+///
+/// The Swift driver keeps its OWN append-only display transcript, so a
+/// dropped wire span costs it nothing VISUALLY — which is exactly the
+/// hazard: the panel keeps showing turns the model can no longer see, so
+/// the amnesia reads as a model defect with no signal anywhere.  The
+/// driver polls this and appends a `.notice` row when it grows.  (The
+/// Windows panel has the opposite shape — it renders the wire transcript
+/// directly, so there the turns visibly vanish — and needs its own,
+/// differently-worded notice.  Both are guarded by SourceHygieneTest.)
+@property (nonatomic, readonly) NSUInteger compactedEntryCount;
+
+/// Mirrors AgentChatLoop::DriverNoteCount() / LastDriverNoteText() — the
+/// notes the LOOP injects into the conversation this session.  NO CURRENT
+/// PRODUCER (E4, 2026-08): the one message this existed for, the
+/// blind-edit NUDGE, was replaced by a SEQUENCING GATE (a tool-call
+/// REFUSAL, delivered as an ordinary tool result — see
+/// -gateRefusalResponseFor:rpcId: and AgentChatLoop.h's SEQUENCING GATE
+/// block) because the nudge's advisory text turned out to be UNSAFE: a
+/// model echoed it back as its own final text and the driver had no way
+/// to tell the echo from genuine progress.  Kept as a name/mechanism for
+/// a FUTURE loop-injected advisory, not dead-coded away.
+///
+/// Same shape as compactedEntryCount above, and for the same reason: this
+/// driver renders its OWN display list, never the wire transcript, so a
+/// loop-injected message reaches the model and is invisible here — the
+/// user sees the agent abruptly change course with nothing to explain it.
+/// The driver polls the count and appends a `.notice` row when it grows.
+/// (The Windows panel renders the transcript directly and instead paints
+/// the Role::DriverNote entry itself, as a dim centered notice row.  Both
+/// end up showing the user the same thing.)
+@property (nonatomic, readonly) NSUInteger driverNoteCount;
+@property (nonatomic, readonly, copy) NSString *lastDriverNoteText;
+
+/// Facet 5 slice S1: the "Available skills" section appended to every
+/// subsequent request's system prompt.  `indexText` is the rendered
+/// index (one "name -- hook" line per skill) the driver fetched ONCE
+/// by driving the read_skill verb (no name) through the viewport
+/// bridge's agentHandleLine at scene open.  Empty string omits the
+/// section.  Survives reset / setProvider (provider-neutral config).
+- (void)setSkillIndex:(NSString *)indexText;
+
+/// GUI stage 3 (prompt triage): override the ENTIRE system prompt for
+/// this bridge's loop — mirrors AgentChatLoop::SetSystemPromptOverride
+/// (see its doc for the full contract).  A non-empty `prompt` REPLACES
+/// the base co-editing prompt and the skills section wholesale; an
+/// empty string clears the override.  Intended for a SEPARATE,
+/// short-lived bridge instance (a triage pass), never the main
+/// scene-editing bridge — deliberately NOT cleared by -reset or
+/// -setProvider:modelId:.
+- (void)setSystemPromptOverride:(NSString *)prompt;
+
+/// Append a user text message (resets the per-turn tool-round
+/// counter; flushes any pending tool calls with synthesized cancelled
+/// results — the designed Stop/interrupt path).  Empty or whitespace-
+/// only text is a documented no-op.
+- (void)addUserMessage:(NSString *)text;
+
+/// Append a user message carrying reference-image attachments
+/// alongside the text (Model-B F5 chat image attachments) — see
+/// AgentChatLoop.h "USER IMAGE RETENTION" for the persistence + cap
+/// policy.  `text` may be empty when `attachments` is non-empty (an
+/// attachment-only message); the no-op above still applies when BOTH
+/// are empty.  Same flush/reset behavior as the text-only overload.
+- (void)addUserMessage:(NSString *)text
+            attachments:(NSArray<RISEAgentChatAttachment *> *)attachments
+    NS_SWIFT_NAME(addUserMessage(_:attachments:));
+
+/// Build the next HTTP request.  `apiKey` goes into the auth header
+/// only — not retained, never logged.  Check `isEmpty` before sending.
+- (RISEAgentChatRequest *)buildRequestWithApiKey:(NSString *)apiKey
+    NS_SWIFT_NAME(buildRequest(apiKey:));
+
+/// Feed back the raw HTTP response.  On ToolCalls the returned step's
+/// `toolCalls` become the pending set the driver must answer (or
+/// abandon — the next addUserMessage/buildRequest synthesizes
+/// cancelled results).  Never throws; hostile bodies come back as
+/// ProviderError with nothing recorded.
+- (RISEAgentChatStep *)handleResponseWithStatus:(NSInteger)httpStatus
+                                           body:(NSString *)rawBody
+    NS_SWIFT_NAME(handleResponse(status:body:));
+
+/// Translate one pending tool call into the JSON-RPC request line the
+/// viewport bridge's agent dispatchers consume.  The chat driver feeds
+/// it to `-agentHandleToolCall:` (the autonomy-routed session), NOT to
+/// `-agentHandleLine:`.  `rpcId` is a driver-chosen monotonic id
+/// (echoed in the response envelope).
+- (NSString *)toolCallToJsonRpcLine:(RISEAgentChatToolCall *)call
+                              rpcId:(NSInteger)rpcId
+    NS_SWIFT_NAME(toolCallToJsonRpcLine(_:rpcId:));
+
+/// SEQUENCING GATE (E4) — mirrors RISE::Agent::AgentChatLoop::
+/// GateRefusalResponse.  Call this BEFORE dispatching `call` (i.e.
+/// before handing a JSON-RPC line to `-agentHandleToolCall:`) —
+/// mirroring the pre-existing ask_user interception this driver already
+/// performs before dispatch, for the identical reason: some calls must
+/// never reach the dispatcher.
+///
+/// Returns the ready-to-feed JSON-RPC SUCCESS envelope when `call` is a
+/// DOCUMENT-MUTATING verb AND the blind-edit streak has already reached
+/// the gate threshold.  THE CALLER MUST NOT DISPATCH `call` IN THAT
+/// CASE — pass the returned string straight to
+/// -addToolResult:jsonRpcResponseLine: instead, so the underlying
+/// document is never touched.
+///
+/// Returns "" (empty) for every other call, and the caller's normal
+/// toolCallToJsonRpcLine -> dispatch -> addToolResult path is completely
+/// unchanged.
+- (NSString *)gateRefusalResponseFor:(RISEAgentChatToolCall *)call
+                                rpcId:(NSInteger)rpcId
+    NS_SWIFT_NAME(gateRefusalResponse(for:rpcId:));
+
+/// Record the raw JSON-RPC response ENVELOPE line for one pending
+/// call.  First result per call id wins; unknown ids are ignored.
+- (void)addToolResult:(RISEAgentChatToolCall *)call
+  jsonRpcResponseLine:(NSString *)line
+    NS_SWIFT_NAME(addToolResult(_:jsonRpcResponseLine:));
+
+/// GUI stage 2: the same deterministic one-line outcome summary the
+/// C++ core computes for a tool's ChatToolDisplaySummary (e.g.
+/// "160x120, luma 0.19", "3/4 applied", "error: <msg>") — wraps
+/// RISE::Agent::AgentChatLoop::ToolOutcomeLineForDisplay.  Pure
+/// function of `call` + `line`; does not touch the loop's transcript
+/// or pending state, so it is safe to call for a result the driver is
+/// handling OUT OF BAND (the async render-tool path) before/without
+/// ever calling addToolResult:jsonRpcResponseLine: for it.
+- (NSString *)toolOutcomeLineFor:(RISEAgentChatToolCall *)call
+                       resultLine:(NSString *)line
+    NS_SWIFT_NAME(toolOutcomeLine(for:resultLine:));
+
+/// Eval-harness E1: begin recording this chat session's trajectory to a
+/// per-session JSONL file under `directory` (created as needed), rotating
+/// old files first (keeps ~50 newest / ~200 MB).  `scenePath`/`headVersion`
+/// are captured in the session record ("" / -1 when unknown).  Pass
+/// enabled:NO to DETACH recording entirely.  Redaction of api-key-shaped
+/// content is UNCONDITIONAL in the core regardless of this toggle.
+- (void)startTrajectoryInDirectory:(NSString *)directory
+                         scenePath:(NSString *)scenePath
+                       headVersion:(long long)headVersion
+                           enabled:(BOOL)enabled
+    NS_SWIFT_NAME(startTrajectory(directory:scenePath:headVersion:enabled:));
+
+/// Durable document snapshots (product gap: a scene built entirely
+/// inside a live GUI agent session, never Save As'd, was otherwise
+/// unrecoverable on quit/crash -- the trajectory recorded tool
+/// calls/results but never the document TEXT).  Wires
+/// RISE::Agent::AgentChatLoop::SetDocumentSnapshotProvider: `provider`
+/// is called to fetch a fresh (text, uuid, revision) whenever the
+/// loop's write policy decides a `document_snapshot` record is due (see
+/// that method's doc for the full policy -- per-advancing-tool-call,
+/// decimated past 1MB, plus one at every trajectory close for ANY
+/// status including app_quit).  Pass nil to detach (every hook becomes
+/// a no-op, matching a fresh loop's default).  Survives -reset /
+/// -setProvider:modelId: (provider-neutral config, like the skill
+/// index / system-prompt override).  A plain assignment underneath --
+/// safe to call repeatedly (e.g. alongside every -startTrajectory: call,
+/// so a fresh viewport bridge is always the one the closure reaches).
+- (void)setDocumentSnapshotProvider:(nullable RISEAgentChatDocumentSnapshotProvider)provider
+    NS_SWIFT_NAME(setDocumentSnapshotProvider(_:));
+
+/// Record one LLM HTTP round (driver-measured status/body/latency) into
+/// the `llm` trajectory record -- call just BEFORE handleResponse.  No-op
+/// when recording is not active.  Uses the request most recently built by
+/// buildRequest (auth headers already stripped from the cached copy).
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+    NS_SWIFT_NAME(recordHttpRound(status:body:elapsedMs:));
+
+/// E4 retry parity: the `attempt`/`retryOf` sibling of the overload
+/// above — mirrors RISE::Agent::AgentChatLoop::RecordHttpRound's
+/// attempt/retryOf parameters (see its doc: `retryOf < 0` for a first
+/// attempt).  Use this overload when recording a driver-initiated retry
+/// (e.g. the degenerate-turn retry-once — see `retryDegenerateTurn`) so
+/// the trajectory shows the retry as an honest sibling `llm` record
+/// instead of silently overwriting/duplicating attempt 1's.
+- (void)recordHttpRoundWithStatus:(NSInteger)httpStatus
+                             body:(NSString *)rawBody
+                        elapsedMs:(int64_t)elapsedMs
+                          attempt:(NSInteger)attempt
+                          retryOf:(NSInteger)retryOf
+    NS_SWIFT_NAME(recordHttpRound(status:body:elapsedMs:attempt:retryOf:));
+
+/// Emit the terminal `summary` record with `status` and detach the
+/// session (a fresh session begins on the next recorded action).
+- (void)finishTrajectoryWithStatus:(NSString *)status
+    NS_SWIFT_NAME(finishTrajectory(status:));
+
+/// GUI stage 3 (prompt triage): record ONE auxiliary HTTP round-trip a
+/// driver performed OUTSIDE this instance's own conversation into THIS
+/// instance's trajectory, as a `purpose`-tagged `llm` record (same
+/// trace_id / same JSONL file as everything else this bridge records).
+/// Call this on the MAIN bridge, not the throwaway triage bridge — the
+/// triage bridge has no trajectory sink of its own.  `requestBody` MUST
+/// already be auth-stripped by the caller (no headers parameter exists
+/// here on purpose — never pass any). No-op when this bridge has no
+/// active trajectory session.
+- (void)recordAuxiliaryHttpRoundWithPurpose:(NSString *)purpose
+                                         url:(NSString *)url
+                                 requestBody:(NSString *)requestBody
+                                  httpStatus:(NSInteger)httpStatus
+                                responseBody:(NSString *)responseBody
+                                   elapsedMs:(int64_t)elapsedMs
+    NS_SWIFT_NAME(recordAuxiliaryHttpRound(purpose:url:requestBody:httpStatus:responseBody:elapsedMs:));
+
+/// Pending tool calls awaiting addToolResult (0 when idle).
+@property (nonatomic, readonly) NSUInteger pendingToolCallsCount;
+
+/// Transcript accessors for display.  Out-of-range index returns
+/// RISEAgentChatRoleUser / the empty string (the loop's bounds-safe
+/// convention) — never throws.
+@property (nonatomic, readonly) NSUInteger transcriptSize;
+- (RISEAgentChatRole)transcriptRoleAtIndex:(NSUInteger)index;
+- (NSString *)transcriptDisplayTextAtIndex:(NSUInteger)index;
+
+@end
+
+NS_ASSUME_NONNULL_END

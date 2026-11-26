@@ -1,0 +1,88 @@
+{
+  "schema": "rise.fire.r247.retained-operand-coverage.v1",
+  "status": "design_input_inventory_not_new_native_audit",
+  "cases": [
+    {
+      "variant": "wide",
+      "run": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1",
+      "accepted_audit_path": "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v2/full_budget_audit.json",
+      "accepted_audit_sha256": "085f5674499c6677e6f356c5a1e18b1d8128e3e5062d1f987106c66ea9ad9c38",
+      "case": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586",
+      "steps": 15315,
+      "retained_capsules": 235,
+      "first_selected_step": 6400,
+      "last_selected_step": 15315,
+      "dimensions": [
+        104,
+        104,
+        80
+      ],
+      "cell_count": 865280,
+      "face_count": 2623296,
+      "payload_bytes_per_capsule": {
+        ".beginning.bin": 107415360,
+        ".native.bin": 160200152,
+        ".flux.bin": 272822856
+      },
+      "combined_packet_bytes": 540438368,
+      "coverage": "Metadata-only file sizes and exact accepted audit receipts; no new payload seal/root/arithmetic pass."
+    },
+    {
+      "variant": "taller",
+      "run": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+      "accepted_audit_path": "/Volumes/SSD/RISE/fire_production_calibration/r246_full_signed_budget_audit.v1/signed_budget_audit.json",
+      "accepted_audit_sha256": "8105dc52c044e6e39e8937fc36baa2be60f8e2e2a3d9f75a9384fc19646b3e72",
+      "case": "805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2",
+      "steps": 15315,
+      "retained_capsules": 235,
+      "first_selected_step": 6400,
+      "last_selected_step": 15315,
+      "dimensions": [
+        104,
+        104,
+        160
+      ],
+      "cell_count": 1730560,
+      "face_count": 5235776,
+      "payload_bytes_per_capsule": {
+        ".beginning.bin": 214776640,
+        ".native.bin": 320010712,
+        ".flux.bin": 544520776
+      },
+      "combined_packet_bytes": 1079308128,
+      "coverage": "Metadata-only file sizes and exact accepted audit receipts; no new payload seal/root/arithmetic pass."
+    }
+  ],
+  "producer_layout_sources": [
+    {
+      "path": "tests/FireSequenceTest.cpp",
+      "sha256": "3249a19b4bfc9a19c20e2d5d0a74fb2b85b9a7698e17e79f37d18f6c51130725"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "6a5c4543d3e5b61c76f1458346d91e94291ab10322c3f542e2870ec83f309a3d"
+    },
+    {
+      "path": "tools/fire/r245_budget_audit.py",
+      "sha256": "1fa6d89575566e5dcf1b744c7c71a4dd4f32040a2499c89197cd0c2dfee74311"
+    }
+  ],
+  "available": [
+    "235 accepted-step Q0/source-delta/M0 plus five frozen-source arrays and burner mask per wide/taller run",
+    "235 accepted R1 conservative fields; R2 face momentum/velocity/density; actual Heun rates; limiter alpha; R1 EOS temperature and metadata",
+    "235 full packed scalar low/antidiffusive flux arrays and signed native momentum terms",
+    "15315 global scalar ledgers with full/native statistics, but only235 spatial capsules"
+  ],
+  "unavailable": [
+    "Baseline beginning/native/flux capsules",
+    "Complete15315 spatial native/flux/source trajectory",
+    "Cumulative original80-layer control-volume budget",
+    "Independent pressure versus EOS restoration contribution",
+    "Stage-by-stage scalar donor/upwind state history"
+  ],
+  "limits": [
+    "Retained local Q0/R1 O2/CH4 are available; exact complete flux donor history is not.",
+    "R1 EOS temperature, frozen-source time and R2 momentum/velocity are different owned stages; no relabeling as one terminal snapshot.",
+    "Snapshots permit selected accepted-step balances and spatial source localization only; no time integration across unpublished gaps."
+  ]
+}

@@ -1,0 +1,456 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AutoRasterizer.h - The auto-routing integrator dispatcher.
+//
+//    A thin `IRasterizer` wrapper that, at the first render-time entry
+//    point, selects one of the concrete PT / BDPT / VCM rasterizers and
+//    delegates every IRasterizer call to it.  It composes the existing
+//    integrators — it contains NO integrator algorithm of its own.
+//
+//    Selection honours an explicit author pin first, then the DL-475
+//    bound-medium support guard, then probe/static selection. See
+//    docs/AUTO_RASTERIZER_DESIGN.md §§2,5 for policy and scope.
+//
+//    Resolution uses the assembled scene at render time, including the
+//    optional pre-render probes. An exclusive, fail-closed resolution
+//    coordinator guards delegate creation: a top-level resolution rejects
+//    while any other Auto is active; only same-thread nested resolution is
+//    admitted, so callback-created worker handoffs cannot hide wait cycles.
+//    BuildDelegate also creates temporary probe candidates. The wrapper
+//    stores the settings needed for all three concrete delegates.
+//
+//    The base `Implementation::Rasterizer` already buffers the output
+//    sinks (`outs`), the progress callback, and the FrameStore for us;
+//    they are added before the delegate exists, so the dispatcher
+//    REPLAYS them onto the freshly-built delegate at resolution time.
+//
+//    Spectral sibling (`auto_spectral_rasterizer`) is implemented as a
+//    DOMAIN FLAG on this same class (Phase 1b, 2026-06-05): `mSpectral`
+//    switches `BuildDelegate` to the `*_spectral_` factories and the
+//    wrapper carries a `SpectralConfig` (range/bins/samples/HWSS) in place
+//    of path-guiding / optimal-MIS.  The decision logic (SelectIntegrator
+//    / RunProbe / ProbeCandidate) is shared verbatim, so there is ONE
+//    source of truth for routing across both domains; see design doc §3.1.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: June 4, 2026
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef AUTO_RASTERIZER_
+#define AUTO_RASTERIZER_
+
+#include "Rasterizer.h"
+#include "../Utilities/RasterizerDefaults.h"      // AutoIntegratorChoice
+#include "../Utilities/OidnConfig.h"
+#include "../Utilities/PathGuidingField.h"        // PathGuidingConfig
+#include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
+#include "../Utilities/ProgressiveConfig.h"
+#include "../Utilities/SpectralConfig.h"        // SpectralConfig (auto_spectral domain)
+#include <atomic>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace RISE
+{
+	class IRayCaster;
+	class IPixelFilter;
+
+	namespace Implementation
+	{
+		class AutoRasterizer : public Rasterizer
+		{
+		public:
+			//! Construct the dispatcher.  The caster / samples / filter
+			//! are the integrator-agnostic inputs every concrete factory
+			//! shares; the configs are the universally-meaningful ones.
+			//! Per-integrator specifics use the canonical built-in
+			//! defaults at delegate-build time (param-population option
+			//! (i)).  Nothing renders until the first render-time entry.
+			AutoRasterizer(
+				IRayCaster* caster,								///< [in] Shared ray caster (integrator-agnostic)
+				ISampling2D* samples,							///< [in] Pixel sampler
+				IPixelFilter* filter,							///< [in] Pixel reconstruction filter
+				const AutoIntegratorChoice integrator,			///< [in] Author pin (Auto = support guard, then probe/static selection)
+				const bool oidnDenoise,							///< [in] OIDN denoise (forwarded to the delegate)
+				const OidnQuality oidnQuality,					///< [in] OIDN quality preset
+				const OidnDevice oidnDevice,					///< [in] OIDN device backend
+				const OidnPrefilter oidnPrefilter,				///< [in] OIDN aux source mode
+				const PathGuidingConfig& guidingConfig,			///< [in] Path-guiding configuration
+				const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+				const StabilityConfig& stabilityConfig,			///< [in] Production stability controls
+				const bool useZSobol,							///< [in] Z-order Sobol sampler toggle
+				const ProgressiveConfig& progressiveConfig,		///< [in] Progressive multi-pass configuration
+				const bool probeEnabled,						///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+				const bool spectral,							///< [in] Domain: false = Pel (RGB), true = spectral (delegate to *_spectral_)
+				const SpectralConfig& spectralConfig,			///< [in] Spectral-core params (range/bins/samples/HWSS); used only when spectral==true
+				FrameStore* frameStore							///< [in] Canonical FrameStore (may be null until Job pushes one)
+				);
+
+		protected:
+			~AutoRasterizer() override;
+			bool AuthorizeFireDelegatePreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const override;
+			void ClearFireDelegatePreflight() const override;
+
+		public:
+			//
+			// IRasterizer surface the `Rasterizer` base does NOT provide.
+			// Each resolves the delegate (once) then forwards.
+			//
+			void AttachToScene( const IScene* pScene ) override;
+			void DetachFromScene( const IScene* pScene ) override;
+			unsigned int PredictTimeToRasterizeScene(
+				const IScene& pScene,
+				const ISampling2D& pSampling,
+				unsigned int* pActualTime
+				) const override;
+			void RasterizeScene(
+				const IScene& pScene,
+				const Rect* pRect,
+				IRasterizeSequence* pRasterSequence
+				) const override;
+			void RasterizeSceneAnimation(
+				const IScene& pScene,
+				const Scalar time_start,
+				const Scalar time_end,
+				const unsigned int num_frames,
+				const bool do_fields,
+				const bool invert_fields,
+				const Rect* pRect,
+				const unsigned int* specificFrame,
+				IRasterizeSequence* pRasterSequence
+				) const override;
+			unsigned int PredictTimeToRasterizeScenePrepared(
+				const IScene&, const ISampling2D&, unsigned int*, Scalar,
+				IRenderPreparationController& ) const override;
+			void RasterizeScenePrepared(
+				const IScene&, Scalar, IRenderPreparationController&,
+				const Rect*, IRasterizeSequence* ) const override;
+			void RasterizeSceneAnimationPrepared(
+				const IScene&, Scalar, Scalar, unsigned int, bool, bool,
+				IRenderPreparationController&, const Rect*, const unsigned int*,
+				IRasterizeSequence* ) const override;
+
+			//
+			// State-mutators the base `Rasterizer` DOES provide, re-declared
+			// so the wrapper forwards them to the resolved delegate.  Without
+			// these the base impl mutates ONLY the wrapper's own pProgressFunc
+			// / outs and the delegate -- the object that actually renders --
+			// keeps whatever it was seeded with at the one-time resolve.  That
+			// desync is a use-after-free: the macOS GUI deletes + recreates
+			// its progress callback on a Merge-load, so the delegate's frozen
+			// pProgressFunc dangles and the next render's SetTitle() jumps
+			// through a zeroed vtable slot (PC=0).  Forwarding keeps the
+			// delegate in lock-step with the wrapper every render.
+			//
+			void SetProgressCallback( IProgressCallback* pFunc ) override;
+			void SetFrameStore( FrameStore* frameStore ) override;
+			void AddRasterizerOutput( IRasterizerOutput* ro ) override;
+			void RemoveRasterizerOutput( IRasterizerOutput* ro ) override;
+			void FreeRasterizerOutputs() override;
+			bool SetDenoisingOverride( bool enabled ) override;
+			int GetDenoisingOverride() const override;
+			void SetTransparentBackground( bool enabled ) override;
+			bool GetTransparentBackground() const override;
+
+			//! The integrator the dispatcher resolved to.  `Auto` until
+			//! the first render-time entry runs selection; the concrete
+			//! pick (PT/BDPT/VCM) thereafter.  For diagnostics / a future
+			//! UI "Auto -> VCM" surfacing.
+			AutoIntegratorChoice ResolvedIntegrator() const;
+
+			//! IRasterizer auto-dispatcher introspection (the cross-UI query
+			//! surface): IsAutoDispatcher()==true; the resolved concrete integrator
+			//! name ("pt"/"bdpt"/"vcm", or "auto" before the first render) and the
+			//! one-line reason, both valid after the first render-time resolution.
+			bool IsAutoDispatcher() const override { return true; }
+			const char* ResolvedIntegratorName() const override;
+			const char* ResolveReason() const override;
+
+			//! Region honesty follows the RESOLVED integrator (today's
+			//! candidate set PT/BDPT/VCM all honor regions, so this is
+			//! future-proofing: if a non-region-honoring integrator ever
+			//! joins the candidate set, the query stays truthful).
+			bool HonorsRegion() const override;
+			bool LastRenderCompleted() const override;
+			bool ResolveForFirePreflight( const IScene& scene ) const override;
+
+			//! Total wall-clock seconds the Tier-2 probe spent rendering
+			//! candidate integrators (0 if the probe didn't run).  Exposed
+			//! so the §6.2 resolution/cost sweep can read the REAL in-process
+			//! probe cost directly instead of log-scraping.  Valid after the
+			//! first render-time entry.
+			double LastProbeSeconds() const;
+			//! Number of candidate renders the probe issued (0 if it didn't run).
+			unsigned int LastProbeRenders() const;
+
+			//! G1 fix-round (2026-08-10): run the ONE-TIME integrator
+			//! resolution NOW, against `scene` exactly as it currently
+			//! stands, instead of lazily at the first render-time entry.
+			//!
+			//! WHY THIS EXISTS -- resolution completes exactly once for the
+			//! lifetime of this dispatcher (the fail-closed resolution
+			//! coordinator; `mResolutionComplete`), and BOTH
+			//! Tier-1 static signals read the scene through
+			//! `IObjectManager::EnumerateObjects`, which FILTERS on
+			//! `IObject::IsWorldVisible()`.  The agent's
+			//! `render{isolate:"x"}` surface hides every other object for the
+			//! duration of ONE render.  If that isolated render is the first
+			//! one issued on this dispatcher, resolution would see a
+			//! one-object scene, lock in the choice that scene implies, and
+			//! keep it -- with a confident but WRONG `ResolveReason()` -- for
+			//! every later full-scene render, including the user's own
+			//! production renders.  Restoring visibility cannot undo it:
+			//! nothing clears `mResolutionComplete`.
+			//!
+			//! The isolate path therefore calls this BEFORE it hides
+			//! anything, which is the same "pre-build the visibility-
+			//! dependent cache against the full set first" shape it already
+			//! uses for the TLAS (`IObjectManager::PrepareForRendering`) and
+			//! the luminary list (`Scene::BumpLightTopologyGeneration`).
+			//!
+			//! Deliberately changes only WHEN resolution happens, never WHAT
+			//! it decides: it forwards verbatim to the same `EnsureResolved`
+			//! every render-time entry point calls, exposes no setter for the
+			//! resolved choice, and is idempotent -- a second call, or the
+			//! render's own `EnsureResolved`, is a no-op.
+			void PreResolveIntegrator( const IScene* scene ) const;
+
+			//! Test-only visibility for the delegated FrameStore identity.  Agent
+			//! isolation must restore both wrapper and delegate immediately.
+			FrameStore* ForTest_GetDelegateFrameStore() const;
+			void ForTest_SetDelegateFrameStore( FrameStore* frameStore );
+			void ForTest_FreeDelegateRasterizerOutputs();
+			bool ForTest_WrapperContainsOutput( IRasterizerOutput* output ) const;
+			bool ForTest_DelegateContainsOutput( IRasterizerOutput* output ) const;
+			void ForTest_ThrowInsideProbe( const IScene& scene ) const;
+			unsigned int ForTest_LiveProbeCaptureCount() const;
+			void ForTest_ReturnNullDelegateOnce() const;
+
+			//! Render-time probe tunables.  Read from `GlobalOptions` at
+			//! selection time (so the Phase-4 resolution/cost sweep can
+			//! vary them without recompiling) with the Phase-3 experiment
+			//! values as defaults.  See AUTO_RASTERIZER_DESIGN.md §6.1.
+			struct ProbeConfig
+			{
+				unsigned int spp;				///< probe samples-per-pixel (default 4)
+				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
+				double       tauCaustic;		///< median-lum VCM/PT ratio gate 1/2 -> caustic candidate (default 1.30)
+				double       tauReach;			///< VCM merge flux share (transport-reach) gate 2/2 -> VCM (default 0.10; DL-167)
+				double       reachWinsorPct;	///< upper-tail winsorize pct for the reach mean (default 0.99; clips VCM merge fireflies so the gate sees broad caustic energy, not sparse spikes)
+				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
+				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
+				unsigned int activationSpp;		///< production spp at/above which the probe runs (default from §6.2 sweep)
+			};
+
+			//! One candidate's probe outcome.  `medianLum` is the
+			//! firefly-robust caustic signal (single render); `meanVar`
+			//! is the mean per-pixel cross-sub-render variance (needs
+			//! `varianceRenders >= 2`); `rasSeconds` is the summed
+			//! probe-render wall time (the T in σ²·T).
+			struct ProbeResult
+			{
+				bool   valid;
+				double medianLum;
+				double meanLum;			///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
+				double robustMeanLum;	///< firefly-robust (upper-tail-winsorized) mean luminance — the transport-reach statistic (the raw mean is spiked by VCM merge fireflies at probe spp)
+				double meanVar;
+				double rasSeconds;
+				double vcmMergeShare;	///< Fraction of VCM flux contributed by VM merges (candidate a)
+				std::vector<double> lum; ///< per-pixel luminance array (row-major)
+			};
+
+			//! Caustic transport-reach candidate signals evaluated between
+			//! PT and VCM probe renders (DL-167).
+			struct CausticReachSignals
+			{
+				bool   valid;
+				double medRatio;		///< VCM median / PT median
+				double meanRatio;		///< VCM raw mean / PT raw mean
+				double robustMeanRatio;	///< VCM winsorized mean / PT raw mean
+				double vcmMergeShare;	///< Merge share of total flux in VCM (candidate a)
+				double p95Ratio;		///< 95th percentile of per-pixel VCM/PT ratio (candidate b)
+				double p90Ratio;		///< 90th percentile of per-pixel VCM/PT ratio
+				double fracGt2;			///< Fraction of pixels with VCM > 2*PT (significant pixels)
+				double fracGt1_5;		///< Fraction of pixels with VCM > 1.5*PT (significant pixels)
+				double fracGt3;			///< Fraction of pixels with VCM > 3*PT (significant pixels)
+				double energyFracGt2;	///< Fraction of VCM flux in pixels where VCM > 2*PT
+			};
+
+			//! Compute candidate reach signals from PT and VCM probe outcomes.
+			static CausticReachSignals ComputeCausticReachSignals(
+				const ProbeResult& pt, const ProbeResult& vcm );
+
+			//! Test-only helper: probe one candidate directly.
+			ProbeResult ForTest_ProbeCandidate(
+				const IScene* scene, AutoIntegratorChoice choice,
+				const ProbeConfig& cfg, bool needVariance ) const
+			{
+				return ProbeCandidate( scene, choice, cfg, needVariance );
+			}
+
+			//! Test-only helper: read the probe config from GlobalOptions.
+			ProbeConfig ForTest_ReadProbeConfig() const
+			{
+				return ReadProbeConfig();
+			}
+
+			//! Test-only: repeatable salted, single-thread probe frames and equal
+			//! sample-work costs instead of wall-clock costs. Caller must force one
+			//! render thread and the owned Mersenne backend. Seeds C rand() without
+			//! restoring it. Production routing remains variance times wall time.
+			void ForTest_UseFixedProbeWork() { mForTestFixedProbeWork = true; }
+
+		private:
+
+			//! Integrator selection.  Tier 0: an explicit author pin always
+			//! wins. DL-475 support guard: automatic scenes with a visible
+			//! transmissive interior medium and positional light select VCM.
+			//! Tier 2 (Phase 4): when the probe is enabled and the
+			//! production sample count clears the activation-spp gate, run
+			//! the gated/short-circuited render-time probe over the
+			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
+			//! (Phase 2, the fallback when the probe is inactive): a cheap,
+			//! conservative static analysis — force PT when a heterogeneous
+			//! or emissive medium is present (fire/smoke G10); otherwise route
+			//! VCM where refractive caustics are plausible (a transmissive /
+			//! dielectric surface AND a positional point/spot source), and
+			//! default everything else to PT.  Sets `mResolveReason` to the
+			//! one-line explanation logged at resolution.
+			AutoIntegratorChoice SelectIntegrator( const IScene* scene ) const;
+
+			//! Read the probe tunables from GlobalOptions (Phase-3 defaults).
+			ProbeConfig ReadProbeConfig() const;
+
+			//! Tier-2 decision tree (AUTO_RASTERIZER_DESIGN.md §6.1/§6.2).  Caustic
+			//! check FIRST, short-circuited: only when (dielectric ∧ ¬env-IBL)
+			//! probe PT+VCM and route VCM iff BOTH the median gate
+			//! median-lum(VCM)/median-lum(PT) > τ_caustic AND the transport-reach
+			//! gate mean-lum(VCM)/mean-lum(PT) > τ_reach hold — the reach gate
+			//! rejects the jewel_vault over-fire (median fires on a converging
+			//! dielectric scene, but PT reaches the same total energy → not a real
+			//! caustic).  Else the BDPT check: probe PT+BDPT and route BDPT iff
+			//! σ²·T(PT)/σ²·T(BDPT) > τ_bdpt, else PT.  Sets mResolveReason.
+			AutoIntegratorChoice RunProbe(
+				const IScene* scene, const ProbeConfig& cfg,
+				bool dielectric, bool envIbl ) const;
+
+			//! Probe one candidate integrator.  Renders it `1` time
+			//! (median-lum only, `needVariance=false`) or `cfg.varianceRenders`
+			//! times (for the per-pixel σ² estimate) at probe resolution +
+			//! probe spp, into a scratch (non-canonical) target, and folds the
+			//! read-back pixels into a ProbeResult.  Does NOT touch the real
+			//! FrameStore or the real delegate.
+			ProbeResult ProbeCandidate(
+				const IScene* scene, AutoIntegratorChoice choice,
+				const ProbeConfig& cfg, bool needVariance ) const;
+
+			//! Build the concrete delegate for `choice` using the stored
+			//! inputs + canonical per-integrator defaults, with the canonical
+			//! sampler (`mSamples`) and FrameStore (`GetFrameStore()`).
+			//! Returns a refcount-1 IRasterizer (caller owns), or null.
+			IRasterizer* BuildDelegate( AutoIntegratorChoice choice ) const;
+
+			//! Build the concrete delegate for `choice` with explicit
+			//! sampler / FrameStore / denoise / guiding / adaptive overrides
+			//! — the probe passes a low-spp cloned sampler, a null FrameStore
+			//! (so a candidate render lands in the delegate's own internal
+			//! image, read back via a capturing output, and never disturbs
+			//! the canonical store), denoise OFF (the σ² signal lives in the
+			//! raw per-pixel noise that a denoiser would erase), and OFF
+			//! guiding/adaptive configs (no expensive training pass; uniform
+			//! spp so the probe cost + variance are well-defined).
+			IRasterizer* BuildDelegate(
+				AutoIntegratorChoice choice,
+				ISampling2D* samples, FrameStore* fs,
+				bool oidnDenoise,
+				const PathGuidingConfig& guiding,
+				const AdaptiveSamplingConfig& adaptive ) const;
+
+			//! Resolve + wire the delegate exactly once, at the first
+			//! render-time entry.  Replays the buffered output sinks /
+			//! progress callback / progressive config onto it.
+			void EnsureResolved( const IScene* scene ) const;
+
+			//! Keep the delegate's FrameStore in lock-step with ours so a
+			//! late `SetFrameStore` (deferred Job push, camera resize)
+			//! reaches the object that actually writes pixels.
+			void SyncDelegateFrameStore() const;
+			IRasterizer* RetainDelegate() const;
+			void SetResolveReason( const std::string& reason ) const;
+			bool ReconcileDelegateOutputTopology( IRasterizer* delegate );
+			bool ReplayWrapperOutputTopologyToDelegate( IRasterizer* delegate ) const;
+
+			// Integrator-agnostic build inputs (addref'd; released in dtor).
+			IRayCaster*					mCaster;
+			ISampling2D*				mSamples;
+			IPixelFilter*				mFilter;
+
+			// The author pin (Auto = dispatcher decides).
+			AutoIntegratorChoice		mPinned;
+
+			// Universally-meaningful configs, forwarded to the delegate
+			// factory at build time.
+			bool						mOidnDenoise;
+			OidnQuality					mOidnQuality;
+			OidnDevice					mOidnDevice;
+			OidnPrefilter				mOidnPrefilter;
+			PathGuidingConfig			mGuiding;
+			AdaptiveSamplingConfig		mAdaptive;
+			StabilityConfig				mStability;
+			bool						mUseZSobol;
+			ProgressiveConfig			mProgressive;
+
+			// Tier-2 probe master enable (Phase 4).  The probe additionally
+			// requires the production sample count to clear the activation-spp
+			// gate; see ReadProbeConfig / SelectIntegrator.
+			bool						mProbeEnabled;
+
+			// Domain selector (Phase 1b).  false = Pel (RGB) factories; true =
+			// spectral factories.  The ONLY axis on which the two siblings
+			// differ — the SelectIntegrator/RunProbe decision logic is shared.
+			bool						mSpectral;
+			// Spectral-core params (range / bins / samples / HWSS).  Carried
+			// only for the spectral domain; default-constructed (unused) for
+			// Pel.  BuildDelegate unpacks it into the *_spectral_ factory args.
+			SpectralConfig				mSpectralConfig;
+
+			// Lazily-resolved delegate.  `mutable` because RasterizeScene
+			// (and its siblings) are `const` per the IRasterizer contract
+			// but are the genuine render-time entry where resolution must
+			// happen (the base class already uses `mutable` for state
+			// reached from those const methods).
+			mutable IRasterizer*			mDelegate;
+			mutable unsigned long long	mReplayRevision;
+			mutable std::recursive_mutex	mDelegateMutationMutex;
+			std::atomic<bool>			mFrameStoreReplayInProgress { false };
+			mutable AutoIntegratorChoice	mResolved;
+			mutable bool					mResolutionInProgress;
+			mutable bool					mResolutionComplete;
+			mutable std::mutex				mResolutionStateMutex;
+			mutable std::atomic<bool>		mFailProbeForTest { false };
+			mutable std::atomic<bool>		mReturnNullDelegateForTest { false };
+
+			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
+			// when the probe is inactive).
+			mutable double					mLastProbeSeconds;
+			mutable unsigned int			mLastProbeRenders;
+
+			// One-line, human-readable reason for the resolved choice
+			// (e.g. "dielectric + positional light"), set by
+			// SelectIntegrator and surfaced in the resolution log line for
+			// diagnostics + the future UI "Auto -> VCM: <reason>" display.
+			mutable std::string				mResolveReason;
+			bool mForTestFixedProbeWork = false;
+		};
+	}
+}
+
+#endif

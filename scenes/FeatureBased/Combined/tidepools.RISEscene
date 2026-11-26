@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -22,34 +22,6 @@ hdr_painter
 	name				pnt_env
 	file				lightprobes/uffizi_probe.hdr
 }
-/*
-ambientocclusion_shaderop
-{
-	name				ambocc
-	multiplybrdf		true
-	numphi				32
-	numtheta			12
-	irradiance_cache	true
-}
-
-standard_shader
-{
-	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		ambocc
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
-}
-
-pixelpel_rasterizer
-{
-	max_recursion		4
-	samples				25
-	lum_samples			1
-	radiance_map		pnt_env
-	radiance_background	TRUE
-}
-*/
 standard_shader
 {
 	name		global
@@ -60,13 +32,13 @@ pathtracing_pel_rasterizer
 {
 	samples                       64
 	oidn_denoise                  TRUE
-	pathguiding                   true
+	pathguiding                   FALSE
 	pathguiding_sampling_type     RIS
 	pathguiding_iterations        6
 	pathguiding_spp               12
 	pathguiding_alpha             0.5
 	pathguiding_max_depth         8
-	adaptive_max_samples	512
+	adaptive_max_samples	128
 	adaptive_threshold		0.05
 	radiance_map		pnt_env
 	radiance_background	TRUE
@@ -84,24 +56,177 @@ file_rasterizeroutput
 # Cameras - Thin lens with depth of field
 ##################################################
 
+# Camera 4 m back and 2.5 m up, looking down at the tidepool.
+# Distance ≈ √(2.6² + 4²) ≈ 4.8 m.  85mm short-tele at f/1.8 —
+# intimate look on the pool, with the floor pebbles and surrounding
+# stones falling into a soft creamy bokeh.
+
+film
+{
+	width			800
+	height			600
+}
+
 thinlens_camera
 {
 	location			0 2.5 4.0
 	lookat				0 -0.1 0
 	up					0 1 0
-	width				800
-	height				600
-	fov					40.0
-	aperture_size		0.08
-	focal_length		4.0
-	focus_distance		4.5
+	sensor_size			36              # mm — full-frame
+	focal_length		85              # mm — short tele
+	fstop				1.8
+	focus_distance		4.8             # metres — onto the pool surface
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -195,12 +320,6 @@ blend_painter
 	mask				pnt_mask
 }
 
-uniformcolor_painter
-{
-	name				pnt_water
-	color				0.85 0.92 0.95
-	colorspace			RISERGB
-}
 
 uniformcolor_painter
 {
@@ -221,12 +340,14 @@ uniformcolor_painter
 	color				0.7 0.4 0.5
 }
 
-iridescent_painter
+# Legacy phase 2 slice C: was iridescent_painter (colora `pnt_shell_blue`, colorb `pnt_shell_pink`, bias 0.5); now its
+# projected-area mean colour (1-w) colora + w colorb, w = 0.9583; the view-dependent
+# colour shift moved to the thin-film ggx_material(s) that bind it.
+uniformcolor_painter
 {
 	name				pnt_shell
-	colora				pnt_shell_blue
-	colorb				pnt_shell_pink
-	bias				0.5
+	color				0.68333 0.40417 0.50833
+	colorspace			Rec709RGB_Linear
 }
 
 ##################################################
@@ -245,19 +366,39 @@ orennayar_material
 dielectric_material
 {
 	name				water
-	tau					pnt_water
+	tau			0.85 0.92 0.95
 	ior					1.33
 	scattering			5000.0
 }
 
-# Wet pebbles - polished with Perlin texture
-polished_material
+# Wet pebbles - a clear coat over a Perlin-textured base.  The coat weight
+# (polished `tau` before the slice-C migration) is locked to unity
+# here as an authoring choice (a uniform coat coverage), not because
+# the engine can't vary it: scalar_painter has since gained a `painter`
+# form (the P2.1 any-painter bridge, docs/WETNESS_COAT_DESIGN.md §3.6) that
+# binds ANY colour painter with a channel select, so
+# `scalar_painter { painter pnt_rock channel R }` bound to `coat_weight` would let
+# the coat coverage follow the same perlin field driving `reflectance`
+# below.  (An earlier version of this comment said scalar_painter had no
+# way to read a spatial painter at all; that stopped being true once the
+# `painter` bridge landed.)  The spatial colour variation still lives in
+# the perlin painter via `reflectance`.
+# Legacy phase 2 slice C: substrate of `wet_rock` (was polished_material reflectance).
+lambertian_material
+{
+	name				wet_rock_base
+	reflectance			pnt_rock
+}
+
+# Legacy phase 2 slice C: was polished_material (Fresnel dielectric coat over a Lambertian substrate) ->
+# coated_material over `wet_rock_base`; coat_weight = tau 1, coat_ior 1.45, coat_roughness 1/sqrt(2*800+1) = 0.02499 (SCENE_CONVENTIONS 11.5).
+coated_material
 {
 	name				wet_rock
-	reflectance			pnt_rock
-	tau					pnt_rock
-	ior					1.45
-	scattering			800.0
+	base				wet_rock_base
+	coat_weight			1
+	coat_ior			1.45
+	coat_roughness		0.02499
 }
 
 # Moss-covered rock - Oren-Nayar
@@ -268,11 +409,41 @@ orennayar_material
 	roughness			0.95
 }
 
-# Shell-like iridescent material
-lambertian_material
+# Legacy phase 2 slice C: white F0 tint for the thin-film materials.
+uniformcolor_painter
+{
+	name				pnt_tf_white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				tf_TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				tf_TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Shell-like iridescent material (a thin-film GGX since slice C)
+# Legacy phase 2 slice C: was lambertian_material; lambertian with iridescent `pnt_shell` -> pearlescent ggx: rd = mean colour 0.683 0.404 0.508 (w 0.958), TiO2 film 280 nm over a 1.5 dielectric (alpha 0.3), thickness matching its normal-incidence colour 0.7 0.4 0.5.
+ggx_material
 {
 	name				shell
-	reflectance			pnt_shell
+	rd					pnt_shell
+	rs					pnt_tf_white
+	alphax				0.3
+	alphay				0.3
+	fresnel_mode		thinfilm
+	ior					1.5
+	extinction			0
+	film_ior			tf_TiO2_n
+	film_extinction		tf_TiO2_k
+	film_thickness		280
 }
 
 ##################################################
@@ -300,7 +471,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				watergeom
-	radii				2.5 0.08 2.5
+	radii				1.25 0.04 1.25
 }
 
 standard_object
@@ -315,19 +486,19 @@ standard_object
 ellipsoid_geometry
 {
 	name				pebble1geom
-	radii				0.2 0.1 0.15
+	radii				0.1 0.05 0.075
 }
 
 ellipsoid_geometry
 {
 	name				pebble2geom
-	radii				0.15 0.08 0.18
+	radii				0.075 0.04 0.09
 }
 
 ellipsoid_geometry
 {
 	name				pebble3geom
-	radii				0.25 0.12 0.2
+	radii				0.125 0.06 0.1
 }
 
 standard_object
@@ -434,7 +605,9 @@ directional_light
 	name				sun
 	power				4.0
 	color				1.0 0.95 0.85
-	direction			-0.3 -1.0 0.5
+	colorspace			sRGB
+	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
+	direction			0.3 1.0 -0.5
 }
 
 # Warm fill from below/side to add life
@@ -443,6 +616,7 @@ omni_light
 	name				warm_fill
 	power				1.5
 	color				1.0 0.85 0.6
+	colorspace			sRGB
 	position			2 1.5 3
 }
 
@@ -453,16 +627,9 @@ spot_light
 	position			0 3 -3
 	target				0 0 0
 	color				0.7 0.8 1.0
+	colorspace			sRGB
 	power				4.0
 	inner				20
 	outer				50
 }
-/*
-irradiance_cache
-{
-	size				500
-	tolerance			0.3
-	min_spacing			8
-	max_spacing			100
-}
-*/
+

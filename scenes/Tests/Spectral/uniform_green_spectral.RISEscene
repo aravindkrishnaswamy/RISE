@@ -1,0 +1,103 @@
+RISE ASCII SCENE 7
+# Diagnostic: uniform-green sphere through the spectral integrator.
+# If this renders green, the spectral pipeline is sound and the
+# avocado_spectral monochrome issue is texture-specific.
+# If this renders monochrome, the issue is broader.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+# Legacy phase 2 slice B2: the former ambient_light, as a uniform environment (radiance_map
+# below).  radiance = ambient color x power / pi: the uniform radiance that lights an
+# unoccluded Lambertian surface as the ambient light did.  The environment is occluded,
+# so creases and interiors get darker (owner ruling #5).
+uniformcolor_painter
+{
+	name				pnt_ambient_env
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_spectral_rasterizer
+{
+	samples				16
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	hwss				false
+	radiance_map			pnt_ambient_env
+	radiance_scale			0.063662
+	radiance_background		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/uniform_green_spectral
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+film
+{
+	width			256
+	height			256
+}
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name				green
+	color				0.4 0.7 0.2
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name		green_mat
+	reflectance	green
+}
+
+sphere_geometry
+{
+	name		sph_geom
+	radius		1
+}
+
+standard_object
+{
+	name		sph
+	geometry	sph_geom
+	material	green_mat
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.5 1.0
+}

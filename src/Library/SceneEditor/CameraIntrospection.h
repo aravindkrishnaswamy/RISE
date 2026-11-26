@@ -1,0 +1,236 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CameraIntrospection.h - Descriptor-driven introspection of an
+//    ICamera for the interactive editor's properties panel.
+//
+//    Looks up the ChunkDescriptor that the parser uses to LOAD the
+//    camera (e.g. "pinhole_camera"), then produces a list of
+//    {name, kind, value-as-string, description} tuples by reading
+//    the camera's current state.  The same descriptor that drives
+//    parsing also drives the panel's rows — single source of truth.
+//
+//    Editing is done via SetProperty(): the caller hands back a
+//    string for the new value and we parse + dispatch to the right
+//    camera setter, then ask the camera to RegenerateData() once.
+//
+//  See docs/INTERACTIVE_EDITOR_PLAN.md.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef RISE_CAMERAINTROSPECTION_
+#define RISE_CAMERAINTROSPECTION_
+
+#include "../Interfaces/ICamera.h"
+#include "../Parsers/ChunkDescriptor.h"
+#include "../Utilities/RString.h"
+#include "SceneEdit.h"   // for CameraSnapshot used by Capture/ApplyCameraSnapshot
+#include <vector>
+#include <string>
+
+namespace RISE
+{
+	class IJob;
+
+	struct CameraProperty
+	{
+		String                       name;          // parameter name as it appears in scene files
+		ValueKind                    kind;          // descriptor kind (Double / DoubleVec3 / UInt / etc.)
+		String                       value;         // current value formatted as a string the user can edit
+		String                       description;   // descriptor's human-readable description
+		bool                         editable;      // false for fields like pixelAR that are const-bound
+		// Optional quick-pick presets surfaced to the editor as a
+		// combo box.  Values are parser-acceptable literals; the user
+		// can still type an arbitrary value (the line-edit stays).
+		std::vector<ParameterPreset> presets;
+		// Optional short unit suffix shown next to the editor field
+		// (e.g. "mm" for sensor_size / focal_length / shift_x/y, "°"
+		// for tilt and rotation angles, "scene units" for
+		// focus_distance, "" for dimensionless params like fstop).
+		// The presence of a unit label lets the panel disambiguate at
+		// a glance — the user-visible "35" then reads as "35 mm"
+		// rather than possibly being misread as "35 metres".
+		String                       unitLabel;
+		// Jump-to-definition (GUI redesign, 2026-07-22): for a
+		// ValueKind::Reference row, the descriptor's declared target
+		// categories (ParameterDescriptor::referenceCategories) —
+		// what KIND of element the value names.  Empty for non-Reference
+		// rows.  The shell never interprets this directly; it asks
+		// SceneEditController::PropertyJumpTarget, which resolves the
+		// row's value against the live managers first-wins (the same
+		// order ComputeChunkRefs uses) and hands back a UI Category to
+		// SetSelection on.
+		std::vector<ChunkCategory>   referenceCategories;
+
+		// doc 88 S4b (Tier-1 param sliders): an authored NUMERIC RANGE for this
+		// row, so a shell can render a slider instead of a bare text field.
+		// `hasRange` is true only when BOTH bounds are known — a one-sided bound
+		// cannot drive a slider, and silently inventing the missing end is how a
+		// panel comes to clamp a value the scene language accepts.  The only
+		// producer today is PainterIntrospection's expression `param[i]` rows,
+		// which read `min` / `max` / `step` off the ParamSpec the painter parsed
+		// at construction (ExpressionParamSpec.h); every other row leaves
+		// `hasRange` false and the shells keep drawing the field they already do.
+		//
+		// `rangeStep` is 0 when the author declared none — "continuous", i.e. the
+		// slider's own default granularity.  It is NOT a sentinel for "no range";
+		// that is `hasRange` alone.
+		//
+		// NOT the descriptor-level `range`/`softRange` hint MATERIAL_EDITOR.md
+		// §2.2 still wants: this carries an AUTHOR's per-param intent out of the
+		// scene text.  A future descriptor hint can populate these same three
+		// fields for rows that have no ParamSpec without either shell changing.
+		bool                         hasRange;
+		Scalar                       rangeMin;
+		Scalar                       rangeMax;
+		Scalar                       rangeStep;
+
+		// Material Editor Slice 3 (inline constant painter editing & slot swatches):
+		// For a ValueKind::Reference row whose referenceCategories include
+		// ChunkCategory::Painter or ChunkCategory::Function:
+		//   - `targetsPainter` is true so the inspector can show a 18x18
+		//     PainterPreview thumbnail next to the reference chip.
+		//   - When the slot is bound to a CST-authored constant painter chunk
+		//     (`uniformcolor_painter` with 3 finite decimal numbers in `color`, or
+		//     Form-1 `scalar_painter` with a single `value` parameter),
+		//     `inlinePainterKind` identifies the constant form,
+		//     `inlinePainterValue` holds the painter's `color` or `value` text, and
+		//     `inlinePainterRefCount` reports how many reference uses in the CST
+		//     document resolve to that painter chunk (`1` = solely owned by this
+		//     slot; `> 1` = shared across multiple slots/entities).
+		enum class InlinePainterKind : int
+		{
+			None         = 0,
+			UniformColor = 1,
+			ScalarValue  = 2
+		};
+		bool                         targetsPainter;
+		InlinePainterKind            inlinePainterKind;
+		String                       inlinePainterValue;
+		unsigned int                 inlinePainterRefCount;
+
+		// Every producer sets name/kind/value/description/editable explicitly;
+		// this ctor exists so the S4b range trio (and `editable`, historically
+		// indeterminate until assigned) has a defined value on a default-
+		// constructed row — a row that reaches a shell with an indeterminate
+		// `hasRange` would draw a slider over garbage bounds.
+		CameraProperty()
+		: kind( ValueKind::String )
+		, editable( false )
+		, hasRange( false )
+		, rangeMin( 0 )
+		, rangeMax( 0 )
+		, rangeStep( 0 )
+		, targetsPainter( false )
+		, inlinePainterKind( InlinePainterKind::None )
+		, inlinePainterRefCount( 0 )
+		{}
+	};
+
+	class CameraIntrospection
+	{
+	public:
+		//! Returns one CameraProperty per parameter the camera's chunk
+		//! descriptor declares.  The list is fully descriptor-driven so
+		//! adding a parameter to the parser automatically surfaces it
+		//! here.  Returns empty vector if the camera type isn't
+		//! recognised.
+		//!
+		//! `includeRollOrientation` — the properties panel hides the
+		//! `orientation` (pitch/yaw/roll) Vec3 row as UI clutter; the
+		//! Roll tool mutates it directly.  The SAVE path must still see
+		//! it so a roll edit can be diffed and round-tripped — it passes
+		//! `true`.  The pitch/yaw/roll scalar shadows and the
+		//! `target_orientation` Vec3 (theta/phi cover it) stay filtered
+		//! either way.
+		static std::vector<CameraProperty> Inspect( const ICamera& camera,
+		                                            bool includeRollOrientation = false );
+
+		//! Parse `value` according to the descriptor kind and apply to
+		//! the camera.  Calls RegenerateData() on success.  Returns
+		//! false on parse failure or if the parameter isn't editable.
+		static bool SetProperty( ICamera& camera,
+		                         const String& name,
+		                         const String& value );
+
+		//! Read the named property's current value as a formatted
+		//! string (in the same form `SetProperty` accepts).  Used by
+		//! the undo path to capture the prev-value before a panel edit.
+		//! Returns empty string for unknown / unreadable properties.
+		static String GetPropertyValue( const ICamera& camera,
+		                                const String& name );
+
+		//! BIT-EXACT capture / restore of the pose fields a transient
+		//! override (the agent's `view` / `camera` / `isolate` / `zoom`
+		//! renders) touches: "location" (the REST position, pre-orbit),
+		//! "lookat", "up", "orientation", "target_orientation" and (pinhole)
+		//! "fov".  The values are the camera's STORED doubles in their native
+		//! units (radians for the angles) -- no string formatting, no degree
+		//! round trip -- so capture -> override -> restore leaves the live
+		//! camera exactly as it was.  GetPropertyValue/SetProperty cannot do
+		//! that: they format with `%.6g` and convert through degrees, which is
+		//! right for a panel and wrong for "put it back".  `out` / `in` hold
+		//! up to three components (target_orientation uses two, fov one).
+		//! Returns false for any other name or a camera that cannot carry the
+		//! field; RestoreExactValue regenerates the camera's derived data.
+		static bool CaptureExactValue( const ICamera& camera, const String& name, double out[3] );
+		static bool RestoreExactValue( ICamera& camera, const String& name, const double in[3] );
+
+		//! Snapshot every field of the camera into a value-typed
+		//! struct.  Used by `SceneEdit::AddCamera` so Redo can
+		//! deterministically recreate the new camera even after the
+		//! source has been edited.  Returns false if the camera is
+		//! not one of the four built-in types (Pinhole / ThinLens /
+		//! Fisheye / Orthographic) — out-of-tree camera types fall
+		//! back to "can't be cloned" rather than corrupting state.
+		static bool CaptureCameraSnapshot( const ICamera& camera,
+		                                   CameraSnapshot& outSnapshot );
+
+		//! Register a new camera under `newName` using the snapshot's
+		//! field values.  Dispatches on `snapshot.type` to the matching
+		//! `IJob::Add*Camera` factory.  Returns false on null/empty
+		//! name, duplicate name (per Add*Camera contract), or unknown
+		//! type discriminator.  By the existing "last added wins"
+		//! policy the new camera becomes active on success — callers
+		//! that need to preserve a different active camera (e.g. undo
+		//! restoring the prior active) MUST call SetActiveCamera
+		//! AFTER returning.
+		static bool AddCameraFromSnapshot( IJob& job,
+		                                   const String& newName,
+		                                   const CameraSnapshot& snapshot );
+
+		//! Returns the scene-file chunk keyword for this camera —
+		//! "pinhole_camera" / "thinlens_camera" / "fisheye_camera" /
+		//! "orthographic_camera" — or empty for an out-of-tree type.
+		//! Current consumers: CameraIntrospection::Inspect (descriptor
+		//! lookup for the property panel) and BuildCameraChunkText (the
+		//! CST camera-clone chunk insert).  (Historically added in Phase
+		//! C so the byte-splice save engine could emit a fresh chunk for
+		//! a newly-created (cloned) camera; that engine went with the
+		//! Slice-6d deletion.)
+		static String GetDescriptorKeyword( const ICamera& camera );
+
+		//! Model-B P5 (camera-clone CST insert): build a FAITHFUL,
+		//! re-derivable scene-file chunk for `camera` under `cloneName`.
+		//! The keyword is the camera's type; the body emits `name
+		//! <cloneName>` followed by every AUTHORABLE pose/param row
+		//! (location / lookat / up / orientation / theta / phi + fov /
+		//! thinlens photographic quartet / fisheye scale / orthographic
+		//! viewport_scale + exposure / scanning_rate / pixel_rate), each
+		//! formatted in the form the parser accepts (degrees for angles,
+		//! mm / scene-units as the descriptor declares) so a re-derive of
+		//! this chunk reproduces an equivalent camera.  NO width / height
+		//! / pixelAR (the `film` chunk owns dims; pixelAR is const-bound).
+		//! The chunk has NO trailing newline (the inter-chunk separator is
+		//! a separate trivia leaf the caller inserts).  Returns an empty
+		//! string for an out-of-tree / ONB camera type (not re-derivable).
+		static std::string BuildCameraChunkText( const ICamera& camera,
+		                                         const String& cloneName );
+	};
+}
+
+#endif

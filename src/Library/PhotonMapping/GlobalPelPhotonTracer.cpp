@@ -13,11 +13,13 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/PathVertexEval.h"
 #include "GlobalPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/GradedIndexMedium.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -51,13 +53,12 @@ void GlobalPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	GlobalPelPhotonMap& pPhotonMap,
 	const bool bStorePhoton,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack (not modified; DL-315)
+	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
-	static unsigned int		numRecursions = 0;
-
 #ifdef ENABLE_MAX_RECURSION
-	if( numRecursions > nMaxRecursions )
+	if( depth > nMaxRecursions )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -74,12 +75,11 @@ void GlobalPelPhotonTracer::TracePhoton(
 		return;
 	}
 
-	numRecursions++;
-
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaSampler(random);
+	pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 
 	if( ri.geometric.bHit )
 	{
@@ -89,9 +89,47 @@ void GlobalPelPhotonTracer::TracePhoton(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// G6: stamp the ambient (incident-medium) IOR from the stack so the
+		// GGX conductor Fresnel evaluated in SPF::Scatter sees the surrounding
+		// medium (e.g. enamel glass) rather than hardcoded air.  Read BEFORE
+		// SetCurrentObject so top() is the medium the photon was travelling
+		// through.  Guard a non-positive stack top to air (1.0).
+		{
+			const Scalar ambIOR = ior_stack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 
+		// DL-315: this hit's current object lives on a COPY; the caller's
+		// stack is `const` and is no longer written through (IORStack's
+		// pCurrentObject used to be `mutable`).
+		IORStack hitStack( ior_stack );
+
+		// DL-292: the interior-segment graded-index factor (DL-09) for the
+		// straight segment this photon just traced, in IMPORTANCE order
+		// (n(hit)/top)^2 -- a straight graded segment has no refraction
+		// Jacobian to supply it implicitly, unlike an interface.  Paid on
+		// the photon's power here, so a gather that pairs it with an eye
+		// walk (which pays its own radiance-order factors) prices the path
+		// as PT/BDPT do; the stack top is re-recorded as n(hit), so the
+		// next segment telescopes.  Exactly nothing happens unless the
+		// medium the photon travelled through is graded.  Before DL-292
+		// the photon tracers never Advanced: photon-map gathers kept the
+		// pre-DL-09 accounting.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eImportance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		RISEPel hitPower( power );
+		if( gradedScale != Scalar( 1 ) ) {
+			hitPower = hitPower * gradedScale;
+		}
+		hitStack.SetCurrentObject( ri.pObject );
+
+		if( !ri.pMaterial ) {
+			return;
+		}
 		ISPF* pSPF = ri.pMaterial->GetSPF();
 
 		if( pSPF )
@@ -100,7 +138,14 @@ void GlobalPelPhotonTracer::TracePhoton(
 			ScatteredRayContainer		scattered;
 
 			IndependentSampler samplerWrapper( random );
-		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
+		// IMPORTANCE mode: NO eta^2 basic-radiance factor (debt 30).
+		// A photon carries FLUX, and flux is conserved across a smooth
+		// interface up to Fresnel -- it is RADIANCE that picks up
+		// (eta_before/eta_after)^2, and only on the camera-rooted side.
+		// Scaling here too would cancel the non-symmetry and put every
+		// gather/merge that pairs a photon with an eye vertex back where
+		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, hitStack );
 
 			bool bDiffuseComponentAvailable = false;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
@@ -112,27 +157,29 @@ void GlobalPelPhotonTracer::TracePhoton(
 			}
 
 			if( bDiffuseComponentAvailable && bStorePhoton ) {
-				pPhotonMap.Store( power, ri.geometric.ptIntersection, ri.geometric.vNormal, -ray.Dir() );
+				// Store incident flux before this surface response. The cache
+				// retains directions and the geometric anchor plane; the query
+				// supplies the BSDF, shading frame and material position.
+				pPhotonMap.Store( hitPower * (1 / ri.acceptedAlphaCoverage), ri.geometric.ptIntersection, ri.geometric.vGeomNormal, -ray.Dir() );
 			}
 
 			if( bBranch ) {
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack );
+					TracePhoton( scat.ray, hitPower*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
 				}
 			} else {
-				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+				Scalar selectedProbability=0;
+				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack );
+					TracePhoton( pScat->ray, hitPower*pScat->kray*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:hitStack, depth+1 );
 				}
 			}
 		}
 	}
 
 	// If there was no hit then the photon just got ejected into space!
-
-	numRecursions--;
 }
 

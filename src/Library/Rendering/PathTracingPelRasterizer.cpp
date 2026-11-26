@@ -23,7 +23,10 @@
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Interfaces/IScene.h"
+#include "../Utilities/Profiling.h"
 #include "ProgressiveFilm.h"
+#include "OIDNDenoiser.h"
+#include "../RasterImages/RasterImage.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -34,23 +37,173 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ ),
-  pIntegrator( 0 )
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ , frameStore),
+  pIntegrator( 0 ),
+	  mHasVariantTransportConfig( false ),
+	  mVariantMaxPathDepth( kDefaultPathTracingMaxDepth ),
+	  mVariantIndirectOnly( false ),
+	  mVariantClayOverride( false ),
+	  mInteractiveDenoiseSuppressed( false ),
+	  mCaptureDirectCompanion( false ),
+	  pDirectCompanionImage( 0 ),
+	  pDirectCompanionRawImage( 0 ),
+	  mDirectCompanionDenoised( false ),
+	  mDirectCompanionHasRegion( false ),
+	  mDirectCompanionRegion( 0, 0, 0, 0 ),
+	  pSMSPhotonMap( 0 ),
+  mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
-		false,
 		smsConfig,
 		stabilityConfig
 		);
-	pIntegrator->addref();
+}
+
+#ifdef RISE_ENABLE_OIDN
+bool PathTracingPelRasterizer::ShouldDenoise() const
+{
+	return !mInteractiveDenoiseSuppressed.load( std::memory_order_acquire )
+		&& PixelBasedPelRasterizer::ShouldDenoise();
+}
+
+
+#endif
+
+void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
+{
+	mHasVariantTransportConfig = true;
+	mVariantMaxPathDepth = n ? n : kDefaultPathTracingMaxDepth;
+	if( pIntegrator ) {
+		pIntegrator->SetMaxPathDepth( n );
+	}
+}
+
+void PathTracingPelRasterizer::SetIndirectOnly( bool b )
+{
+	mHasVariantTransportConfig = true;
+	mVariantIndirectOnly = b;
+	if( pIntegrator ) {
+		pIntegrator->SetIndirectOnly( b );
+	}
+}
+
+void PathTracingPelRasterizer::SetClayOverride( bool b )
+{
+	mHasVariantTransportConfig = true;
+	mVariantClayOverride = b;
+	if( pIntegrator ) {
+		pIntegrator->SetClayOverride( b );
+	}
+}
+
+void PathTracingPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	PixelBasedPelRasterizer::PrepareRuntimeContext( rc );
+	rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+		&rc.pStabilityConfig->maxTranslucentBounce : nullptr;
+	if( mHasVariantTransportConfig ) {
+		rc.hasPathTracingVariantConfig = true;
+		rc.pathTracingMaxDepth = mVariantMaxPathDepth;
+		rc.pathTracingIndirectOnly = mVariantIndirectOnly;
+		rc.pathTracingClayOverride = mVariantClayOverride;
+	}
 }
 
 PathTracingPelRasterizer::~PathTracingPelRasterizer()
 {
 	safe_release( pIntegrator );
+	safe_release( pDirectCompanionImage );
+	safe_release( pDirectCompanionRawImage );
+	if( pSMSPhotonMap ) {
+		delete pSMSPhotonMap;
+		pSMSPhotonMap = 0;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// PreRenderSetup — path-guiding training + SMS photon-aided seeding.
+//
+// Delegates to PixelBasedPelRasterizer::PreRenderSetup for the path
+// guiding training phase, then (optionally) builds the SMS photon
+// map.  Missing the super-class call was a silent bug: guiding was
+// configured, OpenPGL linked, but the training loop never ran, so
+// pGuidingField stayed null and IntegratePixelRGB fell back to BRDF
+// sampling.
+//
+// PathTracing rasterizers reach the manifold solver through
+// pIntegrator->GetSolver() rather than holding their own
+// ManifoldSolver* member.
+//////////////////////////////////////////////////////////////////////
+void PathTracingPelRasterizer::PreRenderSetup(
+	const IScene& pScene,
+	const Rect* pRect
+	) const
+{
+	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
+	safe_release( pDirectCompanionRawImage );
+	mDirectCompanionDenoised = false;
+	mDirectCompanionHasRegion = pRect != 0;
+	if( pRect ) {
+		mDirectCompanionRegion = *pRect;
+	}
+
+	if( mCaptureDirectCompanion ) {
+		const IFilm* film = pScene.GetFilm();
+		const unsigned int width = film ? film->GetWidth() : 0;
+		const unsigned int height = film ? film->GetHeight() : 0;
+		if( width && height ) {
+			if( !pDirectCompanionImage
+			 || pDirectCompanionImage->GetWidth() != width
+			 || pDirectCompanionImage->GetHeight() != height )
+			{
+				safe_release( pDirectCompanionImage );
+				pDirectCompanionImage = new RISERasterImage(
+					width, height, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
+			} else {
+				pDirectCompanionImage->Clear(
+					RISEColor( RISEPel( 0, 0, 0 ), 0.0 ), nullptr );
+			}
+			mDirectCompanionSums.assign(
+				static_cast<std::size_t>( width ) * height, RISEPel( 0, 0, 0 ) );
+			mDirectCompanionWeights.assign(
+				static_cast<std::size_t>( width ) * height, Scalar( 0 ) );
+		}
+	} else {
+		safe_release( pDirectCompanionImage );
+		mDirectCompanionSums.clear();
+		mDirectCompanionWeights.clear();
+	}
+
+	if( !pIntegrator ) {
+		return;
+	}
+	ManifoldSolver* pSolver = pIntegrator->GetSolver();
+	if( !pSolver ) {
+		return;
+	}
+
+	// Cache the scene's specular casters once for the SMS uniform-seeding
+	// path (Mitsuba-faithful single-/multi-scatter; consumed in a later
+	// implementation phase).  Cheap to do unconditionally — runs once per
+	// render and only iterates objects that have a material attached.
+	std::vector<const IObject*> casters;
+	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
+	pSolver->SetSpecularCasters( std::move( casters ) );
+
+	if( mSMSPhotonCount == 0 ) {
+		return;
+	}
+
+	if( !pSMSPhotonMap ) {
+		pSMSPhotonMap = new SMSPhotonMap();
+	}
+	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
+	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
 }
 
 unsigned int PathTracingPelRasterizer::GetProgressiveTotalSPP() const
@@ -75,9 +228,12 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 	const IScene& pScene,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	RISEPel* pDirectCompanion,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return RISEPel( 0, 0, 0 );
@@ -88,8 +244,13 @@ RISEPel PathTracingPelRasterizer::IntegratePixelRGB(
 		return RISEPel( 0, 0, 0 );
 	}
 
+	if( pDirectCompanion ) {
+		return pIntegrator->IntegrateRayDirectIndirect(
+			rc, rast, cameraRay, pScene, *pCaster, sampler,
+			pRadianceMap, *pDirectCompanion, pAOV, pPrimaryHit );
+	}
 	return pIntegrator->IntegrateRay(
-		rc, rast, cameraRay, pScene, *pCaster, sampler, pRadianceMap, pAOV );
+		rc, rast, cameraRay, pScene, *pCaster, sampler, pRadianceMap, pAOV, pPrimaryHit );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -110,6 +271,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -119,14 +281,22 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -136,10 +306,6 @@ void PathTracingPelRasterizer::IntegratePixel(
 	uint32_t pixelSeed;
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
-
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 	const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 	if( useZSobol &&
@@ -166,6 +332,18 @@ void PathTracingPelRasterizer::IntegratePixel(
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
+	const std::size_t companionIndex = pDirectCompanionImage
+		? static_cast<std::size_t>( y ) * pDirectCompanionImage->GetWidth() + x
+		: 0;
+	RISEPel directAccrued( 0, 0, 0 );
+	Scalar directWeights = 0;
+	const bool captureDirect = mCaptureDirectCompanion
+		&& pDirectCompanionImage
+		&& companionIndex < mDirectCompanionSums.size();
+	if( captureDirect ) {
+		directAccrued = mDirectCompanionSums[companionIndex];
+		directWeights = mDirectCompanionWeights[companionIndex];
+	}
 
 	// Welford online variance state (luminance-based)
 	Scalar wMean = 0;
@@ -177,7 +355,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		colAccrued = px.colorSum;
+		colAccrued = px.LoadPelPassInit();
 		weights = px.weightSum;
 		alphas = px.alphaSum;
 		wMean = px.wMean;
@@ -199,7 +377,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 		} else {
 			samples.push_back( Point2( 0, 0 ) );
 		}
@@ -213,20 +391,21 @@ void PathTracingPelRasterizer::IntegratePixel(
 			if( bMultiSample ) {
 				const bool filmMode = (pFilteredFilm != 0);
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
+				} else if( pPixelFilter ) {
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 				} else {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
+					weight = 1.0;
 				}
 			} else {
-				ptOnScreen = Point2( x, height-y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weights += weight;
 
-			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
+				AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
 			// For ZSobol, remap the sample index via Morton code for
@@ -243,31 +422,50 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 			rc.pSampler = &sampler;
 
-#ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
-			const RISEPel sampleColor = IntegratePixelRGB(
+			RISEPel directSample( 0, 0, 0 );
+			bool primaryHit = false;
+			const bool transparentBg = GetTransparentBackground();
+			RISEPel sampleColor = IntegratePixelRGB(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
-				pAOVBuffers ? &aov : 0 );
-			if( pAOVBuffers && aov.valid ) {
-				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				pAOVBuffers ? &aov : 0, captureDirect ? &directSample : nullptr,
+				transparentBg ? &primaryHit : nullptr );
+			const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+			if( sampleAlpha == Scalar( 0.0 ) ) {
+				sampleColor = RISEPel( 0, 0, 0 );
+				directSample = RISEPel( 0, 0, 0 );
 			}
-#else
-			const RISEPel sampleColor = IntegratePixelRGB(
-				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap, 0 );
-#endif
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+			}
+			if( captureDirect ) {
+				directAccrued = directAccrued + directSample * weight;
+				directWeights += weight;
+			}
+
+			RISE_PROFILE_INC(nSamplesAccumulated);
 
 			if( pFilteredFilm ) {
-				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleColor, *pPixelFilter );
+				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleColor, *pPixelFilter, sampleAlpha );
 				colAccrued = colAccrued + sampleColor;
-				alphas += 1.0;
+				alphas += sampleAlpha;
 			} else {
 				colAccrued = colAccrued + sampleColor * weight;
-				alphas += weight;
+				alphas += sampleAlpha * weight;
 			}
 
-			// Welford update on luminance
-			if( adaptive || pProgFilm ) {
+			// Welford update on luminance.  Gated on `adaptive` only:
+			// see BDPTPelRasterizer for the multi-pass selection-bias
+			// rationale — convergence-based termination must NOT fire
+			// in non-adaptive progressive mode.
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -280,7 +478,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 		}
 
 		// Check convergence after enough batches for reliable statistics.
-		if( (adaptive || pProgFilm) && wN >= 32 )
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -306,7 +504,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
-		px.colorSum = colAccrued;
+		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
 		px.wMean = wMean;
@@ -315,12 +513,18 @@ void PathTracingPelRasterizer::IntegratePixel(
 		px.sampleIndex = globalSampleIndex;
 		px.converged = converged;
 	}
+	if( captureDirect ) {
+		mDirectCompanionSums[companionIndex] = directAccrued;
+		mDirectCompanionWeights[companionIndex] = directWeights;
+		if( directWeights > 0 ) {
+			pDirectCompanionImage->SetPEL(
+				x, y, RISEColor( directAccrued * ( 1.0 / directWeights ), 1.0 ) );
+		}
+	}
 
-#ifdef RISE_ENABLE_OIDN
 	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
-#endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
 		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
@@ -328,5 +532,48 @@ void PathTracingPelRasterizer::IntegratePixel(
 	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
+	} else {
+		cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 	}
+
+	RISE_PROFILE_INC(nPixelsResolved);
+}
+
+void PathTracingPelRasterizer::PostRenderCleanup() const
+{
+	// Preserve PixelBasedPelRasterizer's path-guiding and optimal-MIS teardown.
+	// This override only adds companion denoising; it does not replace the
+	// inherited per-render cleanup contract.
+	PixelBasedPelRasterizer::PostRenderCleanup();
+#ifdef RISE_ENABLE_OIDN
+	if( mCaptureDirectCompanion && pDirectCompanionImage && pAOVBuffers
+	 && pAOVBuffers->HasData() && ShouldDenoise() )
+	{
+		pDirectCompanionRawImage = new RISERasterImage(
+			pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+			RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
+		for( unsigned int y = 0; y < pDirectCompanionImage->GetHeight(); ++y ) {
+			for( unsigned int x = 0; x < pDirectCompanionImage->GetWidth(); ++x ) {
+				pDirectCompanionRawImage->SetPEL(
+					x, y, pDirectCompanionImage->GetPEL( x, y ) );
+			}
+		}
+		if( mDirectCompanionHasRegion ) {
+			mDenoiser->ApplyDenoiseRegion(
+				*pDirectCompanionImage, *pAOVBuffers,
+				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+				mDirectCompanionRegion.left, mDirectCompanionRegion.top,
+				mDirectCompanionRegion.right, mDirectCompanionRegion.bottom,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				EstimateDenoiseWorkPerMegapixel() );
+		} else {
+			mDenoiser->ApplyDenoise(
+				*pDirectCompanionImage, *pAOVBuffers,
+				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				EstimateDenoiseWorkPerMegapixel() );
+		}
+		mDirectCompanionDenoised = true;
+	}
+#endif
 }

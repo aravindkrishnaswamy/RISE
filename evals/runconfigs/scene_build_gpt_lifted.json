@@ -1,0 +1,11 @@
+{
+  "//": "gpt-5.6-terra on the furnished-scene family with the LIFTED budget (maxLlmCalls 80->200, maxToolCalls 120->300). Tests whether the budget-80 starvation (8/9 gpt died on budget_llm_calls mid-refine, only the 1 that finished scored 0.8) was masking real completions. Fresh runDir preserves the budget-80 gpt run for before/after.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [ { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" } ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_gpt_lifted"
+}

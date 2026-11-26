@@ -1,0 +1,1452 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           weathered_workbench.RISEscene                                                          #
+#   Description:    Textures showcase 1/4 (doc 88 Phase 1+2 arc) -- a wooden workbench with a bolted-on   #
+#                   cast-iron bench vise and a de-tiled diamond-plate tool tray.  The TOP is eight          #
+#                   boards of softwood, an sdf_geometry with real joints, driven by ONE                     #
+#                   expression_painter field whose R channel colours and roughens it and whose G            #
+#                   channel drives relief_modifier relief_wood.  The four legs carry the same wood at       #
+#                   their own footprint, grain running up the post, plain.  The tool tray is a              #
+#                   checker_painter hex-tiled via stochastic_tile_painter to break its grid repeat --       #
+#                   no tileable photo/scan asset exists in-repo, so this demo substitutes a procedural      #
+#                   checker source to exercise the de-tiling MECHANISM; the intended use of                 #
+#                   stochastic_tile_painter is a small tiling photo/scan, per the skill.                    #
+#                                                                                                           #
+#   THE BENCH TOP.  Until 2026-09-10 this was a single box_geometry under one isotropic                     #
+#   domain-warped fbm, with a scatter_painter of dark stamps multiplied on as "oil stains" --               #
+#   and the standing criticism of it was exactly right: streaky yellow noise with black                     #
+#   blotches, obviously a generated texture rather than something organic.  The vise beside it              #
+#   had already been rebuilt to plank_closeup.RISEscene's seven-rule doctrine; the top is now               #
+#   built to the same one, and the fbm, the scatter_painter and the blend_painter are gone, not             #
+#   re-skinned.  (scatter_painter keeps its dedicated coverage in                                           #
+#   scenes/Tests/Painters/stochastic_scatter.RISEscene.)                                                    #
+#                                                                                                           #
+#   1. THE FOOTPRINT WAS MEASURED FIRST, AND EVERY SIZE FOLLOWS FROM IT.  Painting `fw*15` on               #
+#      the top as a lambertian under a flat white environment and dividing by a flat-albedo                 #
+#      control gives, over the visible top face, fw p50 = 10.7 mm -- 8.1 mm at the near edge and            #
+#      15.5 mm at the far one.  The gradient IS the design brief: this is a horizontal plane seen           #
+#      from 14 degrees above it, so the perpendicular pixel spacing of 5.3-5.6 mm is divided by an          #
+#      incidence cosine near 0.2.  The vise, measured the same way, reads 7.95 mm -- and the                #
+#      FRONT EDGE of this same top reads about 1 mm, because it is seen near face-on.  One object           #
+#      can be in two footprint regimes at once, and the cathedral figure that reads beautifully on          #
+#      the front edge is exactly the figure that must be faded out on the top.                              #
+#                                                                                                           #
+#   2. WHAT A 10.7 mm PIXEL CAN SEE OF A BENCH TOP IS ITS BOARDS.  Growth rings are 4-7 mm apart:           #
+#      half a pixel, and in colour they are the streaky noise the criticism named.  So the rings            #
+#      go to ROUGHNESS alone (`sp_top_ring`), and the structure goes to eight boards -- 133 mm              #
+#      wide, 12 px, separated by 5 mm joints that are REAL GEOMETRY -- each with its own pith               #
+#      depth, pith offset, axis tilt, ring spacing and tone.  That per-board independence is the            #
+#      single loudest cue that this is lumber: the figure on one board has nothing to do with its           #
+#      neighbour's, and it STOPS at the joint.                                                              #
+#                                                                                                           #
+#   3. EXCEPT AT THE CATHEDRAL CROWNS, AND THAT EXCEPTION IS MEASURED, NOT TASTED.  Ring spacing            #
+#      ON THE FACE is `ring_m / sin(theta)`, and at the crown of an arch theta goes to zero, so a           #
+#      4.5 mm ring opens to 40-100 mm of face spacing.  `rfade` computes that face spacing                  #
+#      analytically -- the ring coordinate's gradient projected into the surface is                         #
+#      `sqrt(1 - (u.N)^2)` -- and fades the ring term in against `fw` itself.  Below ~1.15 px the           #
+#      rings are roughness only; past ~2.6 they are colour, relief and roughness together.  The             #
+#      same gate runs on the legs and admits MORE there, unaltered, because their `fw` is smaller.          #
+#                                                                                                           #
+#   4. ONE FIELD, BUT TWO CHANNELS.  `expr_top` returns a vec3: R is what the surface LOOKS like            #
+#      (wood plus every process term), G is what it is SHAPED like (the continuous coarse                   #
+#      undulation).  `ramp_top` and `sp_top_rough` read R; `sp_wood_relief` reads G.  This is one           #
+#      evaluation and one field -- but the two consumers stop at different points in the same sum,          #
+#      for a reason that cost four rounds and is recorded below.                                            #
+#                                                                                                           #
+#   5. PROCESS TIED TO GEOMETRY, AS ALWAYS.  `convexity(0.010)` polishes the board arrises and              #
+#      the front edge a forearm rubs; the analytic distance to the board edge puts the crack and            #
+#      its dirt in the joint; `proximity(0.02)` -- the cross-object signal -- keeps the grime the           #
+#      vise's flange deposits; a hand-placed halo puts wear where the work is.  The rare events             #
+#      are rare and hand-placed: two knots with the rings sweeping around them, one ring left by a          #
+#      wet tin, one patch where oil soaked in.  Nothing is scattered.                                       #
+#                                                                                                           #
+#   THE VISE.  Until 2026-09-06 the "iron vise" here was two box_geometry under an isotropic worley3d       #
+#   field reprojected by mapping_painter{projection world} -- and the standing criticism of it was exactly  #
+#   right: it said nothing about what it was, and it looked like a generated texture rather than an         #
+#   object.  It is now built against the seven-rule doctrine in the header of                               #
+#   plank_closeup.RISEscene, whose rule 7 (silhouette first) named this vise as its counter-example.        #
+#   The worley chunks and the mapping_painter are gone, not re-skinned.                                     #
+#                                                                                                           #
+#   1. THE FOOTPRINT WAS MEASURED FIRST, AND EVERY SIZE FOLLOWS FROM IT.  Painting clamp(fw*50,0,1) on      #
+#      the vise as a lambertian and dividing by a flat-albedo control gives fw p50 = 7.95 mm over the       #
+#      object (the geometric pixel spacing at its 3.38 m axial depth is 5.4 mm, so fw runs about 1.5 px     #
+#      here).  That single number decides the whole surface: a feature needs ~3 px to carry shape, so the   #
+#      casting undulation is 33 mm (6 px) and the paint chips 20-40 mm, and a real casting's 1-3 mm         #
+#      pitting -- a fifth of a pixel -- is BANNED from colour and relief and sent to roughness alone.       #
+#      This is why the vise carries no pits at all where the nail in plank_closeup carries plenty: the      #
+#      two scenes are 20x apart in footprint, and the sizes are not transferable.                           #
+#                                                                                                           #
+#   2. THE SILHOUETTE SAYS "BENCH VISE" BEFORE ANY TEXTURE.  Fifteen sdf_geometry parts: a bolted base      #
+#      flange with four proud bolt heads, a cast body carrying the fixed rear jaw with a flat anvil pad     #
+#      behind it, a machined slide bar, a movable front jaw on it, two hardened jaw pads standing proud     #
+#      of both castings, a lead screw, a thrust collar and a T-handle hanging off-centre in its hole.       #
+#      The castings are smin-joined (k 0.014-0.030) so they carry the fillets a drawn casting has; the      #
+#      bar, the pads and the bolt heads are HARD unions, because a machined part meets a casting at an      #
+#      edge.  The object is yawed 48 degrees -- a swivel base is what a vise has one FOR -- which is the    #
+#      only orientation that shows the jaw gap, the jaw faces and the full length of the handle at once.    #
+#                                                                                                           #
+#   3. ONE FIELD, FOUR CONSUMERS.  expr_vise runs a WEATHERING axis (machined steel -> paint -> the cast    #
+#      iron a chip exposes -> rust); ramp_vise colours it, sp_vise_rough bridges it to GGX roughness,       #
+#      sp_vise_relief bridges it raw into relief_vise, and sp_vise_ior / sp_vise_extinction bridge it into  #
+#      the FRESNEL, so the same field that says "this is paint" also stops that point being a conductor.    #
+#      Variation is tied to the geometry throughout: occlusion() puts grime and rust in the fillets and     #
+#      under the flange lip, -N.y rusts the undersides, curv chips the paint off the drawn arrises, and a   #
+#      Po-space part mask -- not a noise -- decides which faces are machined.                               #
+#                                                                                                           #
+#   ------------------------------------------------------------------------------------------------      #
+#   WHAT WAS TRIED AND WAS WRONG                                                                            #
+#   ------------------------------------------------------------------------------------------------      #
+#                                                                                                           #
+#   -- (BENCH TOP) THE RING-EDGE WARP IS DEAD AT THIS DISTANCE, AND WAS DELETED RATHER THAN LEFT IN.        #
+#      It was authored exactly as the plank's -- 17 mm across the grain by 170 mm along, amplitude          #
+#      held under a quarter ring -- and `fbm` fades the octaves the pixel footprint cannot resolve,         #
+#      so at a 10.7 mm footprint it returned essentially zero everywhere.  Probing the field is what        #
+#      caught it.  The same probe caught the COARSE FIGURE half-faded for the same reason: at               #
+#      38 x 145 mm it was arriving at +-0.017 of field against an intended +-0.08, and the board            #
+#      faces read blank.  At 77 x 285 mm it survives.  OCTAVE SIZE IS NOT A TASTE DECISION, and the         #
+#      auto domain-scale fade means a term can be authored, correct, and entirely absent.                   #
+#                                                                                                           #
+#   -- (BENCH TOP) A PROCESS TERM WITH A HEIGHT IS WHAT MADE THE JOINTS BLACK.  Binding the whole           #
+#      field raw to `relief_modifier` -- doctrine 5 as the plank states it -- put 591 near-black            #
+#      pixels per 10000 on this top, every one of them on a joint line or the near arris, and it was        #
+#      misread for three rounds as the joints being geometrically too deep.  They were not: the joint       #
+#      dirt is a 0.28 step across 10 mm, the clamp binds at full tilt over it, and at 78 degrees of         #
+#      incidence a full-tilt away-facing normal is past the geometric horizon.  Splitting the field         #
+#      into R (look) and G (shape) channels took it to ZERO.  The general rule the plank's doctrine 5       #
+#      needs, and this scene is where it showed up: one field, yes -- but a term that is a FACT ABOUT       #
+#      THE SURFACE'S HISTORY is not a term about its SHAPE, and on a grazing surface the difference         #
+#      is the whole near-black budget.                                                                      #
+#                                                                                                           #
+#   -- (BENCH TOP) AND THE CORRESPONDING TRAP ONE LEVEL DOWN: a PER-BOARD term in the relief channel        #
+#      is also a height step, because the relief stencil (`fw`/2 = 5.4 mm) is wider than the 5 mm           #
+#      joint and straddles the board index within a centimetre of every joint.  Offsetting the              #
+#      figure's noise domain per board -- which is exactly what makes the figure stop at the joint,         #
+#      and is right in COLOUR -- cost 270 near-black per 10000 when it reached relief.  `figc` is           #
+#      the same undulation without the break, and it is what channel G carries.                             #
+#                                                                                                           #
+#   -- (BENCH TOP) CHASING JOINTS THAT WERE NEVER THERE.  Three rounds were spent tuning the joint          #
+#      GEOMETRY (8 mm gap 10 mm deep: near-black slots, a duckboard; 3 mm gap 2 mm deep: invisible)         #
+#      before the relief bisect showed that the joints which had "read" at 8 mm were the relief             #
+#      artefact above, and the real 3 mm groove had been antialiased out of existence the whole time.       #
+#      A 3 mm feature at a 10.7 mm footprint cannot be seen, and no amount of tuning a thing that is        #
+#      a third of a pixel wide will make it appear.  MEASURE THE FEATURE AGAINST `fw` BEFORE TUNING         #
+#      IT.  What ships is 5 mm wide and 5 mm deep between 9 mm eased arrises -- 2.1 px -- and most of       #
+#      the dark line you see is the DIRT, with the geometry there to put that dirt in a real crease         #
+#      and to give `convexity()` an arris to find.                                                          #
+#                                                                                                           #
+#   -- (BENCH TOP) THE JOINT DIRT WAS KEYED TO AN `edge` VALUE THE FLAT SURFACE NEVER REACHES.              #
+#      `edge` runs 0 at the board's centre line to 1 at the joint, but the board's flat top stops at        #
+#      0.834 and the rest is the eased arris -- where the N.y gate that keeps dirt off the vertical         #
+#      faces correctly turns it OFF.  A crack band at `edge` 0.90-1.00 therefore painted nothing at         #
+#      all.  A band keyed on a normalised coordinate has to be checked against the range the SURFACE        #
+#      actually occupies, not the range the coordinate nominally spans.                                     #
+#                                                                                                           #
+#   -- (BENCH TOP) THE RAMP REFUSED TO SPEND THE RANGE THE FIELD OCCUPIED.  Holding the early-wood          #
+#      plateau flat from 0.52 to 0.88 is right for the RING gradient (the plank's "row of rods"), but       #
+#      the field's bulk variation here is board tone and coarse figure, which ARE meant to be tonal.        #
+#      The bulk of the top sat in 1.35:1 of luminance and read airbrushed.  Respacing the stops so          #
+#      0.48-0.80 covers 1.9:1 -- with plateau-to-late-wood at 2.9:1 and the darkest stops still             #
+#      reserved -- is what made the boards read as separate pieces of wood.                                 #
+#                                                                                                           #
+#   -- (BENCH TOP) THE OLD RAMP'S PALE STOP WAS 0.78 0.55 0.30, AN R:B OF 2.6, AND RENDERED AS              #
+#      CARTOON ORANGE.  Aged, dust-greyed softwood is nearer 1.7, which is what ships.  Saturation is       #
+#      a "generated" tell in its own right, independently of contrast.                                      #
+#                                                                                                           #
+#   -- THE FIRST VISE WAS BUILT AT TRUE SCALE AND WAS ILLEGIBLE.  A 200 mm-tall vise is 37 px here and      #
+#      read as a grey lump.  The shipped one is 300 mm above the bench -- deliberately a big shop vise,     #
+#      and deliberately the same envelope the two boxes it replaced occupied, so the composition, the       #
+#      bench top's relief tuning and the camera did not have to move.                                       #
+#                                                                                                           #
+#   -- THE HANDLE POINTED AT THE CAMERA.  With the screw axis along +Z the T-handle is 28 degrees off       #
+#      the view axis and foreshortens to 47% -- a stub.  Solving for a bar PERPENDICULAR to the view        #
+#      (0.898*sin(t) + 0.19*cos(t) = 0 at the 48-degree yaw) gives a near-vertical hang, which then runs    #
+#      the bar's lower end into the bench top; -35 degrees is the compromise that keeps 93% of the length   #
+#      on screen with the end still 49 mm clear.  Foreshortening is a composition variable, not a detail.   #
+#                                                                                                           #
+#   -- EVERY fbm HAD OCTAVES BELOW THE PIXEL FOOTPRINT, AND THEY READ AS DIRT.  fbm(P*30, 3, ...) puts      #
+#      its third octave at 8 mm, and fbm(P*32, 4, ...) its last two at 7 and 3 mm -- all under two          #
+#      pixels.  The field probe looked correctly mottled at a distance and turned to fine speckle up        #
+#      close, which is precisely the "generated" tell.  OCTAVE COUNT IS A FEATURE-SIZE DECISION, not a      #
+#      quality dial: both fields are 2 octaves now, and the sub-pixel structure that was cut from them      #
+#      lives in sp_vise_grain, which reaches roughness ONLY.                                                #
+#                                                                                                           #
+#   -- THE RAMP GAVE PAINT AND BARE IRON THE SAME LUMINANCE.  Being careful about the doctrine's            #
+#      over-contrast warning, the first ramp put intact paint at 0.090 and the iron a chip exposes at       #
+#      0.070 -- a 1.3:1 step that is invisible under any lighting.  The field was healthy the whole time    #
+#      (a probe showed a 0.062 within-band standard deviation); the RAMP was eating it.  Over-contrast is   #
+#      a tell, but so is a ramp that refuses to spend the range the field actually occupies -- the shipped  #
+#      step is 2.3:1, which is the same band the plank's early-to-late wood uses.                           #
+#                                                                                                           #
+#   -- THE PART MASK FADED OUT ACROSS THE OUTER HALF OF EACH JAW PAD.  padband's z transition was set at    #
+#      the pad's own boundary rather than just outside it, so the pad's outer half sat at mask ~0.5, took   #
+#      half the CAST branch, and grew a rust fringe along the top of every pad.  A part mask has to         #
+#      OVERSHOOT the part; the transition then lands on the neighbouring casting, where it is hidden by     #
+#      the crease that is already there.  Every mask edge in expr_vise is placed on a real geometric edge   #
+#      for that reason, and it matters twice over because relief_vise reads the same field, so a mask       #
+#      transition is also a height step.                                                                    #
+#                                                                                                           #
+#   -- CHIPS KEYED MOSTLY ON `curv` DREW AN OUTLINE.  At 0.55*arris the paint failed in a neat band         #
+#      around every jaw and flange edge, which reads as a rendered outline effect rather than as wear.      #
+#      The arris still has to be the FIRST place paint goes, but at 0.18 against a 1.4x chip field and a    #
+#      0.35 gravity-run term, so the chips are patches that happen to reach the edges.                      #
+#                                                                                                           #
+#   -- RUST WITH NO DIRECTION.  Rust is the one process here that gravity writes, so `runs` is an 8:1       #
+#      vertical fbm (11 mm across, 88 mm down) that both elongates the chips downward and concentrates      #
+#      the rust in the lower part of each. The casting undulation is left ISOTROPIC on purpose -- a sand    #
+#      mould has no grain direction -- which is the one place this scene departs from the doctrine's        #
+#      "every noise term gets a direction", and it departs because the physics says so.                     #
+#                                                                                                           #
+#   -- A RUST STAIN RUNNING OVER INTACT PAINT IS NOT REACHABLE FROM A SINGLE 1-D RAMP, and was dropped      #
+#      rather than faked: a point cannot be both "paint" and "rust" on one axis.  Rust here only grows      #
+#      where the paint is already gone, which is what the physics says anyway.                              #
+#                                                                                                           #
+#   -- GRIME UNDER THE FLANGE ON THE BENCH WAS "OUT OF REACH -- occlusion() IS SELF-OCCLUSION               #
+#      ONLY", AND THAT IS NO LONGER TRUE.  It was the right refusal at the time: every signal               #
+#      this scene had asked the hit geometry about ITSELF, so the bench top could not see the               #
+#      vise standing on it, and the only alternative was a painted decal.  Since 2026-09-08                 #
+#      `proximity(r)` measures the distance to the nearest surface of any OTHER object, and                 #
+#      the term is real -- see `expr_top`, which carries it, and note that its radius is a                  #
+#      WORLD LENGTH (20 mm) where occlusion's is a fraction of the object.  The measured                    #
+#      profile outward from the flange's touchdown line is in that chunk's own comment.                     #
+#      What is still NOT painted is grime on the FLOOR at the legs' feet: the floor is a                    #
+#      deliberately flat `uniformcolor_painter` (a supporting surface, out of the depth of                  #
+#      interest), and making it an expression painter to carry one dust band is a bigger                    #
+#      change than the band is worth.  The LEG side of that same seam does get the term for                 #
+#      free, since the legs carry `mat_wood_leg`, which runs the same `proximity(0.02)`.                    #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Declared before the rasterizer chunk below (which references it as
+# `radiance_map`) -- ordinary declare-before-use.  Refinement pass: the
+# first render left an unlit white void above the bench; a soft workshop-
+# window sky reads far better and costs nothing extra to render.
+uniformcolor_painter
+{
+	name			pnt_sky
+	color			0.58 0.60 0.64
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
+{
+	samples					12
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+	max_diffuse_bounce		0
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/weathered_workbench
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			640
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 1.6 3.4
+	lookat			0 0.75 0
+	up				0 1 0
+	fov				42.0
+}
+
+##################################################
+# Painters -- THE BENCH TOP.  One wood field per board, three consumers.
+#
+# The FOOTPRINT WAS MEASURED FIRST (doctrine 1), by painting `fw*15` on the
+# top as a lambertian under a flat white environment, dividing by a
+# flat-albedo control and reading the pixels back:
+#
+#     fw over the visible top face   p50 = 10.7 mm   (p10 7.8, p90 15.9)
+#     ... at the near edge                  8.1 mm
+#     ... at the far edge                  15.5 mm
+#     ... on the front edge face            ~1 mm   (seen near face-on)
+#
+# The gradient is the whole story: the top is a horizontal plane seen from
+# 14 degrees above it, so the perpendicular pixel spacing (5.3-5.6 mm) is
+# divided by an incidence cosine of about 0.2 and the footprint runs 8 mm
+# near to 15 mm far.  A feature needs ~3 px to carry shape, so on this
+# surface that is 32 mm at the middle of the top and 46 mm at the back.
+#
+# WHAT FOLLOWS FROM THAT, and it is most of this chunk's design:
+#
+#   GROWTH RINGS ARE SUB-PIXEL AND CANNOT BE COLOUR.  Softwood rings are
+#   4-7 mm apart radially; at 10.7 mm per pixel they are half a pixel and
+#   putting them in the albedo produces exactly the streaky noise this
+#   scene used to have.  They go into ROUGHNESS (`sp_top_ring`), where a
+#   sub-pixel band modulates gloss instead of aliasing into dirt.
+#
+#   EXCEPT AT THE CATHEDRAL CROWNS, WHICH ARE NOT SUB-PIXEL.  Ring spacing
+#   ON THE FACE is `ring_m / sin(theta)` for theta the angle between the
+#   ring cylinder and the surface, and at the crown of a cathedral arch
+#   theta goes to zero -- the same 4.5 mm ring opens to 40-100 mm of face
+#   spacing there.  That is the part of the figure this camera CAN resolve,
+#   and `rfade` is what admits it: the surface gradient of the ring
+#   coordinate is `sqrt(1 - (u.N)^2)` for `u` the unit radial direction, so
+#   `rm/gs` IS the face spacing in metres and the term is faded in against
+#   `fw` itself.  Measured, not tasted: the rings appear only where they
+#   would occupy more than ~1.15 px and are at full strength past ~2.6.
+#
+#   WHAT IS LEFT IS STRUCTURE, and the structure of a bench top is BOARDS.
+#   Eight of them, 133 mm wide (12 px) with 5 mm joints, each with its
+#   own pith depth, pith offset, axis tilt, ring spacing and tone -- so the
+#   cathedral figure on one board has nothing to do with its neighbour's,
+#   which is the single loudest cue that this is lumber and not a texture.
+#   The joints are REAL GEOMETRY (see `geo_bench_top`), not painted lines.
+#
+# Every art-directable number is a `param` with a range (the doc-88
+# human-editability contract).
+##################################################
+
+expression_painter
+{
+	name			expr_top
+	# -- the board grid.  THESE TWO MUST MATCH geo_bench_top's part lines:
+	#    8 boards of half-width 0.0665625 with 5 mm gaps across the 1.1 m
+	#    top, so `board_p` is 0.133125 + 0.005 and `board_z0` is
+	#    -(0.55 - 0.0665625).  `sp_top_ring` carries the same two, because
+	#    it recomputes the same pith construction (see its comment).
+	param			board_p 0.138125 min 0.06 max 0.30 step 0.0005 label "Board pitch (m)"
+	param			board_z0 -0.4834375 min -0.55 max 0.0 step 0.0005 label "Centre of the back board (m)"
+	param			ring_m 0.0045 min 0.002 max 0.012 step 0.0002 label "Ring spacing, radial (m)"
+	param			late_frac 0.28 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			late_reach 0.44 min 0.05 max 1.0 step 0.02 label "Late-wood field reach (the ramp's dark stops stay reserved)"
+	param			base_f 0.58 min 0.2 max 0.9 step 0.01 label "Field centre (early wood)"
+	param			tone_b 0.125 min 0.0 max 0.25 step 0.005 label "Board-to-board tone spread"
+	param			figure 0.27 min 0.0 max 0.5 step 0.01 label "Coarse grain figure"
+	param			joint_d 0.42 min 0.0 max 1.0 step 0.02 label "Dirt and crack at the board joints"
+	param			wear_p 0.30 min 0.0 max 0.8 step 0.02 label "Wear where hands and work happen"
+	param			knot_d 0.34 min 0.0 max 1.0 step 0.02 label "Knot darkness"
+	param			knot_r 0.036 min 0.01 max 0.08 step 0.002 label "Knot radius (m)"
+	param			knot_pull 0.010 min 0.0 max 0.04 step 0.001 label "Ring sweep around a knot (m)"
+	param			stain_d 0.22 min 0.0 max 0.5 step 0.01 label "Stain darkness (the can ring and the oil patch)"
+	param			flange_grime 0.32 min 0.0 max 1.0 step 0.02 label "Grime where something rests on the bench"
+	seed			4.0
+
+	# --- DOCTRINE 2, step 1: WHICH BOARD.  `bu` is the board coordinate,
+	# integer part = board index, `edge` = 0 at the board's centre line and
+	# 1 at its joint.  `cellhash` floors internally, so an INTEGER offset
+	# re-indexes the same cell and yields an independent number PER BOARD --
+	# the same trick the plank uses per RING, one level up.
+	def				bu (Po.z - board_z0)/board_p + 0.5
+	def				bk floor(bu)
+	def				edge abs(bu - bk - 0.5)*2.0
+	def				hA cellhash(bu + 11.0)
+	def				hB cellhash(bu + 29.0)
+	def				hC cellhash(bu + 47.0)
+	def				hD cellhash(bu + 71.0)
+	def				hE cellhash(bu + 97.0)
+	def				hF cellhash(bu + 131.0)
+
+	# --- step 2: THIS BOARD'S OWN PITH AXIS.  50-190 mm below its face,
+	# offset up to 40 mm across it, and tilted 0.9-2.6 degrees out of the
+	# board's length.  The tilt is the cathedral: the arch of ring radius R
+	# closes where the local pith depth reaches R, and the depth varies
+	# along the board precisely because the axis is tilted.  At these tilts
+	# an arch spans 150-400 mm of board -- 14 to 37 px, which is why the
+	# figure reads at all at this distance.
+	def				pdepth 0.050 + 0.140*hA
+	def				pithp vec3(0.0, 0.060 - pdepth, board_z0 + bk*board_p + (hB - 0.5)*0.08)
+	def				D normalize(vec3(1.0, 0.016 + 0.030*hC, (hD - 0.5)*0.05))
+	def				rel Po - pithp
+	def				rvec rel - dot(rel, D)*D
+	def				r0 max(length(rvec), 0.00002)
+	def				rm ring_m*(0.78 + 0.44*hE)
+
+	# --- step 3: the two knots, hand-placed on two different boards
+	# (doctrine 4).  The SWEEP is what sells a knot, not the dark disc: the
+	# ring coordinate is pulled toward the knot centre, so the crowns near
+	# it bend around it.
+	def				k1d hypot(Po.x - 0.42, Po.z + 0.2078)
+	def				k2d hypot(Po.x + 0.61, Po.z - 0.3463)
+	def				kpull knot_pull*(smoothstep(0.11, 0.0, k1d) + smoothstep(0.11, 0.0, k2d))
+
+	# --- step 4: the ring profile.  An ASYMMETRIC SAWTOOTH of ring phase --
+	# a flat pale plateau, a narrower dark band, and the abrupt snap back a
+	# real ring boundary has.  `cellhash(ph)` gives each RING its own band
+	# width and darkness, the way each growing season does.
+	#
+	# THERE IS NO RING-EDGE WARP HERE, and the plank has one.  It was
+	# authored (17 mm across the grain x 170 mm along, held under a quarter
+	# ring, exactly the plank's), and it was DELETED rather than left in:
+	# `fbm` fades the octaves the pixel footprint cannot resolve, and 17 mm
+	# against a 10.7 mm footprint is inside that fade, so the term returned
+	# essentially zero over the whole top.  A dead term in a field is worse
+	# than no term -- it reads as authored intent and is not.
+	def				ph (r0 - kpull)/rm
+	def				f ph - floor(ph)
+	def				lf late_frac*(0.72 + 0.56*cellhash(ph))
+	def				late smoothstep(1.0 - lf, 1.0 - 0.30*lf, f)*(0.72 + 0.56*cellhash(ph + 13.0))
+	def				lateb late_reach*min(late, 1.15)
+
+	# --- step 5: THE FOOTPRINT GATE.  `gs` is the magnitude of the ring
+	# coordinate's gradient PROJECTED INTO THE SURFACE, so `rm/gs` is the
+	# ring spacing a pixel actually straddles.  See this chunk's header.
+	def				un rvec/r0
+	def				unN dot(un, N)
+	def				gs sqrt(max(1.0 - unN*unN, 0.0004))
+	def				rfade smoothstep(1.15*fw, 2.6*fw, rm/gs)
+
+	# --- step 6: the coarse figure, at 77 mm across x 285 mm along (7 px
+	# x 27 px at 10.7 mm/px; the 38 x 145 mm first cut fell inside fbm's
+	# footprint fade, see the WRONG list).  It is legitimate at this
+	# amplitude precisely BECAUSE it is
+	# coarser than the ring spacing, so it moves neighbouring rings together
+	# instead of scrambling them -- and it is the only wood term that
+	# survives everywhere on this top, the rings having been faded out
+	# between the crowns.
+	def				fig fbm(vec3(Po.x*3.5 + bk*3.7, Po.y*13.0, Po.z*13.0 + bk*8.3) + vec3(seed*5.3, 2.0, 9.0), 2, 0.55, 2.0)
+	# ... and the SAME undulation WITHOUT the per-board break, for channel G.
+	def				figc fbm(vec3(Po.x*3.5, Po.y*13.0, Po.z*13.0) + vec3(seed*5.3, 2.0, 9.0), 2, 0.55, 2.0)
+
+	# --- DOCTRINE 3: PROCESS TIED TO GEOMETRY.
+	#
+	# `convexity(0.010)` is the board arrises -- every joint lip and the
+	# whole front edge.  Its radius is a FRACTION of this object's bbox
+	# diagonal (3.20 m), so 0.010 is 32 mm, and a 5 mm-rounded arris reads
+	# about 0.5 there (0.5 IS a 90-degree arris, on any object at any
+	# scale).  The lips are where a forearm and a workpiece actually rub.
+	#
+	# `convexity` and the joint band PARTITION the joint: the polish sits ON
+	# the lip, the dirt in the 22 mm beside it, and neither needs a
+	# threshold to keep it out of the other.  `occlusion()` is deliberately
+	# NOT used for the joint -- a point on the top face beside an 8 mm slot
+	# has a FULLY OPEN hemisphere and reads occlusion 1, correctly.  The
+	# crack is dark because it is a real crack, and the dirt beside it is
+	# keyed on the analytic distance to the board edge, which is a fact this
+	# field already knows.
+	def				arris convexity(0.010)
+	def				upface smoothstep(0.10, 0.50, N.y)
+	def				jb fbm(vec3(Po.x*9.0, Po.y*9.0, Po.z*9.0) + vec3(seed*2.7, 5.0, 1.0), 2, 0.5, 2.0)
+	def				inner smoothstep(0.55, 0.50, abs(Po.z))
+	def				crack smoothstep(0.76, 0.86, edge)*inner*upface
+	def				grime smoothstep(0.55, 0.84, edge)*clamp(0.50 + 0.95*jb, 0, 1)*inner*upface
+	def				joint clamp(0.75*crack + 0.55*grime, 0, 1)
+
+	# Wear is WHERE THE WORK IS: a 190 mm band along the front edge where a
+	# body leans, a 460 mm halo around the vise where everything is clamped,
+	# hammered and filed, and the arrises.  Broken up at 250 mm so it is a
+	# region rather than a drawn shape.
+	def				frontw smoothstep(0.34, 0.53, Po.z)*upface
+	def				visew smoothstep(0.46, 0.12, hypot(Po.x - 1.15, Po.z + 0.02))
+	def				wearb fbm(vec3(Po.x*4.0, Po.y*4.0, Po.z*4.0) + vec3(seed*7.7, 3.0, 6.0), 2, 0.5, 2.0)
+	def				wearf clamp((0.50*frontw + 0.80*visew + 1.30*arris)*(0.80 + 1.10*wearb), 0, 1)
+
+	# --- THE FLANGE GRIME, and the retraction of this file's own claim that
+	# it could not be had.  The header used to say grime under the vise's
+	# flange "is out of reach ... occlusion() is self-occlusion only".  That
+	# was true of every signal this scene had; it is not true any more.
+	# `proximity(r)` measures the distance from this hit to the nearest
+	# surface of any OTHER object -- 1 at touching, 0 at `r`.
+	#
+	# ITS RADIUS IS A WORLD LENGTH, unlike `occlusion`'s per-object fraction:
+	# `proximity(0.02)` is 20 mm, on this bench or any other.  20 mm is set
+	# from the flange's own geometry.  The flange is a `roundbox` with
+	# half-extents (0.195, 0.021, 0.172) m and an 18 mm rounding, so its flat
+	# underside stops 18 mm inside the nominal edge and the last 18 mm is a
+	# quarter-round lifting away from the bench.  Measured on the bench top
+	# with the query itself, outward from that touchdown line at the middle
+	# of each of the four sides: 0.042 mm of separation at the line, 0.56-0.97
+	# mm at 5 mm out, 8.7-9.3 mm at 20 mm and 20.6-21.9 mm at 35 mm -- so a
+	# 20 mm radius saturates under the lip, is a little past half way out at
+	# 20 mm, and has died before the grime could reach clean bench.
+	#
+	# AND THE RADIUS HAS A CEILING HERE, which is why the BROAD wear halo
+	# above is hand-placed rather than just being this term at 0.3 m: the
+	# legs' tops stand 10 mm INSIDE the top's underside, 120 mm below its
+	# face, so any radius past ~0.11 m paints a grime blob on the bench over
+	# each leg.  20 mm is well clear of that.
+	#
+	# IT IS SUBTRACTIVE, because this ramp runs dark -> pale: grime darkens,
+	# so it takes the field down.  `fgb` breaks it up at ~25 mm so the ring
+	# hugging the flange is patchy rather than a drawn outline.  NOTE the
+	# 0.85 centre on that multiplier: `fbm` is SIGNED and zero-mean here, so
+	# a multiplier written `0.45 + 1.35*fgb` would average 0.45, not 0.9.
+	def				contact proximity(0.02)
+	def				fgb fbm(vec3(P.x*40.0, P.y*40.0, P.z*40.0) + vec3(seed*1.9, 8.0, 2.0), 3, 0.5, 2.0)
+	def				flange clamp(contact*(0.85 + 1.5*fgb), 0, 1)
+
+	# --- DOCTRINE 4: RARE EVENTS.  Two of them, both hand-placed, both at
+	# LOW contrast: the ring a wet tin left (144 mm across, a 2 px band) and
+	# one 420 mm patch where oil soaked in.  Not a scatter of blotches --
+	# the whole point is that most of this top has nothing on it.
+	def				canring smoothstep(0.020, 0.004, abs(hypot(Po.x + 0.34, Po.z - 0.16) - 0.072))
+	def				oilb fbm(vec3(Po.x*8.0, Po.y*8.0, Po.z*8.0) + vec3(seed*4.4, 7.0, 2.0), 2, 0.5, 2.0)
+	def				oilp smoothstep(0.21, 0.05, hypot(Po.x - 0.72, Po.z + 0.12))*clamp(0.45 + 1.5*oilb, 0, 1)
+	def				knots knot_d*(smoothstep(knot_r, knot_r*0.4, k1d) + smoothstep(knot_r, knot_r*0.4, k2d))
+
+	# --- THE WOOD, which is channel G: board tone, coarse figure, ring crowns.
+	def				wood clamp(base_f + tone_b*(hF - 0.5)*2.0 + figure*fig - lateb*rfade, 0, 1)
+	def				shape clamp(base_f + figure*figc, 0, 1)
+
+	# --- THE SUM, AND WHY IT IS A vec3.
+	#
+	# `late_reach` and `tone_b` are ENFORCED reservations, not claims in a
+	# comment: a ramp cannot reserve a range the field is free to write into,
+	# so the late-wood term is bounded where it is summed.
+	#
+	# R IS WHAT THE SURFACE LOOKS LIKE; G IS WHAT THE SURFACE IS SHAPED LIKE.
+	# This is still ONE field with one evaluation -- the ramp and the
+	# roughness bridge read `channel R`, `relief_modifier`'s bridge reads
+	# `channel G` -- but the two channels stop at different points in the same
+	# sum.  R is everything: board tone, the per-board figure, the ring crowns
+	# the footprint gate admits, and every PROCESS term -- wear, joint dirt,
+	# flange grime, knots, stains.  G (`shape`) is the CONTINUOUS coarse
+	# undulation and nothing else.
+	#
+	# The split is not tidiness, it is a MEASUREMENT.  Binding the whole field
+	# raw to relief -- which is what the plank does, and what this file's
+	# relief comment used to argue for -- put 591 near-black pixels per 10000
+	# on this top, all of them on the joint lines and the near arris.  The
+	# mechanism is the one `max_slope` exists to manage, hit from the other
+	# side: the joint dirt is a 0.28 step across ~10 mm, a field gradient of
+	# 28 per metre, which at `scale 0.40` is a slope of 11 against a clamp of
+	# 0.18 -- so the clamp binds at FULL tilt over every joint, and on a
+	# surface already at 78 degrees of incidence a full-tilt away-facing
+	# normal is past the geometric horizon and shades BLACK.  A process term
+	# has no business having a height at all; giving it one is what made the
+	# lines black.
+	#
+	# G ALSO STOPS BEFORE THE TWO PER-BOARD TERMS -- `tone_b` and the
+	# per-board domain offset in `fig` -- for the same reason one level down.
+	# The relief stencil is `fw`/2 = 5.4 mm wide and the joint is 5 mm, so
+	# within a centimetre of every joint the four taps straddle a change of
+	# `bk` and difference a step that is not a height.  `figc` is that same
+	# undulation WITHOUT the per-board break.  Measured: adding the per-board
+	# offset to the relief channel alone cost 270 near-black per 10000.
+	expr			vec3(clamp(wood + wear_p*wearf - joint_d*joint - flange_grime*flange - knots - stain_d*(0.62*canring + 0.85*oilp), 0, 1), shape, 0.0)
+}
+
+# CONSUMER 1 -- COLOUR.  Aged softwood: joint dirt and knot core at the
+# bottom, late wood, the early-wood PLATEAU, and burnished wear at the top.
+#
+# The early-wood band (field 0.48-0.80) is a gentle 1.9:1 rise, 0.159 ->
+# 0.301 in luminance, NOT a flat plateau: at this footprint the rings are
+# sub-pixel, so a ring-scale gradient cannot read as a shaded cylinder the
+# way it does on plank_closeup, and the rise is what separates one board's
+# tone from its neighbour's (see the WRONG list).
+#
+# Plateau-to-late-wood is 0.301 -> 0.105 in luminance (the 0.80 stop
+# against the 0.32 stop), 2.9:1.  Real pine is nearer 2.5:1; the 18:1 an eager ramp reaches for is itself a "generated"
+# tell and it drowns the relief, which is the cue that actually reads as
+# carved.  The two darkest stops are RESERVED for the knots, the joint dirt
+# and the grime -- and `expr_top`'s sum is what enforces that reservation.
+#
+# The old ramp here ran to 0.78 0.55 0.30, an R:B of 2.6 that rendered as
+# cartoon orange.  1.7 is what aged, dust-greyed softwood actually is.
+ramp_painter
+{
+	name			ramp_top
+	input			expr_top
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.055 0.043 0.032
+	stop			0.14  0.088 0.068 0.048
+	stop			0.32  0.135 0.100 0.065
+	stop			0.48  0.205 0.152 0.099
+	stop			0.64  0.290 0.219 0.146
+	stop			0.80  0.375 0.290 0.198
+	stop			1.00  0.460 0.372 0.272
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- the PHYSICAL SCALAR, off the SAME field.  The bridge's
+# scale is NEGATIVE: the field's high end is burnished wear, which is the
+# SMOOTH end, and its low end is dirt and grime, which is the matte one.
+# 0.66 at the dirt down to 0.24 where a forearm has polished it.
+scalar_painter
+{
+	name			sp_top_rough
+	painter			expr_top
+	channel			R
+	scale			-0.42
+	bias			0.66
+}
+
+# CONSUMER 2b -- THE RINGS, WHICH ONLY ROUGHNESS CAN CARRY.  This is the
+# sub-pixel half of the ring field: the same asymmetric sawtooth as
+# `expr_top`'s, with NO footprint gate, zero-meaned and bridged into
+# roughness alone.  At 4.5 mm against a 10.7 mm pixel it can carry no shape
+# and would read as exactly the dirty noise that gives a render away -- but
+# it can still modulate gloss, and a half-pixel band of duller sheen is
+# what late wood looks like from three and a half metres.
+#
+# It recomputes the pith construction rather than bridging `expr_top`
+# because a bridge can only scale a field, and what is wanted here is one
+# TERM of it without the gate the colour pipe needs.
+scalar_painter
+{
+	name			sp_top_ring
+	param			ring_m 0.0045 min 0.002 max 0.012 step 0.0002 label "Ring spacing, radial (m)"
+	param			late_frac 0.28 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			ring_gloss 0.11 min 0.0 max 0.3 step 0.005 label "Ring gloss modulation"
+	param			board_p 0.138125 min 0.06 max 0.30 step 0.0005 label "Board pitch (m)"
+	param			board_z0 -0.4834375 min -0.55 max 0.0 step 0.0005 label "Centre of the back board (m)"
+	seed			4.0
+	def				bu (Po.z - board_z0)/board_p + 0.5
+	def				bk floor(bu)
+	def				pdepth 0.050 + 0.140*cellhash(bu + 11.0)
+	def				pithp vec3(0.0, 0.060 - pdepth, board_z0 + bk*board_p + (cellhash(bu + 29.0) - 0.5)*0.08)
+	def				D normalize(vec3(1.0, 0.016 + 0.030*cellhash(bu + 47.0), (cellhash(bu + 71.0) - 0.5)*0.05))
+	def				rel Po - pithp
+	def				rvec rel - dot(rel, D)*D
+	def				r0 max(length(rvec), 0.00002)
+	def				rm ring_m*(0.78 + 0.44*cellhash(bu + 97.0))
+	def				ph r0/rm
+	def				f ph - floor(ph)
+	def				lf late_frac*(0.72 + 0.56*cellhash(ph))
+	expression		ring_gloss*(smoothstep(1.0 - lf, 1.0 - 0.30*lf, f) - 0.5)
+}
+
+# CONSUMER 2c -- the flange grime's roughness, which needs its own bridge
+# for a reason worth writing down.  `sp_top_rough` has a NEGATIVE scale, and
+# the grime term SUBTRACTS from the field (it darkens), so through that
+# bridge it would come out SMOOTHER -- a polished ring around the vise, the
+# opposite of dirt.  One bridge cannot give one field two signs, so the
+# contact term gets its own additive scalar and the sum is what the material
+# binds.  `contact` is still one definition; it is the SIGN of the bridge
+# that forks.
+#
+# +0.13 at a saturated seam, against the 0.24-0.66 the wood occupies.  The
+# breakup is the SAME `fgb` construction as the colour term's, so the dull
+# patches and the dark patches coincide -- one deposit of dirt, not two
+# independent noises.
+scalar_painter
+{
+	name			sp_flange_rough
+	param			flange_rough 0.13 min 0.0 max 0.4 step 0.01 label "Flange-grime roughening"
+	seed			4.0
+	def				contact proximity(0.02)
+	def				fgb fbm(vec3(P.x*40.0, P.y*40.0, P.z*40.0) + vec3(seed*1.9, 8.0, 2.0), 3, 0.5, 2.0)
+	expression		flange_rough*clamp(contact*(0.85 + 1.5*fgb), 0, 1)
+}
+
+scalar_painter
+{
+	name			sp_top_rough_ring
+	add				sp_top_rough sp_top_ring
+	weight_a		1.0
+	weight_b		1.0
+}
+
+scalar_painter
+{
+	name			sp_wood_rough
+	add				sp_top_rough_ring sp_flange_rough
+	weight_a		1.0
+	weight_b		1.0
+}
+
+# CONSUMER 3 -- RELIEF (docs/RELIEF_MODIFIER_DESIGN.md Phase 5): the SAME
+# field, read through its STRUCTURAL channel (`channel G`) and bridged raw --
+# no scale/bias, because `relief_modifier`'s own `scale` below is the
+# independent height-amplitude multiplier.  `ramp_top` maps field=0 -> dirt
+# and field=1 -> burnished pale, so the field rises with "paleness" and a
+# POSITIVE scale leaves the dark end at the local floor: dark reads SUNK,
+# which is the sign this weathered bench wants.
+#
+# WHY G AND NOT R -- and it took the four rounds recorded in the header.
+# Binding the WHOLE field, process terms included (which is what the plank
+# does), put 591 near-black pixels per 10000 on this top.  A process term
+# has no business having a height, and the joint dirt in particular is a
+# 0.28 step across ~10 mm: a field gradient of 28 per metre, which at
+# `scale 0.40` is a slope of 11 against a clamp of 0.18 -- so the clamp
+# binds at FULL tilt over every joint, and on a surface at 78 degrees of
+# incidence a full-tilt away-facing normal is past the geometric horizon
+# and shades BLACK.  G stops before the process terms, and it also stops
+# before the two PER-BOARD terms (`tone_b` and the per-board domain offset
+# in `fig`), because `step 0` resolves to `fw`/2 = 5.4 mm and the 4-tap
+# stencil straddles the 5 mm joint -- so a per-board step is differenced as
+# a cliff every time the stencil crosses one.  What is left in G, and what
+# relief here actually is, is the CONTINUOUS coarse undulation: `figc`.
+#
+# WHAT RELIEF CANNOT DO AT THIS FOOTPRINT: the rings.  `step 0` resolves to
+# `fw`/2 = 5.4 mm, so a 4.5 mm ring is differenced across a stencil wider
+# than itself and comes back as nothing.  The relief that DOES read is the
+# coarse figure at 77 x 285 mm, which is the honest answer for a surface
+# seen from 3.5 m -- and the joints, which are not relief at all but real
+# geometry.
+#
+# AMPLITUDE + CLAMP, swept on the SHIPPED field (640x480, the 231-column
+# top-face band between the tray and the vise; hf-RMS is the row-wise
+# second-difference RMS across the grain):
+#
+#     scale / max_slope     near-black per 10000     hf-RMS
+#        0.40 / 0.30               265                4.31
+#        0.25 / 0.30                53                3.45
+#        0.40 / 0.18                 0                2.99   <- shipped
+#        0.55 / 0.13                 0                2.90
+#
+# `max_slope` bounds the TILT rather than the amplitude: it rescales the
+# gradient to that slope with its DIRECTION PRESERVED, so `scale` can be
+# raised for legibility while the clamp holds the peaks -- which is why the
+# shipped pair raises `scale` to 0.40 and tightens the clamp instead of
+# dialling `scale` down (that would flatten the shallow parts of the field
+# along with the steep ones).  Past 0.40/0.18 the clamp binds so widely that
+# more `scale` buys nothing: 0.55/0.13 is measurably WORSE on detail.
+#
+# 0.18 is far below the 0.5-1.0 band the skill doc recommends generally, and
+# below the 0.30 this file used before the top was rebuilt.  The reason is
+# geometric: this top is a large horizontal plane seen from 14 degrees above
+# it, and the single most grazing surface in the frame is the eased front
+# arris, which is where the last black pixels lived at 0.30.  atan(0.18) is
+# 10.2 degrees of tilt budget; the arris cannot afford more.
+#
+# THE KEY LIGHT WAS LEFT ALONE, having been tested.  Lowering it from 42 to
+# 24 degrees elevation does NOT help the grain read: fine-detail contrast
+# goes slightly DOWN, the top dims ~7%, and near-black pixels rise 35%.  The
+# reason is the same grazing-budget geometry as the `max_slope` clamp
+# itself, applied to the LIGHT instead of the camera: a clamp of `m` caps
+# the tilt at atan(m), so an away-facing tilt can point the shading normal
+# that far past the light's own direction before N'.L goes non-positive.
+# At the 42-degree key and the 0.4 clamp that test used, the margin is
+# 42-21.8 = 20.2 degrees; at a 24-degree key it is 2.2, so far more of the
+# field's tilt distribution crosses that horizon and gets gated black.
+#
+# `domain surface` -- the boards are an `sdf_geometry`, which has no UVs.
+scalar_painter
+{
+	name			sp_wood_relief
+	painter			expr_top
+	channel			G
+}
+
+relief_modifier
+{
+	name			relief_wood
+	height			sp_wood_relief
+	domain			surface
+	scale			0.40
+	step			0
+	max_slope		0.18
+}
+
+##################################################
+# Painters -- THE LEGS.  The same wood, at their own footprint, plain.
+#
+# A leg is ONE post, not eight boards, and its grain runs VERTICALLY -- so
+# it cannot share the top's field, whose whole construction is "which board
+# am I on, and where is that board's pith".  It gets the same asymmetric
+# sawtooth about a pith axis and the same footprint gate, with the axis
+# along Y, no joints, no stains and no wear.
+#
+# ITS FOOTPRINT IS DIFFERENT AND THAT IS THE POINT.  The legs are seen
+# nearly face-on rather than at 14 degrees, so `fw` there is about 5.8 mm
+# against the top's 10.7 -- roughly twice the resolution, and the gate
+# admits the rings over correspondingly more of the surface.  Nothing was
+# hand-tuned for that; `rfade` reads `fw` and follows.
+#
+# The four legs differ by an object-space id (`legid`) built from the leg's
+# own world position, floored so it is constant over each leg: four posts
+# out of one material, each with its own pith and tone.
+##################################################
+
+expression_painter
+{
+	name			expr_leg
+	param			ring_m 0.0045 min 0.002 max 0.012 step 0.0002 label "Ring spacing, radial (m)"
+	param			late_frac 0.28 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			late_reach 0.22 min 0.05 max 1.0 step 0.02 label "Late-wood field reach"
+	param			base_f 0.62 min 0.2 max 0.9 step 0.01 label "Field centre (early wood)"
+	param			tone_b 0.070 min 0.0 max 0.25 step 0.005 label "Leg-to-leg tone spread"
+	param			figure 0.34 min 0.0 max 0.5 step 0.01 label "Coarse grain figure"
+	param			foot_d 0.26 min 0.0 max 0.8 step 0.02 label "Dirt at the foot and under the apron"
+	seed			9.0
+
+	# -- which leg.  `floor(P.x + 4)` is constant over a 120 mm post at
+	# x = +-1.35 and `floor(P.z + 4)` over one at z = +-0.45, so this is a
+	# stable per-object id without a per-leg material.
+	def				legid floor(P.x + 4.0) + 5.0*floor(P.z + 4.0)
+	def				gA cellhash(legid + 3.0)
+	def				gB cellhash(legid + 17.0)
+	def				gC cellhash(legid + 37.0)
+	def				gD cellhash(legid + 59.0)
+
+	# -- the pith axis runs UP the post, 40-110 mm outside its 120 mm
+	# section, tilted about a degree so the rings drift along the leg.
+	def				poff 0.100 + 0.070*gA
+	def				pang 6.2831853*gB
+	def				pithp vec3(poff*cos(pang), 0.0, poff*sin(pang))
+	def				D normalize(vec3((gC - 0.5)*0.04, 1.0, (gD - 0.5)*0.04))
+	def				rel Po - pithp
+	def				rvec rel - dot(rel, D)*D
+	def				r0 max(length(rvec), 0.00002)
+	def				rm ring_m*(0.78 + 0.44*gC)
+
+	def				ph r0/rm
+	def				f ph - floor(ph)
+	def				lf late_frac*(0.72 + 0.56*cellhash(ph))
+	def				late smoothstep(1.0 - lf, 1.0 - 0.30*lf, f)*(0.72 + 0.56*cellhash(ph + 13.0))
+	def				lateb late_reach*min(late, 1.15)
+
+	# -- the same footprint gate as the top's, reading the legs' own `fw`.
+	def				un rvec/r0
+	def				unN dot(un, N)
+	def				gs sqrt(max(1.0 - unN*unN, 0.0004))
+	def				rfade smoothstep(1.15*fw, 2.6*fw, rm/gs)
+
+	def				fig fbm(vec3(Po.x*13.0, Po.y*3.5, Po.z*13.0) + vec3(9.0, seed*5.3, 2.0), 2, 0.55, 2.0)
+
+	# -- the one process term.  `proximity(0.02)` is the same cross-object
+	# signal the top uses, and on a leg it finds BOTH seams for free: the
+	# floor the foot stands on and the underside of the top the leg is
+	# housed into.  The FLOOR side of the lower seam stays unpainted -- it
+	# is a deliberately flat `uniformcolor_painter`, a supporting surface
+	# out of the depth of interest.
+	def				seam proximity(0.02)
+	def				sb fbm(vec3(P.x*40.0, P.y*40.0, P.z*40.0) + vec3(seed*1.9, 8.0, 2.0), 3, 0.5, 2.0)
+
+	def				wood clamp(base_f + tone_b*(gD - 0.5)*2.0 + figure*fig - lateb*rfade, 0, 1)
+	expr			vec3(clamp(wood - foot_d*clamp(seam*(0.85 + 1.5*sb), 0, 1), 0, 1), wood, 0.0)
+}
+
+ramp_painter
+{
+	name			ramp_leg
+	input			expr_leg
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.055 0.043 0.032
+	stop			0.14  0.088 0.068 0.048
+	stop			0.32  0.135 0.100 0.065
+	stop			0.48  0.205 0.152 0.099
+	stop			0.64  0.290 0.219 0.146
+	stop			0.80  0.375 0.290 0.198
+	stop			1.00  0.460 0.372 0.272
+	color_space		Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name			sp_leg_rough
+	painter			expr_leg
+	channel			R
+	scale			-0.30
+	bias			0.62
+}
+
+scalar_painter
+{
+	name			sp_leg_relief
+	painter			expr_leg
+	channel			G
+}
+
+# The legs are seen nearly FACE-ON, not at 14 degrees like the top, so the
+# grazing-budget argument that pins the top at `max_slope 0.18` does not
+# apply to them -- their geometric horizon is far away and they can carry
+# the 0.5-1.0 the skill doc recommends generally.  0.45 is the value that
+# reads without any of them showing a black tilt.
+relief_modifier
+{
+	name			relief_leg
+	height			sp_leg_relief
+	domain			surface
+	scale			0.25
+	step			0
+	max_slope		0.45
+}
+
+uniformcolor_painter
+{
+	name			pnt_wood_spec
+	color			0.4 0.35 0.28
+}
+
+##################################################
+# Painters -- the vise: ONE cast-iron field, four consumers
+##################################################
+
+# THE FIELD.  Sizes come from the MEASURED footprint over the vise
+# (`fw` p50 = 7.95 mm; see the geometry comment below), so the ordering
+# is: casting undulation at 6 px, chips at 4-7 px, and NOTHING finer in
+# colour or relief -- a real casting's 1-3 mm pitting is a fifth of a
+# pixel here and can only read as dirt, so it goes to roughness alone
+# (`sp_vise_grain`).
+#
+# The axis the field runs along is a WEATHERING axis, not a brightness
+# one: 0 = bare machined steel, ~0.30 = intact paint, ~0.62 = the cast
+# iron a chip exposes, 1.0 = rust bloom.  Everything that moves a point
+# along it is either a sized surface process or a question the geometry
+# answers about itself.
+expression_painter
+{
+	name			expr_vise
+	param			cast_freq 30.0 min 6 max 90 step 1 label "Casting undulation frequency"
+	param			patch_freq 15.0 min 4 max 50 step 1 label "Casting-scale patch frequency"
+	param			chip_freq 32.0 min 8 max 90 step 1 label "Paint-chip field frequency"
+	param			chip_cov 0.16 min -0.3 max 0.6 step 0.02 label "Paint-chip threshold (lower = more bare iron)"
+	param			paint_w 0.42 min 0.0 max 0.8 step 0.02 label "Field value of intact paint"
+	param			iron_w 0.66 min 0.3 max 0.9 step 0.02 label "Field value of bare cast iron"
+	param			steel_w 0.06 min 0.0 max 0.3 step 0.01 label "Field value of machined steel"
+	param			rust_crev 0.55 min 0.0 max 1.5 step 0.05 label "Rust in crevices"
+	param			grime_crev 0.16 min 0.0 max 0.6 step 0.02 label "Grime darkening the paint in crevices"
+	param			rust_down 0.40 min 0.0 max 1.5 step 0.05 label "Rust on the underside"
+	seed			19.0
+
+	# -- geometry signals (doctrine 3).  Every threshold here was MEASURED
+	# on this object, not guessed: a probe render of each signal, divided
+	# by a flat-albedo control, gave curv p25/p50/p75/p90 = 0 / 10.4 /
+	# 27.7 / 32.9 and occlusion(0.09) p2/p10/p25/p50 = 0.43 / 0.70 / 0.87
+	# / 0.97.  `curv` is normalised by the object's bbox diagonal (0.835 m
+	# here: the geometry's bbox is 0.4415 x 0.3637 x 0.6087 m), so a flat cast face reads 0, the screw and handle barrels
+	# read ~17, and only the drawn arrises of the castings reach 30+ --
+	# which is why `arris` starts at 18 and not anywhere near 1.
+	def				occ occlusion(0.09)
+	def				crev smoothstep(0.84, 0.50, occ)
+	def				down clamp(-N.y, 0, 1)
+	def				arris smoothstep(18.0, 34.0, curv)
+
+	# -- the machined-part mask, in OBJECT space (`Po`), because "is this
+	# face machined or as-cast" is a fact about the PART, not about a
+	# noise field, and a vise's whole visual argument is the contrast
+	# between the two.  Three bands: the two jaw pads and the slot
+	# between them; the slide bar where it shows between the castings;
+	# and everything forward of the movable jaw (screw, collar, handle).
+	#
+	# Every transition below is placed ON a real geometric edge -- the
+	# pad's own boundary at |Po.z - 0.0295| = 0.0445, its lower face at
+	# Po.y = 0.171, the bar's flank at |Po.x| = 0.054, the jaw casting's
+	# front at Po.z = 0.173.  That is not decoration: `relief_vise` reads
+	# the same field, so a mask edge is a height step, and a height step
+	# is only invisible when it lands where the silhouette already has a
+	# crease.
+	def				padband smoothstep(0.055, 0.047, abs(Po.z - 0.0295)) * smoothstep(0.163, 0.170, Po.y) * smoothstep(0.124, 0.117, abs(Po.x))
+	def				barband smoothstep(0.060, 0.050, abs(Po.x)) * smoothstep(0.106, 0.114, Po.y) * smoothstep(0.194, 0.186, Po.y) * smoothstep(0.170, 0.158, Po.z)
+	def				frontband smoothstep(0.174, 0.182, Po.z)
+	def				mach clamp(padband + barband + frontband, 0, 1)
+
+	# -- surface processes, sized to the footprint.
+	# 33 mm sand-casting undulation: 6 px, so it carries SHAPE and is the
+	# only term `relief_vise` really renders.
+	def				und fbm(P*cast_freq + vec3(seed, seed*1.7, seed*2.3), 2, 0.5, 2.0)
+	# 67 mm casting-scale drift: 12 px, coarser than the undulation, so it
+	# moves neighbouring ripples together instead of scrambling them.
+	def				patch smoothstep(-0.12, 0.24, fbm(P*patch_freq + vec3(3.0, 8.0, 1.0), 3, 0.5, 2.0))
+
+	# -- the paint layer.  Paint does not chip at random: it comes off the
+	# ARRISES first, off the casting's high spots next, and it survives in
+	# the broad flat panels.  So the chip field is `arris` and `und` added
+	# to a 31 mm noise and thresholded HARD (0.05 wide) -- a chip edge is
+	# crisp, and a soft one reads as a stain.
+	def				chipf fbm(P*chip_freq + vec3(11.0, 2.0, 5.0), 2, 0.55, 2.1)
+	def				runs fbm(vec3(P.x*88.0, P.y*11.0, P.z*88.0) + vec3(6.0, 1.0, 3.0), 2, 0.5, 2.0)
+	def				bare smoothstep(chip_cov, chip_cov + 0.05, 1.4*chipf + 0.18*arris + 0.30*und + 0.35*runs)
+
+	# -- rust.  Concentrated where water sits and cannot dry: the crevices
+	# `occlusion()` finds (jaw-to-body fillet, under the flange lip,
+	# around the bolt heads) and the downward faces `-N.y` finds.  It only
+	# exists where the paint is already gone, which is what `* bare` says.
+	def				rust clamp(0.15 + rust_crev*crev + rust_down*down + 0.45*patch + 0.55*runs, 0, 1)
+
+	# -- the two surfaces, mixed by the part mask.  `iron_w` and the rust
+	# reach are held so the CAST branch tops out just under 1.0 before the
+	# undulation is added: a ramp cannot reserve a range the field is free
+	# to write into.
+	def				grime grime_crev*crev*(1.0 - bare)
+	def				cast paint_w - grime + (iron_w - paint_w)*bare + (0.94 - iron_w)*bare*rust + 0.26*und
+	def				steel steel_w + 0.09*rust + 0.05*und
+	expr			clamp(mix(cast, steel, mach), 0, 1)
+}
+
+# CONSUMER 1 -- colour.  Machined steel -> dulled steel -> a flat plateau
+# of intact paint -> the cast iron a chip exposes -> rust.  The paint
+# occupies 0.26..0.55 as a near-constant colour on purpose (doctrine: a
+# smooth gradient across a plateau reads as a row of rods), and the
+# paint-to-iron step at 0.55 -> 0.62 is deliberately tight because a
+# chip boundary is an edge, not a fade.
+ramp_painter
+{
+	name			ramp_vise
+	input			expr_vise
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.185 0.195 0.210
+	stop			0.11  0.118 0.124 0.134
+	stop			0.20  0.032 0.039 0.050
+	stop			0.32  0.046 0.058 0.081
+	stop			0.46  0.078 0.099 0.136
+	stop			0.60  0.112 0.140 0.186
+	stop			0.66  0.042 0.040 0.036
+	stop			0.76  0.082 0.070 0.056
+	stop			0.87  0.250 0.118 0.050
+	stop			1.00  0.365 0.185 0.088
+	color_space		Rec709RGB_Linear
+}
+
+# CONSUMER 2 -- roughness, linear off the same field: machined steel 0.10,
+# paint 0.26, bare iron 0.47, rust 0.72.
+scalar_painter
+{
+	name			sp_vise_rough_base
+	painter			expr_vise
+	channel			R
+	scale			0.66
+	bias			0.06
+}
+
+# ... plus the ONE term that is deliberately NOT in the field: sand-casting
+# grain at 4.5 mm.  That is 0.8 of a pixel here, so by doctrine 1 it can
+# carry neither colour nor shape -- but a microfacet distribution is
+# exactly where sub-pixel structure belongs, and breaking the specular up
+# per-pixel is most of what stops a GGX surface reading as moulded plastic.
+scalar_painter
+{
+	name			sp_vise_grain
+	param			grain_freq 220.0 min 60 max 600 step 10 label "Sand-cast grain frequency"
+	def				g fbm(P*grain_freq + vec3(4.0, 7.0, 1.0), 2, 0.5, 2.0)
+	expression		0.075*g
+}
+
+scalar_painter
+{
+	name			sp_vise_rough
+	add				sp_vise_rough_base sp_vise_grain
+	weight_a		1.0
+	weight_b		1.0
+}
+
+# CONSUMER 3 -- relief.  NEGATIVE scale: the field's high end is rust and
+# the hollows it eats, and a hollow sinks.  `scale` is set from the
+# undulation's own geometry rather than swept blind -- a 33 mm ripple with
+# about 0.8 mm of amplitude wants a slope near 0.16, and the undulation
+# term moves the field by about +-0.045, so 0.16/(0.045/0.033) = 0.05.
+# `max_slope` then bounds what the chip edges do with the same scale (the
+# field steps ~0.3 across ~10 mm there, which is a slope of 30 before the
+# clamp); 0.30 is the same knee the bench top's own sweep found, and for
+# the same reason -- most of this scene is seen at a grazing angle, which
+# brings the geometric horizon in close.  `step 0` resolves to fw/2 ~ 4 mm,
+# an eighth of the undulation's wavelength, so the ripple is differenced
+# well inside its own feature.
+scalar_painter
+{
+	name			sp_vise_relief
+	painter			expr_vise
+	channel			R
+}
+
+relief_modifier
+{
+	name			relief_vise
+	height			sp_vise_relief
+	domain			surface
+	scale			-0.16
+	step			0
+	max_slope		0.45
+}
+
+# CONSUMER 4 -- the FRESNEL.  The same field decides whether a point is
+# metal or not, which no amount of colour can fake: bare machined steel is
+# a conductor (ior 2.9, k 3.3, F0 ~ 0.7), while paint and rust are
+# dielectrics (ior ~1.6, k ~0, F0 ~ 0.05).  Both slots are physical
+# scalars, so both are `scalar_painter` bridges and neither goes anywhere
+# near a colourspace conversion.  A chip is left on the dielectric side on
+# purpose: exposed iron on a bench vise is oxide within days, not mirror.
+scalar_painter
+{
+	name			sp_vise_ior
+	painter			expr_vise
+	channel			R
+	scale			-1.30
+	bias			2.90
+}
+
+scalar_painter
+{
+	name			sp_vise_extinction
+	painter			expr_vise
+	channel			R
+	scale			-3.30
+	bias			3.45
+}
+
+uniformcolor_painter
+{
+	name			pnt_vise_spec
+	color			0.56 0.57 0.60
+	colorspace		Rec709RGB_Linear
+}
+
+##################################################
+# Painters -- tool tray: stochastic_tile_painter de-tiling a checker source
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_plate_dark
+	color			0.08 0.08 0.09
+}
+
+uniformcolor_painter
+{
+	name			pnt_plate_bright
+	color			0.75 0.75 0.78
+}
+
+# No tileable photo/scan asset (bark/plaster/rust) exists in-repo, so this
+# substitutes a procedural checker source to exercise the de-tiling
+# MECHANISM.  stochastic_tile_painter's intended use is a small tiling
+# photo/scan, per the skill -- this is not that, just a stand-in source.
+checker_painter
+{
+	name			plate_checker_src
+	colora			pnt_plate_dark
+	colorb			pnt_plate_bright
+	size			0.09
+}
+
+stochastic_tile_painter
+{
+	name			plate_stochastic
+	source			plate_checker_src
+	tile_scale		10.0
+	seed			3
+	mean			0.42 0.42 0.43
+	blend_gamma		7.0
+	color_space		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			pnt_tray_spec
+	color			0.5 0.5 0.5
+}
+
+##################################################
+# Painters -- floor
+##################################################
+
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.22 0.22 0.24
+}
+
+##################################################
+# Materials
+##################################################
+
+ggx_material
+{
+	name			mat_wood_top
+	rd				ramp_top
+	rs				pnt_wood_spec
+	alphax			sp_wood_rough
+	alphay			sp_wood_rough
+	ior				1.5
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_wood_leg
+	rd				ramp_leg
+	rs				pnt_wood_spec
+	alphax			sp_leg_rough
+	alphay			sp_leg_rough
+	ior				1.5
+	extinction		0.0
+}
+
+ggx_material
+{
+	name			mat_vise
+	rd				ramp_vise
+	rs				pnt_vise_spec
+	alphax			sp_vise_rough
+	alphay			sp_vise_rough
+	ior				sp_vise_ior
+	extinction		sp_vise_extinction
+}
+
+ggx_material
+{
+	name			mat_tray
+	rd				plate_stochastic
+	rs				pnt_tray_spec
+	alphax			0.25
+	alphay			0.25
+	ior				2.5
+	extinction		3.0
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+}
+
+##################################################
+# Objects -- bench
+##################################################
+
+##################################################
+# THE TOP IS EIGHT BOARDS, NOT A BOX.
+#
+# The single `box_geometry` this replaced could not be a bench top at this
+# camera distance for a reason that has nothing to do with painters: the
+# structure a 10.7 mm pixel CAN resolve on a bench top is its boards, and a
+# box has none.  Eight of them, on a slab that ties them together:
+#
+#   part 1      the slab       3.000 x 0.115 x 1.100 m, local y -0.060..0.055
+#   parts 2-9   the boards     3.000 x 0.022 x 0.13313 m, local y 0.038..0.060,
+#                              arrises eased 9 mm, centres 138.125 mm apart
+#                              from z = -0.4834375 -- so the outer flanks of
+#                              the first and last land exactly on z = +-0.55
+#                              and the overall bbox is the 3.0 x 0.12 x 1.1
+#                              the box had.  Nothing else in the scene moved.
+#
+# The joint is therefore a 5 mm gap between two 9 mm eased arrises, on boards
+# standing 5 mm proud of the slab: a 23 mm valley (2.1 px) that is 5 mm deep,
+# opening onto the slab rather than running through the top.  ALL THREE OF
+# THOSE NUMBERS WERE ARRIVED AT BY RENDERING.  The first cut was an 8 mm gap
+# 10 mm deep between free-standing boards, and it rendered the joints
+# NEAR-BLACK -- no sky reaches an 8 x 120 mm slot under direct lighting, and
+# eight black lines across a bench top is the duckboard it looked like.  The
+# opposite cut, 3 mm and 2 mm, was INVISIBLE: at 10.7 mm per pixel a 3 mm
+# groove is antialiased away entirely, and the joints that seemed to appear
+# when it was tried turned out to be a relief artefact rather than the
+# groove.  What reads is a shallow eased VALLEY -- wide enough for the sky to
+# reach its floor, deep enough to shade.  The dark line you see is mostly the
+# dirt in `expr_top`; the geometry's job is to make that dirt land in a real
+# crease and to give `convexity()` an arris to find.
+#
+# WHAT THE SDF BUYS, beyond the boards themselves: `convexity()` answers on
+# it.  On a `box_geometry` it returns its neutral 0 and `occlusion()` its
+# neutral 1, so doctrine 3's edge-wear term is simply unavailable -- only
+# the SDF family and indexed meshes answer those.  The arris polish along
+# every joint lip and the whole front edge is that signal.
+#
+# Cost: this is the scene's slowest object to intersect (a ray-marched
+# 3 m slab that fills the frame).  Rasterization went 2.44 s -> 4.35 s at
+# 640x480x12, which is the whole of this rework's cost.
+##################################################
+
+sdf_geometry
+{
+	name			geo_bench_top
+	part			box       union  0   0 -0.0025 0          0 0 0   1 1 1   1.5  0.0575 0.55     0
+	part			roundbox  union  0   0  0.049 -0.483438  0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 -0.345313  0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 -0.207187  0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 -0.0690625 0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 0.0690625  0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 0.207187   0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 0.345313   0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	part			roundbox  union  0   0  0.049 0.483438   0 0 0   1 1 1   1.5  0.011  0.0665625  0.009
+	maxsteps		160
+}
+
+standard_object
+{
+	name			obj_bench_top
+	geometry		geo_bench_top
+	material		mat_wood_top
+	position		0 0.85 0
+	modifier		relief_wood
+}
+
+box_geometry
+{
+	name			geo_leg
+	width			0.12
+	height			0.8
+	depth			0.12
+}
+
+standard_object
+{
+	name			obj_leg_fl
+	geometry		geo_leg
+	material		mat_wood_leg
+	position		-1.35 0.4 -0.45
+	modifier		relief_leg
+}
+
+standard_object
+{
+	name			obj_leg_fr
+	geometry		geo_leg
+	material		mat_wood_leg
+	position		1.35 0.4 -0.45
+	modifier		relief_leg
+}
+
+standard_object
+{
+	name			obj_leg_bl
+	geometry		geo_leg
+	material		mat_wood_leg
+	position		-1.35 0.4 0.45
+	modifier		relief_leg
+}
+
+standard_object
+{
+	name			obj_leg_br
+	geometry		geo_leg
+	material		mat_wood_leg
+	position		1.35 0.4 0.45
+	modifier		relief_leg
+}
+
+##################################################
+# Objects -- the bench vise (bolted to the right end of the bench).
+#
+# DOCTRINE 7 (plank_closeup.RISEscene's header): the silhouette has to say
+# what the object is before a single painter is bound to it.  Local frame:
+# +Y up, +Z out along the screw axis, origin on the flange's underside, so
+# the object below simply drops local y = 0 onto the bench top at y = 0.91.
+#
+#  1  base flange              roundbox, 390 x 42 x 344 mm, 18 mm rounding -- half-extents
+#                              (0.195, 0.021, 0.172) m, and RISE's `roundbox` INSETS the
+#                           rounding, so those ARE the outer half-extents.  The header                      #
+#                           said "28 x ... 12 mm arris" until 2026-09-08; both numbers                      #
+#                           were wrong against this line.  The 18 mm quarter-round on a                     #
+#                           21 mm half-height is what puts the flange's touchdown line                      #
+#                           18 mm INSIDE the nominal edge, which is where the grime                         #
+#                           profile in `expr_top` is measured from.                                         #
+#  2  cast body                roundbox, smin k 30 mm to the flange -- the
+#                              fillet a casting is drawn with, and the flat
+#                           top behind the jaw is the anvil pad                                             #
+#  3  fixed rear jaw           roundbox, smin k 24 mm, rising out of 2
+#  4  slide bar                box, HARD union: a machined member meets a
+#                              casting at an edge, never at a fillet
+#  5  movable jaw body         roundbox, smin k 21 mm, wrapping 4
+#  6  movable front jaw        roundbox, smin k 24 mm
+#  7  rear jaw pad             box, hard union, standing 17 mm PROUD of the
+#  8  front jaw pad            casting -- see the mask note below
+#  9  lead screw               cylinder on Z, emerging from 5
+# 10  thrust collar            cylinder
+# 11  T-handle                 capsule, hung -35 deg and slid 45 mm off
+#                              centre in its hole
+# 12-15  bolt heads            cylinders standing 18 mm proud of the flange
+#
+# The jaws stand 56 mm apart (10 px) and the pads 24 mm (4 px): the gap is
+# the second thing after the handle that says "vise", so it is sized to be
+# seen, not to be right.
+#
+# `orientation 0 48 0` -- a vise has a swivel base precisely so it can sit
+# at an angle to the bench, and 48 degrees is the yaw that puts the jaw
+# gap, the jaw faces and the whole length of the handle in shot at once.
+##################################################
+
+sdf_geometry
+{
+	name			geo_vise
+	part			roundbox  union     0        0       0.021  -0.030     0 0 0     1 1 1    0.195  0.021  0.172    0.018
+	part			roundbox  smin      0.030    0       0.114  -0.078     0 0 0     1 1 1    0.120  0.093  0.093    0.027
+	part			roundbox  smin      0.024    0       0.219  -0.054     0 0 0     1 1 1    0.135  0.081  0.039    0.015
+	part			box       union     0        0       0.150   0.030     0 0 0     1 1 1    0.054  0.039  0.128    0
+	part			roundbox  smin      0.021    0       0.156   0.128     0 0 0     1 1 1    0.093  0.054  0.045    0.018
+	part			roundbox  smin      0.024    0       0.219   0.113     0 0 0     1 1 1    0.135  0.081  0.039    0.015
+	part			box       union     0        0       0.244  -0.0068    0 0 0     1 1 1    0.114  0.073  0.0082   0
+	part			box       union     0        0       0.244   0.0658    0 0 0     1 1 1    0.114  0.073  0.0082   0
+	part			cylinder  union     0        0       0.150   0.242     90 0 0    1 1 1    0.0225 0.105  0        0
+	part			cylinder  union     0        0       0.150   0.320     90 0 0    1 1 1    0.042  0.015  0        0
+	part			capsule   union     0        0.0528  0.1889  0.359     0 0 -35   1 1 1    0.021  0.145  0        0
+	part			cylinder  union     0       -0.150   0.048  -0.150     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0        0.150   0.048  -0.150     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0       -0.150   0.048   0.090     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0        0.150   0.048   0.090     0 0 0     1 1 1    0.0255 0.012  0        0
+	maxsteps		192
+}
+
+standard_object
+{
+	name			obj_vise
+	geometry		geo_vise
+	material		mat_vise
+	position		1.15 0.91 -0.02
+	orientation		0 48 0
+	modifier		relief_vise
+}
+
+##################################################
+# Objects -- tool tray (left end of the bench)
+##################################################
+
+box_geometry
+{
+	name			geo_tray
+	width			0.7
+	height			0.04
+	depth			0.5
+}
+
+standard_object
+{
+	name			obj_tray
+	geometry		geo_tray
+	material		mat_tray
+	position		-0.95 0.93 0
+}
+
+##################################################
+# Objects -- floor
+##################################################
+
+infiniteplane_geometry
+{
+	name			floor
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_floor
+	geometry		floor
+	material		mat_floor
+	position		0 0 0
+	orientation		-90 0 0
+	receives_shadows	false
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.2
+	color		1.0 0.95 0.85
+	colorspace	sRGB
+	direction	0.5 0.7 0.6
+}
+
+directional_light
+{
+	name		fill
+	power		0.9
+	color		0.8 0.85 1.0
+	colorspace	sRGB
+	direction	-0.4 0.35 0.5
+}

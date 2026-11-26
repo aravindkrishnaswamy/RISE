@@ -17,7 +17,6 @@
 #define DELETED_CALLBACK_DISPATCHER_
 
 #include "../Interfaces/IDeletedCallback.h"
-#include "../Utilities/RTime.h"
 
 namespace RISE
 {

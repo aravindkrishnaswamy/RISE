@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -24,14 +24,13 @@ standard_shader
 	shaderop	pathtracer
 }
 
-pixelintegratingspectral_rasterizer
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_spectral_rasterizer
 {
 	samples					256
-	lum_samples				1
 	nmbegin					405
 	nmend					705
 	num_wavelengths			8
-	max_recursion			5
 	hwss					true
 }
 
@@ -47,13 +46,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 
@@ -67,7 +70,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -76,7 +78,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -85,7 +86,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -94,7 +94,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				3.2
 }
 
 ##################################################

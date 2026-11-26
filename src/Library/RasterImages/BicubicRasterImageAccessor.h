@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BicubicRasterImageAccessor.h - Implements a raster image accessor using 
-//  bilinear interpolation
+//  BicubicRasterImageAccessor.h - Implements a raster image accessor using
+//  bicubic interpolation
 //                
 //
 //  Author: Aravind Krishnaswamy
@@ -17,6 +17,7 @@
 #define BicubicRasterImageAccessor_
 
 #include "../Interfaces/ICubicInterpolator.h"
+#include "../Utilities/FiniteMath.h"
 #include "BilinRasterImageAccessor.h"
 
 namespace RISE
@@ -41,6 +42,12 @@ namespace RISE
 				interp.addref();
 			}
 
+			BicubicRasterImageAccessor( IRasterImage& pImage_, const ICubicInterpolator<C>& interp_, char wrapS, char wrapT ) :
+			BilinRasterImageAccessor<C>( pImage_, wrapS, wrapT ), interp( interp_ )
+			{
+				interp.addref();
+			}
+
 			void		GetPEL( const Scalar x, const Scalar y, RISEColor& p ) const
 			{
 				C	ret;
@@ -61,12 +68,55 @@ namespace RISE
 
 			void		GetPel( const Scalar x, const Scalar y, C& p ) const
 			{
-				// Calculate x and y value in terms of pixels in the original 
-				// image, also round up any pixel values
-				Scalar	u = y * Scalar( this->image_width ) + 0.5;
-				Scalar	v = x * Scalar( this->image_height ) + 0.5;
+				// Defensive: a zero-dimension image (corrupt PNG decoded
+				// to 0×0, or a freshly-constructed unloaded image) would
+				// hit modulo-by-zero in the Repeat/MirroredRepeat
+				// boundary path below.  Return a default-initialised
+				// (zero) pel.  The Bilin and NNB GetPel paths carry the
+				// same guard for the same index hazard — a 0-dim image
+				// makes the clamp bound Scalar(-1), so the computed texel
+				// index is -1 (Bilin, and this class's ClampToEdge
+				// branches) or Scalar(-1) cast to unsigned (NNB).  Either
+				// way GetPEL's unsigned parameter sees a huge index into
+				// the unchecked raster.  This class is additionally
+				// exposed to modulo-by-zero in the Repeat/MirroredRepeat
+				// path below.
+				if( this->image_width <= 0 || this->image_height <= 0 ) {
+					p = C();
+					return;
+				}
 
-				// Clamp u and v values to between 0 and the image size
+				// Non-finite UV guard: NaN survives the wrap and both
+				// pre-clamps into int(NaN) (UB) — and here it also
+				// breaks the ClampToEdge fallback's "px < 0 implies
+				// xlo == 0" invariant, so px would be ASSIGNED the
+				// garbage xlo instead of clamped.  Bit tests because
+				// plain FP comparisons are foldable under -ffast-math
+				// (rationale at BilinRasterImageAccessor::GetPel /
+				// FiniteMath.h).
+				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
+					p = C();
+					return;
+				}
+
+				// Apply per-axis wrap before pixel-coord scaling.  See
+				// BilinRasterImageAccessor for the rationale and the
+				// wrap_s ↔ y / wrap_t ↔ x axis convention.
+				const Scalar wrappedY = ApplyWrapMode( y, this->wrap_s );
+				const Scalar wrappedX = ApplyWrapMode( x, this->wrap_t );
+
+				// Calculate x and y value in terms of pixels in the original
+				// image, also round up any pixel values
+				Scalar	u = wrappedY * Scalar( this->image_width ) + 0.5;
+				Scalar	v = wrappedX * Scalar( this->image_height ) + 0.5;
+
+				// Clamp u and v to [0, dim-1].  NOTE this is NOT a no-op
+				// for Repeat / MirroredRepeat: u = wrapped*W + 0.5
+				// exceeds W-1 whenever wrapped > 1 - 1.5/W, so the top
+				// ~1.5 texels of every tile pin u to W-1 (making the
+				// interpolation parameter 0 there).  Deliberate pre-clamp
+				// design — do not "fix" (see the Bilin accessor).  For
+				// ClampToEdge the clamp does the actual saturation.
 				if( u < 0.0 ) u = 0.0;
 				if( u > Scalar(this->image_width-1) ) u = Scalar(this->image_width-1);
 				if( v < 0.0 ) v = 0.0;
@@ -80,16 +130,59 @@ namespace RISE
 				int		xlo = int( ulo );
 				int		ylo = int( vlo );
 
-				// Now that we have the four primary pixels, we need all the pixel around that
+				// Bicubic samples a 4x4 footprint around (xlo, ylo).
+				//   - Repeat: off-image neighbour wraps around to the
+				//     opposite edge (modulo W / H).
+				//   - MirroredRepeat: off-image neighbour mirrors —
+				//     fold into [0, 2*W) then reflect into [0, W) so
+				//     adjacent tiles meet seam-free.
+				//   - ClampToEdge: saturate the neighbour index at the
+				//     boundary texel, matching Bilin's xhi/yhi clamp.
+				//     (The low branch writes xlo/ylo, but px < 0 implies
+				//     xlo == 0, so both branches land on the true edge
+				//     texel — textbook clamp-to-edge.)
+				auto wrapIndex = []( int p, int N, char mode ) -> int {
+					if( mode == eRasterWrap_Repeat ) {
+						return ((p % N) + N) % N;
+					}
+					if( mode == eRasterWrap_MirroredRepeat ) {
+						const int twoN = 2 * N;
+						int q = ((p % twoN) + twoN) % twoN;	// [0, 2N)
+						return ( q < N ) ? q : ( twoN - 1 - q );
+					}
+					// ClampToEdge is handled inline by the caller (saturates
+					// at the boundary texel), so this branch is reached only
+					// for an out-of-enum wrap value from the unvalidated
+					// public factory `char` params.  Clamp rather than pass
+					// the raw index through — Bilin and NNB are likewise
+					// total for any char value, and the raster GetPEL is
+					// unchecked.
+					return ( p < 0 ) ? 0 : ( ( p >= N ) ? N - 1 : p );
+				};
 				C pixels[4][4];
+				const int W = (int)this->image_width;
+				const int H = (int)this->image_height;
 				for( int y=0; y<4; y++ ) {
 					for( int x=0; x<4; x++ ) {
 						int px = (xlo-1+x);
 						int py = (ylo-1+y);
-						if( px < 0 ) px = xlo;
-						if( px >= this->image_width ) px = this->image_width-1;
-						if( py < 0 ) py = ylo;
-						if( py >= this->image_height ) py = this->image_height-1;
+						// Axis convention (same as the wrapped-UV code
+						// above and Bilin's xhi/yhi seam partners): the
+						// width-axis index px comes from `u` (input `y`,
+						// wrap_s); the height-axis index py comes from
+						// `v` (input `x`, wrap_t).
+						if( this->wrap_s != eRasterWrap_ClampToEdge ) {
+							px = wrapIndex( px, W, this->wrap_s );
+						} else {
+							if( px < 0 ) px = xlo;
+							if( px >= W ) px = W-1;
+						}
+						if( this->wrap_t != eRasterWrap_ClampToEdge ) {
+							py = wrapIndex( py, H, this->wrap_t );
+						} else {
+							if( py < 0 ) py = ylo;
+							if( py >= H ) py = H-1;
+						}
 						pixels[y][x] =  this->pImage.GetPEL( px, py );
 					}
 				}

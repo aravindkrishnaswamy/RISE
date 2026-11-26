@@ -1,0 +1,13 @@
+{
+  "//": "Arc-75 S1 measurement, gemini instrument (75-expressive-surface-arc.md sec 2 S1). One behavioural variable vs bare_prompt_s0_anchor: the materials-and-media-basics demo fence now carries painter bindings on its cooktorrance facets + pbr roughness sites (the observed copy-source constants). Stop rule, pre-committed: varied_microsurface >=1 in >=2 of 6 build runs per model -> bank and proceed to S2 for geometry only; 0/6 -> example ceiling confirmed at construct level, S2 proceeds for both domains; exactly 1/6 -> one N=3 re-run then decide, no third try. REACH CAVEAT recorded before the run: 3 of 5 read-set skills are lambertian-only (no microsurface slot exists in their snippets), so this lever can only move runs that instantiate pbr/cooktorrance/ggx-class materials -- a 0/6 with all-lambertian documents is a REACH failure, not a copying failure; check material kinds before assigning the verdict.",
+  "scenarios": [
+    "evals/scenarios/bare_prompt_build_courtyard.json",
+    "evals/scenarios/bare_prompt_build_cozy_study.json",
+    "evals/scenarios/build_ambiguous_scene.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/bare_prompt_s1"
+}

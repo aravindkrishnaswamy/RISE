@@ -15,6 +15,7 @@
 #include "DataDrivenBSDF.h"
 #include "../Interfaces/ILog.h"
 #include "../RISE_API.h"
+#include "../Utilities/Color/RGBSpectra.h"   // RGBUnboundedSpectrum (RGB->spectral uplift for valueNM)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -30,6 +31,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 	// First check for the signature
 	if( pBuffer->getInt() != 0xBDF ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: Signature not found in file!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -38,6 +40,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 
 	if( pBuffer->getUInt() != our_version ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: File contains bad version info!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -88,11 +91,22 @@ DataDrivenBSDF::DataDrivenBSDF(
 		std::reverse( btdf.values.begin(), btdf.values.end() );
 
 		this->brdf.push_back( brdf );
-		this->btdf.push_back( brdf );
+		// Store the BUILT transmission lobe (btdf, read from the file's SECOND patch set above), not a
+		// copy of brdf.  NOTE: value()/valueNM() are currently REFLECTION-ONLY -- they iterate `brdf` and
+		// return 0 for transmission geometry (nr<0||nv<0) -- so this->btdf is not yet read at render time.
+		// This corrects the stored lobe (was a discarded-then-wrong brdf copy); it is render-inert today
+		// and becomes live once a DataDrivenBSDF transmission path is implemented.
+		this->btdf.push_back( btdf );
 	}
 
 	pInterpolator = new CatmullRomCubicInterpolator<RISEPel>();
 	GlobalLog()->PrintNew( pInterpolator, __FILE__, __LINE__, "uniform b-spline interpolator" );
+
+	// Release the read buffer (DiskFileReadBuffer holds its FILE* open until
+	// destruction).  Leaking it kept the .bdf open for the process lifetime,
+	// which on Windows blocks any later remove/replace of the file -- POSIX
+	// unlink succeeds on an open file, so the leak was invisible on macOS.
+	safe_release( pBuffer );
 }
 
 DataDrivenBSDF::~DataDrivenBSDF( )
@@ -116,6 +130,17 @@ RISEPel DataDrivenBSDF::ComputeValueForPatchSet( BSDFValuesType::const_iterator 
 	return pInterpolator->InterpolateValues( y0, y1, y2, y3, x );
 }
 
+// A tabulated BRDF interpolated with Catmull-Rom (an INTERPOLATING spline) can overshoot BELOW zero
+// between a bright patch and an adjacent dark one.  A BRDF must never be negative -- it would SUBTRACT
+// energy, and in the spectral valueNM path RGBUnboundedSpectrum's scale = max-channel would itself go
+// negative and contaminate EVERY wavelength.  Clamp every value() result to the non-negative octant.
+static inline RISEPel ClampNonNeg( const RISEPel& c )
+{
+	return RISEPel( c.r < Scalar(0) ? Scalar(0) : c.r,
+	                c.g < Scalar(0) ? Scalar(0) : c.g,
+	                c.b < Scalar(0) ? Scalar(0) : c.b );
+}
+
 RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	const Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
@@ -126,6 +151,22 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 
 	if( nr < 0 || nv < 0 ) {
 		return RISEPel(0,0,0);
+	}
+
+	// Geometric-horizon gate (DL-325 review P1), the SAME one LambertianBRDF's
+	// ShouldReflect and DataDrivenSPF apply: a tilted shading normal (bump /
+	// normal map / glint) can put a direction above the shading plane and below
+	// the true surface.  BSDF and SPF must share ONE support or the sampled
+	// continuation loses that energy while NEE / connections still see it.
+	// Ray-anchored (geomN opposes ri.ray.Dir()); a degenerate vGeomNormal falls
+	// back to the shading normal, making the gate a no-op.
+	{
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : ri.vNormal;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return RISEPel(0,0,0);
+		}
 	}
 
 	const Scalar nv_theta = acos( nv );
@@ -146,23 +187,23 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 					// The very begining, just take the value
 					const RISEPel tp = m->value;
 					if( it==brdf.begin() ) {
-						return tp;
+						return ClampNonNeg( tp );
 					}
 
 					// Otherwise interpolate in emitter direction
 					const RISEPel pp = (cnt+1<(it-1)->values.size())?(it-1)->values[cnt+1].value:(it-1)->values[cnt].value;
-                    return ((1.0-xemm)*tp + (xemm*pp));
+                    return ClampNonNeg( (1.0-xemm)*tp + (xemm*pp) );
 				} else if( nr_theta >= m->dTheta && nr_theta <= (m+1)->dTheta ) {
 					// Otherwise interpolate
 					const Scalar xtheta = (nr_theta-m->dTheta)/((m+1)->dTheta-m->dTheta);
 
 					const RISEPel tp = ComputeValueForPatchSet( it, cnt, static_cast<int>(it->values.size()), xtheta );
 					if( it==brdf.begin() ) {
-						return tp;
+						return ClampNonNeg( tp );
 					}
 
 					const RISEPel pp = ComputeValueForPatchSet( (it-1), cnt, static_cast<int>((it-1)->values.size()), xtheta );
-					return ((1.0-xemm)*tp + (xemm*pp));
+					return ClampNonNeg( (1.0-xemm)*tp + (xemm*pp) );
 				}
 			}
 		}
@@ -173,5 +214,29 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 
 Scalar DataDrivenBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return 0;
+	// RGB-tabulated BRDF -- there is no per-wavelength data, so uplift the RGB BRDF value to a spectral value
+	// (chroma-preserving JH uplift: the SAME RGBUnboundedSpectrum::FromRGB(...).Eval(nm) mechanism
+	// UniformColorPainter::GetColorNM uses) and sample at nm.  Was `return 0`, which rendered data-driven
+	// materials FULLY BLACK under every spectral integrator (the spectral consumers -- e.g. AreaLightShaderOp
+	// -- multiply the emitter's spectral radiance by valueNM with no RGB fallback).  Unbounded (not Albedo)
+	// because a BRDF f_r can exceed 1, which Albedo would clamp.  (Luminance would be simpler but desaturates;
+	// the uplift keeps the BRDF's chroma so the spectral render matches the RGB render, per the material
+	// convention -- every other material's valueNM goes through GetColorNM.)  The uplift is built PER CALL
+	// (FromRGB does a LUT lookup + builds the sigmoid each call -- the per-texel idiom
+	// TexturePainter::GetColorNM uses, NOT the cached single-Eval of UniformColorPainter, because value()
+	// varies per query and can't be precomputed at construction).  Acceptable: DataDrivenBSDF is a niche
+	// material and the spectral path is already per-wavelength.  value() is clamped non-negative (ClampNonNeg)
+	// so FromRGB never sees a negative RGB (whose max-channel scale would flip the whole spectrum negative).
+	return RGBUnboundedSpectrum::FromRGB( value( vLightIn, ri ) ).Eval( nm );
+}
+
+RISEPel DataDrivenBSDF::albedo( const RayIntersectionGeometric& /*ri*/ ) const
+{
+	// No closed-form reflectance for tabulated BSDFs without
+	// integrating over the hemisphere.  A precomputed mean (a Fibonacci-
+	// sphere integration at construction time) would be the proper
+	// answer; until then return mid-gray so OIDN sees a neutral,
+	// non-chromatic albedo and doesn't pull the beauty pass toward any
+	// hue it shouldn't.
+	return RISEPel( 0.5, 0.5, 0.5 );
 }

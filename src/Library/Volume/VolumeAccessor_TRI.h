@@ -29,15 +29,20 @@ namespace RISE
 	public:
 		VolumeAccessor_TRI( ){};
 
-		Scalar GetValue( Scalar x, Scalar y, Scalar z )const 
+		Scalar GetValue( Scalar x, Scalar y, Scalar z )const
 		{
-			Scalar ulo, vlo, wlo;
-
 			// trilinear interpolation
-			// Extract the integer and decimal components of the value at the three axis
-			Scalar	ut = modf( x, &ulo );
-			Scalar	vt = modf( y, &vlo );
-			Scalar	wt = modf( z, &wlo );
+			// Extract the integer and decimal components at the three axis.
+			// floor-based (not modf) so fractions stay in [0,1] for negative
+			// coordinates too -- heterogeneous volumes address with centered,
+			// signed coordinates.
+			const Scalar ulo = floor( x );
+			const Scalar vlo = floor( y );
+			const Scalar wlo = floor( z );
+
+			Scalar	ut = x - ulo;
+			Scalar	vt = y - vlo;
+			Scalar	wt = z - wlo;
 
 			int	xlo = int(ulo);
 			int	xhi = xlo+1;
@@ -46,7 +51,12 @@ namespace RISE
 			int	zlo = int(wlo);
 			int	zhi = zlo+1;
 
-			// Thus our final value is computed from these low and high values
+			// Thus our final value is computed from these low and high values.
+			// NOTE the historical two-letter names read (y, x), not (x, y):
+			// lhA is (ylo, xhi) i.e. GetValue(xhi, ylo), and hlA is
+			// (yhi, xlo) i.e. GetValue(xlo, yhi).  The weight pairing below
+			// is consistent with the reads (ut with xhi, vt with yhi); keep
+			// them in lockstep if renaming.
 			Scalar	llA = pVolume->GetValue( xlo, ylo, zlo );
 			Scalar	lhA = pVolume->GetValue( xhi, ylo, zlo );
 			Scalar	hlA = pVolume->GetValue( xlo, yhi, zlo );
@@ -72,7 +82,8 @@ namespace RISE
 				+ lhB * (ut * omvt) 
 				+ hhB * (ut * vt));
 
-			return (front * wt + back * omwt);
+			// front is the zlo plane, back is the zhi plane
+			return (front * omwt + back * wt);
 		}
 
 		Scalar GetValue( int x, int y, int z )const 

@@ -33,9 +33,12 @@ namespace RISE
 			Matrix4	ComputeScaleFromAR( ) const;
 
 			//! Recomputes camera parameters from class values
-			void Recompute( const unsigned int width, const unsigned int height );
+			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
+			//! DL-465: see CameraCommon::CloneForTimeView.
+			CameraCommon* CloneForTimeView() const override { return new OrthographicCamera( *this ); }
+
 			//! Sets the camera based on two basis vectors and position
 			OrthographicCamera( 
 				const Point3& vPosition,			///< [in] Location of the camera in the world
@@ -65,7 +68,11 @@ namespace RISE
 				const Scalar pixelRate				///< [in] Pixel rate of the camera
 				);
 
-			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+			// Properties-panel getter / setter for the viewport scale.
+			inline Vector2 GetViewportScaleStored()         const { return viewportScale; }
+			inline void    SetViewportScaleStored( const Vector2& v ) { viewportScale = v; }
+
+			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 		};
 	}
 }

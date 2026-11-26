@@ -1,0 +1,189 @@
+# Scene Skeleton and Conventions
+> hook: Read before authoring a scene from scratch, or when a scene renders dark, backwards, or fails to parse.
+
+## The minimal complete scene
+
+A `.RISEscene` is a sequence of chunks.  The header line must be exactly
+`RISE ASCII SCENE 7`, and every chunk brace goes on its OWN line.
+Entities are referenced BY NAME, and a reference must be declared
+EARLIER in the file than its consumer (painter before material,
+geometry/material before object).
+
+```rise
+RISE ASCII SCENE 7
+
+# Integrator: unidirectional path tracing (the default choice).
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+# The film owns the raster dims; cameras are imaging-only (no width/height).
+film
+{
+	width	128
+	height	128
+}
+
+# Right-handed, Y-up.  A camera at +Z looks down -Z at the origin.
+pinhole_camera
+{
+	location	0 0 5
+	lookat		0 0 0
+	up			0 1 0
+	fov			40.0
+}
+
+# A painter supplies color; the material references it by name.
+uniformcolor_painter
+{
+	name	pnt_white
+	color	0.8 0.8 0.8
+}
+
+lambertian_material
+{
+	name		mat_white
+	reflectance	pnt_white
+}
+
+sphere_geometry
+{
+	name	sph
+	radius	1.0
+}
+
+standard_object
+{
+	name		obj_sphere
+	geometry	sph
+	material	mat_white
+	position	0 0 0
+}
+
+# direction points FROM the surface TO the light (see trap 1 below):
+# positive Z lights the side the camera at +Z sees.
+directional_light
+{
+	name		key
+	power		3.14
+	color		1 1 1
+	direction	0.3 0.5 0.8
+}
+```
+
+## A one-call alternative for a varied material
+
+Hand-typing a painter + material pair like `pnt_white`/`mat_white` above
+is fine for a flat colour.  When the material should have real spatial
+variation instead of a single flat colour, `insert_material_scaffold`
+expands one of five family templates (`weathered_wood`, `rough_stone`,
+`brushed_metal`, `aged_bronze`, `glazed_ceramic`) into a small wired
+painter graph in a single call, e.g. `insert_material_scaffold
+{family:"glazed_ceramic", name:"bowl1", tone:"0.85 0.82 0.76", wear:0.3,
+scale:3.0}` -- this lands `tmpl_bowl1_mat` (a `ggx_material`) plus its
+wired painters as ordinary, editable chunks; point a
+`standard_object.material` at `tmpl_bowl1_mat` exactly like `mat_white`
+above.
+
+## A one-call alternative for turned geometry
+
+A turned profile is a `lathe_geometry`: `profile_point <r> <h>` lines
+that ARE the silhouette (see object-modeling-recipes' turned-vessel
+recipe).  When the form must instead be an SDF -- to take part in CSG,
+or to blend into a larger body -- that is a chain of `roundcone` parts
+joined by `smin`, and several lines of `part` math.
+`insert_geometry_scaffold` expands one of seven family templates
+(`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`,
+`blended_chain`, `quadruped` [alias `creature`], `volume_bank`) into that graph in a single call, e.g.
+`insert_geometry_scaffold {family:"sdf_column", name:"column1",
+size:1.0, detail:0.5, aspect:1.5}` -- this lands `tmpl_column1_col` (a
+single `sdf_geometry` base/shaft/capital `smin` chain, closed with the
+same flat-bottom cut) as an ordinary, editable chunk.  Unlike
+`insert_material_scaffold`, this tool never emits a material or a
+`standard_object` (except `volume_bank`, which emits its own -- see the
+modeling-workflow-and-geometry skill) -- point a
+`standard_object.geometry` at `tmpl_column1_col` yourself, exactly like
+`sph` in the minimal scene above.  Already placed a part and want to
+revise its FORM rather than author it from scratch -- `replace_geometry_scaffold`
+expands the same graph and rebinds an existing object's `geometry` slot
+to it in one call, preserving every other param; see the
+modeling-workflow-and-geometry skill for the full contract.
+
+## Convention traps (each has caused real bugs)
+
+1. **`directional_light.direction` is FROM-surface-TO-light**, not the
+   shine direction.  A surface is lit when `N . direction > 0`.  With
+   the camera at `+Z` looking at the origin, a light needs **positive
+   Z** in `direction` to light what the camera sees.  Importers from
+   shine-direction conventions (glTF, Unity, Unreal) must NEGATE first.
+2. **`power` multiplies `color`.**  Directional: radiance =
+   `color * power` (no falloff).  `omni_light` / `spot_light`:
+   `color * power / r^2` — distant point lights need large powers
+   (hundreds+).  `power 3.14` (pi) on a directional key makes a fully
+   lit white Lambertian surface return ~1.  On an emissive material it
+   is `scale` that multiplies the `exitance` painter instead — and
+   **most scenes should be lit by AREA LIGHTS**, an object wearing a
+   `lambertian_luminaire_material`, in most cases a rectangle.  The
+   point / spot / directional kinds are zero-area idealizations (hard
+   shadows, no penumbra, nothing visible in frame) and are for special
+   cases; `ambient_light` is REFUSED on every path that could create it
+   (no position, no direction, no shadow ray, so no shadow and no
+   falloff).  Full recipe in the lighting-recipes skill.
+3. **Colorspace defaults.**  `uniformcolor_painter` treats `color` as
+   already-linear Rec.709 (`colorspace Rec709RGB_Linear`).  Add
+   `colorspace sRGB` when the value came from a color picker / hex code
+   so it is gamma-decoded.  Never use sRGB for normal maps.
+4. **`standard_object` transform precedence: `matrix` > `quaternion` >
+   `orientation`.**  A full `matrix` (16 doubles, column-major)
+   supersedes everything; `quaternion` (xyzw) beats the Euler
+   `orientation` (degrees) and still composes with `position`/`scale`.
+5. **v7 format rules.**  Header `RISE ASCII SCENE 7`; braces on their
+   own lines; one `param value...` per line; `#` starts a line comment.
+   Older scenes: `python tools/migrate_scenes_v5_to_v7.py <path>`.
+
+When a scene renders unexpectedly dark, FIRST swap the materials for a
+Lambertian white and re-check the light directions before touching
+anything else.
+
+**Output note**: the agent surface renders in-memory, but a saved
+scene run via the CLI writes NO image unless the scene carries a
+`file_rasterizeroutput` chunk — see docs/SCENE_CONVENTIONS.md §10 for
+the standard dual EXR (HDR archive) + PNG (display preview) idiom.
+Declare the rasterizer chunk BEFORE any `file_rasterizeroutput`
+chunk; FRO-first (or no rasterizer chunk) fails the load with a
+"no rasterizer is set" diagnostic.
+
+## Choosing the integrator
+
+You may select exactly two integrator families, in either their RGB
+or spectral form:
+
+| Rasterizer chunk | Use it for |
+| --- | --- |
+| `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer` | Everything, unless there is a specific reason not to.  This is the default. |
+| `vcm_pel_rasterizer` / `vcm_spectral_rasterizer` | Caustics and refractive / dispersive transport — light focused through glass, water, gems.  PT misses much of that energy. |
+
+`bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer`,
+`mlt_spectral_rasterizer`, `auto_rasterizer` and
+`auto_spectral_rasterizer` are **specialized rasterizers you may not
+select** — inserting one is refused, and there is no override
+parameter.  If a scene needs one, the user selects it themselves.
+`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer` are
+**frozen legacy rasterizers** (unsupported since 2026-10-09) and are
+refused too.  Material alpha (`alpha_coverage` / `alpha_mode` /
+`alpha_cutoff`) works under PT and VCM, so no scene needs them.
+
+A scene the user handed you that already contains one of the blocked
+rasterizers stays **fully editable** — edit any chunk in it, including
+that rasterizer's own parameters, and render it normally.  The one
+parameter edit that is refused is pinning an `auto_rasterizer`'s
+`integrator` to `bdpt`; `pt`, `vcm` and `auto` are all fine.

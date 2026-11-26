@@ -1,0 +1,83 @@
+# water_absorption.spectra
+#
+# Pure water spectral absorption, 380-700 nm, source: Pope, R.M. and Fry, E.S.
+# (1997) "Absorption Spectrum (380-700 nm) of Pure Water. II. Integrating
+# Cavity Measurements", Applied Optics 36(33):8710-8723.  Values below are the
+# published absorption coefficient a(lambda) in m^-1 (the units of the paper's
+# Table 3 as conventionally cited), resampled onto a 10 nm grid from the
+# source's native 2.5 nm spacing (docs/WETNESS_COAT_DESIGN.md section 6.7
+# cites the anchors a(450)~=0.0092 m^-1, a(650)~=0.34 m^-1, a(700)~=0.624 m^-1
+# as the go/no-go check on this conversion; all three match the source table
+# exactly).  Minimum absorption is ~0.0044 m^-1 near 418 nm (the well-known
+# Pope & Fry blue-absorption result); absorption rises steeply past 590 nm as
+# the O-H stretch overtone band is approached.
+#
+# CONVERSION -- this file is a TRANSMITTANCE BASE, not an absorption
+# coefficient.  dielectric_material's `tau` is applied as pow(tau, distance)
+# (DielectricSPF.cpp:311-324), i.e. Beer-Lambert with tau as the per-unit-
+# distance base, NOT as -sigma_a directly.  Each value below is therefore
+# exp(-a(lambda)) with a(lambda) in m^-1, so that pow(tau, distance_in_metres)
+# reproduces exp(-a(lambda) * distance_in_metres) exactly.  Pasting a raw
+# published absorption coefficient straight into `tau` -- skipping this
+# exp(-a) step -- inverts the curve: blue would come out heavily attenuated
+# and red would pass freely, backwards from real water.
+#
+# WORLD-SCALE ASSUMPTION -- "per unit distance" bakes in 1 WORLD UNIT = 1
+# METRE.  A scene built at a different scale must rescale every value:
+# tau_new = tau_old ^ (1 / s), where s is world units per metre (e.g. a
+# centimetre-scaled scene has s = 0.01, so tau_new = tau_old ^ 100 -- a much
+# stronger per-unit-distance attenuation, matching the fact that a "1 unit"
+# path is now only 1 cm of real water).
+#
+# USAGE (spectral rasterizers) -- `file` resolves through GlobalMediaPathLocator,
+# same as every other colors/*.spectra reference in the tree (e.g.
+# scenes/Tests/VCM/cornellbox_vcm_spectral.RISEscene's `file colors/cornellbox_green.spectra`),
+# so the `colors/` prefix is required, unquoted:
+#   scalar_painter { name water_tau  file colors/water_absorption.spectra }
+#   dielectric_material { name deep_water  tau water_tau  ior 1.333  scattering 1000000 }
+#
+# RGB IDIOM (debt 10, PiecewiseLinearScalarPainter::GetValuesAt broadcasts a
+# single 555 nm sample under an RGB rasterizer -- see the header note on
+# HasPerChannelVariation() -- so the file above is INERT under the default
+# pathtracing_pel_rasterizer: it renders grey water with no depth tint at
+# all).  For an RGB rasterizer, author three explicit per-channel numbers
+# instead, sampling this same table at representative R/G/B wavelengths
+# (610 / 550 / 465 nm below) -- the same idiom already shipped at
+# scenes/FeatureBased/Combined/tidepools.RISEscene:395 (`tau 0.85 0.92 0.95`,
+# an art-directed shallow-pool value, not this file's 1-metre physical base):
+#   dielectric_material { name deep_water_rgb  tau 0.77 0.95 0.99  ior 1.333  scattering 1000000 }
+# Rescale per the WORLD-SCALE note above if the scene is not metre-scaled.
+#
+380	0.988694
+390	0.991526
+400	0.993392
+410	0.995281
+420	0.995470
+430	0.995062
+440	0.993670
+450	0.990822
+460	0.990258
+470	0.989456
+480	0.987380
+490	0.985112
+500	0.979807
+510	0.968022
+520	0.959925
+530	0.957528
+540	0.953706
+550	0.945066
+560	0.939977
+570	0.932860
+580	0.914297
+590	0.873629
+600	0.800595
+610	0.767666
+620	0.759192
+630	0.747067
+640	0.732860
+650	0.711770
+660	0.663650
+670	0.644681
+680	0.628135
+690	0.596903
+700	0.535797

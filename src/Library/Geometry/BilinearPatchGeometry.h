@@ -15,6 +15,9 @@
 #define BILINEARPATCH_GEOMETRY_
 
 #include "Geometry.h"
+#include <atomic>
+#include <mutex>
+#include <memory>
 #include "../Interfaces/IBilinearPatchGeometry.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
@@ -45,6 +48,44 @@ namespace RISE
 			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
 			bool					bUseBSP;			// Are we using BSP trees ?
 
+			//! Area-light sampling tables, built once in Prepare().
+			//! `vAreaCDF` is ONE global cumulative table over every (patch,
+			//! cell) pair -- nAreaCells^2 consecutive entries per patch, in
+			//! patch order -- so a single binary search picks both the patch
+			//! and the cell within it, area-proportionally.  `dTotalArea` is
+			//! the same quadrature's total, so 1/GetArea() is exactly the
+			//! sampler's density (see GeometricUtilities::
+			//! AccumulateBilinearAreaCDF for why that identity, not absolute
+			//! quadrature accuracy, is what unbiasedness rests on).
+			static const unsigned int nAreaCells = 8;
+			std::vector<Scalar>		vAreaCDF;
+			Scalar					dTotalArea;
+			// DL-616: the patch-set certificate is computed LAZILY, on the
+			// first query of the accessors below.  Only consumers that need
+			// it ask (the object manager's open-sheet pass for clear
+			// transmissive materials; a CSG composite certifying its
+			// operands), so an opaque patch model never pays for it.  The
+			// per-hit stamp reads the stored flag without forcing it: an
+			// uncertified set reads "not open", the conservative answer.
+			// A VERSIONED slot, never a once_flag that an edit resets: an
+			// edit bumps m_certGeneration, and the certificate is recomputed
+			// under m_certMutex when m_certComputedGeneration lags behind it.
+			// This only removes the undefined behaviour of resetting a
+			// once_flag another thread may be inside; it does NOT make
+			// editing during a render safe (AddPatch / Prepare still change
+			// `patches` under readers) -- scenes are immutable while a
+			// render runs.
+			mutable std::mutex				m_certMutex;
+			std::atomic<unsigned int>		m_certGeneration;
+			mutable std::atomic<unsigned int>	m_certComputedGeneration;
+			mutable std::atomic<bool>	m_bCertifiedWatertight;
+			mutable std::atomic<bool>	m_bProvablyOpenSheet;
+			mutable std::atomic<bool>	m_bNegativeOpenSignedVolume;
+			mutable std::mutex			m_opennessMutex;
+			mutable std::atomic<int>	m_topologicalOpenness;
+			void EnsureCertified() const;
+			void InvalidateCertificate();
+
 			virtual ~BilinearPatchGeometry( );
 
 		public:
@@ -55,41 +96,75 @@ namespace RISE
 				);
 
 			// Adds a new patch to the list
-			void AddPatch( const BilinearPatch& patch );
+			void AddPatch( const BilinearPatch& patch ) override;
+
+			//! Number of patches in this set.  Lets a caller budget a tessellation
+			//! (detail^2 x patches) BEFORE asking for one.
+			size_t NumPatches() const { return patches.size(); }
 
 			// Instructs that addition of new patches is complete and that
 			// we can prepare for rendering
-			void Prepare();
+			void Prepare() override;
 
-			void GenerateMesh( );
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			// Tessellates every stored bilinear patch as a (detail+1) x (detail+1) bilinear grid,
+			// concatenated.  Per-patch corner mapping is the CANONICAL RISE convention:
+			// pts[0]->UV(0,0), pts[1]->UV(0,1), pts[2]->UV(1,0), pts[3]->UV(1,1) -- NOT
+			// row-major.  (This comment previously documented the pre-fix row-major order,
+			// which disagreed with the body, EvaluateBilinearPatchAt and
+			// RayBilinearPatchIntersection; it misled the 2026-07 area-light work.)
+			// Normals recomputed from triangle topology.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const; 
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest( ) const { return true; };
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea( ) const;
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override; 
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest( ) const override { return true; };
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea( ) const override;
+
+			//! \return False when there is no sampleable surface, so this
+			//! geometry is never registered as a luminary in that state.
+			//! Before 2026-07 this inherited IGeometry's `true` default while
+			//! UniformRandomPoint was an unimplemented stub and GetArea
+			//! returned a hardcoded 1.0 -- a `bilinearpatch_geometry` bound to
+			//! an emissive material became a silently broken area light whose
+			//! every NEE sample landed on the object's local origin.
+			bool CanBeAreaLight() const override { return !patches.empty() && dTotalArea > 0; }
+			bool IsCertifiedWatertight() const { EnsureCertified(); return m_bCertifiedWatertight.load( std::memory_order_acquire ); }
+			bool IsProvablyOpenSheet() const { EnsureCertified(); return m_bProvablyOpenSheet.load( std::memory_order_acquire ); }
+			bool HasNegativeOpenSignedVolume() const { EnsureCertified(); return m_bNegativeOpenSignedVolume.load( std::memory_order_acquire ); }
+			//! DL-617: topological openness (see GeometricUtilities::BilinearPatchSetOpenness).
+			int TopologicalOpenness() const;
+
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's
+			//! debt-21 gate applies to the ONE patch being tested; this
+			//! geometry holds a whole tree of them and the query names only a
+			//! point, so bound them all at once via
+			//! Geometry::BoundingBoxRootFloor (see its note).
+			//! Direction-independent.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override;
 
 			// From TreeElementProcessor
 			typedef const BilinearPatch*		MYOBJ;
-				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
-				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const override;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const override;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const override;
 
-			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
-			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
+			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const override;
+			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const override;
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0; };
-			void SetIntermediateValue( const IKeyframeParameter& val ){};
-			void RegenerateData( ){};
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override{ return 0; };
+			void SetIntermediateValue( const IKeyframeParameter& val ) override{};
+			void RegenerateData( ) override{};
 		};
 	}
 }

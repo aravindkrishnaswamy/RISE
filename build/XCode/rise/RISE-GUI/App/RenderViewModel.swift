@@ -4,6 +4,15 @@ import CoreGraphics
 import AppKit
 import UniformTypeIdentifiers
 
+// RISEBridge is an Obj-C class; Swift can't auto-verify thread-safety.
+// The methods captured across threads here — etaBegin, etaUpdateProgress,
+// etaRemainingSeconds — are all guarded by a std::mutex on the C++ side.
+// The one-way setup methods (setProgressBlock, setImageOutputBlock,
+// rasterize) are called serially from the view model. Vouching for
+// Sendable here silences the @Sendable-capture warnings without wrapping
+// every call site.
+extension RISEBridge: @unchecked Sendable {}
+
 /// A single log message captured from the RISE engine.
 struct LogMessage: Identifiable {
     let id = UUID()
@@ -23,6 +32,26 @@ enum RenderState: Equatable {
     case error(String)
 }
 
+/// Which tab is frontmost in the left panel.  Lives on the view model
+/// (moved from a ContentView-private `@State` in the P1-6 fix) so
+/// `loadScene`'s failure branch can switch it programmatically —
+/// ContentView-local state isn't reachable from RenderViewModel.
+enum LeftPanelTab {
+    case agent
+    case sceneFile
+    /// doc-88 Phase 3 S15: the read-only Painter/Material node canvas
+    /// (`NodeGraphCanvas.swift`) — a third tab alongside Agent/Scene file,
+    /// same tab-strip idiom, no new chrome pattern. User-facing tab label
+    /// is "Material Graph" (renamed from the original generic "Graph" once
+    /// `.objects` shipped as a sibling) — the case name stays `graph`,
+    /// unrenamed, per this slice's "display strings only" scoping.
+    case graph
+    /// Object Graph slice (S2): a fourth tab, sibling of `.graph` --
+    /// `ObjectGraphCanvas.swift`, the object hierarchy down to geometry.
+    /// User-facing tab label is "Object Graph".
+    case objects
+}
+
 /// Thread-safe image buffer that accumulates progressive RGBA16 render updates
 /// and converts them to NSImage for display.
 final class RenderImageBuffer: @unchecked Sendable {
@@ -39,18 +68,26 @@ final class RenderImageBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Called from the render thread. Converts RGBA16 region to RGBA8 and builds an NSImage.
-    func handleOutput(
+    /// Called synchronously by the bridge. Copies and converts only the
+    /// updated region while the bridge-owned source pointer is valid.
+    func updateOutput(
         pImageData: UnsafePointer<UInt16>,
         width: UInt32, height: UInt32,
         rcTop: UInt32, rcLeft: UInt32,
         rcBottom: UInt32, rcRight: UInt32
-    ) -> NSImage? {
+    ) -> Bool {
         let w = Int(width)
         let h = Int(height)
+        guard w > 0, h > 0 else { return false }
         let totalBytes = w * h * 4
-
-        lock.lock()
+        let isFullFrame = rcTop == 0 && rcLeft == 0
+            && Int(rcBottom) >= h - 1 && Int(rcRight) >= w - 1
+        if isFullFrame {
+            lock.lock()
+        } else if !lock.try() {
+            return false
+        }
+        defer { lock.unlock() }
 
         // Initialize on first call or dimension change
         if self.width != w || self.height != h {
@@ -64,6 +101,7 @@ final class RenderImageBuffer: @unchecked Sendable {
         let left = Int(rcLeft)
         let bottom = min(Int(rcBottom), h - 1)
         let right = min(Int(rcRight), w - 1)
+        guard top <= bottom, left <= right else { return false }
 
         for y in top...bottom {
             for x in left...right {
@@ -75,7 +113,20 @@ final class RenderImageBuffer: @unchecked Sendable {
             }
         }
 
-        // Build CGImage from current buffer state
+        return true
+    }
+
+    /// Takes one coherent full-frame snapshot and builds the display image.
+    /// CoalescedImageDelivery calls this on its private queue, never on a
+    /// raster worker or the main actor.
+    func makeImage() -> NSImage? {
+        lock.lock()
+        let w = width
+        let h = height
+        guard w > 0, h > 0 else {
+            lock.unlock()
+            return nil
+        }
         let data = Data(pixelBuffer)
         lock.unlock()
 
@@ -114,37 +165,849 @@ final class AtomicBool: @unchecked Sendable {
     }
 }
 
+/// Keeps a hot render worker from queuing an unbounded number of UI updates.
+/// Each consumer receives the latest value available when it reaches the main
+/// actor; producer-side cancellation checks remain synchronous.
+final class CoalescedProgressDelivery: @unchecked Sendable {
+    struct Update: Sendable {
+        let progress: Double
+        let total: Double
+        let title: String
+    }
+
+    private let lock = NSLock()
+    private var latest: Update? = nil
+    private var deliveryScheduled = false
+
+    /// Returns true exactly when the caller must schedule a main-actor drain.
+    func submit(progress: Double, total: Double, title: String) -> Bool {
+        lock.lock()
+        latest = Update(progress: progress, total: total, title: title)
+        defer { lock.unlock() }
+        guard !deliveryScheduled else { return false }
+        deliveryScheduled = true
+        return true
+    }
+
+    /// Returns the newest pending value and opens the gate for a subsequent
+    /// producer update to schedule the next main-actor drain.
+    func takeLatest() -> Update? {
+        lock.lock()
+        defer { lock.unlock() }
+        deliveryScheduled = false
+        defer { latest = nil }
+        return latest
+    }
+}
+
+/// Coalesces image construction as well as MainActor publication. Bridge
+/// callbacks do only bounded region conversion; the single private queue
+/// snapshots the latest complete buffer and constructs at most one NSImage
+/// per drain iteration.
+final class CoalescedImageDelivery: @unchecked Sendable {
+    private let lock = NSLock()
+    private let imageQueue = DispatchQueue(
+        label: "rise.display-image-coalescer", qos: .userInteractive)
+    private var pending = false
+    private var drainScheduled = false
+    private var lastDrainStart: UInt64 = 0
+    private let minimumIntervalNanoseconds: UInt64 = 33_333_333
+
+    func request(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        lock.lock()
+        pending = true
+        guard !drainScheduled else {
+            lock.unlock()
+            return
+        }
+        drainScheduled = true
+        scheduleDrain(buffer: buffer, publish: publish)
+        lock.unlock()
+    }
+
+    private func scheduleDrain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let earliest = lastDrainStart &+ minimumIntervalNanoseconds
+        let delay = earliest > now ? earliest - now : 0
+        imageQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
+            [weak self] in
+            self?.drain(buffer: buffer, publish: publish)
+        }
+    }
+
+    private func drain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        lock.lock()
+        pending = false
+        lastDrainStart = DispatchTime.now().uptimeNanoseconds
+        lock.unlock()
+
+        if let image = buffer.makeImage() {
+            DispatchQueue.main.sync { publish(image) }
+        }
+
+        lock.lock()
+        if pending {
+            scheduleDrain(buffer: buffer, publish: publish)
+        } else {
+            drainScheduled = false
+        }
+        lock.unlock()
+    }
+}
+
+/// One entry from `RISEViewportBridge.viewportRenderModes()` (docs/gui/
+/// RENDER_MODES.md §5) — a viewport-selectable mode's wire name, UI
+/// title, and the question it answers (used as the dropdown row label
+/// + tooltip).  Equatable so it can sit in `MenuBarSnapshot` (which
+/// diffs on every field to decide whether the native menu bar rebuilds).
+struct ViewportRenderModeInfo: Equatable, Identifiable {
+    var id: String { name }
+    let name: String
+    let title: String
+    let question: String
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the registry's
+    /// `wantsDenoise` flag, read once alongside name/title/question so the
+    /// DENOISED-label formatter can key off it instead of a hardcoded
+    /// `mode == "preview"` check now that BeautyVariant modes (deep_reflect/
+    /// direct) genuinely denoise too.
+    let wantsDenoise: Bool
+    /// P2a review fix: the registry's `IsBeautyVariantMode` flag
+    /// (`RISE_API_GetViewportRenderModeIsVariant`).  True for `deep_reflect`/
+    /// `direct` — those modes drive a wholly separate ephemeral PT pipeline
+    /// (`mVariantRasterizer`) that never reads the x-ray flag, so the x-ray
+    /// toggle is disabled while the active mode has this set (see
+    /// `viewportRenderModeChip`'s Toggle `.disabled(...)`).
+    let isVariant: Bool
+}
+
 @MainActor
 final class RenderViewModel: ObservableObject {
     @Published var renderState: RenderState = .idle
     @Published var progress: Double = 0.0
     @Published var progressTitle: String = ""
     @Published var renderedImage: NSImage? = nil
+    /// N-up (RENDER_MODES.md §7): the live-preview image stream for
+    /// panes 1-3, keyed by pane index (1, 2, or 3 -- pane 0 keeps using
+    /// `renderedImage` above, see RISEViewportBridge.mm's "N-up pane-0
+    /// sink" doc comment).  Sparse -- a pane with no entry yet hasn't
+    /// rendered its first frame.  Wired alongside `renderedImage` at
+    /// every scene-load site below and reset to empty at every one of
+    /// `renderedImage`'s own reset sites, so the two never drift.
+    @Published var panePreviewImages: [Int: NSImage] = [:]
+    /// user-review P2#2 (round 2): panes the N-up mode PRESET has been
+    /// applied to.  Bridge/scene-scoped (reset ONLY on a fresh scene load,
+    /// below) rather than @State on MultiPaneViewportView -- a @State guard
+    /// resets when the view is torn down on a Single detour (Quad→Single→Quad),
+    /// which re-clobbered an explicit "preview" choice the user made in the
+    /// earlier N-up session.  Living here, it survives layout toggles within a
+    /// scene and only clears when a genuinely new scene loads.  Not @Published:
+    /// nothing renders from it, so it must not trigger view updates.
+    var panePresetApplied: Set<Int> = []
     @Published var loadedFilePath: String? = nil
+    /// Phase 6.5: true iff there's at least one in-memory edit since
+    /// the last load / save that the SaveEngine would actually write
+    /// to disk.  Drives the PropertiesPanel's "Save Scene" button
+    /// enable state.  Mirrors the C++ controller's
+    /// `HasUnsavedChanges()` via the bridge's `setDirtyChangedBlock`,
+    /// updated only on transitions (clean→dirty / dirty→clean).
+    @Published var sceneEditsDirty: Bool = false
     @Published var versionString: String = ""
     @Published var elapsedTime: TimeInterval = 0
-    @Published var sceneSize: CGSize? = nil
+    /// When the active rasterizer is the auto-dispatcher, the concrete
+    /// integrator it resolved to ("pt"/"bdpt"/"vcm") and the one-line reason —
+    /// surfaced as "Auto -> X" after a render.  nil for a normal rasterizer.
+    @Published var resolvedIntegrator: String? = nil
+    @Published var resolveReason: String? = nil
+    // nil while the ETA is still warming up or otherwise unavailable.
+    @Published var remainingTime: TimeInterval? = nil
     @Published var logMessages: [LogMessage] = []
-    @Published var isEditorVisible: Bool = false
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+    /// CST <-> scene-file live sync (item 1): true when the live CST has
+    /// moved on (`getSceneTextVersionUuid:revision:` differs from the
+    /// last-synced version) while the editor buffer has unsaved text
+    /// edits (`isEditorDirty`), so the poll couldn't safely overwrite
+    /// `editorText`/`editorOriginalText` without discarding them.
+    /// Cleared whenever a sync succeeds or the buffer stops being dirty
+    /// — see `pollRefinementState`.
+    @Published var editorBehindLiveScene: Bool = false
+    /// Which left-panel tab is frontmost — see `LeftPanelTab`.
+    @Published var leftTab: LeftPanelTab = .agent
+
+    /// "Reveal in scene file" (design comp ⌗ affordance): where to scroll
+    /// + select in the Scene-file tab's editor, set by
+    /// `revealEntityInSceneText`.  `generation` is a monotonic counter
+    /// (not just the byte offset) so a REPEAT click on the SAME entity —
+    /// same offset, buffer unchanged — still re-triggers the scroll/flash;
+    /// without it, SceneTextEditor's Coordinator would see an unchanged
+    /// value and skip the reveal on the second click.
+    struct EditorRevealRequest {
+        let byteOffset: UInt64
+        /// UTF-8 byte length of the exact span to select+flash.  0 = select the
+        /// whole line containing byteOffset (the entity/whole-chunk reveal); > 0 =
+        /// highlight exactly [byteOffset, byteOffset+byteLength) (a param row).
+        let byteLength: UInt64
+        let generation: Int
+    }
+    @Published var editorRevealRequest: EditorRevealRequest? = nil
+    private var nextEditorRevealGeneration = 1
+
+    /// doc-88 Phase 3 S15 (docs/gui/NODE_GRAPH_CANVAS.md §5 item 2):
+    /// double-clicking an expression-family node on the canvas asks
+    /// PropertiesPanel to reveal its `def[i]` rows.  Same generation-
+    /// counter shape as `EditorRevealRequest` for the identical reason —
+    /// a repeat double-click on the SAME already-selected painter (e.g.
+    /// the user hand-collapsed "Advanced" since the first click) must
+    /// still re-trigger the reveal rather than being skipped as
+    /// "unchanged."  No new introspection: PropertiesPanel already
+    /// renders `def[i]` rows (with a stage thumbnail) whenever they're
+    /// visible — this only asks it to open the Advanced disclosure that
+    /// may be hiding them.  See PropertiesPanel's consumption of this
+    /// for why that's the documented Phase-A scope (no per-row scroll-to
+    /// anchor exists in the panel yet).
+    struct GraphDefFocusRequest {
+        let painterName: String
+        let generation: Int
+    }
+    @Published var graphDefFocusRequest: GraphDefFocusRequest? = nil
+    private var nextGraphDefFocusGeneration = 1
+
+    // Facet 5 slice 1c-1: the live agent (JSON-RPC) panel.  A minimal
+    // "agent + user co-edit" affordance — a typed JSON-RPC request is
+    // handed to the viewport bridge's `agentHandleLine`, which drives the
+    // administrative dispatcher over the SAME live controller the GUI
+    // edits through, so a
+    // `propose_patch` edits the running scene and the viewport reflects it.
+    //
+    // Superseded by the Chat panel for everyday use (2026-07); kept ONLY
+    // as the raw-wire debug surface against the LIVE controller (the
+    // headless CLI agent session is a separate process/session and isn't
+    // affected either way).  Gated behind a developer toggle, default
+    // OFF — see `showAgentDebugPanel` below.  (The panel's own
+    // show/hide toggle, `isAgentPanelVisible`, was removed as dead state
+    // in the UI redesign's P3 cleanup — the Agent tab's visibility is
+    // driven entirely by `showAgentDebugPanel` now; see ContentView's
+    // `agentTabBody`.)
+
+    /// Developer toggle: reveals the Agent (JSON-RPC) debug panel's
+    /// button + inline panel at all.  Persisted in UserDefaults (a UI
+    /// preference, not a secret) so it survives relaunch; default OFF —
+    /// the Chat panel is the everyday surface, this is a wire-debug tool.
+    @Published var showAgentDebugPanel: Bool = false {
+        didSet {
+            UserDefaults.standard.set(showAgentDebugPanel, forKey: Self.showAgentDebugPanelKey)
+        }
+    }
+    /// The JSON-RPC request text the user is composing.
+    @Published var agentRequestText: String =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"read_document\"}"
+    /// The last JSON-RPC response line (read-only display).
+    @Published var agentResponseText: String = ""
+
+    // Facet 5 slice B2: the LLM chat panel.  All chat state + the
+    // turn driver live in ChatViewModel (which wraps the C++
+    // AgentChatLoop via RISEAgentChatBridge); this view model only
+    // owns its lifetime and forwards the per-scene bind/unbind so the
+    // chat driver never touches a torn-down viewport bridge.  (The
+    // panel's own show/hide toggle, `isChatPanelVisible`, was removed
+    // as dead state in the UI redesign's P3 cleanup — the Agent tab is
+    // permanently part of the left panel now, not a togglable overlay.)
+    /// App-lifetime chat state (provider/model selection outlives any
+    /// one scene; the conversation itself resets per scene).
+    let chat = ChatViewModel()
+    /// Named-views and other scene controls observe this view model, while
+    /// the chat render-in-flight state lives on `chat`.  Forward that change
+    /// notification so their `isSceneEditableForAgents` bindings invalidate
+    /// as soon as a chat-owned render starts or ends.
+    private var chatStateChangeObserver: AnyCancellable? = nil
+
+    /// B2 review round 1 (refined Model-B F2 slice S2b — see the S2b note
+    /// below): may agent tool calls (the chat driver and the Agent
+    /// JSON-RPC panel) mutate the live scene RIGHT NOW?  THE single gate:
+    /// both call sites — `ChatViewModel.sceneEditable` (wired in `init`
+    /// below) and `sendAgentRequest` (the raw JSON-RPC debug panel) —
+    /// consume this ONE property.  It in turn is built from
+    /// `isProductionRenderRunning`, the SINGLE source for the
+    /// `renderState` case-list — neither this property nor
+    /// `productionRenderActive` below hand-copies that list a second
+    /// time (see `isProductionRenderRunning`'s doc for the S2b P2-1
+    /// fix that single-sourced it).
+    ///
+    /// Only while the interactive viewport is the sole scene reader.
+    /// During a production render (.rendering / .cancelling — the
+    /// production rasterizer's worker threads read Scene state
+    /// off-main until the render task completes) a propose_patch's
+    /// CST re-derive would destroy scene objects under those workers
+    /// — the same race the Clear & Load teardown dance guards (the
+    /// "deep in IntegratePixel" crash).  .loading is excluded too:
+    /// the parser mutates job state on a background thread (the chat
+    /// executor is nil then anyway — belt and suspenders).
+    /// MainActor invariant: this predicate, startRender, and every
+    /// caller run on the main actor, so check-then-execute cannot
+    /// interleave with a render kick.
+    ///
+    /// Model-B F2 slice S2b ADDITIVE clause: `chat.isChatRenderOutstanding`
+    /// folds in truth `isProductionRenderRunning` cannot see on its
+    /// own — a chat-driven `render` tool call's async render runs on the
+    /// controller's dedicated agent-render worker WITHOUT ever flipping
+    /// `renderState` out of `.sceneLoaded`/`.completed` (that state
+    /// machine only tracks the PRODUCTION rasterizer).  Without this
+    /// clause, the Agent JSON-RPC debug panel could fire a `propose_patch`
+    /// (or a second render) concurrently with a chat-driven render still
+    /// in flight on the SAME controller.  This is genuinely NEW truth,
+    /// not a redundant restatement of the renderState cases — the two
+    /// clauses gate two DIFFERENT concurrent-render sources (production
+    /// rasterizer vs. chat-driven agent render) that share the same
+    /// underlying "don't let two things touch the scene/controller at
+    /// once" concern.
+    var isSceneEditableForAgents: Bool {
+        !chat.isChatRenderOutstanding && !isProductionRenderRunning
+    }
+
+    /// P1-1 fix: single-sourced gate for the refinement-transport +
+    /// undo/redo controls (TopBar, Render menu, Edit menu).  Before this
+    /// property existed, `pauseRefinement`/`resumeRefinement`/
+    /// `restartRefinement`/`undo`/`redo` each guarded on
+    /// `!isProductionRenderRunning` alone — which does NOT cover a
+    /// chat-driven agent render outstanding on the controller's
+    /// single-slot worker (see `isSceneEditableForAgents`'s S2b clause).
+    /// A user could hit Undo, or the TopBar pause button, while a chat
+    /// `render` tool call's async render was still in flight, racing the
+    /// SAME controller the chat driver's own tool calls touch.  This
+    /// property folds in that ADDITIVE clause by reusing
+    /// `isSceneEditableForAgents` wholesale (not a hand-copy) plus the
+    /// bridge-presence check every one of those five callers already
+    /// needed.
+    var canUseSceneTransport: Bool { viewportBridge != nil && isSceneEditableForAgents }
+
+    /// Reverse source traceability (text -> UI select): may a right-click
+    /// "Select in Inspector" act right now?  Needs the scene transport (no
+    /// render owns the controller) AND a clean editor buffer -- the click's
+    /// byte offset comes from the buffer but resolves against the live CST
+    /// serialization, so they must agree.  The SINGLE source of truth for
+    /// both the menu-item enablement (so the affordance is "right or absent,
+    /// never misleading", matching the forward reveal affordances) and the
+    /// `reverseSelectEntity` guard.
+    var canReverseSelect: Bool { canUseSceneTransport && !isEditorDirty }
+
+    /// S2b P2-1: THE single source for the `renderState` case-list that
+    /// means "a production render is currently occupying the
+    /// controller/scene" — `.rendering`, `.cancelling`, `.loading`.
+    /// Both `isSceneEditableForAgents` above and `productionRenderActive`
+    /// below (wired into `ChatViewModel` in `init`) read this ONE
+    /// property instead of each hand-copying the same three-case
+    /// switch — the exact duplication the "one gate" goal exists to
+    /// kill, caught in S2b review as P2-1 (both copies lived on this
+    /// same type, so drift between them was a `case` away).
+    private var isProductionRenderRunning: Bool {
+        switch renderState {
+        case .rendering, .cancelling, .loading:
+            return true
+        default:
+            return false
+        }
+    }
     @Published var hasAnimation: Bool = false
+    /// Equality-guarded live options for the active animation.  Unlike the
+    /// original load-time UI snapshot, these follow agent edits and active
+    /// named-animation switches without rebuilding the viewport.
+    @Published private(set) var animationTimeStart: Double = 0
+    @Published private(set) var animationTimeEnd: Double = 1
+    @Published private(set) var animationNumFrames: UInt = 30
     @Published var recentFiles: [String] = []
+    /// Last-opened times for `recentFiles` entries (start-screen "2m ago"
+    /// labels).  Persisted under the sibling `recentSceneMeta` key; a path
+    /// with no entry renders without a time (old installs).
+    @Published var recentFileTimes: [String: Date] = [:]
+
+    /// Live time-scrubber state, displayed on the viewport's bottom slider.
+    @Published var sceneTime: Double = 0
+    /// A model-driven range reconciliation has already applied this exact
+    /// time through the native begin/move/end scrub contract.  ViewportView
+    /// consumes the marker so its binding observer does not submit the same
+    /// time a second time outside that bracket.
+    private var preappliedSceneTime: Double? = nil
+    /// True only between a TimelineSlider drag's admitted begin/end calls.
+    /// Live option polling defers range replacement while this is set so it
+    /// never nests a model-driven jump over the user's open composite.
+    private var manualTimelineScrubActive: Bool = false
+
+    /// True while the Play button is looping the active animation through
+    /// the fast interactive preview renderer (frame-by-frame, looping until
+    /// stopped).  Distinct from `renderState == .rendering` (production).
+    @Published var isPreviewPlaying: Bool = false
+
+    /// Simulation M5: the scene's simulations, live runs and baked ranges
+    /// (SimulationsModel.swift).  Re-attached to every new viewport bridge.
+    let simulations = SimulationsModel()
+
+    // L5a — EDR (extended dynamic range) state.
+    //
+    // `edrAvailable` mirrors the active screen's
+    // `maximumExtendedDynamicRangeColorComponentValue > 1.0`.  If
+    // false (e.g. a vanilla SDR display), the EDR toggle in the UI
+    // stays disabled regardless of `edrEnabled`.
+    //
+    // `edrEnabled` is the user's toggle.  When both are true, the
+    // bridge fires the HDR block (binary16 in extended-linear-sRGB)
+    // and `RenderImageView` swaps in `MetalEDRView`; otherwise the
+    // legacy LDR `Image(nsImage:)` path runs.  Toggling at any
+    // time is supported — the bridge's `setHDREnabled:` triggers
+    // an immediate Repaint so the screen reflects the new mode
+    // without waiting for the next render pass.
+    @Published var edrAvailable: Bool = false
+    @Published var edrEnabled:   Bool = false {
+        didSet {
+            bridge.setHDREnabled(edrEnabled && edrAvailable)
+        }
+    }
+
+    // L5e — LDR preview controls.  Both apply at display read-back
+    // time only (no rasterizer re-run); the bridge's setters trip
+    // an immediate Repaint so the on-screen image swaps live.
+    //
+    // `viewExposureEV` clamps to [-6, +6] in the slider UI but the
+    // Published value isn't itself clamped — programmatic resets to
+    // 0 (double-click on the slider track) and any future scene-
+    // metadata exposure import won't fight the clamp.  Range chosen
+    // to match the convergent 12-stop dynamic range of typical
+    // scene-referred radiance values without making the slider's
+    // sub-pixel granularity feel too coarse.
+    //
+    // `viewToneCurve` raw int matches RISE's DISPLAY_TRANSFORM
+    // enum (0 None, 1 Reinhard, 2 ACES, 3 AgX, 4 Hable).  Default
+    // 2 (ACES) is the modern preview standard — see L5e design
+    // briefing in the conversation log.  Stored as Int instead of
+    // a Swift enum so the same value can flow through the
+    // bridge's `setViewToneCurve:` ObjC method without an extra
+    // mapping layer.
+    @Published var viewExposureEV: Double = 0.0 {
+        didSet {
+            bridge.setViewExposureEV(viewExposureEV)
+        }
+    }
+    @Published var viewToneCurve: Int = 2 /* ACES */ {
+        didSet {
+            bridge.setViewToneCurve(Int32(viewToneCurve))
+        }
+    }
+
+    /// Returns the underlying RISEBridge — needed by the SwiftUI
+    /// `MetalEDRView` so it can hook the HDR block + push the
+    /// resulting frames through Metal.  Callers MUST NOT retain
+    /// this bridge; its lifetime is bounded by the RenderViewModel.
+    var bridgeForEDR: RISEBridge { bridge }
+
+    /// L5a round-5 — TWO durable EDR renderers, one per bridge
+    /// path.  Production renderer drives the "main image" Metal
+    /// layer (per-tile + per-frame production fires).  Interactive
+    /// renderer drives an "overlay" Metal layer with transparent
+    /// background that composites over production (frame-complete
+    /// only — no per-tile flash, no preview-scale resolution
+    /// thrash).  Both built lazily at init when Metal is
+    /// available; nil on Metal-incapable hosts.
+    var productionEDRRenderer:  MetalEDRRenderer?
+    var interactiveEDRRenderer: MetalEDRRenderer?
+
+    /// Back-compat alias for callers that just want the
+    /// "primary" EDR renderer (used by the no-scene-loaded
+    /// `RenderImageView` placeholder, which only has a single
+    /// surface to fill).  Defaults to production.
+    var edrRenderer: MetalEDRRenderer? { productionEDRRenderer }
+
+    /// L5a round-2 P1-3 — handle to the host NSWindow used for
+    /// per-screen EDR-headroom probing (vs `mainScreen` which
+    /// follows keyboard focus, not the RISE window).  Set by
+    /// SwiftUI via the window-tracking onAppear handler in
+    /// ContentView; unset on window-will-close.
+    weak var hostWindow: NSWindow? = nil {
+        didSet {
+            // (Re-)subscribe to the new window's screen-change
+            // notification.  Old subscription is leaked-as-token
+            // since we drop the reference; NotificationCenter
+            // tolerates that.
+            if let win = hostWindow {
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeScreenNotification,
+                    object: win, queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.refreshEDRAvailability()
+                    }
+                }
+            }
+            refreshEDRAvailability()
+        }
+    }
 
     private let bridge = RISEBridge()
+
+    // MARK: - UI redesign (design brief A2/A4): refinement status, undo/redo, panel toggles
+
+    /// Interactive-refinement phase, mirrored from
+    /// `RISEViewportBridge.refinementPhase(scaleDivisor:)`:
+    /// -1 no controller, 0 Idle, 1 Rendering, 2 Refining, 3 Polishing,
+    /// 4 Paused.  Driven by `refinementPollTimer` below; TopBar reads
+    /// this to build its status readout.
+    @Published var refinementPhase: Int = -1
+    /// Preview-resolution divisor accompanying `refinementPhase` — a
+    /// power of two in 1...32 (1 = full res).  Only meaningful while
+    /// `refinementPhase == 2` (Refining); TopBar derives a "rung R/6"
+    /// label from it (R = 6 - log2(divisor)).
+    @Published var refinementScaleDivisor: UInt32 = 1
+    /// Mirrors `RISEViewportBridge.isRefinementPaused()`.
+    /// UI redesign design brief A4 — the active interactive region,
+    /// in full-res FILM-PIXEL space (matches
+    /// `RISEViewportBridge.setInteractiveRegionLeft:top:right:bottom:`),
+    /// or nil when no region is set.  Mirrored from
+    /// `getInteractiveRegionLeft:top:right:bottom:` by the same
+    /// `refinementPollTimer` cadence as `refinementPhase` below, and
+    /// updated immediately (bypassing the poll) by ViewportView right
+    /// after a region drag commits, for instant UI feedback.  The
+    /// core preserves the viewport region across production work;
+    /// this poll picks that up within 0.5s like every other
+    /// refinement-status field.
+    @Published var activeRegion: CGRect? = nil
+    /// Menu/shortcut pulse consumed by ContentView, which owns the local
+    /// one-shot draw-mode binding used by ViewportView.
+    @Published var regionDrawRequestEpoch: UInt = 0
+    /// ContentView owns the viewport layout; mirroring only this boolean lets
+    /// app-menu commands stay disabled while the single viewport is unmounted.
+    @Published var regionDrawLayoutAvailable = true
+
+    var canRequestRegionDraw: Bool {
+        canUseSceneTransport && regionDrawLayoutAvailable
+            && (viewportBridge?.interactiveRasterizerHonorsRegion() ?? false)
+    }
+
+    func requestRegionDraw() {
+        guard canRequestRegionDraw else { return }
+        regionDrawRequestEpoch &+= 1
+    }
+    /// Mirrors `RISEViewportBridge.undoActionLabel()` / `redoActionLabel()`
+    /// — kept as published state (rather than a computed passthrough) so
+    /// the Edit-menu item titles update reliably off the same poll that
+    /// drives the refinement readout, independent of whatever else
+    /// happens to trigger a SwiftUI re-render.
+    @Published var undoLabel: String = ""
+    @Published var redoLabel: String = ""
+
+    /// P1 render modes (docs/gui/RENDER_MODES.md §5): the viewport's
+    /// currently-active render mode wire name ("preview", "normals",
+    /// "depth", "facets", "wireframe").  Refreshed from the bridge on
+    /// scene open/reload (`viewportBridge`'s didSet) and by
+    /// `setViewportRenderMode` after every attempted switch — NEVER
+    /// assumed, because `SceneEditController` resets to "preview" on
+    /// every rebind and a switch can fail (render-owns-scene, unknown
+    /// name).  Session-only: no persistence across scene loads or app
+    /// launches.
+    @Published var viewportRenderMode: String = "preview"
+    /// The dropdown/menu's offered modes (viewportSelectable == true
+    /// registry entries), loaded once per scene open alongside
+    /// `viewportRenderMode` — the registry is a fixed built-in set (§4
+    /// ratified decision 2), so there is nothing to re-poll mid-session.
+    @Published var viewportRenderModes: [ViewportRenderModeInfo] = []
+    /// GUI render modes P2a (docs/gui/RENDER_MODES.md §6): the CURRENTLY
+    /// active mode's `wantsDenoise` flag, looked up from the cached
+    /// `viewportRenderModes` list -- the DENOISED-label formatters
+    /// (TopBar, ViewportView's refinement pill) read this instead of
+    /// string-comparing `viewportRenderMode` against `"preview"`.  Defaults
+    /// to `true` (matching `preview`'s own flag and the pre-fix behaviour)
+    /// when the current mode isn't found in the cached list -- e.g. before
+    /// the list has loaded, or "objectmap" (agent-only, never the active
+    /// viewport mode, and not in this list anyway).
+    var viewportRenderModeWantsDenoise: Bool {
+        viewportRenderModes.first(where: { $0.name == viewportRenderMode })?.wantsDenoise ?? true
+    }
+    /// X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis"): whether the
+    /// viewport resolves hits through transmissive surfaces to the first
+    /// opaque hit.  Applies to EVERY render mode, INCLUDING the shaded
+    /// "preview" pipeline (default ON; user decision 2026-07-17) — not
+    /// just the four data modes.  Same staleness class as `viewportRenderMode` —
+    /// the controller resets it to false on every scene rebind WITHOUT
+    /// replacing the bridge, and `GetViewportXray` reports false
+    /// (transiently, not sticky) while a render owns the scene — so
+    /// it's refreshed alongside the mode both on bridge attach and by
+    /// every `pollRefinementState` tick, equality-guarded like every
+    /// other field written there.
+    @Published var viewportXray: Bool = false
+
+    /// Entity-creation slice: bumped after a successful `addEntity` /
+    /// `duplicateSelectedOrNamed` / `removeEntity`.  `OutlinerView`
+    /// observes it via `@EnvironmentObject` and force-repulls its
+    /// category entity lists, giving an IMMEDIATE, deterministic refresh
+    /// the moment a GUI CRUD commits (rather than waiting for the next
+    /// epoch-driven reload).  The core additionally bumps the
+    /// controller's `sceneEpoch` on every landed chunk CRUD now
+    /// (ApplyAgentChunkCrud_), which is the mechanism that also refreshes
+    /// the outliner for AGENT-driven adds/removes — those never touch
+    /// this counter.
+    @Published var entityListEpoch: Int = 0
+
+    /// Reverse source traceability (text -> UI select): bumped when a
+    /// right-click "Select in Inspector" in the scene-file editor resolves
+    /// to an entity and selects it on the bridge.  ContentView observes this
+    /// and bumps its shared `propertyRefresh`, so the inspector re-snapshots
+    /// and the outliner's highlight follows -- selection lives on the bridge
+    /// and needs an explicit refresh nudge (a reverse-select changes no
+    /// pixels, so no rendered-frame refresh fires).  See `reverseSelectEntity`.
+    @Published var reverseSelectEpoch: Int = 0
+
+    /// View menu toggles (design brief workspace chrome).  Both default
+    /// on; persistence isn't required for slice 1.
+    @Published var showLeftPanel: Bool = true
+    @Published var showLogDrawer: Bool = true
+
+    /// ~2 Hz poll of the interactive controller's refinement/undo state
+    /// while a viewport bridge is attached.  Started/stopped from
+    /// `viewportBridge`'s didSet so every one of the four assignment
+    /// sites (`loadScene`, `continueClearAndLoad`,
+    /// `finishSaveAndReload`, `clearScene`) tracks bridge lifetime
+    /// automatically — mirrors the `hostWindow` didSet pattern above.
+    private var refinementPollTimer: Timer? = nil
+
+    /// CST <-> scene-file live sync — cheap change-detector pair from
+    /// `RISEViewportBridge.getSceneTextVersionUuid:revision:`.  uuid is
+    /// fresh per load; revision bumps iff content changed.
+    private struct SceneTextVersion: Equatable {
+        let uuid: UInt64
+        let revision: UInt64
+    }
+
+    /// The version last mirrored into `editorText`/`editorOriginalText`
+    /// (item 1), or set at load time so the file-on-disk bytes and the
+    /// live CST start in agreement.  nil before any scene has loaded.
+    private var lastSyncedSceneTextVersion: SceneTextVersion? = nil
+
+    /// Reads the live CST's current (uuid, revision) pair.  Same
+    /// do-not-call-during-renders caveat as `serializedSceneText` — only
+    /// call while `isSceneEditableForAgents`.
+    private func currentSceneTextVersion(_ vb: RISEViewportBridge) -> SceneTextVersion? {
+        var uuid: UInt64 = 0
+        var revision: UInt64 = 0
+        guard vb.getSceneTextVersionUuid(&uuid, revision: &revision) else { return nil }
+        return SceneTextVersion(uuid: uuid, revision: revision)
+    }
+
+    /// Lazily constructed when a scene successfully loads; torn down on
+    /// clearScene().  The viewport bridge borrows `bridge`'s job — its
+    /// lifetime must not exceed `bridge`'s.
+    ///
+    /// @Published (menu-decoupling hardening, review P3): MenuBarState's
+    /// snapshot derives hasBridge/canUseSceneTransport from this — before,
+    /// its freshness relied on every assignment site COINCIDENTALLY
+    /// co-publishing some other @Published write in the same tick.  True
+    /// today at all four sites, but a future isolated assignment would
+    /// have silently staled the menu bar.  Publish it directly.
+    @Published private(set) var viewportBridge: RISEViewportBridge? = nil {
+        didSet {
+            if manualTimelineScrubActive {
+                _ = oldValue?.scrubTimeEnd()
+                manualTimelineScrubActive = false
+            }
+            refinementPollTimer?.invalidate()
+            refinementPollTimer = nil
+            // The library clock belonged to the old controller (its owners
+            // stop it before the swap; this only resets the shell's mirror).
+            playbackPollTimer?.invalidate()
+            playbackPollTimer = nil
+            if isPreviewPlaying { isPreviewPlaying = false }
+            simulations.attach(bridge: viewportBridge)
+            guard let vb = viewportBridge else {
+                refinementPhase = -1
+                refinementScaleDivisor = 1
+                undoLabel = ""
+                redoLabel = ""
+                activeRegion = nil
+                lastSyncedSceneTextVersion = nil
+                editorBehindLiveScene = false
+                viewportRenderMode = "preview"
+                viewportRenderModes = []
+                viewportXray = false
+                animationTimeStart = 0
+                animationTimeEnd = 1
+                animationNumFrames = 30
+                preappliedSceneTime = nil
+                return
+            }
+            // CST <-> scene-file live sync (item 1): a freshly-attached
+            // bridge's current version becomes the sync baseline — the
+            // bytes that were just loaded and the live CST agree
+            // at this instant, so there is nothing to pull into the
+            // editor yet.  Only a LATER agent/GUI edit that bumps the
+            // revision should overwrite `editorText`.  Also resets the
+            // per-scene behind-live-scene state so it doesn't leak
+            // across scene loads.  Gated on `isSceneEditableForAgents`
+            // like every other `serializedSceneText`-family call — every
+            // assignment site sets `viewportBridge` only after
+            // `renderState` has already left `.loading`, so this is
+            // always safe in practice, but the gate is kept anyway
+            // rather than assuming that invariant holds forever.
+            lastSyncedSceneTextVersion = isSceneEditableForAgents ? currentSceneTextVersion(vb) : nil
+            editorBehindLiveScene = false
+            // P1 render modes: load the registry list once for this scene
+            // and read the controller's ACTUAL current mode rather than
+            // assuming "preview" — RebindEditorToJob resets it on every
+            // load/reload, but reading it here (instead of hardcoding)
+            // keeps this correct even if that reset rule ever changes.
+            viewportRenderModes = vb.viewportRenderModes().map {
+                ViewportRenderModeInfo(name: $0["name"] ?? "",
+                                        title: $0["title"] ?? "",
+                                        question: $0["question"] ?? "",
+                                        wantsDenoise: $0["wantsDenoise"] == "1",
+                                        isVariant: $0["isVariant"] == "1")
+            }
+            viewportRenderMode = vb.viewportRenderMode
+            viewportXray = vb.viewportXray()
+            pollRefinementState(vb)
+            // Re-read `self.viewportBridge` inside the Task rather than
+            // capturing the local `vb` across the closure boundary —
+            // RISEViewportBridge isn't Sendable (unlike RISEBridge,
+            // which is vouched-for at this file's top), so a weak
+            // capture of it in a @Sendable Task closure trips Swift
+            // concurrency's capture check.
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, let vb = self.viewportBridge else { return }
+                    self.pollRefinementState(vb)
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            refinementPollTimer = timer
+        }
+    }
     private let cancelFlag = AtomicBool(false)
+    /// Durable document snapshots: the app-quit observer token
+    /// (NSApplication.willTerminateNotification) registered once in
+    /// `init()` -- see that registration's doc.  Held so `deinit` can
+    /// remove it; RenderViewModel is an app-lifetime singleton (see
+    /// AppModel), so in practice this fires exactly once per process,
+    /// but removing it on deinit keeps the observer from outliving its
+    /// `[weak self]` closure's usefulness if that ever changes.
+    private var appQuitObserver: NSObjectProtocol?
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
+    /// Drives the bounded progressive-update path. The timer polls the
+    /// production VFS at ~30 Hz for ordinary refinement; synchronous
+    /// try-lock tile callbacks additionally capture short-lived toggle
+    /// markers. Both feed the same image-construction coalescer. Started
+    /// in startRender / start*Render, invalidated in finishRender
+    /// + cancel paths.
+    ///
+    /// Round 16 — the Timer fires on the main run loop (cheap;
+    /// just checks `pollInFlight` atomic + dispatches to
+    /// `pollQueue`), but the actual poll work (`pollProductionVFS`
+    /// → RenderToBuffer → region copy) runs on `pollQueue`; full-image
+    /// construction runs on CoalescedImageDelivery's private queue.
+    /// Pre-round-16 the whole poll ran on the main thread —
+    /// ~20 ms / tick × 30 Hz = 60% main-thread utilisation, which
+    /// felt like a perf regression (UI jitter) even though workers
+    /// were unaffected.
+    private var progressivePollTimer: Timer? = nil
+
+    /// L8 round 16 — serial background queue for the heavy poll
+    /// work. Serial so only one poll runs at a time
+    /// (`pollProductionVFS` is internally re-entrant-safe via
+    /// `bufferMutex_`, but funnelling through a serial queue
+    /// avoids needing to skip-on-busy at the dispatch level).
+    private let pollQueue = DispatchQueue(
+        label: "rise.progressive-poll", qos: .userInteractive)
+
+    /// Re-entrancy guard for the round-16 dispatch.  Atomically
+    /// flipped to `true` when a poll is queued; flipped back to
+    /// `false` when the queued poll completes.  Subsequent Timer
+    /// fires while `true` skip the dispatch — backlog avoidance.
+    private let pollInFlight = AtomicBool(false)
+
     private var renderTask: Task<Void, Never>? = nil
 
     private static let maxLogMessages = 10000
     private static let maxRecentFiles = 10
     private static let recentFilesKey = "recentSceneFiles"
+    /// Start-screen spec §5.4: SIBLING key to `recentFilesKey` mapping
+    /// path -> last-opened unix time, so the start screen can show "2m ago"
+    /// labels.  Deliberately a separate key (not a schema change to the
+    /// shared path list) so old installs and the Windows client's identical
+    /// `recentSceneFiles` list stay compatible; a path with no meta entry
+    /// simply renders without a time.
+    private static let recentFilesMetaKey = "recentSceneMeta"
+    private static let showAgentDebugPanelKey = "showAgentDebugPanel"
 
     init() {
         versionString = RISEBridge.versionString()
         recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
+        if let meta = UserDefaults.standard.dictionary(forKey: Self.recentFilesMetaKey) {
+            // Per-entry decode (round-2 review P3): an all-or-nothing
+            // `as? [String: Double]` cast would drop EVERY timestamp if a
+            // single stored value were malformed; tolerate bad entries
+            // individually instead.
+            for (path, value) in meta {
+                if let t = value as? Double {
+                    recentFileTimes[path] = Date(timeIntervalSince1970: t)
+                }
+            }
+        }
+        showAgentDebugPanel = UserDefaults.standard.bool(forKey: Self.showAgentDebugPanelKey)
+        // NARROWED forwarder (menu-flyout fix follow-up): the old
+        // chat.objectWillChange -> objectWillChange.send() forwarded EVERY
+        // chat mutation — every streamed token, transcript row, and 1 Hz
+        // proposals-poll write invalidated the entire RenderViewModel view
+        // tree (an earlier review flagged this as over-invalidation).  The
+        // view model's own consumers only derive from three chat facts:
+        // isChatRenderOutstanding (the scene-editable gates), and the
+        // provider/key state (StartView's Create-column readiness, read
+        // through viewModel.chat).  Forward exactly those, deduplicated.
+        chatStateChangeObserver = Publishers.Merge3(
+            chat.$chatRenderWorkerOccupied.removeDuplicates().map { _ in () },
+            chat.$keyStateEpoch.removeDuplicates().map { _ in () },
+            chat.$provider.removeDuplicates().map { _ in () })
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+        // B2 review round 1: the chat driver re-checks this predicate
+        // after every await and before each tool call, so a turn
+        // resuming from its HTTP suspension can never mutate the
+        // scene under a production render (the predicate's other
+        // half: startRender / startAnimationRender cancel the turn
+        // BEFORE kicking production).
+        chat.sceneEditable = { [weak self] in
+            self?.isSceneEditableForAgents ?? false
+        }
+        // Simulation M5: a live run plays through the library clock; restart
+        // the clock so it starts the newly attached run's solver.
+        simulations.onLiveAttached = { [weak self] in
+            guard let self else { return }
+            self.stopPreviewPlay()
+            self.startPreviewPlay()
+        }
+        chat.chatRenderWillSubmit = { [weak self] in
+            guard let self else { return }
+            self.stopPreviewPlay()
+            if let vb = self.viewportBridge {
+                self.endManualTimelineScrub(using: vb)
+                _ = vb.finalizeOpenInteractions()
+            }
+        }
+        // Model-B F2 slice S2b: the NARROWER sibling `productionRenderActive`
+        // — see its doc on ChatViewModel for why the render tool call's own
+        // poll loop needs this instead of the combined `isSceneEditableForAgents`
+        // (which now also reports false for that SAME call's own outstanding
+        // render).  S2b P2-1: forwards to `isProductionRenderRunning`, the
+        // SAME single-sourced case-list `isSceneEditableForAgents` reads —
+        // no second hand-copy of the `renderState` switch.
+        chat.productionRenderActive = { [weak self] in
+            guard let self else { return true }   // fail closed, matching sceneEditable's convention
+            return self.isProductionRenderRunning
+        }
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -155,6 +1018,144 @@ final class RenderViewModel: ObservableObject {
                     self.logMessages.removeFirst(self.logMessages.count - Self.maxLogMessages)
                 }
             }
+        }
+
+        // The two durable role renderers share one presentation epoch because
+        // ViewportNSView attaches both to one CAMetalLayer. Ownership changes
+        // invalidate delayed work from the other role before it can present.
+        let edrPresentationCoordinator = MetalEDRPresentationCoordinator()
+        self.productionEDRRenderer  = MetalEDRRenderer(bridge: bridge,
+                                                       role: .production,
+                                                       presentationCoordinator: edrPresentationCoordinator)
+        self.interactiveEDRRenderer = MetalEDRRenderer(bridge: bridge,
+                                                       role: .interactive,
+                                                       presentationCoordinator: edrPresentationCoordinator)
+        self.interactiveEDRRenderer?.claimPresentationOwnership()
+
+        // L5a — initial EDR availability probe + subscribe to
+        // screen-config changes so the toggle dims/lights as the
+        // monitor configuration changes (resolution, attach/detach).
+        // Per-window screen tracking (window-dragged-to-different-
+        // monitor) is set up in `hostWindow.didSet` once SwiftUI
+        // hands us the window reference (round-2 P1-3 fix —
+        // `[NSScreen mainScreen]` follows keyboard focus, not the
+        // RISE window).
+        refreshEDRAvailability()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshEDRAvailability()
+            }
+        }
+
+        // Durable document snapshots: RenderViewModel owns render
+        // lifecycle, so it -- not ChatViewModel -- is where a quit-time
+        // render cancellation belongs.  ORDERING REQUIRED: cancel BEFORE
+        // finish, mirroring MainWindow::~MainWindow's destructor ordering
+        // on Windows (cancelAndJoinInFlightWork() runs before
+        // finishTrajectoryOnQuit()).  Without this, quitting mid-
+        // production-render would block app termination for the render's
+        // FULL remaining duration: ChatViewModel.appWillTerminate()'s
+        // coherent document read blocks on the controller mutex for as
+        // long as the render thread holds it (see
+        // SceneEditController::ReadAgentSceneSnapshot's documented
+        // "BLOCKING, deliberately" contract).  Requesting cancellation
+        // first bounds that wait to the render's cooperative-cancel
+        // latency instead.
+        //
+        // A `queue: .main` NotificationCenter observer is delivered
+        // SYNCHRONOUSLY when the notification is posted from the main
+        // thread (which app termination is) -- this closure calls
+        // straight into @MainActor-isolated members rather than hopping
+        // through `Task { @MainActor in }`, so both steps below complete
+        // before `-applicationWillTerminate:` returns.  (Mirrors the
+        // pattern the old ChatViewModel-owned observer used before this
+        // fix moved it here.)
+        appQuitObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            // The notification is posted (and, with `queue: .main`,
+            // delivered) on the main thread during app termination, so
+            // asserting main-actor isolation here is sound -- and keeps
+            // the body SYNCHRONOUS, which a `Task { @MainActor in }` hop
+            // would not.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Non-blocking cancel REQUEST only -- the same request
+                // continueClearAndLoad/finishSaveAndReload issue before their
+                // own awaited join.  No `await` here: willTerminate's
+                // synchronous-delivery guarantee is what bounds the stall,
+                // and an async hop would defeat it.
+                if self.renderState == .rendering || self.renderState == .cancelling {
+                    self.cancelRender()
+                }
+                self.chat.appWillTerminate()
+            }
+        }
+    }
+
+    deinit {
+        if let observer = appQuitObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// L5a — refresh `edrAvailable` from the screen the RISE
+    /// window is currently on.  Falls back to `[NSScreen
+    /// mainScreen]` (keyboard-focus screen) when no host window
+    /// is registered yet — typical at app launch before SwiftUI
+    /// attaches the window reference.
+    ///
+    /// Round-3 fix: probe `maximumPotentialExtendedDynamicRange…`
+    /// (CAPABILITY) instead of `maximumExtendedDynamicRange…`
+    /// (CURRENT, gated on the OS having actually transitioned the
+    /// screen into EDR mode).  The previous code read `current`,
+    /// which returns 1.0 for many EDR-capable Macs while the
+    /// screen is in SDR mode — making the toggle un-checkable
+    /// even though setting `wantsExtendedDynamicRangeContent =
+    /// YES` would trigger the transition automatically.  Headroom
+    /// values: ~1.6 on a recent MacBook Pro mini-LED in
+    /// SDR-Reference mode, ~5.5 with HDR enabled in System
+    /// Settings, up to ~16.0 on a Pro Display XDR.  When toggled
+    /// off (e.g. window dragged to an SDR monitor), force
+    /// `edrEnabled = false` so the bridge switches back to the
+    /// LDR pipeline immediately.
+    func refreshEDRAvailability() {
+        // Prefer the host window's screen if registered; the
+        // bridge's `displayMaxEDRHeadroom` reads `mainScreen`
+        // which follows focus rather than the window.
+        let headroom: Float
+        if let screen = hostWindow?.screen {
+            headroom = Float(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)
+        } else {
+            headroom = bridge.displayMaxEDRHeadroom()
+        }
+        // Renderer must also be available — Metal-incapable hosts
+        // (extremely rare on modern Macs) have productionEDRRenderer
+        // == nil even on EDR-capable screens.
+        let available = headroom > 1.0 && productionEDRRenderer != nil
+        let availabilityChanged = (edrAvailable != available)
+        if availabilityChanged {
+            edrAvailable = available
+        }
+        if !available && edrEnabled {
+            edrEnabled = false   // setter pushes setHDREnabled:NO
+        }
+        // L5a round-3 — when EDR transitions from unavailable → available
+        // (typical at app launch on an EDR-capable Mac after the host
+        // window attaches and the screen probe runs), auto-enable the
+        // toggle so the user gets EDR rendering by default.  This is
+        // the user-friendly "if your hardware supports it, use it"
+        // policy.  The user can still toggle it off manually; they can
+        // also toggle it back on if it auto-flipped off due to a
+        // window-screen change.  We only auto-enable on the false→true
+        // transition (not on every refresh) so we don't fight the user
+        // if they explicitly disabled the toggle while available.
+        if availabilityChanged && available && !edrEnabled {
+            edrEnabled = true   // setter pushes setHDREnabled:YES
         }
     }
 
@@ -184,56 +1185,107 @@ final class RenderViewModel: ObservableObject {
     }
 
     private func prepareAndLoadScene(at path: String) {
-        // If the editor has unsaved changes, prompt the user before switching
-        if isEditorVisible && isEditorDirty {
-            let saveAlert = NSAlert()
-            saveAlert.messageText = "Unsaved Changes"
-            saveAlert.informativeText = "The scene editor has unsaved changes. Would you like to save them before loading a new scene?"
-            saveAlert.alertStyle = .warning
-            saveAlert.addButton(withTitle: "Save")
-            saveAlert.addButton(withTitle: "Discard")
-            saveAlert.addButton(withTitle: "Cancel")
+        // If the editor has unsaved changes, prompt the user before
+        // switching.  UI redesign: the scene-file editor is now a
+        // permanently-available left-panel tab (not a togglable
+        // sidebar), so the guard is purely dirty-driven rather than
+        // also checking whether the editor happens to be the
+        // frontmost tab right now.
+        // Unsaved-work gate (round 3): the old pre-alert covered only RAW
+        // editor text (isEditorDirty) — a live scene edit (sceneEditsDirty,
+        // via Properties/agent) was silently discarded behind the generic
+        // "Clear & Load?" confirmation.  The shared helper covers both dirt
+        // kinds, the both-dirty case, and untitled scenes (Save-As), and
+        // aborts the open on Cancel or a refused save.
+        guard promptToSaveUnsavedWork(before: "loading a new scene") else { return }
 
-            let saveResponse = saveAlert.runModal()
-            switch saveResponse {
-            case .alertFirstButtonReturn:
-                saveEditorFile()
-            case .alertSecondButtonReturn:
-                break
-            default:
-                return
-            }
-        }
-
-        // If a scene is already loaded, warn about merge behavior
-        if loadedFilePath != nil {
+        // If a scene is already loaded, confirm the clear-and-load.
+        //
+        // The pre-CST "Merge" option is GONE (2026-07-12, in lockstep with
+        // the Windows client): every GUI load routes through the canonical
+        // CST path, whose load-once guard refuses a second load into a
+        // populated Job (Job::LoadAsciiSceneViaCst: "this Job already
+        // loaded a scene; re-load is not supported") -- the old Merge
+        // button could only ever end in the load-failure alert.  If scene
+        // merging is ever wanted, it is a CST-document-level feature, not
+        // a second parser pass over the live Job.
+        // "A scene is loaded" must be judged by the LIVE BRIDGE, not the
+        // document path: an UNTITLED scene (start-screen create path) has
+        // loadedFilePath == nil but a fully-loaded Job.  Gating on the path
+        // alone skipped this whole teardown branch and fell through to a
+        // second loadAsciiScene on the same Job — refused by the load-once
+        // guard, invisibly (the viewport stays on the old scene and the
+        // error state never surfaces because the bridge is non-nil).
+        if loadedFilePath != nil || viewportBridge != nil {
             let alert = NSAlert()
             alert.messageText = "A scene is already loaded"
-            alert.informativeText = "Loading a new scene file will merge it with the current scene. Would you like to clear the current scene first, or merge the new scene into it?"
+            alert.informativeText = "Clear the current scene and load the new one?"
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Clear & Load")
-            alert.addButton(withTitle: "Merge")
             alert.addButton(withTitle: "Cancel")
 
             let response = alert.runModal()
-            switch response {
-            case .alertFirstButtonReturn:
-                // Clear the current scene, then load the new one
-                bridge.clearAll()
-                renderedImage = nil
-                progress = 0.0
-                progressTitle = ""
-                elapsedTime = 0
-                sceneSize = nil
-                imageBuffer.reset()
-                logMessages.removeAll()
-            case .alertSecondButtonReturn:
-                // Merge — just proceed with loading
-                break
-            default:
+            guard response == .alertFirstButtonReturn else { return }
+            // Clear & Load.  We must:
+            //   1. Cancel any in-flight production render and await
+            //      its task — workers spawned by the rasterizer hold
+            //      pointers into Scene state that bridge.clearAll
+            //      is about to destroy.
+            //   2. Stop and shutdown the interactive viewport bridge
+            //      — its render thread also reads Scene state.
+            //   3. THEN call clearAll, which is now safe to destroy
+            //      managers because no thread can still be reading
+            //      them.
+            // saveAndReloadScene already implements this dance via
+            // finishSaveAndReload; we mirror it here.  Pre-fix, the
+            // production-render Tasks parked in workerLoop after
+            // rasterize() returned would still be reachable through
+            // the controller's interactive render thread (and
+            // through the production rasterizer's persisted thread
+            // pool), and clearAll would race them, manifesting as a
+            // crash deep in IntegratePixel / DestroyContainers.
+            if renderState == .rendering || renderState == .cancelling {
+                cancelFlag.value = true
+                bridge.cancelPreparedProductionRender()
+                renderState = .cancelling
+                let task = renderTask
+                Task { @MainActor [weak self] in
+                    await task?.value
+                    self?.continueClearAndLoad(at: path)
+                }
                 return
             }
+            continueClearAndLoad(at: path)
+            return
         }
+
+        loadScene(at: path)
+    }
+
+    /// Clear the current scene's state with the right teardown
+    /// ordering, then load the new file.  Called from
+    /// prepareAndLoadScene's "Clear & Load" branch — extracted so the
+    /// render-still-in-flight path (which has to await the cancelled
+    /// task before continuing) and the idle path can share the body.
+    private func continueClearAndLoad(at path: String) {
+        // Stop and tear down the interactive viewport bridge BEFORE
+        // bridge.clearAll().  shutdown() joins the controller's render
+        // thread; once it returns, no other thread holds pointers into
+        // Scene state that clearAll is about to destroy.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
+        viewportBridge?.shutdown()
+        viewportBridge = nil
+
+        bridge.clearAll()
+        renderedImage = nil
+        panePreviewImages = [:]
+        progress = 0.0
+        progressTitle = ""
+        elapsedTime = 0
+        remainingTime = nil
+        imageBuffer.reset()
+        logMessages.removeAll()
 
         loadScene(at: path)
     }
@@ -244,28 +1296,45 @@ final class RenderViewModel: ObservableObject {
         if recentFiles.count > Self.maxRecentFiles {
             recentFiles = Array(recentFiles.prefix(Self.maxRecentFiles))
         }
+        recentFileTimes[path] = Date()
+        // Prune meta for paths that fell off the list so the sibling key
+        // stays bounded by maxRecentFiles rather than growing forever.
+        recentFileTimes = recentFileTimes.filter { recentFiles.contains($0.key) }
+        persistRecents()
+    }
+
+    /// Start screen: remove one entry (the ✕ on a missing-file row).
+    func removeRecentFile(_ path: String) {
+        recentFiles.removeAll { $0 == path }
+        recentFileTimes.removeValue(forKey: path)
+        persistRecents()
+    }
+
+    private func persistRecents() {
         UserDefaults.standard.set(recentFiles, forKey: Self.recentFilesKey)
+        UserDefaults.standard.set(
+            recentFileTimes.mapValues { $0.timeIntervalSince1970 },
+            forKey: Self.recentFilesMetaKey)
     }
 
     func clearRecentFiles() {
         recentFiles.removeAll()
+        recentFileTimes.removeAll()
         UserDefaults.standard.removeObject(forKey: Self.recentFilesKey)
+        UserDefaults.standard.removeObject(forKey: Self.recentFilesMetaKey)
     }
 
-    func loadScene(at path: String) {
-        addToRecentFiles(path)
-        renderState = .loading
-        renderedImage = nil
-        progress = 0.0
-        cancelFlag.value = false
-
-        // Add the scene file's directory as a media path
+    /// Register the media search paths for a scene at `path`: its own
+    /// directory, plus the RISE project root found by walking up to the
+    /// nearest `global.options` (sets RISE_MEDIA_PATH for
+    /// FileRasterizerOutput).  Called on every load AND on Save-As
+    /// (round-2 review P2: an untitled scene loads from the app bundle so
+    /// the walk-up finds nothing; without re-anchoring here at Save-As,
+    /// relative media in the saved scene stayed unresolvable for the rest
+    /// of the session).
+    private func registerMediaPaths(forSceneAt path: String) {
         let sceneDir = (path as NSString).deletingLastPathComponent
         bridge.addMediaPath(sceneDir)
-
-        // Walk up from the scene directory to find the RISE project root
-        // (identified by the presence of global.options).
-        // This sets RISE_MEDIA_PATH env var needed by FileRasterizerOutput.
         var searchDir = sceneDir
         while !searchDir.isEmpty && searchDir != "/" {
             let candidatePath = (searchDir as NSString).appendingPathComponent("global.options")
@@ -275,13 +1344,45 @@ final class RenderViewModel: ObservableObject {
             }
             searchDir = (searchDir as NSString).deletingLastPathComponent
         }
+    }
+
+    /// Load a scene from `path`.  `untitled` (start-screen create path):
+    /// the file is a bundled template — the loaded scene has NO document
+    /// path (`loadedFilePath` stays nil, Save routes to Save-As) and never
+    /// enters the recents list.  Everything else (controller, bridge, CST
+    /// retention) is identical to a normal file open by design, so the
+    /// agent edits an ordinary live scene.
+    func loadScene(at path: String, untitled: Bool = false) {
+        isRegionProductionRender = false
+        if !untitled {
+            addToRecentFiles(path)
+            // A NORMAL open must never inherit a stale create-prompt: if a
+            // previous starter load failed (its sceneOpened never fired to
+            // consume the stash), the prompt would otherwise auto-send into
+            // this unrelated scene.
+            chat.pendingFirstPrompt = nil
+        }
+        renderState = .loading
+        renderedImage = nil
+        panePreviewImages = [:]
+        progress = 0.0
+        cancelFlag.value = false
+
+        registerMediaPaths(forSceneAt: path)
 
         let cancelRef = cancelFlag
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
+                }
             }
             return !cancelRef.value
         }
@@ -290,63 +1391,303 @@ final class RenderViewModel: ObservableObject {
         Task.detached { [weak self] in
             let success = bridgeRef.loadAsciiScene(path)
 
-            // Read camera dimensions on the background thread before
-            // switching to MainActor, since the bridge accesses C++ state.
-            let camWidth = bridgeRef.cameraWidth()
-            let camHeight = bridgeRef.cameraHeight()
-
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
-                self.loadedFilePath = path
+                // Untitled (start-screen create): the scene came from the
+                // bundled starter template — it has no user-facing document
+                // path.  TopBar shows "Untitled", Save routes to Save-As.
+                self.loadedFilePath = untitled ? nil : path
                 if success {
                     self.renderState = .sceneLoaded
                     self.progressTitle = ""
                     self.hasAnimation = bridgeRef.hasAnimatedObjects()
-                    if camWidth > 0 && camHeight > 0 {
-                        self.sceneSize = CGSize(width: CGFloat(camWidth),
-                                                height: CGFloat(camHeight))
+                    // Tear down any previous viewport bridge (e.g. from
+                    // a prior scene) and stand up a fresh one over the
+                    // newly-loaded job.
+                    self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
+                    self.chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
+                    self.viewportBridge?.shutdown()
+                    self.viewportBridge = nil
+                    // Seed the new job at its conventional default before
+                    // the bridge didSet poll clamps it into a non-zero live
+                    // animation range, if necessary.
+                    self.sceneTime = 0
+                    let vb = RISEViewportBridge(hostBridge: bridgeRef)
+                    self.viewportBridge = vb
+                    // Wire the live-preview image callback.  The block
+                    // is invoked on the main thread by the bridge.
+                    vb?.setImageBlock { [weak self, weak vb] (image: NSImage) in
+                        // user-review P2#6: a frame already dispatched to the
+                        // main queue by a PRIOR bridge (before -shutdown) still
+                        // fires here -- and `self` (the view model) outlives the
+                        // bridge swap, so `[weak self]` alone does not stop a
+                        // stale frame from overwriting the newly-loaded scene.
+                        // Drop any frame not from the CURRENT bridge.
+                        guard let self = self, let vb = vb,
+                              self.viewportBridge === vb else { return }
+                        // This callback is the authoritative signal that a
+                        // live interactive frame actually replaced the held
+                        // production result. A timer/phase poll can miss a
+                        // fast frame or clear the identity before pixels land.
+                        if self.isRegionProductionRender && self.renderState == .completed {
+                            self.isRegionProductionRender = false
+                        }
+                        self.renderedImage = image
+                    }
+                    // N-up (RENDER_MODES.md §7): panes 1-3's image
+                    // streams, wired once per bridge alongside pane 0's
+                    // above.  Rendering is layout-gated core-side (a
+                    // hidden pane never schedules), so these callbacks
+                    // simply sit idle while `viewportLayout == .single`.
+                    for pane in 1...3 {
+                        vb?.setPaneImageBlock({ [weak self, weak vb] (image: NSImage) in
+                            // user-review P2#6: same stale-bridge guard as the
+                            // pane-0 image block above -- a late pane frame from
+                            // a shut-down bridge must not clobber the new scene.
+                            guard let self = self, let vb = vb,
+                                  self.viewportBridge === vb else { return }
+                            self.panePreviewImages[pane] = image
+                        }, forPane: UInt(pane))
+                    }
+                    // Phase 6.5: track dirty edits so the Properties-
+                    // panel's Save button can enable/disable.  The
+                    // bridge always marshals the block onto the main
+                    // queue (see -_fireDirtyChangedFromBackground:),
+                    // so a direct @Published assignment is safe.
+                    // Reset to false on fresh scene load — even if a
+                    // previous scene was dirty, this scene starts clean.
+                    self.sceneEditsDirty = false
+                    // user-review P2#2 (round 2): a genuinely new scene starts
+                    // with no preset applied, so its panes get the spread on
+                    // first reveal.  This is the ONLY reset point -- layout
+                    // toggles within a scene must NOT clear it.
+                    self.panePresetApplied = []
+                    vb?.setDirtyChangedBlock { [weak self] (hasUnsaved: Bool) in
+                        guard let self = self else { return }
+                        self.sceneEditsDirty = hasUnsaved
+                    }
+                    // Override the scene's authored Film with a screen-
+                    // appropriate size for the INTERACTIVE preview.  The
+                    // available surface is the screen's visible area
+                    // (main NSScreen minus menubar / Dock); the long
+                    // edge is capped at 800 px so we never burn cycles
+                    // pushing pixels the viewport view would just
+                    // downscale.  Must run BEFORE start() so the first
+                    // render pass picks up the new dims.  Production
+                    // renders launched from this app will use these
+                    // dims too — author a larger value in the Output
+                    // Settings panel to override.
+                    if let screen = NSScreen.main {
+                        let visible = screen.visibleFrame
+                        vb?.scaleFilm(
+                            toFitSurfaceW: UInt(max(1, Int(visible.size.width))),
+                            surfaceH: UInt(max(1, Int(visible.size.height))),
+                            maxLongEdge: 800)
+                    }
+                    // The viewport is always on once a scene is loaded —
+                    // there is no separate "interact mode" toggle.  Start
+                    // the bridge's render thread now so the user can drag,
+                    // orbit, scrub, and edit immediately.  Render and
+                    // Render-Animation stop the bridge before kicking the
+                    // production rasterizer; both restart it on completion.
+                    vb?.start()
+                    // Facet 5 slice B2: bind the chat driver to the
+                    // fresh scene.  Resets the conversation (it was
+                    // about the previous scene) and fetches the skills
+                    // index once via the live dispatcher's read_skill.
+                    if let vb = vb {
+                        self.chat.sceneOpened(viewportBridge: vb, scenePath: self.loadedFilePath ?? "")
                     }
                 } else {
                     self.renderState = .error("Failed to load scene")
+                    // A failed STARTER load must not leave its create-prompt
+                    // staged (sceneOpened never fired to consume it) — the
+                    // next successful open would auto-send it into an
+                    // unrelated scene.  Cleared here AND defensively at the
+                    // top of every non-untitled load.
+                    self.chat.pendingFirstPrompt = nil
                 }
-                // Always open the editor so the user can fix errors
                 self.refreshEditorContents()
-                self.isEditorVisible = true
+                if !success {
+                    // P1-6 fix: switch the left panel to the Scene-file
+                    // tab on a load failure so the user actually sees
+                    // the file content that needs fixing, instead of
+                    // leaving the Agent tab frontmost with only the
+                    // TopBar's error readout as a clue.  (The old
+                    // `isEditorVisible = true` write here predated the
+                    // tab-based left panel and had no observable effect
+                    // — see SceneEditorPanel's header comment.)
+                    self.leftTab = .sceneFile
+                }
             }
         }
     }
 
     func startRender() {
+        startStillRender(region: nil)
+    }
+
+    /// Explicit production render of the current interactive region. The
+    /// ordinary startRender() path above remains full-frame even while a
+    /// viewport region is active.
+    func startActiveRegionRender() {
+        guard bridge.productionRasterizerHonorsRegion(),
+              let region = activeRegion, region.width >= 1, region.height >= 1 else { return }
+        startStillRender(region: region)
+    }
+
+    var canRenderActiveRegion: Bool {
+        canStartProductionRender && activeRegion != nil
+            && bridge.productionRasterizerHonorsRegion()
+    }
+
+    private func startStillRender(region: CGRect?) {
         guard renderState == .sceneLoaded || renderState == .completed
               || renderState == .cancelled else { return }
 
+        // Stop the interactive viewport's render thread BEFORE the
+        // production rasterizer runs.  Both rasterizers read the same
+        // scene state; running them concurrently is a data race.
+        // The viewport is restarted in finishRender() once production
+        // completes (or is cancelled).  Stop is synchronous — it
+        // joins the viewport's render thread before returning.
+        // Halt any looping preview-play first — it drives scrubTime on the
+        // viewport renderer, which must be idle before production starts.
+        stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn BEFORE
+        // production kicks, mirroring the sceneClosed discipline at
+        // the teardown sites.  A turn suspended in its HTTP await
+        // would otherwise resume mid-render — its cancelled / stop /
+        // executor checks all passing — and execute tool calls
+        // against Scene state the production workers read off-main.
+        chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
+        viewportBridge?.stop()
+
+        // Capture the canonical scrubbed time now, but advance the scene
+        // inside the coordinated background render path below. A full
+        // SetSceneTime regenerates photon maps and can take minutes; doing
+        // it synchronously on MainActor made the app appear hung before it
+        // could even publish `.rendering` or repaint the Cancel control.
+        // The viewport's scrub path calls SetSceneTimeForPreview, which
+        // skips photon regeneration for responsiveness, so production still
+        // must run the full operation before rasterization.
+        //
+        // We prefer the controller's LastSceneTime over the SwiftUI
+        // `sceneTime` because Undo / Redo can change scene time
+        // without going through the slider — passing the slider's
+        // local value in that window would roll the scene back to
+        // a stale time.  Fall back to `sceneTime` when no viewport
+        // bridge is attached (no controller, no scrubs possible).
+        let canonicalSceneTime = viewportBridge?.lastSceneTime() ?? sceneTime
+
+        isRegionProductionRender = (region != nil)
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
-        renderedImage = nil
-        imageBuffer.reset()
+        resetProductionPauseState()
+        // Keep the current display visible until the first regional-production
+        // callback arrives, avoiding a needless preflight flash. The production
+        // rasterizer still owns untouched-pixel semantics; this does not merge
+        // the interactive buffer into the final output. A normal final starts
+        // from a clean frame immediately.
+        if region == nil {
+            renderedImage = nil
+            panePreviewImages = [:]
+            imageBuffer.reset()
+        }
         elapsedTime = 0
+        remainingTime = nil
         renderStartTime = Date()
+        bridge.etaBegin()
 
+        let bridgeForTimer = bridge
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
+                // Elapsed = wall time minus time spent paused (item 4) —
+                // the readout reflects actual render work and freezes
+                // visibly while paused.
+                let pausedNow = self.productionPauseBegan.map { Date().timeIntervalSince($0) } ?? 0
                 self.elapsedTime = Date().timeIntervalSince(start)
+                                   - self.productionPausedAccum - pausedNow
+                self.remainingTime = self.isProductionRenderPaused
+                    ? nil : bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
+        // Progressive-update Timer: every ~33 ms (30 Hz) we call
+        // `bridge.pollProductionVFS`, which checks the production
+        // VFS's retained FrameStore generation and emits a full-image
+        // refresh only when workers have produced new pixels.
+        // Worker tile callbacks independently capture short-lived toggle
+        // markers; the shared coalescer bounds full-image construction.
+        //
+        // Timer fires on the main run loop. A no-change poll takes a short VFS
+        // chain snapshot and skips image conversion; a dirty poll's cost scales
+        // with the active frame and display hardware.
+        //
+        // L8 round 10 — added to `.common` run-loop mode so the
+        // timer fires during user interaction (button hovers, menu
+        // tracking, scrolling).  `Timer.scheduledTimer(...)` and
+        // `RunLoop.main.add(timer, forMode: .default)` only fire in
+        // `.default` mode, which is paused during AppKit event
+        // tracking — net visible effect was "no progressive updates
+        // until I release the cancel button", which the user
+        // reported as "only the whole frame updates."  `.common`
+        // ties the timer to every mode that AppKit promotes into the
+        // common-modes set (default + tracking + modal etc.).
+        //
+        // Invalidated in the renderTask's finishRender block below.
+        let bridgeForPoll = bridge
+        let queueForPoll = pollQueue
+        let inFlightForPoll = pollInFlight
+        let pollTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { _ in
+            // L8 round 16 — dispatch the heavy poll work to a
+            // background queue so it doesn't tie up the main thread
+            // (the bridge's `pollProductionVFS` synchronously calls
+            // the Swift image block, which does the RGBA16→RGBA8
+            // conversion + NSImage allocation + Task @MainActor
+            // dispatch — adding up to ~20 ms on main per tick if
+            // run there).  Skip the dispatch if a prior poll is
+            // still in flight to avoid backlog.
+            if inFlightForPoll.value { return }
+            inFlightForPoll.value = true
+            queueForPoll.async {
+                bridgeForPoll.pollProductionVFS()
+                inFlightForPoll.value = false
+            }
+        }
+        RunLoop.main.add(pollTimer, forMode: .common)
+        progressivePollTimer = pollTimer
+
         let cancelRef = cancelFlag
+        let bridgeForProgress = bridge
+        let pausedRef = productionPausedRef
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            // Don't feed the ETA estimator while paused (item 4): wall
+            // time advances with zero progress, which would poison the
+            // estimate.  Re-converges after resume.
+            if !pausedRef.value {
+                bridgeForProgress.etaUpdateProgress(prog, total: total)
+            }
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
+                }
             }
             return !cancelRef.value
         }
 
         let buffer = imageBuffer
-        let sceneSizeReported = AtomicBool(false)
+        let imageDelivery = CoalescedImageDelivery()
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
@@ -354,49 +1695,94 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            // Capture scene dimensions from the first output block
-            if !sceneSizeReported.value {
-                sceneSizeReported.value = true
-                let w = CGFloat(width)
-                let h = CGFloat(height)
-                Task { @MainActor [weak self] in
-                    self?.sceneSize = CGSize(width: w, height: h)
-                }
-            }
-
-            guard let nsImage = buffer.handleOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
-
-            Task { @MainActor [weak self] in
-                self?.renderedImage = nsImage
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 
         let bridgeRef = bridge
+        let capturedRegion = region
         renderTask = Task.detached { [weak self] in
-            let success = bridgeRef.rasterize()
+            let success: Bool
+            if let r = capturedRegion {
+                let left = UInt32(max(0, Int(r.minX)))
+                let top = UInt32(max(0, Int(r.minY)))
+                let right = UInt32(max(Int(r.minX), Int(r.maxX) - 1))
+                let bottom = UInt32(max(Int(r.minY), Int(r.maxY) - 1))
+                success = bridgeRef.rasterizeRegionLeft(
+                    left, top: top, right: right, bottom: bottom,
+                    atSceneTime: canonicalSceneTime)
+            } else {
+                success = bridgeRef.rasterize(atSceneTime: canonicalSceneTime)
+            }
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
                 self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
+                // L8 round 9 / 16 — stop the progressive-update poll.
+                // The final OnFrameComplete observer (which still
+                // fires from the rasterizer's main thread) has
+                // already emitted the last image bytes, BUT we
+                // poll one more time below to guarantee any
+                // generation bumps between the last 30 Hz tick and
+                // the OnFrameComplete are surfaced too.  Final
+                // poll runs on the background queue (round 16) so
+                // we don't hop back onto main for a final ~20 ms
+                // emit.
+                self.progressivePollTimer?.invalidate()
+                self.progressivePollTimer = nil
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                // Review P2: clear pause bookkeeping on EVERY exit path
+                // (normal completion, cancel, Clear & Load,
+                // save-and-reload) — not just cancelRender + next start.
+                // The readers re-derive off renderState first today, but
+                // that's a duplicated invariant, not a guarantee.
+                self.resetProductionPauseState()
+                self.remainingTime = nil
 
                 if cancelRef.value {
+                    self.resolvedIntegrator = nil
+                    self.resolveReason = nil
                     self.renderState = .cancelled
                 } else if success {
+                    // Auto-dispatcher resolved at render time; surface its pick.
+                    self.resolvedIntegrator = self.bridge.autoResolvedIntegrator()
+                    self.resolveReason = self.bridge.autoResolveReason()
                     self.renderState = .completed
                 } else {
-                    self.renderState = .error("Rasterization failed")
+                    self.resolvedIntegrator = nil
+                    self.resolveReason = nil
+                    self.renderState = .error(capturedRegion == nil
+                        ? "Rasterization failed"
+                        : "Region rasterization failed")
                 }
+
+                // Production render is done (success / cancel / error).
+                // Restart the interactive viewport so the user can keep
+                // editing on the freshly-updated scene state — but WITHOUT
+                // its initial render pass, so the just-finished production
+                // image stays on screen until the user actually interacts.
+                // Without this the interactive rasterizer's first pass
+                // would overwrite the production result (visible as the
+                // render "flashing then flipping back to the live
+                // preview").  The render thread stays parked until the
+                // first edit / gesture; this works for both the LDR
+                // NSImage path and the EDR Metal-layer path, which the
+                // old sink-level frame-drop did not (the EDR frame reaches
+                // the layer through the FrameStore observer, bypassing the
+                // sink entirely).
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
@@ -406,33 +1792,98 @@ final class RenderViewModel: ObservableObject {
         guard renderState == .sceneLoaded || renderState == .completed
               || renderState == .cancelled else { return }
 
+        // Stop the viewport before production renders (see startRender).
+        stopPreviewPlay()
+        // B2 review round 1: cancel any in-flight chat turn before
+        // production kicks (see startRender).
+        chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
+        viewportBridge?.stop()
+
+        isRegionProductionRender = false
         renderState = .rendering
         progress = 0.0
         cancelFlag.value = false
+        resetProductionPauseState()
         renderedImage = nil
+        panePreviewImages = [:]
         imageBuffer.reset()
         elapsedTime = 0
+        remainingTime = nil
         renderStartTime = Date()
+        bridge.etaBegin()
 
+        let bridgeForTimer = bridge
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
+                // Elapsed = wall time minus time spent paused (item 4) —
+                // the readout reflects actual render work and freezes
+                // visibly while paused.
+                let pausedNow = self.productionPauseBegan.map { Date().timeIntervalSince($0) } ?? 0
                 self.elapsedTime = Date().timeIntervalSince(start)
+                                   - self.productionPausedAccum - pausedNow
+                self.remainingTime = self.isProductionRenderPaused
+                    ? nil : bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
+        // L8 round 9 — progressive-update poll for animation render.
+        // Same as `startRender`'s loop; see comment there for the
+        // architecture rationale + the round-10 .common-mode note.
+        // Animation passes through many frames; each frame's
+        // intra-render progress refreshes the viewport via this 30 Hz
+        // poll, then the per-frame OnFrameComplete delivers the
+        // final frame bytes.
+        let bridgeForPoll = bridge
+        let queueForPoll = pollQueue
+        let inFlightForPoll = pollInFlight
+        let pollTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { _ in
+            // L8 round 16 — dispatch the heavy poll work to a
+            // background queue so it doesn't tie up the main thread
+            // (the bridge's `pollProductionVFS` synchronously calls
+            // the Swift image block, which does the RGBA16→RGBA8
+            // conversion + NSImage allocation + Task @MainActor
+            // dispatch — adding up to ~20 ms on main per tick if
+            // run there).  Skip the dispatch if a prior poll is
+            // still in flight to avoid backlog.
+            if inFlightForPoll.value { return }
+            inFlightForPoll.value = true
+            queueForPoll.async {
+                bridgeForPoll.pollProductionVFS()
+                inFlightForPoll.value = false
+            }
+        }
+        RunLoop.main.add(pollTimer, forMode: .common)
+        progressivePollTimer = pollTimer
+
         let cancelRef = cancelFlag
+        let bridgeForProgress = bridge
+        let pausedRef = productionPausedRef
+        let progressDelivery = CoalescedProgressDelivery()
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.progress = total > 0 ? prog / total : 0
-                self.progressTitle = title
+            // Don't feed the ETA estimator while paused (item 4): wall
+            // time advances with zero progress, which would poison the
+            // estimate.  Re-converges after resume.
+            if !pausedRef.value {
+                bridgeForProgress.etaUpdateProgress(prog, total: total)
+            }
+            if progressDelivery.submit(progress: prog, total: total, title: title) {
+                Task { @MainActor [weak self] in
+                    guard let update = progressDelivery.takeLatest() else { return }
+                    guard let self = self else { return }
+                    self.progress = update.total > 0 ? update.progress / update.total : 0
+                    // Publish-on-change (menu/invalidation hygiene): the
+                    // title rarely changes between ticks; progress itself
+                    // legitimately does.
+                    if self.progressTitle != update.title { self.progressTitle = update.title }
+                }
             }
             return !cancelRef.value
         }
 
         let buffer = imageBuffer
-        let sceneSizeReported = AtomicBool(false)
+        let imageDelivery = CoalescedImageDelivery()
         bridge.setImageOutputBlock { [weak self]
             (pImageData: UnsafePointer<UInt16>?,
              width: UInt32, height: UInt32,
@@ -440,24 +1891,14 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            if !sceneSizeReported.value {
-                sceneSizeReported.value = true
-                let w = CGFloat(width)
-                let h = CGFloat(height)
-                Task { @MainActor [weak self] in
-                    self?.sceneSize = CGSize(width: w, height: h)
-                }
-            }
-
-            guard let nsImage = buffer.handleOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
-
-            Task { @MainActor [weak self] in
-                self?.renderedImage = nsImage
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 
@@ -477,10 +1918,29 @@ final class RenderViewModel: ObservableObject {
                 self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
+                // L8 round 9 / 16 — stop the progressive-update poll.
+                // The final OnFrameComplete observer (which still
+                // fires from the rasterizer's main thread) has
+                // already emitted the last image bytes, BUT we
+                // poll one more time below to guarantee any
+                // generation bumps between the last 30 Hz tick and
+                // the OnFrameComplete are surfaced too.  Final
+                // poll runs on the background queue (round 16) so
+                // we don't hop back onto main for a final ~20 ms
+                // emit.
+                self.progressivePollTimer?.invalidate()
+                self.progressivePollTimer = nil
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                // Review P2: clear pause bookkeeping on EVERY exit path
+                // (normal completion, cancel, Clear & Load,
+                // save-and-reload) — not just cancelRender + next start.
+                // The readers re-derive off renderState first today, but
+                // that's a duplicated invariant, not a guarantee.
+                self.resetProductionPauseState()
+                self.remainingTime = nil
 
                 if cancelRef.value {
                     self.renderState = .cancelled
@@ -489,25 +1949,696 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.renderState = .error("Animation rasterization failed")
                 }
+                // Restart the interactive viewport (see startRender) —
+                // without its initial render pass so the finished
+                // animation's last frame stays on screen until the user
+                // interacts.
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
 
     func cancelRender() {
         cancelFlag.value = true
+        bridge.cancelPreparedProductionRender()
+        // Cancel-while-paused: unpark the workers so the cancel lands
+        // promptly (the pause gate also self-detects cancellation via
+        // the progress block, but resuming here is snappier and keeps
+        // the pause UI state honest during the cancelling window).
+        if isProductionRenderPaused { setProductionRenderPaused(false) }
         renderState = .cancelling
     }
 
-    func editSceneFile() {
-        guard loadedFilePath != nil else { return }
+    // MARK: - Production render pause (UI refinement item 4)
 
-        if isEditorVisible {
-            isEditorVisible = false
-            return
+    /// TRUE while the in-flight production render is paused (workers
+    /// parked at the bridge's pause gate; partial image stays up).
+    @Published var isProductionRenderPaused = false
+    /// Identity of the current/most-recent still production result. It remains
+    /// true through completion/cancel/error so a fast regional final and its
+    /// saved result never become indistinguishable from a full-frame final.
+    @Published var isRegionProductionRender = false
+
+    /// Wall-clock spent paused this render — subtracted from the
+    /// elapsed-time display so the readout reflects actual work time.
+    /// (The ETA estimator is NOT fed while paused; its estimate
+    /// re-converges over the first ticks after resume.)
+    private var productionPausedAccum: TimeInterval = 0
+    private var productionPauseBegan: Date? = nil
+    /// Captured by the progress blocks (cancelRef pattern) so render
+    /// threads can read pause state without touching MainActor self.
+    let productionPausedRef = AtomicBool(false)
+
+    func toggleProductionRenderPause() {
+        guard renderState == .rendering else { return }
+        setProductionRenderPaused(!isProductionRenderPaused)
+    }
+
+    private func setProductionRenderPaused(_ paused: Bool) {
+        bridge.setProductionRenderPaused(paused)
+        productionPausedRef.value = paused
+        if paused {
+            productionPauseBegan = Date()
+        } else if let began = productionPauseBegan {
+            productionPausedAccum += Date().timeIntervalSince(began)
+            productionPauseBegan = nil
+        }
+        isProductionRenderPaused = paused
+    }
+
+    /// Reset all pause bookkeeping — called at render start and finish.
+    private func resetProductionPauseState() {
+        productionPausedRef.value = false
+        productionPausedAccum = 0
+        productionPauseBegan = nil
+        if isProductionRenderPaused { isProductionRenderPaused = false }
+        // Also clear the C++-side pause gate on the bridge's persistent
+        // callback.  Normally redundant (a successful setProgressBlock:
+        // creates a fresh, un-paused callback per render) -- but a REFUSED
+        // swap (see RISEBridge setProgressBlock:'s hardening) keeps the OLD
+        // callback alive, and if its gate was left paused, the next
+        // composed render would park its workers instantly while the UI
+        // shows un-paused.  Safe here: this runs at production render
+        // start/finish, where no paused production occupant can exist (the
+        // callers await in-flight renders), and agent renders never route
+        // through this callback's gate.
+        bridge.setProductionRenderPaused(false)
+    }
+
+    // MARK: - Looping preview play (the Play button by the timeline)
+    //
+    // The ACTIVE animation is chosen in the right-side "Animation" accordion
+    // category (it routes through SetSelection -> SetActiveAnimation).
+    //
+    // Simulation M5: playback runs on the LIBRARY clock
+    // (RISE_API_SceneEditController_PlaybackPlay / Pause / Seek,
+    // docs/SIMULATION_M3C_RESULTS.md section 2).  The clock owns the scrub
+    // composite, advances scene time in real time on a controller thread
+    // through the same OnTimeScrub path a slider drag uses, coalesces frames
+    // the viewport cannot keep up with, and never runs ahead of an attached
+    // live simulation.  The shell only polls GetPlaybackStatus to move the
+    // playhead.  A manual drag's OnTimeScrubBegin pauses the clock inside
+    // the library; `stopPreviewPlay` mirrors that here.
+
+    /// Toggle looping preview playback (the Play button by the timeline).
+    func togglePreviewPlay() {
+        if isPreviewPlaying { stopPreviewPlay() } else { startPreviewPlay() }
+    }
+
+    /// Start the library playback clock over the active animation range,
+    /// looping, at the timeline's frame spacing.  Starts from the current
+    /// playhead (the library rewinds when it sits at the end).
+    func startPreviewPlay() {
+        guard !isPreviewPlaying,
+              let vb = viewportBridge,
+              hasAnimation,
+              // Same worker-alive set as isSceneEditableForAgents:
+              // .cancelling means rasterize() has not returned yet, so
+              // production workers may still read animator state.
+              renderState != .rendering, renderState != .cancelling else { return }
+        // A manual drag owns its own composite; the clock opens another.
+        endManualTimelineScrub(using: vb)
+        guard vb.playbackPlay(fps: 0, loop: true) else { return }
+        isPreviewPlaying = true
+        startPlaybackPoll()
+    }
+
+    /// Stop looping preview playback (idempotent; also called before any
+    /// production render and when the user manually scrubs).
+    func stopPreviewPlay() {
+        guard isPreviewPlaying else { return }
+        isPreviewPlaying = false
+        playbackPollTimer?.invalidate()
+        playbackPollTimer = nil
+        guard let vb = viewportBridge else { return }
+        _ = vb.playbackPause()
+        // The clock may have been mid-frame: show the time it last applied.
+        adoptDisplayedSceneTime(vb.lastSceneTime())
+    }
+
+    /// ~20 Hz playhead poll while the library clock plays.
+    private var playbackPollTimer: Timer? = nil
+
+    private func startPlaybackPoll() {
+        playbackPollTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollPlaybackStatus() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackPollTimer = timer
+        pollPlaybackStatus()
+    }
+
+    /// One playhead update from the library clock.  `outTime` is the last
+    /// time it showed; `playing` goes false when the library stopped it
+    /// (a manual scrub from another caller, the scene going away).
+    func pollPlaybackStatus() {
+        guard isPreviewPlaying, let vb = viewportBridge else { return }
+        guard let status = vb.playbackStatus() else { return }
+        if status.framesShown > 0 || !status.playing { adoptDisplayedSceneTime(status.time) }
+        lastPlaybackStatus = status
+        if !status.playing {
+            isPreviewPlaying = false
+            playbackPollTimer?.invalidate()
+            playbackPollTimer = nil
+            adoptDisplayedSceneTime(vb.lastSceneTime())
+        }
+    }
+
+    /// The most recent library playback status (frames shown / dropped,
+    /// solver waits) -- for the transport tooltip and the headless probe.
+    @Published private(set) var lastPlaybackStatus: RISEPlaybackStatus? = nil
+
+    /// Move the playhead to a time the library already displayed, without
+    /// the ViewportView binding observer submitting it again.
+    private func adoptDisplayedSceneTime(_ t: Double) {
+        guard sceneTime != t else { return }
+        preappliedSceneTime = t
+        sceneTime = t
+    }
+
+    func beginManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard !manualTimelineScrubActive, vb.scrubTimeBegin() else { return }
+        manualTimelineScrubActive = true
+    }
+
+    func endManualTimelineScrub(using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        manualTimelineScrubActive = false
+        _ = vb.scrubTimeEnd()
+    }
+
+    /// Apply a manual drag step synchronously inside its known-open native
+    /// composite, then mark the already-updated Binding so the later SwiftUI
+    /// observer does not submit it again after End.
+    func applyManualTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) {
+        guard manualTimelineScrubActive else { return }
+        // Simulation M5: an attached live simulation clamps a scrub to its
+        // latest published frame, so the scene time actually shown is read
+        // back after every scrub -- accepted or refused.
+        _ = vb.scrubTime(time)
+        let canonicalTime = vb.lastSceneTime()
+        preappliedSceneTime = canonicalTime
+        if sceneTime != canonicalTime { sceneTime = canonicalTime }
+    }
+
+    /// Apply a binding-driven playback step only while its native scrub
+    /// composite is known to be open.
+    func applyTimelineSceneTime(_ time: Double, using vb: RISEViewportBridge) -> Bool {
+        // The library clock is the only writer while playing (its times
+        // arrive pre-applied); any other binding write is not a scene edit.
+        return isPreviewPlaying
+    }
+
+    /// Rewind/to-end transport uses this direct path so the native move is
+    /// performed synchronously between Begin and End, before SwiftUI later
+    /// observes the published binding change.
+    func jumpTimelineSceneTime(to time: Double, using vb: RISEViewportBridge) {
+        reconcileSceneTime(to: time, using: vb, force: true)
+    }
+
+    /// Consume a scene-time write that `reconcileSceneTime` already applied
+    /// natively.  Any different write clears the stale marker and follows the
+    /// normal ViewportView binding path.
+    func consumePreappliedSceneTime(_ time: Double) -> Bool {
+        guard let applied = preappliedSceneTime else { return false }
+        preappliedSceneTime = nil
+        return applied == time
+    }
+
+    /// Park an out-of-range playhead through the same native composite used
+    /// by an explicit timeline jump.  Failed admission leaves both the UI
+    /// value and marker untouched so the next 2 Hz poll retries safely.
+    private func reconcileSceneTime(to time: Double, using vb: RISEViewportBridge,
+                                    force: Bool = false) {
+        guard !manualTimelineScrubActive, (force || sceneTime != time),
+              vb.scrubTimeBegin() else { return }
+        let applied = vb.scrubTime(time)
+        _ = vb.scrubTimeEnd()
+        guard applied else { return }
+        // Read back the time the scrub showed (a live simulation clamps it).
+        let shown = vb.lastSceneTime()
+        if sceneTime != shown {
+            preappliedSceneTime = shown
+            sceneTime = shown
+        }
+    }
+
+
+    // MARK: - UI redesign: refinement status poll
+
+    /// Refresh refinement, undo/redo, viewport-mode, and live animation
+    /// presence/options from `vb`.
+    /// Called once immediately on bridge attach, then every 0.5 s by
+    /// `refinementPollTimer` — see `viewportBridge`'s didSet.
+    private func pollRefinementState(_ vb: RISEViewportBridge) {
+        // PUBLISH-ON-CHANGE ONLY (menu-flyout fix, 2026-07-16): this poll
+        // fires every 0.5s for as long as a scene is loaded, and @Published
+        // fires objectWillChange on EVERY assignment — equal or not.  The
+        // App's .commands menus observe this model, and every
+        // objectWillChange rebuilds the menu bar, which dismisses any OPEN
+        // flyout — so unconditional writes here made native menus unusable
+        // whenever a scene was loaded ("flies out then instantly closes").
+        // With equality guards, a settled scene publishes NOTHING and menus
+        // behave normally.  (During an active render, progress/elapsed
+        // updates still legitimately publish — menu use mid-render remains
+        // limited; a dedicated menu-state model would be the deeper fix.)
+        var divisor: UInt32 = 1
+        let phase = vb.refinementPhase(withScaleDivisor: &divisor)
+        if refinementPhase != Int(phase) { refinementPhase = Int(phase) }
+        if refinementScaleDivisor != divisor { refinementScaleDivisor = divisor }
+        let newUndo = vb.undoActionLabel()
+        if undoLabel != newUndo { undoLabel = newUndo }
+        let newRedo = vb.redoActionLabel()
+        if redoLabel != newRedo { redoLabel = newRedo }
+
+        // Viewport render mode — the core resets it to "preview" on every
+        // whole-scene rebind (scene_variant switch, CST full re-derive)
+        // WITHOUT the bridge object changing, so the didSet one-time read
+        // never fires again and the chip/menu/DENOISED gate would all go
+        // stale claiming a data mode the engine is no longer rendering.
+        // This poll re-read is the Mac twin of Windows TopBar's
+        // refreshRenderModeCombo-on-poll; equality-guarded like everything
+        // else here.
+        let engineMode = vb.viewportRenderMode
+        if viewportRenderMode != engineMode { viewportRenderMode = engineMode }
+        // X-ray axis — same staleness class as the mode above (a whole-
+        // scene rebind resets it without replacing the bridge object).
+        let engineXray = vb.viewportXray()
+        if viewportXray != engineXray { viewportXray = engineXray }
+
+        // Timeline presence is live scene state, not load metadata.  An agent
+        // can insert the first timeline after this RenderViewModel was built;
+        // conversely undo/remove can take the last one away.  The bridge
+        // snapshot is controller-mutex-safe and tri-state, so a contended
+        // external commit leaves the last published value intact until the
+        // next poll instead of briefly hiding the timeline.
+        // Simulation M5: bakes run in worker processes; the bake manager's
+        // change counter says when to re-read jobs and install new frames.
+        simulations.bakeCounterObserved(RISEViewportBridge.simulationBakeChangeCounter())
+
+        let liveAnimationPresence = vb.animationPresence
+        if liveAnimationPresence >= 0 {
+            let liveHasAnimation = liveAnimationPresence != 0
+            if liveHasAnimation {
+                // Read the whole option tuple under one controller lock so
+                // start/end/frame count can never come from different agent
+                // commits.  Retain the last good tuple on contention.
+                var liveStart: Double = 0
+                var liveEnd: Double = 0
+                var liveFrames: UInt = 0
+                if vb.getAnimationOptions(timeStart: &liveStart,
+                                          timeEnd: &liveEnd,
+                                          numFrames: &liveFrames),
+                   liveEnd > liveStart {
+                    let optionsChanged = animationTimeStart != liveStart
+                        || animationTimeEnd != liveEnd
+                        || animationNumFrames != liveFrames
+                    // A live DragGesture owns an open native composite and
+                    // still uses the currently displayed range.  Defer a
+                    // tuple replacement until its End; the next poll applies
+                    // it.  Removal below cannot defer because the control is
+                    // about to disappear, so it explicitly finalizes first.
+                    if !optionsChanged || !manualTimelineScrubActive {
+                        if optionsChanged { stopPreviewPlay() }
+                        if animationTimeStart != liveStart { animationTimeStart = liveStart }
+                        if animationTimeEnd != liveEnd { animationTimeEnd = liveEnd }
+                        if animationNumFrames != liveFrames { animationNumFrames = liveFrames }
+                        let clampedTime = min(max(sceneTime, liveStart), liveEnd)
+                        reconcileSceneTime(to: clampedTime, using: vb)
+                    }
+                }
+            } else {
+                endManualTimelineScrub(using: vb)
+                if animationTimeStart != 0 { animationTimeStart = 0 }
+                if animationTimeEnd != 1 { animationTimeEnd = 1 }
+                if animationNumFrames != 30 { animationNumFrames = 30 }
+            }
+            if hasAnimation != liveHasAnimation {
+                if !liveHasAnimation { stopPreviewPlay() }
+                hasAnimation = liveHasAnimation
+            }
         }
 
-        refreshEditorContents()
-        isEditorVisible = true
+        // Design brief A4 — mirror the active region (full-res
+        // film-pixel space). The core preserves it across production
+        // work, so this poll also keeps shell state
+        // synchronized when another caller changes or clears it.
+        var left: UInt32 = 0, top: UInt32 = 0, right: UInt32 = 0, bottom: UInt32 = 0
+        if vb.getInteractiveRegionLeft(&left, top: &top, right: &right, bottom: &bottom) {
+            // `right`/`bottom` are INCLUSIVE (see RISEViewportBridge.h)
+            // — +1 so width/height reflect the pixel COUNT restricted,
+            // matching ViewportView.commitRegionDrag's convention.
+            let region = CGRect(x: CGFloat(left), y: CGFloat(top),
+                                width: CGFloat(right) - CGFloat(left) + 1,
+                                height: CGFloat(bottom) - CGFloat(top) + 1)
+            if activeRegion != region { activeRegion = region }
+        } else if activeRegion != nil {
+            activeRegion = nil
+        }
+
+        // CST <-> scene-file live sync (item 1 only — explicit-save-only
+        // design, user decision 2026-07-12: UI edits never write the
+        // .RISEscene to disk automatically, so there is no item-2
+        // debounced auto-save here anymore; a disk write happens ONLY
+        // from a user-initiated `saveScene()` call).  Gated on
+        // `isSceneEditableForAgents` — `serializedSceneText` and
+        // `getSceneTextVersionUuid:revision:` both take the controller's
+        // commit mutex, which a production render (or an outstanding
+        // chat-driven render) owns; calling either then would hang this
+        // poll on the main actor.  `viewportBridge != nil` is already
+        // guaranteed by every caller of this method.
+        if isSceneEditableForAgents, let currentVersion = currentSceneTextVersion(vb) {
+            // Simulation M5: a scene edit (properties panel, scene text,
+            // agent) can change simulation keys and states, and a live run
+            // must follow it (LiveSimulationResync).  Never starts a bake.
+            simulations.sceneRevisionObserved("\(currentVersion.uuid):\(currentVersion.revision)")
+            // Item 1 — mirror the live CST into the editor buffer.
+            if !isEditorDirty {
+                // No unsaved buffer edits: safe to pull fresh text,
+                // and this is also how a `editorBehindLiveScene` stale
+                // flag clears once the user's buffer catches back up
+                // (e.g. after Revert) without waiting for a new sync.
+                if currentVersion != lastSyncedSceneTextVersion {
+                    let text = vb.serializedSceneText()
+                    editorText = text
+                    editorOriginalText = text
+                    lastSyncedSceneTextVersion = currentVersion
+                }
+                if editorBehindLiveScene { editorBehindLiveScene = false }
+            } else if currentVersion != lastSyncedSceneTextVersion {
+                // The user has unsaved buffer edits AND the live scene
+                // has moved on since the last sync — don't clobber the
+                // buffer; just flag that it's stale.
+                if !editorBehindLiveScene { editorBehindLiveScene = true }
+            }
+        }
+    }
+
+    // MARK: - UI redesign: refinement transport (TopBar / Render menu)
+
+    // (pauseRefinement/resumeRefinement/togglePauseRefinement were
+    // removed by user request — refinement restarts on every edit, so a
+    // user-facing pause for it was a niche control.  The controller's
+    // PauseRefinement API remains for future/programmatic use; the
+    // status formatter's Paused phase stays reachable through it.)
+
+    /// Restart refinement from scratch: stop the interactive render
+    /// thread and start it again (with its normal initial-render pass,
+    /// unlike the post-production `startSuppressingInitialRender` path).
+    /// No-op with no bridge, while a production render owns the scene,
+    /// or while a chat-driven agent render is outstanding — see
+    /// `canUseSceneTransport`.
+    func restartRefinement() {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        vb.stop()
+        claimEDRPresentationOwnership(.interactive)
+        vb.start()
+    }
+
+    private func claimEDRPresentationOwnership(_ role: MetalEDRRendererRole) {
+        switch role {
+        case .production:
+            productionEDRRenderer?.claimPresentationOwnership()
+            interactiveEDRRenderer?.drainCommittedPresentations()
+        case .interactive:
+            productionEDRRenderer?.present()
+            productionEDRRenderer?.drainCommittedPresentations()
+            interactiveEDRRenderer?.claimPresentationOwnership()
+        }
+    }
+
+    private func restartInteractiveAfterFinalProductionPoll() {
+        let bridgeRef = bridge
+        pollQueue.async { [weak self] in
+            bridgeRef.pollProductionVFS()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.claimEDRPresentationOwnership(.interactive)
+                self.viewportBridge?.startSuppressingInitialRender()
+            }
+        }
+    }
+
+    // MARK: - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
+
+    /// Switch the viewport's render mode.  Calls the bridge, then
+    /// re-reads the EFFECTIVE mode from it rather than optimistically
+    /// assuming `name` stuck — the switch is refused while a
+    /// production/agent render owns the scene, for an unknown name, or
+    /// in skeleton mode.  No-op with no bridge or while the scene isn't
+    /// editable (same gate as every other viewport transport call).
+    func setViewportRenderMode(_ name: String) {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        _ = vb.setViewportRenderMode(name)
+        let effective = vb.viewportRenderMode
+        if viewportRenderMode != effective { viewportRenderMode = effective }
+    }
+
+    /// Toggle the X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis").
+    /// Calls the bridge, then re-reads the EFFECTIVE flag rather than
+    /// optimistically assuming `on` stuck — same refusal contract as
+    /// `setViewportRenderMode`.  Applies to EVERY render mode, INCLUDING
+    /// "preview" (default ON) — not gated to the data modes.
+    func setViewportXray(_ on: Bool) {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        _ = vb.setViewportXray(on)
+        let effective = vb.viewportXray()
+        if viewportXray != effective { viewportXray = effective }
+    }
+
+    // MARK: - UI redesign: undo/redo passthrough (Edit menu)
+
+    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
+    func undo() {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        vb.undo()
+        publishHistoryNotice(vb)
+    }
+
+    /// Same gate as `pauseRefinement` — see `canUseSceneTransport`.
+    func redo() {
+        guard canUseSceneTransport, let vb = viewportBridge else { return }
+        vb.redo()
+        publishHistoryNotice(vb)
+    }
+
+    /// A refused undo/redo (e.g. an agent batch edit whose inverse would
+    /// not derive) leaves a notice the user must see -- the step stays in
+    /// the history, so a silent refusal would read as a dead Cmd-Z.
+    /// `ContentView` presents it as an alert.
+    @Published var historyNotice: String? = nil
+
+    private func publishHistoryNotice(_ vb: RISEViewportBridge) {
+        let notice = vb.consumeHistoryNotice()
+        if !notice.isEmpty { historyNotice = notice }
+    }
+
+    // MARK: - UI redesign: TopBar Save
+
+    /// Writes in-memory edits to the originally-loaded path.  Mirrors
+    /// `PropertiesPanel.performSceneSave(useLoadedPath: true)`'s
+    /// in-place branch — kept as a small, deliberate duplication rather
+    /// than threading a shared helper through PropertiesPanel this
+    /// slice (PropertiesPanel is explicitly out of scope for slice 1;
+    /// it gets its own restyling pass later).  No-op with no bridge or
+    /// no loaded path (the TopBar Save button has no Save-As affordance
+    /// — that stays in the Properties panel).
+    ///
+    /// Explicit-save-only (user decision 2026-07-12): this is the ONLY
+    /// place a .RISEscene write ever happens.  UI edits mutate the live
+    /// CST in memory and the CST-to-editor mirror (`pollRefinementState`
+    /// item 1) keeps the Scene-file tab following those edits live, but
+    /// none of that touches disk — a write happens only when the user
+    /// explicitly triggers this method (the TopBar Save button or
+    /// File > Save Scene).  Always alerts on refusal / I/O failure;
+    /// there is no silent/suspended auto-save path to distinguish from.
+    /// Start-screen create path (spec §4.3): load the bundled EMPTY starter
+    /// scene as an untitled document, then hand `prompt` to the agent — the
+    /// chat consumes it exactly once in `sceneOpened` (after the bridge is
+    /// attached), so a slow load can neither drop nor double-send it.
+    /// Returns false only when the bundled template is missing (a packaging
+    /// bug — surfaced as a load error, not a silent no-op).
+    @discardableResult
+    func loadStarterScene(withPrompt prompt: String) -> Bool {
+        guard let templatePath = Bundle.main.path(
+            forResource: "empty_starter", ofType: "RISEscene") else {
+            renderState = .error("The starter scene template is missing from the app bundle")
+            return false
+        }
+        // Stash BEFORE the load so the prompt survives however long the
+        // load takes; sceneOpened is the single consumer.
+        chat.pendingFirstPrompt = prompt
+        leftTab = .agent
+        showLeftPanel = true
+        loadScene(at: templatePath, untitled: true)
+        return true
+    }
+
+    /// Save the scene to a user-chosen path (NSSavePanel).  Also the Save
+    /// fallback for UNTITLED scenes (start-screen create path): the first
+    /// Save becomes Save-As.  On success the scene gains the chosen path
+    /// (re-anchor, matching SaveEngine's own FileIdentity re-anchor), joins
+    /// the recents list, and behaves as a normal named scene from then on.
+    @discardableResult
+    func saveSceneAs() -> Bool {
+        guard let vb = viewportBridge else { return false }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = []  // accept any extension
+        panel.nameFieldStringValue = (loadedFilePath as NSString?)?.lastPathComponent
+            ?? "untitled.RISEscene"
+        if let lp = loadedFilePath {
+            panel.directoryURL = URL(fileURLWithPath: lp).deletingLastPathComponent()
+        }
+        panel.title = "Save Scene As"
+        panel.message = "Choose a destination for the .RISEscene file."
+        guard panel.runModal() == .OK, let path = panel.url?.path, !path.isEmpty else {
+            return false
+        }
+        var errMsg: NSString? = nil
+        let status = vb.saveScene(to: path, errorMessage: &errMsg)
+        switch status {
+        case 0, 1:
+            // Saved (or NoOp).  Re-anchor so subsequent in-place saves
+            // target the just-written file, and an untitled scene becomes
+            // a normal named scene (title, recents, in-place Save).
+            if path != loadedFilePath {
+                loadedFilePath = path
+                addToRecentFiles(path)
+                // Media paths follow the scene to its new home — vital for
+                // the untitled create path, whose bundle load registered
+                // no project root (round-2 review P2).
+                registerMediaPaths(forSceneAt: path)
+            }
+            if !isEditorDirty {
+                refreshEditorContents()
+            } else {
+                // Save-As changed the raw editor's eventual write target.
+                // Keep its independent text edits, but make the overwrite
+                // hazard explicit just as the in-place and Properties-panel
+                // save paths do.
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "The scene is now anchored to \(path), but the scene " +
+                    "editor pane still shows its own unsaved text changes.  " +
+                    "Clicking Save in the scene editor will overwrite that " +
+                    "file — use Revert in the scene editor to discard your " +
+                    "text edits and pull the selected file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            return true
+        case 2:
+            showSaveAlert(title: "Save Refused",
+                          message: (errMsg as String?) ?? "The save engine declined to write this file.")
+            return false
+        default:
+            showSaveAlert(title: "Save Failed",
+                          message: (errMsg as String?) ?? "An I/O error occurred while saving the file.")
+            return false
+        }
+    }
+
+    @discardableResult
+    func saveScene() -> Bool {
+        // Untitled scene (start-screen create): nothing on disk to save
+        // in-place — the first Save IS Save-As (spec §5.2).
+        if loadedFilePath == nil {
+            return saveSceneAs()
+        }
+        guard let vb = viewportBridge, let path = loadedFilePath else { return false }
+        var errMsg: NSString? = nil
+        let status = vb.saveScene(to: path, errorMessage: &errMsg)
+        switch status {
+        case 0:
+            // Saved.  Pull the just-written bytes back into the
+            // scene-editor pane so it reflects the round-tripped
+            // edits — unless the editor has its own unsaved text
+            // edits, in which case overwriting would silently discard
+            // them (same conflict surfaced in PropertiesPanel).
+            if !isEditorDirty {
+                refreshEditorContents()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "Your interactive edits were saved to \(path).  " +
+                    "The scene editor pane still shows the pre-save text " +
+                    "plus your unsaved edits.  Clicking Save in the scene " +
+                    "editor will overwrite the just-saved interactive " +
+                    "changes — use Revert in the scene editor to discard " +
+                    "your text edits and pull the new file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            return true
+        case 1:
+            return true   // NoOp — nothing to write.
+        case 2:
+            let message = (errMsg as String?) ?? "The save engine declined to write this file."
+            showSaveAlert(title: "Save Refused", message: message)
+            return false
+        case 3:
+            let message = (errMsg as String?) ?? "An I/O error occurred while saving the file."
+            showSaveAlert(title: "Save Failed", message: message)
+            return false
+        default:
+            let message = "Unexpected save result (status \(status))."
+            showSaveAlert(title: "Save Failed", message: message)
+            return false
+        }
+    }
+
+    private func showSaveAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    // MARK: - Agent surface (Facet 5 slice 1c-1)
+
+    /// Facet 5 slice 1c-1: hand one JSON-RPC request line to the live
+    /// ADMINISTRATIVE agent dispatcher and return its response line.
+    ///
+    /// Runs SYNCHRONOUSLY on the main actor — the bridge's
+    /// `agentHandleLine` runs on the calling (main) thread, exactly like
+    /// GUI SetProperty drives the controller's cancel-and-park from main.
+    /// After a `propose_patch` the viewport re-renders and the Save button
+    /// enables AUTOMATICALLY: the controller's commit kicks a fresh render
+    /// pass (delivered via the live-preview image block) and flips the
+    /// dirty flag (delivered via `setDirtyChangedBlock` → `sceneEditsDirty`).
+    /// So there is NO manual viewport refresh or Save-state poke here.
+    @discardableResult
+    func sendAgentRequest(_ line: String) -> String {
+        guard let vb = viewportBridge else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"no scene loaded (no viewport bridge)\"}}"
+            agentResponseText = err
+            return err
+        }
+        // B2 review round 1 (audit-by-bug-pattern sibling of the chat
+        // gate): refuse while a production render owns the scene —
+        // `agentHandleLine` would mutate Scene state the production
+        // rasterizer's workers read off-main.  Well-formed JSON-RPC
+        // error, like the nil-dispatcher path above, so the refusal
+        // is visible in the panel's Response area (the panel's Send
+        // is also disabled on the same predicate).
+        guard isSceneEditableForAgents else {
+            let err = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                      "{\"code\":-32603,\"message\":\"a production render is running — " +
+                      "wait for it to finish, then send again\"}}"
+            agentResponseText = err
+            return err
+        }
+        let response = vb.agentHandleLine(line)
+        agentResponseText = response
+        return response
     }
 
     func saveEditorFile() {
@@ -524,8 +2655,361 @@ final class RenderViewModel: ObservableObject {
         }
     }
 
+    /// Save the RAW editor text, prompting for a destination when the
+    /// scene is untitled (no loadedFilePath to write to).  Returns false
+    /// when the user cancelled the panel or the write failed — callers in
+    /// a save-then-proceed flow (the "Unsaved Changes" pre-alert, the
+    /// dirty-close prompt) must ABORT their flow on false, otherwise the
+    /// edits the user just asked to save would be discarded anyway.
+    @discardableResult
+    func saveEditorTextEnsuringPath() -> Bool {
+        if let path = loadedFilePath {
+            do {
+                try editorText.write(toFile: path, atomically: true, encoding: .utf8)
+                editorOriginalText = editorText
+                return true
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Failed to save file"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .critical
+                alert.runModal()
+                return false
+            }
+        }
+        // Untitled: choose a destination for the raw text.  Deliberately a
+        // plain write with NO re-anchor: the callers are about to tear the
+        // scene down, so adopting the path would be pointless churn.
+        return saveEditorTextViaPanel()
+    }
+
+    /// Save the raw editor text to a user-chosen path (always panels, never
+    /// writes to `loadedFilePath`).  Used for untitled scenes and for the
+    /// both-dirty case where the raw text is a DIVERGENT variant of the
+    /// just-saved scene — writing it to the scene's own path would clobber
+    /// that save.  Plain write, no re-anchor.  False on cancel / IO error.
+    private func saveEditorTextViaPanel() -> Bool {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = []
+        panel.nameFieldStringValue = "untitled.RISEscene"
+        panel.title = "Save Scene As"
+        panel.message = "Choose a destination for the editor's scene text."
+        guard panel.runModal() == .OK, let path = panel.url?.path, !path.isEmpty else {
+            return false
+        }
+        do {
+            try editorText.write(toFile: path, atomically: true, encoding: .utf8)
+            editorOriginalText = editorText
+            return true
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Failed to save file"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .critical
+            alert.runModal()
+            return false
+        }
+    }
+
+    /// The single unsaved-work gate for destructive scene transitions
+    /// (Close Scene, load-over, and — via AppDelegate.applicationShouldTerminate
+    /// in RISEApp.swift — app quit).  Handles BOTH dirt kinds — unsaved LIVE
+    /// scene edits (sceneEditsDirty) and unsaved RAW editor text
+    /// (isEditorDirty) — including the BOTH-dirty case round 3 caught:
+    /// they are independent flags, and saving the scene does NOT save a
+    /// divergent editor buffer (writing that buffer to the same file
+    /// would clobber the scene save), so the both case gets an explicit
+    /// follow-up offer to save the text to a SEPARATE file.  Returns true
+    /// to proceed with the transition, false to abort it.  Not `private`:
+    /// AppDelegate calls this synchronously from `applicationShouldTerminate`,
+    /// which NSAlert.runModal() (called inside) supports directly — no
+    /// `.terminateLater` dance needed.  Deliberately indifferent to render
+    /// state, same as the Close Scene / load-over callers: a render in
+    /// flight at quit time is cancelled separately by the existing
+    /// `willTerminateNotification` observer in `init()`, which fires AFTER
+    /// `applicationShouldTerminate` has already decided to terminate.
+    func promptToSaveUnsavedWork(before action: String) -> Bool {
+        guard sceneEditsDirty || isEditorDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Unsaved Changes"
+        if sceneEditsDirty && isEditorDirty {
+            alert.informativeText = "The scene has unsaved changes, and the scene editor has separate unsaved text changes. Save the scene before \(action)?"
+        } else if sceneEditsDirty {
+            alert.informativeText = "The scene has unsaved changes. Save before \(action)?"
+        } else {
+            alert.informativeText = "The scene editor has unsaved text changes. Save before \(action)?"
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if sceneEditsDirty {
+                guard saveScene() else { return false }
+                if isEditorDirty {
+                    let follow = NSAlert()
+                    follow.messageText = "Scene editor text not included"
+                    follow.informativeText = "The scene editor's unsaved text changes were not part of the scene save (writing them to the same file would overwrite it). Save the editor text to a separate file?"
+                    follow.alertStyle = .warning
+                    follow.addButton(withTitle: "Save As…")
+                    follow.addButton(withTitle: "Discard Text")
+                    follow.addButton(withTitle: "Cancel")
+                    switch follow.runModal() {
+                    case .alertFirstButtonReturn:
+                        guard saveEditorTextViaPanel() else { return false }
+                    case .alertSecondButtonReturn:
+                        break
+                    default:
+                        return false
+                    }
+                }
+                return true
+            }
+            return saveEditorTextEnsuringPath()
+        case .alertSecondButtonReturn:
+            return true   // Discard — proceed
+        default:
+            return false  // Cancel — abort the transition
+        }
+    }
+
+    /// Discards the editor buffer's unsaved text edits.  In a
+    /// live-synced world "revert" means "go back to what the scene
+    /// actually IS right now" (the live CST's serialization), not "go
+    /// back to a stale at-load/at-last-sync snapshot" — so this pulls
+    /// `bridge.serializedSceneText` fresh rather than reusing
+    /// `editorOriginalText`.  Falls back to `editorOriginalText` (the
+    /// pre-redesign behavior) when the live text isn't reachable right
+    /// now — no bridge, or a production render / outstanding chat render
+    /// currently owns the scene (`isSceneEditableForAgents` false) —
+    /// same gate as every other `serializedSceneText` call site.
     func revertEditorFile() {
-        editorText = editorOriginalText
+        guard let vb = viewportBridge, isSceneEditableForAgents else {
+            editorText = editorOriginalText
+            return
+        }
+        let text = vb.serializedSceneText()
+        editorText = text
+        editorOriginalText = text
+        lastSyncedSceneTextVersion = currentSceneTextVersion(vb)
+        editorBehindLiveScene = false
+    }
+
+    /// "Reveal in scene file" (design comp's ⌗ affordance): resolve
+    /// `(category, name)` to its position in the scene text, switch to
+    /// the Scene-file tab, and publish `editorRevealRequest` so
+    /// `SceneTextEditor` scrolls/selects/flashes that line.  Same
+    /// scene-editable gate as every other bridge call that reads the
+    /// live CST (`isSceneEditableForAgents` — do not call while a
+    /// production render or an outstanding chat render owns the
+    /// controller).  A no-op (no tab switch, no publish) when the bridge
+    /// is absent, the gate is closed, or the entity doesn't resolve
+    /// (unnamed/ambiguous, or a category with no chunk-name addressing
+    /// scheme — see `SceneEditController::EntitySourceLocation`).
+    func revealEntityInSceneText(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var offset: UInt64 = 0
+        var line: UInt32 = 0
+        guard vb.getEntitySourceLocation(for: category, name: name, byteOffset: &offset, line: &line) else { return }
+        leftTab = .sceneFile
+        // Review P2: the offset addresses the LIVE serialization.  When
+        // the editor buffer has unsaved hand edits it may differ without
+        // being shorter, so a scroll could land on the WRONG line while
+        // looking authoritative.  Switch tabs only in that case (the
+        // stale-buffer warning is already showing) — a reveal must be
+        // right or absent, never misleading.
+        guard !isEditorDirty else { return }
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: 0, generation: nextEditorRevealGeneration)
+        nextEditorRevealGeneration += 1
+    }
+
+    /// doc-88 Phase 3 S15: node-canvas double-click entry point — see
+    /// `GraphDefFocusRequest`.  Selection (which entity/category the
+    /// property panel shows) is a separate call the canvas makes itself
+    /// via the bridge (`setSelection`); this only carries the "please
+    /// open Advanced" intent, so it takes just the name, not a category.
+    func focusPainterDefRows(name: String) {
+        graphDefFocusRequest = GraphDefFocusRequest(painterName: name, generation: nextGraphDefFocusGeneration)
+        nextGraphDefFocusGeneration += 1
+    }
+
+    /// Source traceability: reveal a specific UI element's span in the Scene-file
+    /// editor, highlighting the EXACT byte range (a param row) rather than the whole
+    /// line.  `param` empty falls back to a whole-chunk (line) reveal.  Same
+    /// stale-buffer guard as revealEntityInSceneText — a reveal must be right or
+    /// absent, never misleading.
+    func revealSourceSpan(category: RISEViewportCategory, name: String, param: String, occurrence: Int = 0) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var offset: UInt64 = 0
+        var length: UInt64 = 0
+        var line: UInt32 = 0
+        var col: UInt32 = 0
+        guard vb.resolveSourceSpan(for: category, name: name, param: param, occurrence: Int32(occurrence),
+                                   byteOffset: &offset, byteLength: &length, line: &line, column: &col) else { return }
+        leftTab = .sceneFile
+        guard !isEditorDirty else { return }
+        editorRevealRequest = EditorRevealRequest(byteOffset: offset, byteLength: length, generation: nextEditorRevealGeneration)
+        nextEditorRevealGeneration += 1
+    }
+
+    /// Reverse source traceability (text -> UI select): the inverse of the
+    /// two reveals above.  Resolve the scene entity whose source contains
+    /// UTF-8 `byteOffset` (a right-click in the scene-file editor) and select
+    /// it so the outliner highlight + inspector land on it.  Same editability
+    /// gate as the forward reveals; additionally requires a CLEAN editor
+    /// buffer -- the offset comes from the buffer but `sourceRef` resolves it
+    /// against the live CST serialization, and the two agree only when clean
+    /// (the inverse reasoning of the forward stale-buffer guard).  Selection
+    /// never mutates the document text, so this cannot dirty the buffer or
+    /// feed back into another resolve.  A no-resolve (inter-chunk trivia, a
+    /// non-entity chunk, EOF, or a dirty buffer) is a silent no-op.
+    func reverseSelectEntity(atByteOffset byteOffset: UInt64) {
+        guard let vb = viewportBridge, canReverseSelect else { return }
+        var cat: RISEViewportCategory = .none
+        var name: NSString? = nil
+        var param: NSString? = nil
+        var occurrence: Int32 = 0
+        guard vb.sourceRef(atByteOffset: byteOffset, category: &cat,
+                           name: &name, param: &param, occurrence: &occurrence) else { return }
+        // Only refresh the panels if the selection actually took (the
+        // resolver already validated addressability, so this normally
+        // succeeds; gating avoids a stale re-snapshot on the rare miss).
+        if vb.setSelection(cat, name: (name as String?) ?? "") {
+            reverseSelectEpoch &+= 1
+        }
+    }
+
+    /// Jump-to-definition (GUI redesign 2026-07-22): navigate the
+    /// inspector + outliner to a referenced element -- the action behind
+    /// the property context menu's "Jump to Definition".  Reuses the
+    /// reverse-select epoch so the outliner highlight and the panel
+    /// re-snapshot through the exact wiring "Select in Inspector"
+    /// already exercises.
+    func jumpToEntity(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, !name.isEmpty else { return }
+        if vb.setSelection(category, name: name) {
+            reverseSelectEpoch &+= 1
+        }
+    }
+
+    // MARK: - Entity creation + painter CRUD (entity-creation slice)
+    //
+    // All three mutating calls below take the controller's commit mutex
+    // (same reason as every other scene-edit call) -- gated on
+    // `isSceneEditableForAgents` so a click during a production render
+    // refuses cleanly instead of wedging on the mutex.  Success bumps
+    // `entityListEpoch` (see its doc) and re-selects the affected
+    // entity so the properties panel and outliner both land on it;
+    // failure surfaces the core's honest refusal message via NSAlert.
+
+    /// Templates registered for `category` (empty for categories with
+    /// none). `index` is the template's position, stable for the
+    /// lifetime of the call -- pass straight through to `addEntity`.
+    func entityTemplates(for category: RISEViewportCategory) -> [(index: Int, label: String)] {
+        guard let vb = viewportBridge else { return [] }
+        let count = vb.entityTemplateCount(for: category)
+        guard count > 0 else { return [] }
+        return (0..<count).map { i in
+            (index: Int(i), label: vb.entityTemplateLabel(for: category, index: i))
+        }
+    }
+
+    /// Instantiate template `templateIndex` within `category`.  On
+    /// success, selects the new entity (so the properties panel jumps
+    /// to it) and bumps `entityListEpoch` (so the outliner re-pulls
+    /// that category's list).  On failure, shows the core's refusal
+    /// message.
+    func addEntity(category: RISEViewportCategory, templateIndex: Int) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var outName: NSString? = nil
+        var outMessage: NSString? = nil
+        let applied = vb.instantiateEntityTemplate(
+            for: category, index: UInt(templateIndex),
+            outName: &outName, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+            if let name = outName as String? {
+                _ = vb.setSelection(category, name: name)
+            }
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't add entity",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    /// Duplicate the named entity in `category`.  Same success/failure
+    /// pattern as `addEntity`.
+    func duplicateSelectedOrNamed(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        var outName: NSString? = nil
+        var outMessage: NSString? = nil
+        let applied = vb.duplicateEntity(
+            for: category, name: name,
+            outName: &outName, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+            if let dupName = outName as String? {
+                _ = vb.setSelection(category, name: dupName)
+            }
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't duplicate \"\(name)\"",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    /// Remove the named entity in `category`.  Confirms via NSAlert
+    /// first (irreversible from the user's point of view within a
+    /// session -- there IS an Undo, but the confirm is still the
+    /// honest "are you sure" gesture for a destructive action); the
+    /// core's still-referenced refusal (e.g. a material a
+    /// standard_object still binds) surfaces as a follow-up alert so
+    /// the user understands WHY it didn't go through.
+    func removeEntity(category: RISEViewportCategory, name: String) {
+        guard let vb = viewportBridge, isSceneEditableForAgents else { return }
+        let confirm = NSAlert()
+        confirm.messageText = "Delete \"\(name)\"?"
+        confirm.informativeText = "This can be undone with Edit > Undo."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Delete")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        // Re-check the edit gate AFTER the modal returns: the confirm
+        // dialog blocks the main thread, but a chat-driven agent render
+        // (folded into isSceneEditableForAgents via isChatRenderOutstanding)
+        // can begin or end while it's up, so the gate state at the top of
+        // this function may be stale by now.  Calling into the commit
+        // mutex while a render owns it would wedge the UI.
+        guard isSceneEditableForAgents else { return }
+
+        var outMessage: NSString? = nil
+        let applied = vb.removeEntity(for: category, name: name, outMessage: &outMessage)
+        if applied {
+            entityListEpoch &+= 1
+        } else {
+            presentEntityEditAlert(
+                title: "Couldn't delete \"\(name)\"",
+                message: (outMessage as String?) ?? "The edit was refused.")
+        }
+    }
+
+    private func presentEntityEditAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    /// Public surface for the Environment panel to report a refused / partial
+    /// environment edit (e.g. "already bound", or a live bind that couldn't be
+    /// recorded in the scene file).  Routes through the same warning alert the
+    /// entity-CRUD failures use.
+    func presentEnvironmentNotice(_ message: String) {
+        presentEntityEditAlert(title: "Environment", message: message)
     }
 
     func saveAndReloadScene() {
@@ -547,6 +3031,7 @@ final class RenderViewModel: ObservableObject {
         // Cancel any active render and wait for it to finish before reloading
         if renderState == .rendering || renderState == .cancelling {
             cancelFlag.value = true
+            bridge.cancelPreparedProductionRender()
             renderState = .cancelling
             let task = renderTask
             Task { @MainActor [weak self] in
@@ -559,13 +3044,20 @@ final class RenderViewModel: ObservableObject {
     }
 
     private func finishSaveAndReload(path: String) {
-        // Clear the current scene
+        // Clear the current scene.  Tear the viewport bridge down
+        // first so its render thread is joined before clearAll
+        // destroys the scene it's referencing.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
+        viewportBridge?.shutdown()
+        viewportBridge = nil
         bridge.clearAll()
         renderedImage = nil
+        panePreviewImages = [:]
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
-        sceneSize = nil
+        remainingTime = nil
         imageBuffer.reset()
         logMessages.removeAll()
 
@@ -581,7 +3073,142 @@ final class RenderViewModel: ObservableObject {
         renderState != .rendering && renderState != .cancelling && renderState != .loading
     }
 
+    /// UI redesign: gate for the Render menu's "Production Render" /
+    /// "Render Animation…" items and the old controls panel's Render
+    /// buttons before it — moved here (from a private ContentView
+    /// computed property) so RISEApp.swift's menu commands can read the
+    /// same rule.
+    var canStartProductionRender: Bool {
+        switch renderState {
+        case .sceneLoaded, .completed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// UI redesign: gate for File > Close Scene — matches the retired
+    /// controls panel's "Clear" button (disabled while rendering,
+    /// cancelling, or when there's nothing loaded yet).
+    var canCloseScene: Bool {
+        // `.loading` excluded (review round 2 P1): Close Scene during an
+        // in-flight load would run bridge.clearAll() on the main thread
+        // while the detached load task is still inside loadAsciiScene on
+        // the SAME Job — Job::ClearAll's pCstDocument.reset() +
+        // DestroyContainers racing the loader's reads is a crash-class
+        // data race (same family the production-render clear path awaits
+        // its task for).  The load is short; the menu re-enables when it
+        // completes.
+        renderState != .rendering && renderState != .cancelling
+            && renderState != .idle && renderState != .loading
+    }
+
+    /// L5a round-9 — gate for File > Save Rendered Image.  The
+    /// production VFS's FrameStore exists once the rasterizer has
+    /// emitted a coherent OutputImage.  After completion or cancel
+    /// the FrameStore retains its last contents (the bridge's
+    /// `clearAll` does NOT free the VFS, per L4 §7.5), so saving
+    /// from `.completed` or `.cancelled` produces the user's
+    /// last-rendered frame.  Loading a fresh scene transitions
+    /// through `.loading` → `.sceneLoaded`, neither of which has
+    /// fresh output yet — disable until the next render starts.
+    var canSaveImage: Bool {
+        switch renderState {
+        case .completed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// L5a round-9 — File > Save Rendered Image.  Opens an
+    /// NSSavePanel pre-populated with HDR-first format choices
+    /// (EXR default, then PNG / TIFF), looks up the encoder by
+    /// extension, and dispatches through the bridge's format-aware
+    /// `saveAs`.  HDR formats (EXR) write scene-referred linear
+    /// FP32 FLOAT values; LDR formats (PNG, TIFF-8) bake in the
+    /// current view exposure.
+    /// No-op if `canSaveImage` is false (e.g. no render yet).
+    func saveRenderedImage() {
+        guard canSaveImage else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "Save Rendered Image"
+        panel.message = "Choose a file format. EXR preserves the full HDR " +
+                        "result; PNG / TIFF clip to SDR with the current display EV."
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+
+        // HDR-first dropdown.  NSSavePanel uses `allowedContentTypes`
+        // to populate the Format popup; the FIRST entry is the
+        // default selection.  We keep the list short — EXR (HDR
+        // archival), PNG (LDR most-portable), TIFF (LDR/16-bit
+        // archival).  HDR Radiance / RGBEA / TGA / PPM are niche
+        // and accessible via the CLI; adding them here clutters the
+        // dropdown without obvious user benefit.
+        var allowedTypes: [UTType] = []
+        if let exr = UTType(filenameExtension: "exr") { allowedTypes.append(exr) }
+        allowedTypes.append(.png)
+        if let tif = UTType(filenameExtension: "tiff") { allowedTypes.append(tif) }
+        panel.allowedContentTypes = allowedTypes
+
+        // Default filename: scene basename + ".exr" (the HDR-first
+        // default).  If no scene loaded somehow (shouldn't happen
+        // given canSaveImage gate), fall back to a generic name.
+        let baseName: String
+        if let path = loadedFilePath {
+            baseName = (path as NSString).lastPathComponent
+                .replacingOccurrences(of: ".RISEscene", with: "")
+        } else {
+            baseName = "rendered"
+        }
+        panel.nameFieldStringValue = "\(baseName).exr"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Map extension → bridge format name.  ByExtension is
+        // case-insensitive in the registry, but we normalise here
+        // so the bridge log line is consistent.
+        let ext = url.pathExtension.lowercased()
+        let formatName: String
+        switch ext {
+        case "exr":           formatName = "EXR"
+        case "png":           formatName = "PNG"
+        case "tif", "tiff":   formatName = "TIFF"
+        case "hdr":           formatName = "HDR"
+        case "rgbea":         formatName = "RGBEA"
+        case "tga":           formatName = "TGA"
+        case "ppm":           formatName = "PPM"
+        default:
+            let alert = NSAlert()
+            alert.messageText = "Unsupported Image Format"
+            alert.informativeText = "No image encoder is available for \(url.lastPathComponent)."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+
+		let ok = bridge.save(as: url.path, format: formatName, exposureEV: viewExposureEV)
+        if !ok {
+            let alert = NSAlert()
+            alert.messageText = "Save Failed"
+            alert.informativeText = "Could not write \(url.lastPathComponent) " +
+                                    "as \(formatName).  See the log for details."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
     /// Reload editor contents from the current loadedFilePath.
+    ///
+    /// On failure: if the pane has never loaded content (editorText is
+    /// empty — initial-toggle case), drop a placeholder string so the
+    /// pane isn't a blank canvas with no diagnostic.  If the pane
+    /// ALREADY has content (post-round-trip-save refresh case), keep
+    /// it intact and surface a one-shot alert — wiping content the
+    /// user can still see and copy is more destructive than the rare
+    /// IO failure justifies (matches the Windows SceneEditor::loadFile
+    /// pattern; adversarial-review round 2 P3).
     func refreshEditorContents() {
         guard let path = loadedFilePath else { return }
         do {
@@ -589,26 +3216,53 @@ final class RenderViewModel: ObservableObject {
             editorText = content
             editorOriginalText = content
         } catch {
-            editorText = "// Failed to load file: \(error.localizedDescription)"
-            editorOriginalText = editorText
+            if editorText.isEmpty {
+                editorText = "// Failed to load file: \(error.localizedDescription)"
+                editorOriginalText = editorText
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Failed to reload scene file"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
 
     func clearScene() {
+        // Dirty-close gate (spec §5.2; round-2 introduced it, round-3
+        // unified it with the load-over flow and fixed the BOTH-dirty
+        // case — see promptToSaveUnsavedWork).  A cancelled prompt/panel
+        // or a refused save aborts the close.
+        guard promptToSaveUnsavedWork(before: "closing") else { return }
+
+        // Viewport bridge borrows the underlying job — tear it down
+        // BEFORE bridge.clearAll() so the controller's render thread
+        // is joined before the scene is destroyed.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
+        chat.sceneClosed()  // stop the chat driver before its tool executor is torn down
+        viewportBridge?.shutdown()
+        viewportBridge = nil
+        sceneTime = 0
         bridge.clearAll()
+        isRegionProductionRender = false
         renderState = .idle
         renderedImage = nil
+        panePreviewImages = [:]
         loadedFilePath = nil
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
-        sceneSize = nil
+        remainingTime = nil
         imageBuffer.reset()
         logMessages.removeAll()
         hasAnimation = false
-        isEditorVisible = false
         editorText = ""
         editorOriginalText = ""
+        // The Agent debug panel's response text is per-scene too — its
+        // dispatcher lives in the (now torn-down) viewport bridge.
+        agentResponseText = ""
     }
 
     func clearLog() {
@@ -618,14 +3272,11 @@ final class RenderViewModel: ObservableObject {
     // MARK: - Helpers
 
     var formattedElapsedTime: String {
-        let total = Int(elapsedTime)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%d:%02d", minutes, seconds)
-        }
+        RISEBridge.formatDuration(elapsedTime)
+    }
+
+    var formattedRemainingTime: String? {
+        guard let r = remainingTime else { return nil }
+        return RISEBridge.formatDuration(r)
     }
 }

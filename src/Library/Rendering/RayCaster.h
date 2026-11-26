@@ -18,13 +18,19 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRadianceMap.h"
 #include "../Utilities/Reference.h"
+#include <atomic>
+#include <string>
 
 namespace RISE
 {
 	class Ray;
 	class IScene;
+	class RayIntersection;
+	class ILightPriv;
+	class IObject;
 
 	namespace Implementation { class LightSampler; }
+	namespace GradedIndexMedium { class ShadowSegmentTrack; }
 
 	namespace Implementation
 	{
@@ -41,27 +47,308 @@ namespace RISE
 
 			bool						bConsiderRMapAsBackground;
 
+			//! Depth cap on a cast (`rs.depth > cap` returns nothing).  For
+			//! the legacy pixel-based rasterizers it is the scene's authored
+			//! `max_recursion`; for every integrator-owned caster it is
+			//! kDefaultPathTracingMaxDepth (DL-315 -- it used to be a
+			//! hard-coded 10, which cut PT's SSS continuations: each SSS
+			//! event nests its continuation cast at depth + 2).  Read it
+			//! through MaxRecursions(rc), never directly.
 			const unsigned int			nMaxRecursions;
 
-			const bool					bShowLuminaires;
+			//! DL-315: the effective depth cap for this cast.  A path
+			//! tracer's runtime path-vertex cap (`rc.pathTracingMaxDepth`,
+			//! installed by PathTracingPelRasterizer::SetMaxPathDepth) can
+			//! exceed the construction-time value, and the nested
+			//! PathTracingShaderOp integrator honours it, so the caster
+			//! honours it too.  A legacy rasterizer's context never carries
+			//! a variant config, so its authored cap stands.
+			unsigned int MaxRecursions( const RuntimeContext& rc ) const
+			{
+				return ( rc.hasPathTracingVariantConfig && rc.pathTracingMaxDepth > nMaxRecursions )
+					? rc.pathTracingMaxDepth : nMaxRecursions;
+			}
 
-			const bool					bChooseOnlyOneLuminaire;
+			const bool					bShowLuminaires;
 
 			Scalar						dPendingLightRRThreshold;
 			bool						bPendingUseLightBVH;
 
+			//! Last-set RIS candidate count, retained so a same-pointer
+			//! sampler rebuild (#2b(a)) re-applies it — without this, a
+			//! rebuild would silently reset RIS to the LightSampler default
+			//! (0).  -1 = "never set; leave the fresh sampler at its
+			//! default", matching the other pending settings' "untouched"
+			//! sentinels.  (No in-tree rasterizer calls SetRISCandidates
+			//! today, so this is forward-safety / parity, not a live fix.)
+			int							iPendingRISCandidates;
+
+			//! The Scene light/structure generation the cached samplers
+			//! (LuminaryManager / LightSampler / EnvironmentSampler) were
+			//! last built against (feature/gui-snapshot-prototype #2b(a)).
+			//! AttachScene compares this against the live Scene's
+			//! GetLightTopologyGeneration(): on a same-Scene-pointer
+			//! re-attach whose generation has ADVANCED (a restore or an
+			//! in-place light edit), it rebuilds the samplers and refreshes
+			//! this value, instead of taking the same-pointer fast path.
+			//! 0 is the "never built" sentinel only in concert with a null
+			//! pScene; once a scene is attached this tracks its generation.
+			unsigned int				builtLightGeneration;
+			bool					forceLightSamplerRebuild;
+
+			//! Rebuilds the cached LuminaryManager / LightSampler /
+			//! EnvironmentSampler from the currently-attached `pScene`.
+			//! Shared by the first-attach path and the same-pointer-
+			//! generation-advanced path so the two cannot drift.  Assumes
+			//! `pScene` is non-null and already set; increments the
+			//! process-wide sampler-rebuild diagnostic counter.
+			void RebuildLightSamplers();
+
+			//! When true, the unidirectional path tracer's DELTA-light NEE
+			//! shadow tests (omni / spot / directional) walk clear
+			//! dielectrics with Fresnel transmittance instead of the binary
+			//! CastShadowRay; area / env NEE stays binary (DL-344).  Default
+			//! false (binary occlusion).  Set by
+			//! Job::SetPathTracing{Pel,Spectral}Rasterizer from the scene's
+			//! `transparent_shadows` flag.
+			bool						bTransparentShadows;
+
+			//! DL-344: whether the `transparent_shadows` dielectric walk
+			//! applies to a given shadow ray.
+			//! applies to a given shadow ray: a DELTA light's, and not where
+			//! SMS was evaluated at the same point for that light.
+			bool DielectricShadowWalk( const bool bDeltaLight, const bool bSMSCoversLight ) const
+			{
+				return bTransparentShadows && bDeltaLight && !bSMSCoversLight;
+			}
+
+			//! DL-05: true when some material reachable by a ray hit
+			//! reports IMaterial::HasDeltaPassThrough() (a `transmission
+			//! thin` weave, or a wrapper forwarding one).  Recomputed on
+			//! EVERY AttachScene (a cheap object walk, CSG operands
+			//! included), so a same-pointer re-attach after an in-place
+			//! material edit is never stale.  Gates only the COST of the
+			//! pass-through shadow walk -- when false no shadow ray ever
+			//! pays for it, and when true the per-hit material query still
+			//! decides.
+			bool						bSceneHasDeltaPassThrough;
+
+			//! The shared hit-by-hit shadow walk behind
+			//! CastShadowRayTransmittance (@a bDielectrics: the
+			//! `transparent_shadows` Fresnel pass-through of a clear
+			//! dielectric) and DL-05's delta pass-through
+			//! (@a bDeltaPassThrough: ISPF::DeltaPassThroughTransmittance
+			//! at a material reporting HasDeltaPassThrough).  Any other
+			//! shadow-casting hit blocks; a hit on an object that does not
+			//! cast shadows is stepped over (the binary CastShadowRay
+			//! ignores it too).
+			//! @a pGradedTrack (DL-292, may be null): mirrors every boundary
+			//! crossing the walk makes onto the caller's graded-index stack
+			//! and Finish()es it at the segment end when the walk reaches
+			//! the light -- see GradedIndexMedium::ShadowSegmentTrack.
+			bool WalkShadowSegment(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bNM,
+				const Scalar nm,
+				RISEPel& transmittance,
+				const bool bDielectrics,
+				const bool bDeltaPassThrough,
+				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+				const Point3* pSegmentEnd,
+				ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
+				unsigned int* pPassThroughCrossings = 0,	///< [out] DL-330: when non-null, the number of delta pass-throughs the walk crossed (written on every return)
+				Scalar* pPassThroughProb = 0				///< [out] DL-424/425: when non-null, the product over crossed pass-throughs of the per-crossing MIS pseudo-probability (MaxValue of the crossing's transmittance in RGB, its NM value in spectral; 1 when none) -- BDPTVertex::passThroughProb's walk-side twin
+				) const;
+
+			//! Runtime override for the environment radiance scale,
+			//! backing `> modify rasterizer radiance_scale`.  Negative
+			//! (the construction default) means "no override — use the
+			//! radiance map's own scale" so existing scenes are
+			//! unaffected.  When >= 0, AttachScene builds the environment
+			//! importance sampler at this scale.  Job::SetActiveRasterizer-
+			//! RadianceScale also pushes the same value into the scene's
+			//! radiance map (IRadianceMap::SetScale) so the direct-view /
+			//! ray-miss background stays consistent with NEE.  Set before
+			//! a render (single-threaded); the next AttachScene applies it.
+			Scalar						dRadianceScaleOverride;
+
+			//! When true, every intersection record this caster produces
+			//! requests wireframe closest-edge info from triangle-mesh
+			//! intersectors (RayIntersectionGeometric::bWantsWireEdgeInfo).
+			//! Default false -- production renders never pay for the
+			//! feature.  Set only by the interactive wireframe view-mode
+			//! caster (InteractivePelRasterizer.cpp).
+			bool						bWantsWireEdgeInfo;
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! when true, CastRay/CastRayNM resolve the primary hit THROUGH
+			//! transmissive (glass-like) surfaces to the first OPAQUE hit --
+			//! a straight-line continuation of the ORIGINAL ray direction,
+			//! deliberately with NO refraction bending (an x-ray, not an
+			//! optics simulation).  Moved into the caster layer (was
+			//! previously shader-side, InteractivePelRasterizer-only) so
+			//! EVERY shader benefits -- including the studio material-
+			//! preview shader -- with no per-shader plumbing.  Default
+			//! false; production casters never set it (cost when off is
+			//! one bool test).  Set via SetXrayViewResolve.
+			bool						bXrayViewResolve;
+			mutable std::atomic<bool>	bFirePelDiagnosticEmitted;
+			mutable std::atomic<bool>	bCompetingMediumGuideAlphaNonzero;
+			mutable std::atomic<unsigned long long>	nCompetingMediumGuideSampleCount;
+			mutable std::atomic<bool>	bCompetingMediumReachPdfMismatch;
+			mutable std::atomic<bool>	bCompetingMediumZeroSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumIntermediateSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumUnitSurvivalObserved;
+			unsigned int				nMediumContinuationRRMinDepth;
+			Scalar					dMediumContinuationRRThreshold;
+
+			//! When true, CastRay / CastRayNM / CastRayHWSS treat the scene
+			//! as a VACUUM: the enclosing-object interior medium and the
+			//! scene's `global_medium` are both ignored, so a primary ray
+			//! travels in a straight line to the first surface and the
+			//! shader's returned colour reaches the film UNMODIFIED -- no
+			//! free-flight scatter event that terminates the ray short of
+			//! any surface, no transmittance multiply, no in-scattered
+			//! radiance added on top.
+			//!
+			//! This exists for the DIAGNOSTIC casters whose shaders emit
+			//! DATA rather than radiance: the objectmap identity shader
+			//! (whose per-pixel byte must equal the object's palette entry
+			//! exactly -- see CreateInteractiveObjectMapPipeline) and the
+			//! normals / depth / facets / wireframe view-mode shaders.  For
+			//! those, volumetric transport is not a physical effect to
+			//! honour but a corruption: it rescales a flat identity colour
+			//! per pixel, adds a Monte-Carlo in-scattering term (so the same
+			//! render is not even reproducible run to run), and swallows the
+			//! majority of primary rays before they ever reach a surface, so
+			//! most pixels never call Shade at all.  In a scene with a
+			//! `global_medium` that turns the whole identity contract into
+			//! noise.
+			//!
+			//! Deliberately NOT set on the BeautyVariant view modes
+			//! (deep_reflect / direct / indirect / clay_lights): those ARE
+			//! transport renders and must keep participating media.
+			//! Default false; production casters never set it (cost when off
+			//! is one bool test on a path that already reads the IOR stack).
+			bool						bBypassMediumTransport;
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
+			//! pending solo-target identity, retained across a same-
+			//! pointer LightSampler rebuild (RebuildLightSamplers destroys
+			//! and recreates pLightSampler, exactly like the RIS/BVH/RR
+			//! pending fields above) so a rebuild doesn't silently drop
+			//! it.  0 = none, 1 = explicit light, 2 = mesh luminary,
+			//! 3 = environment (review-p2d: the env is a light, and the
+			//! partition identity solo(A)+solo(B)==all is unstatable
+			//! without a way to name its half) --
+			//! kept as a raw int rather than pulling LightSampler::SoloKind
+			//! into this header (LightSampler is only forward-declared
+			//! here).  `pendingSoloLight` / `pendingSoloLuminary` carry the
+			//! identity for kinds 1 / 2 respectively.
+			int							iPendingSoloKind;
+			const ILightPriv*			pendingSoloLight;
+			const IObject*				pendingSoloLuminary;
+
 			virtual ~RayCaster();
 
+			//! Selects the shader used for a surface hit.  The default
+			//! honours the per-object shader and falls back to the
+			//! caster's default shader.  Interactive preview casters can
+			//! override this policy without mutating scene objects.
+			virtual const IShader& SelectShader( const RayIntersection& ri ) const;
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! the caster-layer x-ray resolver.  Bounded to 16 skips so a
+			//! stack of nested transmissive shells can't loop forever.  A
+			//! miss partway through the chain KEEPS the last transmissive
+			//! hit rather than reporting a miss -- shading something
+			//! honest beats a black hole.  When at least one skip
+			//! happened, restores the ORIGINAL primary ray onto
+			//! `ri.geometric.ray` and recomputes `ri.geometric.range` as
+			//! the TOTAL distance from the original ray's origin to the
+			//! resolved hit point -- NOT the resolved hit's own (last-
+			//! segment) range -- so depth and every other range-reading
+			//! consumer is correct with zero shader-side knowledge of
+			//! x-ray.  Deliberately does NOT apply `ri.pModifier` --
+			//! CastRay/CastRayNM's existing modifier site runs
+			//! immediately after this returns and covers whatever `ri`
+			//! ends up being.
+			void ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) const;
+
+			//! Internal same-segment continuations used only when traversing an
+			//! exact NullBoundaryMaterial.  skipEntryGates prevents a boundary
+			//! crossing from becoming a second depth/roulette event.
+			bool CastRayImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, RISEPel& c, const RAY_STATE& rs,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				RISEPel* sameSegmentMediumSource = 0 ) const;
+			bool CastRayNMImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				Scalar* sameSegmentMediumSource = 0 ) const;
+			bool CastRayHWSSImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar c[SampledWavelengths::N],
+				const RAY_STATE& rs, SampledWavelengths& swl,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+
 		public:
+			//! DL-315: how many nested casts, process-wide, the stack guard
+			//! refused because the calling thread had less than the margin
+			//! of stack left (see RayCaster.cpp's CastStackExhausted).  Zero
+			//! in any render whose threads are sized for the recursion.
+			static unsigned long long StackGuardRefusals();
+
 			RayCaster(
 				const bool seeRadianceMap,
 				const unsigned int maxR,
 				const IShader& pDefaultShader_,
-				const bool showLuminaires,
-				const bool chooseonlyoneluminaire
+				const bool showLuminaires
 				);
 
 			void AttachScene( const IScene* pScene_ );
+			void InvalidateLightSamplers()
+				{ forceLightSamplerRebuild = true; }
+
+			bool CompetingMediumGuideAlphaNonzero() const {
+				return bCompetingMediumGuideAlphaNonzero.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumGuideSampleCount() const {
+				return nCompetingMediumGuideSampleCount.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumReachPdfMismatch() const {
+				return bCompetingMediumReachPdfMismatch.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumZeroSurvivalObserved() const {
+				return bCompetingMediumZeroSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumIntermediateSurvivalObserved() const {
+				return bCompetingMediumIntermediateSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumUnitSurvivalObserved() const {
+				return bCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			void SetMediumContinuationRoulettePolicy(
+				const unsigned int minDepth, const Scalar threshold ) {
+				nMediumContinuationRRMinDepth = minDepth;
+				dMediumContinuationRRThreshold = threshold;
+			}
 
 			//! Tells the ray caster to cast the specified ray into the scene
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
@@ -98,7 +385,7 @@ namespace RISE
 				const RAY_STATE& rs,								///< [in] The ray state
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
@@ -112,7 +399,7 @@ namespace RISE
 				const Scalar nm,									///< [in] Wavelength to cast
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Casts a ray for a bundle of HWSS wavelengths with shared
@@ -129,16 +416,140 @@ namespace RISE
 				SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! This function casts a ray into the scene and only checks to see if it intersects something.
 			//! Very useful for shadow checks
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-			bool CastShadowRay( 
+			bool CastShadowRay(
 				const Ray& ray,										///< [in] Ray to cast
 				const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 				) const;
+
+			//! See IRayCaster::CastOcclusionRay's contract comment: geometry-
+			//! presence any-hit, independent of `casts_shadows`.  For AO-style
+			//! estimators, not NEE.
+			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
+			bool CastOcclusionRay(
+				const Ray& ray,										///< [in] Ray to cast
+				const Scalar dHowFar								///< [in] How far to follow the ray, optimization
+				) const;
+
+			//! TRANSPARENT (Fresnel-attenuated) shadow ray.  Walks the
+			//! shadow segment hit-by-hit (closest-hit IntersectRay); at
+			//! each interface that is a PERFECT-SPECULAR TRANSMISSIVE
+			//! DIELECTRIC (queried via IMaterial::GetSpecularInfo{,NM}:
+			//! valid && isSpecular && canRefract && clearTransmission) the ray
+			//! passes STRAIGHT
+			//! through (no refractive bend) and the running transmittance
+			//! is multiplied by the per-interface Fresnel transmittance
+			//! T = 1 - F(cosTheta, eta).  Any OTHER shadow-casting hit
+			//! (opaque, diffuse, rough, pure mirror) fully blocks (returns
+			//! true, transmittance left at 0); a hit on an object that does
+			//! not cast shadows is stepped over, as the binary CastShadowRay
+			//! ignores it (DL-05; before DL-05 this walk blocked on it).
+			//!
+			//! APPROXIMATION (documented at the implementation): straight-
+			//! through propagation ignores refractive ray bending and
+			//! internal multi-bounce; the per-interface eta is a single
+			//! representative value (see the .cpp for the pel-vs-NM eta
+			//! source).  Used ONLY by the unidirectional PT integrator when
+			//! `transparent_shadows` is enabled; BDPT / VCM / MLT keep the
+			//! binary CastShadowRay.
+			//!
+			//! Caps at 32 interface crossings, then conservatively returns
+			//! blocked (true).
+			//!
+			//! \return TRUE if the light is FULLY occluded (an opaque hit
+			//!         or the crossing cap was reached); FALSE if the ray
+			//!         reached dHowFar, with @a transmittance carrying the
+			//!         accumulated Fresnel transmittance (1.0 when the
+			//!         segment was clear of any geometry).
+            bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
+            bool CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+                Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
+                GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: as CastShadowRayAuto's
+                const Point3* pSegmentEnd = 0,							///< [in] DL-292: as CastShadowRayAuto's
+                bool smsCoversLight = false,							///< [in] DL-344: as CastShadowRayAuto's bSMSCoversLight
+                unsigned int* pPassThroughCrossings = 0,		///< [out] DL-330: delta pass-throughs crossed (0 when the walk did not run)
+                Scalar* pPassThroughProb = 0) const;			///< [out] DL-424/425: see WalkShadowSegment
+
+			bool CastShadowRayTransmittance(
+				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
+				const Scalar dHowFar,								///< [in] How far to follow the ray (distance to the light minus epsilon)
+				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
+				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
+				RISEPel& transmittance								///< [out] Accumulated per-interface Fresnel transmittance product (RGB; all 3 channels equal on the NM path)
+				) const;
+
+			//! Flag-aware NEE shadow occlusion — the SINGLE entry point that
+			//! routes to the Fresnel-transmittance walk when
+			//! `transparent_shadows` is enabled AND @a bDeltaLight is true,
+			//! else the binary CastShadowRay.  DL-344: the dielectric
+			//! see-through obeys DL-05's rule below for the same reason --
+			//! PT's continuation already reaches an area / env light through
+			//! a clear dielectric at MIS weight 1, so a see-through area/env
+			//! shadow ray counts the path twice; for a delta light this ray
+			//! is the only estimator (an approximation through a refracting
+			//! interface: straight, Fresnel only, no focusing).
+			//!
+			//! DL-05: when @a bDeltaLight is true -- the caller is a DELTA
+			//! light's shadow test (omni, spot, directional; the LightSampler
+			//! delta arm, the Step-1 zero-exitance lights, BDPT's
+			//! zero-exitance sweep) -- a hit on a material with a non-bending
+			//! delta pass-through (a thin weave's gap) attenuates by
+			//! ISPF::DeltaPassThroughTransmittance and the walk continues.
+			//! Delta lights only, because no BSDF-sampled continuation can
+			//! ever hit a delta light: this shadow ray is the path's ONLY
+			//! estimator, so seeing through the gap adds a missing path
+			//! without competing with anything.  An area/env light's NEE
+			//! keeps a binary shadow here: PT's continuation already reaches
+			//! it through the gap at MIS weight 1.  Also suppressed while the
+			//! scene carries a radiance-carrying photon map (caustic / global
+			//! / translucent), whose legacy gather ops already estimate the
+			//! light-through-a-delta-lobe path.
+			//! See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
+			//! Every NEE shadow site uses this so the flag is honored
+			//! UNIFORMLY.  Two families of caller:
+			//!   * LightSampler's delta / mesh-luminary NEE branches (the PT
+			//!     path for omni / spot / area lights), via ShadowOccluded.
+			//!   * Every concrete light's ILight::ComputeDirectLighting
+			//!     (Directional, Point, Spot) — the path the Step-1 zero-
+			//!     exitance lights and any direct
+			//!     ILightManager::ComputeDirectLighting caller take.  (Ambient
+			//!     casts no shadow ray.)
+			//! Geometry-agnostic — it forwards to the same CastShadowRay /
+			//! CastShadowRayTransmittance the analytic primitives and SDFs
+			//! both flow through.
+			//!
+			//! \return TRUE if the light is FULLY occluded; FALSE if it is
+			//!         reachable, with @a transmittance carrying the
+			//!         accumulated per-interface Fresnel transmittance
+			//!         (1,1,1 when the segment was clear, or when the flag is
+			//!         off / binary).
+			bool CastShadowRayAuto(
+				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
+				const Scalar dHowFar,								///< [in] How far to follow the ray
+				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
+				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
+				RISEPel& transmittance,								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
+				const bool bDeltaLight,								///< [in] DL-05: the caller is a delta light's shadow test (see above)
+				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: when a hit-by-hit walk runs, it records the graded-index factor of the segment on this track (null: not tracked)
+				const Point3* pSegmentEnd = 0,						///< [in] DL-292: the light point the track is Finish()ed at (required with a track)
+				const bool bSMSCoversLight = false					///< [in] DL-344: SMS was EVALUATED at this shading point and samples this light (only PT's PART-2 surface NEE with a manifold solver, via LightSampler's delta arm); the dielectric walk is then off for this ray
+				) const;
+
+			//! DL-05 read-back (tests): whether the last AttachScene found a
+			//! material with a delta pass-through.
+			bool SceneHasDeltaPassThrough() const { return bSceneHasDeltaPassThrough; }
+
+			//! DL-330: whether a delta light's shadow walk sees through delta
+			//! pass-throughs in this scene -- the scene has one AND carries no
+			//! radiance photon map (CastShadowRayAuto's suppression).  The ONE
+			//! definition CastShadowRayAutoSampled and BDPT's see-through
+			//! connection / jump partition all read.
+			bool DeltaPassThroughShadowsActive() const;
 
 			//! To retreive the current scene
 			/// \return Pointer to currently attached scene, NULL if no scene is currently attached
@@ -155,6 +566,23 @@ namespace RISE
 			/// \return The unified light sampler for the current scene
 			const LightSampler* GetLightSampler() const { return pLightSampler; };
 
+			//! DL-463: per-frame / motion-sweep refresh of the light sampler's
+			//! tables, in place (see IRayCaster).
+			void AccumulateLightMotionSample();
+			void RefreshLightSamplers();
+
+			/// Diagnostic: process-wide count of LightSampler rebuilds
+			/// performed inside AttachScene (the first build on a fresh
+			/// scene-pointer attach PLUS any same-pointer rebuild driven by
+			/// an advanced Scene light-generation).  Proves the #2b(a)
+			/// generation gate: a no-change re-attach leaves it unchanged
+			/// (fast path); a restore / in-place light edit followed by a
+			/// re-attach bumps it by exactly one.  Same static-counter
+			/// pattern as Scene::GetPhotonShootCount.  Single-threaded —
+			/// AttachScene runs at the pre-parallel scene-setup seam.
+			static unsigned int GetSamplerRebuildCount();
+			static void         ResetSamplerRebuildCount();
+
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  Must be called after AttachScene().
 			void SetRISCandidates( const unsigned int M );
@@ -165,6 +593,117 @@ namespace RISE
 
 			/// Enables or disables the light BVH.
 			void SetUseLightBVH( const bool enable );
+
+			/// Enables or disables transparent (Fresnel-attenuated) shadow
+			/// rays for NEE.  When enabled, the unidirectional path
+			/// tracer's DELTA-light shadow tests (DL-344: omni / spot /
+			/// directional only) route through the Fresnel-transmittance
+			/// walk.  Default disabled (binary).
+			void SetTransparentShadows( const bool enable ) { bTransparentShadows = enable; }
+
+			/// \return Whether transparent shadow rays are enabled.  Read
+			/// by LightSampler's NEE evaluators (via a dynamic_cast to the
+			/// concrete RayCaster) to decide between the binary and
+			/// Fresnel-attenuated shadow test.
+			bool GetTransparentShadows() const { return bTransparentShadows; }
+
+			/// Overrides the environment radiance scale (backs `> modify
+			/// rasterizer radiance_scale`).  A negative value clears the
+			/// override (revert to the radiance map's own scale).  Takes
+			/// effect on the NEXT AttachScene, which rebuilds the
+			/// environment importance sampler.  Set before a render.
+			void SetRadianceScale( const Scalar scale ) { dRadianceScaleOverride = scale; }
+
+			/// \return The current radiance-scale override, or a negative
+			/// value when no override is set.
+			Scalar GetRadianceScale() const { return dRadianceScaleOverride; }
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"):
+			//! enables/disables the caster-layer x-ray resolver (see
+			//! `ResolveXrayView_`).  Off by default; production casters
+			//! never call this.
+			void SetXrayViewResolve( const bool enable ) { bXrayViewResolve = enable; }
+
+			/// \return Whether the caster-layer x-ray resolver is enabled.
+			bool GetXrayViewResolve() const { return bXrayViewResolve; }
+
+			//! Enables/disables vacuum traversal for a diagnostic caster --
+			//! see `bBypassMediumTransport` for the full contract.  Off by
+			//! default; production casters never call this.
+			void SetBypassMediumTransport( const bool enable ) { bBypassMediumTransport = enable; }
+
+			/// \return Whether this caster ignores participating media.
+			bool GetBypassMediumTransport() const { return bBypassMediumTransport; }
+
+			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
+			//! resolves `name` against the attached scene's ILightManager
+			//! (explicit lights, by name) then its IObjectManager (mesh
+			//! luminaries -- any named object whose material has a non-
+			//! null GetEmitter(), by name) and designates the match as the
+			//! sole active light -- see LightSampler::SetSoloLight/
+			//! SetSoloLuminary for the exact NEE/emission semantics.  An
+			//! empty `name` clears any active solo (equivalent to
+			//! ClearSolo()).  Retained across a same-pointer LightSampler
+			//! rebuild, forwarded live when a LightSampler already exists
+			//! -- same "set before a render, single-threaded" discipline as
+			//! SetRISCandidates.  Must be called after AttachScene() to
+			//! resolve against a real scene (a null-scene call always
+			//! fails, honestly, rather than silently deferring resolution).
+			//! \return True if `name` resolved (or was empty); false with
+			//! `pAvailableNames` populated (a ", "-joined, quoted list of
+			//! every light + emissive-object name in the scene) when it
+			//! did not.
+			bool SetSoloLightByName(
+				const char* name,								///< [in] Light/luminary name, or "" to clear
+				std::string* pAvailableNames = 0					///< [out] Populated with the resolvable-name list on failure
+				);
+
+			/// Clears any active solo target -- every light contributes
+			/// normally again.  Equivalent to SetSoloLightByName("", ...).
+			void ClearSoloLight();
+
+			/// \return True when a solo target is currently pending/active
+			/// on this caster (mirrors LightSampler::IsSoloActive without
+			/// requiring a live pLightSampler -- true immediately after
+			/// SetSoloLightByName succeeds, even before the next
+			/// AttachScene/RebuildLightSamplers).
+			bool IsSoloLightActive() const { return iPendingSoloKind != 0; }
+
+			//! Opaque snapshot of this caster's light-solo state, for
+			//! RAII capture/restore by callers that temporarily solo a
+			//! LONG-LIVED caster (see AgentSession's LightSoloRestoreGuard).
+			//! review-p2d P3-5: that guard used to unconditionally CLEAR on
+			//! scope exit, resting on a comment-enforced invariant that
+			//! agent light-solo was the only writer of solo state on a
+			//! production caster.  Capturing the real prior state removes
+			//! the invariant instead of documenting it, so a solo set by
+			//! any other path (a future GUI solo toggle) survives an agent
+			//! render rather than being silently dropped.
+			struct SoloStateSnapshot
+			{
+				int					kind;
+				const ILightPriv*	light;
+				const IObject*		luminary;
+				SoloStateSnapshot() : kind( 0 ), light( 0 ), luminary( 0 ) {}
+			};
+
+			SoloStateSnapshot CaptureSoloState() const
+			{
+				SoloStateSnapshot snap;
+				snap.kind     = iPendingSoloKind;
+				snap.light    = pendingSoloLight;
+				snap.luminary = pendingSoloLuminary;
+				return snap;
+			}
+
+			//! Restores a snapshot taken by CaptureSoloState, re-applying
+			//! it to the live LightSampler when there is one.
+			void RestoreSoloState( const SoloStateSnapshot& snap );
+
+			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
+			/// (No `override` — RayCaster matches the file's existing
+			///  style; see CLAUDE.md's note on -Winconsistent-missing-override.)
+			bool IsRadianceMapVisibleAsBackground() const { return bConsiderRMapAsBackground; }
 
 		};
 	}

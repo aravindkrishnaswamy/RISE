@@ -1,22 +1,153 @@
 /rendered
+/worktrees
 /bin
+/dbin
+/dist
 .DS_Store
 *.o
+*.obj
+*.d
 /.vscode
 RISELog.txt
 build_log.txt
 Config.specific
+RendererBuildIdentity.generated.h
+RendererBuildIdentity.generated.h.tmp.*
 Xcuserdata/
 RISE_Log.txt
 *.mov
 .claude/
+.agents/
+# Build artifacts under extlib/ (vendored sources & submodules
+# stay tracked; only build outputs and generated installs are
+# ignored).  Pattern is per-package because each extlib has its
+# own build idiom — see extlib/README.TXT.
+extlib/oidn/source/build/
+extlib/oidn/install/
+
+# Per-extlib Debug/ folders + standalone .vcxproj files that VS
+# regenerates when these vendored libraries are opened on their
+# own.  RISE no longer builds them this way (Library.vcxproj
+# consumes vcpkg packages instead — see the "Old extlib project
+# references removed" comment in Library.vcxproj.filters), so
+# these are noise.
+extlib/*/Debug/
+extlib/*/*.vcxproj
+extlib/*/*.vcxproj.filters
+
+# Visual studio on Windows
+/build/VS2005
+/build/VS2022/Library/Debug
+/build/VS2022/RISE/Debug
+/build/VS2022/RISE-GUI/x64
+/build/VS2022/vcpkg_installed
+/build/VS2022/x64
+/build/VS2022/RISE-CLI/x64
+.vs/
+*.idb
+*.pdb
+*.user
+*.lib
+*.exe
+*.tlog
+*.log
+
+# Internal scenes not meant for public consumption
 /scenes/Internal
 /models/risemesh/internal
-*.md
-!AGENTS.md
-!CLAUDE.md
-!README.md
-!docs/*.md
-!src/**/README.md
-!scenes/**/README.md
-!tests/README.md
+
+# Python bytecode caches (tools/migrate_scenes_v5_to_v7.py etc.)
+__pycache__/
+*.pyc
+
+# Legacy glTF importer used to extract embedded image data into a
+# sibling .gltf_cache/ subdir.  Phase 3 retired the disk round-trip
+# (now handled in-memory via Job::AddInMemoryPNG/JPEGTexturePainter).
+# Keep the ignore as cheap insurance against stale caches in
+# pre-Phase-3 worktrees.
+**/.gltf_cache/
+
+# Simulation M4: scene simulation caches (`cache` defaults to caches/<name> beside
+# the scene file).  Bulk outputs stay outside git.
+scenes/**/caches/
+
+# CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out,
+# rise-android/_out_jni for the cross-compiled JNI .so).
+/build/cmake/*/_out*
+/build/cmake/*/build
+!build/cmake/**/*.md
+
+# ---- Android / Gradle / Android Studio ----
+# Gradle daemon + per-project caches (both root-level and per-module)
+/android/.gradle
+/android/app/.gradle
+
+# Android Studio / IntelliJ workspace. Entirely user-specific (device
+# selector, deployment targets, window layout, caches). If a team ever wants
+# to share code style or run configurations, whitelist .idea/codeStyles/ and
+# .idea/runConfigurations/ explicitly.
+/android/.idea
+/android/app/.idea
+/android/.kotlin
+/.idea
+
+# local.properties contains sdk.dir which is a per-machine absolute path;
+# the file itself says "MUST NOT be checked into Version Control Systems".
+/android/local.properties
+/android/app/local.properties
+
+# Everything under the NDK CMake build staging. One subdir per ABI x variant;
+# contents are regenerated on every sync. Do not narrow to just /Debug/ —
+# Release/RelWithDebInfo builds write siblings.
+/android/app/.cxx
+
+# Full AGP build output. Covers generated sources, intermediates, kotlin,
+# APK outputs, tmp, reports, test-results and anything AGP adds in future.
+/android/app/build
+
+/build/XCode/rise/build
+/build/VS2022/Library/Release
+/build/VS2022/Tests/x64
+/build/bin
+/build/VS2022/Library/vcpkg_installed
+/build/VS2022/Tools/x64
+/var_test
+
+# Integrator-refactor pre/post verification baselines: transient PNG
+# reference images captured per-session by
+# scripts/capture_refactor_baselines.sh for the zero-behaviour-change
+# diff. Regenerated each session, never committed (the Phase 2a
+# precedent left them untracked too).
+tests/baselines_refactor/
+
+# Eval-harness (E1) chat trajectories: per-session JSONL logs the GUI
+# writes to evals/runs/gui/ (and future headless runs under evals/runs/).
+# They capture live scene content and are regenerated per session --
+# never committed (mirrors the baselines_refactor regenerate-per-session
+# precedent above).
+evals/runs/
+
+# Retired-baker reference outputs (the scene is fully procedural since 2026-06;
+# the Python bakers remain as golden references -- their outputs stay untracked)
+/scenes/FeatureBased/GuillocheWatch/dial*.raw2
+/scenes/FeatureBased/GuillocheWatch/strap*.raw2
+/scenes/FeatureBased/GuillocheWatch/oxide_*.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_height.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_normal.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_angle.png
+/scenes/FeatureBased/GuillocheWatch/oxide_thickness.png
+/scenes/FeatureBased/GuillocheWatch/*_preview.png
+/rendered/temper_*.png
+
+# Local API-key secrets for the agent-eval hosted shootout (never commit real keys)
+.env
+*.secrets.env
+evals/.secrets.env
+
+# Per-user node-graph canvas layout sidecars (GUI-authored positions; a
+# curated layout can still be force-added deliberately)
+*.risegraph.json
+
+# agent test suites write transient preview frames into the repo root (AgentProposeRender/AgentViewModeRender); never commit them
+fro_temp_*.png
+extlib/oidn/source

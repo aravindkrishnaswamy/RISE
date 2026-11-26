@@ -17,6 +17,7 @@
 
 #include <vector>
 #include "Utilities/Math3D/Math3D.h"
+#include "Utilities/Color/Color.h"
 
 namespace RISE
 {
@@ -66,7 +67,11 @@ namespace RISE
 		unsigned int	iCoords[N];
 
 	public:
-		IndexedPolygon_Template( )
+		// Indices start at zero: a caller that leaves a set unassigned (e.g. no
+		// normals) must not hand garbage to the mesh, which turns indices into
+		// pointers (TriangleMeshGeometryIndexed::MakePointerTriangle validates
+		// them in every build).
+		IndexedPolygon_Template( ) : iVertices(), iNormals(), iCoords()
 		{
 		};
 
@@ -96,14 +101,12 @@ namespace RISE
 	public:
 		PointerPolygon_Template( )
 		{
-	#ifdef _DEBUG
 			for( int i=0; i<N; i++ )
 			{
 				pVertices[i] = 0;
 				pNormals[i] = 0;
 				pCoords[i] = 0;
 			}
-	#endif
 		};
 
 		virtual ~PointerPolygon_Template( )
@@ -151,10 +154,30 @@ namespace RISE
 	typedef Point3							Vertex;
 	typedef Vector3							Normal;
 	typedef Point2							TexCoord;
+	//! Per-vertex color stored in the engine's working color space
+	//! (linear ROMM RGB; see RISEPel in Utilities/Color/Color.h).
+	//! Loaders are responsible for converting from the source color
+	//! space (typically sRGB for PLY/Blender exports) at load time.
+	typedef RISEPel							VertexColor;
+
+	//! Per-vertex tangent stored as object-space direction (xyz) +
+	//! bitangent sign (w = +1 or -1).  This is the glTF TANGENT
+	//! convention: bitangent = bitangentSign * cross(normal, dir).
+	//! Storing the sign rather than the bitangent itself lets a
+	//! single mesh handle mirrored UVs without duplicating vertices,
+	//! and matches how every modern exporter (Blender, glTF, FBX)
+	//! emits tangent data.
+	struct Tangent4
+	{
+		Vector3	dir;
+		Scalar	bitangentSign;
+	};
 
 	typedef std::vector<Vertex>				VerticesListType;
 	typedef std::vector<Normal>				NormalsListType;
 	typedef std::vector<TexCoord>			TexCoordsListType;
+	typedef std::vector<VertexColor>		VertexColorsListType;
+	typedef std::vector<Tangent4>			Tangent4ListType;
 
 	typedef std::vector<BezierPatch>		BezierPatchesListType;
 }

@@ -11,12 +11,15 @@
 //    6. Material pointwise: GGXSPF.Scatter().pdf == GGXSPF.Pdf()
 //
 //  Build (from project root):
-//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include \
-//        -O3 -ffast-math -funroll-loops -Wall -pedantic \
-//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53 \
-//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING \
+//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include
+//        -O3 -ffast-math -fno-finite-math-only -funroll-loops -Wall -pedantic
+//        (-fno-finite-math-only is REQUIRED to match production since
+//         2026-07-29; without it std::isfinite/isnan fold to constants
+//         and NaN-sentinel assertions silently pass -- see CLAUDE.md.)
+//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53
+//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING
 //        -c tests/GGXWhiteFurnaceTest.cpp -o tests/GGXWhiteFurnaceTest.o
-//    c++ -arch arm64 -o tests/ggx_furnace_test tests/GGXWhiteFurnaceTest.o \
+//    c++ -arch arm64 -o tests/ggx_furnace_test tests/GGXWhiteFurnaceTest.o
 //        bin/librise.a -L/opt/homebrew/lib -lpng -lz
 //
 //  Author: Aravind Krishnaswamy
@@ -38,6 +41,8 @@
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 
@@ -469,19 +474,23 @@ static bool TestMaterialPointwiseConsistency(
 	Scalar alphaXval,
 	Scalar alphaYval,
 	Scalar incomingTheta,
-	int numSamples
+	int numSamples,
+	FresnelMode fresnelMode = eFresnelConductor
 	)
 {
-	// Create painters
+	// Create painters.  In schlick_f0 mode `specular` is interpreted as F0
+	// directly; we use 0.5 to give a clear specular contribution that's
+	// neither pure-dielectric (0.04) nor pure-metal (~baseColor).
+	const Scalar specVal = (fresnelMode == eFresnelSchlickF0) ? 0.5 : 0.8;
 	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  diffuse->addref();
-	UniformColorPainter* specular = new UniformColorPainter( RISEPel(0.8, 0.8, 0.8) );  specular->addref();
-	UniformColorPainter* pAlphaX = new UniformColorPainter( RISEPel(alphaXval, alphaXval, alphaXval) );  pAlphaX->addref();
-	UniformColorPainter* pAlphaY = new UniformColorPainter( RISEPel(alphaYval, alphaYval, alphaYval) );  pAlphaY->addref();
-	UniformColorPainter* ior = new UniformColorPainter( RISEPel(2.5, 2.5, 2.5) );  ior->addref();
-	UniformColorPainter* ext = new UniformColorPainter( RISEPel(3.0, 3.0, 3.0) );  ext->addref();
+	UniformColorPainter* specular = new UniformColorPainter( RISEPel(specVal, specVal, specVal) );  specular->addref();
+	UniformScalarPainter* pAlphaX = new UniformScalarPainter( alphaXval );  pAlphaX->addref();
+	UniformScalarPainter* pAlphaY = new UniformScalarPainter( alphaYval );  pAlphaY->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter(2.5);  ior->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter(3.0);  ext->addref();
 
-	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext );  brdf->addref();
-	GGXSPF*  spf = new GGXSPF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext );   spf->addref();
+	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );  brdf->addref();
+	GGXSPF*  spf = new GGXSPF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );   spf->addref();
 
 	RayIntersectionGeometric ri = MakeRI( incomingTheta );
 
@@ -549,7 +558,8 @@ static bool TestMaterialPointwiseConsistency(
 	const double spfAlbedo = (furnaceSamples > 0) ? spfAccum / furnaceSamples : 0;
 	const double brdfAlbedo = (furnaceSamples > 0) ? brdfAccum / furnaceSamples : 0;
 
-	std::cout << "  Material test (ax=" << alphaXval << ", ay=" << alphaYval
+	const char* modeLabel = (fresnelMode == eFresnelSchlickF0) ? "schlick" : "cond";
+	std::cout << "  Material test [" << modeLabel << "] (ax=" << alphaXval << ", ay=" << alphaYval
 	          << ", theta=" << std::fixed << std::setprecision(1) << (incomingTheta * 180.0 / PI)
 	          << "): valid=" << validSamples
 	          << " pdfFail=" << pdfFailures
@@ -587,6 +597,141 @@ static bool TestMaterialPointwiseConsistency(
 		std::cout << "  OK" << std::endl;
 	}
 	return passed;
+}
+
+// ============================================================
+//  Test 8: Dispersive thin-film conductor interface range (DL-37)
+//  A passive dispersive spectrum can yield an out-of-gamut RGB
+//  preview component > 1; GGXInterfaceFresnel::Directional must
+//  project to [0,1] before complements so (1-A_i)(1-A_o) stays
+//  non-negative and Mean() integrates the projected directional
+//  function consistently.
+// ============================================================
+
+namespace
+{
+	class NotchedIOR : public UniformScalarPainter
+	{
+	public:
+		NotchedIOR() : UniformScalarPainter( 2.0 ) {}
+		Scalar GetValueAtNM( const RayIntersectionGeometric&, Scalar nm ) const override
+		{
+			return ( nm >= 505.0 && nm <= 530.0 ) ? Scalar( 1.0 ) : Scalar( 2.0 );
+		}
+	};
+
+	class DiffuseDraw : public ISampler
+	{
+		unsigned int count = 0;
+	public:
+		Scalar Get1D() override { return count++ == 0 ? Scalar( 0.0 ) : Scalar( 0.5 ); }
+		Point2 Get2D() override { const Scalar u = Get1D(); const Scalar v = Get1D(); return Point2( u, v ); }
+		void StartStream( int ) override {}
+	};
+}
+
+static bool TestThinFilmDispersiveRange()
+{
+	auto* white = new UniformColorPainter( RISEPel( 1.0 ) );
+	auto* black = new UniformColorPainter( RISEPel( 0.0 ) );
+	auto* alpha = new UniformScalarPainter( 0.16 );
+	auto* eta   = new NotchedIOR();
+	auto* zero  = new UniformScalarPainter( 0.0 );
+	auto* film  = new UniformScalarPainter( 1.5 );
+	auto* spf   = new GGXSPF( *white, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+	auto* bare  = new GGXBRDF( *black, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+	auto* mixed = new GGXBRDF( *white, *white, *alpha, *alpha, *eta, *zero, eFresnelThinFilmConductor, nullptr, film, zero, zero );
+
+	const Scalar mu = 0.001;
+	Ray ray( Point3( 0, 0, 1 ), Vector3( std::sqrt( 1.0 - mu * mu ), 0, -mu ) );
+	RasterizerState state = { 0, 0 };
+	RayIntersectionGeometric ri( ray, state );
+	ri.bHit = true;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = ri.vNormal;
+	ri.ambientIOR = 1.0;
+
+	bool good = true;
+	const GGXInterfaceFresnel iface { ri, eFresnelThinFilmConductor, *white, *eta, *zero, film, zero, zero };
+	const RISEPel grazingA = iface.Directional( mu );
+	const RISEPel ifaceMean = iface.Mean();
+	const RISEPel transGrazing = GGXInterfaceFresnel::Transmission( grazingA, ifaceMean );
+	for( int c = 0; c < 3; ++c ) {
+		if( !std::isfinite( grazingA[c] ) || grazingA[c] < 0.0 || grazingA[c] > 1.0 ) good = false;
+		if( !std::isfinite( ifaceMean[c] ) || ifaceMean[c] < 0.0 || ifaceMean[c] > 1.0 ) good = false;
+		if( !std::isfinite( transGrazing[c] ) || transGrazing[c] < 0.0 || transGrazing[c] > 1.0 ) good = false;
+	}
+
+	DiffuseDraw sampler;
+	ScatteredRayContainer rays;
+	IORStack stack = MakeTestIORStack( g_stubObject );
+	spf->Scatter( ri, sampler, rays, stack );
+	if( rays.Count() != 1 ) good = false;
+	for( unsigned int i = 0; i < rays.Count(); ++i ) {
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( rays[i].kray[c] ) || rays[i].kray[c] < 0.0 ) good = false;
+		}
+	}
+
+	RISEPel integrated( 0.0 );
+	const int quadrature = 2048;
+	for( int i = 0; i < quadrature; ++i ) {
+		const Scalar cosine = ( i + 0.5 ) / quadrature;
+		const RISEPel value = iface.Directional( cosine );
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( value[c] ) || value[c] < 0.0 || value[c] > 1.0 ) good = false;
+		}
+		integrated = integrated + value * ( 2.0 * cosine / quadrature );
+	}
+
+	RISEPel bareMean( 0.0 ), mixedMean( 0.0 );
+	if( !bare->hemisphericalAlbedo( ri, bareMean ) || !mixed->hemisphericalAlbedo( ri, mixedMean ) ) good = false;
+	Scalar maxMeanErr = 0.0;
+	Scalar maxGuideErr = 0.0;
+	for( int c = 0; c < 3; ++c ) {
+		const Scalar meanErr = std::fabs( ifaceMean[c] - integrated[c] );
+		if( !std::isfinite( meanErr ) || meanErr > 2e-4 ) good = false;
+		maxMeanErr = r_max( maxMeanErr, meanErr );
+
+		const Scalar reference = ( 1.0 - integrated[c] ) * ( 1.0 - integrated[c] );
+		const Scalar guideErr = std::fabs( ( mixedMean[c] - bareMean[c] ) - reference );
+		if( !std::isfinite( guideErr ) || guideErr > 2e-4 ) good = false;
+		maxGuideErr = r_max( maxGuideErr, guideErr );
+	}
+
+	if( rays.Count() == 1 ) {
+		const Vector3 light = rays[0].ray.Dir();
+		const RISEPel diffuse = mixed->value( light, ri ) - bare->value( light, ri );
+		for( int c = 0; c < 3; ++c ) {
+			if( !std::isfinite( diffuse[c] ) || diffuse[c] < -1e-12 ) good = false;
+		}
+		const Scalar testNMs[3] = { 450.0, 517.5, 650.0 };
+		for( int k = 0; k < 3; ++k ) {
+			DiffuseDraw nmSampler;
+			ScatteredRayContainer nmRays;
+			spf->ScatterNM( ri, nmSampler, testNMs[k], nmRays, stack );
+			if( nmRays.Count() != 1 ) good = false;
+			for( unsigned int i = 0; i < nmRays.Count(); ++i ) {
+				if( !std::isfinite( nmRays[i].krayNM ) || nmRays[i].krayNM < 0.0 ) good = false;
+			}
+		}
+	}
+
+	std::cout << "  Thin-film dispersive range: maxMeanErr=" << std::setprecision(6) << maxMeanErr
+	          << " maxGuideErr=" << maxGuideErr << ( good ? "  OK" : "  FAIL" ) << std::endl;
+
+	mixed->release();
+	bare->release();
+	spf->release();
+	film->release();
+	zero->release();
+	eta->release();
+	alpha->release();
+	black->release();
+	white->release();
+	return good;
 }
 
 // ============================================================
@@ -658,22 +803,52 @@ int main()
 		}
 	}
 
-	// Test 6: Material-level pointwise consistency (exercises GGXBRDF + GGXSPF)
-	std::cout << std::endl << "--- Test 6: Material BRDF/SPF Pointwise Consistency ---" << std::endl;
+	// Test 6: Material-level pointwise consistency (exercises GGXBRDF + GGXSPF
+	// in eFresnelConductor mode — preserves the existing regression coverage)
+	std::cout << std::endl << "--- Test 6: Material BRDF/SPF Pointwise Consistency [conductor] ---" << std::endl;
 	{
 		// Initialize the global log to prevent null pointer crashes
 		GlobalLog();
 
-		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1 };
-		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8 };
+		// P3-f (debt-ggx3 review): the last row (0.8,0.1) is the P1's
+		// blind spot fixed elsewhere in this slice -- every prior row
+		// here has alphaX<=alphaY, so none of them exercised
+		// GGXBRDF/GGXSPF's Kulla-Conty energy-compensation lookup with
+		// alphaX the LARGER of the pair (e.g. every glTF
+		// pbrmetallicroughness_material's convention).
+		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1, 0.8 };
+		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8, 0.1 };
 		Scalar thetas[] = { 0.3, 0.8, 1.2 };
 
-		for( int a = 0; a < 4; a++ ) {
+		for( int a = 0; a < 5; a++ ) {
 			for( int t = 0; t < 3; t++ ) {
-				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000 );
+				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelConductor );
 			}
 		}
 	}
+
+	// Test 7: Same battery, schlick_f0 mode.  Validates that PDF / kray
+	// derivation, multiscatter compensation, and the reciprocal interface diffuse
+	// split all preserve PDF-self-consistency, SPF/BRDF agreement, and
+	// energy conservation when the BRDF uses Schlick-from-F0 instead of
+	// conductor Fresnel.
+	std::cout << std::endl << "--- Test 7: Material BRDF/SPF Pointwise Consistency [schlick_f0] ---" << std::endl;
+	{
+		// P3-f (debt-ggx3 review): same alphaX>alphaY addition as Test 6.
+		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1, 0.8 };
+		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8, 0.1 };
+		Scalar thetas[] = { 0.3, 0.8, 1.2 };
+
+		for( int a = 0; a < 5; a++ ) {
+			for( int t = 0; t < 3; t++ ) {
+				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelSchlickF0 );
+			}
+		}
+	}
+
+	// Test 8: Dispersive thin-film conductor interface range (DL-37)
+	std::cout << std::endl << "--- Test 8: Dispersive Thin-Film Conductor Interface Range ---" << std::endl;
+	allPassed &= TestThinFilmDispersiveRange();
 
 	g_stubObject->release();
 

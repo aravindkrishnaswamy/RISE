@@ -34,11 +34,20 @@ namespace RISE
 			Scalar			sqrRadius;
 			Scalar			OVRadius;
 
+			//! Inverse of TessellateToMesh's polar (u, v) parameterisation.
+			//! Used by both IntersectRay and UniformRandomPoint so the UV
+			//! they emit is consistent with the tessellated mesh.
+			void DiskUVFromPosition( const Point3& pt, Point2& uv ) const;
+
 		public:
 			CircularDiskGeometry( const Scalar radius_, const unsigned char chAxis_ );
 
 			// Geometry interface
-			void GenerateMesh( );
+			// Tessellates the disk to a (detail+1) x (detail+1) radial grid:
+			// angular (u, 0..2PI) x radial (v, 0..R).  u=0/u=1 seam duplicated.  UV is polar
+			// parameterization in [0,1]^2 (not cartesian [-1,1] like the native IntersectRay).
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 
@@ -50,6 +59,17 @@ namespace RISE
 			Scalar GetArea( ) const;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+
+			//! IGeometry::DistanceToSurface -- EXACT: the disk is a flat two-sided sheet, so the
+			//! answer is the axial offset inside the rim and a rim-relative
+			//! hypotenuse outside it
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.2).
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const;
+			//! (No `override` keyword: no other member of this class carries
+			//! one, and adding the first would make clang's
+			//! -Winconsistent-missing-override fire on every OTHER member.
+			//! Matching the file's own convention is the fix; annotating the
+			//! whole class is a separate, unrelated change.)
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );

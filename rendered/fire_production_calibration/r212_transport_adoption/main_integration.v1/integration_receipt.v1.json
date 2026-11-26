@@ -1,0 +1,25 @@
+{
+  "schema": "rise.fire.r212.main-integration.v1",
+  "previous_main_commit": "305d31f2b917989b55a1e743592bd14a3fc355eb",
+  "adopted_main_commit": "1c1d70a99cb6274d43f552d53d024beca1e152d9",
+  "adoption_evidence_commit": "845114c89fb4dc037726cb32ab851f2588416ffa",
+  "history_merge_tree_equals_adoption_evidence_tree": true,
+  "integration": "fire-smoke-design fast-forwarded; no numerical source changed during ancestry reconciliation",
+  "user_xcode_edits": {
+    "path": "build/XCode/rise/rise.xcodeproj/project.pbxproj",
+    "original_sha256": "b605fef7454d1bd4aa2dd347224610decf164da8d65787a715769ad6569c5aa0",
+    "retained_stash": "8337c0a8ec383783bf9a772d3088f43f14d5df57",
+    "stash_message": "r212 preserved owner Xcode ordering before port adoption",
+    "original_object_graph_equals_old_main": true,
+    "merged_sha256": "0e3b5394dae6c301d5543c8cebdc2eca4439282c2c87345297e813bfd18ea1fe",
+    "merged_object_graph_equals_reviewed_port": true,
+    "reversing_only_port_edits_recovers_original_user_bytes": true,
+    "remains_uncommitted": true,
+    "plutil_lint": "passed",
+    "arc_contract_tests": {"passed": 3, "exit_code": 0}
+  },
+  "golden_checkpoint_sha256_unchanged": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "build_scope": "Previously qualified immutable executables remain the run authorities. No new main-checkout executable build or timing claim is inferred from source integration.",
+  "background_reference": "continues in the durable worktree on its original frozen executable; not restarted",
+  "supersedes_status_only": "review_and_handoff.v1.json recorded main integration as pending before this operation; that pending item is now complete"
+}

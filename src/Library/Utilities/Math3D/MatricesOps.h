@@ -213,8 +213,8 @@ namespace RISE
 			Matrix4		m;
 
 			const Scalar _2x = 2.0 * a.v.x;
-			const Scalar _2y = 2.0 * a.v.x;
-			const Scalar _2z = 2.0 * a.v.x;
+			const Scalar _2y = 2.0 * a.v.y;
+			const Scalar _2z = 2.0 * a.v.z;
 			const Scalar _2xx = _2x * a.v.x;
 			const Scalar _2xy = _2x * a.v.y;
 			const Scalar _2xz = _2x * a.v.z;
@@ -342,8 +342,8 @@ namespace RISE
 			const Scalar			omcostTn1 = N.y * omcosT;
 			const Scalar			omcostTn2 = N.z * omcosT;
 			const Scalar			n01 = N.x * omcostTn1;
-			const Scalar			n02 = N.y * omcostTn2;
-			const Scalar			n12 = N.z * omcostTn2;
+			const Scalar			n02 = N.x * omcostTn2;
+			const Scalar			n12 = N.y * omcostTn2;
 			const Scalar			sinTn0 = sinT * N.x;
 			const Scalar			sinTn1 = sinT * N.y;
 			const Scalar			sinTn2 = sinT * N.z;

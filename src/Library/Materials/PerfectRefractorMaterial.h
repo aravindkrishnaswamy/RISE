@@ -18,6 +18,7 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "PerfectRefractorSPF.h"
 
@@ -36,7 +37,7 @@ namespace RISE
 			}
 
 		public:
-			PerfectRefractorMaterial( const IPainter& ref, const IPainter& Nt_ )
+			PerfectRefractorMaterial( const IPainter& ref, const IScalarPainter& Nt_ )
 			{
 				pSPF = new PerfectRefractorSPF( ref, Nt_ );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
@@ -52,6 +53,7 @@ namespace RISE
 			inline IEmitter* GetEmitter() const {	return 0; };
 
 			inline bool CouldLightPassThrough() const { return true; };
+			inline bool TracksInteriorContainment() const { return true; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -68,6 +70,31 @@ namespace RISE
 				) const
 			{
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
+			}
+
+			//! DL-09: the enclosed medium's `ior`, when it is a
+			//! world-position field (see IMaterial::GetGradedIORField).
+			//! Queried live, so an editor rebind of `ior` is honoured.
+			const IScalarPainter* GetGradedIORField() const
+			{
+				const IScalarPainter& ior = pSPF->GetIOR();
+				return ior.IsWorldPositionField() ? &ior : 0;
+			}
+
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.  Two slots: `refractivity`
+			//! is the IPainter colour-attenuation; `ior` is the
+			//! IScalarPainter physical IOR (supports dispersion).
+			inline const IPainter&       GetRefractivity() const { return pSPF->GetRefractivity(); }
+			inline const IScalarPainter& GetIOR()          const { return pSPF->GetIOR(); }
+			inline void SetRefractivity( const IPainter& ref ) { pSPF->SetRefractivity( ref ); }
+			inline void SetIOR( const IScalarPainter& Nt_ )    { pSPF->SetIOR( Nt_ ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pSPF->GetRefractivity().GetPathDependence() |
+					pSPF->GetIOR().GetPathDependence();
 			}
 		};
 	}

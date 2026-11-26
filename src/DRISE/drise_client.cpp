@@ -142,11 +142,18 @@ bool DoWorkerJob_Image( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTaskBu
 
 		StdOutProgress progress( "Parsing scene: " );
 		pJob->SetProgress( &progress );
-		if( !pJob->LoadAsciiScene( szFileName ) ) {
+		if( !pJob->LoadAsciiSceneAuto( szFileName ) ) {   // Slice 6c-3a: via Auto (fresh Job -> load-once guard satisfied; CST-only -- non-native hard-fails, caught below)
 			GlobalLog()->PrintEasyError( "ERROR! Given scene file doesn't exist on this machine, aborting" );
 			safe_release( pJob );
 			return false;
 		}
+
+		// Detach the block-scoped StdOutProgress NOW -- it exists only for the parse above.
+		// Pre-fix, the slot kept pointing at this STACK object after the block closed, and the
+		// render below (outside the block) installed and drove the dangling pointer through the
+		// rasterizer's retained progress callback (SetTitle before the first block; per-block
+		// Progress from the second block on).
+		pJob->SetProgress( 0 );
 
 		strncpy( szLastFileName, szFileName, 1024 );
 
@@ -185,8 +192,8 @@ bool DoWorkerJob_Image( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTaskBu
 	pCompletedTaskBuffer->setUInt( nScanlineStart );
 	pCompletedTaskBuffer->setUInt( nScanlineEnd );
 
-	unsigned int rend_width = pJob->GetScene()->GetCamera()->GetWidth();
-//	unsigned int rend_height = pJob->GetScene()->GetCamera()->GetHeight();
+	unsigned int rend_width = pJob->GetScene()->GetFilm()->GetWidth();
+//	unsigned int rend_height = pJob->GetScene()->GetFilm()->GetHeight();
 
 	for( unsigned int y=nScanlineStart; y<=nScanlineEnd; y++ ) {
 		pCompletedTaskBuffer->setBytes( &sro->pStoredOutput[y*rend_width+xstart], sizeof( RISEColor ) * total_width );
@@ -226,11 +233,18 @@ bool DoWorkerJob_Animation( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTa
 
 		StdOutProgress progress( "Parsing scene: " );
 		pJob->SetProgress( &progress );
-		if( !pJob->LoadAsciiScene( szFileName ) ) {
+		if( !pJob->LoadAsciiSceneAuto( szFileName ) ) {   // Slice 6c-3a: via Auto (fresh Job -> load-once guard satisfied; CST-only -- non-native hard-fails, caught below)
 			GlobalLog()->PrintEasyError( "ERROR! Given scene file doesn't exist on this machine, aborting" );
 			safe_release( pJob );
 			return false;
 		}
+
+		// Detach the block-scoped StdOutProgress NOW -- it exists only for the parse above.
+		// Pre-fix, the slot kept pointing at this STACK object after the block closed, and the
+		// render below (outside the block) installed and drove the dangling pointer through the
+		// rasterizer's retained progress callback (SetTitle before the first block; per-block
+		// Progress from the second block on).
+		pJob->SetProgress( 0 );
 
 		strncpy( szLastFileName, szFileName, 1024 );
 
@@ -261,8 +275,8 @@ bool DoWorkerJob_Animation( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTa
 	//
 	// Copy the output to the completed task buffer
 	//
-	const unsigned int total_width = pJob->GetScene()->GetCamera()->GetWidth();
-	const unsigned int total_height = pJob->GetScene()->GetCamera()->GetHeight();
+	const unsigned int total_width = pJob->GetScene()->GetFilm()->GetWidth();
+	const unsigned int total_height = pJob->GetScene()->GetFilm()->GetHeight();
 	pCompletedTaskBuffer = new Implementation::MemoryBuffer( sizeof( RISEColor ) * total_width * total_height + sizeof( unsigned int ) * 4 );
 	
 	pCompletedTaskBuffer->setBytes( &sro->pStoredOutput[0], sizeof( RISEColor ) * total_width * total_height );

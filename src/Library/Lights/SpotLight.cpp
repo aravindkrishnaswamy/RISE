@@ -12,8 +12,11 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
+#include "../Utilities/IndependentSampler.h"
 #include "SpotLight.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -35,20 +38,39 @@ SpotLight::SpotLight(
   bShootPhotons( shootPhotons )
 {
 	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+	RefreshSpectrum();
+}
+
+void SpotLight::RefreshSpectrum()
+{
+	// See DirectionalLight::RefreshSpectrum: FromRGB's scale comes from
+	// the max channel outside the maxc>1e-9 guard, so a keyframe-spline
+	// overshoot into negative cColor would flip the scale's sign.  Clamp
+	// a local copy; cColor is left untouched for emissionColor()/RGB.
+	RISEPel c = cColor;
+	ColorMath::EnsurePositve( c );
+	cSpectrum = RGBIlluminantSpectrum::FromRGB( c );
 }
 
 SpotLight::~SpotLight( )
 {
 }
 
-void SpotLight::ComputeDirectLighting(
+void SpotLight::ComputeDirectLightingSampled(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
 	const bool bReceivesShadows,
-	RISEPel& amount
+	RISEPel& amount,
+	const bool bFullSphereReceiver,	// no-op here; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( SpotLight, ComputeDirectLightingSampled( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
 	//
 	// Computing direct lighting for spot lights
 	//
@@ -67,10 +89,18 @@ void SpotLight::ComputeDirectLighting(
 	// we limit the spot light's effect.  If its between the outer and inner
 	// angles, then we linearly scale it.  If its within the inner angle, then its
 	// at full power.
+	//
+	// VOLUME RECEIVER: at a medium scatter vertex `ri.vNormal` is the
+	// outgoing direction `wo`, not a normal -- drop the receiver cosine
+	// and its hemisphere gate; the phase function (handed in as `brdf`)
+	// carries the whole angular term.  The cone falloff and `invDistSq`
+	// below are KEPT: both are emitter properties.  With the flag false
+	// this reduces TEXTUALLY to the pre-existing expression and gate.
+	// See ILight.h for the derivation.
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
 
-	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
-
-	if( fDot <= 0.0 ) {
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return;
 	}
 
@@ -79,11 +109,18 @@ void SpotLight::ComputeDirectLighting(
 
 	if( fAngleOfIncidence <= dOuterAngle/2.0 )
 	{
+		// shadowT carries the per-interface Fresnel transmittance when
+		// transparent_shadows is enabled, else (1,1,1).  See PointLight.
+		RISEPel shadowT( 1.0, 1.0, 1.0 );
 		if( bReceivesShadows ) {
-			// Check to see if there is a shadow
 			Ray		rayToLight( ri.ptIntersection, vToLight );
 
-			if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+			const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+			if( pRC ) {
+				if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
+					return;
+				}
+			} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
 				return;
 			}
 		}
@@ -92,19 +129,81 @@ void SpotLight::ComputeDirectLighting(
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy);
+			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy);
+			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
 }
 
-void SpotLight::FinalizeTransformations( )
+Scalar SpotLight::ComputeDirectLightingSampledNM(
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	const Scalar nm,
+	const bool bFullSphereReceiver,	// no-op here; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
+	) const
+{
+	// DL-465: this render thread's pose of the light, if it moves.
+	RISE_TIME_INDEXED_FORWARD( SpotLight, ComputeDirectLightingSampledNM( ri, pCaster, brdf, bReceivesShadows, nm, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+
+	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
+	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
+	// CastShadowRayAuto bNM=true).  VOLUME RECEIVER: see the RGB overload.
+	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
+	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
+	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
+	if( !bVolumeReceiver && fDot <= 0.0 ) {
+		return Scalar(0);
+	}
+
+	const Scalar fDirDot = Vector3Ops::Dot( vToLight, -vDirection );
+	const Scalar fAngleOfIncidence = acos( fDirDot );
+	if( fAngleOfIncidence > dOuterAngle/2.0 ) {
+		return Scalar(0);
+	}
+
+	Scalar shadowT = 1.0;
+	if( bReceivesShadows ) {
+		Ray rayToLight( ri.ptIntersection, vToLight );
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			RISEPel t( 1.0, 1.0, 1.0 );
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
+				return Scalar(0);
+			}
+			shadowT = t.r;	// NM path fills all 3 channels equally
+		} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
+			return Scalar(0);
+		}
+	}
+
+	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
+	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
+	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
+	const Scalar lightSpec = cSpectrum.Eval( nm );
+	const Scalar base = lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
+
+	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
+		return base;
+	}
+	// Quadratic falloff between inner and outer half-angles (matches RGB).
+	const Scalar tt = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
+	return base * tt * tt;
+}
+
+void SpotLight::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	// Tells out transform helper to finalize transformations
-	Transformable::FinalizeTransformations();
+	Transformable::FinalizeTransformations( parentWorld );
 
 	// Then calculate the real-world position of this light...
 	ptPosition = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );
@@ -123,21 +222,33 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 
 	// Check the name and see if its something we recognize
 	if( name == "target" ) {
-		Point3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Point3Keyframe( v, TARGET_ID );
+		double d[3];
+		if( ParseStrictVec3( value, d ) ) {
+			p = new Point3Keyframe( Point3( d[0], d[1], d[2] ), TARGET_ID );
 		}
 	} else if( name == "color" ) {
 		double d[3];
-		if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
+		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
-		p = new Parameter<Scalar>( atof(value.c_str()), ENERGY_ID );
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) {
+			return 0;
+		}
+		p = new Parameter<Scalar>( parsed, ENERGY_ID );
 	} else if( name == "inner_angle" ) {
-		p = new Parameter<Scalar>( atof(value.c_str())*DEG_TO_RAD, INNER_ANGLE_ID );
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) {
+			return 0;
+		}
+		p = new Parameter<Scalar>( parsed * DEG_TO_RAD, INNER_ANGLE_ID );
 	} else if( name == "outer_angle" ) {
-		p = new Parameter<Scalar>( atof(value.c_str())*DEG_TO_RAD, OUTER_ANGLE_ID );
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) {
+			return 0;
+		}
+		p = new Parameter<Scalar>( parsed * DEG_TO_RAD, OUTER_ANGLE_ID );
 	} else {
 		return Transformable::KeyframeFromParameters( name, value );
 	}
@@ -148,6 +259,7 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 
 void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TARGET_ID:
@@ -158,6 +270,7 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	case COLOR_ID:
 		{
 			cColor = *(RISEPel*)val.getValue();
+			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:
@@ -178,4 +291,19 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	}
 
 	Transformable::SetIntermediateValue( val );
+}
+
+void SpotLight::ComputeDirectLighting(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, RISEPel& amount,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random( ThreadLocalSeed() ); IndependentSampler sampler(random);
+    ComputeDirectLightingSampled(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack, sampler, nullptr);
+}
+Scalar SpotLight::ComputeDirectLightingNM(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, const Scalar nm,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random( ThreadLocalSeed() ); IndependentSampler sampler(random);
+    return ComputeDirectLightingSampledNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack, sampler, nullptr);
 }

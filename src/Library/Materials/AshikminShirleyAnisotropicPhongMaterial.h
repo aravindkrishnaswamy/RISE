@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "AshikminShirleyAnisotropicPhongBRDF.h"
 #include "AshikminShirleyAnisotropicPhongSPF.h"
@@ -39,10 +40,10 @@ namespace RISE
 
 		public:
 			AshikminShirleyAnisotropicPhongMaterial(
-				const IPainter& Nu_, 
-				const IPainter& Nv_, 
-				const IPainter& Rd_, 
-				const IPainter& Rs_ 
+				const IScalarPainter& Nu_,
+				const IScalarPainter& Nv_,
+				const IPainter& Rd_,
+				const IPainter& Rs_
 				)
 			{
 				pBRDF = new AshikminShirleyAnisotropicPhongBRDF( Nu_, Nv_, Rd_, Rs_ );
@@ -58,8 +59,33 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pSPF; };
 
+			//! DL-471 (IMaterial::ConnectionScatterTypes): diffuse and glossy-reflection lobes only.
+			inline unsigned int ConnectionScatterTypes() const { return ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ); }
+			//! DL-481: its BSDF splits the connection value by its SPF's lobe labels (IBSDF::valueByScatterType).
+			inline bool HasConnectionTypeSplit() const { return true; }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IScalarPainter& GetNu() const { return pBRDF->GetNu(); }
+			inline const IScalarPainter& GetNv() const { return pBRDF->GetNv(); }
+			inline const IPainter&       GetRd() const { return pBRDF->GetRd(); }
+			inline const IPainter&       GetRs() const { return pBRDF->GetRs(); }
+			inline void SetNu( const IScalarPainter& v ) { pBRDF->SetNu( v ); pSPF->SetNu( v ); }
+			inline void SetNv( const IScalarPainter& v ) { pBRDF->SetNv( v ); pSPF->SetNv( v ); }
+			inline void SetRd( const IPainter& v )       { pBRDF->SetRd( v ); pSPF->SetRd( v ); }
+			inline void SetRs( const IPainter& v )       { pBRDF->SetRs( v ); pSPF->SetRs( v ); }
+
+			unsigned int GetPathDependence() const
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetNu().GetPathDependence() |
+					pBRDF->GetNv().GetPathDependence() |
+					pBRDF->GetRd().GetPathDependence() |
+					pBRDF->GetRs().GetPathDependence();
+			}
 		};
 	}
 }

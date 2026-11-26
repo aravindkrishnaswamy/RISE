@@ -23,8 +23,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class CausticSpectralPhotonMap : 
-			public ISpectralPhotonMap,
-			public PhotonMapDirectionalHelper<SpectralPhoton>
+			public PhotonMapDirectionalSpectralHelper
 		{
 		protected:
 			Scalar			nm_range;							// range of wavelengths to search for a NM irradiance estimate
@@ -51,22 +50,26 @@ namespace RISE
 				nm_range_ = nm_range;
 			}
 
-			void RadianceEstimate( 
-				RISEPel&						rad,					// returned radiance
-				const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
+			void RadianceEstimate(
+				RISEPel& rad,
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IORStack* pIorStack = 0
 				) const;
 
-			void RadianceEstimateNM( 
-				const Scalar					nm,						// wavelength for the estimate
-				Scalar&							rad,					// returned radiance for the particular wavelength
-				const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
+			void RadianceEstimateNM(
+				const Scalar nm,
+				Scalar& rad,
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IORStack* pIorStack = 0
 				) const;
 
 			void Serialize( 
 				IWriteBuffer&			buffer					///< [in] Buffer to serialize to
 				) const;
+
+			bool DeserializeChecked(IReadBuffer& buffer);
 
 			void Deserialize(
 				IReadBuffer&			buffer					///< [in] Buffer to deserialize from

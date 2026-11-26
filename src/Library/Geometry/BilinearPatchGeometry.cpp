@@ -13,13 +13,15 @@
 
 #include "pch.h"
 #include "BilinearPatchGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Interfaces/ILog.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
-#include "../Utilities/stl_utils.h"
+#include "../Utilities/SurfaceCurvature.h"
+#include <algorithm>   // std::lower_bound for the area-CDF search
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -51,16 +53,62 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ri.ray, h, patch );
+	RayBilinearPatchIntersection( ri.ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
 	if( h.bHit ) {
+		if( ri.bHit && h.dRange >= ri.range ) {
+			return;
+		}
+		const Vector3 rawN = GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v );
+		const Scalar nLen = Vector3Ops::Magnitude( rawN );
+		if( nLen < 1e-20 ) {
+			return;
+		}
 		// If there is an intersection, compute the point of intersection, the normal and the
 		// texture co-ordinates
 		ri.bHit = true;
 		ri.range = h.dRange;
 		ri.ptIntersection = ri.ray.PointAtLength( h.dRange );
 		ri.ptCoord = Point2( h.u, h.v );
-		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
+		ri.vNormal = rawN * ( Scalar( 1 ) / nLen );
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+		if( m_bProvablyOpenSheet.load( std::memory_order_acquire ) ) {
+			ri.bProvablyNoInterior = true;
+		}
+
+		// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
+		// this hit already knows exactly which PATCH and (u, v) it landed
+		// on (unlike the generic `ComputeSurfaceDerivatives(point, normal)`
+		// query below, which cannot tell which patch or (u, v) preimage a
+		// bare point came from), so the real closed-form shape operator is
+		// a few vector ops away.  A bilinear surface's own second
+		// derivative is a SINGLE constant vector (d2P/du2 = d2P/dv2 = 0
+		// identically -- see BilinearPatchSecondDerivUV's own comment).
+		// UNGATED like the analytic primitives (Sphere/Ellipsoid/Bezier):
+		// cheap, exact, data the hit already produced.  Only `scaleHint`
+		// (nothing but `curv` reads it) is gated.
+		{
+			const Vector3 dpdu = GeometricUtilities::BilinearPatchTangentU( patch, h.v );
+			const Vector3 dpdv = GeometricUtilities::BilinearPatchTangentV( patch, h.u );
+			const Vector3 d2Pduv = GeometricUtilities::BilinearPatchSecondDerivUV( patch );
+			static const Vector3 kZero( 0, 0, 0 );
+
+			Vector3 dndu, dndv;
+			// `ri.vNormal` above is Normalize(Cross(dpdu, dpdv)) with NO ray-
+			// facing flip (unlike BezierPatchGeometry), so no orientation
+			// correction is needed here -- dndu/dndv are derivatives of
+			// exactly the field `vNormal` already reports.
+			if( SurfaceCurvature::ShapeOperatorFromSecondDerivatives( dpdu, dpdv, kZero, d2Pduv, kZero, dndu, dndv ) ) {
+				ri.derivatives.dpdu  = dpdu;
+				ri.derivatives.dpdv  = dpdv;
+				ri.derivatives.dndu  = dndu;
+				ri.derivatives.dndv  = dndv;
+				ri.derivatives.valid = true;
+				if( SurfaceCurvatureDemand::Any() ) {
+					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+				}
+			}
+		}
 	}
 }
 
@@ -75,9 +123,11 @@ bool BilinearPatchGeometry::RayElementIntersection_IntersectionOnly( const Ray& 
 	const BilinearPatch&	patch = *elem;
 
     BILINEAR_HIT	h;
-	RayBilinearPatchIntersection( ray, h, patch );
+	RayBilinearPatchIntersection( ray, h, patch, bHitFrontFaces, bHitBackFaces );
 
-	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
+	// Self-intersection floor (`tMin`) is already applied inside
+	// RayBilinearPatchIntersection; only bound the upper range here.
+	if( h.bHit && (h.dRange <= 0.0 || h.dRange > dHowFar) ) {
 		h.bHit = false;
 	}
 
@@ -103,7 +153,14 @@ BilinearPatchGeometry::BilinearPatchGeometry(
   pOctree( 0 ),
   nMaxPerOctantNode( max_polys_per_node ),
   nMaxRecursionLevel( max_recursion_level ),
-  bUseBSP( bUseBSP_ )
+  bUseBSP( bUseBSP_ ),
+  dTotalArea( 0 ),
+  m_certGeneration( 1 ),
+  m_certComputedGeneration( 0 ),
+  m_bCertifiedWatertight( false ),
+  m_bProvablyOpenSheet( false ),
+  m_bNegativeOpenSignedVolume( false ),
+  m_topologicalOpenness( -2 )
 {
 }
 
@@ -116,13 +173,15 @@ BilinearPatchGeometry::~BilinearPatchGeometry( )
 void BilinearPatchGeometry::AddPatch( const BilinearPatch& patch )
 {
 	patches.push_back( patch );
+	InvalidateCertificate();
 }
 
 void BilinearPatchGeometry::Prepare()
 {
 	// Prepare for rendering
 	// Optimize the patch container
-	stl_utils::container_optimize< BilinearPatchList >( patches );
+	patches.shrink_to_fit();
+	InvalidateCertificate();	// DL-616: recomputed lazily on first query
 
 	// First create the pointer patches list
 	BilinearPatchPtrList		patchptrs;
@@ -156,11 +215,99 @@ void BilinearPatchGeometry::Prepare()
 
 		pOctree->AddElements( patchptrs, nMaxRecursionLevel );
 	}
+
+	// Build the area-light sampling tables.  Done ONCE here rather than per
+	// UniformRandomPoint call: the table is O(patches * nAreaCells^2) to
+	// build, and NEE calls the sampler once per shadow ray.
+	vAreaCDF.clear();
+	vAreaCDF.reserve( patches.size() * nAreaCells * nAreaCells );
+	dTotalArea = 0;
+	for( BilinearPatchList::const_iterator p = patches.begin(); p != patches.end(); ++p ) {
+		// CANONICAL RISE CORNER MAPPING -- pts[] is NOT row-major:
+		//   pts[0] at (u=0, v=0)    pts[1] at (u=0, v=1)
+		//   pts[2] at (u=1, v=0)    pts[3] at (u=1, v=1)
+		// as implemented by GeometricUtilities::EvaluateBilinearPatchAt,
+		// RayBilinearPatchIntersection and TessellateToMesh.  The helper
+		// takes (c00, c10, c11, c01), so pts[1] and pts[2] SWAP here.
+		// Getting this wrong samples a different surface than IntersectRay
+		// traces on any non-planar patch -- the exact defect the pre-fix
+		// row-major tessellation had (see GeometryUVRoundtripTest's header).
+		dTotalArea += GeometricUtilities::AccumulateBilinearAreaCDF(
+			p->pts[0], p->pts[2], p->pts[3], p->pts[1],
+			nAreaCells, dTotalArea, vAreaCDF );
+	}
 }
 
-void BilinearPatchGeometry::GenerateMesh( )
+bool BilinearPatchGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( patches.empty() || detail < 1 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int rowStride = nU + 1;
+
+	for( BilinearPatchList::const_iterator it = patches.begin(); it != patches.end(); ++it ) {
+		const BilinearPatch& patch = *it;
+
+		const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+		for( unsigned int j = 0; j <= nV; j++ ) {
+			const Scalar v = Scalar(j) / Scalar(nV);
+			for( unsigned int i = 0; i <= nU; i++ ) {
+				const Scalar u = Scalar(i) / Scalar(nU);
+
+				// Match the canonical RISE bilinear convention used by
+				// GeometricUtilities::EvaluateBilinearPatchAt and by
+				// RayBilinearPatchIntersection (and asserted by
+				// tests/GeometricUtilitiesTest.cpp):
+				//   pts[0] at (u=0, v=0)
+				//   pts[1] at (u=0, v=1)
+				//   pts[2] at (u=1, v=0)
+				//   pts[3] at (u=1, v=1)
+				//
+				// Pre-fix this body used the row-major convention (pts[1] at
+				// (1, 0), pts[2] at (1, 1)), which gave a different surface
+				// from what IntersectRay traces — so IntersectRay's (u, v)
+				// did not roundtrip through this forward formula.
+				const Scalar w00 = (1.0 - u) * (1.0 - v);  // pts[0] at (0, 0)
+				const Scalar w01 = (1.0 - u) *        v;   // pts[1] at (0, 1)
+				const Scalar w10 =        u  * (1.0 - v);  // pts[2] at (1, 0)
+				const Scalar w11 =        u  *        v;   // pts[3] at (1, 1)
+
+				const Point3 pos(
+					w00 * patch.pts[0].x + w01 * patch.pts[1].x + w10 * patch.pts[2].x + w11 * patch.pts[3].x,
+					w00 * patch.pts[0].y + w01 * patch.pts[1].y + w10 * patch.pts[2].y + w11 * patch.pts[3].y,
+					w00 * patch.pts[0].z + w01 * patch.pts[1].z + w10 * patch.pts[2].z + w11 * patch.pts[3].z );
+
+				vertices.push_back( pos );
+				normals.push_back( Vector3(0.0, 0.0, 0.0) );  // re-averaged below
+				coords.push_back( Point2( u, v ) );
+			}
+		}
+
+		for( unsigned int j = 0; j < nV; j++ ) {
+			for( unsigned int i = 0; i < nU; i++ ) {
+				const unsigned int a = baseIdx + j     * rowStride + i;
+				const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+				const unsigned int c = baseIdx + (j+1) * rowStride + i;
+				const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+				tris.push_back( MakeIndexedTriangleSameIdx( a, b, c ) );
+				tris.push_back( MakeIndexedTriangleSameIdx( b, d, c ) );
+			}
+		}
+	}
+
+	RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+
+	return true;
 }
 
 void BilinearPatchGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -235,27 +382,152 @@ BoundingBox BilinearPatchGeometry::GenerateBoundingBox() const
 	return BoundingBox();
 }
 
+Scalar BilinearPatchGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+{
+	(void)localDir; (void)localNormal;
+	return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+}
+
 void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	//@ To be implemented
+	// Area-proportional sampling over every (patch, cell) pair via the single
+	// global CDF built in Prepare().  Consumers (NEE, photon emission, SSS)
+	// use 1/GetArea() as the reciprocal position PDF, so selection MUST be
+	// proportional to area -- selecting patches or cells uniformly by count
+	// would reproduce exactly the BoxGeometry defect fixed in 098d2565.
+	//
+	// Was previously an empty stub: it wrote nothing, so with Point3's
+	// zero-initialising default constructor every caller received the local
+	// origin.  A `bilinearpatch_geometry` bound to an emissive material was
+	// therefore a point-mass emitter, not a surface one -- the same pathology
+	// as the VCM torus-arealight deficit.  CanBeAreaLight() now also refuses
+	// the degenerate cases this function can no longer serve.
+	if( patches.empty() || vAreaCDF.empty() || dTotalArea <= 0 ) {
+		if( point )  *point  = Point3( 0, 0, 0 );
+		if( normal ) *normal = Vector3( 0, 1, 0 );
+		if( coord )  *coord  = Point2( 0, 0 );
+		return;
+	}
+
+	// prand.z selects (patch, cell); prand.x / prand.y place the point within
+	// that cell -- the same variate roles BoxGeometry and the triangle meshes
+	// use, so samplers that stratify a particular dimension behave alike.
+	const Scalar target = prand.z * dTotalArea;
+	std::vector<Scalar>::const_iterator it =
+		std::lower_bound( vAreaCDF.begin(), vAreaCDF.end(), target );
+	size_t flat = ( it == vAreaCDF.end() )
+		? vAreaCDF.size() - 1
+		: static_cast<size_t>( std::distance( vAreaCDF.begin(), it ) );
+
+	const size_t cellsPerPatch = static_cast<size_t>( nAreaCells ) * nAreaCells;
+	const size_t patchIdx = flat / cellsPerPatch;
+	const size_t cellIdx  = flat % cellsPerPatch;
+	if( patchIdx >= patches.size() ) {
+		if( point )  *point  = Point3( 0, 0, 0 );
+		if( normal ) *normal = Vector3( 0, 1, 0 );
+		if( coord )  *coord  = Point2( 0, 0 );
+		return;
+	}
+
+	const BilinearPatch& bp = patches[patchIdx];
+	Scalar u = 0, v = 0;
+	GeometricUtilities::BilinearCellToUV(
+		static_cast<unsigned int>( cellIdx ), nAreaCells, prand.x, prand.y, u, v );
+
+	if( point ) {
+		// Same canonical corner mapping as Prepare() -- pts[1]/pts[2] swap.
+		*point = GeometricUtilities::BilinearForward(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], u, v );
+	}
+
+	if( normal ) {
+		const Vector3 Tu = GeometricUtilities::BilinearTangentU(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], v );
+		const Vector3 Tv = GeometricUtilities::BilinearTangentV(
+			bp.pts[0], bp.pts[2], bp.pts[3], bp.pts[1], u );
+		const Vector3 N = Vector3Ops::Cross( Tu, Tv );
+		const Scalar nLen = Vector3Ops::Magnitude( N );
+		*normal = ( nLen > NEARZERO ) ? ( N * ( 1.0 / nLen ) ) : Vector3( 0, 1, 0 );
+	}
+
+	if( coord ) {
+		*coord = Point2( u, v );
+	}
 }
 
 SurfaceDerivatives BilinearPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
 {
-	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
-	sd.valid = true;
-	return sd;
+	// DL-20: same conservative-reject rationale as
+	// BezierPatchGeometry::ComputeSurfaceDerivatives -- this geometry can
+	// hold many patches, and a bare point (no (u, v), no patch index)
+	// cannot be inverted back to "which patch, which (u, v)" the way the
+	// real ray-hit path (RayElementIntersection above) gets for free.  The
+	// pre-fix body fabricated an arbitrary tangent frame with
+	// `dndu=dndv=0` and reported `valid=true` -- a FLAT curvature answer
+	// for a genuinely curved (indeed, saddle-shaped) surface, presented as
+	// legitimate.  Report honest absence instead.
+	(void)objSpacePoint;
+	(void)objSpaceNormal;
+	return SurfaceDerivatives();
 }
 
 Scalar BilinearPatchGeometry::GetArea( ) const
 {
-	//! @@ TODO, find a way to do this
-	return 1.0;
+	// The cached total from Prepare(), computed by the SAME quadrature the
+	// sampler's CDF uses -- so 1/GetArea() is exactly UniformRandomPoint's
+	// density.  That identity, not the absolute accuracy of the quadrature,
+	// is what area-light unbiasedness depends on.
+	//
+	// Previously a hardcoded 1.0, which made a patch's emitted power wrong by
+	// its true area (and, since consumers divide by it, silently rescaled
+	// every estimator built on this geometry).
+	return dTotalArea;
+}
+
+void BilinearPatchGeometry::InvalidateCertificate()
+{
+	// Clear the flags BEFORE publishing the new generation, so no query
+	// that sees the new generation can still read the old answer.
+	m_bCertifiedWatertight.store( false, std::memory_order_release );
+	m_bProvablyOpenSheet.store( false, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( false, std::memory_order_release );
+	m_topologicalOpenness.store( -2, std::memory_order_release );
+	m_certGeneration.fetch_add( 1, std::memory_order_acq_rel );
+	GeometricUtilities::BumpPatchCertificateEpoch();	// cached composite certificates are stale
+	BumpShapeRevision();
+}
+
+void BilinearPatchGeometry::EnsureCertified() const
+{
+	const unsigned int wanted = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == wanted ) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock( m_certMutex );
+	const unsigned int current = m_certGeneration.load( std::memory_order_acquire );
+	if( m_certComputedGeneration.load( std::memory_order_acquire ) == current ) {
+		return;
+	}
+	bool watertight = false, open = false, negative = false;
+	GeometricUtilities::CertifyBilinearPatchSet( patches, watertight, open, negative );
+	m_bCertifiedWatertight.store( watertight, std::memory_order_release );
+	m_bProvablyOpenSheet.store( open, std::memory_order_release );
+	m_bNegativeOpenSignedVolume.store( negative, std::memory_order_release );
+	m_certComputedGeneration.store( current, std::memory_order_release );
+}
+
+int BilinearPatchGeometry::TopologicalOpenness() const
+{
+	const int cached = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( cached != -2 ) {
+		return cached;
+	}
+	std::lock_guard<std::mutex> lock( m_opennessMutex );
+	const int recheck = m_topologicalOpenness.load( std::memory_order_acquire );
+	if( recheck != -2 ) {
+		return recheck;
+	}
+	const int computed = GeometricUtilities::BilinearPatchSetOpenness( patches );
+	m_topologicalOpenness.store( computed, std::memory_order_release );
+	return computed;
 }

@@ -1,0 +1,58 @@
+{
+  "schema": "rise.fire.r247.source-metadata-gate.v1",
+  "status": "candidate_metadata_only",
+  "exit_code": 0,
+  "frames_per_case": 235,
+  "native_field_packets_read": 0,
+  "beginning_payload_seals_verified": false,
+  "full_derivation_accepted": false,
+  "controls": {
+    "status": "synthetic_metadata_lifecycle_only",
+    "red": 23,
+    "metadata_green": true,
+    "native_field_packets_read": 0,
+    "beginning_payload_seals_verified": false
+  },
+  "original_taller_exit_code": 98,
+  "source_packet_bytes_unchanged": true,
+  "limits": [
+    "Wide beginning/frame pins newly captured from original modern declarations; not enumerated by old audit",
+    "Taller captured snapshot CSV seal is reader-issued; exact equality with original unsealed CSV checked",
+    "No beginning native field packet read; actual payload/seal verification and before-field memory admission pending"
+  ],
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/controls.stdout.log",
+      "sha256": "2f40cf186d5785e99e9ce086c16d5d12d29b38461c308b001c7d5398147fac9c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/controls.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/source_admission.frozen.py",
+      "sha256": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/inspect.stdout.log",
+      "sha256": "85036436bcdf020dcd294dbc27e6e0a9833e4a42cda715865ef1e24c6d6b7af2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/inspect.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/metadata/source_metadata.json",
+      "sha256": "e0114ff6c0371d321294ef8775f698baca67c9033874dc276b04d765ec842624"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_metadata_validation.v3/metadata/source_metadata.json.payload-v2.json",
+      "sha256": "99bd8dc82544d31b7c68c8e677dbcb497071b4ca0046fe5c119231e1e307e6ce"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_admission.py",
+      "sha256": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545"
+    }
+  ],
+  "repair": "All frame SHA256 fields require exact lowercase64hex; malformed/truncated/uppercase beginning digests rejected. Original v2 report preserved."
+}

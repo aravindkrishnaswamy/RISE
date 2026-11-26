@@ -14,17 +14,64 @@
 
 #include "pch.h"
 #include "AOVBuffers.h"
+#include "../Utilities/IndependentSampler.h"
+#include "../Interfaces/IScene.h"
+#include "../Interfaces/IRayCaster.h"
+#include "../Interfaces/ICamera.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IBSDF.h"
+#include "../Intersection/RayIntersection.h"
+#include "../Utilities/RuntimeContext.h"
+#include "../Utilities/ThreadPool.h"
+#include "../Utilities/RandomNumbers.h"
+#include "../Utilities/FiniteMath.h"
+#include "../Utilities/IORStackSeeding.h"
+#include "../Cameras/CameraUtilities.h"
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
-AOVBuffers::AOVBuffers( unsigned int w, unsigned int h ) :
+AOVBuffers::AOVBuffers( unsigned int w, unsigned int h, const Plan& requested ) :
   width( w ),
   height( h ),
-  bHasData( false ),
-  albedo( w * h * 3, 0.0f ),
-  normals( w * h * 3, 0.0f )
+  bHasAlbedoData( false ),
+  bHasNormalData( false ),
+  bHasDepthData( false ),
+  plan( requested ),
+  albedo( requested.albedo ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
+  normals( requested.normal ? static_cast<size_t>( w ) * h * 3 : 0, 0.0f ),
+  depths( requested.depth ? static_cast<size_t>( w ) * h : 0, 0.0f ),
+  depthWeights( requested.depth ? static_cast<size_t>( w ) * h : 0, 0.0f )
 {
+}
+
+void AOVBuffers::Reset( unsigned int w, unsigned int h, const Plan& requested )
+{
+	width = w;
+	height = h;
+	bHasAlbedoData.store( false, std::memory_order_relaxed );
+	bHasNormalData.store( false, std::memory_order_relaxed );
+	bHasDepthData.store( false, std::memory_order_relaxed );
+	plan = requested;
+	const size_t pixels = static_cast<size_t>( w ) * h;
+	auto reset = []( std::vector<float>& v, size_t count ) {
+		if( count == 0 ) {
+			std::vector<float>().swap( v );
+			return;
+		}
+		// A resolution change must also discard capacity from the previous
+		// film. vector::assign() is permitted to retain that allocation, which
+		// would let one historical high-resolution render pin guide memory
+		// indefinitely after a downsize.
+		if( v.size() != count ) std::vector<float>( count, 0.0f ).swap( v );
+		else std::fill( v.begin(), v.end(), 0.0f );
+	};
+	reset( albedo, requested.albedo ? pixels * 3 : 0 );
+	reset( normals, requested.normal ? pixels * 3 : 0 );
+	reset( depths, requested.depth ? pixels : 0 );
+	reset( depthWeights, requested.depth ? pixels : 0 );
 }
 
 void AOVBuffers::AccumulateAlbedo(
@@ -34,11 +81,19 @@ void AOVBuffers::AccumulateAlbedo(
 	Scalar weight
 	)
 {
-	bHasData = true;
-	const unsigned int idx = (y * width + x) * 3;
-	albedo[idx + 0] += static_cast<float>( c.r * weight );
-	albedo[idx + 1] += static_cast<float>( c.g * weight );
-	albedo[idx + 2] += static_cast<float>( c.b * weight );
+	if( albedo.empty() ) return;
+	bHasAlbedoData.store( true, std::memory_order_relaxed );
+	const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 3;
+	// Saturate each channel to [0, 1]: OIDN expects albedo in that
+	// range.  IBSDF::albedo() should normally already be in range, but
+	// pathological painters (HDR colors > 1) can push it over — keep
+	// this as a safety net.
+	const Scalar r = r_min( Scalar(1.0), r_max( Scalar(0.0), c.r ) );
+	const Scalar g = r_min( Scalar(1.0), r_max( Scalar(0.0), c.g ) );
+	const Scalar b = r_min( Scalar(1.0), r_max( Scalar(0.0), c.b ) );
+	albedo[idx + 0] += static_cast<float>( r * weight );
+	albedo[idx + 1] += static_cast<float>( g * weight );
+	albedo[idx + 2] += static_cast<float>( b * weight );
 }
 
 void AOVBuffers::AccumulateNormal(
@@ -48,10 +103,34 @@ void AOVBuffers::AccumulateNormal(
 	Scalar weight
 	)
 {
-	const unsigned int idx = (y * width + x) * 3;
+	if( normals.empty() ) return;
+	bHasNormalData.store( true, std::memory_order_relaxed );
+	const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 3;
 	normals[idx + 0] += static_cast<float>( n.x * weight );
 	normals[idx + 1] += static_cast<float>( n.y * weight );
 	normals[idx + 2] += static_cast<float>( n.z * weight );
+}
+
+void AOVBuffers::AccumulateDepth(
+	unsigned int x,
+	unsigned int y,
+	Scalar depth,
+	Scalar weight
+	)
+{
+	if( depths.empty() ) return;
+	bHasDepthData.store( true, std::memory_order_relaxed );
+	if( !RISE::IsFiniteDouble( static_cast<double>( depth ) ) || depth <= 0 ||
+		!RISE::IsFiniteDouble( static_cast<double>( weight ) ) || weight <= 0 ) return;
+	const size_t idx = static_cast<size_t>( y ) * width + x;
+	depths[idx] += static_cast<float>( depth * weight );
+	depthWeights[idx] += static_cast<float>( weight );
+}
+
+void AOVBuffers::MarkGuidesExamined()
+{
+	if( !albedo.empty() ) bHasAlbedoData.store( true, std::memory_order_relaxed );
+	if( !normals.empty() ) bHasNormalData.store( true, std::memory_order_relaxed );
 }
 
 void AOVBuffers::Normalize(
@@ -60,12 +139,210 @@ void AOVBuffers::Normalize(
 	Scalar invWeight
 	)
 {
-	const unsigned int idx = (y * width + x) * 3;
+	NormalizeSelected( x, y, invWeight, plan );
+}
+
+void AOVBuffers::NormalizeSelected(
+	unsigned int x,
+	unsigned int y,
+	Scalar invWeight,
+	const Plan& selected
+	)
+{
 	const float fw = static_cast<float>( invWeight );
-	albedo[idx + 0] *= fw;
-	albedo[idx + 1] *= fw;
-	albedo[idx + 2] *= fw;
-	normals[idx + 0] *= fw;
-	normals[idx + 1] *= fw;
-	normals[idx + 2] *= fw;
+	const size_t pixel = static_cast<size_t>( y ) * width + x;
+	if( selected.albedo && !albedo.empty() ) {
+		const size_t idx = pixel * 3;
+		albedo[idx + 0] *= fw;
+		albedo[idx + 1] *= fw;
+		albedo[idx + 2] *= fw;
+	}
+	if( selected.normal && !normals.empty() ) {
+		const size_t idx = pixel * 3;
+		// SPHERICAL-MEAN CAVEAT.  What the samples accumulated is the
+		// weighted ARITHMETIC mean of unit normals, and that mean is
+		// NOT a unit vector: its length is 1 only when every sample
+		// agreed, and it collapses toward 0 as they disagree.  On
+		// high-frequency geometry (a groom, foliage) a pixel's samples
+		// routinely straddle several surfaces, so the raw mean hands
+		// OIDN a normal whose DIRECTION is right but whose MAGNITUDE
+		// silently encodes intra-pixel disagreement -- and OIDN's
+		// normal guide is documented as a unit vector in [-1,1], so it
+		// reads that shortening as a different surface orientation
+		// rather than as "these samples disagreed".
+		//
+		// Renormalizing recovers the mean DIRECTION (the standard
+		// spherical-mean estimator, i.e. the maximum-likelihood mean
+		// of a von Mises-Fisher fit).  What is deliberately discarded
+		// is the concentration: a pixel whose samples span a 90-degree
+		// spread reports the same unit normal as one whose samples all
+		// agree.  OIDN has no channel to receive that concentration,
+		// so encoding it in the magnitude was never actionable -- it
+		// only degraded the direction.
+		//
+		// Idempotent by construction (renormalizing a unit vector is a
+		// no-op), which also makes a double Normalize() call harmless.
+		// `invWeight` is intentionally unused here for the same reason:
+		// a uniform positive scale cannot change a normalized result.
+		const double nx = static_cast<double>( normals[idx + 0] );
+		const double ny = static_cast<double>( normals[idx + 1] );
+		const double nz = static_cast<double>( normals[idx + 2] );
+		const double len2 = nx*nx + ny*ny + nz*nz;
+		if( len2 > 0 && RISE::IsFiniteDouble( len2 ) ) {
+			const double inv = 1.0 / sqrt( len2 );
+			normals[idx + 0] = static_cast<float>( nx * inv );
+			normals[idx + 1] = static_cast<float>( ny * inv );
+			normals[idx + 2] = static_cast<float>( nz * inv );
+		} else {
+			// All-miss (or degenerate) pixel: leave the zero vector,
+			// which is what this plane has always reported for a pixel
+			// with no surface, rather than inventing a direction.
+			normals[idx + 0] = 0.0f;
+			normals[idx + 1] = 0.0f;
+			normals[idx + 2] = 0.0f;
+		}
+	}
+	if( selected.depth && !depths.empty() ) {
+		const float hitWeight = depthWeights[pixel];
+		depths[pixel] = hitWeight > 0.0f ? depths[pixel] / hitWeight : 0.0f;
+	}
+}
+
+void AOVBuffers::ReleaseDepthStorage()
+{
+	std::vector<float>().swap( depths );
+	std::vector<float>().swap( depthWeights );
+	plan.depth = false;
+	bHasDepthData.store( false, std::memory_order_relaxed );
+}
+
+void RISE::Implementation::CollectFirstHitAOVs(
+	const IScene& scene,
+	IRayCaster& caster,
+	AOVBuffers& aovBuffers,
+	unsigned int samplesPerPixel,
+	OidnPrefilter prefilterMode,
+	const Rect* region
+	)
+{
+	CollectFirstHitAOVRows( scene, caster, aovBuffers, aovBuffers.MissingPlan(),
+		0, 1, samplesPerPixel, prefilterMode, region );
+}
+
+void RISE::Implementation::CollectFirstHitAOVRows(
+	const IScene& scene,
+	IRayCaster& caster,
+	AOVBuffers& aovBuffers,
+	const AOVBuffers::Plan& selected,
+	unsigned int firstRow,
+	unsigned int rowStride,
+	unsigned int samplesPerPixel,
+	OidnPrefilter prefilterMode,
+	const Rect* region
+	)
+{
+	const ICamera* pCamera = scene.GetCamera();
+	const IObjectManager* pObjects = scene.GetObjects();
+	const IFilm* pFilm = scene.GetFilm();
+	if( !pCamera || !pObjects || !pFilm ) return;
+
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+	if( width != aovBuffers.GetWidth() || height != aovBuffers.GetHeight() ) return;
+	if( !selected.Any() || firstRow >= height || rowStride == 0 ) return;
+	if( width == 0 || height == 0 ) return;
+	unsigned int startX = 0, startY = 0, endX = width-1, endY = height-1;
+	if( region ) {
+		if( region->left > region->right || region->top > region->bottom
+			|| region->left >= width || region->top >= height ) return;
+		startX = region->left;
+		startY = region->top;
+		endX = r_min( region->right, width-1 );
+		endY = r_min( region->bottom, height-1 );
+	}
+	if( samplesPerPixel == 0 ) samplesPerPixel = 1;
+	const AOVBuffers::Plan missing = selected;
+	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
+	const unsigned int rowCount = 1u + ( height - 1u - firstRow ) / rowStride;
+	// DL-625 review: each row reseeds the worker's generator from (one value
+	// read here, on the calling thread, row), so the guide buffers are a
+	// function of std::srand's state and not of which worker took which
+	// row (the generator used to keep whatever state its first,
+	// concurrently seeded, construction left).
+	const unsigned int rowSeedBase = LockedLibcRand();
+
+	GlobalThreadPool().ParallelFor( rowCount, [&]( unsigned int row ) {
+		const unsigned int y = firstRow + row * rowStride;
+		if( y < startY || y > endY ) return;
+		// Constant initial seed: it is reseeded per row below, and a
+		// default (libc) seed on a worker's first row would move the libc
+		// stream by a scheduling-dependent count.
+		static thread_local RandomNumberGenerator tl_rng( 0u );
+		const unsigned int rowSeed = DeriveSeed( rowSeedBase, y );
+		tl_rng.Reseed( rowSeed );
+		ScopedMediumTileSeed mediumSeed( rowSeed );
+		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
+		rc.aovPrefilterMode = prefilterMode;
+
+		for( unsigned int x = startX; x <= endX; ++x ) {
+			for( unsigned int s = 0; s < samplesPerPixel; ++s ) {
+				// DL-368: the same pixel <-> screen convention the beauty
+				// pass samples in (ICamera.h, RasterConvention).
+				const Scalar su = tl_rng.CanonicalRandom();
+				const Scalar sv = tl_rng.CanonicalRandom();
+				const Point2 ptOnScreen = RasterConvention::PixelToScreen( x, y, height, su, sv );
+				Vector3 sampleNormal( 0, 0, 0 );
+				RISEPel sampleAlbedo( 0, 0, 0 );
+				Scalar sampleDepth = 0;
+				Ray ray;
+				if( pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
+					RasterizerState rast = { x, y };
+					const bool traceAccurateGuide =
+						prefilterMode == OidnPrefilter::Accurate &&
+						( missing.albedo || missing.normal );
+					if( traceAccurateGuide ) {
+						// Estimators such as MLT cannot attach PixelAOV to their
+						// splat-chain samples. Their bounded fallback retrace still
+						// honors Accurate semantics by asking the prepared shader
+						// caster to walk delta/medium continuations and populate one
+						// coherent guide. Depth remains the raw camera intersection,
+						// captured by RayCaster before any continuation.
+						PixelAOV aov;
+						rc.pAOV = &aov;
+						RISEPel ignoredRadiance( 0, 0, 0 );
+						// Seed from the camera-ray origin (submerged-camera
+						// case) so the Accurate-mode guide walk classifies
+						// its first dielectric crossing the same way the
+						// beauty pass now does; free-space cameras: no-op.
+						IORStack iorStack( 1.0 );
+						IORStackSeeding::SeedFromPoint( iorStack, ray.origin, scene );
+						caster.CastRay( rc, rast, ray, ignoredRadiance,
+							IRayCaster::RAY_STATE(), 0, 0, iorStack );
+						rc.pAOV = 0;
+						if( aov.valid ) {
+							sampleNormal = aov.normal;
+							sampleAlbedo = aov.albedo;
+						}
+						if( aov.primaryDepthCaptured ) sampleDepth = aov.depth;
+					} else {
+						RayIntersection ri( ray, rast );
+						ri.geometric.bIsCameraRay = true;
+						ri.geometric.pCamera = scene.GetCamera();
+						IndependentSampler alphaSampler(rc.random);
+                        pObjects->IntersectRaySampled( ri, alphaSampler );
+						if( ri.geometric.bHit ) {
+							if( ri.pModifier && !ri.pUnresolvedMix ) ri.pModifier->Modify( ri.geometric );
+							sampleDepth = ri.geometric.range +
+								BDPTCameraUtilities::ComputeNearClipDistance( *pCamera, ray.Dir() );
+							EvaluateMaterialAOVGuides( ri, ri.geometric, false, 0, sampleAlbedo, sampleNormal );
+						}
+					}
+				}
+				if( missing.albedo ) aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
+				if( missing.normal ) aovBuffers.AccumulateNormal( x, y, sampleNormal, 1.0 );
+				if( missing.depth ) aovBuffers.AccumulateDepth( x, y, sampleDepth, 1.0 );
+			}
+			aovBuffers.NormalizeSelected( x, y, invSamples, missing );
+		}
+	} );
 }

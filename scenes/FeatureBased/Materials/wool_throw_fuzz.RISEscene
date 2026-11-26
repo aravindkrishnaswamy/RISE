@@ -1,0 +1,206 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           wool_throw_fuzz.RISEscene                                                              #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md Phase 3 (add_fuzz) showcase.  A rolled/folded wool          #
+#                   throw (an `sdf_geometry` roundbox bolster -- a genuinely CURVED silhouette all          #
+#                   the way round, `fabric_material wool` over an Oren-Nayar substrate) plus a fuzz         #
+#                   shell -- a hair_geometry/hair_material/standard_object triad grown on the SAME          #
+#                   geometry, the exact triad shape `add_fuzz` mints.                                       #
+#                                                                                                           #
+#                   FIX ROUND (2026-09-03): the first cut of this scene used a nearly-FLAT displaced        #
+#                   panel against a BLACK background and read as plain cloth -- no visible fringe.          #
+#                   Two root causes, both from the Phase 3 evaluation's own findings, ignored the           #
+#                   first time: (1) a flat panel's silhouette is its rectangular boundary, and a            #
+#                   strand grown along a mostly-camera-facing normal does not cross that boundary on        #
+#                   its own the way a strand on a CURVING limb does -- the evaluation's own halo only       #
+#                   ever showed on its sphere subject; (2) the evaluation's own D_brightbg probe found      #
+#                   that a fringe reads AGAINST a bright background (partial-pixel strand coverage          #
+#                   blends toward what's behind it -- brighter than the strand, it glows; darker, it        #
+#                   reads as static) and nearly vanished against black.  This cut fixes both: a rounded     #
+#                   bolster shape (genuine curvature everywhere, no flat rectangular edge to fight) and     #
+#                   a LIGHT dome background (~0.3-0.4, `radiance_background TRUE`) with a strong rim        #
+#                   behind-and-above -- velvet_cushion.RISEscene's own studio rig, which exists for the     #
+#                   identical reason (the Charlie/fibre lobe's mass sits at grazing half-vectors, and a     #
+#                   dome is the only light supplying a grazing direction at every point of a curved         #
+#                   silhouette at once).                                                                    #
+#                                                                                                           #
+#                   THE FUZZ RECIPE IS HAND-TUNED FOR THIS OBJECT, NOT BLINDLY TAKEN FROM `add_fuzz`'S      #
+#                   OWN AUTO-SCALE.  `add_fuzz`'s surface-area-based density model (AgentSession::          #
+#                   AddFuzz, post fix-round 2026-09-03) reads the bolster's real `Object::GetArea()`        #
+#                   and would produce a reasonable count on its own; this scene still hand-authors the      #
+#                   triad (rather than a live verb call) so the exact numbers are inspectable and           #
+#                   iterable in one file, per this showcase's own brief.                                    #
+#                                                                                                           #
+#                   `oidn_denoise` is FALSE, deliberately: a denoiser is free to smear exactly the fine      #
+#                   fibre structure this scene exists to show.                                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+# The studio DOME -- LIGHT and BACKGROUND both (`radiance_background TRUE`).
+# velvet_cushion.RISEscene's own rig, for the identical reason: the fibre
+# lobe's mass sits at grazing half-vectors, and a dome is the only source
+# that supplies a grazing direction at every point of a curved silhouette at
+# once. Also: the Phase 3 evaluation's own D_brightbg probe found the fringe
+# reads AGAINST A BRIGHT background and nearly vanishes against black.
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.36 0.37 0.40
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				256
+	oidn_denoise		FALSE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/wool_throw_fuzz
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			900
+	height			600
+}
+
+pinhole_camera
+{
+	location			1.55 0.62 2.05
+	lookat				0 0.02 0
+	up					0 1 0
+	fov					32.0
+}
+
+#############################################################################################################
+# The throw, rolled into a bolster -- a rounded box, genuinely curved on
+# every side (unlike a flat panel, whose only "edge" is a straight
+# rectangular boundary a normal-grown strand does not cross on its own).
+#############################################################################################################
+
+sdf_geometry
+{
+	name			throw_body
+	maxsteps		128
+	sampling_detail	80
+	part	roundbox  union  0   0 0 0    0 0 12   1 1 1   0.85 0.34 0.50   0.30
+}
+
+#############################################################################################################
+# Materials.  `fabric_material wool` over an Oren-Nayar substrate -- the
+# `make_fabric` mint for the wool preset, bound directly.
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name				dye_wool
+	color				0.62 0.53 0.42
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				sheen_wool
+	color				0.97 0.93 0.85
+	colorspace			Rec709RGB_Linear
+}
+
+orennayar_material
+{
+	name				base_wool
+	reflectance			dye_wool
+	roughness			0.6
+}
+
+fabric_material
+{
+	name				m_wool
+	fabric				wool
+	base				base_wool
+	sheen_color			sheen_wool
+}
+
+standard_object
+{
+	name		o_throw
+	geometry	throw_body
+	material	m_wool
+	position	0 0 0
+}
+
+#############################################################################################################
+# THE FUZZ SHELL.  Grown directly on `throw_body`, bound through a
+# standard_object `parent`-ed to `o_throw`.
+#############################################################################################################
+
+hair_geometry
+{
+	name			throw_fuzz
+	base_geometry	throw_body
+	count			30000
+	segments		4
+	length			0.014
+	width_root		0.0004
+	width_tip		0.00015
+	seed			11
+	base_detail		64
+	frizz			0.45
+}
+
+hair_material
+{
+	name		m_throw_fuzz
+	color		dye_wool
+	beta_m		0.4
+	beta_n		0.4
+}
+
+standard_object
+{
+	name		throw_fuzz_object
+	geometry	throw_fuzz
+	material	m_throw_fuzz
+	parent		o_throw
+}
+
+#############################################################################################################
+# Lights.  `direction` is FROM the surface TO the light source.  RIM is
+# BEHIND AND ABOVE (velvet_cushion's own placement rationale): on the
+# top-far shoulder the normal points mostly up, so a rim placed there
+# lands close to grazing on exactly the silhouette region the camera sees
+# as curving away.
+#############################################################################################################
+
+directional_light
+{
+	name		key
+	power		0.55
+	color		1.00 0.97 0.92
+	direction	-0.45 0.40 0.60
+}
+
+directional_light
+{
+	name		rim
+	power		4.5
+	color		1.00 0.94 0.85
+	direction	0.35 0.55 -0.78
+}

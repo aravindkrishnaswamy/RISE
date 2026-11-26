@@ -1,0 +1,455 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dandelion_clock.RISEscene                                                               #
+#   Description:    FIBRES AS BOTANY -- a dandelion seed head into a low sun, with two seeds already gone.   #
+#                   It is the third piece in scenes/FeatureBased/Hair/ and it exists to show the ONE         #
+#                   regime the other two cannot: a framing tight enough that INDIVIDUAL FIBRES RESOLVE.      #
+#                                                                                                           #
+#                   WHY THIS SUBJECT.  A groom's fibres are 0.03-0.2 mm wide.  On an animal or a wig at      #
+#                   any normal framing that is a fraction of a pixel, so what a viewer sees is the           #
+#                   converged MASS and never a strand.  A dandelion clock is 60 mm across, so a 100 mm       #
+#                   lens at 0.42 m puts the frame at ~150 mm wide -- about 0.10 mm per pixel -- and an       #
+#                   0.08 mm pappus filament finally lands on the sensor as a LINE.  Every radial spoke in    #
+#                   this image is one `hair_geometry` strand, individually traced, individually shaded by    #
+#                   the Chiang BCSDF.  Nothing here is a texture.                                            #
+#                                                                                                           #
+#                   THE PLANT, in three grooms and two invisible bases:                                     #
+#                                                                                                           #
+#                     * `groom_spokes` -- 900 tan, medullated, slightly thicker fibres grown on the         #
+#                       0.0055 m `geo_recept` receptacle, which IS rendered (it is the dark eye at the      #
+#                       centre).  These are the achene stalks: the radial armature that gives the head      #
+#                       its structure and its gold.                                                          #
+#                                                                                                           #
+#                     * `groom_pappus` -- 22 000 near-white filaments grown on `geo_shell`, a 0.017 m       #
+#                       sphere that is NEVER bound to a `standard_object` and so never renders.  A          #
+#                       groom's base does not have to be visible; growing the outer fluff off a larger      #
+#                       invisible shell is what puts the parachutes in a spherical band around the head     #
+#                       instead of packing them into the middle, and it is the same trick the rabbit's      #
+#                       whiskers use in cottontail_dusk.RISEscene.                                           #
+#                                                                                                           #
+#                     * `groom_seed` -- one tiny groom on a 1.1 mm core, instanced TWICE at two             #
+#                       different distances, both far outside the depth of field.  A `hair_geometry` is a   #
+#                       recipe that realizes once and can be placed many times, so two seeds adrift cost    #
+#                       one groom.                                                                           #
+#                                                                                                           #
+#                   COUNT IS A LOOK PARAMETER, NOT A QUALITY PARAMETER.  The first version of this scene    #
+#                   used 260 000 pappus filaments, which is the density that makes a coat read -- and the   #
+#                   head came out as a featureless white ball.  A real clock carries roughly 180 seeds of   #
+#                   about a hundred filaments each; at 22 000 the structure comes back and you can see      #
+#                   through the head to the spokes behind it.  When a groom is meant to be SEEN as fibres   #
+#                   rather than felt as a mass, fewer is the correct direction.                              #
+#                                                                                                           #
+#                   COLOUR IS ALMOST ABSENT ON PURPOSE.  The pappus is Tier 1 at eumelanin 0.055 /          #
+#                   pheomelanin 0.095 -- as close to unpigmented as this plate goes -- so nearly            #
+#                   everything you see in it is the TT lobe carrying the sun through the fibre, tinted by   #
+#                   the sun and not by the fibre.  `medulla_ratio` 0.85 is what makes those filaments       #
+#                   read as soft and luminous instead of as glass wire.  The spokes are the only pigment    #
+#                   in the frame, and they are what stops the head from being a white blot.                  #
+#                                                                                                           #
+#                   HIGH KEY, DELIBERATELY.  `sun` is a small hard warm panel low and behind, aimed at      #
+#                   the camera through the head -- that is the whole image.  `backdrop_wash` lights the     #
+#                   far field ONLY (it faces away from the subject), lifting the background to a soft       #
+#                   luminous green so the filaments read as bright lines against a bright ground rather     #
+#                   than as a rim on black; `skyfill` is a dim cool panel that keeps the near side of the   #
+#                   stem from going to silhouette.  The background gradient is an `expression_painter`      #
+#                   with a radial falloff centred behind the head, which is the vignette a real lens and    #
+#                   a real meadow would give you for free.                                                   #
+#                                                                                                           #
+#                   f/3.2 AT 100 mm IS THE POINT OF THE TWO LOOSE SEEDS.  They sit 0.13 m and 0.16 m in     #
+#                   front of the focal plane, so each resolves as a soft disc of bokeh with just enough     #
+#                   golden structure left in its core to be recognisable.  Depth of field is what tells     #
+#                   the viewer the sharp filaments ARE sharp.                                                #
+#                                                                                                           #
+#                   RENDER SETTINGS.  `oidn_denoise FALSE` for the reason in                                #
+#                   docs/HAIR_FUR_DESIGN.md section 6.5 -- and this scene is the worst possible case for    #
+#                   a denoiser, since the entire subject is one-pixel-wide detail that a denoiser reads     #
+#                   as noise.  The samples carry it.  ~25 000 strands total, which is nothing; the cost     #
+#                   here is the near-white low-absorption fibres and the high-key background, both of       #
+#                   which need many bounces to settle.  The committed 1440x960 at 256 spp is 6 min 4 s on   #
+#                   a 14-core Apple Silicon laptop (measured on this scene).  24 spp is enough for          #
+#                   composition and seed placement.                                                          #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-28                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+film
+{
+	width			1440
+	height			960
+}
+
+thinlens_camera
+{
+	location		0.145 0.212 0.400
+	lookat			0.028 0.152 0.000
+	up			0 1 0
+	sensor_size		36.0
+	focal_length		100.0
+	fstop			3.2
+	focus_distance		0.425
+	aperture_blades		9
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			256
+	rr_min_depth		6
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/dandelion_clock
+	type			PNG
+	bpp			8
+	color_space		sRGB
+}
+
+##################################################
+# LIGHT.  One sun, one sky, one backdrop wash -- and each is doing a
+# job the other two cannot.
+#
+# `sun` is small (0.16 m) and hard, low and behind the head, aimed
+# forward through it.  A backlit fibre is the whole subject: what
+# reaches the camera is the TT lobe, light that entered one side of a
+# filament, crossed its interior and left the other.
+#
+# `backdrop_wash` faces AWAY from the subject, so it lights only the
+# far field.  That is what makes this a high-key image instead of a rim
+# on black -- and a bright ground is the harder, better test, because a
+# one-pixel filament has to stay legible against a value close to its
+# own rather than against nothing.
+#
+# `skyfill` is dim, cool and frontal: it keeps the stem from going to
+# silhouette and puts a little colour opposite the sun.
+##################################################
+rect_light
+{
+	name			sun
+	center			-0.30 0.36 -0.34
+	size			0.16 0.16
+	facing			0.55 -0.42 0.72
+	color			1.00 0.84 0.58
+	exitance		3200.0
+}
+
+rect_light
+{
+	name			skyfill
+	center			0.34 0.46 0.30
+	size			0.60 0.60
+	facing			-0.62 -0.55 -0.56
+	color			0.58 0.70 1.00
+	exitance		20.0
+}
+
+rect_light
+{
+	name			backdrop_wash
+	center			-0.34 0.34 -0.60
+	size			0.45 0.45
+	facing			0.24 -0.16 -0.96
+	color			0.88 0.96 0.78
+	exitance		105.0
+}
+
+##################################################
+# BACKGROUND -- a far meadow, 0.95 m behind and far outside the depth
+# of field.  The painter is a height ramp times an fbm mottle times a
+# RADIAL FALLOFF centred behind the head, which is the vignette a real
+# lens and a real field would give for free, and which is what keeps
+# the eye on the seed head in a frame that is two-thirds empty.
+##################################################
+expression_painter
+{
+	name			pnt_bg
+	def			h clamp((P.y + 0.10) / 0.70, 0.0, 1.0)
+	def			n 0.5 + 0.5 * fbm(P * 2.6, 4.0, 0.58, 2.1)
+	def			r length(vec3(P.x - 0.02, P.y - 0.20, 0.0))
+	def			v 1.0 - 0.72 * smoothstep(0.10, 0.62, r)
+	def			t clamp((0.40 * h + 0.60 * n) * v, 0.0, 1.0)
+	expr			mix(vec3(0.045,0.062,0.036), vec3(0.330,0.375,0.205), t)
+}
+
+lambertian_material
+{
+	name			mat_bg
+	reflectance		pnt_bg
+}
+
+infiniteplane_geometry
+{
+	name			geo_bg
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name			obj_bg
+	geometry		geo_bg
+	material		mat_bg
+	position		0 0 -0.95
+}
+
+##################################################
+# STEM + RECEPTACLE
+##################################################
+uniformcolor_painter
+{
+	name			pnt_stem
+	color			0.145 0.180 0.078
+}
+
+orennayar_material
+{
+	name			mat_stem
+	reflectance		pnt_stem
+	roughness		0.55
+}
+
+lathe_geometry
+{
+	name			geo_stem
+	axis			y
+	n_radial		32
+	smooth			TRUE
+	profile_point		0.00000 0.000
+	profile_point		0.00190 0.000
+	profile_point		0.00175 0.060
+	profile_point		0.00160 0.110
+	profile_point		0.00185 0.146
+	profile_point		0.00300 0.153
+	profile_point		0.00000 0.156
+}
+
+standard_object
+{
+	name			obj_stem
+	geometry		geo_stem
+	material		mat_stem
+	position		0 0 0
+}
+
+uniformcolor_painter
+{
+	name			pnt_recept
+	color			0.190 0.180 0.110
+}
+
+orennayar_material
+{
+	name			mat_recept
+	reflectance		pnt_recept
+	roughness		0.60
+}
+
+sphere_geometry
+{
+	name			geo_recept
+	radius			0.0055
+}
+
+standard_object
+{
+	name			obj_recept
+	geometry		geo_recept
+	material		mat_recept
+	position		0.000 0.1600 0.000
+}
+
+##################################################
+# THE HEAD -- two grooms, one visible base, one invisible shell.
+#
+# `pnt_gaps` is shared by both: a worley cell mask times an fbm, which
+# punches a handful of holes where seeds have already blown away.  A
+# perfect sphere of filaments is the tell that a clock was generated
+# rather than grown.
+#
+# `groom_spokes` grows on the RENDERED receptacle; `groom_pappus` grows
+# on `geo_shell`, a 0.017 m sphere that is never bound to an object and
+# therefore never rendered.  Its only purpose is to be a surface for
+# roots to sit on, 17 mm out from the centre, so the parachutes form a
+# shell rather than a solid ball.
+##################################################
+scalar_painter
+{
+	name			pnt_gaps
+	def			w  worley_f1(Po * 130.0, 1.0)
+	def			g  smoothstep(0.14, 0.30, w)
+	def			n  0.5 + 0.5 * fbm(Po * 90.0, 3.0, 0.5, 2.0)
+	expression		g * clamp(0.70 + 0.42 * n, 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name			pnt_headlen
+	def			n 0.5 + 0.5 * fbm(Po * 26.0, 3.0, 0.55, 2.0)
+	expression		0.80 + 0.40 * clamp(n, 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name			eu_spoke
+	value			0.30
+}
+
+scalar_painter
+{
+	name			ph_spoke
+	value			0.62
+}
+
+hair_material
+{
+	name			mat_spoke
+	eumelanin		eu_spoke
+	pheomelanin		ph_spoke
+	beta_m			0.32
+	beta_n			0.36
+	alpha			2.4
+	ior			1.53
+	medulla_ratio		0.45
+	medulla_scatter		1.4
+	medulla_g		0.40
+}
+
+hair_geometry
+{
+	name			groom_spokes
+	base_geometry		geo_recept
+	count			900
+	segments		4
+	length			0.0175
+	width_root		0.00020
+	width_tip		0.00008
+	base_detail		64
+	seed			5
+	density			pnt_gaps
+	gravity			0.02
+	frizz			0.03
+}
+
+standard_object
+{
+	name			obj_spokes
+	geometry		groom_spokes
+	material		mat_spoke
+	position		0.000 0.1600 0.000
+}
+
+scalar_painter
+{
+	name			eu_pappus
+	value			0.055
+}
+
+scalar_painter
+{
+	name			ph_pappus
+	value			0.095
+}
+
+hair_material
+{
+	name			mat_pappus
+	eumelanin		eu_pappus
+	pheomelanin		ph_pappus
+	beta_m			0.55
+	beta_n			0.62
+	alpha			2.0
+	ior			1.53
+	medulla_ratio		0.85
+	medulla_scatter		2.2
+	medulla_g		0.50
+}
+
+sphere_geometry
+{
+	name			geo_shell
+	radius			0.0170
+}
+
+hair_geometry
+{
+	name			groom_pappus
+	base_geometry		geo_shell
+	count			22000
+	segments		5
+	length			0.0138
+	width_root		0.000080
+	width_tip		0.000040
+	base_detail		128
+	seed			17
+	density			pnt_gaps
+	length_painter		pnt_headlen
+	gravity			0.03
+	frizz			0.07
+}
+
+standard_object
+{
+	name			obj_pappus
+	geometry		groom_pappus
+	material		mat_pappus
+	position		0.000 0.1600 0.000
+}
+
+##################################################
+# TWO SEEDS ADRIFT.  One `hair_geometry`, two `standard_object`s: a
+# groom is a recipe that realizes once and places many times.  Both sit
+# well in front of the focal plane, so f/3.2 turns each into a soft
+# disc -- and it is that softness, not the sharp head, that tells the
+# viewer the head is sharp.
+##################################################
+sphere_geometry
+{
+	name			geo_seedcore
+	radius			0.00110
+}
+
+hair_geometry
+{
+	name			groom_seed
+	base_geometry		geo_seedcore
+	count			1100
+	segments		5
+	length			0.0115
+	width_root		0.000080
+	width_tip		0.000040
+	base_detail		48
+	seed			29
+	gravity			0.05
+	frizz			0.08
+}
+
+standard_object
+{
+	name			obj_seed_a
+	geometry		groom_seed
+	material		mat_pappus
+	position		0.0780 0.2020 0.0800
+}
+
+standard_object
+{
+	name			obj_seed_b
+	geometry		groom_seed
+	material		mat_pappus
+	position		0.0700 0.1320 0.0480
+}

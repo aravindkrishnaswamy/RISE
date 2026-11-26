@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OrenNayarSPF.h - Defines a Oren-Nayar SPF, which just
-//    does uniform sampling but adjusts the weights according
-//    to the Cook-Torrance BRDF
+//  OrenNayarSPF.h - Defines a Oren-Nayar SPF, which samples
+//    the cosine-weighted hemisphere and weights each ray by the
+//    Oren-Nayar BRDF (classic or EON)
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 12, 2004
@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "OrenNayarBRDF.h"
 
@@ -25,21 +26,35 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class OrenNayarSPF : 
-			public virtual ISPF, 
+		class OrenNayarSPF :
+			public virtual ISPF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~OrenNayarSPF( );
 
-			const IPainter&	pReflectance;
-			const IPainter& pRoughness;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			//! Field names already start with `p` — pre-Phase-4 naming
+			//! that happens to match the new pointer reality.
+			const IPainter*			pReflectance;
+			const IScalarPainter*	pRoughness;
+
+			//! The model, as on OrenNayarBRDF: false classic, true EON.
+			const bool				bEnergyPreserving;
 
 		public:
-			OrenNayarSPF( 
-				const IPainter& reflectance, 
-				const IPainter& roughness
+			OrenNayarSPF(
+				const IPainter& reflectance,
+				const IScalarPainter& roughness,
+				const bool energy_preserving = false
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetReflectance() const { return *pReflectance; }
+			inline const IScalarPainter& GetRoughness()   const { return *pRoughness; }
+			void SetReflectance( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  
@@ -47,7 +62,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -58,7 +73,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Evaluates the PDF for scattering into direction wo (cosine-weighted hemisphere)

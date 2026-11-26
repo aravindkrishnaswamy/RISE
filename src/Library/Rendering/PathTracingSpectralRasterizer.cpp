@@ -41,24 +41,73 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityCfg,
 	bool useZSobol_,
-	bool useHWSS_
+	bool useHWSS_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ , frameStore),
   pIntegrator( 0 ),
-  adaptiveConfig( adaptiveConfig )
+  adaptiveConfig( adaptiveConfig ),
+  pSMSPhotonMap( 0 ),
+  mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
-		false,
 		smsConfig,
 		stabilityCfg
 		);
-	pIntegrator->addref();
+}
+
+void PathTracingSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+    PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext(rc);
+    rc.pNativePTSubsurfaceBounceCap = rc.pStabilityConfig ?
+        &rc.pStabilityConfig->maxTranslucentBounce : nullptr;
 }
 
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 {
 	safe_release( pIntegrator );
+	if( pSMSPhotonMap ) {
+		delete pSMSPhotonMap;
+		pSMSPhotonMap = 0;
+	}
+}
+
+// Delegates to PixelBasedSpectralIntegratingRasterizer::PreRenderSetup
+// for the path guiding training phase before (optionally) building
+// the SMS photon map.  See PathTracingPelRasterizer::PreRenderSetup
+// for the full rationale — missing the super-class call silently
+// disables path guiding.
+void PathTracingSpectralRasterizer::PreRenderSetup(
+	const IScene& pScene,
+	const Rect* pRect
+	) const
+{
+	PixelBasedSpectralIntegratingRasterizer::PreRenderSetup( pScene, pRect );
+
+	if( !pIntegrator ) {
+		return;
+	}
+	ManifoldSolver* pSolver = pIntegrator->GetSolver();
+	if( !pSolver ) {
+		return;
+	}
+
+	// See PathTracingPelRasterizer::PreRenderSetup for rationale.
+	std::vector<const IObject*> casters;
+	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
+	pSolver->SetSpecularCasters( std::move( casters ) );
+
+	if( mSMSPhotonCount == 0 ) {
+		return;
+	}
+
+	if( !pSMSPhotonMap ) {
+		pSMSPhotonMap = new SMSPhotonMap();
+	}
+	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
+	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
 }
 
 unsigned int PathTracingSpectralRasterizer::GetProgressiveTotalSPP() const
@@ -82,11 +131,14 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 	const Point2& ptOnScreen,
 	const IScene& pScene,
 	ISampler& sampler,
-	const IRadianceMap* pRadianceMap
+	const IRadianceMap* pRadianceMap,
+	PixelAOV* pAOV,
+	bool* pPrimaryHit
 	) const
 {
+	if( pPrimaryHit ) *pPrimaryHit = false;
 	const ICamera* pCamera = pScene.GetCamera();
-	if( !pCamera ) {
+	if( !pCamera || nSpectralSamples == 0 ) {
 		return XYZPel( 0, 0, 0 );
 	}
 
@@ -96,35 +148,38 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 	}
 
 	XYZPel spectralSum( 0, 0, 0 );
+	bool anyHit = false;
 
 	if( bUseHWSS )
 	{
-		unsigned int totalActive = 0;
 
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
 			const Scalar u = rc.random.CanonicalRandom();
-			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
+			XYZPel bundleSum(0,0,0);
 			Scalar result[SampledWavelengths::N] = {0};
+			bool sampleHit = false;
 			pIntegrator->IntegrateRayHWSS(
-				rc, rast, cameraRay, swl, pScene, *pCaster, sampler, pRadianceMap, result );
+				rc, rast, cameraRay, swl, pScene, *pCaster, sampler, pRadianceMap, result, pAOV,
+				pPrimaryHit ? &sampleHit : nullptr );
+			if( sampleHit ) anyHit = true;
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 				if( !swl.terminated[i] ) {
 					XYZPel thisNM( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( thisNM, swl.lambda[i] ) ) {
-						spectralSum = spectralSum + thisNM * result[i];
-						totalActive++;
+						bundleSum = bundleSum + thisNM * result[i];
 					}
 				}
 			}
+			spectralSum = spectralSum + swl.BundleAverage(bundleSum);
 		}
 
-		if( totalActive > 0 ) {
-			return spectralSum * (1.0 / Scalar(totalActive));
-		}
-		return spectralSum;
+		if( pPrimaryHit ) *pPrimaryHit = anyHit;
+		// Average independently sampled bundles, not their pooled active lanes.
+		return spectralSum * (mYNormalization / Scalar(nSpectralSamples));
 	}
 
 	// Standard (non-HWSS) path: independent random wavelengths
@@ -134,8 +189,11 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 			(lambda_begin + int(rc.random.CanonicalRandom() * Scalar(num_wavelengths)) * wavelength_steps) :
 			(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
 
+		bool sampleHit = false;
 		const Scalar nmvalue = pIntegrator->IntegrateRayNM(
-			rc, rast, cameraRay, nm, pScene, *pCaster, sampler, pRadianceMap );
+			rc, rast, cameraRay, nm, pScene, *pCaster, sampler, pRadianceMap, pAOV,
+			pPrimaryHit ? &sampleHit : nullptr );
+		if( sampleHit ) anyHit = true;
 
 		if( nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -145,7 +203,9 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 		}
 	}
 
-	return spectralSum * (1.0 / Scalar(nSpectralSamples));
+	if( pPrimaryHit ) *pPrimaryHit = anyHit;
+	// MC normalization: (1/N) × (b-a)/k_y.  See HWSS branch above.
+	return spectralSum * ( mYNormalization / Scalar(nSpectralSamples) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -166,6 +226,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -174,7 +235,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	RasterizerState rast = {x,y};
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = sampling && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	uint32_t pixelSeed = SobolSequence::HashCombine(
@@ -184,20 +245,29 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 	if( bMultiSample )
 	{
+		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
+		const unsigned int batchSize = sampling->GetNumSamples();
+		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
 		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
 			if( px.converged ) {
-				if( px.alphaSum > 0 ) {
-					cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+				if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+					const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+					cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+				} else if( px.alphaSum > 0 ) {
+					// px.colorSum is XYZPel; defer XYZ->ROMM RGB to
+					// here via implicit RISEPel(XYZPel) constructor.
+					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
+					cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
+				} else {
+					cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 				}
 				return;
 			}
 		}
 
-		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
-		const unsigned int batchSize = pSampling->GetNumSamples();
-		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 		if( useZSobol &&
@@ -218,7 +288,10 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		RISEPel colAccrued( 0, 0, 0 );
+		// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+		// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+		// Removes per-sample chromaticity gamut clip bias.
+		XYZPel colAccrued( 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
 		Scalar wMean = 0;
@@ -251,7 +324,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		while( sampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && sampleIndex<passEndIndex; m++, sampleIndex++ )
@@ -261,17 +334,18 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
+				} else if( pPixelFilter ) {
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 				} else {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
+					weight = 1.0;
 				}
 				weights += weight;
 
-				if( temporal_samples ) {
-					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				if( temporal_samples && !pScene.FireTemporalHold() ) {
+					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 
 				const uint32_t effectiveIndex = useZSobol
@@ -286,21 +360,43 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 				rc.pSampler = &sampler;
 
-				const XYZPel sampleXYZ = IntegratePixelSpectral(
-					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
-				const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+				PixelAOV aov;
+				bool primaryHit = false;
+				const bool transparentBg = GetTransparentBackground();
+				XYZPel sampleXYZ = IntegratePixelSpectral(
+					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
+					pAOVBuffers ? &aov : 0, transparentBg ? &primaryHit : nullptr );
+				const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+				if( sampleAlpha == Scalar( 0.0 ) ) {
+					sampleXYZ = XYZPel( 0, 0, 0 );
+				}
+				if( pAOVBuffers ) {
+					if( aov.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+					}
+					if( aov.primaryDepthCaptured ) {
+						pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+						pAOVBuffers->MarkGuidesExamined();
+					}
+				}
+				// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
+				// now accumulates XYZ; no per-sample chromaticity clip.
 
 				if( filmMode ) {
-					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, samplePel, *pPixelFilter );
-					colAccrued = colAccrued + samplePel;
-					alphas += 1.0;
+					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleXYZ, *pPixelFilter, sampleAlpha );
+					colAccrued = colAccrued + sampleXYZ;
+					alphas += sampleAlpha;
 				} else {
-					colAccrued = colAccrued + samplePel * weight;
-					alphas += weight;
+					colAccrued = colAccrued + sampleXYZ * weight;
+					alphas += sampleAlpha * weight;
 				}
 
-				if( adaptive || pProgFilm ) {
-					const Scalar lum = ColorMath::MaxValue(samplePel);
+				// Welford update gated on `adaptive` only (see
+				// BDPTPelRasterizer for the multi-pass selection-bias
+				// rationale).  XYZ.Y is the CIE photometric luminance.
+				if( adaptive ) {
+					const Scalar lum = sampleXYZ.Y;
 					wN++;
 					const Scalar delta = lum - wMean;
 					wMean += delta / Scalar(wN);
@@ -311,7 +407,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				rc.pSampler = 0;
 			}
 
-			if( (adaptive || pProgFilm) && wN >= 32 )
+			if( adaptive && wN >= 32 )
 			{
 				const Scalar variance = wM2 / Scalar(wN - 1);
 				const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -343,11 +439,22 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
+		// Normalize accumulated AOVs by total weight (non-progressive only;
+		// the progressive path normalizes in PixelBasedRasterizerHelper after
+		// the final pass).  Mirrors PathTracingPelRasterizer.
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+		}
+
 		if( adaptive && adaptiveConfig.showMap ) {
 			const Scalar t = Scalar(sampleIndex) / Scalar(targetSamples);
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
 		} else if( alphas > 0 ) {
-			cret = RISEColor( colAccrued * (1.0 / alphas), alphas / weights );
+			// Single XYZ -> ROMM RGB conversion at resolve.
+			const XYZPel avgXYZ = colAccrued * (1.0 / alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
+		} else {
+			cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 		}
 	}
 	else
@@ -368,10 +475,29 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 		rc.pSampler = &sampler;
 
+		PixelAOV aov;
+		bool primaryHit = false;
+		const bool transparentBg = GetTransparentBackground();
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
-			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap );
+			rc, rast, RasterConvention::PixelCentreToScreen( x, y, height ), pScene, sampler, pRadianceMap,
+			pAOVBuffers ? &aov : 0, transparentBg ? &primaryHit : nullptr );
+		if( pAOVBuffers ) {
+			if( aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+			}
+			if( aov.primaryDepthCaptured ) {
+				pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+				pAOVBuffers->MarkGuidesExamined();
+			}
+			pAOVBuffers->Normalize( x, y, 1.0 );
+		}
 
-		cret = RISEColor( RISEPel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z ), 1.0 );
+		// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
+		const Scalar sampleAlpha = ( transparentBg && !primaryHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+		cret = ( sampleAlpha == Scalar( 0.0 ) )
+			? RISEColor( RISEPel( 0, 0, 0 ), 0.0 )
+			: RISEColor( RISEPel( sampleXYZ ), sampleAlpha );
 
 		rc.pSampler = 0;
 	}

@@ -28,7 +28,8 @@ namespace RISE
 		virtual ~IMemoryBuffer() {};
 
 	public:
-		//! This returns the pointer at the begining of the buffer
+		//! Returns the beginning of the buffer. A resize or growing write may
+		//! replace the storage and invalidate previously returned pointers.
 		virtual char * Pointer( ) = 0;
 
 		//! This returns a const pointer at the begining of the buffer

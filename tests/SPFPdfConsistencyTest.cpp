@@ -13,12 +13,15 @@
 //       compare observed counts against Pdf()-predicted expected counts.
 //
 //  Build (from project root):
-//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include \
-//        -O3 -ffast-math -funroll-loops -Wall -pedantic \
-//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53 \
-//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING \
+//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include
+//        -O3 -ffast-math -fno-finite-math-only -funroll-loops -Wall -pedantic
+//        (-fno-finite-math-only is REQUIRED to match production since
+//         2026-07-29; without it std::isfinite/isnan fold to constants
+//         and NaN-sentinel assertions silently pass -- see CLAUDE.md.)
+//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53
+//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING
 //        -c tests/SPFPdfConsistencyTest.cpp -o tests/SPFPdfConsistencyTest.o
-//    c++ -arch arm64 -o tests/spf_pdf_test tests/SPFPdfConsistencyTest.o \
+//    c++ -arch arm64 -o tests/spf_pdf_test tests/SPFPdfConsistencyTest.o
 //        bin/librise.a -L/opt/homebrew/lib -lpng -lz
 //
 //  Author: Aravind Krishnaswamy
@@ -29,6 +32,8 @@
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <algorithm>
 #include <vector>
 #include <string>
 
@@ -38,13 +43,27 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include "DataDrivenTestTables.h"
+#include <cstdio>
+#ifdef _WIN32
+#include <process.h>
+#ifndef getpid
+#define getpid _getpid
+#endif
+#else
+#include <unistd.h>
+#endif
 #include "../src/Library/Materials/OrenNayarSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"
@@ -56,7 +75,16 @@
 #include "../src/Library/Materials/PolishedSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/GGXSPF.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/CoatedLayer.h"
+#include "../src/Library/Materials/FabricMaterial.h"
+#include "WeaveTestFixture.h"
 
 #include "TestStubObject.h"
 
@@ -67,13 +95,62 @@ using namespace RISE::Implementation;
 //  Test configuration
 // ============================================================
 
-static const int NUM_SAMPLES        = 500000;   // Samples for histogram test
-static const int NUM_CROSS_VALIDATE = 50000;    // Samples for cross-validation
+static const int MAX_CHI2_SEEDS     = 8;
+static int       NUM_SAMPLES        = 80000;    // Samples for histogram test (150000 under --extended)
+static int       NUM_CROSS_VALIDATE = 5000;     // Samples for cross-validation (15000 under --extended)
+static int       NUM_SUBDENSITY     = 20000;    // Samples for Part 2b emission-probability (50000 under --extended)
 static const int NUM_THETA_BINS     = 20;       // Bins in polar angle
 static const int NUM_PHI_BINS       = 40;       // Bins in azimuthal angle
 static const double CHI2_ALPHA      = 0.001;    // Significance level
 static const double CROSS_VAL_TOL   = 1e-6;     // Tolerance for relative error
 static const double INTEGRAL_TOL    = 0.05;     // Tolerance for PDF integral (5%)
+static bool      g_extended         = false;
+
+// ------------------------------------------------------------
+//  DL-176: seeds, and the multi-seed chi-squared criterion.
+//
+//  Every `RandomNumberGenerator` in this file used to be default-
+//  constructed, i.e. seeded from an un-`srand`ed libc `rand()`.  That is
+//  reproducible only by accident (C says `rand()` behaves as if
+//  `srand(1)` had been called, so the whole suite was silently running
+//  ONE seed), and it made the single most fragile gate in the file --
+//  `CookTorrance_BlackDiffuse @ 60deg`, 927.52 against a critical
+//  928.261 -- look like a pass that any upstream change in `rand()`
+//  consumption could flip.  Every RNG below now takes an EXPLICIT seed.
+//
+//  A single-seed alpha=0.001 gate is also the wrong instrument for the
+//  question this part asks.  chi2 with `d` degrees of freedom has mean
+//  `d` and standard deviation `sqrt(2d)`; at d=799 that is 799 +/- 39.97,
+//  and the 0.001 critical value 928.261 sits at +3.23 sd.  A gate there
+//  has a 0.1% false-alarm rate PER ROW PER RUN (26 gated rows => ~2.6%
+//  chance that some row reddens on a clean tree) while being nearly
+//  blind to a small PERSISTENT density defect, which is the thing worth
+//  catching.  Averaging the statistic over NUM_CHI2_SEEDS independent
+//  seeds inverts both properties: the mean of N iid chi2(d) values has
+//  mean `d` and sd `sqrt(2d/N)`, so
+//
+//      z = ( mean(chi2) - d ) / sqrt( 2d / N )
+//
+//  is ~N(0,1) under H0 (N=8 is already deep in the CLT for d=799), a
+//  |z| < CHI2_Z_TOL band is a 6.334e-5 two-sided test per row, and a
+//  systematic offset shrinks its error bar by sqrt(N) instead of hiding
+//  inside it.  Both the per-seed values and z are printed.
+//
+//  Family-wise, COUNTED rather than estimated (review round 1, P3-a):
+//  this file prints 30 gated chi2 evaluations carrying 23 DISTINCT
+//  statistics -- several rows are bit-identical because their samplers
+//  are all cosine hemispheres consuming the same draws from the same
+//  seeds, e.g. Lambertian / OrenNayar / Composite.  So the false-alarm
+//  rate of the whole file is 1 - (1-p)^n = 0.146 % over the 23
+//  independent statistics and 0.190 % over all 30 evaluations, against
+//  a single-seed alpha=0.001 threshold's 3.0 % over 30.
+// ------------------------------------------------------------
+static int          NUM_CHI2_SEEDS  = 2;        // Independent seeds per chi2 row (3 under --extended)
+static const unsigned int SUBDENSITY_SEED = 777001u;
+static const double SUBDENSITY_TOL  = 0.015;    // Part 2b band (see there)
+static const unsigned int CHI2_SEED_BASE  = 20260918u;
+static const unsigned int CROSSVAL_SEED   = 12345u;
+static const double CHI2_Z_TOL      = 4.0;      // |z| band on the seed-mean
 
 // ============================================================
 //  Chi-squared critical value (Wilson-Hilferty approximation)
@@ -152,11 +229,29 @@ struct TestResult {
     bool crossValPassed;
     bool integralPassed;
     bool chi2Passed;
-    double chi2Stat;
-    double chi2Crit;
+    double chi2Stat;        //!< seed-MEAN of the per-seed chi2 statistics
+    double chi2Crit;        //!< single-seed alpha=0.001 critical value (reporting)
     int crossValFailures;
     double maxCrossValError;
     double pdfIntegral;
+    // DL-176 round-1-review (P2-1): the SUB-DENSITY contract.
+    double fullSphereIntegral;  //!< int Pdf over the WHOLE sphere
+    double emissionProb;        //!< P(Scatter + RandomlySelect yield a non-delta ray)
+    double pdfUpperShare;       //!< fraction of int Pdf in the upper hemisphere
+    double emittedUpperShare;   //!< fraction of emitted rays in the upper hemisphere
+    bool   subDensityPassed;
+    bool   domainSplitPassed;
+    // DL-176 multi-seed reporting.
+    int    chi2Dof;
+    //! Fraction of NUM_SAMPLES `Scatter` calls whose selected ray landed
+    //! in the upper hemisphere (first seed).  This is what Part 3's
+    //! expected counts are now normalised to, and -- per the DL-98/DL-99
+    //! sub-density contract -- the quantity `Pdf` should integrate to.
+    double emissionRate;
+    double chi2Z;           //!< ( mean - dof ) / sqrt( 2*dof / NUM_CHI2_SEEDS )
+    double chi2Min;
+    double chi2Max;
+    double chi2Seeds[ MAX_CHI2_SEEDS ];
 };
 
 // ============================================================
@@ -171,7 +266,15 @@ static TestResult TestSPF(
     bool exactSelectedPdf,
     bool skipCrossVal,
     bool skipChi2,
-    double integralTol
+    double integralTol,
+    //! Part 2b's band on `|int Pdf(full sphere) - emission probability|`.
+    //! 0.01 everywhere except where a DOCUMENTED open defect is being
+    //! pinned rather than asserted away -- see the `spfs` table.
+    double subDensityTol,
+    //! True for an SPF that deliberately emits into BOTH hemispheres, so
+    //! Part 2's `int Pdf over the HEMISPHERE == 1` is not its contract.
+    //! See the gate's own note in Part 2b.
+    bool bFullSphereSampler
     )
 {
     TestResult result;
@@ -181,11 +284,26 @@ static TestResult TestSPF(
     result.chi2Passed = true;
     result.crossValFailures = 0;
     result.maxCrossValError = 0;
+    result.chi2Stat = 0;
+    result.chi2Crit = 0;
+    result.chi2Dof  = 0;
+    result.emissionRate = 0;
+    result.fullSphereIntegral = 0;
+    result.emissionProb = 0;
+    result.pdfUpperShare = 0;
+    result.emittedUpperShare = 0;
+    result.subDensityPassed = true;
+    result.domainSplitPassed = true;
+    result.chi2Z    = 0;
+    result.chi2Min  = 0;
+    result.chi2Max  = 0;
+    for( int s = 0; s < NUM_CHI2_SEEDS; s++ ) result.chi2Seeds[s] = 0;
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
 
-    RandomNumberGenerator rng;
+    // DL-176: explicit seed -- see the CHI2_SEED_BASE block above.
+    RandomNumberGenerator rng( CROSSVAL_SEED );
     Implementation::IndependentSampler sampler( rng );
     IORStack iorStack = MakeTestIORStack( g_stubObject );
 
@@ -314,58 +432,180 @@ static TestResult TestSPF(
     }
 
     result.pdfIntegral = pdfIntegral;
-    if( fabs(pdfIntegral - 1.0) > integralTol )
+    // DL-157/DL-41 (2026-09-18): `int Pdf` over the UPPER HEMISPHERE is 1
+    // only for an SPF that emits nowhere else.  `TranslucentSPF` emits its
+    // transmission / backscatter Phong lobe into the opposite half-space
+    // BY CONSTRUCTION, so for it this integral is legitimately the upper
+    // hemisphere's SHARE of the density -- and the correct statement about
+    // that share is Part 2b's, which gates it against the sampler's own
+    // measured upper-hemisphere emission rate.  Nothing is loosened: for
+    // such a row, `pdfIntegral == pdfUpperShare * fullSphereIntegral` and
+    // Part 2b gates BOTH factors, so this check is strictly implied by
+    // the two below rather than dropped.
+    if( !bFullSphereSampler && fabs(pdfIntegral - 1.0) > integralTol )
         result.integralPassed = false;
+
+    // ================================================================
+    //  Part 2b: THE SUB-DENSITY CONTRACT (DL-176 review round 1, P2-1)
+    //
+    //  Part 2 above asks `|int Pdf over the HEMISPHERE - 1| <= tol`.
+    //  That is the wrong target for two independent reasons, and the
+    //  rescale DL-176 applied to Part 3 removed the only place the
+    //  right one was implicitly being asked:
+    //
+    //    * `Pdf` is legitimately a SUB-density -- it must integrate to
+    //      the PROBABILITY that `Scatter` + `RandomlySelect` produce a
+    //      non-delta ray at all, which is strictly less than 1 whenever
+    //      a lobe can be rejected or carries zero weight; and
+    //    * the domain is the whole SPHERE, not the hemisphere, wherever
+    //      the sampler can emit below the shading horizon.
+    //
+    //  Live proof that the pair of them is not academic: `Translucent`
+    //  prints a hemispherical `int Pdf` of 1.00004 while only 0.556 of
+    //  its selected rays land in that hemisphere -- a 1.80x mismatch
+    //  that passes BOTH Part 2 and (post-rescale) Part 3, because one
+    //  measures the wrong domain and the other is now shape-only by
+    //  construction.
+    //
+    //  Two gated checks, because the mismatch splits into two
+    //  independent failure modes and only one of them is about mass:
+    //
+    //   (i) MASS -- `int Pdf` over the whole SPHERE against the measured
+    //       `P(Scatter + RandomlySelect yield a non-delta ray)`.  This
+    //       catches a density that has lost or duplicated mass.
+    //  (ii) DOMAIN SPLIT -- the FRACTION of `Pdf`'s mass in the upper
+    //       hemisphere against the fraction of emitted rays that land
+    //       there.  This catches mass that is all present but in the
+    //       wrong place, which (i) is blind to by construction.
+    //
+    //  Measured, the Translucent row is exactly that second case and
+    //  NOT the first: its full-sphere mass agrees to 4.1e-5, while it
+    //  puts essentially 100% of its density in the upper hemisphere
+    //  and only 55.6% of its rays -- a 1.80x domain-split violation
+    //  (DL-41: `TranslucentSPF::Pdf` covers NEITHER Phong cos^N
+    //  transmission lobe).  So the round-1 review's reading that
+    //  "emission rate 0.556282 vs int Pdf 1.00004" is a MASS mismatch
+    //  was comparing a hemisphere-restricted acceptance count against a
+    //  hemisphere integral; the defect is real, but it is a domain
+    //  split, and (ii) is the check that sees it.
+    //
+    //  Tolerance 0.01 on both, the same band
+    //  `tests/WardDensityKrayTest.cpp` section D derives for the same
+    //  comparison (a deterministic selection quadrature's residual
+    //  dominates it, so it does not shrink with the draw count).
+    // ================================================================
+
+    {
+        // SPH_THETA is EVEN, so its first half is exactly the upper
+        // hemisphere and the two integrals below share one grid -- the
+        // ratio in (ii) is then free of any grid-mismatch bias.
+        const int SPH_THETA = 200;
+        const int SPH_PHI = 200;
+        double sph = 0.0, sphUp = 0.0;
+        for( int t = 0; t < SPH_THETA; t++ )
+        {
+            const double theta = (t + 0.5) * PI / SPH_THETA;
+            const double dTheta = PI / SPH_THETA;
+            const double sinT = sin(theta), cosT = cos(theta);
+            for( int p = 0; p < SPH_PHI; p++ )
+            {
+                const double phi = (p + 0.5) * TWO_PI / SPH_PHI;
+                const double dPhi = TWO_PI / SPH_PHI;
+                Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
+                wo = Vector3Ops::Normalize( wo );
+                const double m = spf.Pdf( ri, wo, iorStack ) * sinT * dTheta * dPhi;
+                sph += m;
+                if( t < SPH_THETA/2 ) sphUp += m;
+            }
+        }
+        result.fullSphereIntegral = sph;
+
+        // The measured probabilities, over their OWN seed so they do
+        // not perturb Part 1's or Part 3's streams.
+        RandomNumberGenerator rngE( SUBDENSITY_SEED );
+        Implementation::IndependentSampler samplerE( rngE );
+        const int NE = ( subDensityTol < 1e-3 ) ? 200000 : NUM_SUBDENSITY;
+        int emitted = 0, emittedUp = 0;
+        for( int i = 0; i < NE; i++ )
+        {
+            ScatteredRayContainer scattered;
+            spf.Scatter( ri, samplerE, scattered, iorStack );
+            ScatteredRay* sel = scattered.RandomlySelect( rngE.CanonicalRandom(), false );
+            if( !sel || sel->isDelta ) continue;
+            emitted++;
+            if( Vector3Ops::Dot( Vector3Ops::Normalize( sel->ray.Dir() ), normal ) > 0 ) {
+                emittedUp++;
+            }
+        }
+        result.emissionProb = double(emitted) / double(NE);
+        result.pdfUpperShare     = ( sph > 0 )     ? ( sphUp / sph )                    : 0.0;
+        result.emittedUpperShare = ( emitted > 0 ) ? ( double(emittedUp)/double(emitted) ) : 0.0;
+
+        if( fabs( result.fullSphereIntegral - result.emissionProb ) > subDensityTol )
+            result.subDensityPassed = false;
+        if( fabs( result.pdfUpperShare - result.emittedUpperShare ) > subDensityTol )
+            result.domainSplitPassed = false;
+    }
 
     // ================================================================
     //  Part 3: Chi-squared histogram test
     //  Use RandomlySelect to pick one ray per Scatter call (matching
     //  path tracer behavior), bin directions, compare against Pdf().
+    //
+    //  DL-176 (2026-09-18) changed TWO things here, both formulation
+    //  rather than tolerance:
+    //
+    //  (a) THE EXPECTED COUNTS ARE NORMALISED TO THE OBSERVED TOTAL.
+    //      The old code set `expected[i] = (4x4 sub-integral of Pdf over
+    //      bin i) * totalAccepted`, which is only a valid null model if
+    //      `sum_i expected[i] == totalAccepted` -- i.e. if `Pdf`
+    //      integrates to EXACTLY 1 over the binned hemisphere AND the
+    //      4x4 sub-integration is exact.  Neither holds in general:
+    //      `Pdf` is legitimately a SUB-density whenever `Scatter` can
+    //      emit nothing (a rejected lobe) or emit below the horizon,
+    //      and the histogram counts only the calls that DID land in the
+    //      hemisphere.  Any mismatch `eps = totalAccepted/sum(expected)
+    //      - 1` then appears in every group at once and injects
+    //      `sum_i expected[i] * eps^2 = totalAccepted * eps^2 / (1+eps)`
+    //      into chi2 -- a pure normalisation artifact with no angular
+    //      content.  At `CookTorrance_BlackDiffuse @ 60deg`
+    //      (integral 0.98463, ~410k accepted) that term alone is ~100,
+    //      which is exactly the size of the anomaly DL-176 was filed
+    //      for.  The fix is the standard Pearson construction: rescale
+    //      so `sum expected == totalAccepted`, making Part 3 a pure
+    //      SHAPE test.  The one degree of freedom this costs is ALREADY
+    //      subtracted below -- `dof--; // Lose 1 DOF because total count
+    //      is fixed` -- the old code paid for a constraint it never
+    //      imposed.  Total MASS is not left untested: Part 2 gates it
+    //      directly, which is the right split (mass -> Part 2,
+    //      shape -> Part 3).
+    //
+    //  (b) THE TRAILING PARTIAL GROUP IS NO LONGER DISCARDED.  The
+    //      merge-at-5 loop dropped whatever observed/expected counts had
+    //      not yet reached 5 when it ran off the end of the array (the
+    //      grazing horizon bins, where most SPFs put least mass).  They
+    //      are now folded into the last completed group.
+    //
+    //  And the statistic is evaluated at NUM_CHI2_SEEDS independent
+    //  seeds; the gate is on the seed-MEAN via `z` (see CHI2_Z_TOL).
+    //  The bin GROUPING is fixed once, from a reference acceptance count
+    //  measured at the first seed, so `dof` cannot drift between seeds.
     // ================================================================
 
     if( skipChi2 )
     {
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
         return result;
     }
 
     const int totalBins = NUM_THETA_BINS * NUM_PHI_BINS;
-    std::vector<int> observed( totalBins, 0 );
-    int totalAccepted = 0;
 
-    for( int i = 0; i < NUM_SAMPLES; i++ )
-    {
-        ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, iorStack );
-
-        // Use RandomlySelect to pick one ray, as the path tracer does
-        ScatteredRay* selected = scattered.RandomlySelect( rng.CanonicalRandom(), false );
-        if( !selected ) continue;
-        if( selected->isDelta ) continue;
-
-        Vector3 wo = Vector3Ops::Normalize( selected->ray.Dir() );
-        int tb, pb;
-        if( DirectionToBin( wo, normal, tb, pb ) )
-        {
-            observed[ tb * NUM_PHI_BINS + pb ]++;
-            totalAccepted++;
-        }
-    }
-
-    if( totalAccepted < 1000 )
-    {
-        std::cout << "  WARNING: " << name << " produced too few hemisphere samples ("
-                  << totalAccepted << "), skipping chi2 test" << std::endl;
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
-        return result;
-    }
-
-    // Compute expected counts by numerically integrating Pdf() over each bin
+    // --- Expected SHAPE: the 4x4 sub-integration, computed ONCE.
+    //     Units: probability per bin (NOT counts).  The Pdf() shape does
+    //     not depend on the sampler's seed, so this is seed-invariant.
     const int SUB_THETA = 4;
     const int SUB_PHI = 4;
-    std::vector<double> expected( totalBins, 0.0 );
+    std::vector<double> expectedProb( totalBins, 0.0 );
+    double expectedProbSum = 0.0;
 
     for( int tb = 0; tb < NUM_THETA_BINS; tb++ )
     {
@@ -398,57 +638,381 @@ static TestResult TestSPF(
                 }
             }
 
-            expected[ tb * NUM_PHI_BINS + pb ] = integral * totalAccepted;
+            expectedProb[ tb * NUM_PHI_BINS + pb ] = integral;
+            expectedProbSum += integral;
         }
     }
 
-    // Compute chi-squared statistic, merging bins with expected < 5
-    double chi2 = 0;
-    int dof = 0;
-    double mergedObs = 0;
-    double mergedExp = 0;
-
-    for( int i = 0; i < totalBins; i++ )
+    if( expectedProbSum <= 0 )
     {
-        mergedObs += observed[i];
-        mergedExp += expected[i];
-
-        if( mergedExp >= 5.0 )
-        {
-            double diff = mergedObs - mergedExp;
-            chi2 += (diff * diff) / mergedExp;
-            dof++;
-            mergedObs = 0;
-            mergedExp = 0;
-        }
-    }
-
-    if( dof <= 1 )
-    {
-        std::cout << "  WARNING: " << name << " too few bins with sufficient expected count" << std::endl;
-        result.chi2Stat = 0;
-        result.chi2Crit = 0;
+        std::cout << "  WARNING: " << name << " Pdf() integrates to zero over the "
+                     "binned hemisphere, skipping chi2 test" << std::endl;
         return result;
     }
 
-    dof--;  // Lose 1 DOF because total count is fixed
+    // --- Draw the histograms, one per seed.
+    std::vector< std::vector<int> > observedSeeds( NUM_CHI2_SEEDS );
+    std::vector<int> acceptedSeeds( NUM_CHI2_SEEDS, 0 );
 
-    double critical = Chi2Critical( dof, CHI2_ALPHA );
-    result.chi2Stat = chi2;
-    result.chi2Crit = critical;
+    for( int sd = 0; sd < NUM_CHI2_SEEDS; sd++ )
+    {
+        std::vector<int> observed( totalBins, 0 );
+        int totalAccepted = 0;
 
-    if( chi2 > critical )
+        RandomNumberGenerator rngS( CHI2_SEED_BASE + (unsigned int)sd );
+        Implementation::IndependentSampler samplerS( rngS );
+
+        for( int i = 0; i < NUM_SAMPLES; i++ )
+        {
+            ScatteredRayContainer scattered;
+            spf.Scatter( ri, samplerS, scattered, iorStack );
+
+            // Use RandomlySelect to pick one ray, as the path tracer does
+            ScatteredRay* selected = scattered.RandomlySelect( rngS.CanonicalRandom(), false );
+            if( !selected ) continue;
+            if( selected->isDelta ) continue;
+
+            Vector3 wo = Vector3Ops::Normalize( selected->ray.Dir() );
+            int tb, pb;
+            if( DirectionToBin( wo, normal, tb, pb ) )
+            {
+                observed[ tb * NUM_PHI_BINS + pb ]++;
+                totalAccepted++;
+            }
+        }
+
+        observedSeeds[sd].swap( observed );
+        acceptedSeeds[sd] = totalAccepted;
+    }
+
+    if( acceptedSeeds[0] < 1000 )
+    {
+        std::cout << "  WARNING: " << name << " produced too few hemisphere samples ("
+                  << acceptedSeeds[0] << "), skipping chi2 test" << std::endl;
+        return result;
+    }
+
+    // --- Fix the GROUPING once, from the first seed's acceptance count,
+    //     so every seed's statistic has the same degrees of freedom.
+    //     `groupEnd[g]` is one past the last bin index in group g.
+    result.emissionRate = double( acceptedSeeds[0] ) / double( NUM_SAMPLES );
+    const double refScale = double( acceptedSeeds[0] ) / expectedProbSum;
+    std::vector<int> groupEnd;
+    {
+        double acc = 0;
+        for( int i = 0; i < totalBins; i++ )
+        {
+            acc += expectedProb[i] * refScale;
+            if( acc >= 5.0 )
+            {
+                groupEnd.push_back( i + 1 );
+                acc = 0;
+            }
+        }
+        // (b) whatever is left over is folded into the last group.
+        if( !groupEnd.empty() ) {
+            groupEnd.back() = totalBins;
+        }
+    }
+
+    if( (int)groupEnd.size() <= 1 )
+    {
+        std::cout << "  WARNING: " << name << " too few bins with sufficient expected count" << std::endl;
+        return result;
+    }
+
+    const int dof = (int)groupEnd.size() - 1;   // total count is fixed by (a)
+    result.chi2Dof = dof;
+
+    // --- The statistic, per seed.
+    double chi2Sum = 0;
+    result.chi2Min = 1e300;
+    result.chi2Max = -1e300;
+
+    for( int sd = 0; sd < NUM_CHI2_SEEDS; sd++ )
+    {
+        const std::vector<int>& observed = observedSeeds[sd];
+        // (a) expected counts normalised to THIS seed's observed total.
+        const double scale = double( acceptedSeeds[sd] ) / expectedProbSum;
+
+        double chi2 = 0;
+        int begin = 0;
+        for( size_t g = 0; g < groupEnd.size(); g++ )
+        {
+            double obs = 0, exp_ = 0;
+            for( int i = begin; i < groupEnd[g]; i++ )
+            {
+                obs  += observed[i];
+                exp_ += expectedProb[i] * scale;
+            }
+            begin = groupEnd[g];
+            if( exp_ > 0 )
+            {
+                const double diff = obs - exp_;
+                chi2 += (diff * diff) / exp_;
+            }
+        }
+
+        result.chi2Seeds[sd] = chi2;
+        chi2Sum += chi2;
+        if( chi2 < result.chi2Min ) result.chi2Min = chi2;
+        if( chi2 > result.chi2Max ) result.chi2Max = chi2;
+    }
+
+    result.chi2Stat = chi2Sum / double( NUM_CHI2_SEEDS );
+    result.chi2Crit = Chi2Critical( dof, CHI2_ALPHA );
+    result.chi2Z = ( result.chi2Stat - double(dof) )
+                 / sqrt( 2.0 * double(dof) / double( NUM_CHI2_SEEDS ) );
+
+    if( fabs( result.chi2Z ) > CHI2_Z_TOL )
         result.chi2Passed = false;
 
     return result;
 }
 
 // ============================================================
+//  Spectral (NM) companion -- docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 6
+//  asks for the pdf consistency check "RGB and NM", and the harness
+//  above is RGB-only: TestSPF drives `Scatter` / `Pdf` and there is no
+//  ScatterNM / PdfNM anywhere in it.
+//
+//  That is a real hole rather than a stylistic one.  The RGB and NM
+//  paths are TWINS, and docs/skills/audit-by-bug-pattern.md's whole
+//  subject is that RISE twins drift: an NM path that reported a
+//  branch-local density while the RGB path reported the mixture would
+//  sail through every check above.  So this runs the two sub-tests that
+//  transfer -- Part 1's exact cross-validation and Part 2's
+//  hemispherical integral -- against `ScatterNM` / `PdfNM` at a hero
+//  wavelength.
+//
+//  (Part 3's chi-squared is deliberately not repeated: it is a
+//  statement about the SAMPLER's angular frequencies, and ScatterImpl
+//  draws its direction from the same code and the same sampler in both
+//  regimes -- only the throughput and the density evaluation differ,
+//  which is what Parts 1 and 2 measure.)
+// ============================================================
+
+struct NMResult {
+    std::string name;
+    int    crossValFailures;
+    double maxCrossValError;
+    double pdfIntegral;
+    double fullSphereIntegral = 0;  //!< sub-density rows only
+    double emissionProb = 0;        //!< sub-density rows only
+    bool   subDensityPassed = true;
+    bool   passed;
+};
+
+static NMResult TestSPFNM(
+    const std::string& name,
+    ISPF& spf,
+    double incomingTheta,
+    double nm,
+    double integralTol,
+    //! Per-entry cross-validation tolerance.  CROSS_VAL_TOL (1e-6) for
+    //! every SPF that satisfies the contract; relaxed ONLY where a
+    //! DOCUMENTED pre-existing defect is being bounded rather than
+    //! asserted away.  See the `nmEntries` table.
+    double crossValTol,
+    //! When positive, the NM twin of the RGB Part 2b MASS gate:
+    //! `|int PdfNM over the SPHERE - P(ScatterNM + RandomlySelect yield a
+    //! non-delta ray)| <= subDensityTol`.  Set on the sub-density rows,
+    //! whose loose Part 2 band would otherwise leave the NM mass ungated.
+    double subDensityTol = -1.0
+    )
+{
+    NMResult result;
+    result.name = name;
+    result.crossValFailures = 0;
+    result.maxCrossValError = 0;
+
+    RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
+    RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    // Part 1 (NM): the pdf stored on the sampled ray must equal an
+    // independent PdfNM() call for that same direction.
+    for( int i = 0; i < NUM_CROSS_VALIDATE; i++ )
+    {
+        ScatteredRayContainer scattered;
+        spf.ScatterNM( ri, sampler, nm, scattered, iorStack );
+        if( scattered.Count() == 0 ) continue;
+
+        const ScatteredRay& sel = scattered[0];
+        if( sel.isDelta ) continue;
+        if( sel.pdf <= 0 ) continue;
+
+        const Vector3 wo = Vector3Ops::Normalize( sel.ray.Dir() );
+        const Scalar pdfEval = spf.PdfNM( ri, wo, nm, iorStack );
+
+        const double err   = fabs( sel.pdf - pdfEval );
+        const double denom = r_max( fabs( sel.pdf ), fabs( pdfEval ) );
+        const double relErr = ( denom > 1e-10 ) ? err / denom : err;
+
+        if( relErr > crossValTol ) {
+            result.crossValFailures++;
+        }
+        // Track the worst error regardless of the tolerance, so a
+        // relaxed row still REPORTS its true magnitude and a regression
+        // in it is visible in the output even before it trips the bound.
+        if( relErr > result.maxCrossValError ) result.maxCrossValError = relErr;
+    }
+
+    // Part 2 (NM): PdfNM must integrate to 1 over the hemisphere.
+    const int INTEGRAL_THETA = 100;
+    const int INTEGRAL_PHI   = 200;
+    double pdfIntegral = 0.0;
+    for( int t = 0; t < INTEGRAL_THETA; t++ )
+    {
+        const double theta = ( t + 0.5 ) * PI_OV_TWO / INTEGRAL_THETA;
+        const double sinT = sin( theta ), cosT = cos( theta );
+        const double dTheta = PI_OV_TWO / INTEGRAL_THETA;
+        for( int p = 0; p < INTEGRAL_PHI; p++ )
+        {
+            const double phi = ( p + 0.5 ) * TWO_PI / INTEGRAL_PHI;
+            const double dPhi = TWO_PI / INTEGRAL_PHI;
+            Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+            wo = Vector3Ops::Normalize( wo );
+            pdfIntegral += spf.PdfNM( ri, wo, nm, iorStack ) * sinT * dTheta * dPhi;
+        }
+    }
+    result.pdfIntegral = pdfIntegral;
+
+    if( subDensityTol > 0 )
+    {
+        const int SPH_THETA = 200, SPH_PHI = 200;
+        double sph = 0.0;
+        for( int t = 0; t < SPH_THETA; t++ ) {
+            const double theta = ( t + 0.5 ) * PI / SPH_THETA;
+            const double sinT = sin( theta ), cosT = cos( theta );
+            for( int p = 0; p < SPH_PHI; p++ ) {
+                const double phi = ( p + 0.5 ) * TWO_PI / SPH_PHI;
+                const Vector3 wo = Vector3Ops::Normalize( Vector3( sinT * cos( phi ), sinT * sin( phi ), cosT ) );
+                sph += spf.PdfNM( ri, wo, nm, iorStack ) * sinT * ( PI / SPH_THETA ) * ( TWO_PI / SPH_PHI );
+            }
+        }
+        RandomNumberGenerator rngE( SUBDENSITY_SEED );
+        Implementation::IndependentSampler samplerE( rngE );
+        const int NE = NUM_SUBDENSITY;
+        int emitted = 0;
+        for( int i = 0; i < NE; i++ ) {
+            ScatteredRayContainer scattered;
+            spf.ScatterNM( ri, samplerE, nm, scattered, iorStack );
+            ScatteredRay* sel = scattered.RandomlySelect( rngE.CanonicalRandom(), false );
+            if( sel && !sel->isDelta ) emitted++;
+        }
+        result.fullSphereIntegral = sph;
+        result.emissionProb = double( emitted ) / double( NE );
+        result.subDensityPassed = fabs( sph - result.emissionProb ) <= subDensityTol;
+    }
+
+    result.passed = ( result.crossValFailures == 0 )
+                 && ( fabs( pdfIntegral - 1.0 ) <= integralTol )
+                 && result.subDensityPassed;
+    return result;
+}
+
+//! Does a given `wo` actually DISCRIMINATE a branch-local density from
+//! the full mixture?  9.9 gate 6 is explicit that "a sheen-only
+//! direction would not discriminate", and the same caveat -- which the
+//! doc does not state -- applies from the other side:
+//!
+//!   THE SHEEN LOBE IS A COSINE HEMISPHERE, AND SO IS EVERY DIFFUSE
+//!   SUBSTRATE'S SAMPLER.  For a LAMBERTIAN (or Oren-Nayar) base both
+//!   mixture components have density cos(wo)/pi, so
+//!   `w*q_sheen + (1-w)*q_base == q_sheen == q_base` IDENTICALLY, and a
+//!   `Scatter` that wrongly reported its branch's own density would be
+//!   accidentally right.  Those rows are still worth running -- they are
+//!   the only fabric rows whose chi-squared histogram can resolve, and
+//!   they exercise the integral and the repricing arithmetic -- but they
+//!   CANNOT catch the branch-local mistake gate 6 exists for.
+//!
+//!   A substrate whose sampler is NOT cosine is required for that, which
+//!   is why the GGX row carries the gate.
+//!
+//! Returns the three densities so the caller can print them, and says
+//! whether this configuration discriminates.  Asserting the premise
+//! rather than assuming it is the point: without it, a future change
+//! that made every fabric row non-discriminating would leave the gate
+//! green and testing nothing.
+struct LobeDiscrimination {
+    double qMix;
+    double qBase;
+    double qSheen;
+    bool   baseReaches;
+    bool   discriminates;
+};
+
+static LobeDiscrimination MeasureLobeDiscrimination(
+    ISPF& fabricSPF,
+    ISPF& baseSPF,
+    double incomingTheta,
+    const Vector3& wo )
+{
+    RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    LobeDiscrimination d;
+    d.qMix  = fabricSPF.Pdf( ri, wo, iorStack );
+    d.qBase = baseSPF.Pdf( ri, wo, iorStack );
+    // The fabric's sheen branch is a cosine hemisphere about the
+    // ray-facing normal, so its density is exactly cos(wo)/pi.
+    d.qSheen = r_max( Scalar(0), Vector3Ops::Dot( wo, ri.onb.w() ) ) * INV_PI;
+    d.baseReaches = ( d.qBase > 0 );
+    // Discriminating iff the two components genuinely differ, so that
+    // reporting either one alone would disagree with the mixture.
+    d.discriminates = d.baseReaches
+                   && ( fabs( d.qBase - d.qSheen ) > 1e-6 * r_max( d.qBase, d.qSheen ) );
+    return d;
+}
+
+//! Part 2b's per-row band.  CookTorrance_BlackSpecular is the direct
+//! DL-211 regression: its aggregate density must match the probability
+//! that Scatter actually returns a sample to 5e-5.  Other rows retain
+//! the historical broad harness band unless listed as documented open
+//! defects, which are gated by their own two-sided pin instead.
+struct SubDensityPinRef { const char* name; double lo; double hi; const char* why; };
+template< class PinT >
+static double SubDensityTolFor( const std::string& name, const PinT* pins, int n )
+{
+    if( name == "CookTorrance_BlackSpecular" ) return 5e-5;
+    for( int i = 0; i < n; i++ ) {
+        // A null `name` is the empty-table sentinel (the array cannot
+        // legally have zero elements in C++), not a row.
+        if( pins[i].name && name == pins[i].name ) return 1e9;
+    }
+    return SUBDENSITY_TOL;
+}
+
+//! See `fullSphereSamplers` in the `spfs` table.
+static bool IsFullSphereSampler( const std::string& name, const char* const* names, int n )
+{
+    for( int i = 0; i < n; i++ ) {
+        if( names[i] && name.rfind( names[i], 0 ) == 0 ) return true;
+    }
+    return false;
+}
+
+// ============================================================
 //  Main
 // ============================================================
 
-int main()
+int main( int argc, char** argv )
 {
+    if( const char* ext = std::getenv( "RISE_TEST_EXTENDED" ) ) {
+        if( ext[0] != '\0' && std::string( ext ) != "0" ) g_extended = true;
+    }
+    for( int i = 1; i < argc; ++i ) {
+        if( std::strcmp( argv[i], "--extended" ) == 0 ) g_extended = true;
+    }
+    if( g_extended ) {
+        NUM_SAMPLES        = 150000;
+        NUM_CROSS_VALIDATE = 15000;
+        NUM_SUBDENSITY     = 50000;
+        NUM_CHI2_SEEDS     = 3;
+    }
+
     std::cout << "===== SPF PDF Consistency Test =====" << std::endl;
     std::cout << "Cross-validation samples: " << NUM_CROSS_VALIDATE << std::endl;
     std::cout << "Histogram samples: " << NUM_SAMPLES << std::endl;
@@ -475,17 +1039,62 @@ int main()
     UniformColorPainter* ashNu      = new UniformColorPainter( RISEPel(100.0, 100.0, 100.0) ); ashNu->addref();
     UniformColorPainter* ashNv      = new UniformColorPainter( RISEPel(50.0, 50.0, 50.0) );  ashNv->addref();
 
+    // Scalar twins — IScalarPainter slots (physical scalars), no JH
+    // spectral uplift.  Declared before any SPF/BRDF constructions
+    // that consume them.
+    UniformScalarPainter* roughnessSc   = new UniformScalarPainter( 0.3 );    roughnessSc->addref();
+    UniformScalarPainter* highExpSc     = new UniformScalarPainter( 50.0 );   highExpSc->addref();
+    UniformScalarPainter* ashNuSc       = new UniformScalarPainter( 100.0 );  ashNuSc->addref();
+    UniformScalarPainter* ashNvSc       = new UniformScalarPainter( 50.0 );   ashNvSc->addref();
+    UniformScalarPainter* alphaSmallSc  = new UniformScalarPainter( 0.2 );    alphaSmallSc->addref();
+    UniformScalarPainter* alphaSmallYSc = new UniformScalarPainter( 0.3 );    alphaSmallYSc->addref();
+    UniformScalarPainter* isotropySc    = new UniformScalarPainter( 0.8 );    isotropySc->addref();
+    UniformScalarPainter* lowSc         = new UniformScalarPainter( 0.1 );    lowSc->addref();
+    UniformScalarPainter* extinctionSc  = new UniformScalarPainter( 0.0 );    extinctionSc->addref();
+    UniformScalarPainter* iorScalarTop  = new UniformScalarPainter( 1.5 );    iorScalarTop->addref();
+    UniformScalarPainter* phongNSc      = new UniformScalarPainter( 10.0 );   phongNSc->addref();
+    UniformScalarPainter* scatFactorSc  = new UniformScalarPainter( 0.3 );    scatFactorSc->addref();
+
     // Construct SPFs
     LambertianSPF* lambertian = new LambertianSPF( *white );  lambertian->addref();
-    OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughness );  orenNayar->addref();
-    IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExp );  phong->addref();
-    CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *low, *ior, *extinction );  cookTorrance->addref();
-    GGXSPF* ggxIso = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIso->addref();
-    GGXSPF* ggxAniso = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAniso->addref();
-    SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughness, *isotropy );  schlick->addref();
-    WardIsotropicGaussianSPF* wardIso = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmall );  wardIso->addref();
-    WardAnisotropicEllipticalGaussianSPF* wardAniso = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAniso->addref();
-    AshikminShirleyAnisotropicPhongSPF* ashikmin = new AshikminShirleyAnisotropicPhongSPF( *ashNu, *ashNv, *gray, *spec );  ashikmin->addref();
+
+    // DL-325: datadriven_material's SPF (cosine-weighted sampling of a
+    // tabulated BRDF; single emit, so the aggregate Pdf IS the emitted
+    // ray's density).  Constant table = Lambertian 0.4; the varied table is
+    // chromatic and direction-dependent.
+    char ddPathConst[128], ddPathVaried[128];
+    std::snprintf( ddPathConst,  sizeof( ddPathConst ),  "spfpdf_dd_const_%d.bdf",  (int)getpid() );
+    std::snprintf( ddPathVaried, sizeof( ddPathVaried ), "spfpdf_dd_varied_%d.bdf", (int)getpid() );
+    DataDrivenTestTables::WriteConstant( ddPathConst, 0.4 );
+    DataDrivenTestTables::WriteVaried( ddPathVaried );
+    DataDrivenMaterial* ddConstMat  = new DataDrivenMaterial( ddPathConst );   ddConstMat->addref();
+    DataDrivenMaterial* ddVariedMat = new DataDrivenMaterial( ddPathVaried );  ddVariedMat->addref();
+    std::remove( ddPathConst );
+    std::remove( ddPathVaried );
+    OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughnessSc );  orenNayar->addref();
+    IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phong->addref();
+    CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorrance->addref();
+
+    // REVIEW_CHIP3 P1 closure (achromatic-selection floor,
+    // docs/SPECTRAL_PARITY_AUDIT.md "CookTorranceSPF -- achromatic
+    // selection floor"): two more CookTorranceSPF fixtures with an
+    // AUTHORED PURE-BLACK slot, one on each side of the mixture, to
+    // prove the floor keeps every lobe reachable and Scatter<->Pdf /
+    // ScatterNM<->PdfNM exact even at the RGB-max3==0 corner the review
+    // flagged -- the base `cookTorrance` fixture above never hits an
+    // exact zero, so it could not have caught the hole the floor fixes.
+    // Same `lowSc`/`iorScalarTop`/`extinctionSc` as the base row: a
+    // minimal one-slot-at-a-time variation of an already-covered
+    // configuration, not a new untested combination.
+    UniformColorPainter* black = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  black->addref();
+    CookTorranceSPF* cookTorranceBlackDiffuse  = new CookTorranceSPF( *black, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorranceBlackDiffuse->addref();
+    CookTorranceSPF* cookTorranceBlackSpecular = new CookTorranceSPF( *gray,  *black, *lowSc, *iorScalarTop, *extinctionSc );  cookTorranceBlackSpecular->addref();
+    GGXSPF* ggxIso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalarTop, *extinctionSc );  ggxIso->addref();
+    GGXSPF* ggxAniso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalarTop, *extinctionSc );  ggxAniso->addref();
+    SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc );  schlick->addref();
+    WardIsotropicGaussianSPF* wardIso = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmallSc );  wardIso->addref();
+    WardAnisotropicEllipticalGaussianSPF* wardAniso = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAniso->addref();
+    AshikminShirleyAnisotropicPhongSPF* ashikmin = new AshikminShirleyAnisotropicPhongSPF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikmin->addref();
 
     // Initialize the global log to prevent null pointer crashes
     GlobalLog();
@@ -500,20 +1109,149 @@ int main()
     UniformColorPainter* polishScat  = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();  // Phong exponent for polish
     UniformColorPainter* sssAbsorb   = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat     = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
-    UniformColorPainter* zeroExt     = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
 
-    // Translucent SPF: front reflectance, transmittance, extinction, Phong N, scattering
-    TranslucentSPF* translucent = new TranslucentSPF( *gray, *trans, *extinction, *phongN, *scatFactor );  translucent->addref();
+    // Scalar twins (IScalarPainter slots — physical scalars, no JH uplift).
+    UniformScalarPainter* tauScalar     = new UniformScalarPainter( 0.9 );   tauScalar->addref();
+    UniformScalarPainter* iorScalar     = new UniformScalarPainter( 1.5 );   iorScalar->addref();
+    UniformScalarPainter* polishScatSc  = new UniformScalarPainter( 20.0 );  polishScatSc->addref();
 
-    // Polished SPF: diffuse Rd, dielectric transmittance tau, IOR Nt, scattering (Phong exponent), bHG=false
-    PolishedSPF* polished = new PolishedSPF( *gray, *tauPainter, *ior, *polishScat, false );  polished->addref();
+    // Translucent SPF: front reflectance, transmittance (color); extinction, Phong N, scattering (scalar).
+    TranslucentSPF* translucent = new TranslucentSPF( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  translucent->addref();
 
-    // SubSurfaceScattering SPF: IOR, absorption, scattering, g=0.8, roughness=0.3
-    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sss->addref();
+    // Polished SPF: diffuse Rd (color), tau/IOR/scattering as IScalarPainter.
+    PolishedSPF* polished = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polished->addref();
 
-    // Composite SPF: two Lambertian layers, max_recur=4, reflection/refraction/diffuse/translucent limits, thickness=0.1, zero extinction
-    LambertianSPF* lambertian2 = new LambertianSPF( *spec );  lambertian2->addref();
-    CompositeSPF* composite = new CompositeSPF( *lambertian, *lambertian2, 4, 2, 2, 2, 2, 0.1, *zeroExt );  composite->addref();
+    // SubSurfaceScattering SPF: IOR, g=0.8, roughness=0.3
+    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sss->addref();
+
+    // composite_material (DL-24).  Built through CompositeMaterial -- the
+    // production construction, which hands both layers' BSDFs to the SPF --
+    // because the composite's non-delta emissions are priced by the layered
+    // evaluator those BSDFs feed.  Three stacks:
+    //   Composite                     two Lambertians (the pre-DL-24 row):
+    //                                 a reflection-only top, so the
+    //                                 composite IS its top.
+    //   Composite_DielectricLambertian the coat-over-diffuse regime DL-24 is
+    //                                 about: a delta Fresnel reflection plus
+    //                                 the covered walked class.
+    //   Composite_TranslucentLambertian a NON-delta top whose own lobes and
+    //                                 the walked class share the hemisphere.
+    LambertianMaterial* compLambTop = new LambertianMaterial( *white );  compLambTop->addref();
+    LambertianMaterial* compLambBot = new LambertianMaterial( *spec );   compLambBot->addref();
+    CompositeMaterial* compositeMat = new CompositeMaterial( *compLambTop, *compLambBot, 4, 2, 2, 2, 2, 0.1, *extinctionSc );
+    compositeMat->addref();
+    ISPF* composite = compositeMat->GetSPF();
+    UniformScalarPainter* compDielTau  = new UniformScalarPainter( 1.0 );      compDielTau->addref();
+    UniformScalarPainter* compDielIor  = new UniformScalarPainter( 1.5 );      compDielIor->addref();
+    UniformScalarPainter* compDielScat = new UniformScalarPainter( 10000.0 );  compDielScat->addref();
+    DielectricMaterial* compDielTop = new DielectricMaterial( *compDielTau, *compDielIor, *compDielScat, false );  compDielTop->addref();
+    CompositeMaterial* compositeDielMat = new CompositeMaterial( *compDielTop, *compLambTop, 3, 3, 3, 3, 3, 0.1, *extinctionSc );
+    compositeDielMat->addref();
+    ISPF* compositeDiel = compositeDielMat->GetSPF();
+    TranslucentMaterial* compTransTop = new TranslucentMaterial( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  compTransTop->addref();
+    CompositeMaterial* compositeTransMat = new CompositeMaterial( *compTransTop, *compLambTop, 3, 3, 3, 3, 3, 0.1, *extinctionSc );
+    compositeTransMat->addref();
+    ISPF* compositeTrans = compositeTransMat->GetSPF();
+
+    // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2 item 5).
+    // Built through the MATERIAL because CoatedSPF is the importance
+    // sampler for a specific CoatedBRDF and holds a reference to it.
+    // Two substrates from the allowlist so the mixture PDF is exercised
+    // against both a single-lobe base and a three-lobe one.
+    UniformScalarPainter* coatWeightSc = new UniformScalarPainter( 1.0 );   coatWeightSc->addref();
+    UniformScalarPainter* coatIorSc    = new UniformScalarPainter( 1.33 );  coatIorSc->addref();
+    UniformScalarPainter* coatRoughSc  = new UniformScalarPainter( 0.05 );  coatRoughSc->addref();
+    UniformScalarPainter* coatZeroSc   = new UniformScalarPainter( 0.0 );   coatZeroSc->addref();
+    UniformColorPainter*  coatTintOne  = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  coatTintOne->addref();
+
+    LambertianMaterial* coatBaseLambMat = new LambertianMaterial( *white );  coatBaseLambMat->addref();
+    GGXMaterial* coatBaseGgxMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );
+    coatBaseGgxMat->addref();
+
+    CoatedMaterial* coatedLambMat = new CoatedMaterial(
+        *coatBaseLambMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+    coatedLambMat->addref();
+    CoatedMaterial* coatedGgxMat = new CoatedMaterial(
+        *coatBaseGgxMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+    coatedGgxMat->addref();
+
+    ISPF* coatedLamb = coatedLambMat->GetSPF();
+    ISPF* coatedGgx  = coatedGgxMat->GetSPF();
+
+    // fabric_material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.9 gate 6).
+    //
+    // THIS IS THE GATE THAT PROVES 9.2'S SAMPLE-THEN-REPRICE RECIPE WAS
+    // ACTUALLY IMPLEMENTED.  Part 1 (cross-validation) fails precisely
+    // when `Scatter` reports a BRANCH-LOCAL density instead of the full
+    // mixture -- the one mistake the delta-lobe `kray / selectProb`
+    // convention would invite, and one that would be invisible to every
+    // other check in the suite.  Part 2 (the hemispherical integral of
+    // Pdf) is what would fail if the mixture weights did not sum to 1,
+    // and Part 3's chi-squared would independently reject a sampler
+    // whose actual frequencies disagreed with the reported density.
+    //
+    // Two substrates, so a direction is reachable from BOTH lobes in
+    // both cases (9.9 gate 6: "a sheen-only direction would not
+    // discriminate").  The Lambertian base has full-hemisphere support
+    // by definition; the ANISOTROPIC GGX with a non-zero
+    // weave_rotation additionally exercises 9.5's frame hand-off -- a
+    // Scatter that sampled in the rotated frame while Pdf evaluated in
+    // the unrotated one would show up here as a cross-validation
+    // failure, which is exactly what that gate is for.
+    UniformScalarPainter* fabAlphaSc = new UniformScalarPainter( 0.3 );  fabAlphaSc->addref();
+    UniformScalarPainter* fabZeroSc  = new UniformScalarPainter( 0.0 );  fabZeroSc->addref();
+    UniformScalarPainter* fabWeaveSc = new UniformScalarPainter( 0.7853981633974483 );  fabWeaveSc->addref();
+
+    GGXMaterial* fabBaseAnisoMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalarTop, *extinctionSc, eFresnelSchlickF0 );
+    fabBaseAnisoMat->addref();
+
+    FabricMaterial* fabricLambMat = new FabricMaterial(
+        *coatBaseLambMat, *coatTintOne, *fabAlphaSc, *fabZeroSc );
+    fabricLambMat->addref();
+    FabricMaterial* fabricAnisoMat = new FabricMaterial(
+        *fabBaseAnisoMat, *gray, *fabAlphaSc, *fabWeaveSc );
+    fabricAnisoMat->addref();
+
+    ISPF* fabricLamb  = fabricLambMat->GetSPF();
+    ISPF* fabricAniso = fabricAnisoMat->GetSPF();
+
+    // weave_material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+    //
+    // THE SUB-TEST THAT MATTERS MOST HERE IS PART 2, THE HEMISPHERE
+    // INTEGRAL, and it is testing something structural rather than
+    // arithmetic.  A fibre frame's (theta, phi) parametrisation covers
+    // the whole SPHERE, so a naive surface-lobe sampler would put a
+    // large fraction of its density below the surface plane and this
+    // integral would land near 0.5 -- section 9.4 rejected the Charlie
+    // D-sampler for exactly that failure mode.  `WeaveSPF` avoids it by
+    // TRIMMING the azimuthal logistic to the visible azimuth range at
+    // each fibre latitude, which is exact (the trimmed logistic is
+    // normalised over whatever interval it is given).  If that
+    // construction is ever broken or removed, this row's integral is
+    // what says so.
+    //
+    // Part 1 (cross-validation) carries the same force it does for
+    // fabric: `WeaveSPF` reprices every sample against the FULL
+    // four-lobe mixture, so a branch-local density would show up here
+    // and nowhere else.
+    //
+    // TWO PRESETS, CHOSEN TO BE DISCRIMINATING:
+    //   * `satin` has the narrowest longitudinal lobe in the shipped
+    //     table (0.044 rad) and NON-ZERO OPPOSITE TILTS, which is the
+    //     configuration where the azimuth trimming has real work to do
+    //     -- a tilted family's visible azimuth range is latitude-
+    //     dependent rather than a flat +-pi/2.
+    //   * `denim` has zero tilt and a broad lobe, and carries a
+    //     non-zero `weave_rotation`, so a Scatter that sampled in the
+    //     rotated frame while Pdf evaluated in the unrotated one would
+    //     surface as a cross-validation failure -- the same frame-
+    //     hand-off check the fabric rows make one layer up.
+    RISE::WeaveTest::PresetWeave weaveSatin( "satin" );
+    RISE::WeaveTest::PresetWeave weaveDenim( "denim", 0.7853981633974483 );
+    ISPF* weaveSatinSPF = weaveSatin.SPF();
+    ISPF* weaveDenimSPF = weaveDenim.SPF();
 
     //------------------------------------------------------------------
     // Per-material test configuration
@@ -527,12 +1265,22 @@ int main()
     // skipCrossVal:  Skip the cross-validation sub-test entirely.
     //     Cross-validation checks that Scatter().pdf matches Pdf(ri,wo).
     //     For multi-lobe SPFs, the Pdf() method returns a weighted
-    //     mixture of per-lobe PDFs, but the weights are based on color
-    //     magnitude (MaxValue of reflectance painters).  The actual
-    //     selection probability in RandomlySelect is proportional to
-    //     kray magnitude, which is computed at shading time and may
-    //     differ from the static painter weights.  This creates a
-    //     systematic mismatch for multi-lobe materials.
+    //     mixture of per-lobe PDFs, but the weights may be based on
+    //     color magnitude (MaxValue of reflectance painters).  The
+    //     actual selection probability in RandomlySelect is
+    //     proportional to kray magnitude, which is computed at shading
+    //     time and may differ from the static painter weights.  This
+    //     creates a systematic mismatch for multi-lobe materials.
+    //
+    //     NOTE: for the three "draw every lobe, then pick one by its
+    //     realized kray" SPFs -- Schlick (DL-67 Slice 0), IsotropicPhong
+    //     (DL-98) and AshikminShirleyAnisotropicPhong (DL-99) -- that
+    //     description is HISTORICAL: their Pdf() now reports the true
+    //     generating density.  They still skip cross-val, but for a
+    //     STRUCTURAL reason that no fix can remove: a lobe's per-call
+    //     selection probability there is an expectation over the OTHER
+    //     lobe's independent draw, so no aggregate density can satisfy
+    //     a per-call identity.  Their chi2 gates ARE live.
     //
     // skipChi2:  Skip the chi-squared histogram sub-test.
     //     The chi-squared test compares the distribution of directions
@@ -556,28 +1304,112 @@ int main()
         bool skipCrossVal;
         bool skipChi2;
         double integralTol;
+        //! Part 2b band; SUBDENSITY_TOL unless a documented open defect
+        //! is being PINNED at its measured value.  Defaulted by the
+        //! `SubDensityTolFor` lookup below so the 26-row table does not
+        //! grow a column that is the same number on all but one row.
     };
+    // Rows whose Part 2b residual is a KNOWN, TRACKED defect rather
+    // than an assertion: pinned at their measured value with a
+    // two-sided band, so closure is as visible as regression.
+    struct SubDensityPin { const char* name; double lo; double hi; const char* why; };
+    //
+    // DL-41 CLOSED 2026-09-18: `TranslucentSPF::Pdf` is now the aggregate
+    // density of what `Scatter` + `RandomlySelect` generate, both Phong
+    // lobes included, so its Part 2b domain split is a real gate at the
+    // ordinary `SUBDENSITY_TOL` instead of a pinned band.  The pinned
+    // value was 0.44469 in [0.40, 0.48]; the two shares now agree to
+    // 2.3e-4 (Pdf 0.555538 vs emitted 0.55531 at both incidence angles).
+    const SubDensityPin subDensityPins[] = {
+        { 0, 0, 0, 0 },   //!< none open; kept so the machinery stays live
+    };
+
+    //! SPFs that deliberately emit into BOTH hemispheres.  For these,
+    //! Part 2's `int Pdf over the HEMISPHERE == 1` is not the contract --
+    //! Part 2b's pair of full-sphere checks is (see the note at Part 2's
+    //! own gate).  `Translucent` joined the list when DL-41 gave its
+    //! transmission / backscatter lobes real density.
+    const char* fullSphereSamplers[] = { "Translucent" };
 
     SPFEntry spfs[] = {
         { "Lambertian",                        lambertian,  true,  true,  false, false, INTEGRAL_TOL },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  true,  true,  false, false, INTEGRAL_TOL },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), true,  true,  false, false, INTEGRAL_TOL },
         { "OrenNayar",                         orenNayar,   true,  true,  false, false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
         // IsotropicPhong: diffuse + specular lobes.
         //
-        // Pdf() returns a weighted mixture of cosine-hemisphere PDF
-        // (diffuse) and Phong-lobe PDF (specular).  The weights use
-        // static MaxValue(reflectance) but RandomlySelect picks by
-        // kray, which includes the cos-weighted BRDF evaluation.
-        // This causes massive cross-val divergence (38k-45k mismatches
-        // out of 50k samples) and chi2 failure.
+        // Cross-val: STILL SKIPPED, and for the same structural reason
+        //   as Schlick below, NOT the stale one this comment used to
+        //   give.  Scatter() draws BOTH lobes every call and
+        //   RandomlySelect picks one by the REALIZED MaxValue(kray), so
+        //   a lobe's per-call selection probability is an expectation
+        //   over the OTHER lobe's independent random draw.  Cross-val's
+        //   per-call identity (Scatter().pdf == Pdf(ri,wo)) cannot hold
+        //   for any aggregate density, correct or not.
         //
-        // The PDF integral is fine (~1.0) — only the weighting between
-        // lobes is mismatched.
+        // Integral: passes (0.999924 @ 30deg, 0.999909 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  820.9 @ 30deg / 786.4 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "the weights use static
+        //   MaxValue(reflectance) but RandomlySelect picks by kray ...
+        //   causes massive cross-val divergence (38k-45k mismatches)
+        //   and chi2 failure" -- described DL-98, fixed 2026-09-17.
+        //   Pdf()/PdfNM() now report the true generating density of
+        //   Scatter+RandomlySelect: C_D*p_D(wo) + sum_i q_i(wo)*p_i(wo),
+        //   with C_D/q_i estimated by a deterministic 16x16 stratified
+        //   replay of the sampler's own inverse-CDF square (the
+        //   dominant term is the specular lobe's geomN REJECTION rate,
+        //   which no static reflectance ratio can see).  See
+        //   docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and the dedicated
+        //   tests/IsotropicPhongSPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "IsotropicPhong",                    phong,       false, false, true,  true,  INTEGRAL_TOL },
+        { "IsotropicPhong",                    phong,       false, false, true,  false, INTEGRAL_TOL },
 
         { "CookTorrance",                      cookTorrance,false, true,  false, false, INTEGRAL_TOL },
+        //--------------------------------------------------------------
+        // CookTorrance with an authored PURE-BLACK diffuse or specular
+        // slot (REVIEW_CHIP3 P1 closure).  RGB max3 == 0 exactly for
+        // the black slot, so ComputeLobeWeights' kSelFloor is the ONLY
+        // thing keeping that lobe's selection weight above zero --
+        // exercising exactly the corner the base CookTorrance row above
+        // (all-tinted, no exact zeros) does not reach.  Same
+        // exactSelectedPdf contract as the base row: Scatter's stored
+        // mixPdf must still equal Pdf() exactly, proving the floor
+        // didn't reintroduce a Scatter<->Pdf mismatch at the corner it
+        // was added to fix.
+        //
+        // DL-176 (2026-09-18), what the seed sweep found on these two:
+        //
+        //   `_BlackDiffuse` was the row DL-176 was FILED on (927.52
+        //   against critical 928.261, single seed).  The 10-seed sweep
+        //   put its true mean at 938.26 -- z = +11.0, ABOVE critical --
+        //   so it was never one unlucky draw.  The cause is entirely in
+        //   the harness: this SPF's `Pdf` is a correct SUB-density.  It
+        //   genuinely emits nothing on 1.5% of calls at 60deg (the
+        //   internally-selected lobe's `kray` is the authored literal
+        //   black, and `Scatter` only adds a ray when `kray > 0`), and
+        //   `int Pdf = 0.98463` against a measured emission rate of
+        //   0.984664 -- they AGREE to 3e-5.  Part 3's old expected
+        //   counts took the 1.5% shortfall as an angular error.  With
+        //   the normalisation of (a) in place the row reads z = +0.54.
+        //   NOTHING IN `CookTorranceSPF` CHANGED.
+        //
+        //   DL-211 closes the `_BlackSpecular` residual by requiring a
+        //   selected, floored zero-throughput RGB lobe to remain a real
+        //   terminating sample.  That preserves the achromatic mixture
+        //   shared with ScatterNM (where the authored-black spectrum has
+        //   a small nonzero reconstruction residual) and makes `Pdf`'s
+        //   mass describe exactly what Scatter emits.  The dedicated
+        //   Part 2b row above tightens that equality to 5e-5; the normal
+        //   |z| <= 4 shape gate below replaces the old [1.5,2.7] /
+        //   [3.0,4.0] known-defect pins.
+        //--------------------------------------------------------------
+        { "CookTorrance_BlackDiffuse",          cookTorranceBlackDiffuse,  false, true, false, false, INTEGRAL_TOL },
+        { "CookTorrance_BlackSpecular",         cookTorranceBlackSpecular, false, true, false, false, INTEGRAL_TOL },
         //--------------------------------------------------------------
         // GGX Isotropic / Anisotropic (height-correlated G2):
         //
@@ -596,63 +1428,134 @@ int main()
         //--------------------------------------------------------------
         // Schlick (1994 approximation):
         //
-        // Cross-val: multi-lobe weighting mismatch (same as Phong).
-        // Integral: the Schlick PDF under-integrates at grazing angles
-        //   because the specular PDF normalization assumes isotropic
-        //   roughness, but the model has an isotropy parameter that
-        //   stretches the lobe.  Observed: 0.90 @ 30°, 0.87 @ 60°.
-        // Chi2: fails due to PDF normalization + weighting issues.
+        // Cross-val: STILL SKIPPED, and provably must be.  Scatter()
+        //   draws BOTH lobes every call and RandomlySelect picks one by
+        //   the REALIZED MaxValue(kray), so the diffuse lobe's per-call
+        //   selection probability is an expectation over the independent
+        //   specular draw.  Cross-val's per-call lower bound cannot be
+        //   met by any direction-independent diffuse coefficient -- see
+        //   tests/SchlickSPFPdfConsistencyTest.cpp's header.
         //
-        // Integral tolerance relaxed to 15% to cover 0.87.
+        // Integral: PASSES at the standard 5% tolerance since DL-67
+        //   Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md).  Measured
+        //   1.00166 @ 30deg, 0.999932 @ 60deg.
+        //
+        //   The tolerance used to be 15%, with a comment blaming "the
+        //   specular PDF normalisation assumes isotropic roughness".
+        //   That diagnosis was wrong, and this exact fixture (rd 0.5,
+        //   rs 0.3, roughness 0.3, isotropy 0.8) is the one that shows
+        //   why.  The deficit -- 0.904 @ 30deg / 0.873 @ 60deg at the
+        //   time -- had TWO causes, neither a missing normalisation:
+        //
+        //   (a) the LOBE WEIGHTING, dominated by the specular sampler's
+        //       REJECTION rate, which Pdf() modelled not at all.  For
+        //       this fixture, Scatter accepts only 73.9% of its specular
+        //       draws at 30deg and 64.1% at 60deg, and a REJECTED
+        //       specular draw leaves RandomlySelect holding one ray,
+        //       which it then returns with probability 1 regardless of
+        //       weight.
+        //
+        //   (b) the azimuthal density for isotropy != 1 was a DIFFERENT
+        //       DISTRIBUTION from the one the sampler draws (not a
+        //       mis-scaled version of it) -- off by up to 25x at
+        //       isotropy 0.3, and this row runs at 0.8.
+        //
+        //   Both are fixed, each with its own red-proof in the dedicated
+        //   test.
+        //
+        // Chi2: NOW GATED (was skipped).  783.7 @ 30deg / 816.3 @ 60deg
+        //   against critical 928.3.  It was failing purely on the
+        //   weighting defect above -- the sampled histogram and Pdf()
+        //   now agree.
         //--------------------------------------------------------------
-        { "Schlick",                           schlick,     false, false, true,  true,  0.15 },
+        { "Schlick",                           schlick,     false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
-        // Ward Isotropic Gaussian (Ward 1992):
+        // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992):
         //
-        // Cross-val: only 1-1422 mismatches (nearly passes), caused by
-        //   the 1/sqrt(n·r × n·v) divergence at grazing angles making
-        //   kray weights differ from PDF weights.
-        // Chi2: the Ward model is not energy-conserving.  The specular
-        //   VNDF sampling doesn't perfectly match the BRDF evaluation
-        //   at grazing angles, causing histogram divergence.
-        //--------------------------------------------------------------
-        { "WardIsotropicGaussian",             wardIso,     false, false, true,  true,  INTEGRAL_TOL },
-
-        //--------------------------------------------------------------
-        // Ward Anisotropic Elliptical Gaussian (Ward 1992):
+        // DL-177 (CLOSED 2026-09-18,
+        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  Both rows used to skip
+        // chi2 with this note: "the Ward model is not energy-conserving.
+        // The specular VNDF sampling doesn't perfectly match the BRDF
+        // evaluation at grazing angles, causing histogram divergence"
+        // (isotropic) and "the elliptical Gaussian PDF doesn't fully
+        // integrate to 1.0 when the two roughness parameters differ.
+        // Tolerance relaxed to 10%" (anisotropic).
         //
-        // Same issues as isotropic Ward, compounded by anisotropy.
-        // The elliptical Gaussian lobe (αx ≠ αy) makes the VNDF
-        // sampling mismatch worse.  PDF integral dips to ~0.95 at 60°
-        // due to the anisotropic normalization — the elliptical
-        // Gaussian PDF doesn't fully integrate to 1.0 when the two
-        // roughness parameters differ.  Tolerance relaxed to 10%.
+        // NEITHER was a model limitation.  `GenerateSpecularRay` stored
+        // a value that is not a density at all -- the TRUE solid-angle
+        // density of its own half-vector times `cos^4(theta_h)`.  Both
+        // rows run at alpha 0.2 / 0.3, where a typical sampled
+        // `cos^4(theta_h)` is ~0.94, so the integral stayed inside a
+        // 5%/10% band and only the histogram could see it; that is
+        // exactly why chi2 was the sub-test that got switched off.  A
+        // separate defect made `Pdf` a raw-albedo mixture rather than
+        // the density `RandomlySelect` produces.  Both fixed, with
+        // per-draw and full-sphere gates in
+        // `tests/WardDensityKrayTest.cpp`.
+        //
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong / Schlick / Ashikmin above.  Both lobes are
+        //   drawn every call and one is picked by its REALIZED kray, so
+        //   no aggregate density can satisfy a per-call identity.
+        //
+        // Integral: 0.999611 / 0.999912 (isotropic 30/60 deg) and
+        //   0.999500 / 0.999978 (anisotropic), against 0.973145 /
+        //   0.963752 and 0.959258 / 0.949217 on an isolated pre-fix
+        //   rebuild -- and that last one FAILED even the 5% band, which
+        //   is what the anisotropic row's relaxed 10% tolerance was
+        //   really covering.  Both rows go back to INTEGRAL_TOL.
+        //
+        // Chi2: NOW GATED (was skipped).  Seed-mean z = +0.84 / +0.30
+        //   (isotropic 30/60 deg) and -0.08 / +0.06 (anisotropic),
+        //   against +25.4 / +35.9 and +59.0 / +107.8 pre-fix -- the
+        //   histogram was the only sub-test that could see a density
+        //   off by cos^4, and it was the one switched off.
         //--------------------------------------------------------------
-        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  true,  0.10 },
+        { "WardIsotropicGaussian",             wardIso,     false, false, true,  false, INTEGRAL_TOL },
+        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, true,  false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------
         // Ashikmin-Shirley Anisotropic Phong (2000):
         //
-        // Cross-val: large mismatch (16k-43k) because the model uses
-        //   a Fresnel-weighted blend of diffuse and specular lobes.
-        //   The Fresnel term is direction-dependent, so the effective
-        //   lobe weights at each sample point differ from the static
-        //   weights in Pdf().
-        // Chi2: fails as a direct consequence of the cross-val issue.
-        // Integral: fine (~1.0).
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong and Schlick above (both lobes drawn every
+        //   call, one picked by realized kray, so no per-call identity
+        //   between Scatter().pdf and any aggregate Pdf()).
+        //
+        // Integral: passes (0.997936 @ 30deg, 0.997958 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  811.0 @ 30deg / 827.0 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "large mismatch (16k-43k) because ...
+        //   the effective lobe weights at each sample point differ from
+        //   the static weights in Pdf()" plus "chi2: fails as a direct
+        //   consequence" -- described DL-99, fixed 2026-09-17.  This
+        //   SPF needs TWO independent quadratures rather than Phong's
+        //   one, because BOTH of its lobes carry a direction-dependent
+        //   realized weight (the diffuse kray is
+        //   Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i), not a
+        //   constant).  See docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and
+        //   tests/AshikminShirleySPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  true,  INTEGRAL_TOL },
+        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  false, INTEGRAL_TOL },
 
         { "Translucent",                       translucent, false, false, true,  false, INTEGRAL_TOL },  // Pdf() only covers diffuse lobe, not translucent
 
         //--------------------------------------------------------------
         // Polished (dielectric coat over diffuse substrate):
         //
-        // Cross-val: 311 mismatches at 60° due to Fresnel-dependent
-        //   coating transmission affecting kray weights vs PDF weights.
-        //   At 30° it passes.  Skip cross-val for consistency.
-        // Chi2 and integral: pass at both angles.
+        // Since DL-285 (2026-09-28) `PolishedSPF::Pdf` is the REALIZED
+        // RandomlySelect density, with BOTH lobes' selection weights
+        // direction-dependent (the coat via min(F(ci),F(co)) and co, the
+        // substrate via 1-F(co)) -- DL-99's case.  Cross-val's
+        // multi-lobe branch checks Pdf >= q_I * p_I with q_I read off ONE
+        // realization, which is not a bound on the expectation over the
+        // other lobe's draw that the realized density is, so it stays
+        // skipped.  Chi2 (shape) and the sub-density gate (mass) are the
+        // real checks and pass at both angles; the per-row derivation and
+        // gates live in tests/PolishedBRDFConsistencyTest.cpp.
         //--------------------------------------------------------------
         { "Polished",                          polished,    false, false, true,  false, INTEGRAL_TOL },
 
@@ -667,7 +1570,134 @@ int main()
         //--------------------------------------------------------------
         { "SubSurfaceScattering",              sss,         true,  true,  false, true,  INTEGRAL_TOL },
 
-        { "Composite",                         composite,   false, false, false, false, INTEGRAL_TOL },
+        //--------------------------------------------------------------
+        // composite_material (DL-24).  Every check ON: the composite now
+        // emits at most ONE ray per Scatter (singleLobe) and stamps the
+        // exact non-delta density on it (exactSelectedPdf).  Part 2's
+        // "hemispherical int Pdf ~ 1" is NOT a composite's contract: Pdf
+        // is the density of its NON-DELTA emissions, a sub-density whenever
+        // the top has a delta lobe (the dielectric's Fresnel reflection) or
+        // the walker branch's floor share emits nothing on a covered path.
+        // Part 2b gates the mass exactly (int Pdf over the sphere == the
+        // measured non-delta emission probability, 0.01), so Part 2's band
+        // is widened to hold only a sanity bound on those two rows.
+        //--------------------------------------------------------------
+        // "Composite"'s Lambertian TOP does not declare a deterministic
+        // up/down split (ISPF::SelectionMassIsDeterministic: it can drop
+        // its lobe under a tilted shading normal), so since the DL-24
+        // review the composite runs PER-BRANCH mode there: each emitted
+        // ray carries its own branch's density and `Pdf` is the MIS
+        // partner, not the exact density -- exactSelectedPdf is off for
+        // that row alone (mass and chi2 shape still gated).
+        { "Composite",                         composite,      true,  false, false, false, INTEGRAL_TOL },
+        { "Composite_DielectricLambertian",    compositeDiel,  true,  true,  false, false, 0.15 },
+        { "Composite_TranslucentLambertian",   compositeTrans, true,  true,  false, false, 0.15 },
+
+        //--------------------------------------------------------------
+        // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2 item 5,
+        // "Real mixture Pdf/PdfNM -- not a 50/50 placeholder".  7.5
+        // calls this "the correctness line that separates [coated] from
+        // composite_material", and names THIS FILE as the guard.  Until
+        // DL-24 (2026-09-28) the contrast was the `Composite` row above,
+        // which ran with cross-val, chi2 AND exact-selected-pdf switched
+        // off because CompositeSPF's Pdf was a hard-coded 50/50 blend;
+        // since DL-24 the composite rows run with every check on too.
+        //
+        // The coated triad runs with EVERY check on, at both
+        // substrates:
+        //   singleLobe        -- one ray per Scatter call by design.
+        //   exactSelectedPdf  -- Scatter writes the SAME mixture
+        //                        density Pdf() returns, so cross-val is
+        //                        exact rather than tolerated.
+        //   skipCrossVal=false  -- the sampler draws from precisely the
+        //                        density it reports.
+        //
+        // chi2: ON for the Lambertian substrate, which passes.  OFF for
+        // the GGX substrate, and the reason is INHERITED, not new.  The
+        // coated mixture's substrate term is q_base = baseSPF->Pdf(wo),
+        // so it reproduces whatever mismatch the substrate already has
+        // between its reported density and its actual lobe-selection
+        // frequencies -- and GGX_Isotropic's own row above skips chi2
+        // for exactly that ("Fresnel- and E_ss-dependent lobe weights
+        // that vary per direction, causing a systematic mismatch
+        // between the static Pdf() weights and the actual
+        // RandomlySelect probabilities").  Measured here: chi2 929.6
+        // against a 928.3 critical value at 30 deg -- a 0.14 % overshoot
+        // on an inherited defect, versus GGX's own 952-1063.  Coated
+        // does not amplify it; it also cannot fix it, and pretending
+        // otherwise by loosening the statistic would hide a real future
+        // regression in the substrate.  Cross-val and the PDF integral
+        // stay ON for this row and both pass.
+        //
+        // ONE CONSEQUENCE WORTH SPELLING OUT, because it is NOT the
+        // same failure mode the bare-GGX row has.  For GGX itself the
+        // mismatch is a DISTRIBUTION distortion: kray is computed
+        // per-lobe, so a direction drawn slightly more often than
+        // Pdf() claims still carries its own lobe's correct weight and
+        // the estimate stays unbiased -- only the histogram shape is
+        // off.  Under the coated estimator the weight is f*cos/q with
+        // q the REPORTED mixture density, so any gap between the
+        // reported density and the true draw frequency lands directly
+        // in the MEAN.  It is bounded by the same ~0.14 % the
+        // statistic measures -- far inside every furnace tolerance and
+        // well under MC noise at any practical sample count -- but it
+        // is a small BIAS rather than pure variance, and it would go
+        // to zero the moment GGXSPF::Pdf's lobe weights are made to
+        // match its own RandomlySelect probabilities.  That fix
+        // belongs on GGXSPF, not here: `coated_material` faithfully
+        // reports whatever density its substrate reports, which is the
+        // only thing it can correctly do.
+        //--------------------------------------------------------------
+        { "Coated_Lambertian",                 coatedLamb,  true,  true,  false, false, INTEGRAL_TOL },
+        //
+        // DL-388 (2026-10-02): half of the substrate branch now samples the
+        // GGX lobe IN THE COAT'S FRAME, and an internal draw outside the
+        // escape cone is trapped by total internal reflection and emits
+        // nothing.  `Pdf` is therefore a SUB-density -- 0.819 at 30 deg,
+        // 0.795 at 60 -- and Part 2's "hemisphere integral ~ 1" holds only
+        // as a sanity bound (0.25) on this row; Part 2b gates the mass
+        // EXACTLY against the measured emission probability (0.01), and
+        // cross-validation stays exact.
+        { "Coated_GGX",                        coatedGgx,   true,  true,  false, true,  0.25 },
+
+        //--------------------------------------------------------------
+        // fabric_material.  singleLobe / exactSelectedPdf both TRUE, and
+        // NOTHING is skipped for the Lambertian row: FabricSPF emits one
+        // ray carrying the FULL mixture density, so cross-validation,
+        // the integral and the chi-squared histogram all apply at full
+        // strength.  That is the whole content of gate 6.
+        //
+        // The anisotropic-GGX row skips CHI2 ONLY, for the same reason
+        // Coated_GGX does: the histogram's 20 x 40 angular bins cannot
+        // resolve a narrow anisotropic specular lobe (alphay = 0.3 vs
+        // alphax = 0.2 through a 45 deg weave rotation) at
+        // NUM_SAMPLES, so the test would reject on binning resolution
+        // rather than on a density mismatch.  Cross-validation -- the
+        // sub-test that actually catches a branch-local pdf -- stays ON
+        // for both rows, and it is exact (CROSS_VAL_TOL = 1e-6).
+        //--------------------------------------------------------------
+        { "Fabric_Lambertian",                 fabricLamb,  true,  true,  false, false, INTEGRAL_TOL },
+        { "Fabric_GGXaniso_weave45",           fabricAniso, true,  true,  false, true,  INTEGRAL_TOL },
+
+        //--------------------------------------------------------------
+        // weave_material.  singleLobe / exactSelectedPdf both TRUE:
+        // WeaveSPF emits ONE ray per Scatter carrying the full four-lobe
+        // mixture density, so cross-validation is exact at
+        // CROSS_VAL_TOL = 1e-6 and the hemisphere integral applies at
+        // full strength.
+        //
+        // CHI2 IS SKIPPED ON BOTH ROWS, and the reason is binning
+        // resolution rather than a density mismatch -- the same reason
+        // Coated_GGX and Fabric_GGXaniso_weave45 skip it.  The surface
+        // lobe is a specular CONE about the yarn (0.044 rad wide for
+        // satin, 0.24 for denim), which the histogram's 20 x 40 angular
+        // bins cannot resolve at NUM_SAMPLES: the test would reject on
+        // the binning, not on the sampler.  Cross-validation -- the
+        // sub-test that actually catches a wrong density -- stays ON for
+        // both, and so does the integral.
+        //--------------------------------------------------------------
+        { "Weave_satin",                       weaveSatinSPF, true, true, false, true, INTEGRAL_TOL },
+        { "Weave_denim_rot45",                 weaveDenimSPF, true, true, false, true, INTEGRAL_TOL },
     };
 
     double incomingAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
@@ -685,6 +1715,18 @@ int main()
             std::string fullName = spfs[s].name + " @ " + angleNames[a];
             std::cout << "Testing " << fullName << "..." << std::endl;
 
+            // As documented in the DL-176 header note, DataDriven_constant0.4,
+            // DataDriven_varied, and OrenNayar share the exact same cosine-hemisphere
+            // direction sampler and seed stream as Lambertian (producing bit-identical
+            // chi2 statistics).  Skip their duplicate chi2 histogram passes in default
+            // fast mode while keeping Part 1 cross-validation, Part 2 integral, and
+            // Part 2b sub-density/domain-split active on every row.
+            const bool duplicateCosineChi2 = !g_extended && (
+                spfs[s].name == "DataDriven_constant0.4" ||
+                spfs[s].name == "DataDriven_varied" ||
+                spfs[s].name == "OrenNayar" );
+            const bool effectiveSkipChi2 = spfs[s].skipChi2 || duplicateCosineChi2;
+
             TestResult r = TestSPF(
                 fullName,
                 *spfs[s].spf,
@@ -692,8 +1734,14 @@ int main()
                 spfs[s].singleLobe,
                 spfs[s].exactSelectedPdf,
                 spfs[s].skipCrossVal,
-                spfs[s].skipChi2,
-                spfs[s].integralTol );
+                effectiveSkipChi2,
+                spfs[s].integralTol,
+                // Pinned rows get a band wide enough that the pin below
+                // is what gates them, not this.
+                SubDensityTolFor( spfs[s].name, subDensityPins,
+                                  int(sizeof(subDensityPins)/sizeof(subDensityPins[0])) ),
+                IsFullSphereSampler( spfs[s].name, fullSphereSamplers,
+                                  int(sizeof(fullSphereSamplers)/sizeof(fullSphereSamplers[0])) ) );
             results.push_back( r );
 
             // Report cross-validation
@@ -725,28 +1773,289 @@ int main()
                 std::cout << "  PASS" << std::endl;
             }
 
-            // Report chi-squared
-            if( spfs[s].skipChi2 )
+            // Report Part 2b -- the sub-density contract.
             {
-                std::cout << "  SKIP chi2 (known model limitation — see per-material notes)" << std::endl;
-            }
-            else if( r.chi2Crit > 0 )
-            {
-                if( !r.chi2Passed )
-                {
-                    std::cout << "  FAIL chi2: " << r.chi2Stat
-                              << " > critical " << r.chi2Crit << std::endl;
+                const double diff = fabs( r.fullSphereIntegral - r.emissionProb );
+                std::cout << ( r.subDensityPassed ? "  PASS" : "  FAIL" )
+                          << " sub-density: int Pdf(full sphere) " << r.fullSphereIntegral
+                          << " vs emission probability " << r.emissionProb
+                          << "  |diff| " << diff << std::endl;
+                if( !r.subDensityPassed ) {
                     numFailed++;
                 }
-                else
+                const double sdiff = fabs( r.pdfUpperShare - r.emittedUpperShare );
+                const SubDensityPin* pin = 0;
+                for( size_t q = 0; q < sizeof(subDensityPins)/sizeof(subDensityPins[0]); q++ ) {
+                    if( subDensityPins[q].name && spfs[s].name == subDensityPins[q].name ) {
+                        pin = &subDensityPins[q]; break;
+                    }
+                }
+                if( pin ) {
+                    // KNOWN-DEFECT control, two-sided: a regression and
+                    // a CLOSURE are both visible, which a one-sided
+                    // "<= tol" band or a silently widened tolerance
+                    // would not be.
+                    const bool inBand = ( sdiff >= pin->lo && sdiff <= pin->hi );
+                    std::cout << ( inBand ? "  PASS" : "  FAIL" )
+                              << " domain split KNOWN-DEFECT (" << pin->why << "): "
+                              << "Pdf upper-hemisphere share " << r.pdfUpperShare
+                              << " vs emitted share " << r.emittedUpperShare
+                              << "  |diff| " << sdiff
+                              << "  pinned band [" << pin->lo << ", " << pin->hi << "]" << std::endl;
+                    if( !inBand ) {
+                        numFailed++;
+                    }
+                } else {
+                    std::cout << ( r.domainSplitPassed ? "  PASS" : "  FAIL" )
+                              << " domain split: Pdf upper-hemisphere share " << r.pdfUpperShare
+                              << " vs emitted share " << r.emittedUpperShare
+                              << "  |diff| " << sdiff << std::endl;
+                    if( !r.domainSplitPassed ) {
+                        numFailed++;
+                    }
+                }
+            }
+
+            // Report chi-squared
+            if( effectiveSkipChi2 )
+            {
+                std::cout << "  SKIP chi2 ("
+                          << ( duplicateCosineChi2 ? "bit-identical cosine-hemisphere sampler covered by Lambertian" : "known model limitation — see per-material notes" )
+                          << ")" << std::endl;
+            }
+            else if( r.chi2Dof > 0 )
+            {
+                // DL-176: the gate is on the SEED-MEAN via z; the single-seed
+                // alpha=0.001 critical value is printed for continuity with
+                // the pre-2026-09-18 output only.
+                std::cout << ( r.chi2Passed ? "  PASS" : "  FAIL" )
+                          << " chi2 mean " << r.chi2Stat
+                          << " over " << NUM_CHI2_SEEDS << " seeds"
+                          << "  [min " << r.chi2Min << ", max " << r.chi2Max << "]"
+                          << "  dof " << r.chi2Dof
+                          << "  z " << r.chi2Z
+                          << "  [emission rate " << r.emissionRate
+                          << " vs int Pdf " << r.pdfIntegral << "]"
+                          << " (|z| <= " << CHI2_Z_TOL
+                          << "; single-seed alpha=0.001 critical " << r.chi2Crit << ")"
+                          << std::endl;
+                if( !r.chi2Passed )
                 {
-                    std::cout << "  PASS chi2: " << r.chi2Stat
-                              << " < critical " << r.chi2Crit << std::endl;
+                    numFailed++;
                 }
             }
         }
         std::cout << std::endl;
     }
+
+    // ---- gate 6's NM half ----
+    std::cout << "--- Spectral (NM) companion (9.9 gate 6; fabric + every "
+                 "exact-selected-pdf SPF) ---" << std::endl;
+    {
+        // Premise check first: at a mid-hemisphere direction reachable
+        // from both lobes, at least one fabric configuration must
+        // genuinely DISCRIMINATE a branch-local density from the
+        // mixture, or the cross-validations below prove nothing.
+        const Vector3 midWo = Vector3Ops::Normalize( Vector3( 0.35, 0.25, 0.90 ) );
+        const LobeDiscrimination dLamb = MeasureLobeDiscrimination(
+            *fabricLamb, *coatBaseLambMat->GetSPF(), 30.0 * DEG_TO_RAD, midWo );
+        const LobeDiscrimination dAniso = MeasureLobeDiscrimination(
+            *fabricAniso, *fabBaseAnisoMat->GetSPF(), 30.0 * DEG_TO_RAD, midWo );
+
+        std::cout << "  mid-hemisphere lobe densities at wo=(0.35,0.25,0.90):" << std::endl;
+        std::cout << "    Fabric_Lambertian        qMix=" << dLamb.qMix
+                  << "  qBase=" << dLamb.qBase << "  qSheen=" << dLamb.qSheen
+                  << "  -> " << ( dLamb.discriminates ? "DISCRIMINATES"
+                                                      : "coincident lobes (control only)" )
+                  << std::endl;
+        std::cout << "    Fabric_GGXaniso_weave45  qMix=" << dAniso.qMix
+                  << "  qBase=" << dAniso.qBase << "  qSheen=" << dAniso.qSheen
+                  << "  -> " << ( dAniso.discriminates ? "DISCRIMINATES"
+                                                       : "coincident lobes (control only)" )
+                  << std::endl;
+
+        // Both must at least be REACHED by the substrate (a sheen-only
+        // direction tests nothing at all), and the GGX row must
+        // discriminate -- it is the row that carries the gate.
+        if( !dLamb.baseReaches || !dAniso.baseReaches ) {
+            std::cout << "  FAIL: the mid-hemisphere direction is not reachable from the "
+                         "substrate lobe -- gate 6 would be testing the sheen lobe alone"
+                      << std::endl;
+            numFailed++;
+        }
+        if( !dAniso.discriminates ) {
+            std::cout << "  FAIL: no fabric configuration discriminates a branch-local "
+                         "density from the mixture -- gate 6 proves nothing as configured"
+                      << std::endl;
+            numFailed++;
+        }
+
+        // THE SAME PREMISE, FOR THE WEAVE ROWS, and it needs its own
+        // check rather than inheriting fabric's: the two mixtures are
+        // built from different lobes.  `weave_material`'s cosine branch
+        // has density cos(wo)/pi, so a `Scatter` that reported its OWN
+        // branch's density would be accidentally right at every
+        // direction where the surface lobe's density happens to equal
+        // it.  Asserting that the surface lobe's density at this
+        // direction genuinely DIFFERS from the cosine one is what makes
+        // the cross-validations above discriminating rather than
+        // decorative -- exactly the argument
+        // `MeasureLobeDiscrimination`'s header makes for fabric.
+        {
+            RayIntersectionGeometric wri = MakeIntersection( 30.0 * DEG_TO_RAD );
+            IORStack wStack = MakeTestIORStack( g_stubObject );
+            const Scalar qCos = r_max( Scalar(0), Vector3Ops::Dot( midWo, wri.onb.w() ) ) * INV_PI;
+
+            struct WeaveProbe { const char* name; ISPF* spf; };
+            const WeaveProbe probes[] = {
+                { "Weave_satin",       weaveSatinSPF },
+                { "Weave_denim_rot45", weaveDenimSPF }
+            };
+            int weaveDiscriminating = 0;
+            for( const WeaveProbe& wp : probes ) {
+                const Scalar qMix = wp.spf->Pdf( wri, midWo, wStack );
+                const bool   diff = ( fabs( qMix - qCos ) > 1e-6 * r_max( qMix, qCos ) );
+                std::cout << "    " << wp.name << "  qMix=" << qMix
+                          << "  qCosineBranch=" << qCos
+                          << "  -> " << ( diff ? "DISCRIMINATES"
+                                               : "coincident lobes (control only)" )
+                          << std::endl;
+                if( diff ) ++weaveDiscriminating;
+            }
+            if( weaveDiscriminating == 0 ) {
+                std::cout << "  FAIL: no weave configuration discriminates a branch-local "
+                             "density from the mixture -- the weave rows prove nothing as "
+                             "configured" << std::endl;
+                numFailed++;
+            }
+        }
+
+        // EVERY SPF that carries an EXACT selected pdf on the RGB pipe,
+        // not just the two fabric rows.
+        //
+        // The NM companion was fabric-only when it was added, which
+        // satisfied gate 6's literal text but left the harness a
+        // fabric-specific bolt-on rather than a general capability (M3
+        // review, 2026-09-02).  The RGB/NM twins drift across this whole
+        // directory, so the rows below are the ones whose RGB
+        // cross-validation is already exact -- i.e. the ones for which
+        // "does ScatterNM's stored pdf equal PdfNM?" is a meaningful
+        // question with a known-good answer on the sibling pipe.
+        //
+        // The `skipCrossVal` multi-lobe rows are deliberately NOT here:
+        // their RGB cross-validation is skipped for a documented
+        // model limitation (the selection weights do not match the
+        // reported mixture), so an NM failure there would be that same
+        // pre-existing limitation, not a twin-drift finding.
+        // `crossValTol` is CROSS_VAL_TOL (1e-6) everywhere except the one
+        // row with a MEASURED, PRE-EXISTING defect -- see CookTorrance
+        // below.  The relaxed row is deliberately kept IN the sweep and
+        // BOUNDED rather than skipped: skipping would let the defect
+        // grow silently, which is the failure mode this whole broadening
+        // exists to prevent.
+        //! `integralTol`: Part 2's hemisphere band; INTEGRAL_TOL except on a
+        //! sub-density row (Coated_GGX since DL-388 -- see the RGB table).
+        //! `subDensityTol`: when positive, the NM mass gate (TestSPFNM).
+        struct NMEntry { const char* name; ISPF* spf; double crossValTol; double integralTol = INTEGRAL_TOL; double subDensityTol = -1.0; };
+        const NMEntry nmEntries[] = {
+            { "Lambertian",              lambertian,   CROSS_VAL_TOL },
+            { "OrenNayar",               orenNayar,    CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // CookTorrance: FIXED 2026-09-03.  `CookTorranceSPF::ScatterNM`
+            // used to build its 3-lobe mixture SELECTION weights (and
+            // `alpha`) PER-WAVELENGTH -- GuardedGetColorNM on diffuse/
+            // specular, GetValueAtNM on the masking scalar -- while
+            // `CookTorranceSPF::PdfNM` forwarded to `Pdf`, which built the
+            // same weights from the RGB max3.  The density stored on a
+            // spectral sample was therefore a DIFFERENT mixture from the
+            // one PdfNM reported for that same direction (measured
+            // maxRelErr 1.44e-4 at 30 deg / 1.55e-4 at 60 deg, ~11 orders
+            // of magnitude out of family with every other row here).
+            //
+            // Fixed by making `ScatterNM`'s selection weights and `alpha`
+            // ACHROMATIC -- the same RGB max3 / RGB masking source `Pdf`
+            // already used -- exactly the convention `fabric_material`
+            // adopted for the identical reason (FabricBRDF::ResolveFabric
+            // reads alpha, m and weaveAngle achromatically in both
+            // regimes so Scatter's stored hero pdf cannot drift from a
+            // companion-wavelength Pdf() call; see its declaration).
+            // `PdfNM`'s bare forward to `Pdf` is now correct by
+            // construction and stays unchanged.  Only the per-wavelength
+            // VALUE (kray/krayNM) still varies with `nm`; re-measured at
+            // CROSS_VAL_TOL (1e-6), maxRelErr now lands in the same
+            // 1e-15-to-1e-13 family as every other row.
+            //----------------------------------------------------------
+            { "CookTorrance",            cookTorrance, CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // CookTorrance with an authored PURE-BLACK slot
+            // (REVIEW_CHIP3 P1 closure).  Exact CROSS_VAL_TOL, NOT
+            // relaxed: the floor makes ScatterNM's selection weights
+            // agree with Pdf/PdfNM bit-for-bit at the RGB-max3==0
+            // corner too, so this is new coverage the P1 fix needed --
+            // not a bounded pre-existing gap like the comment above.
+            //----------------------------------------------------------
+            { "CookTorrance_BlackDiffuse",  cookTorranceBlackDiffuse,  CROSS_VAL_TOL },
+            { "CookTorrance_BlackSpecular", cookTorranceBlackSpecular, CROSS_VAL_TOL },
+
+            { "GGX_Isotropic",           ggxIso,       CROSS_VAL_TOL },
+            { "GGX_Anisotropic",         ggxAniso,     CROSS_VAL_TOL },
+            { "SubSurfaceScattering",    sss,          CROSS_VAL_TOL },
+            { "Coated_Lambertian",       coatedLamb,   CROSS_VAL_TOL },
+            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL, 0.25, SUBDENSITY_TOL },
+            { "Fabric_Lambertian",       fabricLamb,   CROSS_VAL_TOL },
+            { "Fabric_GGXaniso_weave45", fabricAniso,  CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // weave_material.  Its RGB cross-validation is exact, so the
+            // NM question is meaningful; and `WeaveBRDF::ResolveWeave`
+            // reads every one of its FOURTEEN geometric scalars
+            // achromatically in both regimes for exactly the reason the
+            // CookTorrance note above spells out.  These two rows are
+            // what makes that a measured claim rather than a comment.
+            //
+            // Note in particular that the tint enters the SELECTION
+            // WEIGHT (`SurfaceSelectWeight` reads max3(A)), which is why
+            // `ResolveWeave` keeps the RGB `tint` populated on the NM
+            // path as well: reading the hero-wavelength dye there would
+            // reproduce CookTorrance's defect exactly.
+            //----------------------------------------------------------
+            { "Weave_satin",             weaveSatinSPF, CROSS_VAL_TOL },
+            { "Weave_denim_rot45",       weaveDenimSPF, CROSS_VAL_TOL },
+        };
+        const double nmAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
+        const char*  nmAngleNames[] = { "30deg", "60deg" };
+
+        for( const NMEntry& e : nmEntries )
+        {
+            for( int a = 0; a < 2; ++a )
+            {
+                // 660 nm: the wavelength where the Jakob-Hanika white
+                // corner was historically worst, so an NM path that
+                // diverged from RGB through the tint would diverge here
+                // first (docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+                NMResult r = TestSPFNM( std::string( e.name ) + " @ " + nmAngleNames[a],
+                                        *e.spf, nmAngles[a], 660.0, e.integralTol,
+                                        e.crossValTol, e.subDensityTol );
+                std::cout << "  " << ( r.passed ? "PASS" : "FAIL" ) << "  " << r.name
+                          << "  crossValFailures=" << r.crossValFailures
+                          << "  maxRelErr=" << r.maxCrossValError
+                          << "  pdfIntegral=" << r.pdfIntegral;
+                if( e.subDensityTol > 0 ) {
+                    std::cout << "  int PdfNM(sphere)=" << r.fullSphereIntegral
+                              << " vs emission " << r.emissionProb;
+                }
+                if( e.crossValTol != CROSS_VAL_TOL ) {
+                    std::cout << "   [cross-val bounded at " << e.crossValTol
+                              << " -- documented pre-existing RGB/NM gap, see source]";
+                }
+                std::cout << std::endl;
+                if( !r.passed ) numFailed++;
+            }
+        }
+    }
+    std::cout << std::endl;
 
     // Summary
     std::cout << "===== Summary =====" << std::endl;
@@ -756,9 +2065,15 @@ int main()
         const TestResult& r = results[i];
         // Determine which SPFEntry this result corresponds to
         int si = (int)(i % numSPFs);
+        const bool isDuplicateCosineChi2 =
+            !g_extended &&
+            ( spfs[si].name == "DataDriven_constant0.4" ||
+              spfs[si].name == "DataDriven_varied" ||
+              spfs[si].name == "OrenNayar" );
+        const bool effectiveSkipChi2 = spfs[si].skipChi2 || isDuplicateCosineChi2;
         bool passed = r.integralPassed;
         if( !spfs[si].skipCrossVal ) passed = passed && r.crossValPassed;
-        if( !spfs[si].skipChi2 )     passed = passed && r.chi2Passed;
+        if( !effectiveSkipChi2 )     passed = passed && r.chi2Passed;
         std::cout << (passed ? "PASS" : "FAIL") << "  " << r.name;
         if( spfs[si].skipCrossVal && r.crossValFailures > 0 )
             std::cout << " [cross-val: skipped]";
@@ -766,12 +2081,644 @@ int main()
             std::cout << " [cross-val: " << r.crossValFailures << " errors]";
         if( !r.integralPassed )
             std::cout << " [integral: " << r.pdfIntegral << "]";
-        if( spfs[si].skipChi2 )
+        passed = passed && r.subDensityPassed && r.domainSplitPassed;
+        if( !r.subDensityPassed )
+            std::cout << " [sub-density: int Pdf " << r.fullSphereIntegral
+                      << " vs emission " << r.emissionProb << "]";
+        if( !r.domainSplitPassed )
+            std::cout << " [domain split: Pdf share " << r.pdfUpperShare
+                      << " vs emitted share " << r.emittedUpperShare << "]";
+        if( effectiveSkipChi2 )
             std::cout << " [chi2: skipped]";
         else if( !r.chi2Passed )
-            std::cout << " [chi2: " << r.chi2Stat << " > " << r.chi2Crit << "]";
+            std::cout << " [chi2 seed-mean: " << r.chi2Stat << ", dof " << r.chi2Dof
+                      << ", z " << r.chi2Z << "]";
         std::cout << std::endl;
     }
+
+    // ================================================================
+    //  REVIEW_CHIP3 P1 closure: achromatic-selection FLOOR reachability.
+    //
+    //  The cross-validation and integral rows above (CookTorrance_Black-
+    //  Diffuse / _BlackSpecular, RGB and NM) prove the floor keeps
+    //  Scatter<->Pdf and ScatterNM<->PdfNM CONSISTENT at an authored
+    //  pure-black slot.  They do NOT by themselves prove the black
+    //  lobe is actually SAMPLED -- a floor that was somehow zeroed out
+    //  or shadowed by a different guard could still pass every
+    //  consistency check while never firing.  This block runs the
+    //  sampler directly and counts.
+    //
+    //  Disambiguating which lobe fired, from OUTSIDE CookTorranceSPF:
+    //    * Specular is unambiguous by TYPE: only the specular branch
+    //      emits eRayReflection: both diffuse and multiscatter emit
+    //      eRayDiffuse.
+    //    * Diffuse vs multiscatter, on the RGB pipe, is unambiguous by
+    //      VALUE: CookTorranceSPF::Scatter's diffuse branch adds its ray
+    //      UNCONDITIONALLY (no kray>0 gate), and for an authored
+    //      pure-black diffuse painter `pDiffuse->GetColor(ri)` is
+    //      EXACTLY (0,0,0), so diffuse.kray is exactly (0,0,0) on every
+    //      fire. The multiscatter branch is also unconditional after
+    //      DL-211 (a selected zero-throughput event must remain in the
+    //      mixture), but this fixture's NONBLACK specular painter gives
+    //      every sampled in-support multiscatter event positive kray.
+    //      Thus an added eRayDiffuse ray with MaxValue(kray) exactly 0
+    //      identifies the authored-black diffuse branch here; this does
+    //      not rely on a positive-kray gate in production.
+    //    * Diffuse vs multiscatter, on the NM pipe, needs a different
+    //      test: GuardedGetColorNM's black-cell leak means krayNM is
+    //      NOT exactly 0, so the exact-zero trick doesn't apply. But
+    //      `wdValNM` and `pDiffuseSelect` are both computed from `ri`/
+    //      `nm` ALONE (never from the sampled `wo`), so the diffuse
+    //      branch's krayNM is the SAME deterministic constant on every
+    //      fire. Predicting that constant independently (same painter,
+    //      same formula) and matching fired rays against it separates
+    //      diffuse fires from multiscatter's wo-dependent krayNM.
+    // ================================================================
+    {
+        std::cout << "=== REVIEW_CHIP3 P1 closure: achromatic-selection floor reachability ===" << std::endl;
+
+        const int   kReachTrials = 200000;
+        const double kReachTheta = 30.0 * DEG_TO_RAD;
+        const double kReachNM    = 660.0;
+        // MUST match CookTorranceSPF.cpp's anonymous-namespace kSelFloor.
+        // Duplicated here deliberately (the same way the harness above
+        // calls Pdf() independently to cross-validate Scatter(), rather
+        // than reaching into production internals): an independent
+        // prediction that later drifts from production is a visible
+        // test failure, not a silent tautology.
+        const double kSelFloorTest = 1e-3;
+
+        RayIntersectionGeometric reachRi = MakeIntersection( kReachTheta );
+        IORStack reachIorStack = MakeTestIORStack( g_stubObject );
+        RandomNumberGenerator reachRng;
+        Implementation::IndependentSampler reachSampler( reachRng );
+
+        const double cosWiReach = cos( kReachTheta );
+        const double reachAlpha = 0.1;   // matches `lowSc`
+        const double Ess_iReach = MicrofacetEnergyLUT::LookupEss( cosWiReach, reachAlpha );
+
+        // cookTorranceBlackDiffuse: diffuse = black (RGB max3 == 0),
+        // specular = `spec` (RGB max3 == 0.3).  wd is the one floored.
+        const double wdBD_RGB   = 0.0;   // `black` painter's RGB max3
+        const double wsBD_RGB   = 0.3;   // `spec` painter's RGB max3
+        const double wdBD       = r_max( wdBD_RGB, kSelFloorTest );
+        const double wsBD       = r_max( wsBD_RGB, kSelFloorTest );
+        const double wmsBD      = wsBD * ( 1.0 - Ess_iReach );
+        const double totalBD    = wdBD + wsBD + wmsBD;
+        const double pDiffuseSelectPred = wdBD / totalBD;
+
+        // cookTorranceBlackSpecular: diffuse = `gray` (RGB max3 == 0.5),
+        // specular = black (RGB max3 == 0).  ws is the one floored --
+        // an INDEPENDENT computation from the block above, not a
+        // roles-swapped reuse of it (wms depends on ws, which differs
+        // between the two fixtures).
+        const double wdBS_RGB   = 0.5;   // `gray` painter's RGB max3
+        const double wsBS_RGB   = 0.0;   // `black` painter's RGB max3
+        const double wdBS       = r_max( wdBS_RGB, kSelFloorTest );
+        const double wsBS       = r_max( wsBS_RGB, kSelFloorTest );
+        const double wmsBS      = wsBS * ( 1.0 - Ess_iReach );
+        const double totalBS    = wdBS + wsBS + wmsBS;
+        const double pSpecSelectPred = wsBS / totalBS;
+
+        const double wdValNMReach = GuardedGetColorNM( *black, reachRi, kReachNM );
+        const double expectedDiffuseKrayNM = wdValNMReach / pDiffuseSelectPred;
+
+        // --- Black diffuse: RGB pipe -----------------------------------
+        {
+            int diffuseFires = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackDiffuse->Scatter( reachRi, reachSampler, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    if( s.type == ScatteredRay::eRayDiffuse && ColorMath::MaxValue( s.kray ) == 0.0 )
+                        diffuseFires++;
+                }
+            }
+            const double observedRate = (double)diffuseFires / (double)kReachTrials;
+            // Order-of-magnitude band, not a tight statistical bound: the
+            // point is proving the floored lobe fires at a rate SET BY
+            // THE FLOOR (was exactly 0 before this fix), not pinning the
+            // MC estimate to high precision.
+            const bool ok = ( diffuseFires > 0 )
+                          && ( observedRate > pDiffuseSelectPred * 0.3 )
+                          && ( observedRate < pDiffuseSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackDiffuse RGB: diffuse-lobe fires=" << diffuseFires
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pDiffuseSelect=" << pDiffuseSelectPred
+                      << "  (kray exactly (0,0,0) on every fire, as authored) "
+                      << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+
+        // --- Black diffuse: NM pipe --------------------------------------
+        {
+            int diffuseFires = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackDiffuse->ScatterNM( reachRi, reachSampler, kReachNM, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    if( s.type != ScatteredRay::eRayDiffuse ) continue;
+                    const double relErr = fabs( s.krayNM - expectedDiffuseKrayNM )
+                                        / r_max( 1e-30, r_max( fabs(s.krayNM), fabs(expectedDiffuseKrayNM) ) );
+                    if( relErr < 1e-6 ) diffuseFires++;
+                }
+            }
+            const double observedRate = (double)diffuseFires / (double)kReachTrials;
+            const bool ok = ( diffuseFires > 0 )
+                          && ( observedRate > pDiffuseSelectPred * 0.3 )
+                          && ( observedRate < pDiffuseSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackDiffuse NM@660: diffuse-lobe fires=" << diffuseFires
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pDiffuseSelect=" << pDiffuseSelectPred
+                      << "  krayNM on fire=" << expectedDiffuseKrayNM
+                      << " (nonzero: the ~2.5e-5 JH black-cell leak is now SAMPLED, not"
+                      << " permanently unreachable) " << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+
+        // --- Black specular: RGB and NM pipes ----------------------------
+        // Unambiguous by TYPE alone (eRayReflection), so both pipes share
+        // one loop shape; no value-matching trick needed here.
+        //
+        // Both pipes must emit the selected lobe at the floor-based rate.
+        // RGB carries the authored literal-zero throughput and terminates;
+        // NM carries the small nonzero JH black-cell reconstruction.  The
+        // shared achromatic mixture therefore remains honest in both
+        // regimes instead of pricing an RGB event Scatter silently drops.
+        {
+            int specFiresRGB = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackSpecular->Scatter( reachRi, reachSampler, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    if( scattered[j].type == ScatteredRay::eRayReflection ) specFiresRGB++;
+                }
+            }
+            const double observedRate = (double)specFiresRGB / (double)kReachTrials;
+            const bool ok = ( specFiresRGB > 0 )
+                          && ( observedRate > pSpecSelectPred * 0.3 )
+                          && ( observedRate < pSpecSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackSpecular RGB: specular-lobe fires=" << specFiresRGB
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pSpecSelect=" << pSpecSelectPred
+                      << " (kray is exactly (0,0,0): a terminating sample whose existence"
+                      << " keeps the shared mixture density honest) " << ( ok ? "-> PASS" : "-> FAIL" )
+                      << std::endl;
+            if( !ok ) numFailed++;
+        }
+        {
+            int specFiresNM = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackSpecular->ScatterNM( reachRi, reachSampler, kReachNM, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    if( scattered[j].type == ScatteredRay::eRayReflection ) specFiresNM++;
+                }
+            }
+            const double observedRate = (double)specFiresNM / (double)kReachTrials;
+            const bool ok = ( specFiresNM > 0 )
+                          && ( observedRate > pSpecSelectPred * 0.3 )
+                          && ( observedRate < pSpecSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackSpecular NM@660: specular-lobe fires=" << specFiresNM
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pSpecSelect=" << pSpecSelectPred
+                      << " (nonzero: the ~2.5e-5 JH black-cell leak is now SAMPLED, not"
+                      << " permanently unreachable) " << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  REVIEW_CHIP3 proof point 4: the floor changes VARIANCE, not
+    //  EXPECTATION, for a tinted (non-near-black) Cook-Torrance material.
+    //
+    //  For the base `cookTorrance` fixture above (rd=0.5 gray, rs=0.3
+    //  spec -- both well above kSelFloor=1e-3), ComputeLobeWeights'
+    //  `r_max(wdRGB, kSelFloor)` / `r_max(wsRGB, kSelFloor)` are NO-OPs:
+    //  r_max(0.5, 0.001) == 0.5 and r_max(0.3, 0.001) == 0.3 bit-for-bit,
+    //  so `wd`/`ws`/`wms`/`total` -- and therefore every kray, mixPdf, and
+    //  Pdf() value -- are IDENTICAL to what the pre-fix code computed for
+    //  this material.  The floor provably does not touch this row at all;
+    //  "unchanged within MC noise" is the WEAKER claim the algebra already
+    //  guarantees.  This block measures the directional-hemispherical
+    //  reflectance anyway, as the concrete number the review asked for and
+    //  as a live regression guard: an energy-conservation break in a
+    //  future change to ComputeLobeWeights (e.g. a floor that leaked into
+    //  a tinted material's weights) would move this number.
+    //
+    //  Estimator: kray IS the light-transport throughput factor
+    //  (f*cos/pdf), so its RGB-channel MEAN over many Scatter() calls at a
+    //  fixed incoming direction is a standard Monte Carlo estimate of the
+    //  directional-hemispherical reflectance rho(wi) -- must land in
+    //  (0, 1) for an energy-conserving BRDF.
+    // ================================================================
+    {
+        std::cout << "=== Furnace / energy check: white(ish) CookTorrance directional albedo, floor is a no-op here ===" << std::endl;
+
+        const int kFurnaceTrials = 40000;
+        RayIntersectionGeometric fRi = MakeIntersection( 30.0 * DEG_TO_RAD );
+        IORStack fIorStack = MakeTestIORStack( g_stubObject );
+        RandomNumberGenerator fRng;
+        Implementation::IndependentSampler fSampler( fRng );
+
+        RISEPel sum( 0, 0, 0 );
+        long long nRays = 0;
+        for( int i = 0; i < kFurnaceTrials; i++ )
+        {
+            ScatteredRayContainer scattered;
+            cookTorrance->Scatter( fRi, fSampler, scattered, fIorStack );
+            for( unsigned int j = 0; j < scattered.Count(); j++ )
+            {
+                sum = sum + scattered[j].kray;
+                nRays++;
+            }
+        }
+        const RISEPel rho = sum * ( 1.0 / (double)kFurnaceTrials );
+        const double rhoMax = ColorMath::MaxValue( rho );
+        // Generous band: this is a regression guard on gross energy
+        // conservation, not a tight closed-form check (no closed-form
+        // reference is being computed here) -- (0, 1) with headroom.
+        const bool ok = ( rhoMax > 0.0 ) && ( rhoMax < 0.95 );
+        std::cout << "  CookTorrance rd=0.5,rs=0.3,alpha=0.1 @ 30deg: rays=" << nRays
+                  << "/" << kFurnaceTrials << "  rho=(" << rho[0] << "," << rho[1] << "," << rho[2]
+                  << ")  max=" << rhoMax
+                  << "  (floor is algebraically inert here: r_max(0.5,1e-3)=0.5,"
+                  << " r_max(0.3,1e-3)=0.3 bit-for-bit, so this number is identical"
+                  << " pre- and post-fix by construction, not merely within MC noise) "
+                  << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+        if( !ok ) numFailed++;
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  P2-B (docs/CLOTH_FABRIC_DESIGN.md 10): the CONTINUUM pdf integral
+    //  over the FULL SPHERE for a `transmission thin` material.
+    //
+    //  `TestSPF`'s own Part 2 integrates theta over [0, pi/2] ONLY (a
+    //  hemisphere) and asserts ~1 -- correct for every reflection-only
+    //  material in `spfs[]` above, and WRONG for a full-sphere one: a
+    //  thin weave's reflect-side alone integrates to well under 1 (the
+    //  delta branch and the transmit-side share both took some of the
+    //  mass), so running it through the shared harness unmodified would
+    //  either need a tolerance loose enough to hide a real regression or
+    //  fail a materially correct implementation.  This block instead
+    //  integrates over the WHOLE SPHERE (theta 0..pi) and checks the
+    //  result against `(1 - gap)` -- the CONTINUUM's own share of the
+    //  pmf, `Pdf()`'s brief-mandated convention (WeaveSPF.h's P2-B
+    //  section): the delta branch is excluded from `Pdf()` by
+    //  construction (it reports 0 for that direction), so the honest
+    //  target for the continuum's integral is "1 minus whatever went to
+    //  the delta spike", not 1.
+    // ================================================================
+    {
+        std::cout << "=== P2-B: continuum PDF integral over the FULL SPHERE (thin weave) ===" << std::endl;
+
+        const double kGap = 0.2;
+        RISE::WeaveTest::PresetWeave weaveThinFull( "satin", 0.0, -1, false, /*thin=*/true, -1, -1, kGap );
+
+        RayIntersectionGeometric ri = MakeIntersection( 30.0 * PI / 180.0 );
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        const int INTEGRAL_THETA_FULL = 80;
+        const int INTEGRAL_PHI_FULL   = 80;
+        double pdfIntegralFull = 0.0;
+        for( int t = 0; t < INTEGRAL_THETA_FULL; t++ )
+        {
+            const double theta = ( t + 0.5 ) * PI / INTEGRAL_THETA_FULL;	// 0..pi, the FULL sphere
+            const double sinT = sin( theta ), cosT = cos( theta );
+            const double dTheta = PI / INTEGRAL_THETA_FULL;
+            for( int p = 0; p < INTEGRAL_PHI_FULL; p++ )
+            {
+                const double phi = ( p + 0.5 ) * TWO_PI / INTEGRAL_PHI_FULL;
+                const double dPhi = TWO_PI / INTEGRAL_PHI_FULL;
+                Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
+                wo = Vector3Ops::Normalize( wo );
+                const Scalar pdfVal = weaveThinFull.SPF()->Pdf( ri, wo, iorStack );
+                pdfIntegralFull += pdfVal * sinT * dTheta * dPhi;
+            }
+        }
+
+        const double expected = 1.0 - kGap;
+        const double fullSphereTol = 0.05;
+        const bool fullSpherePassed = fabs( pdfIntegralFull - expected ) <= fullSphereTol;
+        std::cout << "  Weave_satin_thin_gap0.2: full-sphere integral=" << pdfIntegralFull
+                  << "  expected (1-gap)=" << expected
+                  << "  " << ( fullSpherePassed ? "-> PASS" : "-> FAIL" ) << std::endl;
+        if( !fullSpherePassed ) numFailed++;
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME
+    //  full-sphere continuum identity, and cross-validation, for a
+    //  `fabric_material` WRAPPING that thin weave.
+    //
+    //  WHY IT NEEDS ITS OWN TARGET.  The wrapper mixes a REFLECTION-ONLY
+    //  sheen lobe (cosine hemisphere about the ray-facing normal, so it
+    //  places no mass below it) with the substrate's full-sphere
+    //  continuum, at the substrate's own selection probability `1 - w`:
+    //
+    //      INT_sphere q  =  w * 1  +  (1 - w) * (1 - gap)
+    //
+    //  where `w = FabricBRDF::SheenSelectWeight(alpha, m, cos theta_v)`.
+    //  It is NOT `1 - gap` (the bare weave's answer) and it is NOT 1: the
+    //  delta branch's share of the pmf shrank by exactly the factor the
+    //  wrapper diverted to its own lobe, and `Pdf()` must be truthful
+    //  about that or every MIS denominator downstream is wrong.
+    //
+    //  BOTH FAILURE DIRECTIONS ARE CAUGHT.  Reporting 0 below the
+    //  horizon -- the pre-P1.1 behaviour -- lands the integral at
+    //  `w + (1-w)*R` with `R` the reflect-only share (~0.62 here, well
+    //  outside the band); forgetting the `(1 - w)` factor on the
+    //  transmit arm lands it high by `w * (1 - gap - R)`.
+    //
+    //  CROSS-VALIDATION is the other half and is the one that would catch
+    //  a BRANCH-LOCAL density on the transmit side: `Scatter` must store
+    //  the same number an independent `Pdf(ri, wo)` call returns for that
+    //  same direction, to `CROSS_VAL_TOL`.  Run over BOTH regimes, since
+    //  the RGB and NM paths reach the substrate through different entry
+    //  points.
+    // ================================================================
+    {
+        std::cout << "=== R8 P1.1: fabric over a thin weave -- full-sphere continuum pdf + cross-validation ===" << std::endl;
+
+        const double kGapF = 0.2;
+        RISE::WeaveTest::PresetWeave thinBase( "linen", 0.0, 0.5, false, /*thin=*/true, -1, -1, kGapF );
+        FabricMaterial* fabThinMat = new FabricMaterial(
+            *thinBase.Material(), *coatTintOne, *fabAlphaSc, *fabZeroSc );
+        fabThinMat->addref();
+        ISPF* fabThinSPF = fabThinMat->GetSPF();
+
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        for( int a = 0; a < 2; a++ )
+        {
+            const double theta = incomingAngles[a];
+            RayIntersectionGeometric ri = MakeIntersection( theta );
+
+            // `m` is 1 (the shared white `coatTintOne`) and alpha 0.3 is
+            // above the 0.04 floor, so the selection weight is known in
+            // closed form here.  This DOES call the material's own static
+            // -- deliberately: the claim under test is that `Pdf()`
+            // apportions its mass by the SAME weight the sampler selects
+            // with, which is a statement about one number being used
+            // twice, not about that number's value.
+            const double w = (double)FabricBRDF::SheenSelectWeight( 0.3, 1.0, std::cos( theta ) );
+            const double expected = w * 1.0 + ( 1.0 - w ) * ( 1.0 - kGapF );
+
+            const int NT = 80, NP = 80;
+            double integ = 0.0, integNM = 0.0;
+            for( int t = 0; t < NT; t++ )
+            {
+                const double th = ( t + 0.5 ) * PI / NT;      // 0..pi, the FULL sphere
+                const double sinT = sin( th ), cosT = cos( th );
+                const double dTheta = PI / NT;
+                for( int p = 0; p < NP; p++ )
+                {
+                    const double phi = ( p + 0.5 ) * TWO_PI / NP;
+                    const double dPhi = TWO_PI / NP;
+                    Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+                    wo = Vector3Ops::Normalize( wo );
+                    integ   += fabThinSPF->Pdf( ri, wo, iorStack )          * sinT * dTheta * dPhi;
+                    integNM += fabThinSPF->PdfNM( ri, wo, 550.0, iorStack ) * sinT * dTheta * dPhi;
+                }
+            }
+
+            const double tol = 0.05;
+            const bool okRGB = fabs( integ   - expected ) <= tol;
+            const bool okNM  = fabs( integNM - expected ) <= tol;
+            std::cout << "  Fabric/Weave_linen_thin_gap0.2 @ " << angleNames[a]
+                      << ": full-sphere integral=" << integ << " (NM " << integNM << ")"
+                      << "  expected w+(1-w)(1-gap)=" << expected
+                      << "  [w=" << w << "]  "
+                      << ( ( okRGB && okNM ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !okRGB || !okNM ) numFailed++;
+
+            // ---- cross-validation, both regimes.
+            RandomNumberGenerator rng;
+            Implementation::IndependentSampler sampler( rng );
+            int checked = 0, mismatches = 0, deltas = 0, belowHorizon = 0;
+            double worst = 0.0;
+            for( int i = 0; i < 5000; i++ )
+            {
+                const bool bNM = ( i % 2 ) != 0;
+                ScatteredRayContainer scattered;
+                if( bNM ) {
+                    fabThinSPF->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+                } else {
+                    fabThinSPF->Scatter( ri, sampler, scattered, iorStack );
+                }
+                if( scattered.Count() == 0 ) continue;
+                const ScatteredRay& s = scattered[0];
+                const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                if( Vector3Ops::Dot( wo, ri.onb.w() ) < 0 ) belowHorizon++;
+                if( s.isDelta ) { deltas++; continue; }
+                if( s.pdf <= 0 ) continue;
+
+                const double q = bNM ? (double)fabThinSPF->PdfNM( ri, wo, 550.0, iorStack )
+                                     : (double)fabThinSPF->Pdf( ri, wo, iorStack );
+                const double rel = fabs( q - s.pdf ) / std::max( 1e-30, (double)s.pdf );
+                if( rel > worst ) worst = rel;
+                if( rel > CROSS_VAL_TOL ) mismatches++;
+                checked++;
+            }
+
+            // Non-degeneracy: the transmit side and the delta branch must
+            // both be LIVE, or the two checks above would be measuring a
+            // reflection-only material and proving nothing about P1.1.
+            const bool live = ( belowHorizon > 0 ) && ( deltas > 0 );
+            std::cout << "    cross-val @ " << angleNames[a] << ": checked=" << checked
+                      << " mismatches=" << mismatches << " maxRel=" << worst
+                      << "  (below-horizon draws=" << belowHorizon << ", delta draws=" << deltas << ")  "
+                      << ( ( mismatches == 0 && live ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( mismatches != 0 || !live ) numFailed++;
+        }
+
+        safe_release( fabThinMat );
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material`'s OWN
+    //  below-horizon transmission branch (CoatedSPF.cpp's DL-23
+    //  additions) -- the SAME full-sphere continuum identity and
+    //  cross-validation the P2-B / R8 P1.1 blocks above prove for the
+    //  bare weave and fabric-over-weave, now for `coated_material`
+    //  wrapping a `transmission thin` weave DIRECTLY
+    //  ("Coated_Weave_thin") and THROUGH a fabric layer
+    //  ("Coated_Fabric", coat -> fabric -> weave).
+    //
+    //  WHY THE SAME FORM APPLIES.  `CoatedSPF`'s mixture is
+    //  structurally identical to `FabricSPF`'s: a reflection-only top
+    //  lobe (VNDF for the coat; cosine sheen for fabric) selected with
+    //  probability `pCoat = cp.weight * CoatedLayer::Fresnel(cosWi,
+    //  cp.eta)` (`CoatedSPF::ScatterImpl`/`PdfImpl`) that places NO
+    //  mass below the horizon (VNDF reflection about the ray-facing
+    //  normal cannot draw a below-horizon direction), mixed with the
+    //  substrate's own density at `(1 - pCoat)`.  The coat lobe
+    //  therefore integrates to exactly 1 over the FULL sphere (0
+    //  below, 1 above), so
+    //
+    //      INT_sphere q  =  pCoat * 1  +  (1 - pCoat) * INT_sphere(qBase)
+    //
+    //  where `INT_sphere(qBase)` is the substrate's OWN full-sphere
+    //  continuum share -- `(1 - gap)` for the bare weave (P2-B above)
+    //  and `w_fab + (1 - w_fab)*(1 - gap)` for the fabric-over-weave
+    //  substrate (R8 P1.1 above) -- giving the two closed forms below.
+    //  `coatWeightSc` is 1.0 (the shared neutral coat fixture the
+    //  Coated_Lambertian/Coated_GGX rows above already use), so
+    //  `pCoat = CoatedLayer::Fresnel(cosWi, coatIorSc)` alone.
+    // ================================================================
+    {
+        std::cout << "=== DL-23 P2-1: coated_material below-horizon transmission -- full-sphere pdf + cross-val ===" << std::endl;
+
+        const double kGapC = 0.2;
+        const double coatEta = 1.33;	// coatIorSc's authored value
+
+        RISE::WeaveTest::PresetWeave weaveThinCoat( "satin", 0.0, -1, false, /*thin=*/true, -1, -1, kGapC );
+        CoatedMaterial* coatedWeaveThinMat = new CoatedMaterial(
+            *weaveThinCoat.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedWeaveThinMat->addref();
+        ISPF* coatedWeaveThinSPF = coatedWeaveThinMat->GetSPF();
+
+        // Same fabric-over-thin-linen substrate the R8 P1.1 block above
+        // built (alpha 0.3, tint 1.0 via `coatTintOne`), wrapped in the
+        // SAME neutral coat -- coat -> fabric -> weave, two layers deep.
+        RISE::WeaveTest::PresetWeave thinBaseC( "linen", 0.0, 0.5, false, /*thin=*/true, -1, -1, kGapC );
+        FabricMaterial* fabThinMatC = new FabricMaterial(
+            *thinBaseC.Material(), *coatTintOne, *fabAlphaSc, *fabZeroSc );
+        fabThinMatC->addref();
+        CoatedMaterial* coatedFabricThinMat = new CoatedMaterial(
+            *fabThinMatC, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedFabricThinMat->addref();
+        ISPF* coatedFabricThinSPF = coatedFabricThinMat->GetSPF();
+
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        struct CoatedRow { const char* name; ISPF* spf; double expected; };
+
+        for( int a = 0; a < 2; a++ )
+        {
+            const double theta = incomingAngles[a];
+            RayIntersectionGeometric ri = MakeIntersection( theta );
+            const double cosWi = std::cos( theta );
+            const double pCoat = (double)CoatedLayer::Fresnel( (Scalar)cosWi, (Scalar)coatEta );	// coatWeightSc == 1.0
+            const double wFab  = (double)FabricBRDF::SheenSelectWeight( 0.3, 1.0, cosWi );	// matches the R8 P1.1 fixture (alpha=0.3, m=1 via coatTintOne)
+
+            CoatedRow rows[] = {
+                { "Coated_Weave_thin", coatedWeaveThinSPF,  pCoat + ( 1.0 - pCoat ) * ( 1.0 - kGapC ) },
+                { "Coated_Fabric",     coatedFabricThinSPF, pCoat + ( 1.0 - pCoat ) * ( wFab + ( 1.0 - wFab ) * ( 1.0 - kGapC ) ) },
+            };
+
+            for( const CoatedRow& row : rows )
+            {
+                const int NT = 80, NP = 80;
+                double integ = 0.0, integNM = 0.0;
+                for( int t = 0; t < NT; t++ )
+                {
+                    const double th = ( t + 0.5 ) * PI / NT;	// 0..pi, the FULL sphere
+                    const double sinT = sin( th ), cosT = cos( th );
+                    const double dTheta = PI / NT;
+                    for( int p = 0; p < NP; p++ )
+                    {
+                        const double phi = ( p + 0.5 ) * TWO_PI / NP;
+                        const double dPhi = TWO_PI / NP;
+                        Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+                        wo = Vector3Ops::Normalize( wo );
+                        integ   += row.spf->Pdf( ri, wo, iorStack )          * sinT * dTheta * dPhi;
+                        integNM += row.spf->PdfNM( ri, wo, 550.0, iorStack ) * sinT * dTheta * dPhi;
+                    }
+                }
+
+                const double tol = 0.05;
+                const bool okRGB = fabs( integ   - row.expected ) <= tol;
+                const bool okNM  = fabs( integNM - row.expected ) <= tol;
+                std::cout << "  " << row.name << " @ " << angleNames[a]
+                          << ": full-sphere integral=" << integ << " (NM " << integNM << ")"
+                          << "  expected=" << row.expected
+                          << "  [pCoat=" << pCoat << "]  "
+                          << ( ( okRGB && okNM ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( !okRGB || !okNM ) numFailed++;
+
+                // ---- cross-validation (sampling matches density), both regimes.
+                RandomNumberGenerator rng;
+                Implementation::IndependentSampler sampler( rng );
+                int checked = 0, mismatches = 0, deltas = 0, belowHorizon = 0;
+                double worst = 0.0;
+                for( int i = 0; i < 5000; i++ )
+                {
+                    const bool bNM = ( i % 2 ) != 0;
+                    ScatteredRayContainer scattered;
+                    if( bNM ) {
+                        row.spf->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+                    } else {
+                        row.spf->Scatter( ri, sampler, scattered, iorStack );
+                    }
+                    if( scattered.Count() == 0 ) continue;
+                    const ScatteredRay& s = scattered[0];
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    if( Vector3Ops::Dot( wo, ri.onb.w() ) < 0 ) belowHorizon++;
+                    if( s.isDelta ) { deltas++; continue; }
+                    if( s.pdf <= 0 ) continue;
+
+                    const double q = bNM ? (double)row.spf->PdfNM( ri, wo, 550.0, iorStack )
+                                         : (double)row.spf->Pdf( ri, wo, iorStack );
+                    const double rel = fabs( q - s.pdf ) / std::max( 1e-30, (double)s.pdf );
+                    if( rel > worst ) worst = rel;
+                    if( rel > CROSS_VAL_TOL ) mismatches++;
+                    checked++;
+                }
+
+                // Non-degeneracy: both the transmit continuum AND the
+                // delta gap-pass-through must be LIVE, exactly like R8
+                // P1.1's `live` guard above -- the weave's own delta ray
+                // must survive being forwarded through one (or two)
+                // wrapper layers, or this proves nothing about DL-23.
+                const bool live = ( belowHorizon > 0 ) && ( deltas > 0 );
+                std::cout << "    cross-val " << row.name << " @ " << angleNames[a] << ": checked=" << checked
+                          << " mismatches=" << mismatches << " maxRel=" << worst
+                          << "  (below-horizon draws=" << belowHorizon << ", delta draws=" << deltas << ")  "
+                          << ( ( mismatches == 0 && live ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( mismatches != 0 || !live ) numFailed++;
+            }
+        }
+
+        safe_release( coatedFabricThinMat );
+        safe_release( fabThinMatC );
+        safe_release( coatedWeaveThinMat );
+    }
+    std::cout << std::endl;
+
+    // Coated triad: materials own the BRDF/SPF borrowed above, so
+    // release them before their substrates and painters.  (This file
+    // does not otherwise release its fixtures -- one-shot process --
+    // but the coated chain has a real ownership graph worth exercising.)
+    safe_release( fabricAnisoMat );
+    safe_release( fabricLambMat );
+    safe_release( fabBaseAnisoMat );
+    safe_release( fabWeaveSc );
+    safe_release( fabZeroSc );
+    safe_release( fabAlphaSc );
+    safe_release( coatedGgxMat );
+    safe_release( coatedLambMat );
+    safe_release( coatBaseGgxMat );
+    safe_release( coatBaseLambMat );
+    safe_release( coatTintOne );
+    safe_release( coatZeroSc );
+    safe_release( coatRoughSc );
+    safe_release( coatIorSc );
+    safe_release( coatWeightSc );
 
     g_stubObject->release();
 

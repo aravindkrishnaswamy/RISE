@@ -1,0 +1,6 @@
+{
+  "$comment": "RISE build configuration for vcpkg manifest mode. The overlay-ports entry replaces the stock x265 registry port with build/VS2022/vcpkg-overlays/x265, which builds x265 10-bit (Main10) so FFmpeg's libx265 encoder can emit HEVC HDR10. See vcpkg-overlays/x265/portfile.cmake (HIGH_BIT_DEPTH=ON). Paths are relative to this file.",
+  "overlay-ports": [
+    "./vcpkg-overlays"
+  ]
+}

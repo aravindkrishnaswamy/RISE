@@ -107,7 +107,141 @@ namespace RISE
 		//!			  You must have added all the IndexedTriangles
 		//!	          You MUST not have called DoneIndexedTriangles yet!
 		virtual void ComputeVertexNormals() = 0;
+
+		//! Tier 1 §3 animation refit support.  Replace vertex / normal
+		//! arrays in place (count must match the existing arrays —
+		//! topology preserved) and refit the BVH bottom-up.  Returns
+		//! the BVH refit duration in ms (never less than 1 on success); 0 on
+		//! size mismatch / no BVH.
+		//!
+		//! Caller must ensure this is invoked between frames, never
+		//! concurrent with intersection.  See
+		//! docs/BVH_ACCELERATION_PLAN.md §4.6.
+		virtual unsigned int UpdateVertices(
+			const VerticesListType& newVertices,
+			const NormalsListType&  newNormals ) = 0;
 	};
+
+	//! Sub-interface that adds optional per-vertex color storage to
+	//! ITriangleMeshGeometryIndexed.  Color indices are tied to vertex
+	//! position indices (every position index `i` maps to the same color
+	//! index `i`) — the convention every common exporter (PLY, 3DS, RAW2,
+	//! FBX, glTF COLOR_0) actually produces, so adding a fourth `iColors`
+	//! per triangle would just bloat `PointerTriangle` (the BVH leaf
+	//! payload) for no exporter-driven benefit.
+	//!
+	//! Loaders that want to attach colors `dynamic_cast` to this
+	//! interface; if the cast fails the loader should drop colors with a
+	//! warning rather than fail the load.  Adding it as a separate
+	//! interface (instead of new pure virtuals on the v1 interface)
+	//! preserves the v1 vtable layout for any out-of-tree subclass.
+	class ITriangleMeshGeometryIndexed2 : public virtual ITriangleMeshGeometryIndexed
+	{
+	protected:
+		ITriangleMeshGeometryIndexed2(){};
+		virtual ~ITriangleMeshGeometryIndexed2(){};
+
+	public:
+		//! Adds a single per-vertex color (linear ROMM RGB; see RISEPel).
+		virtual void AddColor( const VertexColor& color ) = 0;
+
+		//! Adds a list of per-vertex colors.
+		virtual void AddColors( const VertexColorsListType& colors ) = 0;
+
+		/// \return The number of stored vertex colors (0 if not present)
+		virtual unsigned int numColors() const = 0;
+
+		/// \return The vertex-color array; may be empty.
+		virtual VertexColorsListType const& getColors() const = 0;
+	};
+
+	//! Sub-interface adding optional per-vertex tangent (vec4) and
+	//! secondary UV (TEXCOORD_1) storage to ITriangleMeshGeometryIndexed2.
+	//!
+	//! Both attributes follow the same indexing rule as v2 colors —
+	//! tangent index == position index, secondary UV uses iCoords[]
+	//! the same way primary UVs do.  Storing them out-of-band rather
+	//! than widening PointerTriangle keeps the BVH leaf payload small
+	//! while still supporting every modern exporter (glTF TANGENT and
+	//! TEXCOORD_1, Blender / FBX equivalents).
+	//!
+	//! Phase 1 of glTF import (see docs/GLTF_IMPORT.md) uses these
+	//! storage hooks; the consumers (`normal_map_modifier`, occlusion
+	//! texture sampling on TEXCOORD_1) come in Phase 2.
+	//!
+	//! Same rationale as v2 for the separate sub-interface: preserves
+	//! the v1/v2 vtable layout for any out-of-tree subclass, and
+	//! loaders fall back gracefully if dynamic_cast to v3 fails.
+	class ITriangleMeshGeometryIndexed3 : public virtual ITriangleMeshGeometryIndexed2
+	{
+	protected:
+		ITriangleMeshGeometryIndexed3(){};
+		virtual ~ITriangleMeshGeometryIndexed3(){};
+
+	public:
+		//! Adds a single per-vertex tangent (object-space direction
+		//! plus bitangent sign).
+		virtual void AddTangent( const Tangent4& tangent ) = 0;
+
+		//! Adds a list of per-vertex tangents.
+		virtual void AddTangents( const Tangent4ListType& tangents ) = 0;
+
+		/// \return The number of stored tangents (0 if not present).
+		virtual unsigned int numTangents() const = 0;
+
+		/// \return The tangent array; may be empty.
+		virtual Tangent4ListType const& getTangents() const = 0;
+
+		//! Adds a single secondary-UV coordinate (TEXCOORD_1).
+		virtual void AddTexCoord1( const TexCoord& coord ) = 0;
+
+		//! Adds a list of secondary-UV coordinates.
+		virtual void AddTexCoords1( const TexCoordsListType& coords ) = 0;
+
+		/// \return The number of stored secondary UVs (0 if not present).
+		virtual unsigned int numTexCoords1() const = 0;
+
+		/// \return The secondary-UV array; may be empty.
+		virtual TexCoordsListType const& getTexCoords1() const = 0;
+	};
+    //! Independent shader direction: drives anisotropy, never UV normal decode.
+    //! Store full object-local socket vectors, including their normal component.
+    //! Object/CSG promote; modifiers reproject RAW vectors against current N.
+    //! Separate sub-interface preserves every v1/v2/v3 virtual layout.
+    class ITriangleMeshGeometryIndexed4 : public virtual ITriangleMeshGeometryIndexed3
+    {
+    public:
+        virtual void AddShaderDirection(const Vector3& direction) = 0;
+    };
+
+	//! Named per-corner RGBA attribute storage (arbitrary geometry attributes
+	//! such as Blender `mesh.attributes`, Geometry Nodes fields, extra color
+	//! layers, float/vector/color attributes).  Stored flat as 4 linear floats
+	//! per triangle corner (`triIndex * 3 + k` for `k in {0, 1, 2}`) so sharp
+	//! face-corner / UV / crease attribute seams are preserved losslessly.
+	//! Separate sub-interface preserves every v1..v4 virtual layout.
+	class ITriangleMeshGeometryIndexed5 : public virtual ITriangleMeshGeometryIndexed4
+	{
+	protected:
+		ITriangleMeshGeometryIndexed5(){};
+		virtual ~ITriangleMeshGeometryIndexed5(){};
+
+	public:
+		//! Attaches or overwrites a named per-corner RGBA attribute.
+		//! `cornerRGBA` must contain `numCorners * 4` floats in triangle-corner
+		//! order (`triIndex * 3 + k`, `k in {0,1,2}`).
+		//! \return true on success, false if `name` is null/empty, `numCorners`
+		//!         is 0, or `cornerRGBA` is null.
+		virtual bool AddNamedCornerAttribute(
+			const char* name,
+			const float* cornerRGBA,
+			unsigned int numCorners
+			) = 0;
+
+		/// \return Number of stored named per-corner attributes.
+		virtual unsigned int numNamedCornerAttributes() const = 0;
+	};
+
 }
 
 #endif

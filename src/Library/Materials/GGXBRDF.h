@@ -21,13 +21,40 @@
 #define GGX_BRDF_
 
 #include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IMaterial.h"		// For FresnelMode
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		// Borrowed per-hit interface inputs shared by GGX evaluation and sampling.
+		// This is macro-interface Fresnel, not integrated rough-GGX reflectance.
+		struct GGXInterfaceFresnel
+		{
+			const RayIntersectionGeometric& ri;
+			FresnelMode mode;
+			const IPainter& specular;
+			const IScalarPainter& ior;
+			const IScalarPainter& extinction;
+			const IScalarPainter* filmIOR;
+			const IScalarPainter* filmExtinction;
+			const IScalarPainter* filmThickness;
+
+			RISEPel Directional( Scalar cosine ) const;
+			Scalar DirectionalNM( Scalar cosine, Scalar nm ) const;
+			RISEPel Mean() const;
+			Scalar MeanNM( Scalar nm ) const;
+
+			template<class T> static T Transmission( const T& incoming, const T& outgoing )
+			{
+				// Single entry and exit; deliberately no diffuse recycling.
+				return (T(1.0) - incoming) * (T(1.0) - outgoing);
+			}
+		};
+
 		class GGXBRDF :
 			public virtual IBSDF,
 			public virtual Reference
@@ -35,25 +62,120 @@ namespace RISE
 		protected:
 			virtual ~GGXBRDF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pAlphaX;
-			const IPainter& pAlphaY;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			//! Pointer storage so the interactive editor can rebind
+			//! via Set*.  See LambertianBRDF for pattern.  The names
+			//! already start with `p` (a pre-Phase-4 naming choice
+			//! that happens to match the new pointer reality, so no
+			//! site rename was needed when changing `&` to `*`).
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter*	pAlphaY;
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
+			const FresnelMode fresnelMode;
+			//! Landing 8: optional tangent-frame rotation (radians,
+			//! applied around w to the (u, v) basis) per
+			//! KHR_materials_anisotropy.  nullptr = no rotation
+			//! (every existing GGX site falls back here, matching
+			//! pre-L8 behaviour bit-identically).  When non-null,
+			//! the painter is sampled per-shading-point so a
+			//! texture or procedural can drive the rotation.
+			const IPainter* pTangentRotation;
+			//! DL-16: optional Scalar-pipe alias for the same angle.
+			//! Preferred over `pTangentRotation` when both are non-null
+			//! (see `ResolveTangentONB`) -- `tangent_rotation` is a
+			//! physical scalar by MEANING and the Color-pipe binding
+			//! above is the documented pre-DL-16 oddball, kept working
+			//! but deprecated.  nullptr = not bound via the Scalar pipe
+			//! (every pre-DL-16 site falls back to `pTangentRotation`,
+			//! matching prior behaviour bit-identically).
+			const IScalarPainter* pTangentRotationScalar;
+			//! Thin-film (eFresnelThinFilmConductor) FILM slots — the
+			//! oxide layer of the air/oxide/metal stack.  Physical
+			//! scalars (no JH uplift): film n, film k, film thickness
+			//! (nm, may be spatially varying).  nullptr for every other
+			//! Fresnel mode (the conductor/Schlick branches never read
+			//! them); only dereferenced inside the thin-film branch,
+			//! which the parser/factory guarantee supplies all three.
+			//! The SUBSTRATE n,k reuse pIOR / pExtinction.
+			const IScalarPainter*	pFilmIOR;
+			const IScalarPainter*	pFilmExtinction;
+			const IScalarPainter*	pFilmThickness;
+
+		private:
+			bool SingleScatterRGB( const Vector3& vLightIn, const RayIntersectionGeometric& ri, RISEPel& singleOut ) const;
+			bool SingleScatterNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, Scalar& singleOut ) const;
 
 		public:
 			GGXBRDF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr,
+				const IScalarPainter* film_ior = nullptr,
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): reflection = single-scatter specular, diffuse = diffuse + multiscatter.
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
+			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+			virtual bool hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const;
+			virtual bool hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const;
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH the BRDF and SPF in lockstep so they
+			//! never drift.  Tangent rotation is already pointer-typed
+			//! (it's optional/nullable) so SetTangentRotation accepts
+			//! a pointer; pass null to clear.
+			inline const IPainter&       GetDiffuse()    const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()   const { return *pSpecular; }
+			inline const IScalarPainter& GetAlphaX()     const { return *pAlphaX; }
+			inline const IScalarPainter& GetAlphaY()     const { return *pAlphaY; }
+			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			//! Thin-film FILM slots — POINTER-returning because they are
+			//! NULLABLE (only the thin-film Fresnel mode binds them; every
+			//! other mode leaves them null).  Callers MUST null-check
+			//! before dereferencing — unlike GetIOR which returns a
+			//! required reference.  GetFresnelMode lets the introspection
+			//! layer gate the film rows on the active Fresnel mode.
+			inline const IScalarPainter* GetFilmIOR()        const { return pFilmIOR; }
+			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
+			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
+			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
+			//! Optional anisotropy tangent-rotation painter (KHR_materials_
+			//! anisotropy); nullable.  Read-back for the snapshot clone so a
+			//! GGX clone keeps the same anisotropic tangent orientation.
+			inline const IPainter*       GetTangentRotation() const { return pTangentRotation; }
+			//! DL-16: Scalar-pipe alias read-back (nullable); see
+			//! `pTangentRotationScalar` above.
+			inline const IScalarPainter* GetTangentRotationScalar() const { return pTangentRotationScalar; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlphaX( const IScalarPainter& v );
+			void SetAlphaY( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
+			//! Rebind a thin-film FILM slot.  Same release-old / addref-new
+			//! discipline as SetIOR.  Material's forwarder hits BOTH the
+			//! BRDF and the SPF in lockstep so the shaded value and the
+			//! sampling distribution never drift.  Takes a reference (the
+			//! editor only ever rebinds to a registered painter, never to
+			//! null) — to CLEAR a film slot you would reconstruct the
+			//! material, matching how the other nullable slots behave.
+			void SetFilmIOR( const IScalarPainter& v );
+			void SetFilmExtinction( const IScalarPainter& v );
+			void SetFilmThickness( const IScalarPainter& v );
 		};
 	}
 }

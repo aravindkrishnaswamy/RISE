@@ -16,21 +16,44 @@
 
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Transformable.h"
+#include "../Utilities/FiniteMath.h"
 #include "Frame.h"
+#include <cmath>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class CameraCommon : 
-			public virtual ICamera, 
+		//! SPIKE (feature/gui-snapshot-prototype): value-typed capture of
+		//! the active camera's MUTABLE pose state.  Cameras are
+		//! polymorphic (pinhole / thinlens / orthographic / ONB) and some
+		//! are ONB-constructed (see CameraCommon::IsFromONB) — recreating
+		//! the concrete camera through a factory is out of scope for the
+		//! spike, and the editor mutates pose via the SetLocation /
+		//! SetLookAt / SetUp / SetEulerOrientation setters anyway.  So the
+		//! snapshot captures the pose by value; this copy is INDEPENDENT
+		//! of any later live mutation of the camera.
+		struct CameraPoseSnapshot
+		{
+			Point3  position;       //!< stored (rest) location, pre-orbit
+			Point3  lookAt;
+			Vector3 up;
+			Vector3 orientation;    //!< euler (pitch, roll, yaw)
+			Vector2 targetOrientation;
+			bool    fromONB;        //!< honesty flag: ONB cameras can't be
+			                        //!< rebuilt via the non-ONB factory.
+		};
+
+		class CameraCommon :
+			public virtual ICamera,
 			public virtual Reference
 		{
 		protected:
 			Point3				vPosition;			/// Location of the camera in the world
 			Point3				vLookAt;			/// A point in the world camera is looking at
 			Vector3				vUp;				/// What is considered up in the world
-			const Scalar		pixelAR;			/// Pixel aspect ratio
+			Scalar				pixelAR;			/// Pixel aspect ratio (mutable since 2026-05 so SetPixelAR can re-sync to Scene's Film)
 			Scalar				exposureTime;		/// Exposure time of the camera
 			Scalar				scanningRate;		/// Rate at which the camera records each scanline (normalized unit time / scanline)
 			Scalar				pixelRate;			/// Rate at which the camera records each pixel (normalized unit time / pixel)
@@ -38,7 +61,8 @@ namespace RISE
 			Matrix4				mxTrans;			/// Transformation matrix of this camera
 			Vector3				orientation;		/// Orientation (Pitch,Roll,Yaw)
 			Vector2				target_orientation;	/// Orientation relative to a target
-			const bool			from_onb;			/// Was this camera created with an ONB passed in explicitly?
+			bool				from_onb;			/// Is this camera currently represented by an explicit ONB?
+			Scalar				nearClip;			/// Planar near-clip distance in scene units (0 = disabled)
 
 			// Non ONB specifying version
 			CameraCommon(
@@ -68,15 +92,241 @@ namespace RISE
 			virtual void Recompute( const unsigned int width, const unsigned int height ) = 0;
 
 		public:
+			//! DL-465: a per-thread clone for time-indexed motion blur -- an
+			//! exact copy of this camera's state (a new Reference with its own
+			//! count), which the render thread re-poses at each sample time.
+			virtual CameraCommon* CloneForTimeView() const = 0;
 
-			inline Point3 GetLocation( ) const
-			{ 
+		protected:
+
+		public:
+
+			//
+			// Mutation surface for the interactive scene editor.
+			// Setters update the stored member; the caller is
+			// responsible for invoking RegenerateData() afterwards
+			// (typically by calling all the setters then a single
+			// Regenerate) so the basis matrix is rebuilt exactly
+			// once per logical edit.
+			//
+			inline void SetLocation( const Point3& p )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vPosition = p; }
+			inline Point3 GetStoredLookAt() const         { return vLookAt; }
+			inline Vector3 GetStoredUp() const            { return vUp; }
+			inline void SetLookAt( const Point3& p )      { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vLookAt = p; }
+			inline void SetUp( const Vector3& u )         { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vUp = u; }
+
+			//! Rest position — `vPosition` as stored, BEFORE the
+			//! orbit-around-look-at rotation that Recompute applies via
+			//! `target_orientation`.  This is the value the user sets
+			//! in the .RISEscene file's `location` field.  Distinct
+			//! from `GetLocation()` which returns the post-orbit
+			//! `frame.GetOrigin()` — useful for the rasterizer (it
+			//! wants the actual eye position) but misleading in the
+			//! editor properties panel (an orbit shouldn't appear to
+			//! mutate a parameter the user didn't touch).
+			inline Point3 GetRestLocation() const         { return vPosition; }
+
+			// Additional getters/setters used by the descriptor-driven
+			// properties panel and by Scene::SetFilm to re-sync each
+			// camera's projection to a newly-installed Film (post-CLI
+			// override, post-late-`film`-chunk, or programmatic
+			// SetFilm).
+			inline Scalar  GetPixelAR()                   const { return pixelAR; }
+			inline Scalar  GetExposureTimeStored()        const { return exposureTime; }
+			inline Scalar  GetScanningRateStored()        const { return scanningRate; }
+			inline Scalar  GetPixelRateStored()           const { return pixelRate; }
+			inline Vector3 GetEulerOrientation()          const { return orientation; }
+			inline Vector2 GetTargetOrientation()         const { return target_orientation; }
+			//! True iff this camera is currently represented by the explicit
+			//! basis installed through an ONB constructor (`Add*CameraONB`).
+			//! Interactive pose math may convert it to an equivalent lookAt/up
+			//! pose transiently, then restores the explicit basis before the
+			//! edit returns.  ONB-represented cameras
+			//! bypass the lookAt/up + target_orientation math in
+			//! `Recompute()`, so the editor's snapshot/clone path
+			//! must refuse to re-create them through the non-ONB
+			//! factory (which would silently degrade the camera's
+			//! basis representation).
+			inline bool    IsFromONB()                    const { return from_onb; }
+			inline void    SetPixelAR( Scalar v )               { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) pixelAR = v; }
+			inline void    SetExposureTimeStored( Scalar v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) exposureTime = v; }
+			inline void    SetScanningRateStored( Scalar v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) scanningRate = v; }
+			inline void    SetPixelRateStored( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) pixelRate = v; }
+			inline void    SetEulerOrientation( const Vector3& v )  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) orientation = v; }
+			inline void    SetTargetOrientation( const Vector2& v ) { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) target_orientation = v; }
+			inline Scalar  GetNearClip()                  const { return nearClip; }
+			inline void    SetNearClip( const Scalar v )
+			{
+				Transformable::PreparedExternalMutationScope m;
+				if( m.IsValid() ) {
+					nearClip = ( RISE::IsFiniteDouble( static_cast<double>( v ) ) && v > Scalar( 0 ) ) ? v : Scalar( 0 );
+				}
+			}
+
+			//! Option A near-clip helpers: planar depth `nearClip / cosTheta` along
+			//! a unit ray leaving the unclipped camera origin/aperture (`z = 0`).
+			inline Scalar ComputePlanarNearClipT( const Vector3& rayDir ) const
+			{
+				if( nearClip <= Scalar( 0 ) ) return Scalar( 0 );
+				const Scalar cosTheta = Vector3Ops::Dot( rayDir, frame.GetBasis().w() );
+				return ( cosTheta > NEARZERO ) ? ( nearClip / cosTheta ) : Scalar( 0 );
+			}
+
+			//! True iff `worldPt` lies at or beyond the planar near-clip plane.
+			inline bool IsPointPastPlanarNearClip( const Point3& worldPt ) const
+			{
+				if( nearClip <= Scalar( 0 ) ) return true;
+				const Vector3 delta = Vector3Ops::mkVector3( worldPt, frame.GetOrigin() );
+				return Vector3Ops::Dot( delta, frame.GetBasis().w() ) >= nearClip;
+			}
+
+		protected:
+			//! Advance a camera ray origin to the planar near-clip plane at
+			//! depth `nearClip` along camera forward (`frame.GetBasis().w()`),
+			//! updating ray differential origins so texture footprints at any
+			//! downstream hit are invariant to `nearClip`.  No-op when
+			//! `nearClip <= 0`.  Matches Blender/Cycles `camera_sample_*`.
+			inline void ApplyNearClip( Ray& r ) const
+			{
+				if( nearClip > Scalar( 0 ) ) {
+					const Scalar cosTheta = Vector3Ops::Dot( r.Dir(), frame.GetBasis().w() );
+					if( cosTheta > NEARZERO ) {
+						const Scalar tNear = nearClip / cosTheta;
+						r.Advance( tNear );
+						if( r.hasDifferentials ) {
+							r.diffs.rxOrigin = r.diffs.rxOrigin + r.diffs.rxDir * tNear;
+							r.diffs.ryOrigin = r.diffs.ryOrigin + r.diffs.ryDir * tNear;
+						}
+					}
+				}
+			}
+
+			//! Advance a fisheye/panoramic camera ray radially by `nearClip`.
+			inline void ApplyRadialNearClip( Ray& r ) const
+			{
+				if( nearClip > Scalar( 0 ) ) {
+					r.Advance( nearClip );
+					if( r.hasDifferentials ) {
+						r.diffs.rxOrigin = r.diffs.rxOrigin + r.diffs.rxDir * nearClip;
+						r.diffs.ryOrigin = r.diffs.ryOrigin + r.diffs.ryDir * nearClip;
+					}
+				}
+			}
+
+		public:
+
+			//! Update the camera's frame dimensions and rebuild the
+			//! basis matrix.  Used by the interactive editor to render
+			//! at a downsampled resolution during fast drags so each
+			//! render pass completes within the 30Hz budget.
+			//! Caller is responsible for restoring the original
+			//! dimensions when the drag ends.
+			inline void SetDimensions( unsigned int w, unsigned int h )
+			{
+				Transformable::PreparedExternalMutationScope mutation;
+				if( !mutation.IsValid() ) return;
+				frame.SetDimensions( w, h );
+				RegenerateData();
+			}
+
+			//! Update width, height, and pixelAR atomically and rebuild
+			//! the projection matrix once.  Used by Scene::SetFilm when
+			//! a new Film is installed AFTER cameras have been added —
+			//! every camera's frame must follow Film, otherwise the
+			//! rasterizer enumerates Film-many pixels but GenerateRay
+			//! projects through the old camera dims.
+			inline void SetDimensionsAndPixelAR( unsigned int w, unsigned int h, Scalar pAR )
+			{
+				Transformable::PreparedExternalMutationScope mutation;
+				if( !mutation.IsValid() ) return;
+				frame.SetDimensions( w, h );
+				pixelAR = pAR;
+				RegenerateData();
+			}
+
+			//! SPIKE: capture this camera's mutable pose into a value
+			//! struct that is independent of later live mutation.
+			//! Concrete method (not an interface virtual) — no ABI change.
+			inline CameraPoseSnapshot CaptureSnapshot() const
+			{
+				CameraPoseSnapshot s;
+				s.position          = vPosition;
+				s.lookAt            = vLookAt;
+				s.up                = vUp;
+				s.orientation       = orientation;
+				s.targetOrientation = target_orientation;
+				s.fromONB           = from_onb;
+				return s;
+			}
+
+			inline Point3 GetLocation( ) const override
+			{
 				return frame.GetOrigin();
 			}
 
-			inline Matrix4 GetMatrix( ) const
+			inline Matrix4 GetMatrix( ) const override
 			{ 
 				return mxTrans;
+			}
+
+			//! Returns the camera's live rigid world-space frame (+X = right,
+			//! +Y = up, +Z = forward, origin = eye position).  Non-virtual by
+			//! design (see ICamera.h's no-vtable-growth note); callers holding
+			//! an `const ICamera*` query it via `dynamic_cast<const CameraCommon*>`.
+			inline bool GetCameraFrame( Point3& origin, Vector3& right, Vector3& up, Vector3& forward ) const
+			{
+				const OrthonormalBasis3D b = frame.GetBasis();
+				origin  = frame.GetOrigin();
+				right   = -b.u();
+				up      = b.v();
+				forward = b.w();
+				return true;
+			}
+
+			//! Current realized orientation basis.  This is the faithful
+			//! orientation source for ONB-constructed cameras because their
+			//! stored lookAt/up fields are intentionally unused.
+			inline OrthonormalBasis3D GetCurrentBasis() const
+			{
+				return frame.GetBasis();
+			}
+
+			//! Convert an explicit-ONB camera to the ray-equivalent editable
+			//! lookAt/up representation used by Orbit/Pan/Zoom/Roll.  The
+			//! concrete camera type and all photographic parameters stay
+			//! unchanged.  A later CST pose commit may encode the realized
+			//! basis back into an `onb_pinhole_camera` chunk.
+			inline void BeginInteractivePoseEdit()
+			{
+				if( !from_onb ) return;
+				const Point3 origin = frame.GetOrigin();
+				const OrthonormalBasis3D basis = frame.GetBasis();
+				const Vector3 w = basis.w();
+				vPosition = origin;
+				vLookAt = Point3(
+					origin.x + w.x, origin.y + w.y, origin.z + w.z );
+				vUp = basis.v();
+				orientation = Vector3( 0, 0, 0 );
+				target_orientation = Vector2( 0, 0 );
+				from_onb = false;
+			}
+
+			//! Exact inverse used by camera-op Undo when the pre-edit camera
+			//! was explicit-ONB.  `RegenerateData()` by the caller rebuilds
+			//! the concrete projection matrix from this restored frame.
+			inline void RestoreInteractiveONBPose(
+				const Point3& origin, const Vector3& u,
+				const Vector3& v, const Vector3& w )
+			{
+				vPosition = origin;
+				vLookAt = Point3(
+					origin.x + w.x, origin.y + w.y, origin.z + w.z );
+				vUp = v;
+				orientation = Vector3( 0, 0, 0 );
+				target_orientation = Vector2( 0, 0 );
+				frame.SetOrigin( origin );
+				frame.SetBasis( OrthonormalBasis3D( u, v, w ) );
+				from_onb = true;
 			}
 
 			inline unsigned int GetWidth( ) const
@@ -89,28 +339,27 @@ namespace RISE
 				return frame.GetHeight();
 			}
 
-			inline Scalar GetExposureTime( ) const
+			inline Scalar GetExposureTime( ) const override
 			{
 				return exposureTime;
 			}
 
-			inline Scalar GetScanningRate( ) const
+			inline Scalar GetScanningRate( ) const override
 			{
 				return scanningRate;
 			}
 
-			inline Scalar GetPixelRate( ) const
+			inline Scalar GetPixelRate( ) const override
 			{
 				return pixelRate;
 			}
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData( );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData( ) override;
 		};
 	}
 }
 
 #endif
-

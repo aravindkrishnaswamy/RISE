@@ -1,7 +1,7 @@
 import bpy
 
-from . import bridge
-from .engine import RISEBlenderRenderEngine
+from . import bridge, material_bake
+from .engine import RISEBlenderRenderEngine, get_last_auto_resolution
 from .properties import addon_preferences
 
 
@@ -37,13 +37,51 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.use_property_decorate = False
 
         settings = context.scene.rise
+        layout.prop(settings, "rasterizer_type")
+
+        # Phase 7b — when Auto is selected, surface what the dispatcher
+        # resolved to on the most recent render (set by engine.py).  The
+        # dispatcher uses canonical per-integrator defaults, so the BDPT /
+        # VCM / MLT knobs below are intentionally NOT shown for Auto.
+        if settings.rasterizer_type in ("9", "10"):
+            res = get_last_auto_resolution()
+            box = layout.box()
+            if res.get("is_auto") and res.get("integrator"):
+                box.label(text="Auto \u2192 " + res["integrator"].upper(), icon="CHECKMARK")
+                if res.get("reason"):
+                    box.label(text=res["reason"], icon="INFO")
+            else:
+                box.label(text="Auto - render to resolve the integrator", icon="INFO")
         layout.prop(settings, "pixel_samples")
         layout.prop(settings, "light_samples")
         layout.prop(settings, "max_recursion")
-        layout.prop(settings, "use_path_tracing")
         layout.prop(settings, "use_world_ambient")
         layout.prop(settings, "choose_one_light")
         layout.prop(settings, "show_lights")
+        layout.prop(settings, "use_zsobol")
+        layout.prop(settings, "skip_collections_pattern")
+
+        rk = settings.rasterizer_type
+        # BDPT / VCM / MLT subpath knobs — collapsible "Advanced"
+        # row that only shows for the integrators that consume them.
+        if rk in ("3", "4", "5", "6", "7", "8"):
+            sub = layout.box()
+            sub.label(text="Bidirectional / MLT", icon="LIGHT_DATA")
+            sub.prop(settings, "bidir_max_eye_depth")
+            sub.prop(settings, "bidir_max_light_depth")
+        if rk in ("5", "6"):
+            sub = layout.box()
+            sub.label(text="VCM", icon="OUTLINER_OB_LIGHTPROBE")
+            sub.prop(settings, "vcm_merge_radius")
+            sub.prop(settings, "vcm_enable_vc")
+            sub.prop(settings, "vcm_enable_vm")
+        if rk in ("7", "8"):
+            sub = layout.box()
+            sub.label(text="MLT", icon="GROUP_VERTEX")
+            sub.prop(settings, "mlt_bootstrap")
+            sub.prop(settings, "mlt_chains")
+            sub.prop(settings, "mlt_mutations_per_pixel")
+            sub.prop(settings, "mlt_large_step_prob")
 
 
 class RISE_RENDER_PT_path_tracing(_RISEPanel):
@@ -57,15 +95,23 @@ class RISE_RENDER_PT_path_tracing(_RISEPanel):
 
         settings = context.scene.rise
         layout.enabled = settings.use_path_tracing
-        layout.prop(settings, "path_branch")
         layout.prop(settings, "sms_enabled")
 
         sms_col = layout.column()
         sms_col.enabled = settings.sms_enabled
+        sms_col.prop(settings, "sms_seeding_mode")
+        sms_col.prop(settings, "sms_target_bounces")
+        sms_col.prop(settings, "sms_extended")
         sms_col.prop(settings, "sms_max_iterations")
         sms_col.prop(settings, "sms_threshold")
         sms_col.prop(settings, "sms_max_chain_depth")
         sms_col.prop(settings, "sms_biased")
+        sms_col.prop(settings, "sms_bernoulli_trials")
+        sms_col.prop(settings, "sms_multi_trials")
+        sms_col.prop(settings, "sms_two_stage")
+        sms_col.prop(settings, "sms_use_levenberg_marquardt")
+        sms_col.prop(settings, "sms_photon_count")
+        sms_col.prop(settings, "sms_max_photon_seeds")
 
 
 class RISE_RENDER_PT_adaptive(_RISEPanel):
@@ -113,8 +159,13 @@ class RISE_RENDER_PT_guiding(_RISEPanel):
         guiding_col.enabled = supports_guiding and settings.path_guiding_enabled
         guiding_col.prop(settings, "path_guiding_training_iterations")
         guiding_col.prop(settings, "path_guiding_training_spp")
+        guiding_col.prop(settings, "path_guiding_combine_training")
+        guiding_col.prop(settings, "path_guiding_online")
+        guiding_col.prop(settings, "path_guiding_warmup_iterations")
         guiding_col.prop(settings, "path_guiding_alpha")
+        guiding_col.prop(settings, "path_guiding_learned_alpha")
         guiding_col.prop(settings, "path_guiding_max_depth")
+        guiding_col.prop(settings, "path_guiding_max_light_depth")
         guiding_col.prop(settings, "path_guiding_sampling_type")
         guiding_col.prop(settings, "path_guiding_ris_candidates")
 
@@ -139,6 +190,12 @@ class RISE_RENDER_PT_stability(_RISEPanel):
         layout.prop(settings, "stability_max_transmission_bounce")
         layout.prop(settings, "stability_max_translucent_bounce")
         layout.prop(settings, "stability_max_volume_bounce")
+        layout.prop(settings, "stability_use_light_bvh")
+        layout.prop(settings, "stability_optimal_mis")
+        omis_col = layout.column()
+        omis_col.enabled = settings.stability_optimal_mis
+        omis_col.prop(settings, "stability_optimal_mis_training_iterations")
+        omis_col.prop(settings, "stability_optimal_mis_tile_size")
 
 
 class RISE_RENDER_PT_output(_RISEPanel):
@@ -161,8 +218,28 @@ class RISE_RENDER_PT_output(_RISEPanel):
         oidn_row.enabled = supports_oidn
         oidn_row.prop(settings, "oidn_denoise")
 
+        oidn_col = layout.column()
+        oidn_col.enabled = supports_oidn and settings.oidn_denoise
+        oidn_col.prop(settings, "oidn_quality")
+        oidn_col.prop(settings, "oidn_device")
+        oidn_col.prop(settings, "oidn_prefilter")
+
         if capabilities is not None and not capabilities.supports_oidn:
             layout.label(text="This bridge build does not include OIDN.", icon="INFO")
+
+        layout.separator()
+        layout.prop(settings, "progressive_enabled")
+        prog_col = layout.column()
+        prog_col.enabled = settings.progressive_enabled
+        prog_col.prop(settings, "progressive_samples_per_pass")
+
+        layout.separator()
+        layout.prop(settings, "pixel_filter")
+        filter_col = layout.column()
+        filter_col.enabled = settings.pixel_filter != "0"
+        filter_col.prop(settings, "pixel_filter_width")
+        filter_col.prop(settings, "pixel_filter_param_a")
+        filter_col.prop(settings, "pixel_filter_param_b")
 
 
 class RISE_RENDER_PT_bridge(_RISEPanel):
@@ -209,7 +286,276 @@ class RISE_RENDER_PT_bridge(_RISEPanel):
         )
 
 
+class RISE_OT_bake_materials(bpy.types.Operator):
+    """Explicit manual DIFFUSE COLOR / Roughness / Normal approximation.
+
+    Visits complex materials and materials with active procedural texture
+    nodes (e.g. Voronoi, Noise, White Noise, Checker) on scene MESH objects
+    once using the first encountered object, temporarily switches to Cycles,
+    saves successful channels, and restores the engine. Existing diffuse
+    selects a synthetic dielectric (metallic0), with optional roughness/normal,
+    on later exports. Other lobes are not preserved. Failed channels can
+    retain prior cache. Default retries regardless of metadata; optional skip
+    uses any existing channel file, even stale. Simple materials (including
+    natively translated Voronoi/Noise/White Noise) also render directly
+    without baking. Tangent has its separate automatic corner producer.
+    Retry explicitly after shader changes: the limited fingerprint does not
+    detect every edit. See docs/BLENDER_MATERIAL_TRANSLATION.md.
+    """
+
+    bl_idname = "rise.bake_materials"
+    bl_label = "Bake Procedural Materials for RISE"
+    bl_description = (
+        "Manually approximate complex or procedural-texture materials with "
+        "Diffuse COLOR, Roughness and Normal PNGs. Existing diffuse enables a "
+        "dielectric cache; other lobes are dropped. Retry after edits; not "
+        "every edit is detected."
+    )
+    bl_options = {"REGISTER"}
+
+    bake_resolution: bpy.props.IntProperty(
+        name="Bake Resolution",
+        description="Square texture resolution (per channel) of the baked PNGs",
+        default=1024,
+        min=128,
+        max=8192,
+    )
+    only_unbaked: bpy.props.BoolProperty(
+        name="Skip Already-Baked Materials",
+        description=(
+            "Skip materials with any existing recorded channel file, even stale "
+            "or without diffuse. A missing diffuse-path file alone does not "
+            "skip. Disable to retry regardless of cache."
+        ),
+        default=False,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene is not None
+
+    def execute(self, context):
+        scene = context.scene
+        prev_engine = scene.render.engine
+        scene.render.engine = "CYCLES"
+        try:
+            count = material_bake.bake_complex_materials_in_scene(
+                scene,
+                resolution=int(self.bake_resolution),
+                only_unbaked=bool(self.only_unbaked),
+                report=lambda msg: self.report({"INFO"}, msg),
+            )
+        finally:
+            scene.render.engine = prev_engine
+
+        if count == 0:
+            self.report(
+                {"INFO"},
+                "RISE: No new channel images saved (no eligible materials, skipped, or failed)",
+            )
+        else:
+            self.report({"INFO"}, f"RISE: Saved channel images for {count} material(s)")
+        return {"FINISHED"}
+
+
+class RISE_OT_clear_baked_materials(bpy.types.Operator):
+    """Clear the seven defined keys for the selected material subset.
+    Selection uses any existing channel file OR a diffuse-path property;
+    attempt-only failures and arbitrary rise_baked_* keys are not removed.
+
+    Viable complex materials with a cleared attempted marker require a
+    manual bake before render; no automatic bake or PNG deletion occurs.
+    Failed attempt-only materials may not pass the selection check below;
+    the default Bake button can retry them regardless of attempted hash.
+    """
+
+    bl_idname = "rise.clear_baked_materials"
+    bl_label = "Clear RISE Bake Cache"
+    bl_description = (
+        "Remove the seven defined bake metadata keys from materials with an "
+        "existing channel file or diffuse-path property. Attempt-only failures "
+        "and other custom keys remain; PNG files are not deleted."
+    )
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        count = 0
+        for mat in bpy.data.materials:
+            if material_bake.baked_paths(mat) is not None or material_bake.BAKED_DIFFUSE_KEY in mat:
+                material_bake.clear_baked_metadata(mat)
+                count += 1
+        self.report({"INFO"}, f"RISE: Cleared bake cache on {count} material(s)")
+        return {"FINISHED"}
+
+
+class RISE_RENDER_PT_materials(_RISEPanel):
+    """Render-properties panel: the Bake button + cache diagnostics.
+
+    Workflow (see docs/BLENDER_MATERIAL_TRANSLATION.md manual channel bake):
+
+      1. User authors a Cycles material with a complex node graph
+         (Mix Shader or AO on an ordinary input other than Tangent).
+      2. User clicks **Bake Procedural Materials** once.  RISE swaps
+         to Cycles, bakes Diffuse / Roughness / Normal to PNGs under
+         ``<tmp>/rise_baked/<material>_*.png``, stores the paths as
+         ID properties, and swaps back.
+      3. User clicks Render. Existing diffuse selects the synthetic dielectric
+         approximation; roughness/normal are optional and other lobes dropped.
+      4. A detected fingerprint edit changes the attempted comparison; the next
+         Render asks for another manual attempt if a viable proxy exists.
+         A stored successful cache may also show a stale UI warning. Matching
+         attempted hashes allow render after failures or missing PNGs.
+         Not every shader edit changes the limited fingerprint.
+         Tangent-only graphs have their own isolated export-time producer.
+
+    This panel is the place users come to (a) trigger the bake and
+    (b) confirm what's in the cache.
+    """
+
+    bl_label = "RISE Material Baking"
+
+    def draw(self, context):
+        layout = self.layout
+
+        # `needs_bake_attempt` is the single source of truth that
+        # `engine.render()`'s gate also uses — panel CTA and render
+        # gate stay aligned.
+        scene = context.scene
+        needs_bake = [
+            mat.name
+            for mat in material_bake.materials_needing_bake(scene)
+        ]
+        already_baked: list[tuple[str, str, bool]] = []
+        for mat in bpy.data.materials:
+            paths = material_bake.baked_paths(mat)
+            if paths is not None:
+                channels = ", ".join(sorted(paths.keys()))
+                stale = material_bake.baked_cache_is_stale(mat)
+                already_baked.append((mat.name, channels, stale))
+
+        if needs_bake:
+            box = layout.box()
+            names = ", ".join(needs_bake[:3])
+            if len(needs_bake) > 3:
+                names += f", … +{len(needs_bake) - 3} more"
+            box.label(
+                text=f"{len(needs_bake)} material(s) need baking: {names}",
+                icon="ERROR",
+            )
+            box.label(
+                text="Click Bake below before rendering — render will abort otherwise.",
+                icon="BLANK1",
+            )
+
+        # Primary CTA — make the Bake button big and obvious.
+        col = layout.column(align=True)
+        col.scale_y = 1.6
+        col.operator(
+            "rise.bake_materials",
+            text="Bake Procedural Materials",
+            icon="RENDER_STILL",
+        )
+
+        layout.separator()
+        layout.label(
+            text=(
+                "RISE renders simple materials (Image Texture, Voronoi/Noise/"
+                "White Noise, Mapping, single Principled BSDF) directly."
+            ),
+            icon="INFO",
+        )
+        layout.label(
+            text=(
+                "Manual complex-material bakes approximate three channels; "
+                "existing diffuse enables the dielectric cache."
+            ),
+            icon="BLANK1",
+        )
+        layout.label(
+            text="Retry after shader edits; the hash does not detect every change.",
+            icon="BLANK1",
+        )
+
+        # Diagnostic: cache state — useful for confirming a bake
+        # landed and for spotting stale-cache materials before render.
+        box = layout.box()
+        box.label(text="Bake cache:", icon="MATERIAL")
+        if not already_baked:
+            box.label(text="  (no baked materials yet)")
+        else:
+            for name, channels, stale in already_baked:
+                stale_tag = " — STALE, retry manually (not a render gate)" if stale else ""
+                box.label(text=f"  {name}: {channels}{stale_tag}")
+
+        layout.operator("rise.clear_baked_materials", icon="X")
+
+
+class RISE_CAMERA_PT_photographic(bpy.types.Panel):
+    """Properties → Camera tab: RISE-specific photographic settings.
+
+    Surfaces ISO (Cycles-incompatible) on the active camera so users
+    can drive RISE's EV-compensation pipeline without leaving the
+    camera-data panel.  Focal length, sensor size, f-stop, focus
+    distance, aperture blades / rotation / ratio, and lens shift are
+    all read directly from Blender's stock camera-data fields — the
+    existing Cycles UI panels remain the authoring surface for them.
+    """
+
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "data"
+    bl_label = "RISE Photographic"
+    bl_options = {"DEFAULT_CLOSED"}
+    COMPAT_ENGINES = {RISEBlenderRenderEngine.bl_idname}
+
+    @classmethod
+    def poll(cls, context):
+        if context.engine not in cls.COMPAT_ENGINES:
+            return False
+        if context.camera is None:
+            return False
+        return True
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        camera_data = context.camera
+        rise_settings = getattr(camera_data, "rise_camera", None)
+        if rise_settings is None:
+            layout.label(text="rise_camera property not registered", icon="ERROR")
+            return
+
+        layout.label(
+            text=(
+                "ISO drives RISE's EV-compensation pipeline.  "
+                "Other photographic settings are read from the "
+                "standard Camera and DOF panels."
+            ),
+            icon="INFO",
+        )
+        layout.prop(rise_settings, "iso")
+
+        # Surface a read-only hint about which photographic params
+        # are currently wired up (helps users spot when ISO is set
+        # but f-stop is at default zero, which disables EV).
+        dof = getattr(camera_data, "dof", None)
+        info = layout.box()
+        info.label(text="Current photographic state:", icon="CAMERA_DATA")
+        info.label(text=f"Focal length: {getattr(camera_data, 'lens', 50.0):.2f} mm")
+        info.label(text=f"Sensor: {getattr(camera_data, 'sensor_width', 36.0):.1f} × {getattr(camera_data, 'sensor_height', 24.0):.1f} mm  ({getattr(camera_data, 'sensor_fit', 'AUTO')})")
+        if dof is not None:
+            info.label(text=f"DOF enabled: {bool(getattr(dof, 'use_dof', False))}")
+            info.label(text=f"f-stop: {getattr(dof, 'aperture_fstop', 0.0):.2f}")
+            info.label(text=f"Focus distance: {getattr(dof, 'focus_distance', 0.0):.3f} m")
+        else:
+            info.label(text="DOF: (no dof sub-struct)")
+
+
 CUSTOM_PANELS = (
+    RISE_OT_bake_materials,
+    RISE_OT_clear_baked_materials,
     RISE_RENDER_PT_settings,
     RISE_RENDER_PT_path_tracing,
     RISE_RENDER_PT_adaptive,
@@ -217,6 +563,8 @@ CUSTOM_PANELS = (
     RISE_RENDER_PT_stability,
     RISE_RENDER_PT_output,
     RISE_RENDER_PT_bridge,
+    RISE_RENDER_PT_materials,
+    RISE_CAMERA_PT_photographic,
 )
 
 

@@ -22,6 +22,7 @@
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/SMSPhotonMap.h"
 #include "../Utilities/Color/CIE_XYZ.h"
 #include <stdint.h>
 
@@ -35,10 +36,21 @@ namespace RISE
 			public PixelBasedSpectralIntegratingRasterizer
 		{
 		protected:
+			//! DL-465: motion-blurred animation frames render multi-threaded
+			//! through per-thread time-indexed scene state.
+			bool SupportsTimeIndexedMotionBlur() const override { return true; }
+
+#ifdef RISE_ENABLE_OIDN
+			double DenoiseWorkPerMegaSample() const override { return 0.8; }
+#endif
 			virtual ~PathTracingSpectralRasterizer();
 
 			PathTracingIntegrator*	pIntegrator;
 			AdaptiveSamplingConfig	adaptiveConfig;
+
+			/// SMS photon-aided seeding store (see BDPTRasterizerBase).
+			mutable SMSPhotonMap*	pSMSPhotonMap;
+			unsigned int			mSMSPhotonCount;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -50,7 +62,7 @@ namespace RISE
 				const bool temporal_samples,
 				const Scalar temporal_start,
 				const Scalar temporal_exposure
-				) const;
+				) const override;
 
 			/// Single spectral sample integration using the iterative integrator.
 			/// Returns XYZ accumulated over nSpectralSamples wavelengths.
@@ -60,12 +72,27 @@ namespace RISE
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				ISampler& sampler,
-				const IRadianceMap* pRadianceMap
+				const IRadianceMap* pRadianceMap,
+				PixelAOV* pAOV = 0,
+				bool* pPrimaryHit = 0
 				) const;
 
-			unsigned int GetProgressiveTotalSPP() const;
+			void PrepareRuntimeContext( RuntimeContext& rc ) const override;
+			unsigned int GetProgressiveTotalSPP() const override;
+
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const override { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const override { return adaptiveConfig.maxSamples; }
 
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the spectral shader-
+			// graph base's true).
+			bool ConsumesScenePhotonMaps() const override { return false; }
+
 			PathTracingSpectralRasterizer(
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin,
@@ -76,8 +103,14 @@ namespace RISE
 				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
+
+			virtual void PreRenderSetup(
+				const IScene& pScene,
+				const Rect* pRect
+				) const override;
 		};
 	}
 }

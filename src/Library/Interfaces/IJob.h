@@ -21,15 +21,62 @@
 #define IJOB_
 
 #include "IReference.h"
+#include <type_traits>   // SFINAE for the arithmetic AR-film convenience
+#include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
+#include "IEnumCallback.h"      // for EnumerateMediumNames callback
+#include "ProceduralDescriptors.h" // sweep / path-instances parameter blocks
+#include "SimulationDescriptor.h"   // Simulation M4: AddSimulation
+#include <string>
+#include <utility>   // std::pair -- ApplyCstParamEdits' (param, value) batch
+#include <vector>    // std::vector -- ditto
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include "../Utilities/PixelFilterConfig.h"
+#include "../Utilities/SMSConfig.h"
+#include "../Utilities/SpectralConfig.h"
+#include "../Utilities/RadianceMapConfig.h"
+#include "../Utilities/OidnConfig.h"
+#include "../Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice (auto_rasterizer dispatcher)
 
 namespace RISE
 {
+	namespace Cst { struct Document; }   // P5 Slice 4 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of IJob.h
+	// Forward declaration to avoid pulling in the full
+	// ITriangleMeshGeometry.h dependency chain.  Used by
+	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
+	class ITriangleMeshGeometryIndexed;
+
+	// Forward declaration so `GetMedium` can return a pointer without
+	// pulling IMedium.h's full dependency chain into this header.
+	class IMedium;
+	class IGeometry;
+
+	//! One entry in a parallel-decode batch passed to
+	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
+	//! is set — never both, never neither.  See AddTexturePaintersBatch
+	//! for full semantics.
+	struct TexturePainterBatchRequest
+	{
+		const char*           name;          ///< Painter name to register under
+		const char*           filePath;      ///< NULL if reading from in-memory bytes
+		const unsigned char*  bytes;         ///< NULL if reading from filePath
+		size_t                numBytes;      ///< 0 if reading from filePath
+		char                  format;        ///< 0 = PNG, 1 = JPEG
+		char                  colorSpace;    ///< 0=Rec709 linear, 1=sRGB, 2=ROMM linear, 3=ProPhoto
+		char                  filterType;    ///< 0=NN, 1=Bilinear, 2=CRBicubic, 3=BSBicubic
+		char                  wrap_s;        ///< U-axis wrap mode (0=clamp, 1=repeat, 2=mirrored repeat); see eRasterWrapMode
+		char                  wrap_t;        ///< V-axis wrap mode (same encoding)
+		bool                  lowmemory;     ///< Defer color-space convert to first sample (reduces RAM at the cost of slightly slower sampling)
+		double                scale[3];      ///< Per-channel scale (multiply at decode time)
+		double                shift[3];      ///< Per-channel shift (add at decode time)
+		bool                  mipmap;        ///< Landing 2: build mip pyramid + LOD-aware sampling.  Set false for vector-quantity textures (normal maps).  Defaults to true via zero-init in importer code that opts in explicitly.
+		SpectrumKind          spectrumKind;  ///< Landing 3: spectral-uplift role (Albedo / Unbounded / Illuminant).  Defaults to Albedo via zero-init; importers SHOULD set Unbounded for emissive / HDR sources.
+	};
+
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
 	class IJob : public virtual IReference
@@ -63,71 +110,102 @@ namespace RISE
 
 
 		//
-		// Setting cameras
+		// Cameras — multi-camera contract.
+		//
+		// A scene holds many cameras keyed by name in an
+		// ICameraManager (Scene::GetCameras()), with one designated
+		// active.  Each AddXxxCamera registers a new camera under
+		// `name` AND makes it active by policy ("last added wins").
+		// SetActiveCamera switches which camera the rasterizer draws
+		// through; RemoveCamera unregisters one and auto-promotes
+		// (lexicographic first-remaining) if the removed camera was
+		// active.
+		//
+		// Names follow the same convention as painters / materials:
+		// unique within the manager (duplicate-add returns false).
+		// The parser auto-suffixes unnamed camera chunks
+		// ("default", "default_1", ...) so existing single-camera
+		// scenes parse unchanged.
 		//
 
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetPinholeCamera(
+		//! Adds a pinhole camera.  Width / height / pixelAR are read
+		//! from the scene's active Film at construction; call
+		//! `SetFilm` first to install non-default dims.
+		/// \return TRUE if successful, FALSE on null/empty name or
+		/// duplicate name.
+		virtual bool AddPinholeCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
 			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate,									///< [in] Rate at which each pixel is recorded
-			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2]						///< [in] Orientation relative to a target
-			) = 0;
-
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetPinholeCameraONB(
-			const double ONB_U[3],									///< [in] U vector of orthonormal basis
-			const double ONB_V[3],									///< [in] V vector of orthonormal basis
-			const double ONB_W[3],									///< [in] W vector of orthonormal basis
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate									///< [in] Rate at which each pixel is recorded
-			) = 0;
-
-		//! Sets a camera based on thin lens model
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetThinlensCamera(
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-			const double vUp[3],									///< [in] Up vector of the camera
-			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
 			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
 			const double target_orientation[2],						///< [in] Orientation relative to a target
-			const double aperture,									///< [in] Size of the aperture
-			const double focalLength,								///< [in] Focal length
-			const double focusDistance								///< [in] Focus distance
+			const double iso = 0.0,									///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (existing behaviour preserved bit-identically).  When > 0, fstop and exposure must also be > 0; the camera computes evCompensation = -log2(1.2) - log2(N²×100/(ISO×T)) and stacks it additively into LDR outputs' exposure_compensation.  HDR archival outputs (EXR / RGBE) ignore it.
+			const double fstop = 0.0								///< [in] Landing 5: f-number for EV computation.  Required when iso > 0; ignored otherwise.  Pinhole has no geometric DOF, so fstop only drives the exposure stack.
 			) = 0;
 
-		//! Sets a fisheye camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetFisheyeCamera(
+		//! Adds a pinhole camera oriented via an orthonormal basis.
+		//! Dims read from the scene's active Film — see AddPinholeCamera.
+		virtual bool AddPinholeCameraONB(
+			const char* name,										///< [in] Name to register the camera under
+			const double ONB_U[3],									///< [in] U vector of orthonormal basis
+			const double ONB_V[3],									///< [in] V vector of orthonormal basis
+			const double ONB_W[3],									///< [in] W vector of orthonormal basis
+			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
+			const double fov,										///< [in] Field of view in radians
+			const double exposure,									///< [in] Exposure time of the camera
+			const double scanningRate,								///< [in] Rate at which each scanline is recorded
+			const double pixelRate,									///< [in] Rate at which each pixel is recorded
+			const double iso = 0.0,									///< [in] Landing 5: ISO sensitivity.  See AddPinholeCamera.
+			const double fstop = 0.0								///< [in] Landing 5: f-number for EV computation.  See AddPinholeCamera.
+			) = 0;
+
+		//! Adds a thin-lens camera.  Photographic parameters: sensor
+		/// size + focal length + f-stop + focus distance.
+		///
+		/// Units (Phase 1.2):
+		///   - sensor_size, focal_length, shift_x, shift_y are in MM.
+		///   - focus_distance is in scene units (matches geometry coords).
+		///   - sceneUnitMeters bridges the two: meters per scene unit
+		///     (default 1.0 = metres scene; 0.001 = mm; 0.0254 = inches).
+		///   - The camera converts mm → scene-units internally so the
+		///     lens equation is unit-consistent with focus_distance.
+		//! Dims read from the scene's active Film — see AddPinholeCamera.
+		virtual bool AddThinlensCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
+			const double sensorSize,								///< [in] Sensor width (mm)
+			const double focalLength,								///< [in] Lens focal length (mm)
+			const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
+			const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+			const double sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene; 0.001 = mm scene)
+			const double exposure,									///< [in] Exposure time of the camera
+			const double scanningRate,								///< [in] Rate at which each scanline is recorded
+			const double pixelRate,									///< [in] Rate at which each pixel is recorded
+			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
+			const double target_orientation[2],						///< [in] Orientation relative to a target
+			const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
+			const double apertureRotation,							///< [in] Polygon rotation (radians)
+			const double anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+			const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
+			const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
+			const double shiftX,									///< [in] Lens shift along x (mm); 0 = centered
+			const double shiftY,									///< [in] Lens shift along y (mm); 0 = centered
+			const double iso = 0.0									///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (existing behaviour preserved bit-identically).  When > 0, fstop and exposure must also be > 0; evCompensation is computed and stacks into LDR outputs' exposure_compensation.  See AddPinholeCamera for the formula.
+			) = 0;
+
+		//! Adds a fisheye camera.  Dims read from active Film — see AddPinholeCamera.
+		virtual bool AddFisheyeCamera(
+			const char* name,										///< [in] Name to register the camera under
+			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
+			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
+			const double vUp[3],									///< [in] Up vector of the camera
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
@@ -136,21 +214,43 @@ namespace RISE
 			const double scale										///< [in] Scale factor to exagerrate the effects
 			) = 0;
 
-		//! Sets an orthographic camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetOrthographicCamera(
+		//! Adds an orthographic camera.  Dims read from active Film.
+		virtual bool AddOrthographicCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
 			const double vpScale[2],								///< [in] Viewport scale factor
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
 			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
 			const double target_orientation[2]						///< [in] Orientation relative to a target
+			) = 0;
+
+		//! Designates the named camera as active.  Returns false if
+		/// the name isn't registered with the scene's camera manager.
+		virtual bool SetActiveCamera(
+			const char* name										///< [in] Name of camera to make active
+			) = 0;
+
+		//! Reads back the currently-active camera name.  Returns an empty
+		/// string when the scene has no cameras (and therefore no active
+		/// camera).  Used by importers that need to snapshot+restore the
+		/// active camera around a multi-camera registration step (see
+		/// GLTFSceneImporter::ImportScene — a `gltf_import` chunk with
+		/// `import_cameras TRUE` registers N cameras, each auto-promoting
+		/// to active under the last-added-wins rule; the importer uses
+		/// this query to detect a pre-existing user camera and preserve
+		/// it across the walk instead of letting the asset's last DFS
+		/// camera silently take over).
+		virtual std::string GetActiveCameraName() const = 0;
+
+		//! Removes the named camera.  If the removed camera was
+		/// active, auto-promotes a remaining camera (or leaves the
+		/// scene cameraless if none remain).
+		virtual bool RemoveCamera(
+			const char* name										///< [in] Name of camera to remove
 			) = 0;
 
 
@@ -203,9 +303,215 @@ namespace RISE
 									const double vShift[2]			///< [in] How much to shift the function by
 									) = 0;
 
+		//! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
+		//! Implements both IPainter and IFunction2D so it can drive a
+		//! `displaced_geometry`'s `displacement` parameter.  Falloff modes
+		//! are integers: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic,
+		//! 5=Quintic, 99=Gaussian.  See `ControlledSmoothness2DPainter.h`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddControlledSmoothness2DPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* pa,					///< [in] Low/zero-end color painter
+									const char* pb,					///< [in] High/peak-end color painter
+									const double centerU,			///< [in] Bump center, U axis (UV space)
+									const double centerV,			///< [in] Bump center, V axis (UV space)
+									const double radius,			///< [in] Bump radius (UV space)
+									const double amplitude,			///< [in] Peak height
+									const unsigned int smoothnessMode	///< [in] One of 0/1/2/3/5/99 — see header
+									) = 0;
+
+		//! Adds a polynomial-based Function2D painter.  See
+		//! `Painters/PolynomialFunction2DPainter.h` for the polynomial
+		//! family enum (0=radial_bump, 1=monomial, 2=paraboloid,
+		//! 3=hyperbolic_saddle, 4=monkey_saddle, 5=bivariate) and the
+		//! coefficient ordering for bivariate.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPolynomialFunction2DPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Zero/low-end color painter
+									const char* pb,						///< [in] Positive/peak-end color painter
+									const unsigned int polynomialType,	///< [in] Type enum (0..5)
+									const double center[2],				///< [in] (U, V) origin for normalised coords
+									const double scale[2],				///< [in] (U, V) divisor
+									const double amplitude,				///< [in] Global multiplier
+									const unsigned int degree,			///< [in] Degree (radial_bump / bivariate)
+									const unsigned int powerX,			///< [in] x exponent (monomial)
+									const unsigned int powerY,			///< [in] y exponent (monomial)
+									const double* pCoeffs,				///< [in] Bivariate coefficients (or nullptr)
+									const unsigned int nCoeffs			///< [in] Number of bivariate coefficients (or 0)
+									) = 0;
+
+		//! Adds a composable Function2D painter.  Combines two named child
+		//! Function2Ds per a binary operator (sum/product/lerp/max/min/
+		//! difference), after per-operand weight and (u,v) affine
+		//! transform, then a final output remap.  Both children must be
+		//! already-registered Function2D-implementing painters.  Op
+		//! integers: 0=Sum, 1=Product, 2=Lerp, 3=Max, 4=Min, 5=Difference.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCompositeFunction2DPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Low-value color painter
+									const char* pb,						///< [in] High-value color painter
+									const char* childA,					///< [in] First operand Function2D (name)
+									const char* childB,					///< [in] Second operand Function2D (name)
+									const unsigned int op,				///< [in] Operator (0..5)
+									const double weightA,				///< [in] Scalar multiplier on A
+									const double uvScaleA[2],			///< [in] (U, V) scale for A
+									const double uvOffsetA[2],			///< [in] (U, V) offset for A
+									const double weightB,				///< [in] Scalar multiplier on B
+									const double uvScaleB[2],			///< [in] (U, V) scale for B
+									const double uvOffsetB[2],			///< [in] (U, V) offset for B
+									const double lerpT,					///< [in] Lerp parameter (clamped to [0,1])
+									const double outputScale,			///< [in] Final-stage scalar multiplier
+									const double outputOffset			///< [in] Final-stage scalar offset
+									) = 0;
+
+		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
+		//! Intended to drive a DisplacedGeometry via the IFunction2D hook.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGerstnerWavePainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Trough color painter
+									const char* pb,						///< [in] Crest color painter
+									const unsigned int numWaves,		///< [in] Number of sine waves to sum
+									const double medianWavelength,		///< [in] Central wavelength (UV units)
+									const double wavelengthRange,		///< [in] Multiplicative range; span is [median/range, median*range]
+									const double medianAmplitude,		///< [in] Amplitude at median wavelength
+									const double amplitudePower,		///< [in] A_i = medianAmplitude * (lambda_i/medianWavelength)^power
+									const double windDir[2],			///< [in] Wind direction (x, y); normalized internally
+									const double directionalSpread,		///< [in] Per-wave angle jitter (radians)
+									const double dispersionSpeed,		///< [in] Multiplies sqrt(g*k); tune motion speed
+									const unsigned int seed,			///< [in] RNG seed
+									const double time					///< [in] Simulation time
+									) = 0;
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPerlin3DPainter(
+									const char* name,				///< [in] Name of the painter
+									const double dPersistence,		///< [in] Persistence
+									const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const double vScale[3],			///< [in] How much to scale the function by
+									const double vShift[3]			///< [in] How much to shift the function by
+									) = 0;
+
+		virtual bool AddWavelet3DPainter(
+									const char* name,
+									const unsigned int nTileSize,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddReactionDiffusion3DPainter(
+									const char* name,
+									const unsigned int nGridSize,
+									const double dDa,
+									const double dDb,
+									const double dFeed,
+									const double dKill,
+									const unsigned int nIterations,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddGabor3DPainter(
+									const char* name,
+									const double dFrequency,
+									const double dBandwidth,
+									const double vOrientation[3],
+									const double dImpulseDensity,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddSimplex3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddSDF3DPainter(
+									const char* name,
+									const unsigned int nType,
+									const double dParam1,
+									const double dParam2,
+									const double dParam3,
+									const double dShellThickness,
+									const double dNoiseAmplitude,
+									const double dNoiseFrequency,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddCurlNoise3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const double dEpsilon,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		virtual bool AddDomainWarp3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const double dWarpAmplitude,
+									const unsigned int nWarpLevels,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									) = 0;
+
+		//! Adds a 3D Perlin-Worley hybrid (cloud noise) painter
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPerlinWorley3DPainter(
+									const char* name,				///< [in] Name of the painter
+									const double dPersistence,		///< [in] Persistence for Perlin FBM
+									const unsigned int nOctaves,	///< [in] Number of octaves for Perlin
+									const double dWorleyJitter,		///< [in] Worley jitter [0,1]
+									const double dBlend,			///< [in] Blend: 0=Perlin, 1=Worley
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const double vScale[3],			///< [in] Scale
+									const double vShift[3]			///< [in] Shift
+									) = 0;
+
+		//! Adds a 3D Worley (cellular) noise painter
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddWorley3DPainter(
+									const char* name,				///< [in] Name of the painter
+									const double dJitter,			///< [in] Jitter amount [0,1]
+									const unsigned int nMetric,		///< [in] Distance metric (0=Euclidean, 1=Manhattan, 2=Chebyshev)
+									const unsigned int nOutput,		///< [in] Output mode (0=F1, 1=F2, 2=F2-F1)
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const double vScale[3],			///< [in] How much to scale the function by
+									const double vShift[3]			///< [in] How much to shift the function by
+									) = 0;
+
+		//! Adds a 3D turbulence noise painter
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddTurbulence3DPainter(
 									const char* name,				///< [in] Name of the painter
 									const double dPersistence,		///< [in] Persistence
 									const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
@@ -244,7 +550,11 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (0 = clamp [legacy default], 1 = repeat, 2 = mirrored repeat).  See eRasterWrapMode.
+									const char wrap_t = 0,			///< [in] V-axis wrap mode (same encoding as wrap_s)
+									const bool mipmap = true,		///< [in] Build mip pyramid + use LOD-aware sampling (Landing 2).  Set false for vector-quantity textures (normal maps).
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role.  Default Albedo (correct for baseColor / metallic_roughness / normal / occlusion); pass Unbounded for emissive-role bindings.
 									) = 0;
 
 		//! Adds a painter that paints a uniform color
@@ -255,7 +565,84 @@ namespace RISE
 									const char* cspace				///< [in] Color space of the given color
 									) = 0;
 
-		//! Adds a HDR texture painter
+		//! Adds a painter that returns the per-vertex color interpolated by the
+		//! geometry at the hit point (`ri.vColor`).  Falls back to the supplied
+		//! default for hits on geometry without vertex colors.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddVertexColorPainter(
+									const char* name,				///< [in] Name of the painter
+									const double fallback[3],		///< [in] Default color when no vertex color is present
+									const char* cspace				///< [in] Color space of the fallback color
+									) = 0;
+
+		//! Adds a JPEG texture painter
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddJPEGTexturePainter(
+									const char* name,				///< [in] Name of the painter
+									const char* filename,			///< [in] Name of the file that contains the texture
+									const char color_space,			///< [in] Color space in the file
+																	///		0 - Rec709 RGB Linear
+																	///		1 - sRGB profile
+																	///		2 - ROMM RGB (ProPhotoRGB) linear
+																	///		3 - ROMM RGB (ProPhotoRGB) non-linear
+									const char filter_type,			///< [in] Type of texture filtering
+																	///     0 - Nearest neighbour
+																	///     1 - Bilinear
+																	///     2 - Catmull Rom Bicubic
+																	///     3 - Uniform BSpline Bicubic
+									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
+									const double scale[3],			///< [in] Scale factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
+									) = 0;
+
+		//! Adds a PNG texture painter from an in-memory byte buffer.  Used
+		//! by the glTF importer to register painters for embedded `.glb`
+		//! images without writing them to disk first.  The byte buffer is
+		//! consumed during decode (pixels are copied into an internal
+		//! IRasterImage), so the caller may free `bytes` immediately
+		//! after this call returns.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddInMemoryPNGTexturePainter(
+									const char* name,				///< [in] Name of the painter
+									const unsigned char* bytes,		///< [in] Pointer to PNG-encoded byte buffer
+									const size_t numBytes,			///< [in] Length of byte buffer
+									const char color_space,			///< [in] Color space in the file (same encoding as AddPNGTexturePainter)
+									const char filter_type,			///< [in] Texture filtering (same encoding as AddPNGTexturePainter)
+									const bool lowmemory,			///< [in] Low-memory mode skips image convert
+									const double scale[3],			///< [in] Scale factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
+									) = 0;
+
+		//! Adds a JPEG texture painter from an in-memory byte buffer.
+		//! See AddInMemoryPNGTexturePainter for rationale + lifetime contract.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddInMemoryJPEGTexturePainter(
+									const char* name,
+									const unsigned char* bytes,
+									const size_t numBytes,
+									const char color_space,
+									const char filter_type,
+									const bool lowmemory,
+									const double scale[3],
+									const double shift[3],
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
+									) = 0;
+
+		//! Adds a HDR texture painter.  Defaults `spectrumKind` to
+		//! Unbounded since .hdr files (Radiance RGBE format) carry
+		//! per-pixel exponents specifically to express values > 1.0;
+		//! the bounded-reflectance LUT path would silently clamp them.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHDRTexturePainter(
 									const char* name,				///< [in] Name of the painter
@@ -267,7 +654,10 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] Spectral-uplift role; defaults to Unbounded for HDR
 									) = 0;
 
 		//! Adds an EXR texture painter
@@ -287,7 +677,10 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] Spectral-uplift role; defaults to Unbounded for EXR
 									) = 0;
 
 		//! Adds a texture painter
@@ -307,7 +700,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a painter that paints a voronoi diagram
@@ -365,6 +760,32 @@ namespace RISE
 									const char* mask				///< [in] Mask painter
 									) = 0;
 
+		//! Adds a channel-extraction painter.  Returns scale * source[channel] + bias
+		//! broadcast as (v, v, v).  Designed for glTF metallic-roughness texture
+		//! decomposition (B = metallic, G = roughness).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddChannelPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const char  channel,			///< [in] 0=R, 1=G, 2=B
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
+									) = 0;
+
+		//! Adds a UV-transform wrapper painter (glTF KHR_texture_transform).
+		//! Each glTF texture binding may carry its own offset/rotation/scale,
+		//! so the same image painter is wrapped per-binding via this helper.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddUVTransformPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const double offset_u,			///< [in] U translation
+									const double offset_v,			///< [in] V translation
+									const double rotation,			///< [in] Rotation in radians (KHR sign)
+									const double scale_u,			///< [in] U scale
+									const double scale_v			///< [in] V scale
+									) = 0;
+
 
 		//
 		// Adding materials
@@ -396,8 +817,45 @@ namespace RISE
 									const char* tau,				///< [in] Transmittance painter
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
-									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar* arN = 0,			///< [in] AR coating layer real indices, ambient->substrate (0/null = no coating)
+								const Scalar* arK = 0,			///< [in] AR coating layer extinctions (~0; null => all 0)
+								const Scalar* arThickness = 0,	///< [in] AR coating layer thicknesses, nm
+								const unsigned int arNLayers = 0	///< [in] Number of AR layers (0 = no coating)
 									) = 0;
+
+		//! Legacy single-film AR convenience -> the N-layer virtual above.  A
+		//! single SFINAE template (constrained to arithmetic args) so ANY spelling
+		//! of the three AR-film scalars compiles -- all-double, all-int `(0,0,0)`,
+		//! or MIXED `(1.38, 0, 99.6)`.  A fixed Scalar/int overload pair would leave
+		//! mixed calls with no best match; a template is exact for every combo and,
+		//! being non-pointer, never competes with the array-form virtual.
+		//! NON-virtual (no vtable change).  NO-COATING: arFilmThickness <= 0 =>
+		//! nLayers=0 (bare Fresnel), not a zero-thickness/zero-index film.
+		template< typename ARN, typename ARK, typename ART,
+		          typename = typename std::enable_if< std::is_arithmetic<ARN>::value &&
+		                                              std::is_arithmetic<ARK>::value &&
+		                                              std::is_arithmetic<ART>::value >::type >
+		bool AddDielectricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* tau,				///< [in] Transmittance painter
+									const char* rIndex,				///< [in] Index of refraction
+									const char* scat,				///< [in] Scattering function (either Phong or HG)
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const ARN arFilmN,				///< [in] Single AR film real index
+									const ARK arFilmK,				///< [in] Single AR film extinction
+									const ART arFilmThickness		///< [in] Single AR film thickness, nm
+									)
+		{
+			if( Scalar( arFilmThickness ) <= Scalar( 0 ) ) {
+				return AddDielectricMaterial( name, tau, rIndex, scat, hg,
+					(const Scalar*)0, (const Scalar*)0, (const Scalar*)0, 0u );
+			}
+			const Scalar n[1]  = { Scalar( arFilmN ) };
+			const Scalar k[1]  = { Scalar( arFilmK ) };
+			const Scalar th[1] = { Scalar( arFilmThickness ) };
+			return AddDielectricMaterial( name, tau, rIndex, scat, hg, n, k, th, 1u );
+		}
 
 		//! Adds a SubSurface Scattering material
 		/// \return TRUE if successful, FALSE otherwise
@@ -493,59 +951,6 @@ namespace RISE
 			const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 			) = 0;
 
-		//! Adds a BioSpec skin BSSRDF material (BDPT-compatible)
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool AddBioSpecSkinBSSRDFMaterial(
-			const char* name,
-			const char* thickness_SC_,
-			const char* thickness_epidermis_,
-			const char* thickness_papillary_dermis_,
-			const char* thickness_reticular_dermis_,
-			const char* ior_SC_,
-			const char* ior_epidermis_,
-			const char* ior_papillary_dermis_,
-			const char* ior_reticular_dermis_,
-			const char* concentration_eumelanin_,
-			const char* concentration_pheomelanin_,
-			const char* melanosomes_in_epidermis_,
-			const char* hb_ratio_,
-			const char* whole_blood_in_papillary_dermis_,
-			const char* whole_blood_in_reticular_dermis_,
-			const char* bilirubin_concentration_,
-			const char* betacarotene_concentration_SC_,
-			const char* betacarotene_concentration_epidermis_,
-			const char* betacarotene_concentration_dermis_,
-			const char* folds_aspect_ratio_,
-			const bool bSubdermalLayer,
-			const char* roughness
-			) = 0;
-
-		//! Adds a BioSpec skin random-walk SSS material
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool AddBioSpecSkinRWMaterial(
-			const char* name,
-			const char* thickness_SC_,
-			const char* thickness_epidermis_,
-			const char* thickness_papillary_dermis_,
-			const char* thickness_reticular_dermis_,
-			const char* ior_SC_,
-			const char* ior_epidermis_,
-			const char* ior_papillary_dermis_,
-			const char* ior_reticular_dermis_,
-			const char* concentration_eumelanin_,
-			const char* concentration_pheomelanin_,
-			const char* melanosomes_in_epidermis_,
-			const char* hb_ratio_,
-			const char* whole_blood_in_papillary_dermis_,
-			const char* whole_blood_in_reticular_dermis_,
-			const char* bilirubin_concentration_,
-			const char* betacarotene_concentration_SC_,
-			const char* betacarotene_concentration_epidermis_,
-			const char* betacarotene_concentration_dermis_,
-			const char* roughness,
-			const char* maxBounces
-			) = 0;
-
 		//! Adds a Donner & Jensen 2008 spectral skin BSSRDF material
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddDonnerJensenSkinBSSRDFMaterial(
@@ -581,13 +986,13 @@ namespace RISE
 			const char* name,											///< [in] Name of the material
 			const char* top,											///< [in] Name of material on top
 			const char* bottom,											///< [in] Name of material on bottom
-			const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-			const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-			const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-			const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-			const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+			const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+			const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+			const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+			const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+			const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 			const double thickness,										///< [in] Thickness between the materials
-			const char* extinction										///< [in] Extinction painter name
+			const char* extinction										///< [in] Extinction: a scalar_painter name, or an inline `r g b` / single scalar (physical SCALAR slot -- a colour painter does not bind here)
 			) = 0;
 
 		//! Adds Composite material
@@ -609,16 +1014,121 @@ namespace RISE
 			const char* alphay											///< [in] Standard deviation (RMS) of surface slope in y
 			) = 0;
 
-		//! Adds GGX anisotropic microfacet material
+		//! Adds GGX anisotropic microfacet material.
+		//!
+		//! `fresnel_mode` selects the Fresnel evaluation model:
+		//!   "conductor"  (default) — Optics::CalculateConductorReflectance using
+		//!                            ior + ext painters; specular acts as a tint
+		//!                            on top of conductor Fresnel.  Correct for
+		//!                            hand-authored materials with real ior /
+		//!                            extinction values.
+		//!   "schlick_f0" — Schlick approximation `F = F0 + (1-F0)(1-cosθ_h)^5`
+		//!                  treating the `specular` painter as F0 directly; ior
+		//!                  and ext painters are unused.  Required by glTF
+		//!                  metallicRoughness PBR mapping.  GGX applies reciprocal
+		//!                  single-pass diffuse interface transmission `(1-Ai)*(1-Ao)`
+		//!                  in evaluation and selected diffuse throughput, without
+		//!                  the historical constant `(1-max(F0))` split or diffuse
+		//!                  recycling; multiscatter uses the closed-form Schlick
+		//!                  hemispherical average.
+		//!   "thinfilm"   — air / oxide-film / metal thin-film interference; ior
+		//!                  and ext are the substrate n,k; film_ior and
+		//!                  film_thickness are required.
+		//!   "constant"   — `specular` at every angle, no Fresnel term (Cycles'
+		//!                  Glossy BSDF); ior and ext are unused; multiscatter
+		//!                  uses `specular` as the per-bounce reflectance, and the
+		//!                  diffuse lobe is attenuated by (1 - specular) on entry
+		//!                  and on exit.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddGGXMaterial(
 			const char* name,											///< [in] Name of the material
 			const char* diffuse,										///< [in] Diffuse reflectance
-			const char* specular,										///< [in] Specular reflectance
+			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction
-			const char* ext												///< [in] Extinction coefficient
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 and constant modes; SUBSTRATE n in thinfilm mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 and constant modes; SUBSTRATE k in thinfilm mode)
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", "thinfilm", or "constant" (rs at every angle, no Fresnel term)
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; eFresnelThinFilmConductor only.  "none" = no film painter.  REQUIRED in thinfilm mode.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; eFresnelThinFilmConductor only.  "none" = transparent film (k = 0).
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness in nm (scalar_painter, may be spatially varying); eFresnelThinFilmConductor only.  REQUIRED in thinfilm mode.
+			) = 0;
+
+		//! Adds GGX material with optional emissive (LambertianEmitter)
+		//! folded in.  glTF pbrMetallicRoughness materials with non-zero
+		//! emissiveFactor / emissiveTexture map onto this overload.  Pass
+		//! `emissive` = NULL or "none" to fall through to the no-emitter
+		//! AddGGXMaterial behaviour.  See AddGGXMaterial for `fresnel_mode`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGGXEmissiveMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* diffuse,										///< [in] Diffuse reflectance
+			const char* specular,										///< [in] Specular reflectance / F0
+			const char* alphaX,											///< [in] Roughness in tangent u direction
+			const char* alphaY,											///< [in] Roughness in tangent v direction
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 and constant modes)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 and constant modes)
+			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
+			const double emissive_scale,								///< [in] Multiplier on emissive radiance
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", "thinfilm", or "constant" (rs at every angle, no Fresnel term)
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness nm scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			) = 0;
+
+		//! Adds a glTF-spec pbrMetallicRoughness material.  Composes a
+		//! GGX BRDF from PBR-shaped inputs by auto-creating internal
+		//! painters (uniformcolor for constants, blend_painter for the
+		//! base_color / metallic / roughness combinators) and a final
+		//! ggx_material that consumes them.  The internal painters are
+		//! registered in the painter manager with prefix `__pbrmr_<name>__`
+		//! so they don't clash with user-authored painters; users
+		//! shouldn't reference them by name.
+		//!
+		//! Mapping (per glTF 2.0 §3.9.2):
+		//!   diffuse  = baseColor * (1 - metallic)        // diffuse color
+		//!   F0       = lerp(0.04, baseColor, metallic)   // F0 painter
+		//!   alpha    = roughness * roughness
+		//!   ior      = ignored — Fresnel mode is forced to schlick_f0,
+		//!              which uses F0 directly via Schlick's approximation.
+		//!              The `ior` argument is preserved for API stability;
+		//!              it has no effect on rendering.
+		//!
+		//! The (1 - 0.04) "diffuse retention factor" used in earlier
+		//! revisions is now gone.  The PBR diffuse painter carries
+		//! `baseColor * (1 - metallic)`; GGX applies its reciprocal
+		//! single-pass interface transmission at evaluation and selected
+		//! sample throughput.  This deliberately omits diffuse recycling
+		//! and is a rough-interface approximation rather than an exact
+		//! integrated rough-GGX energy model.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPBRMetallicRoughnessMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* base_color,										///< [in] baseColor painter (sRGB-decoded RGB)
+			const char* metallic,										///< [in] Metallic painter or scalar string
+			const char* roughness,										///< [in] Roughness painter or scalar string
+			const double ior,											///< [in] Preserved for API stability; ignored
+			const char* emissive,										///< [in] Optional emissive painter; "none" = no emitter
+			const double emissive_scale,								///< [in] Multiplier on emissive radiance
+			const char* specular_factor = "1.0",						///< [in] Landing 7 / KHR_materials_specular: scalar in [0, 1] (or painter) scaling F0; default "1.0" preserves the standard 0.04 dielectric F0.  When < 1, dielectric F0 = 0.04 × specular_factor (matches matte plastic / paint with reduced specular highlight).
+			const char* specular_color = "none",						///< [in] Landing 7 / KHR_materials_specular: RGB tint on dielectric F0; default "none" means white (untinted).  When set, dielectric F0 = 0.04 × specular_color × specular_factor (matches metals shipped as conductor + tint, or measurements where the dielectric Fresnel is wavelength-dependent).  Painter or "none".
+			const char* anisotropy_factor = "0.0",						///< [in] Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or painter) controlling specular-lobe stretch.  0 = isotropic (default; matches existing PBR-MR exactly: αx = αy = roughness²).  1 = maximum anisotropy (αt = 1, αb = roughness²; lobe stretches infinitely along the tangent direction).  Useful for brushed metal, hair, fabric.
+			const char* anisotropy_rotation = "0.0"						///< [in] Landing 8 / KHR_materials_anisotropy: scalar painter or scalar string with the tangent-frame rotation in RADIANS.  Default 0 = aligned with the geometry's TANGENT attribute (or the dpdu fallback).  Applied to the GGX tangent frame by the PBR painter graph in both evaluation and sampling.
+			) = 0;
+
+		//! Adds a Charlie sheen material for fabric / cloth (Estevez &
+		//! Kulla 2017 -- Lambda-polynomial visibility, NOT the Neubelt
+		//! closed form; see SheenBRDF.h).
+		//! Designed to compose as the top layer in a CompositeMaterial
+		//! pairing for glTF KHR_materials_sheen, but usable standalone
+		//! for hand-authored fabric scenes.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSheenMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* sheen_color,									///< [in] Sheen colour painter
+			const char* sheen_roughness									///< [in] Sheen roughness painter or scalar
 			) = 0;
 
 		//! Adds Cook Torrance material
@@ -677,7 +1187,6 @@ namespace RISE
 			const double scale											///< [in] Value to scale radiant exitance by
 			) = 0;
 
-
 		//
 		// Adds geometry
 		//
@@ -716,7 +1225,8 @@ namespace RISE
 									const char* name,				///< [in] Name of the geometry
 									const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 									const double radius,			///< [in] Radius of the cylinder
-									const double height			///< [in] Height of the cylinder
+									const double height,			///< [in] Height of the cylinder
+									const bool capped = true		///< [in] TRUE: closed solid (end caps, default); FALSE: open tube.  Defaulted so pre-cap 4-arg callers keep compiling.
 									) = 0;
 
 		//! Adds an infinite plane that passes through the origin
@@ -751,7 +1261,9 @@ namespace RISE
 										const double minorRad		///< [in] Minor radius (as a percentage of the major radius)
 										) = 0;
 
-		//! Adds a triangle mesh geometry from the pointers passed it
+		//! Adds a triangle mesh geometry from the pointers passed it.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+		//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddIndexedTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
@@ -765,80 +1277,124 @@ namespace RISE
 							const unsigned int numnormals,			///< [in] Number of normals
 							const unsigned int numcoords,			///< [in] Number of texture co-ordinate points
 							const unsigned int numfaces,			///< [in] Number of faces
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a 3DS file
+		//! Adds a triangle mesh geometry from a 3DS file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool Add3DSTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* filename,					///< [in] The 3DS file to load
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a raw file
+		//! Adds a triangle mesh geometry from a raw file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		/// \todo this is deprecated and should be removed
 		virtual bool AddRAWTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+							const bool double_sided					///< [in] Are the triangles double sided ?
 							) = 0;
 
-		//! Creates a triangle mesh geometry from a file of version 2
-		//! The format of the file for this version is different from the one
-		//! above
+		//! Creates a triangle mesh geometry from a file of version 2.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
+		//! The format of the file for this version is different from the one above.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddRAW2TriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a series of bezier patches
-		/// \return TRUE if successful, FALSE otherwise
-		/// \todo this is deprecated and should be removed
-		virtual bool AddBezierTriangleMeshGeometry(
-							const char* name,						///< [in] Name of the geometry
-							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int detail,				///< [in] Level of tesselation
-							const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-							const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-							const bool face_normals,				///< [in] Use face normals rather than vertex normals
-							const char* displacement,				///< [in] Displacement function for static displacement mapping
-							const double disp_scale					///< [in] Displacement scale factor
-							) = 0;
-
-		//! Creates a triangle mesh geometry from a ply file
+		//! Creates a triangle mesh geometry from a ply file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPLYTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool bInvertFaces,				///< [in] Should the faces be inverted?
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
+							) = 0;
+
+		//! Imports a complete glTF 2.0 scene into the Job.  Walks the
+		//! file's scene tree and creates per-primitive geometries +
+		//! standard_objects (transforms flow through Job::AddObjectMatrix
+		//! verbatim — no Euler decomposition), per-material PBR materials
+		//! (Schlick-from-F0 mode), per-texture painters (embedded `.glb`
+		//! images decode in-memory; external URIs read from disk — no
+		//! sidecar cache), per-light KHR_lights_punctual entries, and
+		//! the first camera (subsequent ones warn).  alphaMode = MASK /
+		//! BLEND are both honoured via auto-wired alpha_test_shaderop /
+		//! transparency_shaderop with per-pixel alpha read straight
+		//! from the baseColor texture (PT-only; BDPT/VCM/MLT/photon
+		//! tracers bypass shader ops and treat both as opaque).  Phase
+		//! 4 also wires KHR_materials_emissive_strength, KHR_materials_
+		//! unlit (LambertianLuminaireMaterial), and the scalar subset
+		//! of KHR_materials_transmission + volume + ior (Beer-Lambert
+		//! glass; transmission_texture is ignored with a warning).
+		//! Object names are prefixed with `name_prefix` to avoid
+		//! manager-level collisions.  See docs/GLTF_IMPORT.md §7
+		//! (phased plan), §13 (Phase 2/3 review), and §15 (Phase 4
+		//! status) for the full design and the out-of-scope features
+		//! that warn-and-skip (animation / skinning / morph targets /
+		//! KHR_materials_clearcoat / KHR_materials_sheen as a layer
+		//! over PBR / transmission_texture / other KHR_materials_*
+		//! beyond core PBR / Draco / meshopt).
+		//!
+		//! `scene_index = UINT_MAX` (the recommended default; this is
+		//! `GLTFImportOptions::kSceneIndexDefault`) imports the file's
+		//! default scene as set in the glTF JSON's top-level `"scene"`
+		//! field, falling back to scenes[0] when no default is declared.
+		//! Any other value is treated as an explicit zero-based index
+		//! into the file's `scenes[]` array; out-of-range values warn
+		//! and fall back to the file default.  Note: passing 0 will now
+		//! force selection of scenes[0], which is NOT the same as
+		//! "default scene" for multi-scene assets whose default is at
+		//! a higher index.
+		/// \return TRUE if the file parsed successfully, FALSE otherwise.
+		virtual bool ImportGLTFScene(
+							const char* filename,					///< [in] .gltf or .glb file
+							const char* name_prefix,				///< [in] Prefix for created object names
+							const unsigned int scene_index,			///< [in] Index into the file's scenes[] array, or UINT_MAX (= GLTFImportOptions::kSceneIndexDefault) for the file's default scene
+							const bool import_meshes,				///< [in] Create per-primitive standard_objects
+							const bool import_materials,			///< [in] Create one PBR material per glTF material
+							const bool import_lights,				///< [in] Create lights from KHR_lights_punctual
+							const bool import_cameras,				///< [in] Create the first camera (subsequent ones warn)
+							const bool import_normal_maps,			///< [in] Attach normal_map_modifier when material has normalTexture
+							const bool lowmem_textures,				///< [in] Defer texture color-space conversion to per-sample (saves ~4x texture RAM + 5-10x faster load on heavy-PBR scenes; pays ~25% per-sample render cost).  Default FALSE for final-render workflow; flip to TRUE for iteration on NewSponza-class scenes.
+							const double lights_intensity_override,	///< [in] Landing 4 deprecated.  Unit-blind override that replaces zero authored intensities for ALL light types uniformly when > 0.  Kept one release for back-compat; prefer the per-type fields below (which respect glTF's per-type unit semantics — lux for directional, candela for point/spot).  Default 0 (no override).
+							const double directional_intensity_override,	///< [in] Landing 4: per-type override for directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights set non-zero stay untouched.  Default 0 (no override).  Typical: ~120000 noon clear-sky sun, ~10000 overcast day, ~100 moonlight.
+							const double point_intensity_override,			///< [in] Landing 4: per-type override for point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical: ~100 for a 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.
+							const double spot_intensity_override,			///< [in] Landing 4: per-type override for spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).
+							const bool respect_baked_occlusion = true,		///< [in] Landing 13: when TRUE (default), honour `occlusionTexture` by multiplying the diffuse path by the texture's R channel × `occlusionStrength`.  Phase-1 implementation modulates ALL bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Set FALSE for strict-PB workflows.
+							const double emissive_intensity_scale = 1.0,	///< [in] Multiplier applied AFTER each material's authored `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use to brighten ALL emissive surfaces in the import uniformly without editing the asset (e.g. a deep-dusk candle scene whose flame meshes are authored at daytime-balanced strength can multiply by 50–200 to make the candles dominate).  Unlike `lights_intensity_override` this is a SCALE (composes with authored values) — emissive materials typically ship with meaningful chromatic / relative values whose ratios should be preserved.  Values ≤ 0 kill all emissive in the import.  Folded in once at import time, no per-sample cost.
+							const double emissive_tint_r = 1.0,		///< [in] Per-channel R multiplier applied to every material's `emissiveFactor`.  Default 1.0 (no tint).  Use to recolour emissive surfaces uniformly across the import without editing the asset.  The tint multiplies the FACTOR componentwise, so an authored 0.0 channel can't be lifted (multiplying by a non-zero tint stays 0.0).  Folded in once at import time.
+							const double emissive_tint_g = 1.0,		///< [in] Per-channel G multiplier (see `emissive_tint_r`).  Example: (1.0, 0.5, 0.1) tints a pure-yellow flame (1,1,0) to warm orange (1, 0.5, 0).
+							const double emissive_tint_b = 1.0		///< [in] Per-channel B multiplier (see `emissive_tint_r`).
+							) = 0;
+
+		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
+		//! Phase 1 of the glTF import work: a single primitive of a single mesh
+		//! becomes one named geometry.  Materials, scene structure, lights,
+		//! cameras, and animations are NOT imported by this call -- the user
+		//! assembles the rest of the scene with existing chunks.  See
+		//! docs/GLTF_IMPORT.md §7 for the phased plan.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGLTFTriangleMeshGeometry(
+							const char* name,						///< [in] Name of the geometry
+							const char* szFileName,					///< [in] .gltf or .glb file to load
+							const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+							const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+							const bool double_sided,				///< [in] Are the triangles double sided?
+							const bool face_normals,				///< [in] Use face normals rather than vertex normals
+							const bool flip_v						///< [in] Flip TEXCOORD V at load.  Default TRUE on the chunk parser because glTF stores V increasing upward (V=0 at bottom of texture, OpenGL convention) while RISE's TexturePainter samples V increasing downward (row 0 = top of stored image, DirectX convention).  Override to FALSE only for atypical glTF exports with DirectX V already baked in.
 							) = 0;
 
 		//! Adds a mesh from a .risemesh file
@@ -850,24 +1406,19 @@ namespace RISE
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Creates a bezier patch geometry
+		//! Creates a bezier patch geometry.
+		//! Rendering is always analytic (Kajiya resultant + 2D Newton polish).
+		//! Displacement is NOT a parameter either — wrap this geometry in a
+		//! `displaced_geometry` chunk for displacement, and for bulk-tessellated
+		//! rendering use `displaced_geometry { displacement none disp_scale 0 }`.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBezierPatchGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-							const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-							const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-							const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-							const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-							const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-							const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-							const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-							const unsigned int detail,				///< [in] Level of tesselation for polygons
-							const char* displacement,				///< [in] Displacement function for static displacement mapping
-							const double disp_scale					///< [in] Displacement scale factor
+							const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+							const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+							const bool use_bsp,						///< [in] Use BSP tree (true) or Octree (false) for the patch accelerator
+							const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 							) = 0;
 
 		//! Creates a bilinear patch geometry
@@ -880,17 +1431,48 @@ namespace RISE
 							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
 							) = 0;
 
+		//! Creates a displaced geometry wrapping a previously-registered base geometry,
+		//! tessellating it via IGeometry::TessellateToMesh and displacing vertices along the
+		//! surface normal by displacement(u,v)*disp_scale.  Returns false if the base cannot be
+		//! tessellated (e.g. InfinitePlaneGeometry) — the whole scene should then fail to parse.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+		//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddDisplacedGeometry(
+							const char*         name,				///< [in] Name of the geometry to register
+							const char*         base_geometry_name,	///< [in] Name of a previously-registered IGeometry to wrap
+							const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
+							const char*         displacement,		///< [in] Name of registered IFunction2D, or NULL for pure tessellation
+							const Scalar        disp_scale,			///< [in] Displacement scale factor
+							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
+							const bool          face_normals,
+			const bool          seam_fold = true		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							) = 0;
+
 
 		//
 		// Adds lights
 		//
+		// COLOUR CONVENTION (2026-09-02).  `color` is a LINEAR triple by
+		// default -- the same reading `uniformcolor_painter` and every
+		// emissive material's exitance already had.  `colorspace` names
+		// the interpretation and accepts exactly the value set
+		// AddUniformColorPainter accepts ("sRGB", "Rec709RGB_Linear",
+		// "ROMMRGB_Linear", "ProPhotoRGB", "RISERGB"); null means the
+		// default "Rec709RGB_Linear".  BEFORE this date these four
+		// methods silently gamma-DECODED the triple as sRGB, so
+		// `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033) --
+		// a trap the glTF importer had to pre-encode around and that
+		// made a live editor colour edit (which was always linear, via
+		// KeyframeFromParameters) disagree with the reloaded file.
 
 		//! Adds a infinite point omni light, located at the origin
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPointOmniLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double pos[3],									///< [in] Position of the light
 			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			) = 0;
@@ -900,7 +1482,8 @@ namespace RISE
 		virtual bool AddPointSpotLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double foc[3],									///< [in] Point the center of the light is focussing on
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
@@ -913,7 +1496,8 @@ namespace RISE
 		virtual bool AddAmbientLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			) = 0;
 
 		//! Adds an infinite directional light, shining in a particular direction
@@ -921,10 +1505,10 @@ namespace RISE
 		virtual bool AddDirectionalLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double dir[3]										///< [in] Direction of the light
 			) = 0;
-
 
 		//
 		// Participating media
@@ -936,6 +1520,25 @@ namespace RISE
 			const char* name,										///< [in] Name of the medium
 			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
 			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			) = 0;
+
+		//! Adds a homogeneous participating medium with optional
+		//! per-wavelength coefficient curves for the spectral (NM) path
+		//! (G1, vitreous enamel).  \a absorption_spectral /
+		//! \a scattering_spectral are names of registered IFunction1D
+		//! curves (lambda->value), or null/"" for none.  When both are
+		//! absent the medium matches AddHomogeneousMedium (plus the
+		//! emission term).  The RGB triples drive the RGB/preview path.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHomogeneousMediumSpectral(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+			const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+			const double emission[3],								///< [in] Volumetric emission (RGB)
+			const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+			const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
 			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			) = 0;
@@ -959,6 +1562,23 @@ namespace RISE
 			const double bboxMax[3]									///< [in] World-space AABB maximum corner
 			) = 0;
 
+		//! Adds a heterogeneous participating medium driven by a painter
+		/// The painter is evaluated at world-space points to produce density.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPainterHeterogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double max_sigma_a[3],							///< [in] Max absorption coefficient (linear RGB)
+			const double max_sigma_s[3],							///< [in] Max scattering coefficient (linear RGB)
+			const double emission[3],								///< [in] Volumetric emission (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g,									///< [in] Asymmetry factor for HG
+			const char* density_painter,							///< [in] Name of the painter to use for density
+			const unsigned int virtualResolution,					///< [in] Virtual grid resolution per axis
+			const char colorToScalar,								///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+			const double bboxMin[3],								///< [in] World-space AABB minimum corner
+			const double bboxMax[3]									///< [in] World-space AABB maximum corner
+			) = 0;
+
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetGlobalMedium(
@@ -972,18 +1592,88 @@ namespace RISE
 			const char* medium_name									///< [in] Name of the medium
 			) = 0;
 
+		//! Looks up a registered medium by name.  Returns null if no
+		//! medium with that name is registered.  Used by the interactive
+		//! editor to validate `interior_medium` edits and to recover
+		//! the prior medium's name for undo via reverse-lookup against
+		//! `IObject::GetInteriorMedium()`.
+		virtual const IMedium* GetMedium(
+			const char* name										///< [in] Name of the requested medium
+			) const = 0;
+
+		//! Enumerates registered medium names.  Used by the interactive
+		//! editor's properties panel to populate the `interior_medium`
+		//! preset dropdown.  Iteration order is unspecified.
+		virtual void EnumerateMediumNames(
+			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered medium name
+			) const = 0;
+
+		//! Returns the registered IGeometry with the given name, or null
+		//! if no geometry with that name is registered.  Used by the
+		//! interactive editor to validate `geometry` edits (runtime
+		//! geometry swap) and to recover the prior geometry's name for
+		//! undo via reverse-lookup against `IObject::GetGeometry()`.
+		virtual const IGeometry* GetGeometry(
+			const char* name										///< [in] Name of the requested geometry
+			) const = 0;
+
+		//! Enumerates registered geometry names.  Used by the interactive
+		//! editor's properties panel to populate the `geometry` preset
+		//! dropdown (runtime geometry swap).  Iteration order is unspecified.
+		virtual void EnumerateGeometryNames(
+			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered geometry name
+			) const = 0;
+
+		// `IsMaterialComposed` lives in the appended-default-impl
+		// region at the end of IJob (see the "ABI POLICY" comment
+		// down there for the reasoning).  Out-of-tree IJob impls
+		// pick up the `false` default automatically — only Job
+		// (which tracks composed-name registrations) overrides.
+
 
 		//
 		// Adds modifiers
 		//
 
-		//! Adds a bump map
+		//! Adds a bump map -- a LEGACY SHIM since 2026-09-06.
+		//!
+		//! The `bumpmap_modifier` chunk and the `BumpMap` class were
+		//! REMOVED (docs/RELIEF_MODIFIER_DESIGN.md 7.5); this virtual's
+		//! SIGNATURE is ABI-frozen and stays, because the Blender bridge
+		//! (src/Blender/native/rise_blender_bridge.cpp) and out-of-tree
+		//! IJob impls call it.  It now registers a `relief_modifier` over
+		//! a `Function2DScalarPainter` in the UV domain, with the design
+		//! 7.2 amplitude fold (`S' = -S*2W`; a non-positive `window`,
+		//! which the removed class treated as inert, folds to `scale 0`).
+		//! In-tree callers should use `AddReliefModifierEx` instead: any
+		//! scalar painter as the height field, no texcoords needed, the
+		//! Blinn sign convention rather than the legacy depth one, and the
+		//! optional `max_slope` clamp (the plain `AddReliefModifier` below
+		//! is the no-clamp forwarding shim, kept only for ABI).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers
 			const char* func,										///< [in] The function to use as the bump generator
 			const double scale,										///< [in] Factor to scale values by
 			const double window										///< [in] Size of the window
+			) = 0;
+
+		//! Adds a tangent-space normal-map modifier.  The painter must
+		//! be loaded with NO colour-matrix conversion: post Stage B
+		//! colour-space migration (RISEPel == Rec709RGBPel) that means
+		//! `color_space Rec709RGB_Linear` on the png_painter /
+		//! jpg_painter / etc., which stores PNG bytes verbatim into
+		//! the engine working space.  sRGB would gamma-decode and
+		//! break the [0,1] vector domain; ROMMRGB_Linear applies a
+		//! Rec.709 → ROMM colour matrix that warps the encoded normal.
+		//! Designed for glTF 2.0 normalTexture but works with any
+		//! linear-RGB normal map.  See Modifiers/NormalMap.h for the
+		//! full rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddNormalMapModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* painter,									///< [in] Normal-map painter, loaded with no colour-matrix conversion (Rec709RGB_Linear post Stage B)
+			const double scale										///< [in] glTF normalTexture.scale (xy multiplier; default 1.0)
 			) = 0;
 
 		//
@@ -1021,14 +1711,31 @@ namespace RISE
 			const char* material,									///< [in] Name of the material
 			const char* modifier,									///< [in] Name of the modifier
 			const char* shader,										///< [in] Name of the shader
-			const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-			const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-			const double radiance_orient[3],						///< [in] Orientation of the object
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` is ignored here
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const double scale[3],									///< [in] Object scaling
 			const bool bCastsShadows,								///< [in] Does the object cast shadows?
 			const bool bReceivesShadows								///< [in] Does the object receive shadows?
+		) = 0;
+
+		//! Adds an object whose world transform is supplied as a pre-composed
+		//! 4x4 matrix.  Used by the glTF importer to pass node transforms
+		//! through losslessly instead of round-tripping through Euler XYZ
+		//! decomposition (the latter is gimbal-lock prone for arbitrary
+		//! quaternion rotations).  Matrix layout is column-major to match
+		//! both glTF's `nodes[i].matrix` field and RISE's internal Matrix4.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddObjectMatrix(
+			const char* name,										///< [in] Name of the object
+			const char* geom,										///< [in] Name of the geometry
+			const char* material,									///< [in] Name of the material
+			const char* modifier,									///< [in] Name of the modifier
+			const char* shader,										///< [in] Name of the shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL)
+			const double matrix[16],								///< [in] World transform, 4x4 column-major
+			const bool bCastsShadows,
+			const bool bReceivesShadows
 		) = 0;
 
 		//! Creates a CSG object
@@ -1045,13 +1752,17 @@ namespace RISE
 			const char* material,									///< [in] Name of the material
 			const char* modifier,									///< [in] Name of the modifier
 			const char* shader,										///< [in] Name of the shader
-			const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-			const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-			const double radiance_orient[3],						///< [in] Orientation of the object
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` is ignored here
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const bool bCastsShadows,								///< [in] Does the object cast shadows?
-			const bool bReceivesShadows								///< [in] Does the object receive shadows?
+			const bool bReceivesShadows,							///< [in] Does the object receive shadows?
+			const bool bAllowTransformedOperands					///< [in] Acknowledges an intentional operand-rebase (author set
+																	///<      `allow_transformed_operands TRUE` on this csg_object);
+																	///<      suppresses the operand-rebase advisory Job::AddCSGObject
+																	///<      would otherwise log when this csg_object's own
+																	///<      position/orientation is non-identity AND at least one
+																	///<      operand is already transformed.
 			) = 0;
 
 
@@ -1072,10 +1783,7 @@ namespace RISE
 
 		virtual bool AddDirectLightingShaderOp(
 			const char* name,										///< [in] Name of the shaderop
-			const char* bsdf,										///< [in] BSDF to use when computing radiance (overrides object BSDF)
-			const bool nonmeshlights,								///< [in] Compute lighting from non mesh lights?
-			const bool meshlights,									///< [in] Compute lighting from mesh lights (area light sources)?
-			const bool cache										///< [in] Should the rasterizer state cache be used?
+			const char* bsdf										///< [in] BSDF to use when computing radiance (overrides object BSDF)
 			) = 0;
 
 		virtual bool AddCausticPelPhotonMapShaderOp(
@@ -1107,7 +1815,6 @@ namespace RISE
 			const unsigned int samples,								///< [in] Number of sample to use in distribution
 			const bool irradiancecaching,							///< [in] Should irradiance caching be used if available?
 			const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-			const bool branch,										///< [in] Should we branch when doing scattering?
 			const bool reflections,									///< [in] Should reflections be traced?
 			const bool refractions,									///< [in] Should refractions be traced?
 			const bool diffuse,										///< [in] Should diffuse rays be traced?
@@ -1126,7 +1833,6 @@ namespace RISE
 
 		virtual bool AddPathTracingShaderOp(
 			const char* name,
-			const bool branch,
 			const bool smsEnabled,
 			const unsigned int smsMaxIterations,
 			const double smsThreshold,
@@ -1229,6 +1935,29 @@ namespace RISE
 			const bool one_sided									///< [in] One sided transparency only (ignore backfaces)
 			) = 0;
 
+		//! Adds a stochastic alpha-test shader op.  Implements glTF
+		//! alphaMode = MASK: at hit time, samples alpha from the
+		//! painter; if alpha < cutoff, the ray is forwarded past the
+		//! surface and shading from behind is composited into the
+		//! current pixel.  Otherwise this op is a no-op and downstream
+		//! shader ops handle the surface normally.
+		//!
+		//! Caveat: this op runs only on integrators that go through
+		//! IShader::Shade() (the path tracer and legacy direct shaders).
+		//! BDPT, VCM, MLT, and photon tracers bypass the shader-op
+		//! pipeline and treat the surface as fully opaque.  No runtime
+		//! warning is emitted when an alpha-masked material renders
+		//! under one of those integrators -- users must choose PT for
+		//! glTF MASK assets, or accept the cutout being silently
+		//! ignored.  See AlphaTestShaderOp.h for the full architectural
+		//! rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddAlphaTestShaderOp(
+			const char* name,										///< [in] Name of the shaderop
+			const char* alpha_painter,								///< [in] Painter sampling alpha at the hit
+			const double cutoff										///< [in] Threshold; alpha < cutoff continues the ray past the surface
+			) = 0;
+
 		//
 		// Adds Shaders
 		//
@@ -1297,26 +2026,18 @@ namespace RISE
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1324,27 +2045,14 @@ namespace RISE
 		virtual bool SetPixelBasedSpectralIntegratingRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int specSamples,							///< [in] Number of spectral samples / pixel
-			const double lambda_begin,								///< [in] Wavelength to start sampling at
-			const double lambda_end,								///< [in] Wavelength to finish sampling at
-			const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 			const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
 			const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
@@ -1352,9 +2060,10 @@ namespace RISE
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets the rasterizer type to be Pel (RGB) BDPT
@@ -1363,30 +2072,16 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1396,65 +2091,127 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start wavelength (nm)
-			const double nmend,										///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
+		//! Sets the rasterizer type to be Pel (RGB) Vertex Connection and Merging
+		virtual bool SetVCMPelRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
+			const bool enableVC,									///< [in] Enable vertex connection strategies
+			const bool enableVM,									///< [in] Enable vertex merging strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
+		//! Sets the rasterizer type to be spectral Vertex Connection and Merging
+		virtual bool SetVCMSpectralRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
+			const bool enableVC,									///< [in] Enable vertex connection strategies
+			const bool enableVM,									///< [in] Enable vertex merging strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
+		//! Sets the rasterizer to the auto-routing integrator dispatcher
+		//! (`auto_rasterizer`).  Builds the shared caster / sampler / filter
+		//! once and hands them to a wrapper that lazily delegates to a
+		//! concrete PT / BDPT / VCM rasterizer.  Per-integrator specifics use
+		//! canonical defaults (param-population option (i)); the chunk only
+		//! carries the universally-meaningful params + the `integrator` pin.
+		virtual bool SetAutoRasterizer(
+			const AutoIntegratorChoice integrator,					///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig,				///< [in] Progressive multi-pass rendering configuration
+			const bool probeEnabled									///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+			) = 0;
+
+		//! Sets the rasterizer to the SPECTRAL auto-routing dispatcher
+		//! (`auto_spectral_rasterizer`, Phase 1b).  Same dispatcher as
+		//! SetAutoRasterizer (shared Tier-0/1/2 decision logic) but the resolved
+		//! delegate is a `*_spectral_` rasterizer; carries the spectral-core
+		//! params instead of path-guiding (the spectral domain has none).
+		virtual bool SetAutoSpectralRasterizer(
+			const AutoIntegratorChoice integrator,					///< [in] Author pin (Auto = dispatcher decides)
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig,				///< [in] Progressive multi-pass rendering configuration
+			const bool probeEnabled									///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 			) = 0;
 
 		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)
 		virtual bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1462,38 +2219,23 @@ namespace RISE
 		virtual bool SetPathTracingSpectralRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start wavelength (nm)
-			const double nmend,										///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
-		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
+		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+		//! Filter-aware signature — this is what the parser and new
+		//! code calls.  Subclasses must implement this overload.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
@@ -1504,12 +2246,46 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
-		//! Sets up a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+		//! Legacy pre-filter overload of SetMLTRasterizer.  Preserves
+		//! source compatibility for external code written against the
+		//! pre-filter IJob API — it forwards to the filter-aware
+		//! overload asking for `pixel_filter none`, which reproduces
+		//! the old unfiltered (round-to-nearest point splat) behaviour.
+		//! New code should call the full overload with an explicit
+		//! filter choice.  Non-virtual so it dispatches through the
+		//! derived class's pure-virtual implementation.
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetMLTRasterizer(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth,
+			const unsigned int nBootstrap,
+			const unsigned int nChains,
+			const unsigned int nMutationsPerPixel,
+			const double largeStepProb,
+			const char* shader,
+			const bool bShowLuminaires,
+			const bool oidnDenoise,
+			const StabilityConfig& stabilityConfig
+			)
+		{
+			PixelFilterConfig legacyNone;
+			legacyNone.filter = "none";
+			return SetMLTRasterizer(
+				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+				nMutationsPerPixel, largeStepProb, shader,
+				bShowLuminaires, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+				legacyNone, stabilityConfig );
+		}
+
+		//! Sets up a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTSpectralRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
@@ -1520,18 +2296,69 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start of spectral range (nm)
-			const double nmend,										///< [in] End of spectral range (nm)
-			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
+
+		//! Legacy pre-filter overload.  See SetMLTRasterizer above for
+		//! the rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetMLTSpectralRasterizer(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth,
+			const unsigned int nBootstrap,
+			const unsigned int nChains,
+			const unsigned int nMutationsPerPixel,
+			const double largeStepProb,
+			const char* shader,
+			const bool bShowLuminaires,
+			const double nmbegin,
+			const double nmend,
+			const unsigned int nSpectralSamples,
+			const bool useHWSS,
+			const bool oidnDenoise,
+			const StabilityConfig& stabilityConfig
+			)
+		{
+			PixelFilterConfig legacyNone;
+			legacyNone.filter = "none";
+			SpectralConfig legacySpectral;
+			legacySpectral.nmBegin = nmbegin;
+			legacySpectral.nmEnd = nmend;
+			legacySpectral.spectralSamples = nSpectralSamples;
+			legacySpectral.useHWSS = useHWSS;
+			return SetMLTSpectralRasterizer(
+				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+				nMutationsPerPixel, largeStepProb, shader,
+				bShowLuminaires,
+				legacySpectral, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
+				legacyNone, stabilityConfig );
+		}
 
 		//
 		// Adds rasterizer outputs
 		//
+
+		//! L5d — Suppress `file_rasterizeroutput` chunks at parse time.
+		//! When set true (typically by GUI hosts at construction),
+		//! `AddFileRasterizerOutput` becomes a no-op that logs at
+		//! Info level and returns `true` (so parsing doesn't fail).
+		//! This prevents interactive renders inside the GUI from
+		//! silently writing PNG / EXR / etc. files referenced by
+		//! the loaded scene's `file_rasterizeroutput` chunks
+		//! (which are intended for command-line batch renders).
+		//!
+		//! Default-implemented as a no-op so out-of-tree IJob
+		//! subclasses (mocks, test stubs) don't have to override.
+		//! CLI does NOT enable this — preserves byte-identical
+		//! legacy behaviour for `bin/rise scene.RISEscene`.
+		virtual void SetSuppressFileRasterizerOutputs( bool /*suppress*/ ) {}
+		virtual bool GetSuppressFileRasterizerOutputs() const { return false; }
 
 		//! Creates a file rasterizer output
 		//! This should be called after a rasterizer has been set
@@ -1548,12 +2375,26 @@ namespace RISE
 																	///		3 - HDR
 																	///     4 - TIFF
 																	///		5 - RGBEA
+																	///		6 - EXR
 			const unsigned char bpp,								///< [in] Bits / pixel for the file
-			const char color_space									///< [in] Color space to apply
+			const char color_space,									///< [in] Color space to apply
 																	///		0 - Rec709 RGB linear
 																	///		1 - sRGB profile
 																	///		2 - ROMM RGB (ProPhotoRGB) linear
 																	///		3 - ROMM RGB (ProPhotoRGB) non-linear
+			const double exposureEV,								///< [in] Exposure offset in EV stops; 0 = no scaling.  LDR formats only.
+			const char display_transform,							///< [in] Display tone curve, LDR formats only:
+																	///		0 - none      (legacy linear-to-OETF, clips at 1.0)
+																	///		1 - reinhard  (x / (1 + x))
+																	///		2 - aces      (Narkowicz fit; recommended default)
+																	///		3 - agx       (Sobotka scalar; placeholder until Landing 3)
+																	///		4 - hable     (Uncharted 2 filmic, white-point 11.2)
+			const char exr_compression,								///< [in] EXR compression mode, EXR only:
+																	///		0 - none
+																	///		1 - zip
+																	///		2 - piz       (default; lossless wavelet)
+																	///		3 - dwaa      (lossy)
+			const bool exr_with_alpha								///< [in] Write alpha channel.  EXR only; default true.
 			) = 0;
 
 		//! Creates a user callback rasterizer output
@@ -1933,6 +2774,38 @@ namespace RISE
 			const char* name								///< [in] Name of the modifer to remove
 			) = 0;
 
+		//! Invalidates the top-level acceleration structure (TLAS) so the next
+		//! render rebuilds it.  An incremental re-derivation that recreated objects
+		//! (new addresses) or changed any object's world bounding box MUST call this
+		//! -- the TLAS holds raw object pointers, so a stale BVH would dangle (see
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  Default no-op so
+		//! non-scene IJob impls are unaffected; the real Job delegates to its
+		//! IObjectManager::InvalidateSpatialStructure.
+		virtual void InvalidateSpatialStructure() {}
+
+		//! Bumps the scene's light-topology generation so the next AttachScene
+		//! rebuilds the light/environment samplers (mirrors the SceneEditor path).
+		//! An incremental re-derivation that may have changed the emitter set
+		//! (recreated/re-pointed an emissive material or object) MUST call this.
+		//! Default no-op; the real Job bumps its Scene's generation counter.
+		virtual void BumpLightTopologyGeneration() {}
+
+		//! Reads the current light-topology generation (the counter
+		//! BumpLightTopologyGeneration advances).  A consumer reads it across an edit to
+		//! confirm whether the emitter set changed (the incremental apply's closure-gated
+		//! light-gen decision).  Default 0; the real Job returns its Scene's counter.
+		virtual unsigned int GetLightTopologyGeneration() const { return 0; }
+
+		//! Enables/disables INCREMENTAL re-point mode (slice 3 stable-object apply,
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  While enabled,
+		//! AddObject/AddObjectMatrix re-point an EXISTING same-named object IN PLACE
+		//! (keeping its address so the TLAS that holds raw object pointers stays valid)
+		//! instead of creating a new one; with it disabled (the default, and every full
+		//! derive -- where objects never pre-exist) behaviour is unchanged.  The CST
+		//! incremental apply sets it true only around its single-threaded re-Finalize
+		//! loop.  Default no-op; the real Job stores the flag.
+		virtual void SetIncrementalRepointMode( bool ) {}
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool ClearAll(
@@ -1943,11 +2816,43 @@ namespace RISE
 		virtual bool RemoveRasterizerOutputs(
 			) = 0;
 
-		//! Loading an ascii scene description
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool LoadAsciiScene(
+		//! P5 (Model-B): load via the canonical CST path (Scene = derive(CST)) instead of the legacy
+		//! streaming parser.  Refuses non-native-v7 documents and derive-error scenes.  Default returns
+		//! FALSE (only Job overrides this -- it retains the CST Document).  Reached via LoadAsciiSceneAuto's
+		//! native-v7 branch -- CST-load is the Slice-5 DEFAULT (the RISE_LOAD_VIA_CST opt-in env var was removed).
+		/// \return TRUE iff loaded via the CST path with no error diagnostics
+		virtual bool LoadAsciiSceneViaCst(
 			const char* filename							///< [in] Name of the file containing the scene
-			) = 0;
+			) { return false; }
+
+		//! P5 (Model-B, Slice 6c-3a): DEFAULT scene-load entry point used by every front-end (CLI/GUI/bridges).
+		//! CST-ONLY -- routes a NATIVE-v7 scene to the CST path (LoadAsciiSceneViaCst -- retains the Document for
+		//! edit/save/scene_variant); an un-migrated scene HARD-FAILS with an actionable diagnostic pointing at
+		//! the offline migrator (the legacy loader was retired -- no fallback, no env escape hatch).  A derive
+		//! error on the native-v7 branch is a REAL, visible failure (returns false) -- it is NOT masked by a
+		//! legacy retry.  Default (non-Job implementers) is a safe no-op returning false -- the legacy streaming
+		//! loader was deleted in Slice 6c-3c, so there is nothing to delegate to; only Job overrides this.
+		/// \return TRUE iff the scene loaded successfully
+		virtual bool LoadAsciiSceneAuto(
+			const char* filename							///< [in] Name of the file containing the scene
+			) { return false; }
+
+		//! P5 (Model-B): re-derive the RETAINED CST Document with a FORCED active scene_variant ("none"/"" =
+		//! base), re-baking the materials -- the GUI variant switch.  Resets the managers first (ClearAll), so the
+		//! Document must already be retained (loaded via LoadAsciiSceneViaCst).  Default FALSE (only Job overrides).
+		/// \return TRUE iff re-derived with no error diagnostics
+		virtual bool RederiveCstWithVariant(
+			const char* variantName							///< [in] variant to force active ("none"/"" = base)
+			) { return false; }
+
+		//! P5: does this Job retain a CST Document (loaded via LoadAsciiSceneViaCst)?  The GUI gates the
+		//! "Variants" accordion on this -- the variant SWITCH needs the Document to re-derive, so a legacy-loaded
+		//! scene (no Document) must not offer pickable variants that would silently no-op.  Default FALSE.
+		virtual bool HasRetainedCstDocument() const { return false; }
+
+		//! P5 Slice 4 (save-as-CST): the retained canonical CST Document (null unless loaded via
+		//! LoadAsciiSceneViaCst).  The SaveEngine serializes it directly when present.  Default null; see Job.
+		virtual const RISE::Cst::Document* GetCstDocument() const { return nullptr; }
 
 		//! Runs an ascii script
 		/// \return TRUE if successful, FALSE otherwise
@@ -1958,10 +2863,15 @@ namespace RISE
 		//! Tells us whether anything is keyframed
 		virtual bool AreThereAnyKeyframedObjects() = 0;
 
-		//! Adds a keyframe for the specified element
+		//! Adds a keyframe for the specified element, routed to the implicit default
+		//! animation (equivalent to AddKeyframeToAnimation with a NULL/empty animation
+		//! name -- see that method's doc for the full element_type=="camera" targeting
+		//! semantics: `element` names a SPECIFIC camera by `name`; empty/"none" targets
+		//! the ACTIVE camera; a non-empty `element` naming no existing camera is a LOUD
+		//! failure (returns false), never a silent active-camera fallback).
 		virtual bool AddKeyframe(
 			const char* element_type,						///< [in] Type of element to keyframe (ie. camera, painter, geometry, object...)
-			const char* element,							///< [in] Name of the element to keyframe
+			const char* element,							///< [in] Name of the element to keyframe (camera: target camera's `name`; empty/"none" == active camera)
 			const char* param,								///< [in] Name of the parameter to keyframe
 			const char* value,								///< [in] Value at this keyframe
 			const double time,								///< [in] Time of the keyframe
@@ -1980,10 +2890,2168 @@ namespace RISE
 			const bool invert_fields						///< [in] Should the fields be temporally inverted?
 			) = 0;
 
+		//! Reads back the animation options previously set via
+		//! SetAnimationOptions, or the defaults (0, 1, 30) for jobs
+		//! whose .RISEscene file declared no `animation_options`
+		//! chunk.  The interactive editor's timeline scrubber reads
+		//! these to size the slider's range and report the duration.
+		virtual bool GetAnimationOptions(
+			double& time_start,
+			double& time_end,
+			unsigned int& num_frames,
+			bool& do_fields,
+			bool& invert_fields
+			) const = 0;
+
+		//
+		// Named animation paths (additive; appended after the existing animation
+		// API so the vtable slots above stay ABI-stable).  A NULL or empty
+		// animation name everywhere routes to the implicit "(default)" animation,
+		// so legacy callers are unaffected.  Per the IJob ABI convention (see the
+		// other defaulted tail methods), these carry default bodies rather than
+		// being pure-virtual so out-of-tree IJob subclasses need not override
+		// them; the concrete in-tree Job overrides all of them.
+		//
+
+		//! Declares (or updates the playback options of) a named animation.
+		//! If make_active is TRUE the animation becomes the active one.
+		virtual bool DeclareAnimation(
+			const char* /*name*/,
+			const double /*time_start*/,
+			const double /*time_end*/,
+			const unsigned int /*num_frames*/,
+			const bool /*do_fields*/,
+			const bool /*invert_fields*/,
+			const bool /*make_active*/
+			) { return false; }
+
+		//! Adds a keyframe owned by a named animation.  A NULL/empty animation
+		//! routes to the implicit default animation (identical to AddKeyframe).
+		//!
+		//! Camera targeting (element_type=="camera"): `element` names the SPECIFIC
+		//! camera (by its `name`) to animate; an empty, NULL, or "none" `element`
+		//! falls back to the ACTIVE camera (back-compat for the common single-,
+		//! often unnamed-, camera scene).  A non-empty `element` that names no
+		//! existing camera is a LOUD failure -- returns false -- never a silent
+		//! active-camera fallback, so a CST dry-run derive rejects the edit instead
+		//! of animating the wrong camera.  ("none" is reserved as the scene
+		//! language's universal unbind sentinel and cannot itself be a camera's
+		//! `name` -- see Scene::AddCamera / RejectReservedCameraName.)
+		virtual bool AddKeyframeToAnimation(
+			const char* /*element_type*/,
+			const char* /*element*/,						///< camera: target camera's `name`; empty/NULL/"none" == active camera
+			const char* /*param*/,
+			const char* /*value*/,
+			const double /*time*/,
+			const char* /*interp*/,
+			const char* /*interp_params*/,
+			const char* /*animation*/
+			) { return false; }
+
+		//! Selects the active animation by name; FALSE if the name is unknown.
+		virtual bool SetActiveAnimation( const char* /*name*/ ) { return false; }
+
+		//! Selects the active animation by index; FALSE if out of range.
+		virtual bool SetActiveAnimationByIndex( const unsigned int /*index*/ ) { return false; }
+
+		//! Number of declared named animations.
+		virtual unsigned int GetAnimationCount() const { return 0; }
+
+		//! Records that an `override_object` chunk modified an existing object's transform
+		//! in place (its Finalize calls this).  The CST incremental apply reads
+		//! GetObjectOverrideCount() to refuse when any override is present: an
+		//! override_object references its target object by a ValueKind::String `name`,
+		//! invisible to the static reference graph (review P1.3), so the closure of editing
+		//! the target would NOT include the override -> the re-point would erase the
+		//! override's effective transform.  Default no-op / 0; the real Job counts them.
+		virtual void NoteObjectOverride() {}
+		virtual unsigned int GetObjectOverrideCount() const { return 0; }
+
+		//! Copies the name of the animation at `index` into `buf` (NUL-terminated,
+		//! truncated to bufLen).  FALSE if the index is out of range.
+		virtual bool GetAnimationName( const unsigned int /*index*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! Index of the active animation (0 if none declared).
+		virtual unsigned int GetActiveAnimationIndex() const { return 0; }
+
+		//! Copies the active animation's name into `buf`.  FALSE if none declared.
+		virtual bool GetActiveAnimationName( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! Declares a named scene variant (a selectable overlay).  active_camera may be "" (none).  See
+		//! docs/agentic-redesign/63-scene-variants-feature-spec.md.
+		virtual bool DeclareSceneVariant( const char* /*name*/, const char* /*active_camera*/ ) { return false; }
+		//! Sets the stored active scene variant ("" / "none" => the base default).
+		virtual bool SetActiveSceneVariant( const char* /*name*/ ) { return false; }
+		//! Returns the active scene variant name into buf (empty if none).
+		virtual bool GetActiveSceneVariant( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! P5: COUNT of declared scene_variants (the GUI accordion's variant list).  Default 0.
+		virtual unsigned int GetSceneVariantCount() const { return 0; }
+
+		//! P5: the idx-th declared scene_variant name (0-based, in the map's sorted order).  Default false.
+		virtual bool GetSceneVariantName( unsigned int /*idx*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+		//! True iff the Job has any declared scene variant or an active selection -- the O(1) incremental-derive
+		//! refuse signal (a variant's bake is whole-document, so a variant scene's edits fall back to a full re-derive).
+		virtual bool HasSceneVariants() const { return false; }
+		//! Resets the scene-variant records (per derive/clear); a re-derive must not inherit prior variant state.
+		virtual void ClearSceneVariants() {}
+
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function
 			) = 0;
+
+		//! Loads N PNG/JPEG texture painters in parallel and registers each
+		//! one under its requested name.  The decode work (libpng /
+		//! libjpeg + the color-space promotion to a working IRasterImage)
+		//! runs across the global ThreadPool — a multi-core saturation
+		//! pattern that scales with the number of textures the import
+		//! needs.  The actual manager registrations happen serially in
+		//! the calling thread (manager state is not thread-safe).
+		//!
+		//! Used by GLTFSceneImporter to decode every texture a scene
+		//! references in one batch before the materials loop, instead of
+		//! N sequential libpng decodes.  On NewSponza-class assets (137
+		//! PNGs) this collapses tens of seconds of decode-thread idle to
+		//! single-digit seconds across the worker pool.
+		//!
+		//! Each request has either filePath set (on-disk asset, used by
+		//! .gltf JSON-form imports with external image files) OR bytes +
+		//! numBytes set (in-memory, used by .glb embedded images).
+		//! `format` selects PNG (0) or JPEG (1).
+		//!
+		//! Returns true iff every request decoded + registered
+		//! successfully.  Individual failures are logged; the batch as a
+		//! whole still attempts every request before returning, so a
+		//! single malformed PNG doesn't abort the rest.
+		//!
+		//! `outRequestSuccess` is an OPTIONAL parallel array of length
+		//! `numRequests`.  When non-null, each entry is filled with
+		//! `true` iff that request both decoded AND registered with the
+		//! manager (i.e. is reachable by name afterwards).  Callers that
+		//! memoize "this name is now registered" MUST consult this array
+		//! — relying on the aggregate bool alone misclassifies failed
+		//! requests as registered, which makes downstream lookups fail
+		//! silently.  When null the caller doesn't care and only the
+		//! aggregate is reported.
+		/// \return TRUE if every request succeeded; FALSE if any failed
+		virtual bool AddTexturePaintersBatch(
+			const TexturePainterBatchRequest* requests,
+			size_t numRequests,
+			bool* outRequestSuccess = nullptr
+			) = 0;
+
+		//! Registers a caller-owned, fully-built triangle mesh geometry under
+		//! `name`.  Symmetric with the format-specific `AddXXXTriangleMeshGeometry`
+		//! family, but bypasses the loader step — the caller has already filled
+		//! the geometry (BeginIndexedTriangles → AddVertex/Normal/etc. →
+		//! DoneIndexedTriangles, including BVH build).  Used by importers that
+		//! parse a multi-asset container (e.g. glTF) once and emit many
+		//! geometries from the cached parse — registering each one through
+		//! this method instead of going back through a per-call file loader.
+		//! Reference-counts `pGeom` like every other manager registration.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPrebuiltTriangleMeshGeometry(
+			const char* name,									///< [in] Name to register the geometry under
+			ITriangleMeshGeometryIndexed* pGeom					///< [in] Caller-owned, already-built geometry
+			) = 0;
+
+		//
+		// Rasterizer registry (interactive-editor accordion).
+		//
+		// Each successful Set*Rasterizer call registers the new
+		// instance under its scene-file chunk name (e.g.
+		// "bdpt_pel_rasterizer", "vcm_pel_rasterizer", legacy
+		// "pixelpel_rasterizer") AND makes it active.  A scene that
+		// declares two different rasterizer chunks ends up with both
+		// in the registry; the last-declared one wins for "active".
+		//
+		// SetActiveRasterizer rebinds the active pointer to a
+		// previously-registered entry without re-instantiating.  The
+		// interactive editor's accordion uses this to switch
+		// rasterizers — the analogue of SetActiveCamera for cameras.
+		// Returns false on null/empty name or unknown name.
+		//
+		// Phase-1 contract: only types the parser instantiated are
+		// registered.  Phase-2 will pre-instantiate the standard set
+		// (PT/BDPT/VCM/MLT × Pel/Spectral) at scene-load time with
+		// sensible defaults so any of them is selectable from the
+		// accordion regardless of what the scene declared.
+		//
+		// `GetRasterizerTypeCount` / `GetRasterizerTypeName` enumerate
+		// the registry by index.  `GetActiveRasterizerName` returns
+		// the type name of the currently-active entry (or empty when
+		// no rasterizer has been set).
+		//
+		// These methods carry default implementations rather than
+		// being pure-virtual: IJob is a public deployment surface and
+		// adding pure virtuals would force every implementer to
+		// override.  The defaults degrade to "no registry" — sensible
+		// behaviour for any subclass that hasn't opted into the
+		// rasterizer registry yet.  Concrete `Job` overrides them all.
+		//
+		// ABI POLICY: appending virtuals to `IJob` is binary-compat
+		// for the new-impl + old-caller direction (old call sites
+		// don't dispatch through the new slots), but NOT for the new-
+		// caller + old-impl direction — out-of-tree subclasses
+		// compiled against the pre-Phase-3 header have no slot here.
+		// RISE's policy is "in-tree IJob impls only; out-of-tree
+		// callers must rebuild against the matching header."  See
+		// docs/skills/abi-preserving-api-evolution.md for the full
+		// trade-off.  Out-of-tree IJob *callers* that don't dispatch
+		// through these methods are unaffected.
+		virtual bool        SetActiveRasterizer( const char* /*name*/ ) { return false; }
+		virtual std::string GetActiveRasterizerName() const { return std::string(); }
+		virtual unsigned int GetRasterizerTypeCount() const { return 0; }
+		virtual std::string GetRasterizerTypeName( unsigned int /*idx*/ ) const { return std::string(); }
+
+		//! Edit a single parameter on a registered rasterizer and
+		//! re-instantiate the underlying IRasterizer with the
+		//! modified value.  All other params come from the registry's
+		//! snapshot — preserving the scene file's chunk values for
+		//! params not touched by the edit.  Recognised param names:
+		//!   numSamples, maxEyeDepth, maxLightDepth, showLuminaires,
+		//!   mergeRadius (VCM), nBootstrap / nChains /
+		//!   nMutationsPerPixel / largeStepProb (MLT).  Default impl
+		//!   returns false for ABI safety; concrete `Job` overrides.
+		//! \return true on success; false on unknown rasterizer or
+		//!   unrecognised param name.
+		virtual bool SetRasterizerParameter(
+			const char* /*rasterizerName*/,
+			const char* /*paramName*/,
+			const char* /*valueStr*/ ) { return false; }
+
+		//! Read a single rasterizer parameter as a parser-formatted
+		//! string (so a round-trip through SetRasterizerParameter
+		//! gives back the same value).  Empty string for unknown
+		//! rasterizer / param.  One GET-ONLY addition with no
+		//! SetRasterizerParameter counterpart: "shader" / "defaultshader"
+		//! returns the resolved shader NAME the active rasterizer was
+		//! constructed with (review-p3 P2-c) -- the scene's actual
+		//! configured default shader, for callers that need to recover it
+		//! (e.g. an ephemeral pipeline built outside the production
+		//! rasterizer that wants to match its shading).
+		virtual std::string GetRasterizerParameter(
+			const char* /*rasterizerName*/,
+			const char* /*paramName*/ ) const { return std::string(); }
+
+		//! True if the named material was registered via a composing
+		//! factory (`AddPBRMetallicRoughnessMaterial`,
+		//! `AddGGXEmissiveMaterial`) rather than authored directly.
+		//! Composing factories build a painter graph and feed the
+		//! resulting painters into a `ggx_material` (or similar) —
+		//! the registered material has slot bindings that are NOT
+		//! independently authored; rebinding one would break the
+		//! graph's downstream computations.  The interactive editor's
+		//! Materials panel consults this to surface composed-material
+		//! slots as read-only.  Default `return false` lets out-of-
+		//! tree IJob subclasses skip the override — they don't track
+		//! composed names, so "no, not composed" is the safe answer.
+		//! Only `Job` overrides for its scene-side tracking.
+		virtual bool IsMaterialComposed(
+			const char* /*name*/
+			) const { return false; }
+
+		//! Adds a TEXCOORD_1 selector painter (glTF L12.D).  Wraps a
+		//! source painter to sample at ri.ptCoord1 instead of ri.ptCoord.
+		//! Appended at the end of IJob to preserve the vtable layout
+		//! for out-of-tree consumers compiled against the prior header.
+		//! Default impl returns false for ABI safety; concrete `Job`
+		//! overrides.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddTexCoord1Painter(
+									const char* /*name*/,			///< [in] Name of the painter
+									const char* /*source*/			///< [in] Source painter
+									) { return false; }
+
+		//! Sets the scene's global radiance map directly from an
+		//! IRadianceMap (Landing 3.D — used by the analytic
+		//! `hosek_wilkie_skylight` chunk to install a non-painter-
+		//! based radiance map without going through the rasterizer's
+		//! painter-name lookup path).  The Job takes a reference;
+		//! caller may release after returning.  Appended at the end
+		//! to preserve vtable layout.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool SetGlobalRadianceMap(
+									class IRadianceMap* /*pRm*/		///< [in] IRadianceMap impl to install (e.g. HosekWilkieSpectralRadianceMap)
+									) { return false; }
+
+		//! Un-install the global (environment) radiance map from the live
+		//! scene.  Backs the editor's RemoveEnvironment: a rasterizer rebuild
+		//! with radiance_map "none" does NOT clear the previously-installed map
+		//! (setup only installs one), so this is the explicit clear path.
+		/// \return TRUE if a scene was present to clear, FALSE otherwise
+		virtual bool ClearGlobalRadianceMap() { return false; }
+
+		//! Atomically create a Hosek-Wilkie analytic spectral sun-and-
+		//! sky pair: registers the IRadianceMap as the scene's global
+		//! radiance map AND optionally creates a matched directional
+		//! light at the solar position.  Single-call wrapper used by
+		//! the `hosek_wilkie_skylight` scene-language chunk so the two
+		//! halves of the model can't drift apart.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHosekWilkieSkylight(
+									const double /*solarElevationDegrees*/,
+									const double /*solarAzimuthDegrees*/,
+									const double /*turbidity*/,
+									const double /*groundAlbedo*/[3],
+									const double /*skyIntensityScale*/,
+									const double /*sunIntensityScale*/,
+									const bool   /*createSun*/
+									) { return false; }
+
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended here so that any in-tree
+		// consumer compiled against an older version of this header
+		// keeps the same vtable slot indices for the methods it
+		// knows about.  Mid-insertion shifts every subsequent slot
+		// and miscompiles stale .obj files.
+
+		//
+		// Film — pixel-grid descriptor.
+		//
+		// A scene has exactly one active Film.  InitializeContainers
+		// installs a default qHD (960 x 540, square pixels) so a
+		// scene that omits the `film` chunk still renders; SetFilm
+		// replaces it.  CLI flags (--width / --height / --pixel-ar)
+		// will call SetFilm post-parse to override the scene-file
+		// value (intent for Phase D).
+		//
+		// Phase B1 contract: cameras still take xres/yres/pixelAR
+		// through Add*Camera (used for their internal Frame projection
+		// math) but the rasterizer reads its grid dimensions from
+		// Scene::GetFilm().  Scene::SetFilm now re-syncs every
+		// registered camera's Frame + pixelAR to the new Film, so
+		// dims can never silently desync — whether SetFilm is called
+		// by the parser, the glTF/Blender/3DSMax importers, the CLI
+		// override path, or a late `film` chunk after a camera chunk.
+		// SetActiveCamera is also safe: every camera's Frame already
+		// matches Film at switch time.
+		//
+		// Multi-camera scenes: every camera in the manager is
+		// resynced to the latest SetFilm call, so per-camera dims are
+		// not preserved across a SetFilm.  Author one Film per scene
+		// and let all cameras share it.
+		//
+		// Same concurrency contract as the camera mutators above —
+		// must not run concurrently with rendering.
+
+		//! Replaces the active Film with one carrying the supplied
+		//! width / height / pixelAR.  Returns false on zero
+		//! dimensions or non-positive pixelAR.
+		virtual bool SetFilm(
+			const unsigned int width,								///< [in] Image width in pixels
+			const unsigned int height,								///< [in] Image height in pixels
+			const double pixelAR									///< [in] Pixel aspect ratio (1.0 = square pixels)
+			) = 0;
+
+		//! Shrink the active Film so it fits within a (maxSurfaceW,
+		//! maxSurfaceH) rendering surface AND so its long edge does not
+		//! exceed maxLongEdge — preserving the scene's authored aspect
+		//! ratio and pixelAR.  Never upscales: if the scene's Film
+		//! already fits, this is a no-op.  Returns true on success or
+		//! no-op; false on zero arguments or a SetFilm failure.
+		//!
+		//! Intended for interactive GUI editors that want to render the
+		//! preview at a screen-appropriate resolution rather than
+		//! blindly using whatever the .RISEscene file declared.  Call
+		//! after scene-parse, before the interactive controller starts.
+		//! Production renders that want the scene's authored dims
+		//! should NOT use this — they should render whatever the scene
+		//! declared.
+		virtual bool ScaleFilmToFit(
+			const unsigned int maxSurfaceW,							///< [in] Available viewport width in pixels (must be > 0)
+			const unsigned int maxSurfaceH,							///< [in] Available viewport height in pixels (must be > 0)
+			const unsigned int maxLongEdge							///< [in] Hard cap on the longer of the two output edges (must be > 0)
+			) = 0;
+
+		//! Creates a signed-distance-field (implicit) geometry: transformed
+		//! primitives composed with smooth-min / boolean ops, sphere-traced.
+		//! For melded / filleted organic shapes.  The part list comes from
+		//! exactly ONE of `szParts` (inline, newline-separated part lines --
+		//! the normal authoring path; the scene chunk's repeatable `part`
+		//! parameter) or `szFileName` (external parts file, same
+		//! one-part-per-line grammar; for very large SDFs).
+		//! NB: part of the append-only TAIL of IJob -- new virtuals are only
+		//! ever added after the existing ones (AddSDFGeometry, then the
+		//! guilloché / sweep / path-instances methods below), keeping every existing
+		//! virtual at its original vtable slot (ABI-stable for any consumer
+		//! linked against an older IJob).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* szFileName,					///< [in] SDF parts file to load ("" / "none" = use szParts)
+			const char* szParts,					///< [in] Inline newline-separated part lines ("" = use szFileName)
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
+		//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
+		//! z = scale*field(u,v), clipped to a DISK of radius `radius` centred at
+		//! the origin in the local XY plane -- not a square -- via u=(x+R)/2R,
+		//! v=(y+R)/2R, sphere-traced with O(1) memory -- the exact-geometry
+		//! ground-truth twin of a `displaced_geometry` on a `cartesian_disk_geometry`
+		//! (which tessellates and shares this circular domain).  `heightfieldFunction`
+		//! names an already-registered IFunction2D (an expression_function2d,
+		//! noise, polynomial, composite, etc.).  Appended after AddSDFGeometry
+		//! per the append-only IJob tail (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFHeightfieldGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v) in [0,1]
+			const double radius,					///< [in] Radius of the disk domain, centred at the origin in local XY (object units)
+			const double scale,						///< [in] World amplitude (surface z = scale*f(u,v))
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
+
+		//! Creates a general profile sweep: a closed 2D profile polygon
+		//! swept along a 3D Catmull-Rom path with rotation-minimizing
+		//! frames, per-axis taper, and end caps.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSweepGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
+			) = 0;
+
+		//! Creates along-path instances of a NAMED template geometry
+		//! (tessellated through the universal TessellateToMesh contract)
+		//! at arc-length pitch.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPathInstancesGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* szTemplate,					///< [in] Name of the template geometry to instance
+			const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters (pGeometry filled from szTemplate)
+			) = 0;
+
+		//! Wraps a named IFunction2D as a greyscale colour painter
+		//! (see RISE_API_CreateFunction2DColorPainter).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddFunction2DColorPainter(
+			const char* name,						///< [in] Name of the painter
+			const char* szFunction,					///< [in] Name of the source IFunction2D
+			const double scale,						///< [in] Output scale
+			const double bias						///< [in] Output bias
+			) = 0;
+
+		//! Creates a flat Cartesian-grid circular disk base (see
+		//! RISE_API_CreateCartesianDiskGeometry).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCartesianDiskGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const double radius,					///< [in] Disk radius (world units)
+			const int meshN							///< [in] Grid samples across the diameter
+			) = 0;
+
+		// ----- `> modify` runtime-mutation surface (vtable-stable) -----
+		// These four virtuals back the generalized `> modify` scene
+		// command (AsciiCommandParser::ParseModify) so a scene "mode"
+		// (day / night / dramatic) can be expressed as a self-contained
+		// command block instead of hand-editing chunk bodies.  All run
+		// BEFORE a render while the scene is still mutable; the next
+		// render's RayCaster::AttachScene re-Prepares the light set and
+		// rebuilds the environment sampler, so emissive<->non-emissive
+		// material swaps and radiance-scale changes take effect with no
+		// extra dirty/re-prepare plumbing.  Appended at the END of the
+		// interface so existing vtable slot indices are unchanged.
+
+		//! Reassigns the material bound to an existing scene object,
+		//! mirroring the interactive editor's material-swap path
+		//! (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+		//! No acceleration rebuild — a material change cannot move the
+		//! object's bounding box.
+		/// \return TRUE if both the object and the material exist, FALSE otherwise
+		virtual bool SetObjectMaterial(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* materialName				///< [in] Name of the (already-added) material to bind
+			) = 0;
+
+		//! Reassigns the shader bound to an existing scene object.
+		/// \return TRUE if both the object and the shader exist, FALSE otherwise
+		virtual bool SetObjectShader(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* shaderName					///< [in] Name of the (already-added) shader to bind
+			) = 0;
+
+		//! Rescales the emission of an existing luminaire material.
+		//! Delegates to IMaterial::SetEmissionScale — non-luminaire
+		//! materials reject the change (return FALSE) via the interface
+		//! default.
+		/// \return TRUE if the material exists AND is a luminaire, FALSE otherwise
+		virtual bool SetMaterialEmissionScale(
+			const char* materialName,				///< [in] Name of the (luminaire) material to rescale
+			const double scale						///< [in] New emission scale (replaces the original)
+			) = 0;
+
+		//! Overrides the radiance (environment / IBL) scale on the
+		//! ACTIVE rasterizer's RayCaster.  The override is applied on the
+		//! next AttachScene to both the environment importance sampler
+		//! and the background radiance map so direct-view and NEE stay
+		//! consistent.
+		/// \return TRUE if an active rasterizer with a RayCaster exists, FALSE otherwise
+		virtual bool SetActiveRasterizerRadianceScale(
+			const double scale						///< [in] New environment radiance scale
+			) = 0;
+
+		//! Adds a discrete-facet glint modifier (sparse mirror-like
+		//! micro-facets pinned to the surface by an object-space cell
+		//! hash; a hit on a facet has its shading normal replaced by
+		//! the facet's tilted normal so the existing materials twinkle
+		//! — enamel flecks, metallic flake, snow, glitter).  See
+		//! Modifiers/GlintModifier.h for the model and parameter
+		//! semantics; all values must be FINITE (callers own loud
+		//! rejection; the modifier goes inert on garbage).
+		//! (Appended at the interface END per the vtable end-append
+		//! convention, hence its distance from the sibling modifier
+		//! adders.)
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGlintModifier(
+			const char* name,										///< [in] Name of the modifier
+			const double density,									///< [in] cells per object-space unit (facet pitch = 1/density); <= 0 inert
+			const double coverage,									///< [in] per-cell facet existence probability [0,1]
+			const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+			const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+			const double scale[3],									///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
+			const double shift[3],									///< [in] cell-space offset
+			const unsigned int seed									///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+			) = 0;
+		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
+		//! (incrementally for the common case; a FULL document re-derive for variant / animated / source-instance
+		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that
+		//! disambiguates a cross-category name clash -- reliable ONLY for materials today ("material"; every
+		//! material keyword is "material" or ends in "_material").  geometry/light/camera keywords have exceptions
+		//! (gltf_import, hosek_wilkie_skylight, camera_defaults), so the expansion will narrow by ChunkCategory
+		//! instead; "" = no narrowing.  `role` = the param (e.g. "reflectance"); `occ` = the occurrence; `newValue`
+		//! = the new value (INSERTED if the scene text omitted the slot; occ 0 + non-empty value only).  Returns
+		//! 0 = no change (live scene intact); 1 = applied incrementally (managers untouched); 2 = applied via a FULL
+		//! re-derive (the Scene + managers were REPLACED -- the caller MUST re-point any cached scene/manager
+		//! pointers); 3 = managers replaced BUT the re-derive diagnosed -> rebind required AND treat as failure.
+		//! A full re-derive (2/3) PRESERVES the user's runtime state -- active camera/rasterizer/animation and the
+		//! interactive scrub time -- across the rebuild (an EDIT must not reset them the way a variant SWITCH does).
+		//! Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
+
+		//! P5 Slice 3 expansion (object transform): commit an object's LOCAL transform -- what its chunk authors;
+		//! 87 re-composes a parented object's world matrix from it on every derive -- as the authoritative
+		//! standard_object `matrix` param.  Default no-op (legacy jobs have no retained CST).  See Job override.
+		virtual int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 ) { return 0; }
+
+		//! P5 Slice 3 expansion (camera drag): commit a camera's NET pose params to the retained CST.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.
+		virtual int ApplyCstCameraPoseEdit( const char* camName, const char* location, const char* lookat, const char* up,
+		                                    const char* orientation, const char* targetOrientation ) { return 0; }
+
+		//! Model-B P5 (camera-clone CST insert): INSERT a faithful camera chunk into the retained CST so a future
+		//! D2 / save reproduces a cloned camera.  Document-only (no re-derive); 1 = inserted, 0 = failure.  Default
+		//! no-op (legacy jobs have no retained CST).  See Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstInsertCameraChunk( const char* chunkText ) { return 0; }
+
+		//! Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` (inverse of
+		//! ApplyCstInsertCameraChunk).  Document-only; 1 = removed, 0 = failure.  Default no-op; see Job override.
+		virtual int ApplyCstRemoveCameraChunk( const char* camName ) { return 0; }
+
+		//! Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST so a SAVE
+		//! (SerializeCst) and a future D2 re-derive preserve it -- the live SetFilm already mutated the scene, this
+		//! only PATCHES the singleton unnamed `film` chunk.  Each of width/height/pixelAR is OPTIONAL (nullptr =
+		//! leave that param untouched -> a single-property edit writes ONLY the changed param; a preset passes
+		//! width+height with pixelAR=nullptr).  Document-only (no re-derive, no rebind); 1 = recorded, 0 = no-op /
+		//! failure (legacy scene with no retained Document -> clean 0).  Default no-op; see Job override.
+		virtual int ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR ) { return 0; }
+
+		//! GUI Environment section: mirror a `radiance_*` IBL-binding edit into the retained CST so a SAVE and a
+		//! future D2 re-derive preserve it (twin of ApplyCstFilmEdit for the singleton, active rasterizer chunk).
+		//! `radiance_map` with an empty/null value ERASES the whole binding (unbind); any other value sets/adds the
+		//! named param.  Document-only (no re-derive); 1 = recorded, 0 = no-op (legacy scene / no unique rasterizer
+		//! chunk of the active kind).  Default no-op; see Job override.
+		virtual int ApplyCstEnvironmentEdit( const char* paramName, const char* value ) { return 0; }
+
+		//! P5 Slice 3 expansion (object transform): 0 = not routable / 1 = matrix (standard_object) / 2 = components
+		//! (csg_object).  Default 0; see Job override.
+		virtual int CstObjectTransformKind( const char* name ) const { return 0; }
+
+		//! P5 Slice 3 expansion (csg transform): commit a csg_object's translate+rotate as position+orientation
+		//! params.  Default no-op; see Job override.
+		virtual int ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation ) { return 0; }
+
+		//! P5 Slice 4: re-baseline the CST-load file identity after a successful save (re-anchor on Save-As).
+		//! Default no-op (legacy jobs use the SaveEngine's own refresh); see Job override.
+		virtual void RefreshCstLoadFileIdentity( const char* path ) {}
+
+		//! Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk named `camName` from the retained CST
+		//! -- file-authored OR clone-inserted -- via the trivia-preserving Cst::DocEraseChunkTidy (keeps the
+		//! Document well-formed: NO `}<keyword>` glue; collapses ONE adjacent blank-line separator).  This is the
+		//! general erase a future arbitrary-camera-delete op MUST use; do NOT reuse the CLONE-UNDO-ONLY
+		//! ApplyCstRemoveCameraChunk on a file-authored camera (its idx-1 unconditional drop glues the prior chunk).
+		//! Document-only (no re-derive); 1 = removed, 0 = failure (no Document / not found / ambiguous).  Default
+		//! no-op (legacy jobs have no retained CST); see Job override.  Appended at the IJob tail per the append-only ABI convention (moved here after it was mistakenly inserted mid-tail).
+		virtual int ApplyCstDeleteCameraChunk( const char* camName ) { return 0; }
+
+		//! Model-B P5: cache the interactive viewport screen-fit params on the Job AND apply the fit immediately
+		//! (delegates to ScaleFilmToFit -- same never-upscale, aspect-preserving, no-op-if-already-fit semantics,
+		//! same zero-argument rejection).  The GUI bridges call THIS instead of ScaleFilmToFit at scene-load (and
+		//! on viewport resize) so the fit params are cached; a subsequent D2 full re-derive (variant switch / CST
+		//! edit) -- which re-derives the LIVE film to the Document's AUTHORED dims -- then RE-APPLIES the cached fit
+		//! at its tail, keeping the preview at a screen-appropriate resolution instead of jumping to full-res.
+		//! Live-only: never touches the retained CST Document, so save reproduces the AUTHORED dims.  The headless
+		//! CLI never calls this, so the cache stays unset and every D2 tail skips the re-fit (CLI = authored full-res).
+		//! Returns ScaleFilmToFit's bool.  Default no-op returning false (legacy / non-Job); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		virtual bool SetViewportFit( const unsigned int surfaceW, const unsigned int surfaceH, const unsigned int maxLongEdge ) { return false; }
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained CST
+		//! Document, then REALIZE it in the live scene via a FULL re-derive (validate-before-destroy dry-run into
+		//! a throwaway Job first -- a failed dry-run leaves the Document AND the live scene byte-identical).
+		//! `chunkText` must parse to EXACTLY ONE chunk (`keyword { ... }`; braces on their own lines) with nothing
+		//! but pure-whitespace trivia around it -- scene headers/directives/comments outside the chunk are refused.
+		//! A duplicate (kind,name) against an existing chunk is refused early; a chunk carrying a `variant` param
+		//! is exempt from that check (a variant overlay legitimately shares its base chunk's (kind,name)) but an
+		//! EXACT (kind,name,variant) duplicate is still refused.  An UNNAMED chunk (film / rasterizer /
+		//! camera-class) is refused when an unnamed chunk of the SAME keyword already exists -- unnamed chunks are
+		//! singletons per keyword (a duplicate would be last-wins-masked on derive yet persisted by save, and
+		//! bare-name-addressed remove_chunk could never delete it).  NOTE the one-way doors: an unnamed FILM or
+		//! RASTERIZER chunk can never be removed through this surface once inserted (remove_chunk is
+		//! bare-name-addressed) -- insert them deliberately.  The SOLE camera is the EXCEPTION:
+		//! ApplyCstRemoveChunk's kind="camera" positional fallback resolves it even unnamed (any target string
+		//! that matches no chunk name), so a camera SWAP must REMOVE the old camera FIRST, THEN insert the
+		//! replacement -- insert-first yields TWO cameras and the exactly-one fallback then resolves neither
+		//! (a NAMED second camera stays removable by name; the stranded one is the old UNNAMED camera).
+		//! POSITION (round 2): DECLARATION-class chunks (painters/functions; materials/geometry/modifiers/media/
+		//! shaders/shaderops) are inserted BEFORE their potential consumers (declare-before-use), falling back to
+		//! append-at-end if the positioned insert does not derive; everything else -- objects, lights, cameras,
+		//! film, rasterizers, outputs -- appends at the document END.  A RASTERIZER insert additionally becomes
+		//! the ACTIVE rasterizer (the D2 activation restore is skipped for it), so the live integrator matches
+		//! what a save+reload's last-wins derive would activate.
+		//! Out-params (each nullable): `outKeyword`/`outName` echo the parsed chunk's keyword + `name` param (filled
+		//! as soon as the chunk parses, so even a refusal identifies what was attempted); `outDiag` carries the FIRST
+		//! dry-run diagnostic (code 0) or a short refusal reason (codes -1/-2).  `outInsertedAt` (round-1 P1-A fix):
+		//! ONLY on a landed insert (codes 2/3) is set to the top-level Document index of the splice's OWN LEADING
+		//! ITEM -- i.e. exactly the `at` this call itself used for `DocInsertItem(d,at,leadItem)` (whichever branch
+		//! committed: the tier-positioned attempt, or the append-at-end fallback) -- NOT a post-hoc name/kind
+		//! re-resolution.  This is the ONLY reliable way for a caller to recover the exact 3-item splice position
+		//! for a later `ApplyCstRemoveItemsAt` inverse: a variant-tagged overlay chunk legitimately shares its base
+		//! chunk's (kind,name) (see the duplicate-refusal rule above), so re-resolving "the chunk I just inserted"
+		//! by (name,kind) after the fact can match MULTIPLE chunks and correctly fail to resolve -- silently
+		//! wrong-indexing a caller that then falls back to guessing.  Left UNTOUCHED (caller must pre-initialize,
+		//! e.g. to -1) on every non-landing code (0/-1/-2) and when null.
+		//! Returns: 2 = inserted + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = inserted + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for
+		//! no retained CST Document, empty chunk text, and an internal separator-build failure (outDiag/log say
+		//! which);
+		//! -1 = malformed chunk text (not exactly one chunk / stray text / unclosed chunk); -2 = duplicate
+		//! (kind,name) or exact (kind,name,variant), or the RESERVED name `none` (the scene language's unbind
+		//! sentinel -- the material + painter managers pre-register a "none" null entry, and countless slots
+		//! treat the literal string "none" as "unbound", so an entity named `none` could never be bound or
+		//! addressed distinctly; outDiag is prefixed "reserved name" so callers can distinguish it).
+		//! Never 1: an insert is ALWAYS D2-class (a new entity cannot re-derive incrementally).
+		//! Default no-op returning 0 (legacy jobs have no retained CST); see Job override.
+		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
+		//! `outInsertedAt` was added by amending THIS virtual in place (not a new tail overload) -- it was
+		//! introduced on this same unpushed branch (S2 slice), so there are no external ABI consumers to break.
+		virtual int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+		                                 char* outName, unsigned int nameMax,
+		                                 char* outDiag, unsigned int diagMax,
+		                                 int* outInsertedAt = nullptr )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outName && nameMax ) outName[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name `target`
+		//! (optional `kind` keyword-suffix narrowing + the sole-unnamed-camera positional fallback -- the SAME
+		//! resolution rules as ApplyCstParamEdit) from the retained CST Document via the TRIVIA-PRESERVING
+		//! Cst::DocEraseChunkTidy (safe for FILE-AUTHORED chunks: never the clone-undo-only idx-1 drop), then
+		//! drop the entity from the live scene via a FULL re-derive (dry-run first -- removing a chunk that is
+		//! still REFERENCED fails the dry-run and leaves Document + live scene byte-identical).
+		//! Out-params (nullable): `outKeyword` echoes the resolved chunk's keyword; `outDiag` the first dry-run
+		//! diagnostic (code 0), the match count (code -2), or a short refusal reason (code -1).
+		//! Returns: 2 = removed + clean full re-derive (rebind); 3 = replaced-but-diagnosed (rebind + failure);
+		//! 0 = refused, would-not-derive (e.g. target still referenced, or the remainder no longer derives in
+		//! document order; nothing changed) -- ALSO returned for no retained CST Document / empty target;
+		//! -1 = no chunk with that name -- ALSO covers a name that resolved to a chunk of a DIFFERENT kind than
+		//! the requested one (kind verification on a destructive verb) and a chunk with no top-level index
+		//! (outDiag + the log disambiguate); -2 = ambiguous name (narrow with `kind`).  Never 1.
+		//! Default no-op returning 0; see Job override.  Appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstRemoveChunk( const char* target, const char* kind,
+		                                 char* outKeyword, unsigned int keywordMax,
+		                                 char* outDiag, unsigned int diagMax )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeyword && keywordMax ) outKeyword[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a FULL-DERIVABILITY pre-commit
+		//! gate for AGENT-originated edits.  Same parameters and 0/1/2/3 return contract as ApplyCstParamEdit,
+		//! with ONE addition: before the incremental fast path may commit, the edited Document is dry-run through
+		//! the FULL derive (throwaway Job) and the edit is refused with 0 (head + live scene byte-identical) when
+		//! the whole document would no longer derive in DOCUMENT ORDER.  Rationale: the incremental path validates
+		//! the edit closure against the LIVE managers, so a reference RETARGET to an entity declared LATER in the
+		//! document (a forward reference) commits a head whose serialized bytes fail to reload -- silent save-time
+		//! data loss, and every subsequent D2-class verb is refused.  Agent edits are discrete, so the extra
+		//! throwaway derive (~ms..24ms at 16k chunks) is acceptable; the GUI property-panel / gizmo path keeps the
+		//! ungated ApplyCstParamEdit fast path.  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention (a NEW virtual, not a signature change
+		//! to ApplyCstParamEdit -- changing an existing virtual's signature would break every prior vtable slot
+		//! contract, which is worse than appending).
+		virtual int ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
+
+		//! Shared-undo U1: the FULL-DERIVABILITY-GATED inverse of a param INSERT --
+		//! removes ONLY the `occ`-th occurrence of `role` on the entity's chunk (Cst::DocRemoveParamOcc; 0 =
+		//! first), then re-derives via the SAME 0/1/2/3-contract tail ApplyCstParamEditChecked uses.
+		//! Undoes an agent edit that INSERTED a previously-absent (defaulted) param: the
+		//! entity had no `role` line in the scene text, Job::ApplyCstParamEditChecked's
+		//! DocSetOrAddParamValue inserted one, and undo must remove it (a re-SET of "the
+		//! prior value" is meaningless -- there was no prior value, only the descriptor
+		//! default).  Same resolution rules as ApplyCstParamEditChecked (entityKind
+		//! narrows a cross-category name clash; the "camera" kind gets the unique-in-kind
+		//! resolve-by-position fallback).
+		//! P1-2 fix (round 1): `occ` is REQUIRED (not defaulted) -- removing EVERY same-role occurrence (the
+		//! pre-fix behaviour, Cst::DocRemoveParam) silently deletes other edits a repeatable param accumulated
+		//! AFTER the agent's insert; the Undo was only ever asked to revert its own occurrence. This virtual was
+		//! introduced in the same slice as this fix (unpushed, no external consumers), so the signature is
+		//! amended IN PLACE rather than appending a second tail virtual.
+		//! Return: 0 = not found / would-not-derive (head
+		//! untouched); 1 = removed incrementally; 2 = removed via a full re-derive (Scene +
+		//! managers REPLACED, caller must rebind); 3 = same as 2 but the re-derive
+		//! diagnosed (still rebind; treat as failure).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ ) { return 0; }
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstRemoveChunk, used ONLY by an agent
+		//! AgentRemoveChunk op's Undo (SceneEditor::ApplyRevertMutation).  Unlike ApplyCstInsertChunk (which
+		//! POSITIONS a FRESH chunk by declaration-tier heuristic, falling back to append-at-end), this splices
+		//! `bytesInOrder` back verbatim AT `atIndex` -- the top-level index captured by the controller
+		//! (SceneEditController::ApplyAgentChunkCrud_) from the retained Document immediately BEFORE the
+		//! original ApplyCstRemoveChunk call that erased it.  `bytesInOrder` is the CONCATENATION, in document
+		//! order, of every top-level item Cst::DocEraseChunkTidy actually dropped at that erase (the chunk
+		//! itself, plus its OWN tidied-away trailing separator when the erase collapsed one) -- reproducing
+		//! exactly the substring SerializeCst showed at [atIndex, atIndex+droppedCount) before the erase.  This
+		//! is parsed back into its constituent top-level items and DocInsertItem'd at `atIndex` in order, which
+		//! is the documented exact inverse of DocRemoveItem (Cst.h): the result is byte-identical to the
+		//! pre-erase Document.  Then realized via the SAME dry-run-guarded full re-derive tail every chunk-CRUD
+		//! verb uses (a still-invalid restore -- e.g. something removed in the interim now collides with the
+		//! restored chunk's name -- fails the dry-run and leaves the Document + live scene untouched).
+		//! `restoreActiveRasterizer` (default true): pass false when the restored chunk is itself a
+		//! `*_rasterizer` chunk, mirroring ApplyCstInsertChunk's own rule -- re-inserting ANY rasterizer chunk
+		//! changes the document's last-wins activation the same way a fresh insert does, so the pre-erase
+		//! active rasterizer must NOT be restored over it (live must match what a reload of the now-restored
+		//! Document would activate).
+		//! GLUE-SAFETY (round-1 P1-B fix + round-2 P1 fix, LEFT and RIGHT sides): `atIndex` is CLAMPED to the
+		//! current Document's range but carries NO identity check -- an out-of-band Document mutation between
+		//! the original erase and this restore call (another agent session; a script; the Test-19-style
+		//! "independent mechanism" idiom) can shift indices, so `atIndex` may land in a position whose LEFT
+		//! NEIGHBOUR does not end in a newline, or whose RIGHT NEIGHBOUR does not begin with whitespace.
+		//! Splicing `bytesInOrder` verbatim at such an index would glue the restored chunk's `keyword` token
+		//! directly onto the neighbour's `}` on the left (`}lambertian_material`), OR glue the neighbour's own
+		//! `keyword` token directly onto the restored chunk's trailing `}` on the right
+		//! (`}lambertian_luminaire_material`) -- syntactically recoverable today (the tokenizer is
+		//! brace-forgiving) but a byte-exact-restore invariant violation and latent corruption.  Mirroring
+		//! Cst::DocEraseChunkTidy's own glue-safety reasoning (ItemEndsInNewline / IsPureWhitespaceTrivia):
+		//! after clamping, if `atIndex > 0` and the item now at `atIndex - 1` does NOT end in a newline, a
+		//! synthesized pure-`"\n"` Trivia lead item is spliced in FIRST (ahead of `bytesInOrder`'s own items) so
+		//! the restored chunk always starts on a fresh line.  SYMMETRICALLY on the right: `bytesInOrder` is NOT
+		//! always trailing-separator-terminated -- the controller's capture is trimmed to JUST the chunk's own
+		//! bytes (which always end in `}`, never `\n`, since the trailing newline when one exists is a
+		//! SEPARATE sibling Trivia item) whenever the original erase's `droppedCount == 1` (the removed chunk
+		//! was the LAST top-level item, so no trailing separator ever existed; or DocEraseChunkTidy found the
+		//! separator glue-unsafe to collapse and left it in the Document rather than folding it into the
+		//! capture).  So if the restored run's LAST item does not end in a newline AND an item is now sitting
+		//! at the (post-left-synthesis) splice point AND that item's FIRST byte is not whitespace, a synthesized
+		//! pure-`"\n"` Trivia item is appended AFTER `bytesInOrder`'s own items before splicing.  In the
+		//! ordinary NO-SHIFT case (the common path -- nothing moved between erase and restore) neither synthetic
+		//! item is added: the left neighbour already ends in `\n` (the original erase's own glue-safety proved
+		//! that), and on the right, the item now sitting at the splice point is either nothing (the chunk was
+		//! last) or the ORIGINAL untouched separator DocEraseChunkTidy declined to collapse -- which, being
+		//! pure whitespace by construction, always STARTS with a whitespace byte (space/tab, not necessarily
+		//! `\n`) even when it isn't newline-led, so the "first byte is whitespace" test (not "first byte is
+		//! `\n`") is what keeps the no-shift path byte-IDENTICAL to the pre-erase Document rather than
+		//! incorrectly inserting a `\n` that was never there.  Under a genuine shift the bar relaxes from
+		//! byte-identity to glue-safety (a well-formed, non-corrupt Document) -- byte-identity to a Document
+		//! state that no longer exists is not a coherent goal once something else has changed it.
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = restored + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused, would-not-derive in context (dry-run diagnosed; nothing changed) -- ALSO returned for no
+		//! retained CST Document, empty bytes, or a malformed `bytesInOrder` (does not parse to at least one
+		//! top-level item).  Never 1 (a restored chunk is never incrementally re-derivable, matching
+		//! ApplyCstInsertChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+		                                     char* outDiag, unsigned int diagMax )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Shared-undo U2: the EXACT-POSITION inverse of ApplyCstInsertChunk, used ONLY by an agent
+		//! AgentInsertChunk op's Undo.  ApplyCstInsertChunk ALWAYS splices EXACTLY THREE top-level items
+		//! ([leadSep "\n"][chunk][trailSep "\n"]) at a single contiguous index `at` (whether positioned by the
+		//! declaration-tier heuristic or appended at the document end) -- so its exact inverse is removing
+		//! those same three items at that same index, NOT the general-purpose Cst::DocEraseChunkTidy
+		//! (Job::ApplyCstRemoveChunk's mechanism), which is a HEURISTIC erase for an arbitrary FILE-AUTHORED
+		//! chunk (at most ONE adjacent separator collapsed, glue-safety evaluated from the actual bytes) and
+		//! -- by design, per its own erase contract -- leaves a residual blank line when applied to a chunk
+		//! that had TWO fresh separators inserted around it (see AgentChunkCrudTest.cpp's T3, "one residual
+		//! lead \n vs the original" -- correctness over minimality is the RIGHT choice for an arbitrary
+		//! erase, but it means a plain remove is NOT byte-identical to the pre-insert Document).  This
+		//! primitive removes EXACTLY `count` top-level items starting at `atIndex` (Document-only splice via
+		//! repeated Cst::DocRemoveItem at the same index), then realizes via the SAME dry-run-guarded full
+		//! re-derive tail every chunk-CRUD verb uses.  `count` is always 3 for the sole caller (the insert's
+		//! own [lead][chunk][trail] triple), but the primitive itself has no reason to hardcode that.
+		//! Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! `expectedChunkBytes` (round-1 P2 fix, nullable -- null preserves the pre-fix positional-only splice for
+		//! any OTHER caller that cannot supply it): the caller's own captured exact bytes of the CHUNK item it
+		//! expects to still be sitting at the middle of the triple (`atIndex + 1`, the [lead][CHUNK][trail]
+		//! layout) -- i.e. `SceneEdit::propertyValue`'s chunk substring for an AgentInsertChunk Undo.  This
+		//! primitive has NO IDENTITY CHECK of its own beyond bounds -- it is a pure positional splice, so an
+		//! `atIndex` that is IN-RANGE but STALE (an out-of-band Document mutation shifted indices between the
+		//! insert and this Undo call -- e.g. another agent session, or a script, inserting/removing chunks ahead
+		//! of `atIndex` -- see AgentLiveCommitTest.cpp's Test 19 "independent mechanism" idiom for how such a
+		//! shift is manufactured) would otherwise splice-and-dry-run-validate whatever THREE items now occupy
+		//! [atIndex, atIndex+3) -- and the dry-run can DERIVE CLEANLY even when those are the WRONG three items
+		//! (any well-formed, unreferenced triple derives), silently deleting the wrong content.  When
+		//! `expectedChunkBytes` is non-null, the item at `atIndex + 1` is serialized (Cst::SerializeNode) and
+		//! byte-compared against it BEFORE the splice; a mismatch REFUSES with code 0 (Document byte-unchanged,
+		//! outDiag says "document changed since the edit was recorded") instead of removing whatever happens to
+		//! be there.
+		//! Returns: 2 = removed + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = removed + managers replaced BUT the re-derive diagnosed (rebind AND treat as failure);
+		//! 0 = refused -- would-not-derive in context (dry-run diagnosed; nothing changed), OR an out-of-range
+		//! `atIndex`/`count`, `count <= 0`, no retained CST Document, OR (when `expectedChunkBytes` is supplied)
+		//! the chunk at `atIndex + 1` no longer byte-matches the caller's capture (STALE INDEX -- something else
+		//! moved the Document since the index was recorded; nothing changed).  Never 1 (matching
+		//! ApplyCstRemoveChunk).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.  `expectedChunkBytes` was added by
+		//! amending THIS virtual in place (not a new tail overload) -- it was introduced on this same unpushed
+		//! branch (U2 slice), so there are no external ABI consumers to break.
+		virtual int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+		                                    const char* expectedChunkBytes = nullptr )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		//! Atomically clears the progress callback IFF the slot still holds `expected` -- the
+		//! conditional twin of `SetProgress(nullptr)` for callers that share this Job with renders
+		//! driven from OTHER threads.  The concrete race this exists for: a GUI completion handler
+		//! calls SetProgress(nullptr) on the UI thread to detach the adapter it installed, while an
+		//! agent render -- queued behind the GUI render on the SceneEditController coordinator --
+		//! has just installed ITS callback from the coordinator worker thread; the unconditional
+		//! null stomps that installation and silently degrades the agent render's progress/cancel
+		//! wiring.  This compare-and-swap clears the slot only when it still points at the caller's
+		//! OWN installation.  \return TRUE iff the slot was cleared; a null `expected` is refused
+		//! (returns false, slot untouched) so the return value stays meaningful.  Default returns
+		//! false without touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention).  Caveat for out-of-tree readers:
+		//! IJobPriv derives from IJob and declares further virtuals, so a base-class tail append
+		//! still shifts IJobPriv's slots -- fine here because every IJobPriv consumer is in-tree
+		//! and rebuilds with the library.
+		virtual bool ClearProgressIfCurrent(
+			IProgressCallback* /*expected*/				///< [in] Clear only if the installed callback is exactly this
+			) { return false; }
+
+		//! Atomically INSTALLS `next` as the progress callback IFF the slot currently holds
+		//! `expected` -- the install-side twin of ClearProgressIfCurrent, for callers whose
+		//! unconditional install could stomp a callback another owner (an agent render on the
+		//! coordinator worker thread) placed in the slot between the caller's clear and its
+		//! install.  Unlike ClearProgressIfCurrent, a null `expected` is MEANINGFUL here
+		//! ("install only if the slot is empty") and `next` may be null (generalized conditional
+		//! swap; note the null->null edge: on an empty slot, SetProgressIfCurrent(nullptr, nullptr)
+		//! "succeeds" vacuously -- the TRUE means "the compare matched", not "something was
+		//! installed").  \return TRUE iff the swap happened.  Default returns false without
+		//! touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention; same IJobPriv-slot-shift
+		//! caveat as ClearProgressIfCurrent above).
+		virtual bool SetProgressIfCurrent(
+			IProgressCallback* /*expected*/,			///< [in] Swap only if the installed callback is exactly this (null = empty slot)
+			IProgressCallback* /*next*/					///< [in] The callback to install on a successful compare
+			) { return false; }
+
+		//! Atomically installs `next` as the progress callback and returns what the slot held --
+		//! capture-the-prior + install as ONE indivisible operation.  This is what the
+		//! coordinator render paths (AgentSession::RenderCore_, SceneEditController::
+		//! RunProductionRenderComposed) use to claim the slot: a separate GetProgress() read
+		//! followed by SetProgress() leaves a window in which a platform adapter's
+		//! conditional-clear can "succeed" (the slot still held the old callback) and delete an
+		//! object the coordinator has ALREADY captured as its restore value -- the exchange makes
+		//! "your conditional clear succeeded" genuinely mean "no render holds that pointer as its
+		//! prior".  Default returns null without touching anything; only Job overrides.
+		//! NB: appended at the IJob tail (append-only convention; same IJobPriv-slot-shift
+		//! caveat as ClearProgressIfCurrent above).
+		virtual IProgressCallback* ExchangeProgress(
+			IProgressCallback* /*next*/					///< [in] The callback to install (may be null)
+			) { return nullptr; }
+
+		//! ONB-aware tail extension of ApplyCstCameraPoseEdit.  Ordinary jobs
+		//! inherit the six-argument behavior; Job uses the realized W/V vectors
+		//! to persist an interactive edit back into `onb_pinhole_camera`
+		//! without degrading it to a lookAt camera.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual int ApplyCstCameraPoseEditWithBasis(
+			const char* camName, const char* location,
+			const char* lookat, const char* up,
+			const char* orientation, const char* targetOrientation,
+			const char* /*realizedBasisW*/, const char* /*realizedBasisV*/ )
+		{
+			return ApplyCstCameraPoseEdit(
+				camName, location, lookat, up,
+				orientation, targetOrientation );
+		}
+
+		//! R1a (2026-08-09, batched remove_chunks): the BATCH form of ApplyCstRemoveChunk -- remove `count`
+		//! chunks in ONE atomic operation (ONE Document mutation, ONE full re-derive, therefore ONE head-version
+		//! bump), instead of `count` separate ApplyCstRemoveChunk calls.  `targets[i]` / `kinds[i]` (kinds[i] may
+		//! be null or empty for "no kind narrowing") are resolved with the EXACT same rules ApplyCstRemoveChunk
+		//! uses -- both share one resolver, so the two verbs can never drift apart.
+		//!
+		//! ALL-OR-NOTHING.  Every target is resolved FIRST, against the unmutated Document; if ANY target fails
+		//! to resolve (unknown / ambiguous / resolved to a different kind), NOTHING is erased, the Document and
+		//! live scene are byte-identical, and `*outFailIndex` (nullable) reports which input element failed.
+		//! Only once every target resolved does the erase run -- Cst::DocEraseChunkTidy applied to each resolved
+		//! top-level index in DESCENDING index order (so earlier indices stay valid across the erases) on a
+		//! working copy -- followed by ONE dry-run-guarded full re-derive.  A batch whose REMAINDER would not
+		//! derive (a target still referenced from OUTSIDE the batch, or the remainder no longer derives in
+		//! document order) refuses as a whole with code 0, Document + live scene byte-identical.
+		//!
+		//! INTRA-BATCH REFERENCES resolve for free and need no ordering pass: all `count` chunks leave the
+		//! Document BEFORE the single re-derive runs, so a producer referenced ONLY by a consumer that is also
+		//! in the batch is removable regardless of the order the caller listed them in.  This is the property
+		//! `count` sequential ApplyCstRemoveChunk calls cannot offer at all.
+		//!
+		//! DUPLICATES: two input elements that resolve to the SAME chunk are collapsed (the chunk is erased
+		//! once) rather than refused -- an erase of an already-erased index would be a corruption, so this is a
+		//! correctness requirement, not a convenience.  The caller (AgentSession::RemoveChunks) additionally
+		//! dedupes by NAME up front so it can report the fact honestly.
+		//!
+		//! Out-params (all nullable): `outKeywords` receives the resolved keyword of each target, one per input
+		//! element, '\n'-separated in input order (empty entries for elements that never resolved), always
+		//! NUL-terminated and truncated to `keywordsMax`; `outDiag` the first dry-run diagnostic (code 0), the
+		//! match count (code -2), or a short refusal reason (code -1); `outFailIndex` the 0-based input index
+		//! that caused a -1/-2 refusal (-1 when the refusal is not attributable to one element).
+		//! Returns the SAME code alphabet as ApplyCstRemoveChunk: 2 = removed + clean full re-derive (Scene +
+		//! managers REPLACED -- caller MUST rebind); 3 = removed + replaced BUT the re-derive diagnosed;
+		//! 0 = refused, would-not-derive (nothing changed) -- ALSO for no retained CST Document / `count` <= 0 /
+		//! a null or empty target string; -1 = a target was not found (or resolved to a different kind);
+		//! -2 = a target was ambiguous.  Never 1.
+		//! Default no-op returning 0; see the Job override.  NB: appended at the IJob tail (append-only ABI).
+		virtual int ApplyCstRemoveChunks( const char* const* /*targets*/, const char* const* /*kinds*/, int /*count*/,
+		                                  char* outKeywords, unsigned int keywordsMax,
+		                                  char* outDiag, unsigned int diagMax,
+		                                  int* outFailIndex = nullptr )
+		{
+			// The default no-op still honours the out-param contract (buffers always NUL-terminated).
+			if( outKeywords && keywordsMax ) outKeywords[0] = '\0';
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			if( outFailIndex ) *outFailIndex = -1;
+			return 0;
+		}
+
+		//! R1a (2026-08-09, batched remove_chunks -- UNDO): replace the ENTIRE retained CST Document with
+		//! `fullText` (re-parsed via Cst::ParseToCst) and realize it through the SAME dry-run-guarded full
+		//! re-derive tail every chunk-CRUD verb uses.  Used by an agent `AgentRemoveChunks` op's Undo
+		//! (SceneEditor::ApplyRevertMutation), whose recorded payload is the byte-exact serialization of the
+		//! Document as it stood immediately BEFORE the batch erase.
+		//!
+		//! R2 (2026-08-10, replace_geometry_scaffold): this primitive is ALSO the FORWARD commit of the
+		//! composite geometry-replacement verb, and the Undo AND Redo of its history record -- one call
+		//! swaps in a candidate document that was computed whole (new scaffold chunks spliced in, the
+		//! target object's `geometry` slot rebound, the orphaned old geometry chunk erased), so the entire
+		//! composite is ONE Document mutation, ONE dry-run-guarded re-derive and ONE head-version bump.
+		//! `diagContext` (nullable) names the operation in the re-derive's log lines; null keeps R1a's
+		//! original "restore document (agent remove_chunks undo)" wording verbatim for its existing caller.
+		//!
+		//! WHY a whole-document restore rather than N ApplyCstRestoreChunkAt splices: the batch erases N
+		//! scattered top-level indices in one shot, so the per-chunk "captured bytes + captured index" record
+		//! ApplyCstRestoreChunkAt consumes is not well defined for ADJACENT targets (Cst::DocEraseChunkTidy's
+		//! trailing-separator collapse for chunk i depends on whether chunk i+1 is still there, which for a
+		//! batch it may not be).  Restoring the recorded pre-batch text wholesale is byte-exact BY
+		//! CONSTRUCTION for any target set, and undo is LIFO so the recorded text is by definition the state
+		//! the immediately-preceding operation started from.
+		//!
+		//! `restoreActiveRasterizer` is forwarded to the shared re-derive tail: pass FALSE when the restored
+		//! text re-introduces a `*_rasterizer` chunk (mirroring ApplyCstRestoreChunkAt's own P1-B rule -- the
+		//! document's last-wins activation must be what a reload of the restored text would activate), TRUE
+		//! otherwise.  Out-param `outDiag` (nullable) carries the first dry-run diagnostic on a code-0 refusal.
+		//! Returns: 2 = restored + clean full re-derive (Scene + managers REPLACED -- caller MUST rebind);
+		//! 3 = restored + replaced BUT the re-derive diagnosed; 0 = refused (no retained CST Document, empty
+		//! `fullText`, text that parses to no top-level item, or a dry-run failure -- nothing changed).
+		//! Never 1.  Default no-op returning 0; see the Job override.  NB: appended at the IJob tail.
+		virtual int ApplyCstReplaceDocumentText( const char* /*fullText*/, bool /*restoreActiveRasterizer*/,
+		                                         char* outDiag, unsigned int diagMax,
+		                                         const char* /*diagContext*/ = nullptr )
+		{
+			if( outDiag && diagMax ) outDiag[0] = '\0';
+			return 0;
+		}
+
+		// ---- Recursive scene graph (docs/agentic-redesign/87-recursive-scene-graph.md).
+		// NB: appended at the IJob tail (append-only vtable ABI, pinned by
+		// tests/IJobVtableManifest.txt).
+
+		//! Record `child`'s parent in the AUTHORED scene graph.  A null / empty
+		//! `parent` detaches the child.  This records a LINK and nothing else:
+		//! no transform is composed here, which is precisely what makes a
+		//! container's transform edit an ordinary one-chunk param edit and
+		//! is what will make hierarchical animation work once the per-frame
+		//! re-bake lands (87 section 5 step 2 -- NOT yet: animating a parent
+		//! does not move its children frame-to-frame today).  Composition
+		//! happens in ComposeObjectHierarchy.
+		//!
+		//! Refuses (returning FALSE, changing nothing) when either name is not
+		//! a declared object, when they are the same object, when the link
+		//! would close a cycle, or when either end is a CSG OPERAND (whose
+		//! transform is interpreted in its composite's frame, not the world's;
+		//! the `csg_object` ITSELF is parentable).  The parent must be DECLARED
+		//! BEFORE the child, the same rule `standard_shader`'s `shaderop`
+		//! references live under.
+		//!
+		//! RUNTIME ONLY.  This changes the live object graph; it does NOT write
+		//! a `parent` param back to the scene document.  The document is the
+		//! source of truth on every full re-derive, so a link made only through
+		//! this call is reverted by the next one (a save + reload, a variant
+		//! switch, a material edit that falls back to a full derive).  A caller
+		//! that wants a reparent to PERSIST must also edit the child's chunk --
+		//! `standard_object` and `csg_object` both take a `parent` param.
+		/// \return TRUE if the link was recorded, FALSE if refused
+		virtual bool SetObjectParent(
+			const char* /*child*/,								///< [in] Name of the child object
+			const char* /*parent*/								///< [in] Name of the parent object, or null / "" to detach
+			) { return false; }
+
+		//! Bake `world = parent.world * local` into every object, parent before
+		//! child.  Call once the whole object graph exists -- the scene derive
+		//! does this at its tail.  Idempotent and cheap (a no-op when the scene
+		//! has no parent links at all).
+		//! \return TRUE if any object's world matrix actually changed.
+		virtual bool ComposeObjectHierarchy( ) { return false; }
+
+		//! Creates a SURFACE OF REVOLUTION (lathe): an open 2D profile
+		//! polyline in the (radius, height) half-plane revolved about a
+		//! world axis, optionally through less than a full turn (which
+		//! adds two flat ear-clipped radial caps).  Vases, bottles, turned
+		//! legs, lamp bases, pedestals, knobs.  Appended after
+		//! ComposeObjectHierarchy per the append-only IJob tail (preserves
+		//! every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddLatheGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
+			) = 0;
+
+		//! Adds an expression_painter (doc 88 P1, S2): the COLOUR-pipe
+		//! texture-expression VM surface.  The body sees the FULL 3D
+		//! context (u, v, P, Po, N, fw, fwo, time), unlike expression_function2d.
+		//! `params` are raw `<name> <value> [min][max][step][label]` lines
+		//! (ExpressionParamSpec grammar); `defs` are raw `<name> <expr>`
+		//! lines.  `seed` is auto-registered as a named scalar constant
+		//! `seed` the body can reference for per-instance jitter (e.g.
+		//! `perlin(P + vec3(seed*17.0, seed*31.0, seed*13.0))`).  `time` is
+		//! keyframeable at the scene level (Gerstner precedent).  Appended
+		//! after AddLatheGeometry per the append-only IJob tail (preserves
+		//! every prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddExpressionPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* expr,					///< [in] Final value expression
+									const char* const* params,			///< [in] Raw `param` lines
+									const unsigned int numParams,		///< [in] Count of `params`
+									const char* const* defs,			///< [in] Raw `def` lines
+									const unsigned int numDefs,		///< [in] Count of `defs`
+									const double seed,					///< [in] Auto-registered named constant `seed`
+									const double time					///< [in] Initial `time` value (keyframeable)
+									) = 0;
+
+		//! Adds a ramp_painter (doc 88 P2.2, S3): the universal scalar ->
+		//! colour remap.  `input`'s channel drives `t`, which is clamped
+		//! to the authored stop range and used to interpolate between the
+		//! bracketing pair of `stopPositions`/`stopColors` (r,g,b
+		//! flattened, `numStops` triples, `stopPositions` non-decreasing,
+		//! at least 2 required -- validated by the chunk parser before
+		//! this call).  `stopColors` triples are interpreted per
+		//! `colorSpace` (same convention/values as uniformcolor_painter's
+		//! `colorspace` field).  Appended after AddExpressionPainter per
+		//! the append-only IJob tail (preserves every prior vtable slot --
+		//! see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddRampPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* input,					///< [in] Named painter whose channel drives t
+									const unsigned int channel,		///< [in] 0=R, 1=G, 2=B, 3=A
+									const unsigned int interpolation,	///< [in] 0=linear, 1=constant, 2=smooth
+									const double* stopPositions,		///< [in] Stop positions, ascending, `numStops` entries
+									const double* stopColors,			///< [in] Stop colours, `numStops` x (r,g,b) flattened
+									const unsigned int numStops,		///< [in] Count of stops (>= 2)
+									const char* colorSpace				///< [in] Interpretation of stopColors triples
+									) = 0;
+
+		//! Adds a mapping_painter (doc 88 P2.3): wraps `source` and
+		//! transforms the domain it is evaluated at (uv / world / object /
+		//! triplanar) before delegating -- the author-facing scale/
+		//! rotate/translate/reproject tool (distinct from
+		//! UVTransformPainter, which stays the glTF KHR_texture_transform
+		//! bridge).  `scale`/`rotateDeg`/`translate` are flattened (x,y,z)
+		//! triples; for `projection` == uv (0), only x/y of scale and
+		//! translate and z of rotateDeg are meaningful (documented, not
+		//! silently dropped -- see MappingPainter.h).  Appended after
+		//! AddRampPainter per the append-only IJob tail (preserves every
+		//! prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddMappingPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* source,				///< [in] Named source painter
+									const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+									const double scale[3],				///< [in] Per-axis scale
+									const double rotateDeg[3],			///< [in] Per-axis rotation in DEGREES
+									const double translate[3],			///< [in] Per-axis translation
+									const double blendSharpness		///< [in] Triplanar normal-weight exponent
+									) = 0;
+
+		//! P1-A fix (S7 review round 1): AddVoronoi3DPainter's original
+		//! signature (above) must stay byte-identical -- an out-of-tree
+		//! consumer compiled against the OLD IJob vtable calls that slot
+		//! with 8 arguments; widening it in place (even with a default
+		//! value) would push 9 arguments through a vtable thunk built for
+		//! 8 and read garbage for the 9th.  The `space` (P2.5, doc 88)
+		//! form is therefore a NEW tail-appended virtual, matching the
+		//! repo's existing `*WithFilter` / `*WithEmission` / `*WithBasis`
+		//! / `*WithVariant` idiom for "old signature stays, new
+		//! parameter via a new name" (see RISE_API_CreateMLTRasterizer
+		//! WithFilter, RISE_API_CreateHomogeneousMediumWithEmission,
+		//! ApplyCstCameraPoseEditWithBasis, RederiveCstWithVariant) --
+		//! there is no `*InSpace`/`*In<X>` precedent anywhere in the
+		//! codebase, so `WithSpace` was picked over `InSpace` to match
+		//! the idiom that actually exists.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddVoronoi3DPainterWithSpace(
+									const char* name,				///< [in] Name of the painter
+									const double pt_x[],			///< [in] X co-ordinates of generators
+									const double pt_y[],			///< [in] Y co-ordinates of generators
+									const double pt_z[],			///< [in] Z co-ordinates of generators
+									const char** painters,			///< [in] The painters for each generator
+									const unsigned int count,		///< [in] Number of the generators
+									const char* border,				///< [in] Name of the painter for the border
+									const double bsize,				///< [in] Size of the border
+									const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+									) = 0;
+
+		//! P1-A fix (S7 review round 1): same rationale as
+		//! AddVoronoi3DPainterWithSpace above -- AddBlendPainter's
+		//! original 4-argument signature must stay byte-identical for
+		//! out-of-tree vtable compatibility, so the `mode` (P2.4, doc 88)
+		//! form is a new tail-appended virtual, named `WithMode` to match
+		//! the repo's `*With<Thing>` idiom.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddBlendPainterWithMode(
+									const char* name,				///< [in] Name of the painter
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const char* mask,				///< [in] Mask painter
+									const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+									) = 0;
+
+		//! Adds a stochastic_tile_painter (doc 88 P3.1, S8): hex-tiling
+		//! with histogram-preserving blending over `source` -- see
+		//! StochasticTilePainter.h for the full algorithm.  Tail-appended
+		//! after AddBlendPainterWithMode per the append-only IJob tail
+		//! (preserves every prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddStochasticTilePainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Named source painter
+									const double tileScale,			///< [in] Lattice density
+									const unsigned int seed,			///< [in] Hash seed
+									const double mean[3],				///< [in] Source's mean value (r,g,b), author-supplied
+									const double blendGamma,			///< [in] Barycentric-weight sharpening exponent
+									const char* colorSpace			///< [in] Interpretation of `mean`
+									) = 0;
+
+		//! Adds a scatter_painter (doc 88 P3.2, S8): texture-bombing /
+		//! FX-map-lite, stamping `source` over `background` on a
+		//! jittered square lattice -- see ScatterPainter.h for the full
+		//! algorithm and the neighbourhood-reach proof the parser
+		//! enforces.  Tail-appended after AddStochasticTilePainter.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddScatterPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Named stamp painter
+									const char* background,			///< [in] Named background painter
+									const double cellScale,			///< [in] Lattice density
+									const double stampScale,			///< [in] Base stamp size within a cell
+									const double jitterPosition,		///< [in] Position jitter, [0,1]
+									const double jitterRotationDeg,	///< [in] Max rotation jitter, degrees
+									const double jitterScale,			///< [in] Relative +/- scale jitter, [0,1)
+									const double probability,			///< [in] Per-cell occupancy probability, [0,1]
+									const unsigned int seed			///< [in] Hash seed
+									) = 0;
+
+		//! Creates a SKIN (doc 89 slice B): the open ruled / billowed sheet
+		//! spanning two boundary polylines.  Wings, fins, webbing, sails,
+		//! leaves, awnings, lampshade panels -- the "thin surface bounded by
+		//! curves" class that neither a sweep nor a lathe can state.  Both
+		//! rails are inline points, so this adds NO cross-chunk reference.
+		//! Appended after AddScatterPainter per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSkinGeometry(
+									const char* name,				///< [in] Name of the geometry
+									const SkinDescriptor& desc		///< [in] Rails + tessellation + billow parameters
+									) = 0;
+
+		//! Sets (or clears) an object's LOCAL MIRROR (doc 89 slice C): a reflection
+		//! across the plane through the node's own origin perpendicular to `axis`,
+		//! composed INNERMOST -- `world = parent.world * P * O * Stretch * Scale *
+		//! Mirror` -- so it reflects the node's shape, and everything parented under
+		//! it, before the node's own placement applies.  Author one wing, mirror the
+		//! other; with `source`, the whole cloned subtree arrives reflected.
+		//!
+		//! `axis` is "x", "y" or "z"; a NULL / empty / "none" axis CLEARS the mirror.
+		//! Any other string is REFUSED (returns false, changes nothing) rather than
+		//! mapped onto an axis nobody asked for.
+		//!
+		//! ALWAYS CALLED, mirror on or off, by the `standard_object` parser -- for
+		//! the reason `SetObjectParent` is: an incremental re-apply of a chunk whose
+		//! `mirror` line was DELETED must actively clear it, or the object keeps
+		//! rendering reflected until a save + reload silently un-reflects it.
+		//!
+		//! Appended after AddSkinGeometry per the append-only IJob tail (preserves
+		//! every prior vtable slot).
+		//! A `csg_object` is REFUSED (except for a no-op clear): a composite's
+		//! transform is saved as `position` + `orientation`, and neither can express
+		//! a reflection, so a mirror there would render and never round-trip to disk.
+		//!
+		/// \return TRUE if the mirror was set or cleared, FALSE if the object is
+		///         unknown, is a csg_object, or the axis is not one of x / y / z / none
+		virtual bool SetObjectMirror(
+									const char* object_name,		///< [in] Name of the object
+									const char* axis				///< [in] "x", "y", "z", or null/""/"none" to clear
+									) = 0;
+
+		//! Creates a HAIR GROOM: a runtime curve primitive whose strands
+		//! are GENERATED, at Realize() time, on the surface of another
+		//! named geometry, steered by up to three painters and a seed
+		//! (docs/HAIR_FUR_DESIGN.md section 5.3).  This is the
+		//! `hair_geometry` scene chunk's Job-level entry point.
+		//!
+		//! The four names in `desc` are resolved here: `baseGeometry`
+		//! against the geometry manager (REQUIRED, and it must be
+		//! tessellatable), `density` and `lengthPainter` against the
+		//! SCALAR painter manager (they are physical scalars, not
+		//! colours -- IScalarPainter, so no JH uplift), and `comb`
+		//! against the COLOUR painter manager (its RGB encodes a
+		//! direction).  An unbound optional is NULL, "" or "none".
+		//!
+		//! Appended after SetObjectMirror per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGeometry(
+									const char* name,				///< [in] Name of the geometry
+									const HairGroomDescriptor& desc	///< [in] Base + painters + numeric groom parameters
+									) = 0;
+
+		//! Adds a hair material (Chiang et al. 2016 near-field hair/fur
+		//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly ONE colour tier must
+		//! be bound: `color` (Tier 3, artist reflectance), `sigma_a`
+		//! (Tier 2, direct absorption), or `eumelanin` / `pheomelanin`
+		//! (Tier 1, melanin concentration -- either or both count as the
+		//! SINGLE melanin tier).  Pass "none" for a tier that is not
+		//! bound (the default for `color` / `sigma_a` / `eumelanin` /
+		//! `pheomelanin`).  Zero or two-or-more tiers bound is a
+		//! parse-time error naming all three options.
+		//!
+		//! Relocated here (C2 round-1 review, slice-B ABI cleanup) from a
+		//! MID-vtable slot it was originally inserted at, breaking the
+		//! append-only IJob tail convention every other slice follows --
+		//! adjacent to `AddHairGeometry`, the other hair-system entry
+		//! point, per the append-only IJob tail (preserves every prior
+		//! vtable slot; this move itself is the one deliberate reordering,
+		//! landed together with the corresponding
+		//! tests/IJobVtableManifest.txt regen in the same commit).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* color,											///< [in] Tier 3: artist reflectance painter; "none" = not bound
+			const char* sigma_a,										///< [in] Tier 2: direct absorption (scalar_painter or inline `r g b` / scalar); "none" = not bound
+			const char* eumelanin,										///< [in] Tier 1a: eumelanin concentration (scalar); "none" = not bound
+			const char* pheomelanin,									///< [in] Tier 1b: pheomelanin concentration (scalar); "none" = not bound
+			const char* beta_m = "0.3",									///< [in] Longitudinal roughness (scalar)
+			const char* beta_n = "0.3",									///< [in] Azimuthal roughness (scalar)
+			const char* alpha = "2.0",									///< [in] Cuticle scale tilt, degrees (scalar)
+			const char* ior = "1.55",									///< [in] Fibre index of refraction (scalar)
+			const char* medulla_ratio = "0",							///< [in] Yan 2017 medulla radius ratio kappa; "0" (default) = no medulla
+			const char* medulla_scatter = "0.5",						///< [in] Medulla scattering coefficient sigma_m, per fibre diameter
+			const char* medulla_g = "0.4"								///< [in] Medulla Henyey-Greenstein anisotropy
+			) = 0;
+
+		//! Registers an AUTHORED GUIDE-STRAND SET under `name` -- the
+		//! `hair_guides` scene chunk's Job-level entry point (Phase 2,
+		//! docs/HAIR_FUR_DESIGN.md section 5.3).
+		//!
+		//! Guides are pure DATA (open polylines), not scene entities: they
+		//! intersect nothing, render nothing, and are never bound to an
+		//! object.  They live in a Job-side name table rather than a
+		//! manager, following the `AddMedium*` family's manager-less
+		//! `mediaMap` -- and, since the category split, the OTHER half of
+		//! that precedent too.  Media got their own `ChunkCategory::Medium`
+		//! with its own enumeration hooks across the editor/agent/suggestion
+		//! surfaces; `hair_guides` now has the same: its own
+		//! `ChunkCategory::HairGuides` (declared in ChunkParserRegistry.cpp
+		//! alongside, but no longer sharing a category with, `hair_geometry`)
+		//! plus `EnumerateHairGuideNames` at the tail of this interface,
+		//! which `CstIntrospection::CandidateNamesForChunkCategory`
+		//! dispatches to exactly as it does `EnumerateMediumNames`.
+		//!
+		//! WHAT THE SPLIT BUYS, in the two places the earlier shared-category
+		//! arrangement was known to be wrong: (1) a category-scoped lookup
+		//! (jump-to-definition, the reference graph, the suggestion index) no
+		//! longer confuses a guide set with a real, renderable geometry
+		//! chunk; (2) a `hair_guides` name is no longer a candidate for an
+		//! ORDINARY Geometry-typed slot such as `standard_object.geometry`
+		//! -- that port declares `referenceCategories = {Geometry}`, so the
+		//! wiring is refused at WIRE time by ConnectionLegality rather than
+		//! only at derive time by `Job::AddHairGeometry`'s guide-table probe
+		//! (which is kept as defence-in-depth for hand-authored scene text,
+		//! and is what a scene file that never passes through the canvas
+		//! still hits).  The forward direction -- a real geometry name typed
+		//! into `hair_geometry.guides` -- was already refused by that
+		//! parameter's `keywordAllowlist`, and the allowlist remains.  The
+		//! set is COPIED here; the caller keeps its arrays.
+		//!
+		//! Validated here (`ValidateHairGuides`): at least one guide, at
+		//! least two points per guide, all finite, each with a strictly
+		//! positive total arc length, and both counts inside their caps.
+		//!
+		//! Appended after AddHairMaterial per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGuides(
+									const char* name,					///< [in] Name of the guide set
+									const HairGuidesDescriptor& desc	///< [in] The authored guide polylines
+									) = 0;
+
+		//! Adds an IMPORTED hair groom: a `HairGeometry` built from the
+		//! strands of a Cem Yuksel `.hair` file, rather than from a
+		//! grow-on-a-surface recipe (Phase 2,
+		//! docs/HAIR_FUR_DESIGN.md section 7).  The `hair_geometry`
+		//! chunk's `file` mode routes here; its grow mode routes to
+		//! `AddHairGeometry`, and the chunk refuses a document that
+		//! authors both.
+		//!
+		//! WHY A SEPARATE ENTRY POINT rather than a `file` field on
+		//! `HairGroomDescriptor`: the two modes share not one input.  A
+		//! recipe resolves a base geometry and up to three painters and
+		//! generates at `Realize()`; an import resolves a path and reads
+		//! strands right here.  Folding them into one descriptor would
+		//! make every field of it conditionally meaningful, which is
+		//! exactly the shape that produces silently-ignored parameters.
+		//!
+		//! THE FILE IS READ IN THIS CALL (parse time for a scene),
+		//! matching `AddRISEMeshTriangleMeshGeometry` and every other
+		//! file-backed geometry: an import has nothing to wait for, and
+		//! reading here puts a bad path's diagnostic against the
+		//! author's own chunk instead of mid-render.  The resulting
+		//! geometry is in explicit-strand mode, so its `Realize()` is a
+		//! no-op.
+		//!
+		//! Fails with a named diagnostic on a missing / unreadable /
+		//! corrupt / truncated file, counts over the loader's caps,
+		//! non-positive width multipliers, or a file whose every strand
+		//! was rejected.  See HairFileLoader.h for what of the format is
+		//! honoured and what is read and dropped (per-point transparency
+		//! and colours have no home in RISE and are discarded with a
+		//! warning; the format carries no root UVs, so a UV-driven
+		//! material does not vary across an imported groom).
+		//!
+		//! Appended after AddHairGuides per the append-only IJob tail
+		//! (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHairGeometryFromFile(
+									const char* name,						///< [in] Name of the geometry
+									const HairFileGroomDescriptor& desc		///< [in] File path + the two width multipliers
+									) = 0;
+
+		//! Enumerates registered `hair_guides` set names.  The guide-table
+		//! twin of `EnumerateMediumNames` (which enumerates the OTHER
+		//! manager-less Job-side name table), and the live-enumeration hook
+		//! `CstIntrospection::CandidateNamesForChunkCategory` dispatches to
+		//! for `ChunkCategory::HairGuides` -- so a `guides` reference row can
+		//! offer real candidates, and the editor's dangling-reference guard
+		//! can tell a runtime-registered guide set from an inline literal.
+		//! Iteration order is unspecified (it is `hairGuidesMap`'s, i.e.
+		//! name order, but no caller may rely on that).
+		//!
+		//! DECLARED HERE, at the tail, rather than beside
+		//! `EnumerateMediumNames` in the middle of the interface: IJob's
+		//! documented policy is append-only (see the "ABI POLICY" comment
+		//! above `SetActiveRasterizer`, and `AddHairGuides`'s own "appended
+		//! per the append-only IJob tail" note) -- inserting a virtual next
+		//! to its thematic sibling would renumber every vtable slot after it.
+		virtual void EnumerateHairGuideNames(
+									IEnumCallback<const char*>& cb			///< [in] Functor called once per registered guide-set name
+									) const = 0;
+
+		//! Adds a Coated material -- a transparent dielectric film over
+		//! a RESTRICTED substrate, with the film's coverage as a
+		//! spatially varying slot (docs/WETNESS_COAT_DESIGN.md Phase 2).
+		//!
+		//! `base` names an already-registered material and must be one
+		//! of lambertian / orennayar / ggx / pbr_metallic_roughness and
+		//! must not emit; anything else is refused here with a
+		//! diagnostic naming the allowlist, because the layered model
+		//! needs the substrate's directional albedo to run its
+		//! interreflection series.
+		//!
+		//! DECLARED HERE, at the tail, rather than beside
+		//! `AddPolishedMaterial` where it belongs thematically: IJob's
+		//! policy is append-only (the "ABI POLICY" comment above
+		//! `SetActiveRasterizer`, and the same note on
+		//! `EnumerateHairGuideNames` directly above).  Slotting it next
+		//! to its sibling renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that, and did catch this one.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCoatedMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
+									) = 0;
+
+		//! Light-colour composite (2026-09-02 round 2): apply SEVERAL param-value edits to ONE chunk of the
+		//! retained CST Document as a SINGLE ATOMIC unit -- all of them are resolved and validated against the
+		//! PRISTINE document first, then written into ONE Document copy which is derived ONCE.  Same resolution
+		//! rules, same duplicate-occurrence refusal (applied to EVERY param before anything is written) and the
+		//! same 0/1/2/3 return contract as ApplyCstParamEdit; `occ` is 0 for every pair (the composite exists for
+		//! non-repeatable params -- a repeatable one still goes through the occurrence-addressed single edit).
+		//!
+		//! WHY IT EXISTS.  Two sequential ApplyCstParamEdit calls are two derives with NO rollback between them:
+		//! if the first succeeds and the second is refused, the live scene is left in a state NEITHER the caller
+		//! nor the history knows about (the light-colour case: `colorspace` converted to linear while the colour
+		//! digits still read as sRGB -- the light jumps ~6x and nothing is undoable).  0 here means NOTHING
+		//! changed: no write, no derive, no re-render.
+		//!
+		//! Every pair must name a non-empty role and a non-empty value, and every role must resolve to the SAME
+		//! owner chunk (the `override_object` transform walk is per-role, so a mixed-owner batch is refused
+		//! rather than silently split across two chunks).
+		//!
+		//! CROSS-STRIP RULE: no pair's role may appear in another pair's transform-masking strip list (e.g.
+		//! a `position` pair strips `matrix`, so a batch also writing `matrix` is refused) -- writing the
+		//! batch in order would let one pair's masking strip silently delete a param a SIBLING pair in the
+		//! SAME batch just wrote, which is exactly the kind of partial, unnoticed loss atomicity exists to
+		//! prevent.  Refused (0) for the whole batch, named in the diagnostic.
+		//!
+		//! Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstParamEdits( const char* entityName, const char* entityKind,
+		                                const std::vector< std::pair< std::string, std::string > >& edits ) { return 0; }
+
+		//! Adds a Fabric material -- an energy-compensated Charlie sheen
+		//! lobe over a RESTRICTED substrate, with the weave direction
+		//! delivered as a rotation of the frame the SUBSTRATE is
+		//! evaluated in (docs/CLOTH_FABRIC_DESIGN.md Phase 1).
+		//!
+		//! `base` names an already-registered material and must be one
+		//! of lambertian / orennayar / ggx / pbr_metallic_roughness and
+		//! must not emit; anything else is REFUSED here with a
+		//! diagnostic naming the allowlist, because the layered model
+		//! needs the substrate's hemispherical albedo.
+		//!
+		//! `fabric` is the PRESET NAME (FabricPresets.h).  It reaches
+		//! this method rather than being fully consumed in the parser
+		//! for two reasons the parser contract forces:
+		//!   1. The preset's SHEEN COLOUR is an RGB triple, not a
+		//!      painter name, so only this layer -- which can synthesise
+		//!      an owned uniform painter -- can honour it.
+		//!   2. The preset's RECOMMENDED SUBSTRATE CLASS can only be
+		//!      checked once the material manager has resolved `base` to
+		//!      a pointer, which `IAsciiChunkParser::Finalize` cannot do
+		//!      (it sees a name, a string).  A mismatch is a WARNING,
+		//!      not an error -- the composition is legal, it just is not
+		//!      the fabric the preset names.
+		//!
+		//! An empty / `none` `sheen_color` resolves to the preset's
+		//! colour where it sets one, otherwise to an OWNED UNIFORM WHITE
+		//! painter -- NOT to the painter manager's built-in `none`,
+		//! which is BLACK and would switch the sheen lobe off (the trap
+		//! `coated_material`'s `coat_tint` documented).
+		//!
+		//! DECLARED HERE, at the tail: IJob's policy is append-only (the
+		//! "ABI POLICY" comment above `SetActiveRasterizer`, and the
+		//! same note on `AddCoatedMaterial`).  Slotting it next to its
+		//! sibling renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddFabricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* fabric,				///< [in] Preset name (cotton|linen|denim|wool|silk|satin|velvet|custom)
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* sheen_color,		///< [in] Sheen / dye tint (colour painter; empty or `none` = preset colour, else white)
+									const char* sheen_roughness,	///< [in] Charlie alpha, clamped to [0.04, 1] (physical scalar)
+									const char* weave_rotation		///< [in] Weave angle in RADIANS for the SUBSTRATE's frame (physical scalar)
+									) = 0;
+
+		//! Adds a channel-extraction SCALAR painter: scale * source.channel + bias,
+		//! as a genuine `IScalarPainter` (no colourspace conversion, no JH uplift) --
+		//! the scalar-typed analogue of `AddChannelPainter`.  Needed because several
+		//! physical-scalar material slots (e.g. `fabric_material`'s `sheen_roughness`)
+		//! can only bind a registered `IScalarPainter` name or an inline numeric
+		//! literal (see docs/ISCALARPAINTER_REFACTOR.md); there was previously no way
+		//! to derive one of those from a single channel of an already-registered
+		//! colour/texture painter (e.g. glTF KHR_materials_sheen's
+		//! `sheenRoughnessTexture` ALPHA channel).  Thin wrapper over
+		//! `RISE_API_CreatePainterChannelScalarPainter`.
+		//!
+		//! DECLARED HERE, at the tail: see the ABI-append-only note on
+		//! `AddFabricMaterial` immediately above.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPainterChannelScalarPainter(
+									const char* name,				///< [in] Name of the scalar painter
+									const char* source,				///< [in] Source colour painter (already registered)
+									const char  channel,			///< [in] 0=R, 1=G, 2=B, 3=A
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
+									) = 0;
+
+		//! Adds a Weave material -- a structured TWO-THREAD-FAMILY cloth
+		//! BSDF (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+		//!
+		//! `weave` is the DRAFT (plain | twill_2_1 | twill_3_1 |
+		//! satin_5 | custom) and `fabric` is the PRESET (denim | silk |
+		//! satin | linen | custom).  They are independent: the preset
+		//! SEEDS the draft along with every other slot, and any slot the
+		//! author wrote explicitly wins -- the `Has()` rule
+		//! `fabric_material` established.  An empty string on any slot
+		//! below means "the preset's value".
+		//!
+		//! Like `AddFabricMaterial`, the preset name reaches this method
+		//! rather than being fully consumed in the parser, because the
+		//! preset's two DYES are RGB triples rather than painter names
+		//! and only a layer that can synthesise an owned uniform painter
+		//! can honour them.  Unlike `AddFabricMaterial` there is no
+		//! substrate and therefore no allowlist check and no
+		//! preset-mismatch warning: this material IS the BSDF.
+		//!
+		//! `coverage` is read ONLY when the resolved draft is `custom`.
+		//!
+		//! DECLARED HERE, at the tail: IJob's policy is append-only (the
+		//! "ABI POLICY" comment above `SetActiveRasterizer`, and the same
+		//! note on `AddFabricMaterial`).  Slotting it next to its sibling
+		//! renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that.
+		/// \return TRUE if successful, FALSE otherwise
+		//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10) added `transmission`
+		//! (`none`/`thin`; empty = the preset's), inserted right after
+		//! `fabric` (mid-signature, next to the other whole-material
+		//! enums), and a per-family `transmit` scalar APPENDED at the
+		//! tail (after `weft_tilt`).  Neither is a pure tail append, so
+		//! this is a signature CHANGE to an existing pure virtual;
+		//! update tests/IJobVtableManifest.txt in the same commit
+		//! (`RISE_REGEN_IJOB_VTABLE_MANIFEST=1`).
+		virtual bool AddWeaveMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* weave,				///< [in] Draft name; empty = the preset's
+									const char* fabric,				///< [in] Preset name (denim|silk|satin|linen|custom)
+									const char* transmission,		///< [in] P2-B: `none`/`thin`; empty = the preset's
+									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
+									const char* weave_rotation,		///< [in] Warp direction in RADIANS (physical scalar)
+									const char* weft_skew,			///< [in] Weft offset from perpendicular, RADIANS (physical scalar)
+									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction, clamped to [0, 0.3] (physical scalar); P2-B: also the `thin` delta lobe's aperture; `sheer` is an accepted alias
+									const char* warp_color,			///< [in] Warp dye (colour painter; empty = preset colour, else white)
+									const char* weft_color,			///< [in] Weft dye (colour painter; empty = preset colour, else white)
+									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
+									const char* weft_ior,			///< [in] Weft fibre IOR (physical scalar)
+									const char* warp_width,			///< [in] Warp longitudinal width beta, RADIANS (physical scalar)
+									const char* weft_width,			///< [in] Weft longitudinal width beta, RADIANS (physical scalar)
+									const char* warp_azimuth,		///< [in] Warp azimuthal width gamma, RADIANS (physical scalar)
+									const char* weft_azimuth,		///< [in] Weft azimuthal width gamma, RADIANS (physical scalar)
+									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
+									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
+									const char* warp_tilt,			///< [in] Warp float tilt out of plane, RADIANS (physical scalar)
+									const char* weft_tilt,			///< [in] Weft float tilt out of plane, RADIANS (physical scalar)
+									const char* warp_transmit,		///< [in] P2-B: warp's diffuse-transmission share, [0,1] (physical scalar)
+									const char* weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1] (physical scalar)
+									) = 0;
+
+		//! Adds a relief_modifier: painter-driven shading-normal
+		//! micro-relief.  `height` names ANY registered `scalar_painter`
+		//! (or an inline numeric literal, which is flat and therefore
+		//! pointless) -- resolved through the physical-scalar pipe, so a
+		//! colour painter bound here produces the standing
+		//! `kScalarBoundToIPainterFmt` diagnostic and its one-line fix
+		//! (`scalar_painter { name X_h  painter X  channel R }`).  Height
+		//! is a LENGTH, not a colour: it must never pass through JH
+		//! spectral uplift, which is exactly what the scalar pipe
+		//! guarantees.  Positive height rises along +N (Blinn / PBRT-v4),
+		//! the OPPOSITE of `bumpmap_modifier` (REMOVED 2026-09-06 along
+		//! with the `BumpMap` class -- docs/RELIEF_MODIFIER_DESIGN.md 7.5;
+		//! `AddBumpMapModifier` above is its ABI-frozen legacy shim, kept
+		//! only for the Blender bridge and out-of-tree callers).  `domain` is `surface`
+		//! (default; 3D field, world-unit tangent step, no texcoords
+		//! required) or `uv` (legacy sampling geometry).  `step` <= 0
+		//! selects the automatic rule (surface: max(1e-3, pixel
+		//! footprint); uv: 0.01).  There is NO slope clamp on this
+		//! signature -- it forwards to `AddReliefModifierEx` (the class
+		//! tail) with `maxSlope` 0, which is the unbounded tilt every
+		//! caller of this entry point has always had.  Appended after AddWeaveMaterial per the
+		//! append-only IJob tail (preserves every prior vtable slot -- see
+		//! SourceHygieneTest and tests/IJobVtableManifest.txt).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddReliefModifier(
+									const char* name,				///< [in] Name of the modifier
+									const char* height,				///< [in] Height field (scalar_painter name or inline numeric)
+									const double scale,				///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+									const char* domain,				///< [in] "surface" (default) or "uv"
+									const double step				///< [in] Central-difference half-step; <= 0 = auto
+									) = 0;
+
+		//! Adds a modifier_stack: an ordered composition of PREVIOUSLY
+		//! registered modifiers, applied in authored order -- each member
+		//! sees the previous one's vNormal/onb.  `modifierNames` names
+		//! each member (resolved through the modifier manager); an unknown
+		//! name diagnoses which stack and which member failed to resolve.
+		//! `count == 0` is a parse-time error (an empty stack is a
+		//! mistake, not a no-op, matching glint_modifier's stance).
+		//! Nesting (a stack naming another stack) is allowed; self-
+		//! reference is impossible because names resolve at parse time,
+		//! before this stack itself is registered.  See
+		//! Modifiers/ModifierStack.h and docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 4.  Appended after AddReliefModifier per the
+		//! append-only IJob tail (preserves every prior vtable slot --
+		//! see SourceHygieneTest and tests/IJobVtableManifest.txt).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddModifierStack(
+									const char* name,				///< [in] Name of the modifier stack
+									const char** modifierNames,		///< [in] Names of the member modifiers, in authored (application) order
+									const unsigned int count			///< [in] Number of members; 0 is rejected
+									) = 0;
+
+		//! Adds a displaced geometry whose height comes from EITHER the
+		//! legacy IFunction2D `displacement` (evaluated as `f(u,v)`) OR the
+		//! IScalarPainter `height` (evaluated as a 3D FIELD at each vertex,
+		//! resolved through the standing scalar pipe so a colour painter
+		//! bound there gets the `kScalarBoundToIPainterFmt` diagnostic).
+		//! Exactly one, or neither (undisplaced); naming BOTH is refused with
+		//! a diagnostic that names both parameters.  `disp_scale` multiplies
+		//! either identically.
+		//!
+		//! OBJECT SPACE.  The bake precedes object binding, so the synthetic
+		//! hit the scalar field is evaluated against carries the vertex's
+		//! OBJECT-space position in both `P` and `Po` -- they coincide, and a
+		//! `P`-authored field does NOT follow the object's placement.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on AddDisplacedGeometry:
+		//! IJob's vtable is APPEND-ONLY (SourceHygieneTest +
+		//! tests/IJobVtableManifest.txt) -- even a trailing defaulted
+		//! parameter on an existing pure virtual is an ABI break.
+		//! AddDisplacedGeometry is kept verbatim and forwards here with a
+		//! null `height`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddDisplacedGeometryWithHeight(
+							const char*         name,				///< [in] Name of the geometry to register
+							const char*         base_geometry_name,	///< [in] Name of a previously-registered IGeometry to wrap
+							const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
+							const char*         displacement,		///< [in] Name of a registered IFunction2D, or NULL
+							const char*         height,				///< [in] Name of a registered IScalarPainter (or an inline numeric), or NULL
+							const Scalar        disp_scale,			///< [in] Displacement scale factor, applied to either route
+							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
+							const bool          face_normals,		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							const bool          seam_fold			///< [in] Tent-fold UV before evaluation (closed wrap-seam surfaces)
+							) = 0;
+
+		//! Adds a painter-driven micro-relief modifier WITH the optional
+		//! slope clamp.  Identical to `AddReliefModifier` above in every
+		//! other respect; `maxSlope` is an upper bound on the tangent-plane
+		//! tilt `|scale * grad h|`, expressed as a SLOPE (1.0 = 45 degrees,
+		//! 0.577 = 30).  When the scaled gradient exceeds it the gradient is
+		//! rescaled to that magnitude with its DIRECTION PRESERVED, so the
+		//! relief keeps facing the way the field points and only stops
+		//! leaning further.  `0` (and any value `<= 0`) means no clamp,
+		//! which is exactly what `AddReliefModifier` forwards -- so every
+		//! pre-existing scene and caller is unchanged.  A NEGATIVE value is
+		//! refused by name: it cannot mean anything, and silently treating
+		//! it as "off" would hide an authoring mistake.
+		//!
+		//! WHY IT EXISTS.  The perturbation is unbounded in the field's
+		//! slope, so a fine `fbm` height at a `scale` large enough to READ
+		//! tilts the shading normal to within a degree or two of the
+		//! surface plane.  It never crosses that plane (the perturbation is
+		//! perpendicular to N), but it does cross the GEOMETRIC HORIZON as
+		//! seen from the ray or the light, and the materials'
+		//! geometric-horizon gates then reject nearly every sampled
+		//! direction: the surface shades BLACK.  Amplitude alone cannot fix
+		//! that -- lowering `scale` until the black goes away puts the
+		//! detail back below the pixel footprint.  See
+		//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 3.2.
+		//!
+		//! THE BOUND IS PER MODIFIER, NOT PER PIXEL.  `maxSlope` caps the
+		//! tilt THIS modifier adds relative to the vNormal it receives, not
+		//! the total against the original geometric normal -- a `modifier_stack`
+		//! (section 4) of several relief modifiers ADDS their tilts, so two
+		//! at `maxSlope 0.30` compose to up to `2*atan(0.30)`, not the
+		//! single-clamp `atan(0.30)`.  See docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 3.2 and ReliefModifierTest's test 11g.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on AddReliefModifier:
+		//! IJob's vtable is APPEND-ONLY (SourceHygieneTest +
+		//! tests/IJobVtableManifest.txt) -- even a trailing defaulted
+		//! parameter on an existing pure virtual moves or changes a vtable
+		//! slot.  AddReliefModifier is kept verbatim and forwards here with
+		//! `maxSlope` 0.  Appended after AddDisplacedGeometryWithHeight per
+		//! the append-only IJob tail.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddReliefModifierEx(
+									const char* name,				///< [in] Name of the modifier
+									const char* height,				///< [in] Height field (scalar_painter name or inline numeric)
+									const double scale,				///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+									const char* domain,				///< [in] "surface" (default) or "uv"
+									const double step,				///< [in] Central-difference half-step; <= 0 = auto
+									const double maxSlope			///< [in] Tilt bound as a slope (1 = 45 deg); 0 = unclamped, negative refused
+									) = 0;
+
+		//! Adds an atan2-combinator SCALAR painter: atan2(y, x) + offset,
+		//! as a genuine IScalarPainter (no JH uplift).  Built for DL-17
+		//! (docs/DEBT_LEDGER.md, docs/CLOTH_FABRIC_DESIGN.md sec 15 item
+		//! 12): glTF KHR_materials_anisotropy's PER-TEXEL rotation --
+		//! direction = normalize(2*RG - 1), rotation = atan2(dir.y,
+		//! dir.x) + scalar anisotropyRotation.  `y`/`x` name previously-
+		//! registered IScalarPainters (typically two
+		//! AddPainterChannelScalarPainter results reading the same
+		//! texture's G / R channels with `scale 2 bias -1`); `offset` is
+		//! an additive constant in radians (the scalar rotation term,
+		//! folded in here via an internal AddScalarPainter so callers
+		//! don't need a second combinator round-trip).  The registered
+		//! scalar_painter is a legal binding for `ggx_material`'s DL-16
+		//! `tangent_rotation_scalar` slot (or `pbr_metallic_roughness_-
+		//! material`'s `anisotropy_rotation`, which now dual-resolves
+		//! the same way -- see Job::AddPBRMetallicRoughnessMaterial).
+		//!
+		//! No public Add{Multiply,Add,Scaled}ScalarPainter exists on IJob
+		//! today (those combinators are scene-language-only, reached via
+		//! IJobPriv from the chunk parser) -- this is a purpose-built
+		//! bridge for glTF import, mirroring AddPainterChannelScalarPainter's
+		//! own precedent, not a general scalar-algebra surface.
+		//!
+		//! Appended after AddReliefModifierEx per the append-only IJob
+		//! tail (preserves every prior vtable slot -- see
+		//! SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddAtan2ScalarPainter(
+									const char* name,				///< [in] Name of the new scalar painter
+									const char* y,					///< [in] Name of a registered IScalarPainter (Y operand)
+									const char* x,					///< [in] Name of a registered IScalarPainter (X operand)
+									const double offset				///< [in] Additive constant in radians
+									) = 0;
+
+		//! Adds a Coated material WITH an optional coat-lobe-only
+		//! tangent-space normal map (DL-192, docs/DEBT_LEDGER.md;
+		//! Blender Principled BSDF's "Coat Normal" socket).  Same eight
+		//! leading parameters as `AddCoatedMaterial` above, plus:
+		//!
+		//! `coat_normal` names an already-registered COLOUR painter
+		//! (a normal-map texture, RGB [0,1] encoding a tangent-space
+		//! vector -- the identical glTF/`normal_map_modifier` convention
+		//! `NormalMap.cpp` decodes) applied ONLY to the coat's own GGX
+		//! reflection lobe; the substrate keeps its own (possibly
+		//! separately normal-mapped) shading normal unchanged.  NULL /
+		//! empty / `"none"` = no perturbation.  `coat_normal_scale` is
+		//! the xy multiplier (glTF `normalTexture.scale`'s analogue;
+		//! Blender's Normal Map node "Strength" slider binds here),
+		//! ignored when `coat_normal` is unset.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on
+		//! `AddCoatedMaterial`: IJob's vtable is APPEND-ONLY
+		//! (SourceHygieneTest + tests/IJobVtableManifest.txt) -- even a
+		//! trailing defaulted parameter on an existing pure virtual
+		//! moves or changes a vtable slot (see `AddReliefModifierEx`'s
+		//! identical note).  `AddCoatedMaterial` is kept verbatim and
+		//! forwards here with `coat_normal = "none"`.  Appended after
+		//! `AddAtan2ScalarPainter` per the append-only IJob tail.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCoatedMaterialEx(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint,			///< [in] Coat transmission colour (colour painter)
+									const char* coat_normal,		///< [in] DL-192: coat-lobe-only normal-map colour painter; NULL/"none" = no perturbation
+									const double coat_normal_scale	///< [in] DL-192: xy scale on the decoded tangent-space normal
+									) = 0;
+
+        //! DL-214: scalar coverage on an existing material (opaque/mask/blend).
+        virtual bool SetMaterialAlpha(const char* material, const char* alpha,
+            const char* mode, const double cutoff) = 0;
+
+        //! DL-213: optional object-local xyz/sign tangent per TRIANGLE CORNER.
+        //! Expands position indices only when tangents are supplied, preserving
+        //! normal/UV seams. Empty tangents call the frozen indexed API unchanged.
+        virtual bool AddIndexedTriangleMeshGeometryWithTangents(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents) = 0;
+
+        //! Full object-local shader vectors; canonical world rotation, independent original UV frame.
+        virtual bool AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents) = 0;
+
+        //! Nonabsorbing GGX interface with reciprocal energy compensation. Positive alpha widths in
+        //! (0,1], single-scalar slots; spectral IOR curves retain NM dispersion.
+        //! Appended to preserve all existing virtual slot positions.
+        virtual bool AddRoughDielectricMaterial(const char*, const char*,
+            const char*, const char*) { return false; }
+
+		//! Adds the Phase-A painter-baked carbon + temperature medium.
+		//! Each channel source is `painter <scalar_painter-name>` in the
+		//! scene grammar; both are baked onto the same trilinear lattice.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMedium(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/
+			) { return false; }
+
+		//! Adds a unit-transmission medium boundary distinct from the
+		//! terminating "none" material.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddNullBoundaryMaterial(
+			const char* /*name*/					///< [in] Name of the material
+			) { return false; }
+
+		//! Adds the Phase-A medium with its optional condensed-organic channel.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithCondensed(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/,
+			const double /*smoke_km_cond*/,
+			const double /*smoke_n_cond*/,
+			const double /*smoke_albedo_cond*/,
+			const double /*smoke_g_cond*/
+			) { return false; }
+
+		//! Adds the Phase-A medium with the all-or-none chem channel/SPD bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithChem(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const double /*soot_em*/,
+			const double /*soot_density*/,
+			const double /*soot_albedo_hot*/,
+			const double /*soot_g_hot*/,
+			const double /*smoke_km_carbon*/,
+			const double /*smoke_n_carbon*/,
+			const double /*smoke_albedo_carbon*/,
+			const double /*smoke_g_carbon*/,
+			const double /*smoke_km_cond*/,
+			const double /*smoke_n_cond*/,
+			const double /*smoke_albedo_cond*/,
+			const double /*smoke_g_cond*/
+			) { return false; }
+
+		//! Adds a fire medium whose constituent optics come from one versioned
+		//! record.  Optional chem arguments are accepted only as one complete
+		//! channel/SPD/interval bundle.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMultichannelHeterogeneousMediumWithPreset(
+			const char* /*name*/,
+			const char* /*carbon_painter*/,
+			const char* /*temperature_painter*/,
+			const char* /*condensed_painter*/,
+			const char* /*chem_ch_painter*/,
+			const char* /*chem_c2_painter*/,
+			const char* /*chem_co2_painter*/,
+			const char* /*chem_spd_ch*/,
+			const char* /*chem_spd_c2*/,
+			const char* /*chem_spd_co2*/,
+			const double /*chem_interval_ch*/[2],
+			const double /*chem_interval_c2*/[2],
+			const double /*chem_interval_co2*/[2],
+			const unsigned int /*bake_width*/,
+			const unsigned int /*bake_height*/,
+			const unsigned int /*bake_depth*/,
+			const double /*bboxMin*/[3],
+			const double /*bboxMax*/[3],
+			const double /*scene_unit_meters*/,
+			const char* /*optical_record*/
+			) { return false; }
+
+		//! Requests fire-render fidelity at scene/job scope. Static Phase-A
+		//! fire media remain preview-only; predictive requests fail preflight.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetFireFidelityMode(
+			const char* /*mode*/
+			) { return false; }
+
+		//! Adds a manifest-backed fire sequence medium.  The manifest is the sole
+		//! sequence locator and carries the complete physical/record closure.
+		//! NB: appended at the ABI tail.
+		virtual bool AddFireMedium(
+			const char* /*name*/,
+			const char* /*sequence_manifest*/
+			) { return false; }
+
+		//! Exact scene binding for the manifest-backed channel set. Empty optional
+		//! names mean absent; chem is either none or the complete triplet.
+		virtual bool AddFireMediumBound(
+			const char* name, const char* sequence_manifest,
+			const char* channel_carbon, const char* channel_temperature,
+			const char* channel_condensed, const char* channel_reaction,
+			const char* channel_chem_ch, const char* channel_chem_c2,
+			const char* channel_chem_co2, const char* channel_velocity,
+			const bool chem_model_none )
+		{
+			(void)channel_carbon;(void)channel_temperature;(void)channel_condensed;
+			(void)channel_reaction;(void)channel_chem_ch;(void)channel_chem_c2;
+			(void)channel_chem_co2;(void)channel_velocity;(void)chem_model_none;
+			return AddFireMedium(name,sequence_manifest);
+		}
+
+		//! Adds an Oren-Nayar material with an explicit model: "classic"
+		//! (what AddOrenNayarMaterial makes) or "energy_preserving" (EON;
+		//! `roughness` in [0, 1]).  The default forwards "classic" (or an
+		//! empty model) to AddOrenNayarMaterial and refuses anything else.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddOrenNayarMaterialModel(
+			const char* name, const char* reflectance,
+			const char* roughness, const char* model )
+		{
+			const std::string m = model ? model : "";
+			if( m.empty() || m == "classic" ) {
+				return AddOrenNayarMaterial( name, reflectance, roughness );
+			}
+			return false;
+		}
+
+		//! Simulation M3b: adds a fixed-topology deforming triangle mesh read
+		//! from a simulation cache (`cache`: the cache directory; `~/` is the
+		//! home directory, any other relative path goes through the media path)
+		//! and its mesh.v1 output `output`.  Each prepared render installs the
+		//! frame for its time: scene time t maps to cache time
+		//! (t - time_offset) * time_scale, then through the cache's own time
+		//! map; `end_policy` is cache|hold|loop|error outside the frames;
+		//! `missing_frame` (hold|hide) is what a preview binding does with a
+		//! frame a partial cache has not baked yet; `fidelity` predictive
+		//! refuses a cache that is not complete and labelled predictive, and
+		//! fails a frame closed.  `motion_blur` installs shutter keys from the
+		//! frame velocities; `face_normals` shades flat, otherwise the cache's
+		//! normals (or area-weighted ones) are used.  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulatedMeshGeometry(
+			const char* /*name*/, const char* /*cache*/, const char* /*output*/,
+			const double /*time_offset*/, const double /*time_scale*/,
+			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
+			const bool /*motion_blur*/, const bool /*face_normals*/, const bool /*double_sided*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: declares a simulation producer (`cloth_simulation`,
+		//! `fire_simulation`, `simulation_cache`).  Data only, like
+		//! AddHairGuides: nothing is configured or run here.  Simulations live
+		//! in a Job-side name table under `ChunkCategory::Simulation`; the
+		//! cache key, the state and the bake are computed from the scene
+		//! later (IJobPriv::DescribeSimulations, `rise-sim bake <scene>`).
+		//! The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulation(
+			const SimulationDescriptor& /*desc*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: removes a declared simulation (the incremental
+		//! re-derive of an edited producer chunk).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool RemoveSimulation(
+			const char* /*name*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: enumerates the declared simulation names (the
+		//! editor's candidates for a `source` reference).  The default
+		//! enumerates nothing.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual void EnumerateSimulationNames(
+			IEnumCallback<const char*>& /*cb*/ ) const
+		{
+		}
+
+		//! Simulation M4: a simulated mesh bound to a producer's output
+		//! (`simulated_mesh_geometry { source <simulation>.<output> }`) instead
+		//! of a cache path.  The output must be a mesh codec.  The producer's
+		//! cache directory is read as AddSimulatedMeshGeometry reads `cache`;
+		//! a stale or partial cache loads (marked through DescribeSimulations),
+		//! a missing one gives an unbound, hidden mesh with a warning, unless
+		//! `fidelity` is predictive (then the load fails).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddSimulatedMeshGeometryFromSimulation(
+			const char* /*name*/, const char* /*simulation*/, const char* /*output*/,
+			const double /*time_offset*/, const double /*time_scale*/,
+			const char* /*end_policy*/, const char* /*missing_frame*/, const char* /*fidelity*/,
+			const bool /*motion_blur*/, const bool /*face_normals*/, const bool /*double_sided*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: the directory relative `cache` paths of simulation
+		//! producers resolve against (the scene file's directory; set by the
+		//! scene loader before the derive).  The default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetSimulationSceneDirectory(
+			const char* /*directory*/ )
+		{
+			return false;
+		}
+
+		//! Simulation M4: a fire medium bound to a producer's grid output
+		//! (`fire_medium { source <simulation>.<output> }`): the producer's
+		//! cache read exactly as AddFireMediumBound reads `sequence_manifest`
+		//! (<cache>/manifest.cbor).  A producer with no cache yet gives an empty
+		//! (vacuum) homogeneous medium of that name with a warning, unless the
+		//! scene requests predictive fire fidelity (then it fails).  The
+		//! default refuses.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddFireMediumFromSimulation(
+			const char* /*name*/, const char* /*source*/,
+			const char* /*channel_carbon*/, const char* /*channel_temperature*/,
+			const char* /*channel_condensed*/, const char* /*channel_reaction*/,
+			const char* /*channel_chem_ch*/, const char* /*channel_chem_c2*/,
+			const char* /*channel_chem_co2*/, const char* /*channel_velocity*/,
+			const bool /*chem_model_none*/ )
+		{
+			return false;
+		}
+
+		//! Adds a physically-based bounded N-ary mix material (`mix_material`).
+		//! `children[i]` names a registered material (or `"none"` / empty for
+		//! black absorber); `weights[i]` names a scalar painter (or inline
+		//! scalar); `modifiers` (or `modifiers[i]`) is optional (`nullptr` /
+		//! empty / `"none"` = keep object modifier); `passthroughWeight` is
+		//! optional (`nullptr` / empty = no pass-through).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddMixMaterial(
+			const char* /*name*/,
+			const char* const* /*children*/,
+			const char* const* /*weights*/,
+			const char* const* /*modifiers*/,
+			const unsigned int /*numChildren*/,
+			const char* /*passthroughWeight*/
+			)
+		{
+			return false;
+		}
+
+		//! Adds a blended_modifier: weighted blend of two previously-registered
+		//! modifiers (`modAName` at weight 0, `modBName` at weight 1; either
+		//! may be null/empty/"none" for the unperturbed surface normal, at
+		//! least one must name a modifier).  `weight` names an IScalarPainter
+		//! or inline numeric literal in [0, 1].
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddBlendedModifier(
+			const char* /*name*/,
+			const char* /*modAName*/,
+			const char* /*modBName*/,
+			const char* /*weight*/
+			)
+		{
+			return false;
+		}
+
+		//! Sets the planar near-clip distance (in scene units; 0 disables)
+		//! on a named camera (or the active camera when `name` is null/empty).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetCameraNearClip(
+			const char* /*name*/,
+			const double /*nearClip*/
+			)
+		{
+			return false;
+		}
+
+		//! Adds a thin two-sided diffuse reflection + diffuse transmission
+		//! material (`diffuse_transmission_material`).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddDiffuseTransmissionMaterial(
+			const char* /*name*/,
+			const char* /*reflectance*/,
+			const char* /*transmittance*/
+			)
+		{
+			return false;
+		}
+
 	};
 
 

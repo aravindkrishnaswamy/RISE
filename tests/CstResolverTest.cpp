@@ -1,0 +1,732 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CstResolverTest.cpp - slice 1 of docs/agentic-redesign/21-stable-apply-and-
+//  resolver.md: the shared resolver (BuildReferenceGraph). Locks in the four
+//  properties that make it the AUTHORITATIVE graph rename + closure consume:
+//    [consistency] its edges agree with what the derivation actually binds
+//                  (no drift between the resolver and the derive -- P1.8).
+//    [stamp]       a conservative fingerprint: every graph-changing edit moves it
+//                  (a reference re-point / rename) and is STABLE otherwise (a
+//                  non-reference value edit) -- so a cached graph's staleness is
+//                  detectable in O(1) (P1.8 unstamped).
+//    [namespace]   the runtime defaults (the `none` material/painter) are in the
+//                  derivation namespace (P1.8 coarser-namespace) -- and stay in
+//                  present in the engine (a listed default renamed/removed in
+//                  Job.cpp fails this test; a Job-side addition is not auto-caught).
+//    [ref-or-literal] a reference-kind value that is a pure NUMBER is a literal
+//                  (e.g. ggx `roughness 0.5`), not a dangling reference -- not an
+//                  edge, not a false diagnostic (P1.8 ref-or-literal).
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Cst/Cst.h"
+#include "CstRenderEquivalence.h"      // Job, IObject/manager interfaces
+#include "../src/Library/Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers -- [func2d-registry-invariant]
+
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace RISE;
+using namespace RISE::Cst;
+using namespace risequiv;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
+
+static bool HasEdge( const ReferenceGraph& g, NodeId src, NodeId tgt )
+{
+	for( const ReferenceUse& e : g.edges ) if( e.sourceValueNodeId == src && e.targetNodeId == tgt ) return true;
+	return false;
+}
+
+static bool DiagsMention( const std::vector<std::string>& d, const char* needle )
+{
+	for( const std::string& s : d ) if( s.find( needle ) != std::string::npos ) return true;
+	return false;
+}
+
+int main()
+{
+	std::printf( "CstResolverTest -- slice 1 (shared resolver: consistency / stamp / namespace / ref-or-literal)\n" );
+
+	const std::string scene =
+		"RISE ASCII SCENE 7\n"
+		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+		"lambertian_material\n{\nname m\nreflectance p\n}\n"
+		"lambertian_material\n{\nname m2\nreflectance p\n}\n"
+		"sphere_geometry\n{\nname g\nradius 1\n}\n"
+		"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
+	//----------------------------------------------------------------------
+	// [consistency] the graph's edges agree with the derivation's bindings.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst( scene );
+		const NodeId pid = DocFindByName( doc, "uniformcolor_painter/p" );
+		const NodeId mid = DocFindByName( doc, "lambertian_material/m" );
+		const NodeId gid = DocFindByName( doc, "sphere_geometry/g" );
+		const NodeId oid = DocFindByName( doc, "standard_object/o" );
+		const NodeId oMat  = DocParamId( doc, oid, "material", 0 );
+		const NodeId oGeom = DocParamId( doc, oid, "geometry", 0 );
+		const NodeId mRefl = DocParamId( doc, mid, "reflectance", 0 );
+
+		std::vector<std::string> diags;
+		ReferenceGraph gph = BuildReferenceGraph( doc, &diags );
+		Check( HasEdge( gph, oMat,  mid ), "graph: object.material -> material m" );
+		Check( HasEdge( gph, oGeom, gid ), "graph: object.geometry -> geometry g" );
+		Check( HasEdge( gph, mRefl, pid ), "graph: material.reflectance -> painter p" );
+		Check( diags.empty(), "graph: no dangling-reference diagnostics on a clean scene" );
+
+		// derive, and confirm the ENGINE bound the object exactly where the graph says.
+		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
+		IObject* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		const IMaterial* mPtr = j->GetMaterials()  ? j->GetMaterials()->GetItem( "m" )  : 0;
+		const IGeometry* gPtr = j->GetGeometries() ? j->GetGeometries()->GetItem( "g" ) : 0;
+		Check( o && mPtr && o->GetMaterial() == mPtr, "derive: object o bound to material m (matches graph edge)" );
+		Check( o && gPtr && o->GetGeometry() == gPtr, "derive: object o bound to geometry g (matches graph edge)" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [drift] EVERY object->material/geometry edge is cross-verified against the
+	// derive's ACTUAL binding (the drift guard, slice 5): if BuildReferenceGraph
+	// resolved a name differently than the derive does, this fails. Painter / other
+	// edges are existence-checked only (a material does not expose its painters for a
+	// pointer cross-check) -- so this is a drift DETECTOR on the tested scenes, not an
+	// exhaustive structural every-edge proof.
+	//----------------------------------------------------------------------
+	{
+		const std::string s2 =
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
+			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g1\nradius 1\n}\n"
+			"sphere_geometry\n{\nname g2\nradius 2\n}\n"
+			"standard_object\n{\nname oa\ngeometry g1\nmaterial m1\n}\n"
+			"standard_object\n{\nname ob\ngeometry g2\nmaterial m2\n}\n";
+		Document doc = ParseToCst( s2 );
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
+		struct Ob { const char* o; const char* m; const char* gm; };
+		const Ob obs[] = { { "oa", "m1", "g1" }, { "ob", "m2", "g2" } };
+		bool allMatch = true;
+		for( const Ob& ob : obs ) {
+			const NodeId oid = DocFindByName( doc, ( std::string( "standard_object/" ) + ob.o ).c_str() );
+			const NodeId mid = DocFindByName( doc, ( std::string( "lambertian_material/" ) + ob.m ).c_str() );
+			const NodeId gid = DocFindByName( doc, ( std::string( "sphere_geometry/" ) + ob.gm ).c_str() );
+			if( !HasEdge( g, DocParamId( doc, oid, "material", 0 ), mid ) ) allMatch = false;
+			if( !HasEdge( g, DocParamId( doc, oid, "geometry", 0 ), gid ) ) allMatch = false;
+			IObject* o = j->GetObjects() ? j->GetObjects()->GetItem( ob.o ) : 0;
+			const IMaterial* mp = j->GetMaterials()  ? j->GetMaterials()->GetItem( ob.m )  : 0;
+			const IGeometry* gp = j->GetGeometries() ? j->GetGeometries()->GetItem( ob.gm ) : 0;
+			if( !( o && mp && o->GetMaterial() == mp ) ) allMatch = false;
+			if( !( o && gp && o->GetGeometry() == gp ) ) allMatch = false;
+		}
+		Check( allMatch, "drift: EVERY object->material/geometry graph edge matches the derive's actual binding (by pointer), across multiple objects" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [stamp] conservative fingerprint: every graph-changing edit moves it (the
+	// load-bearing direction); it may also move on a graph-neutral edit (safe).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst( scene );
+		const unsigned long long s0 = BuildReferenceGraph( doc ).stamp;
+
+		// a NON-reference value edit (sphere radius) cannot change the graph -> stable.
+		Document docR = DocSetParamValue( doc, DocFindByName( doc, "sphere_geometry/g" ), "radius", 0, "2" );
+		Check( BuildReferenceGraph( docR ).stamp == s0, "stamp STABLE across a non-reference value edit (radius)" );
+
+		// a reference RE-POINT (object.material m -> m2) changes the graph -> stamp moves.
+		Document docP = DocSetParamValue( doc, DocFindByName( doc, "standard_object/o" ), "material", 0, "m2" );
+		Check( BuildReferenceGraph( docP ).stamp != s0, "stamp CHANGES on a reference re-point (object.material m->m2)" );
+
+		// a RENAME (material m -> mx, referrers rewritten) changes the graph -> stamp moves.
+		Document docN = DocRename( doc, DocFindByName( doc, "lambertian_material/m" ), "mx" );
+		Check( BuildReferenceGraph( docN ).stamp != s0, "stamp CHANGES on a rename (material m->mx)" );
+
+		// re-stamping the SAME document is deterministic.
+		Check( BuildReferenceGraph( doc ).stamp == s0, "stamp deterministic (same doc -> same stamp)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [namespace] the runtime defaults are in the engine's namespace + in sync.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\n" );   // empty scene: only the engine defaults
+		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "none" ) != 0, "runtime default present: material 'none' (resolver namespace in sync)" );
+		Check( j->GetPainters()  && j->GetPainters()->GetItem( "none" )  != 0, "runtime default present: painter 'none' (resolver namespace in sync)" );
+		// Guard RuntimeDefaultDefs's shader ops: each listed op must be PRESENT in a
+		// freshly-derived Job, so a Job.cpp default RENAMED or REMOVED (relative to the
+		// list below) fails here. (A Job-side ADDITION, or a drop from RuntimeDefaultDefs
+		// alone, is not auto-caught -- the latter surfaces as a dangling diagnostic only
+		// when a scene references the now-unseeded default.)
+		const char* shops[] = { "DefaultReflection", "DefaultRefraction", "DefaultEmission",
+			"DefaultDirectLighting", "DefaultCausticPelPhotonMap", "DefaultCausticSpectralPhotonMap",
+			"DefaultGlobalPelPhotonMap", "DefaultGlobalSpectralPhotonMap", "DefaultTranslucentPelPhotonMap",
+			"DefaultShadowPhotonMap", "DefaultPathTracing" };
+		bool allShops = j->GetShaderOps() != 0;
+		for( const char* s : shops ) if( !( j->GetShaderOps() && j->GetShaderOps()->GetItem( s ) ) ) allShops = false;
+		Check( allShops, "runtime defaults present: all 11 Default* shader ops (RuntimeDefaultDefs in sync with Job.cpp)" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [ref-or-literal] a numeric value in a reference-kind slot is a LITERAL.
+	//----------------------------------------------------------------------
+	{
+		// pbr_metallic_roughness_material.roughness is ValueKind::Reference but "can be
+		// a painter ref OR a scalar string"; `roughness 0.5` is a literal, not a
+		// dangling reference.
+		Document doc = ParseToCst( "RISE ASCII SCENE 7\npbr_metallic_roughness_material\n{\nname gx\nroughness 0.5\n}\n" );
+		std::vector<std::string> diags;
+		ReferenceGraph gph = BuildReferenceGraph( doc, &diags );
+		Check( !DiagsMention( diags, "roughness" ) && !DiagsMention( diags, "0.5" ), "ref-or-literal: numeric `roughness 0.5` is NOT a false dangling reference" );
+		const NodeId gxRough = DocParamId( doc, DocFindByName( doc, "pbr_metallic_roughness_material/gx" ), "roughness", 0 );
+		bool edgeFromRough = false;
+		for( const ReferenceUse& e : gph.edges ) if( e.sourceValueNodeId == gxRough ) edgeFromRough = true;
+		Check( !edgeFromRough, "ref-or-literal: numeric `roughness 0.5` produces NO edge" );
+
+		// control: a NON-numeric unresolved reference IS a dangling diagnostic (a name
+		// pointing at nothing) -- in a ref-or-literal slot too.
+		Document doc2 = ParseToCst( "RISE ASCII SCENE 7\npbr_metallic_roughness_material\n{\nname gx\nroughness nosuchpainter\n}\n" );
+		std::vector<std::string> diags2;
+		BuildReferenceGraph( doc2, &diags2 );
+		Check( DiagsMention( diags2, "nosuchpainter" ), "control: a non-numeric unresolved reference (a name) IS diagnosed dangling" );
+
+		// An inline multi-number literal (`scattering 1 2 3`, the `r g b` form some
+		// scalar slots accept) is also a literal -- entirely numeric tokens -> NOT a
+		// dangling reference. (This is why LooksNumeric checks every token, not just
+		// the first -- a per-slot ref-or-literal flag could not have covered it.)
+		Document doc4 = ParseToCst( "RISE ASCII SCENE 7\ntranslucent_material\n{\nname tm\nscattering 1 2 3\n}\n" );
+		std::vector<std::string> diags4;
+		BuildReferenceGraph( doc4, &diags4 );
+		Check( !DiagsMention( diags4, "scattering" ), "ref-or-literal: inline `scattering 1 2 3` is NOT a false dangling reference" );
+
+		// A pure number in a PURE-reference slot (`reflectance 0.5`) is NOT a dangling
+		// reference -- a number is never a name. It is a TYPE MISMATCH, which the full
+		// DeriveToJob refuses at apply time (verified below); the static reference-graph
+		// pass deliberately does not double-report it. (This replaced the fragile
+		// per-slot ref-or-literal flag, which under-flagged ~30 real scalar slots.)
+		Document doc3 = ParseToCst( "RISE ASCII SCENE 7\nlambertian_material\n{\nname m\nreflectance 0.5\n}\n" );
+		std::vector<std::string> diags3;
+		BuildReferenceGraph( doc3, &diags3 );
+		Check( !DiagsMention( diags3, "reflectance" ), "numeric `reflectance 0.5` is NOT a dangling reference (a number is not a name)" );
+		Job* jt = new Job(); std::vector<std::string> dt; int applied = DeriveToJob( doc3, *jt, &dt ); jt->release();
+		Check( applied == 0 && !dt.empty(), "the type mismatch `reflectance 0.5` IS caught by the full DeriveToJob (refused at apply time)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [conflation] (review P1.4) scalar + colour painters share ChunkCategory::Painter
+	// but live in SEPARATE managers; the (category,name) defs key cannot tell them apart.
+	// A same-named pair must be FLAGGED (the edge to that name is imprecise) rather than
+	// silently resolved to one.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname p\nfile noise.dat\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "colour and scalar" ), "conflation: a same-named colour+scalar painter is FLAGGED by the resolver (review P1.4)" );
+
+		// control: distinct painter names -> NO conflation diagnostic.
+		Document docOk = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname pc\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname ps\nfile noise.dat\n}\n" );
+		std::vector<std::string> diagsOk;
+		BuildReferenceGraph( docOk, &diagsOk );
+		Check( !DiagsMention( diagsOk, "colour and scalar" ), "conflation control: distinct painter names -> no false flag" );
+	}
+
+	//----------------------------------------------------------------------
+	// [function2d-ref] (review P1.4 sibling) a colour painter (e.g. expression_function2d,
+	// ChunkCategory::Painter) ALSO registers in the Function-2D manager, so a {Function}
+	// reference to it (scalar_painter.function2d) must RESOLVE -- not be a false dangling
+	// with a missed closure/rename edge.  The resolver seeds (Function, name) for such
+	// painters to match the derive (pFunc2DManager->GetItem).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"expression_function2d\n{\nname noise\nexpr u*v\n}\n"
+			"scalar_painter\n{\nname disp\nfunction2d noise\n}\n" );
+		std::vector<std::string> diags;
+		ReferenceGraph g = BuildReferenceGraph( doc, &diags );
+		Check( !DiagsMention( diags, "noise" ), "function2d-ref: a {Function} reference to a dual-registered painter is NOT a false dangling (P1.4 sibling)" );
+		const NodeId noiseId = DocFindByName( doc, "expression_function2d/noise" );
+		Check( noiseId != 0 && DocEditClosure( noiseId, g ).size() == 2, "function2d-ref: closure(noise) = {noise, disp} = 2 (the dual-register edge is traced)" );
+		Check( !DiagsMention( diags, "dimension-precisely" ), "function2d-ref control: a single Function producer is NOT flagged as a 1D/2D conflation" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func-conflation] (review #3) Function1D and Function2D producers share
+	// ChunkCategory::Function but use TYPED lookups in the derive; the (Function,name)
+	// graph cannot disambiguate them, so a same-named 1D + 2D pair must be FLAGGED.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname fx\n}\n"
+			"piecewise_linear_function2d\n{\nname fx\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "dimension-precisely" ), "func-conflation: same-named 1D + 2D function FLAGGED by the resolver (review #3)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [plf1d-colour] (review #3a) a piecewise_linear_function dual-registers into the COLOUR
+	// painter manager (Job::AddPiecewiseLinearFunction), so reflectance <plf1d> is a valid
+	// engine binding -- the graph must trace it (else closure/rename miss the referrer).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname fx\ncp 0 0\ncp 1 1\n}\n"
+			"lambertian_material\n{\nname m\nreflectance fx\n}\n" );
+		std::vector<std::string> diags;
+		ReferenceGraph g = BuildReferenceGraph( doc, &diags );
+		const NodeId fxId = DocFindByName( doc, "piecewise_linear_function/fx" );
+		Check( fxId != 0 && DocEditClosure( fxId, g ).size() == 2, "plf1d-colour: closure(fx) = {fx, m} = 2 (the reverse dual-register edge is traced)" );
+		Check( !DiagsMention( diags, "reflectance -> 'fx'" ) && !DiagsMention( diags, "unresolved" ), "plf1d-colour: reflectance->plf1d is NOT a false dangling" );
+	}
+
+	//----------------------------------------------------------------------
+	// [plf1d-painter-conflation] (review #3a) a plf1d and a colour painter sharing a name
+	// both seed (Painter, name); the (category,name) graph cannot disambiguate -> FLAG it.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "share this name" ), "plf1d-painter-conflation: same-named plf1d + colour painter FLAGGED (review #3a)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func-precise] (review #3, 2nd pass) a function1d consumer binds the same-named
+	// Function1D, NOT the Function2D -- closure follows the dimension-precise edge.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname x\n}\n"
+			"scalar_painter\n{\nname sp\nfunction1d x\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/x" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/x" );
+		const NodeId sp = DocFindByName( doc, "scalar_painter/sp" );
+		std::vector<NodeId> c1 = DocEditClosure( f1, g );
+		std::vector<NodeId> c2 = DocEditClosure( f2, g );
+		bool f1HasSp = false; for( NodeId n : c1 ) if( n == sp ) f1HasSp = true;
+		bool f2HasSp = false; for( NodeId n : c2 ) if( n == sp ) f2HasSp = true;
+		Check( f1 && f2 && sp && f1HasSp, "func-precise: closure(Function1D x) INCLUDES the scalar_painter.function1d consumer" );
+		Check( !f2HasSp, "func-precise: closure(Function2D x) does NOT include the function1d consumer (no misbind)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [cp-closure] (review #2, 2nd pass) a piecewise_linear_function2d cp row embeds a
+	// Function1D name; editing that Function1D must include the Function2D in the closure.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname f2\ncp 0.0 f1\ncp 1.0 f1\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/f1" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/f2" );
+		std::vector<NodeId> c1 = DocEditClosure( f1, g );
+		bool hasF2 = false; for( NodeId n : c1 ) if( n == f2 ) hasF2 = true;
+		Check( f1 && f2 && hasF2, "cp-closure: closure(Function1D f1) INCLUDES the piecewise_linear_function2d that references it via cp (review #2)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [painter-alias] (review P1.4, 2nd pass) a colour painter and a scalar painter sharing a
+	// name: the (Painter,name) edge first-wins to ONE, so a consumer the engine binds to the
+	// OTHER (here scalar_painter.base, a scalar slot) would be MISSED from that painter's
+	// closure.  The conservative alias makes editing EITHER include the consumer (superset).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname x\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname sp\nbase x\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId colourX = DocFindByName( doc, "uniformcolor_painter/x" );
+		const NodeId scalarX = DocFindByName( doc, "scalar_painter/x" );
+		const NodeId sp = DocFindByName( doc, "scalar_painter/sp" );
+		bool scalarReachesSp = false; for( NodeId n : DocEditClosure( scalarX, g ) ) if( n == sp ) scalarReachesSp = true;
+		bool colourReachesSp = false; for( NodeId n : DocEditClosure( colourX, g ) ) if( n == sp ) colourReachesSp = true;
+		Check( colourX && scalarX && sp && scalarReachesSp, "painter-alias: closure(scalar x) reaches the scalar consumer (alias rescues the first-wins miss, P1.4)" );
+		Check( colourReachesSp, "painter-alias: closure(colour x) also reaches it (superset, never misses)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [transfer-precise] (review #3, 2nd-pass sibling) directvolumerendering transfer_red is
+	// Function1D-only in the engine; it must bind the same-named Function1D, not a colour painter.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname t\ncolor 1 0 0\n}\n"
+			"piecewise_linear_function\n{\nname t\ncp 0 0\ncp 1 1\n}\n"
+			"directvolumerendering_shader\n{\nname dvr\ntransfer_red t\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId plf = DocFindByName( doc, "piecewise_linear_function/t" );
+		const NodeId colour = DocFindByName( doc, "uniformcolor_painter/t" );
+		const NodeId dvr = DocFindByName( doc, "directvolumerendering_shader/dvr" );
+		bool plfHasDvr = false; for( NodeId n : DocEditClosure( plf, g ) ) if( n == dvr ) plfHasDvr = true;
+		bool colourHasDvr = false; for( NodeId n : DocEditClosure( colour, g ) ) if( n == dvr ) colourHasDvr = true;
+		Check( plf && colour && dvr && plfHasDvr, "transfer-precise: closure(Function1D t) INCLUDES the directvolumerendering consumer" );
+		Check( !colourHasDvr, "transfer-precise: closure(colour t) does NOT (transfer_red binds Function1D, not the painter)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [transfer-spectral] (review #3, 2nd-pass sibling) the spectral-DVR transfer_spectral is
+	// Function2D-only in the engine; with a same-named 1D+2D pair it must bind the Function2D.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname s\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname s\n}\n"
+			"spectraldirectvolumerendering_shader\n{\nname sdvr\ntransfer_spectral s\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/s" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/s" );
+		const NodeId sdvr = DocFindByName( doc, "spectraldirectvolumerendering_shader/sdvr" );
+		bool f2HasSdvr = false; for( NodeId n : DocEditClosure( f2, g ) ) if( n == sdvr ) f2HasSdvr = true;
+		bool f1HasSdvr = false; for( NodeId n : DocEditClosure( f1, g ) ) if( n == sdvr ) f1HasSdvr = true;
+		Check( f1 && f2 && sdvr && f2HasSdvr, "transfer-spectral: closure(Function2D s) INCLUDES the spectral-DVR consumer" );
+		Check( !f1HasSdvr, "transfer-spectral: closure(Function1D s) does NOT (transfer_spectral binds Function2D)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [painter-decl-func2d] (review #3, 3rd-pass exhaustive table) displaced_geometry.displacement
+	// is declared Function2D-piped with `referenceCategories = {Painter, Function}` (since
+	// 2026-09-06 -- until then it was declared {Painter} ONLY with no `pipe` at all, even though
+	// the engine has always bound it via pFunc2DManager, Function2D, which holds plf2d).  It must
+	// reach a piecewise_linear_function2d target in closure -- the coarse (Painter,name) key a
+	// name-list special case used to paper over would have missed it (plf2d is not in the painter
+	// managers); the fixed descriptor now reaches it through the (Function,name) half of its own
+	// declared categories, via FunctionSubNamespace's pipe-based general rule.
+	//
+	// A THIRD consumer, `bumpmap_modifier.function`, used to be checked here; that chunk was
+	// REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and its `function` entry left
+	// Cst.cpp's FunctionSubNamespace with it.  Its coverage moved to [relief-modifier-scalar]
+	// below, which is the same declared-category-vs-resolving-manager shape one manager over.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n"
+			"composite_function2d_painter\n{\nname comp\nchild_a d2\nchild_b d2\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId d2 = DocFindByName( doc, "piecewise_linear_function2d/d2" );
+		const NodeId disp = DocFindByName( doc, "displaced_geometry/disp" );
+		const NodeId comp = DocFindByName( doc, "composite_function2d_painter/comp" );
+		bool hasDisp = false, hasComp = false;
+		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == comp ) hasComp = true; }
+		Check( d2 && disp && hasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES displaced_geometry.displacement (review #3 table)" );
+		Check( comp && hasComp, "painter-decl-func2d: ...and composite_function2d_painter.child_a/child_b" );
+	}
+
+	//----------------------------------------------------------------------
+	// [relief-modifier-scalar] (relief-modifier arc, Phase 3) the new-modifier
+	// twin of [painter-decl-func2d] above: `relief_modifier.height` is
+	// declared {Painter} but resolved through the SCALAR painter manager
+	// (ParameterPipe::Scalar) rather than the colour-painter manager --
+	// exactly the same "declared-category vs. resolving-manager" shape the
+	// removed bumpmap_modifier.function/Function2D edge had, one manager over.
+	// Closure of the scalar_painter must include the relief_modifier naming it.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname h\nexpression 0.1*P.x\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId h = DocFindByName( doc, "scalar_painter/h" );
+		const NodeId r = DocFindByName( doc, "relief_modifier/r" );
+		bool hasR = false; for( NodeId n : DocEditClosure( h, g ) ) if( n == r ) hasR = true;
+		Check( h && r && hasR, "relief-modifier-scalar: closure(scalar_painter h) INCLUDES relief_modifier.height" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displaced-height-scalar] (2026-09-06) `displaced_geometry` now declares
+	// BOTH height routes, and they resolve through DIFFERENT managers:
+	//   `displacement` -> Function2D, via Cst.cpp's FunctionSubNamespace,
+	//                     keyed on the param's DECLARED `ParameterPipe::
+	//                     Function2D` (since 2026-09-06; formerly a literal
+	//                     `paramName == "displacement"` case) -- `height` is
+	//                     untouched by it because it declares Scalar pipe;
+	//   `height`       -> the scalar painter manager, via the standing
+	//                     ParameterPipe::Scalar closure -- no new special
+	//                     case, which is the claim under test here.
+	// Both edges must exist SIMULTANEOUSLY from ONE displaced_geometry, and a
+	// RENAME of either target must rewrite its own line and leave the other's
+	// alone -- the sharpest available check that the two slots resolve
+	// independently rather than one capturing the other.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			// Two SEPARATE displaced geometries: the engine refuses both slots
+			// on ONE chunk (mutually exclusive), so the resolver's two edges
+			// are exercised on a scene the derive also accepts.
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement d2\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId d2       = DocFindByName( doc, "piecewise_linear_function2d/d2" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		const NodeId pDisp    = DocParamId( doc, viafunc,  "displacement", 0 );
+		const NodeId pHeight  = DocParamId( doc, viafield, "height",       0 );
+		Check( d2 && hs && viafunc && viafield && pDisp && pHeight,
+			"displaced-height-scalar: scene parsed (plf2d d2, scalar_painter hs, both displaced_geometry forms)" );
+		Check( HasEdge( g, pDisp, d2 ),
+			"displaced-height-scalar: `displacement` still resolves to the Function2D (now via the pipe-based general rule, not a name-list case)" );
+		Check( HasEdge( g, pHeight, hs ),
+			"displaced-height-scalar: `height` resolves to the scalar_painter through the EXISTING scalar closure (no new special case)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displacement-dimension-precise] (2026-09-06) the actual RED-PROOF
+	// case for the pipe-based FunctionSubNamespace rule replacing the old
+	// `paramName == "displacement"` name list: a same-named Function1D +
+	// Function2D pair, exactly [func-precise] above but through
+	// `displaced_geometry.displacement`.  This is the ONE scenario that
+	// distinguishes the pipe-based dimension-precise resolution from the
+	// COARSE `{Painter, Function}` referenceCategories fallback that ALSO
+	// landed this workstream (item 1 above) -- widening referenceCategories
+	// alone is already enough to find a NON-COLLIDING same-name target (as
+	// [displaced-height-scalar] and [painter-decl-func2d] exercise, both
+	// with only a single same-named producer in scene), because
+	// `piecewise_linear_function` ALSO dual-registers into `(Painter,name)`
+	// (review #3a, "plf1d-painter-conflation" above) -- so with NO
+	// pipe-based routing, the coarse fallback (`for (rc : referenceCategories)`,
+	// Painter checked before Function) finds the 1D producer's
+	// Painter-dual-registration FIRST. That is the WRONG target, not "no
+	// edge": deleting FunctionSubNamespace's `pd->semantics.pipe ==
+	// ParameterPipe::Function2D` line does NOT make this test vacuously
+	// pass by finding nothing -- it makes `displacement s` bind the
+	// Function1D `s` instead of the Function2D `s`, which the two Checks
+	// below catch precisely.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname s\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname s\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement s\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1    = DocFindByName( doc, "piecewise_linear_function/s" );
+		const NodeId f2    = DocFindByName( doc, "piecewise_linear_function2d/s" );
+		const NodeId disp  = DocFindByName( doc, "displaced_geometry/disp" );
+		const NodeId pDisp = disp ? DocParamId( doc, disp, "displacement", 0 ) : 0;
+		Check( f1 && f2 && disp && pDisp,
+			"displacement-dimension-precise: scene parsed (plf1d s, plf2d s, displaced_geometry disp)" );
+		Check( HasEdge( g, pDisp, f2 ),
+			"displacement-dimension-precise: `displacement s` resolves to the Function2D `s`" );
+		Check( !HasEdge( g, pDisp, f1 ),
+			"displacement-dimension-precise MONEY: ...and NOT the Function1D `s` -- the red-proof case "
+			"for the pipe-based FunctionSubNamespace rule (a coarse referenceCategories fallback alone "
+			"would bind the wrong one here)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displaced-height-rename] the rename half of the case above, on a
+	// document WITHOUT a piecewise_linear_function2d -- whose `cp` entries
+	// embed Function1D names as String tokens and therefore make DocRename
+	// refuse ANY rename in the whole document (review #2).  Here the
+	// Function2D side is an `expression_function2d` (a Painter-category chunk
+	// that dual-registers into the Function2D manager), so both routes are
+	// renameable and each rewrites ONLY its own line.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"expression_function2d\n{\nname fuv\nexpr u*v\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement fuv\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		const NodeId fuv      = DocFindByName( doc, "expression_function2d/fuv" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		Check( fuv && hs && viafunc && viafield,
+			"displaced-height-rename: scene parsed (expression_function2d fuv, scalar_painter hs, both displaced_geometry forms)" );
+
+		Document docH = DocRename( doc, hs, "hs2" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafield ), "height", 0 ) == "hs2",
+			"displaced-height-rename: renaming the scalar_painter REWRITES displaced_geometry.height" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafunc ), "displacement", 0 ) == "fuv",
+			"displaced-height-rename: ...and leaves the sibling `displacement` line untouched" );
+
+		Document docD = DocRename( doc, fuv, "fuvx" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafunc ), "displacement", 0 ) == "fuvx",
+			"displaced-height-rename: control -- renaming the Function2D rewrites `displacement`" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafield ), "height", 0 ) == "hs",
+			"displaced-height-rename: control -- ...and leaves `height` untouched" );
+	}
+
+	//----------------------------------------------------------------------
+	// [ior-phantom] (workstream #2) ior/film_ior resolve scalar-painter ->
+	// colour-painter -> numeric, NEVER a Function (Job::ResolveOrDiagnoseScalar
+	// consults no Function manager).  The descriptor over-declared
+	// {Painter,Function}, so ior naming a Function-CATEGORY chunk (a plf2d --
+	// NOT a colour painter, unlike expression_function2d whose category IS
+	// Painter) traced a phantom edge the engine treats as dangling.  Now
+	// {Painter}: the phantom is gone.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function2d\n{\nname f\n}\n"   // Function-category, not a colour painter
+			"ggx_material\n{\nname m\nior f\n}\n" );
+		const NodeId fid  = DocFindByName( doc, "piecewise_linear_function2d/f" );
+		const NodeId mid  = DocFindByName( doc, "ggx_material/m" );
+		const NodeId mIor = DocParamId( doc, mid, "ior", 0 );
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		Check( fid && mid && mIor, "ior-phantom: scene parsed (plf2d f + ggx m.ior f)" );
+		Check( !HasEdge( g, mIor, fid ), "ior-phantom: ior naming a Function2D produces NO edge (engine never resolves ior via Function)" );
+		bool clHasMat = false; for( NodeId n : DocEditClosure( fid, g ) ) if( n == mid ) clHasMat = true;
+		Check( !clHasMat, "ior-phantom: editing the Function2D does NOT re-derive the ior material" );
+	}
+
+	//----------------------------------------------------------------------
+	// [modifier-stack-repeatable-rename] (Phase 2, docs/RELIEF_MODIFIER_DESIGN.md
+	// section 4) modifier_stack's `modifier` param is a repeatable Reference on
+	// {Modifier}, exactly like standard_shader's `shaderop` on {ShaderOp} -- prove
+	// the SAME generic per-occurrence-NodeId machinery that already renames
+	// shaderop referrers correctly also covers modifier_stack, with NO Cst.cpp
+	// change: ComputeChunkRefs iterates every Param child by (role, occurrence),
+	// so each repeated `modifier` line gets its own edge keyed by its OWN
+	// DocParamId, and DocRename rewrites each referrer edge at its recorded
+	// (chunk, role, occ) independently -- a rename of ONE member therefore
+	// rewrites ONLY that occurrence's line, leaving a sibling occurrence naming a
+	// DIFFERENT modifier untouched.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"relief_modifier\n{\nname r1\nheight 0.1\n}\n"
+			"glint_modifier\n{\nname g1\n}\n"
+			"modifier_stack\n{\nname finish\nmodifier r1\nmodifier g1\n}\n" );
+
+		const NodeId r1Id = DocFindByName( doc, "relief_modifier/r1" );
+		const NodeId g1Id = DocFindByName( doc, "glint_modifier/g1" );
+		const NodeId stackId = DocFindByName( doc, "modifier_stack/finish" );
+		Check( r1Id != 0 && g1Id != 0 && stackId != 0,
+		       "modifier-stack-rename: scene parsed (r1, g1, finish{modifier r1, modifier g1})" );
+
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		const NodeId occ0 = DocParamId( doc, stackId, "modifier", 0 );
+		const NodeId occ1 = DocParamId( doc, stackId, "modifier", 1 );
+		Check( HasEdge( g, occ0, r1Id ) && HasEdge( g, occ1, g1Id ),
+		       "modifier-stack-rename: BOTH repeatable `modifier` occurrences resolve as graph edges (r1 at occ0, g1 at occ1)" );
+
+		Document docN = DocRename( doc, r1Id, "r1x" );
+		ReferenceGraph gN = BuildReferenceGraph( docN );
+		Check( gN.stamp != g.stamp, "modifier-stack-rename: renaming r1 moves the graph stamp" );
+
+		NodeRef stackChunk = DocResolveNodeId( docN, stackId );
+		Check( stackChunk.get() != 0, "modifier-stack-rename: the stack chunk survives the rename (NodeId preserved, D44)" );
+		const std::string v0 = ParamValueAtOccurrence( stackChunk, "modifier", 0 );
+		const std::string v1 = ParamValueAtOccurrence( stackChunk, "modifier", 1 );
+		Check( v0 == "r1x", "modifier-stack-rename: occurrence 0 (`modifier r1`) IS rewritten to `r1x`" );
+		Check( v1 == "g1", "modifier-stack-rename: occurrence 1 (`modifier g1`) is UNCHANGED by renaming r1" );
+
+		// control: renaming g1 instead rewrites ONLY occurrence 1, leaving
+		// occurrence 0 (still naming r1) untouched -- proves the rewrite is
+		// addressed by occurrence, not "first repeated param wins" or
+		// "rewrite every occurrence with this role".
+		Document docG = DocRename( doc, g1Id, "g1x" );
+		NodeRef stackChunkG = DocResolveNodeId( docG, stackId );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 0 ) == "r1",
+		       "modifier-stack-rename: control -- renaming g1 leaves occurrence 0 (`r1`) untouched" );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 1 ) == "g1x",
+		       "modifier-stack-rename: control -- occurrence 1 IS rewritten to `g1x`" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func2d-registry-invariant] (2026-09-06, the pipe-based-resolver
+	// follow-up to [painter-decl-func2d] / [displaced-height-scalar] above)
+	// proves the CLAIM those two cases only ever demonstrated on FIVE
+	// hardcoded names: that Cst.cpp's FunctionSubNamespace resolves a
+	// Function2D-piped parameter through the DECLARATION
+	// (`ParameterPipe::Function2D`), not a name list, so a brand-new such
+	// parameter needs NO Cst.cpp edit to close correctly. This test walks
+	// the LIVE chunk-parser registry (CreateAllChunkParsers -- no hardcoded
+	// param list of its own) and, for every Reference parameter any
+	// descriptor declares Function2D-piped, builds a minimal one-chunk scene
+	// wiring a piecewise_linear_function2d into it and checks the resolver
+	// graph connects the edge. Today that is exactly the five parameters
+	// this workstream audited (scalar_painter.function2d,
+	// function2d_painter.function2d, sdf_geometry.heightfield_function,
+	// displaced_geometry.displacement, composite_function2d_painter.child_a
+	// and .child_b -- six params, five chunk kinds); the point of walking
+	// the registry rather than asserting on those names is that a SIXTH
+	// chunk kind declaring a NEW Function2D-piped parameter tomorrow is
+	// covered here automatically, with no edit to this test either.
+	// ParseToCst does not enforce a chunk's OTHER `required` fields (that is
+	// a DeriveToJob/Finalize-time check), so a minimal `name X\n<param>
+	// f2dx` block is a fully valid CST chunk for this purpose even when the
+	// real chunk (e.g. displaced_geometry) also needs a `base_geometry`.
+	//----------------------------------------------------------------------
+	{
+		const std::vector<ChunkParserEntry> parsers = CreateAllChunkParsers();
+		int walked = 0;
+		for( size_t e = 0; e < parsers.size(); ++e ) {
+			if( !parsers[e].parser ) continue;
+			const ChunkDescriptor& d = parsers[e].parser->Describe();
+			for( size_t k = 0; k < d.parameters.size(); ++k ) {
+				const ParameterDescriptor& p = d.parameters[k];
+				if( p.semantics.pipe != ParameterPipe::Function2D ) continue;
+				if( p.kind != ValueKind::Reference ) continue;   // no tuple-typed Function2D-pipe param exists today; guard anyway
+				++walked;
+
+				const std::string scene =
+					std::string( "RISE ASCII SCENE 7\n" ) +
+					"piecewise_linear_function2d\n{\nname f2dx\n}\n" +
+					d.keyword + "\n{\nname target\n" + p.name + " f2dx\n}\n";
+				Document doc = ParseToCst( scene );
+				ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+				const NodeId f2dx   = DocFindByName( doc, "piecewise_linear_function2d/f2dx" );
+				const NodeId target = DocFindByName( doc, d.keyword + "/target" );
+				const NodeId pParam = target ? DocParamId( doc, target, p.name, 0 ) : 0;
+				const std::string what = "func2d-registry-invariant: " + d.keyword + "." + p.name +
+					" (declared ParameterPipe::Function2D) resolves to a piecewise_linear_function2d target";
+				Check( f2dx && target && pParam && HasEdge( g, pParam, f2dx ), what.c_str() );
+			}
+		}
+		// Sanity floor: fail loudly if the registry walk itself found nothing (e.g. a future
+		// refactor renamed `semantics.pipe` and silently emptied this loop) rather than passing
+		// vacuously.
+		Check( walked >= 5,
+			"func2d-registry-invariant: the registry walk found at least the 5 known Function2D-piped "
+			"parameters (would be 0 and pass vacuously if the pipe check itself were broken)" );
+	}
+
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
+}

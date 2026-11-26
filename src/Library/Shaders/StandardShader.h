@@ -36,8 +36,23 @@ namespace RISE
 
 			bool bComputeSPF;
 
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): resolved ONCE at construction from `shaderops_`
+			//! (StandardShader has no per-op depth ranges, unlike
+			//! AdvancedShader, so this is depth-independent and safe to
+			//! cache) -- see `RAY_STATE::chainHasNEEOp`/
+			//! `chainHasBsdfContinuationOp`'s doc for the full contract.
+			bool bHasDirectLightingOp;
+			bool bHasBsdfContinuationOp;
+
 		public:
 			StandardShader( const std::vector<IShaderOp*>& shaderops_ );
+			StandardShader( const StandardShader& other );
+
+			const std::vector<IShaderOp*>& ShaderOpsForSSSClassification() const
+			{
+				return shaderops;
+			}
 
 			//! Tells the shader to apply shade to the given intersection point
 			void Shade(
@@ -46,7 +61,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [out] RISEPel value at the point
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -57,7 +72,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack& ior_stack				///< [in/out] Index of refraction stack
+				const IORStack& ior_stack				///< [in] Index of refraction stack
 				) const;
 
 			//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
@@ -73,6 +88,7 @@ namespace RISE
 
 			//! Tells the shader to reset itself
 			void ResetRuntimeData() const;
+			bool HasRuntimeData() const;
 		};
 	}
 }

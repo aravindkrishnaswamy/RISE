@@ -113,8 +113,8 @@ class EnumRenderOutputsCallback : public IEnumCallback<IRasterizerOutput>
 void Usage()
 {
 	std::cout << "Usage: mpirun -np #procs ./risempi <scene file> [S|A] <num frames>" << std::endl;
-	std::cout << "Example: mpirun -np 8 ./risempi ../scenes/cornellbox.RISEscene S      -or-" << std::endl;
-	std::cout << "         mpirun -np 8 ./risempi ../scenes/cornellbox.RISEscene A 240" << std::endl;
+	std::cout << "Example: mpirun -np 8 ./risempi ../scenes/Tests/BDPT/cornellbox_bdpt.RISEscene S      -or-" << std::endl;
+	std::cout << "         mpirun -np 8 ./risempi ../scenes/Tests/BDPT/cornellbox_bdpt.RISEscene A 240" << std::endl;
 
 }
 
@@ -133,8 +133,8 @@ void DoStill( int rank, int size, IJobPriv* pJob )
 	GlobalLog()->PrintNew( sro, __FILE__, __LINE__, "store rasterizer output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( sro );
 
-	unsigned int total_width = pJob->GetScene()->GetCamera()->GetWidth();
-	unsigned int total_height = pJob->GetScene()->GetCamera()->GetHeight();
+	unsigned int total_width = pJob->GetScene()->GetFilm()->GetWidth();
+	unsigned int total_height = pJob->GetScene()->GetFilm()->GetHeight();
 
 	if( rank == 0 )
 	{
@@ -335,7 +335,17 @@ int main( int argc, char** argv )
 	if( rank == 0 ) {
 		std::cout << "Loading ascii scene file: " << argv[1] << std::endl;
 	}
-	pJob->LoadAsciiScene( argv[1] );
+	// Same KEPT-LIVE-BUT-LOUD contract as commandconsole.cpp: a failed
+	// derive leaves a PARTIAL Job live; render it if you must, but say so
+	// loudly on every rank-0 console.  (Cst.h's caller-bucket doc, bucket 3.)
+	if( !pJob->LoadAsciiSceneAuto( argv[1] ) ) {   // Slice 6c-3a: via Auto (CST-only -- native-v7 -> CST, else hard-fail)
+		if( rank == 0 ) {
+			std::cout << "==============================================================" << std::endl;
+			std::cout << "PARTIAL SCENE: derive reported failures -- see the log;" << std::endl;
+			std::cout << "the run will render the PARTIAL scene." << std::endl;
+			std::cout << "==============================================================" << std::endl;
+		}
+	}
 	
 	if( argv[2][0] == 'S' ) {
 		DoStill( rank, size, pJob );
@@ -376,4 +386,3 @@ int main( int argc, char** argv )
 
 	return 1;
 }
-

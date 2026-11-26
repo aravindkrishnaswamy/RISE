@@ -1,0 +1,753 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           origami_lantern_pavilion.RISEscene                                                      #
+#   Description:    "The Origami Lantern & Dichroic Velvet Gallery"                                         #
+#                   Creative contemporary-gallery showcase exercising the remaining Blender-parity paths    #
+#                   natively in RISE, routed automatically via `auto_rasterizer`:                           #
+#                                                                                                           #
+#                     1. AUTO-ROUTED PATH-DEPENDENCE CONTAINMENT (`auto_rasterizer`): detects the PT-only   #
+#                        view/ray shading builtins (`osl_fresnel`, `osl_layer_weight`, `osl_is_camera_ray`) #
+#                        and automatically delegates to Path Tracing with a one-shot load diagnostic.       #
+#                     2. FOLDED ORIGAMI PAPER LANTERN (`skin_geometry` + `diffuse_transmission_material`    #
+#                        + `osl_gradient` + `blended_modifier`): six spiraling origami paper sails around   #
+#                        an incandescent filament core on a stepped basalt plinth; warm coral-to-teal       #
+#                        translucency with blended washi-fiber and geometric pleat relief.                  #
+#                     3. DICHROIC VELVET & SPIRAL-GOLD BROCADE TORUS (`torus_geometry` + `mix_material`     #
+#                        + `osl_fresnel` + `osl_layer_weight` Facing + `osl_to_camera_vector` +             #
+#                        `osl_vector_rotate` + `scalar_painter { channel RGB }` + `passthrough`):           #
+#                        camera-space dichroic velvet sheen interwoven with rotated spiral gold filigree.   #
+#                     4. CAMERA-RAY GOSSAMER GALLERY VEIL (`skin_geometry` + `mix_material` +               #
+#                        `osl_is_camera_ray()` + `passthrough` + `diffuse_transmission_material`):          #
+#                        delicate gold-veined gallery screen that is mostly transparent to camera rays      #
+#                        while casting a rich tinted translucent shadow onto the terrazzo floor.            #
+#                     5. VENETIAN TERRAZZO & BRASS-INLAY FLOOR (`osl_voronoi_color` + `osl_brick` +         #
+#                        `osl_ao` + `mix_material`): polished multi-chip terrazzo with brushed-brass        #
+#                        geometric divider strips and ray-traced contact occlusion under each pedestal.     #
+#                     6. CINEMATIC THIN-LENS CAMERA (`thinlens_camera` + `near_clip 0.70`): gentle shallow  #
+#                        depth-of-field focused on the origami lantern & dichroic velvet torus.             #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-11-25                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer & Thin-Lens Camera
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_gallery_env
+	color		0.025 0.032 0.052
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width		960
+	height		540
+}
+
+# auto_rasterizer automatically detects PT-only view/ray signals and delegates to PT!
+auto_rasterizer
+{
+	samples				128
+	oidn_denoise		TRUE
+	pixel_filter		gaussian
+	radiance_map		pnt_gallery_env
+	radiance_background	TRUE
+}
+
+thinlens_camera
+{
+	location		0.05 1.48 4.45
+	lookat			0.02 0.68 -0.05
+	up				0 1 0
+	sensor_size		36.0
+	focal_length	36.0
+	fstop			4.0
+	focus_distance	4.50
+	near_clip		0.70
+}
+
+##################################################
+# Gallery Lighting
+##################################################
+
+# Sculptural warm-white museum spot from upper front-left
+rect_light
+{
+	name		light_museum_key
+	center		-2.40 3.10 2.15
+	size		1.35 1.35
+	facing		0.55 -0.68 -0.48
+	color		1.00 0.92 0.82
+	exitance	20.0
+}
+
+# Cool cyan-blue architectural gallery wash from upper right-back
+rect_light
+{
+	name		light_museum_rim
+	center		2.75 2.55 -1.45
+	size		1.60 2.00
+	facing		-0.75 -0.48 0.45
+	color		0.45 0.72 1.00
+	exitance	14.0
+}
+
+# Subtle warm uplight grazing the gallery backdrop
+rect_light
+{
+	name		light_wall_wash
+	center		0.0 2.95 -1.35
+	size		3.60 0.45
+	facing		0.0 -0.95 0.30
+	color		0.85 0.88 0.96
+	exitance	7.0
+}
+
+# Glowing incandescent heart inside the origami paper lantern sculpture
+omni_light
+{
+	name		light_origami_heart
+	position	-0.18 0.92 -0.10
+	color		1.00 0.56 0.24
+	power		36.0
+}
+
+##################################################
+# 1. VENETIAN TERRAZZO & BRASS-INLAY FLOOR:
+#    osl_voronoi_color + osl_brick + osl_ao + mix_material
+##################################################
+
+expression_painter
+{
+	name		pnt_terrazzo_col
+	def			vcol	osl_voronoi_color(P, 0.0, 3, 0, 0, 5.8, 0.0, 0.5, 2.0, 0.0, 2.0, 0.92, 1)
+	def			vdist	osl_voronoi_distance(P, 0.0, 3, 0, 0, 5.8, 0.0, 0.5, 2.0, 0.0, 2.0, 0.92, 1)
+	def			chip	1.0 - smoothstep(0.24, 0.30, vdist)
+	def			ao		osl_ao(0.45, 8, vec3(0,0,0), 0)
+	def			binder	vec3(0.14, 0.145, 0.16)
+	def			c1		mix(vec3(0.42, 0.36, 0.30), vec3(0.18, 0.26, 0.30), vcol.x)
+	def			c2		mix(c1, vec3(0.55, 0.32, 0.24), step(0.72, vcol.y))
+	def			c3		mix(c2, vec3(0.62, 0.58, 0.50), step(0.78, vcol.z))
+	expr		mix(binder, c3, chip) * mix(0.35, 1.0, ao)
+}
+
+uniformcolor_painter
+{
+	name		pnt_terrazzo_spec
+	color		0.055 0.055 0.055
+}
+
+scalar_painter
+{
+	name		sp_terrazzo_rough
+	def			n		osl_noise_texture(P * 3.5, 0.0, 3, 1, 3.0, 0.5, 2.0, 0.0, 1.0, 0.0, 1)
+	expression	mix(0.14, 0.28, n)
+}
+
+ggx_material
+{
+	name			mat_terrazzo
+	rd				pnt_terrazzo_col
+	rs				pnt_terrazzo_spec
+	alphax			sp_terrazzo_rough
+	alphay			sp_terrazzo_rough
+	fresnel_mode	schlick_f0
+}
+
+# Brushed brass inlay strips in the terrazzo via osl_brick mortar lines
+uniformcolor_painter
+{
+	name		pnt_brass_n_rgb
+	color		0.24 0.48 1.28
+}
+
+uniformcolor_painter
+{
+	name		pnt_brass_k_rgb
+	color		3.30 2.38 1.82
+}
+
+scalar_painter
+{
+	name		sp_brass_n
+	painter		pnt_brass_n_rgb
+	channel		RGB
+	scale		1.0
+	bias		0.0
+}
+
+scalar_painter
+{
+	name		sp_brass_k
+	painter		pnt_brass_k_rgb
+	channel		RGB
+	scale		1.0
+	bias		0.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_brass_tint
+	color		0.94 0.80 0.48
+}
+
+ggx_material
+{
+	name			mat_brass_inlay
+	rd				none
+	rs				pnt_brass_tint
+	alphax			0.16
+	alphay			0.16
+	ior				sp_brass_n
+	extinction		sp_brass_k
+	fresnel_mode	conductor
+}
+
+scalar_painter
+{
+	name		sp_floor_brass_w
+	def			b		osl_brick(vec3(P.x, P.z, 0.0) * 0.85, 0.014, 0.003, 0.0, 1.0, 1.0, 0.5, 2, 1.0, 2)
+	expression	b.y
+}
+
+scalar_painter
+{
+	name		sp_floor_terrazzo_w
+	expression	1.0 - sample_scalar(sp_floor_brass_w)
+}
+
+mix_material
+{
+	name		mat_gallery_floor
+	child		mat_terrazzo    weight sp_floor_terrazzo_w modifier none
+	child		mat_brass_inlay weight sp_floor_brass_w    modifier none
+}
+
+box_geometry
+{
+	name		geo_gallery_floor
+	width		10.0
+	height		0.30
+	depth		8.0
+}
+
+standard_object
+{
+	name		obj_gallery_floor
+	geometry	geo_gallery_floor
+	material	mat_gallery_floor
+	position	0.0 -0.15 0.0
+}
+
+# Matte fluted architectural charcoal concrete gallery wall
+expression_painter
+{
+	name		pnt_gallery_wall
+	def			flute	sin(P.x * 16.0) * 0.5 + 0.5
+	def			n		osl_noise_texture(P * 2.2, 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.1, 1)
+	def			ao		osl_ao(0.75, 8, vec3(0,0,0), 0)
+	def			base	mix(vec3(0.08, 0.09, 0.11), vec3(0.14, 0.155, 0.185), n * 0.7 + flute * 0.3)
+	expr		base * mix(0.40, 1.0, ao)
+}
+
+scalar_painter
+{
+	name		sp_wall_flute_h
+	expression	sin(P.x * 16.0) * 0.5 + 0.5
+}
+
+relief_modifier
+{
+	name		mod_wall_flutes
+	height		sp_wall_flute_h
+	scale		0.012
+	domain		surface
+	max_slope	0.50
+}
+
+lambertian_material
+{
+	name		mat_gallery_wall
+	reflectance	pnt_gallery_wall
+}
+
+box_geometry
+{
+	name		geo_gallery_wall
+	width		10.0
+	height		6.0
+	depth		0.30
+}
+
+standard_object
+{
+	name		obj_gallery_wall
+	geometry	geo_gallery_wall
+	material	mat_gallery_wall
+	modifier	mod_wall_flutes
+	position	0.0 2.5 -1.65
+}
+
+##################################################
+# 2. FOLDED ORIGAMI PAPER LANTERN SCULPTURE:
+#    skin_geometry + diffuse_transmission_material +
+#    osl_gradient + blended_modifier
+##################################################
+
+# Warm coral-apricot core transitioning to luminous cool-ivory/teal wingtips via osl_gradient
+expression_painter
+{
+	name		pnt_origami_refl
+	def			g		osl_gradient(vec3(u, v, 0.0), 3)
+	def			fiber	osl_noise_texture(Po * 22.0, 0.0, 3, 1, 4.0, 0.6, 2.0, 0.0, 1.0, 0.2, 1)
+	def			col		mix(vec3(0.46, 0.32, 0.26), vec3(0.38, 0.48, 0.50), g)
+	expr		col * (0.88 + 0.18 * fiber)
+}
+
+expression_painter
+{
+	name		pnt_origami_trans
+	def			g		osl_gradient(vec3(u, 0.0, 0.0), 2)
+	def			rib		abs(sin(u * 25.1327))
+	def			col		mix(vec3(0.50, 0.24, 0.10), vec3(0.18, 0.42, 0.44), g)
+	expr		col * (0.72 + 0.28 * rib)
+}
+
+diffuse_transmission_material
+{
+	name			mat_origami_paper
+	reflectance		pnt_origami_refl
+	transmittance	pnt_origami_trans
+}
+
+# Blended modifier: fine washi paper fibers + crisp accordion origami pleats
+scalar_painter
+{
+	name		sp_washi_h
+	expression	osl_noise_texture(Po * 34.0, 0.0, 3, 1, 4.0, 0.65, 2.0, 0.0, 1.0, 0.2, 1)
+}
+
+scalar_painter
+{
+	name		sp_pleat_h
+	expression	osl_math(37, u * 16.0, 1.0, 0.0)
+}
+
+relief_modifier
+{
+	name		mod_washi_fiber
+	height		sp_washi_h
+	scale		0.0025
+	domain		surface
+	max_slope	0.35
+}
+
+relief_modifier
+{
+	name		mod_origami_pleats
+	height		sp_pleat_h
+	scale		0.0085
+	domain		surface
+	max_slope	0.55
+}
+
+blended_modifier
+{
+	name		mod_origami_combined
+	modifier_a	mod_washi_fiber
+	modifier_b	mod_origami_pleats
+	weight		0.65
+}
+
+# Sculpted basalt pedestal under the origami lantern
+expression_painter
+{
+	name		pnt_basalt_col
+	def			n		osl_noise_texture(Po * 6.0, 0.0, 3, 1, 4.0, 0.55, 2.0, 0.0, 1.0, 0.15, 1)
+	def			ao		osl_ao(0.32, 8, vec3(0,0,0), 0)
+	expr		mix(vec3(0.06, 0.065, 0.075), vec3(0.15, 0.16, 0.18), n) * mix(0.40, 1.0, ao)
+}
+
+uniformcolor_painter
+{
+	name		pnt_basalt_spec
+	color		0.045 0.045 0.045
+}
+
+ggx_material
+{
+	name			mat_basalt
+	rd				pnt_basalt_col
+	rs				pnt_basalt_spec
+	alphax			0.35
+	alphay			0.35
+	fresnel_mode	schlick_f0
+}
+
+lathe_geometry
+{
+	name			geo_origami_plinth
+	axis			y
+	n_radial		48
+	profile_point	0.00 0.00
+	profile_point	0.48 0.00
+	profile_point	0.48 0.06
+	profile_point	0.42 0.09
+	profile_point	0.40 0.28
+	profile_point	0.44 0.31
+	profile_point	0.36 0.36
+	profile_point	0.00 0.36
+}
+
+standard_object
+{
+	name		obj_origami_plinth
+	geometry	geo_origami_plinth
+	material	mat_basalt
+	position	-0.18 0.00 -0.10
+}
+
+# Glowing filament core sphere above the plinth
+blackbody_painter
+{
+	name		pnt_filament_bb
+	temperature	2700.0
+}
+
+lambertian_luminaire_material
+{
+	name		mat_filament_core
+	exitance	pnt_filament_bb
+	scale		65.0
+}
+
+sphere_geometry
+{
+	name		geo_filament_core
+	radius		0.07
+}
+
+standard_object
+{
+	name		obj_filament_core
+	geometry	geo_filament_core
+	material	mat_filament_core
+	position	-0.18 0.88 -0.10
+}
+
+# Sculpted origami paper wing petal (billowed folded kite)
+skin_geometry
+{
+	name		geo_origami_sail
+	n_len		24
+	n_across	10
+	billow		0.18
+	rail_a		0.00  0.00  0.04
+	rail_a		0.22  0.22  0.22
+	rail_a		0.34  0.58  0.26
+	rail_a		0.16  0.96  0.14
+	rail_a		0.00  1.18  0.02
+	rail_b		0.00  0.00 -0.04
+	rail_b		-0.06 0.24  0.12
+	rail_b		-0.04 0.62  0.18
+	rail_b		-0.02 0.98  0.08
+	rail_b		0.00  1.18  0.02
+}
+
+# Six spiraling origami sails blooming around the warm filament heart
+standard_object
+{
+	name		obj_sail_1
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 0.0 0.0
+}
+
+standard_object
+{
+	name		obj_sail_2
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 60.0 0.0
+}
+
+standard_object
+{
+	name		obj_sail_3
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 120.0 0.0
+}
+
+standard_object
+{
+	name		obj_sail_4
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 180.0 0.0
+}
+
+standard_object
+{
+	name		obj_sail_5
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 240.0 0.0
+}
+
+standard_object
+{
+	name		obj_sail_6
+	geometry	geo_origami_sail
+	material	mat_origami_paper
+	modifier	mod_origami_combined
+	position	-0.18 0.36 -0.10
+	orientation	0.0 300.0 0.0
+}
+
+##################################################
+# 3. DICHROIC VELVET & SPIRAL-GOLD BROCADE TORUS:
+#    osl_fresnel + osl_layer_weight (Facing) +
+#    osl_to_camera_vector + osl_vector_rotate + mix_material
+##################################################
+
+# Dichroic velvet colour shifts live with camera-space normal & facing angle:
+# deep midnight-indigo facing camera -> glowing royal magenta-violet at grazing rim!
+expression_painter
+{
+	name		pnt_dichroic_velvet
+	def			ncam	osl_to_camera_vector(N)
+	def			face	osl_layer_weight(0.48, vec3(0,0,0), 1)
+	def			fres	osl_fresnel(1.42, vec3(0,0,0), 0)
+	def			tilt	osl_clamp(0, ncam.x * 0.5 + 0.5, 0.0, 1.0)
+	def			core	mix(vec3(0.04, 0.05, 0.16), vec3(0.08, 0.12, 0.26), tilt)
+	def			rim		mix(vec3(0.55, 0.09, 0.36), vec3(0.14, 0.44, 0.62), tilt)
+	expr		mix(core, rim, clamp(face * 0.85 + fres * 0.45, 0.0, 1.0))
+}
+
+lambertian_material
+{
+	name		mat_dichroic_velvet
+	reflectance	pnt_dichroic_velvet
+}
+
+# Spiral brocade gold filigree bands computed with osl_vector_rotate!
+scalar_painter
+{
+	name		sp_spiral_gold_w
+	def			pr		osl_vector_rotate(0, 0, Po, vec3(0,0,0), vec3(0,1,0), Po.y * 4.5, vec3(0,0,0))
+	def			ang		atan2(pr.z, pr.x)
+	def			wave	sin(ang * 6.0 + length(vec3(pr.x, 0.0, pr.z)) * 18.0)
+	def			band	smoothstep(0.62, 0.74, wave)
+	expression	band
+}
+
+scalar_painter
+{
+	name		sp_velvet_w
+	expression	1.0 - sample_scalar(sp_spiral_gold_w)
+}
+
+scalar_painter
+{
+	name		sp_velvet_nap_h
+	expression	osl_noise_texture(Po * 55.0, 0.0, 3, 1, 3.0, 0.6, 2.0, 0.0, 1.0, 0.1, 1)
+}
+
+relief_modifier
+{
+	name		mod_velvet_nap
+	height		sp_velvet_nap_h
+	scale		0.002
+	domain		surface
+	max_slope	0.35
+}
+
+mix_material
+{
+	name		mat_brocade_torus
+	child		mat_dichroic_velvet weight sp_velvet_w      modifier mod_velvet_nap
+	child		mat_brass_inlay     weight sp_spiral_gold_w modifier none
+}
+
+torus_geometry
+{
+	name		geo_brocade_torus
+	majorradius	0.36
+	minorratio	0.36
+}
+
+standard_object
+{
+	name		obj_brocade_torus
+	geometry	geo_brocade_torus
+	material	mat_brocade_torus
+	position	0.92 0.56 0.25
+	orientation	62.0 -28.0 18.0
+}
+
+# Slender basalt pedestal cradling the brocade torus
+lathe_geometry
+{
+	name			geo_torus_stand
+	axis			y
+	n_radial		40
+	profile_point	0.00 0.00
+	profile_point	0.26 0.00
+	profile_point	0.24 0.04
+	profile_point	0.11 0.08
+	profile_point	0.09 0.16
+	profile_point	0.16 0.21
+	profile_point	0.00 0.19
+}
+
+standard_object
+{
+	name		obj_torus_stand
+	geometry	geo_torus_stand
+	material	mat_basalt
+	position	0.92 0.00 0.25
+}
+
+##################################################
+# 4. CAMERA-RAY GOSSAMER GALLERY VEIL:
+#    osl_is_camera_ray() + mix_material + passthrough +
+#    diffuse_transmission_material
+##################################################
+
+# Delicate golden-amber vellum & filigree veil:
+#   - To camera rays (`osl_is_camera_ray() == 1`): 72% passthrough gossamer so the
+#     viewer looks right through the etched veil at the origami lantern behind!
+#   - To shadow & indirect rays (`osl_is_camera_ray() == 0`): denser translucent screen
+#     that casts a warm golden tinted shadow onto the terrazzo floor!
+expression_painter
+{
+	name		pnt_veil_refl
+	def			g		osl_gradient(vec3(u, v, 0.0), 3)
+	expr		mix(vec3(0.32, 0.26, 0.20), vec3(0.22, 0.32, 0.38), g)
+}
+
+expression_painter
+{
+	name		pnt_veil_trans
+	def			g		osl_gradient(vec3(u, v, 0.0), 3)
+	expr		mix(vec3(0.58, 0.36, 0.16), vec3(0.24, 0.44, 0.54), g)
+}
+
+diffuse_transmission_material
+{
+	name			mat_veil_vellum
+	reflectance		pnt_veil_refl
+	transmittance	pnt_veil_trans
+}
+
+# Gold filigree veins etched across the gossamer veil via Voronoi Distance-to-Edge
+scalar_painter
+{
+	name		sp_veil_gold_w
+	def			edge	osl_voronoi_distance(vec3(u * 4.0, v * 6.0, 0.0), 0.0, 2, 3, 0, 1.0, 0.0, 0.5, 2.0, 0.0, 2.0, 0.8, 1)
+	def			border	max(max(step(u, 0.05), step(0.95, u)), max(step(v, 0.04), step(0.96, v)))
+	def			vein	1.0 - smoothstep(0.015, 0.032, edge)
+	expression	clamp(max(border, vein * 0.85), 0.0, 1.0)
+}
+
+scalar_painter
+{
+	name		sp_veil_pass_w
+	def			cam		osl_is_camera_ray()
+	def			gold	sample_scalar(sp_veil_gold_w)
+	expression	(1.0 - gold) * mix(0.20, 0.74, cam)
+}
+
+scalar_painter
+{
+	name		sp_veil_vellum_w
+	expression	clamp(1.0 - sample_scalar(sp_veil_gold_w) - sample_scalar(sp_veil_pass_w), 0.0, 1.0)
+}
+
+mix_material
+{
+	name		mat_gossamer_veil
+	child		mat_veil_vellum weight sp_veil_vellum_w modifier none
+	child		mat_brass_inlay weight sp_veil_gold_w   modifier none
+	passthrough	weight sp_veil_pass_w
+}
+
+# Gently curved arched gallery screen
+skin_geometry
+{
+	name		geo_gossamer_veil
+	n_len		24
+	n_across	12
+	billow		0.08
+	rail_a		-0.34 0.06  0.04
+	rail_a		-0.34 0.52  0.00
+	rail_a		-0.28 0.92  0.02
+	rail_a		-0.14 1.12  0.04
+	rail_b		 0.34 0.06 -0.04
+	rail_b		 0.34 0.52  0.00
+	rail_b		 0.28 0.92 -0.02
+	rail_b		 0.14 1.12 -0.04
+}
+
+standard_object
+{
+	name		obj_gossamer_veil
+	geometry	geo_gossamer_veil
+	material	mat_gossamer_veil
+	position	-0.84 0.00 0.56
+	orientation	0.0 34.0 0.0
+}
+
+# Small basalt plinth foot under the gossamer screen
+box_geometry
+{
+	name		geo_veil_foot
+	width		0.76
+	height		0.07
+	depth		0.16
+}
+
+standard_object
+{
+	name		obj_veil_foot
+	geometry	geo_veil_foot
+	material	mat_basalt
+	position	-0.84 0.035 0.56
+	orientation	0.0 34.0 0.0
+}
+
+##################################################
+# Output
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/origami_lantern_pavilion
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}

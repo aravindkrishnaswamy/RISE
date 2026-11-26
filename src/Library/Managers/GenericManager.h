@@ -22,9 +22,94 @@
 #include "../Utilities/RString.h"
 #include <map>
 #include <vector>
+#include <string>
+#include <string_view>
+#include <algorithm>
+#include <cstring>
 
 namespace RISE
 {
+	// D35 record-during-derive (slice 1, docs/agentic-redesign/21-stable-apply-and-resolver.md
+	// §8): when DeriveToJob installs these sinks -- SETUP-TIME only, during its PASS-2 chunk
+	// bracketing; NULL by default, so the normal path pays a single predictable branch and
+	// nothing else -- GenericManager records each PRODUCED entity (AddItem) and each RESOLVED
+	// entity (GetItem-found) by pointer.  The derive then builds the reference graph from the
+	// engine's ACTUAL production+resolution, not a parallel heuristic, so the two cannot drift.
+	// Keyed by entity POINTER: a multiple-inheritance sub-object pointer (the same painter seen
+	// as IPainter via the colour manager and as IFunction2D via the func-2D manager) records
+	// under each base, but both AddItems run in the same chunk's bracket, so both pointers map
+	// to the one producer.  See Cst.cpp DeriveToJob.
+	// INVARIANT for any entity class added to this recording (e.g. the media mediaMap hook):
+	// a resolution hook MUST be paired with a production hook.  Producer-pointer identity is
+	// how a resolution maps back to its producer; if an entity could be freed + its address
+	// reused mid-derive (e.g. a duplicate-name replace) without a production hook re-stamping
+	// that address, a stale producer attribution could survive.  With the pairing, any reused
+	// address is re-recorded as a producer before it can be resolved -- so it stays correct.
+	inline thread_local std::vector<const void*>* g_cstProductionSink = nullptr;
+	inline thread_local std::vector<const void*>* g_cstResolutionSink = nullptr;
+
+	// Finalize-failure detail sink.  Unlike the two D35 sinks above (production/resolution
+	// bookkeeping, gated behind `outRecorded`), this one is installed UNCONDITIONALLY around
+	// every chunk's Finalize call in DeriveToJob's PASS-2 apply loop (see Cst.cpp) so any
+	// Finalize -- however deep the call stack (e.g. Job::ImportGLTFScene calling into
+	// GLTFSceneImporter) -- has a way to hand back a SPECIFIC one-line reason for its failure
+	// instead of the generic "<keyword>: apply failed (e.g. unresolved reference); see log"
+	// diagnostic.  Contract: on failure, a Finalize (or anything it calls) may
+	// `if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = "specific reason";` before
+	// returning false; DeriveToJob reads + clears it immediately after the call and prefers
+	// it (non-empty) over the generic message.  NULL/empty is the default -- callers that
+	// never set it are byte-identical to before this existed.
+	inline thread_local std::string* g_cstFinalizeDiagSink = nullptr;
+
+	// FIRST-diagnostic-wins helper for the sink above (DL-32 round-2 review, P3,
+	// docs/DEBT_LEDGER.md).  The sink is armed for the WHOLE duration of one
+	// Finalize call -- including everything that Finalize calls into -- and a
+	// single call can hit more than one failure reason on its way to a final
+	// `return false`: an early, SPECIFIC one (e.g. `ParseStateBag::GetVec3`'s
+	// DL-32 wrong-arity hard-error, which does NOT stop the caller -- it
+	// zero-fills and lets Finalize keep running on the bad value), then a
+	// LATER, less specific one triggered BY that zero-filled value (e.g. a
+	// positivity check, or an unrelated validation a few lines further down).
+	// Every writer of this sink should go through here rather than a raw
+	// `*g_cstFinalizeDiagSink = ...`, so the EARLIEST cause -- the one a human
+	// actually needs to fix -- is what survives to DeriveToJob, not whichever
+	// check happened to run last.  `ParseStateBag::ReportVectorArity` (DL-32,
+	// ChunkDescriptor.h) already used this exact empty-check inline before this
+	// helper existed; it is unchanged, just no longer the only writer that
+	// protects itself this way.
+	//
+	// NOT for a writer that INTENTIONALLY re-wraps an existing message with
+	// more context (e.g. `Job::AddSweepGeometry`/`AddLatheGeometry`/
+	// `AddSkinGeometry` prefixing a nested factory failure with the object's
+	// own name, since the factory cannot know it) -- that is a different,
+	// sanctioned pattern (reads THEN writes, gated on non-empty) and stays a
+	// direct `*g_cstFinalizeDiagSink = ...` write.
+	inline void SetFinalizeDiagIfEmpty( const std::string& msg )
+	{
+		if( g_cstFinalizeDiagSink && g_cstFinalizeDiagSink->empty() ) *g_cstFinalizeDiagSink = msg;
+	}
+
+	// Preserve the old vector<char> ordering, including its terminating NUL.
+	struct ManagerNameLess
+	{
+		using is_transparent = void;
+
+		bool operator()( std::string_view left, std::string_view right ) const
+		{
+			const auto common = std::min( left.size(), right.size() );
+			size_t i = 0;
+			// Skip equal blocks, then apply char ordering at the first mismatch.
+			for( ; common - i >= 16; i += 16 ) {
+				if( std::memcmp( left.data() + i, right.data() + i, 16 ) != 0 ) break;
+			}
+			for( ; i < common; ++i ) {
+				if( left[i] != right[i] ) return left[i] < right[i];
+			}
+			if( left.size() == right.size() ) return false;
+			return left.size() < right.size() ? right[common] >= char(0) : left[common] < char(0);
+		}
+	};
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{
@@ -32,30 +117,20 @@ namespace RISE
 
 		struct ITEMREFERENCES
 		{
-			IDeletedCallback<T>&	pFunc;
-			IReference&				pCaller;
-
-			ITEMREFERENCES( IDeletedCallback<T>& a, IReference& c ) :
-			pFunc( a ), pCaller( c )
-			{}
-
-			ITEMREFERENCES( const ITEMREFERENCES& item ) :
-			pFunc( item.pFunc ), pCaller( item.pCaller )
-			{}
-
-			ITEMREFERENCES& operator=( const ITEMREFERENCES& item )
-			{
-				pFunc = item.pFunc;
-				pCaller = item.pCaller;
-				return *this;
-			}
+			IDeletedCallback<T>* pFunc;
+			IReference* pCaller;
 		};
 
 		typedef std::vector<ITEMREFERENCES>				ReferencesListType;
 		typedef std::pair<T*,ReferencesListType>		ItemType;
-		typedef std::map<String,ItemType>				ItemListType;
+		typedef std::map<std::string,ItemType,ManagerNameLess>				ItemListType;
 
 		ItemListType		items;
+
+		// P1: parallel per-name registration serial, bumped on every AddItem, so a
+		// remove+re-add under the same name yields a NEW serial (identity change).
+		unsigned long long							m_nNextSerial;
+		std::map<std::string,unsigned long long,ManagerNameLess>			m_serials;
 
 		virtual ~GenericManager( )
 		{
@@ -64,6 +139,7 @@ namespace RISE
 
 	public:
 		GenericManager( )
+		: m_nNextSerial( 0 )
 		{}
 
 		bool		AddItem( T* pItem, const char* szName )
@@ -79,11 +155,17 @@ namespace RISE
 				return false;
 			}
 
-			// Now add it
+			std::string name( szName );
+			const auto inserted = items.try_emplace( name, pItem, ReferencesListType() );
+			try {
+				m_serials.emplace( std::move(name), m_nNextSerial + 1 );
+			} catch( ... ) {
+				items.erase( inserted.first );
+				throw;
+			}
+			++m_nNextSerial;
 			pItem->addref();
-
-			String vecName( szName );
-			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
+			if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pItem ) );   // D35: PRODUCED entity
 			return true;
 		}
 
@@ -94,22 +176,25 @@ namespace RISE
 				return false;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RemoveItem:: '%s' not found", szName );
 				return false;
 			}
+			const auto serial = m_serials.find( elem->first );
+			auto item = items.extract( elem );
+			if( serial != m_serials.end() ) m_serials.erase( serial );
+			NotifyDeleted( item.mapped() );
 
-			typename ReferencesListType::iterator	m, n;
-			for( m=elem->second.second.begin(), n=elem->second.second.end(); m!=n; m++ ) {
-				ITEMREFERENCES&	itemcb = *m;
-				itemcb.pFunc( *(elem->second.first) );
-				itemcb.pCaller.release();
-			}
-
-			items.erase( elem );
+			// Release the manager's own ref on the item.  AddItem
+			// addref'd; without this matching release the item leaks
+			// every time RemoveItem succeeds.  Pre-existed across all
+			// managers but only mattered once cameras started being
+			// removed at runtime; the other managers are essentially
+			// load-once / shutdown-once in practice and Shutdown's
+			// safe_release covers them on teardown.
+			safe_release( item.mapped().first );
 			return true;
 		}
 
@@ -120,14 +205,22 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::const_iterator	elem = items.find( vecName );
+			typename ItemListType::const_iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				return 0;
 			}
 
+			if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( (*elem).second.first ) );   // D35: RESOLVED entity
 			return (*elem).second.first;
+		}
+
+		// P1: see IManager::GetItemSerial.
+		unsigned long long	GetItemSerial( const char* szName ) const
+		{
+			if( !szName ) return 0;
+			typename std::map<std::string,unsigned long long,ManagerNameLess>::const_iterator it = m_serials.find( std::string_view(szName) );
+			return ( it == m_serials.end() ) ? 0 : it->second;
 		}
 
 		T*			RequestItemUse( const char* szName, IDeletedCallback<T>& pFunc, IReference& pCaller )
@@ -138,16 +231,14 @@ namespace RISE
 				return 0;
 			}
 
-			String vecName( szName );
-			typename ItemListType::iterator	elem = items.find( vecName );
+			typename ItemListType::iterator	elem = items.find( std::string_view(szName) );
 
 			if( elem == items.end() ) {
 				GlobalLog()->PrintEx( eLog_Warning, "GenericManager::RequestItemUse:: '%s' not found", szName );
 				return 0;
 			}
 
-			ITEMREFERENCES		itemcb( pFunc, pCaller );
-			elem->second.second.push_back( itemcb );
+			elem->second.second.push_back( { &pFunc, &pCaller } );
 			pCaller.addref();
 			return elem->second.first;
 		}
@@ -163,10 +254,11 @@ namespace RISE
 					for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ )
 					{
 						ITEMREFERENCES&	itemcb = *m;
-						if( itemcb.pFunc == pFunc ) {
+						if( *itemcb.pFunc == pFunc ) {
 							// We found it, now blow this entry away.
-							itemcb.pCaller.release();
+							auto* caller = itemcb.pCaller;
 							i->second.second.erase( m );
+							caller->release();
 							return true;
 						}
 					}
@@ -183,21 +275,12 @@ namespace RISE
 		//
 		void		Shutdown( )
 		{
-			typename ItemListType::iterator		i, e;
-			for( i=items.begin(), e=items.end(); i!=e; i++ )
-			{
-				typename ReferencesListType::iterator	m, n;
-				for( m=i->second.second.begin(), n=i->second.second.end(); m!=n; m++ ) {
-					ITEMREFERENCES&	itemcb = (*m);
-					itemcb.pFunc( *i->second.first );
-					itemcb.pCaller.release();
-				}
-
-				i->second.second.clear();
-				safe_release( i->second.first );
+			while( !items.empty() ) {
+				auto item = items.extract( items.begin() );
+				m_serials.erase( item.key() );
+				NotifyDeleted( item.mapped() );
+				safe_release( item.mapped().first );
 			}
-
-			items.clear();
 		}
 
 		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }
@@ -215,6 +298,15 @@ namespace RISE
 			typename ItemListType::const_iterator		i, e;
 			for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 				pFunc( i->second.first );
+			}
+		}
+
+	private:
+		static void NotifyDeleted( const ItemType& item )
+		{
+			for( const auto& callback : item.second ) {
+				(*callback.pFunc)( *item.first );
+				callback.pCaller->release();
 			}
 		}
 	};

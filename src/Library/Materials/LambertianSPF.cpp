@@ -20,21 +20,30 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 LambertianSPF::LambertianSPF( const IPainter& ref ) :
-  reflectance( ref )
+  pReflectance( &ref )
 {
-	reflectance.addref();
+	pReflectance->addref();
 }
 
 LambertianSPF::~LambertianSPF( )
 {
-	reflectance.release();
+	safe_release( pReflectance );
+}
+
+void LambertianSPF::SetReflectance( const IPainter& ref )
+{
+	// addref-before-release ordering so a self-rebind is safe; see
+	// the matching comment in LambertianBRDF::SetReflectance.
+	ref.addref();
+	safe_release( pReflectance );
+	pReflectance = &ref;
 }
 
 void LambertianSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
@@ -52,13 +61,30 @@ void LambertianSPF::Scatter(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 
-	diffuse.kray = reflectance.GetColor(ri);
+	diffuse.kray = ReflectanceColor( *pReflectance, ri );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 	diffuse.isDelta = false;
 
-	scattered.AddScatteredRay( diffuse );
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a sampled direction that validates
+	// against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the
+	// solid.  Oriented to the SAME normal the direction was generated
+	// around above.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal, making the gate
+	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3 nEff = ( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
+		? -ri.onb.w() : ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 void LambertianSPF::ScatterNM( 
@@ -66,7 +92,7 @@ void LambertianSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
@@ -84,13 +110,30 @@ void LambertianSPF::ScatterNM(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 	
-	diffuse.krayNM = reflectance.GetColorNM(ri, nm);
+	diffuse.krayNM = ReflectanceColorNM( *pReflectance, ri, nm );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 	diffuse.isDelta = false;
 
-	scattered.AddScatteredRay( diffuse );
+	// Geometric-horizon gate: GlintModifier can tilt the shading normal up
+	// to 60 deg off the true surface, so a sampled direction that validates
+	// against the (tilted) shading normal can still point below the
+	// geometric surface -- the continuation ray then tunnels into the
+	// solid.  Oriented to the SAME normal the direction was generated
+	// around above.  Degenerate vGeomNormal (SquaredModulus guard, matches
+	// GlintModifier.cpp) falls back to the shading normal, making the gate
+	// a no-op.
+	// (ray-anchor sweep: geomN's orientation is anchored to ri.ray.Dir(), not to the shading normal, so a glint tilt cannot flip the gate to the wrong side.)
+	const Vector3 nEff = ( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
+		? -ri.onb.w() : ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
+		scattered.AddScatteredRay( diffuse );
+	}
 }
 
 Scalar LambertianSPF::Pdf(
@@ -105,7 +148,15 @@ Scalar LambertianSPF::Pdf(
 	const Scalar cosTheta = bFrontFace ?
 		Vector3Ops::Dot( wo, ri.onb.w() ) :
 		-Vector3Ops::Dot( wo, ri.onb.w() );
-	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+
+	// Geometric-horizon gate (MIS consistency with Scatter's sampler-side
+	// gate): a wo the sampler can no longer emit contributes zero density.
+	const Vector3 nEff = bFrontFace ? ri.onb.w() : -ri.onb.w();
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+		? ri.vGeomNormal : nEff;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+
+	return (cosTheta > 0 && Vector3Ops::Dot( wo, geomN ) > 0) ? cosTheta * INV_PI : 0;
 }
 
 Scalar LambertianSPF::PdfNM(

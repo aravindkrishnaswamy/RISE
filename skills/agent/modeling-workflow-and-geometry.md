@@ -1,0 +1,844 @@
+# Modeling Workflow and Geometry
+> hook: Read when composing or iterating on scene GEOMETRY -- placing objects, choosing primitive types, or checking placement cheaply from multiple angles.
+
+## The observe loop (build in coherent groups, then look)
+
+Modeling is: build a coherent GROUP of related chunks, then look.
+Batch the group so it costs one round-trip, and render often enough
+that a mistake is one edit to fix instead of thirty edits buried.  A
+render is cheap -- a single small call -- and it is how you catch the
+floor you forgot, the light that is off, the hero placed off-frame,
+while they are still easy to fix.
+
+**Batch related chunks with `insert_chunks`.**  A painter, its
+material, a geometry, and the object that binds them are one coherent
+unit -- add them in a single `insert_chunks` call, in dependency order,
+not four separate `insert_chunk` calls.  Same for a whole lighting rig
+or a piece of furniture.  That is one round-trip instead of many, and
+it means you render once you have a whole THING to look at rather than
+after each fragment.  Batching is where you SAVE calls; the renders
+between groups are cheap and you should keep them.
+
+**Batch related edits with `propose_patches`.**  The same rule applies
+to CHANGING things, and this is where the calls really add up: a
+correction pass after a render is usually "nudge these six objects and
+retune two lights", which is a dozen or more parameter edits.  Send
+them as ONE `propose_patches` call, not a dozen `propose_patch` calls
+turn by turn -- an agent that patches one parameter per round will burn
+its entire call budget on a single correction pass and never reach a
+finished scene.  Reach for single `propose_patch` only when you are
+genuinely changing ONE thing.
+
+Two things to know about the batch form.  Elements are applied in array
+order and it is BEST-EFFORT -- one rejected element does not stop the
+rest -- so **read the `applied`/`total` it returns**: `8/12 applied`
+means four edits did not land, and `results[i]` tells you which and
+why.  Do not assume a batch succeeded because the call returned.  The
+one exception to best-effort: if the `baseHeadVersion` you passed is
+stale, the WHOLE batch stops with nothing applied (so it cannot
+half-clobber an edit someone else made) -- re-read the document and
+resubmit.
+
+**Render after each OBJECT GROUP, and always after lighting.**  Once a
+group has landed -- the surface, a piece of furniture, the light rig --
+render a small preview and check it before you build the next group on
+top.  On a from-scratch build that means a look after each object or
+pair of objects, **not** one look at the end: four renders across a
+six-object scene is too few, and a measured build that rendered only
+four times in thirty-three turns spent fourteen of those turns tearing
+down and rebuilding things a look would have caught immediately.  A
+192px preview per group is cheap; the turns you spend re-deriving a
+placement you never saw are not.
+
+Note what this does and does not trade against.  Batching is where you
+save round-trips -- a painter, its material, its geometry and its
+object still go in ONE `insert_chunks` call.  The look BETWEEN groups is
+not the thing to economize on.  And it does not contradict the rule that
+a parameter edit needs no render: see "Param confirmation versus visual
+judgement" below.
+
+In particular:
+- **the LIGHTING render is the one you must not skip.**  Once your
+  lights are in place -- and again whenever you change a light or a
+  material -- render and actually CHECK the lit result.  Is it too dark,
+  too bright, or crushed to a single colour (a warm key with no fill
+  reads as an orange blob)?  Brightness and colour balance are visual
+  facts you cannot read off the chunk text, and getting the light wrong
+  is the single most common way a build fails -- a scene that is black,
+  blown out, or mono-coloured fails no matter how good the geometry is,
+  and you will not know until you look;
+- render the first time there is a lit surface to SEE -- is the scene
+  not black, is the hero in frame, does the floor exist;
+- render to settle a spatial relationship a single mental model cannot
+  -- is that object behind, inside, or floating above another; does the
+  hero actually rest ON the table (a second camera angle is what catches
+  depth ambiguity);
+- render before you build a LOT more on top of something unverified --
+  check the foundation before thirty chunks bury it.
+
+The only render not worth making is one that tells you nothing you
+already know: re-rendering when nothing visual changed since the last
+look, or rendering to confirm a binding that `read_document` or the
+insert's own `issues` diagnostics already answered.  Short of that,
+when in doubt, look -- the render is cheap and the failure it catches
+is not.
+
+**Param confirmation versus visual judgement.**  These are two
+different questions and only one of them needs an image, so the rules
+never actually collide:
+
+- **A VALUE landing is a param confirmation.**  You set `power` to 12,
+  or bound a material, or inserted a chunk: the apply response's status
+  and bumped `headVersion` already told you it took, and `validate` with
+  no arguments covers the structural case.
+  Do NOT render to confirm a parameter took -- a render cannot tell you
+  anything the apply response did not.
+- **PLACEMENT, SHAPE and COMPOSITION are not param confirmations.**
+  Where an object sits relative to another, what silhouette it reads as,
+  whether the frame composes -- an apply response reports clean success
+  for coordinates that leave two objects a foot apart, so it cannot
+  answer any of these.  They are visual judgements, and a visual
+  judgement needs an image.  Look.
+
+The short form: never render to re-read a number you set; always look
+to judge a placement.
+
+**Relational constraints must be checked against an image.**  When the
+request describes one object as
+resting against / behind / in front of / overlapping
+another, that something breaks the horizon or leads the eye, or that
+the scene "reads as X from this angle" -- that claim is not verified
+until you have rendered and LOOKED at the result.  Reasoning about
+coordinates is not verification.  Two objects with entirely plausible
+numbers routinely fail to touch, interpenetrate instead of resting, or
+occlude in the wrong order, because contact depends on the geometry's
+actual extent and on the camera, neither of which is visible in the
+position values.
+
+- Render with `imageMaxEdge` (~192) and look at the relationship
+  directly -- and from a SECOND `camera` angle when the constraint is
+  about depth, since one view cannot distinguish touching from merely
+  overlapping in screen space.
+- Use `query_object_at {x,y}` to settle "is object A actually at this
+  screen position" for the price of one cheap call -- it returns the
+  name directly (`hit:false`, not an error, when nothing is there).
+  That is the fast way to confirm an occlusion is the object you meant.
+- **When the check fails, patch the position and look again.**  One
+  `propose_patches` call to nudge the offender, one small re-render to
+  confirm.  Do not re-derive the answer from the numbers -- the numbers
+  are what misled you the first time.
+
+Do not call a task with relational constraints done off a clean apply
+and clean validate.  Those say the document is well-formed, not that
+the pestle is leaning on the rim.
+
+**Do not fly blind.**  The failure that actually loses builds is the
+opposite of over-rendering: assembling an entire scene and never
+rendering once, then discovering at the end that the key light was off
+or the hero off-frame, with no budget left to fix it.  If you have
+built a substantial scene and have not looked, render now.
+
+**How to render cheaply, when you do render:**
+- **`render {width:160, height:120}`** from the default camera -- the
+  `meanR/meanG/meanB` alone often answer "is it lit / still black /
+  blown out" without reading a single pixel.
+- **`render` with a `camera` override from another angle** to resolve
+  depth -- keep `lookat` on the subject and move `location` (swap X and
+  Z for a side view, raise Y for top-down).  `location`/`lookat` are
+  `"x y z"` strings of exactly 3 finite numbers; `fov` is optional in
+  the open range `(0, 180)`.  The override is EPHEMERAL -- restored
+  after that one render, never touches the document.
+- **`render {imageMaxEdge:160}`** when you actually need to SEE the
+  frame (composition, silhouette, colour) -- the PNG comes back in that
+  same call, so no separate `read_image` is needed.  Most of the time
+  the channel means already answered "did this change".
+- **`validate` with NO arguments** before a render if you are unsure an
+  edit is well-formed -- it checks the CURRENT scene and is cheaper than
+  a failed render.  Do NOT pass `text` to re-send the document you just
+  edited; the `text` form is for a CANDIDATE document you have not
+  applied, and echoing a whole scene back costs thousands of output
+  tokens for nothing.
+- **Full-size, full-sample render** (no width/height/camera override)
+  ONLY for final verification, once you are confident.
+
+**Why this matters (measured):** a `maxEdge 128`-`192` preview PNG is
+roughly an order of magnitude smaller than a full 800^2 frame --
+**8-17x**, depending on content (PNG size varies with image
+complexity, so don't expect an exact multiplier to reproduce across
+scenes).  A blocking-out pass that renders from 3 angles at 160x120
+and reads back one `maxEdge 160` image costs a small fraction of the
+tokens (and render time) of doing the same pass at full resolution
+each step.  Reserve full resolution for the shot you are actually
+going to keep.
+
+## Geometry-type selection
+
+Survey of every geometry/object chunk kind actually registered in the
+parser (`src/Library/Parsers/ChunkParserRegistry.cpp`) -- do not
+invent kinds not listed here.
+
+- **Analytic primitives** -- `sphere_geometry` (`radius`),
+  `box_geometry` (`width`/`height`/`depth`, axis-aligned),
+  `cylinder_geometry` (`axis` x/y/z, `radius`, `height`),
+  `torus_geometry` (`majorradius`, `minorratio` -- minor radius as a
+  FRACTION of major), `ellipsoid_geometry` (`radii`, per-axis
+  semi-axes).  Exact silhouettes, no tessellation, cheapest to
+  intersect.  Prefer these for blocking out a scene and for anything
+  that genuinely IS that primitive shape (a ball, a crate, a pipe,
+  a ring).
+- **Planes** -- `infiniteplane_geometry` (tiling, unbounded: floors,
+  walls, backdrops -- see the lighting/materials skills, a specular
+  object needs one of these behind it or it renders black) and
+  `clippedplane_geometry` (four explicit corners `pta/ptb/ptc/ptd`:
+  a bounded quad -- area-light emitters, framed backdrops, cropped
+  floors).  `clippedplane_geometry`'s corner WINDING picks which side
+  renders/emits, same rule as the emissive-quad trap in the lighting
+  skill.
+- **`csg_object`** -- boolean combination of two already-declared
+  objects (`obja`, `objb`) via `operation` (`union` / `intersection` /
+  `subtraction`).  Size the result by sizing the CHILD geometries
+  before combining -- `csg_object` itself takes only `position` and
+  `orientation`, **no `scale` parameter** (a scale edit on a
+  `csg_object` is refused).  Good for cut/drilled/intersected shapes
+  (a box with a cylindrical bore, a lens from two overlapping
+  spheres).
+- **Triangle meshes** -- `3dsmesh_geometry`, `rawmesh_geometry` /
+  `rawmesh2_geometry`, `risemesh_geometry`, `plymesh_geometry`,
+  `gltfmesh_geometry`, each taking a `file` pointing at the source
+  asset.  Use for imported/authored assets that are not primitive-
+  shaped.  Declare the geometry chunk before the `standard_object`
+  that references it, same declare-before-use rule as painters and
+  materials.
+- **Other real kinds worth knowing about**: `lathe_geometry` (a
+  `profile_point <r> <h>` silhouette revolved about an axis -- the
+  LATHE verb, see the rule below), `skeleton_geometry` (a `joint <name>
+  <parent|none> <x> <y> <z> <radius>` graph, the verb for a limbed
+  body), `circulardisk_geometry`,
+  `bezierpatch_geometry`, `bilinearpatch_geometry` (patch/surface
+  primitives), `sdf_geometry` (signed-distance-field geometry -- blends,
+  fillets, and one `superellipsoid` part for any rounded box/cushion/
+  torso mass),
+  `cartesian_disk_geometry`, `sweep_geometry`, `path_instances_geometry`
+  (instancing along a path), and `displaced_geometry` (tessellates a
+  `base_geometry` and offsets vertices by a `displacement` painter --
+  a real modeling tool for bumpy/organic surfaces, but if you use it:
+  prefer FEWER bumps with LONGER wavelengths over many small bumps,
+  matching the displacement lesson in the SMS docs -- finer
+  tessellation (`detail`) does not fix a too-busy displacement and
+  can make downstream specular/caustic solving worse).  These are
+  real chunks but more specialized -- reach for the analytic
+  primitives and meshes above first.
+
+**Drop-in: a bumpy slab via `displaced_geometry`.** A small noise
+source bolted onto an existing base shape -- no colour painter needed
+for the noise source, since `displaced_geometry`'s `displacement`
+resolves through the Function2D manager, not the colour pipe
+(`Job::AddDisplacedGeometry`, `src/Library/Job.cpp` ~5338).
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	2.4 1.8 3.2
+	lookat		0 0 0
+	up			0 1 0
+	fov			42.0
+}
+
+box_geometry
+{
+	name	slab_base
+	width	3.0
+	height	0.3
+	depth	3.0
+}
+
+perlin2d_painter
+{
+	name		fn_bump
+	octaves		3
+	persistence	0.5
+	scale		6.0 6.0
+}
+
+displaced_geometry
+{
+	name			slab1_disp
+	base_geometry	slab_base
+	detail			32
+	displacement	fn_bump
+	disp_scale		0.15
+}
+
+uniformcolor_painter
+{
+	name	pnt_slab
+	color	0.6 0.6 0.6
+}
+
+lambertian_material
+{
+	name		mat_slab
+	reflectance	pnt_slab
+}
+
+standard_object
+{
+	name		slab1
+	geometry	slab1_disp
+	material	mat_slab
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
+**A one-call alternative to the recipe above.**
+`insert_geometry_scaffold {family:"displaced_slab", name:"slab2",
+size:3.0, detail:0.4, aspect:1.0}` expands the same box + noise +
+`displaced_geometry` graph shown above into a single call instead of
+hand-typing the three chunks yourself -- returns `geometry`
+(`{name,kind}`) naming the one `displaced_geometry` chunk
+(`tmpl_slab2_disp`) to bind into a `standard_object.geometry` slot.
+Unlike `insert_material_scaffold`, this tool NEVER emits a material or
+a `standard_object` -- wire those yourself exactly as `pnt_slab` /
+`mat_slab` / `slab1` do above.
+
+**A one-call tapered, blended limb/branch/tendril: `blended_chain`.**
+Any part that reads as a jointed, organic protrusion -- a limb, a
+branch, a tendril, a root, a horn, a tentacle -- suffers two recurring
+defects when hand-built: an untapered cylinder (uniform thickness end
+to end, reads as a pipe) and assembly by positional overlap (segments
+butted together with no smin blend, so the joints show as visible
+seams).  `insert_geometry_scaffold {family:"blended_chain",
+name:"branch1", points:"0 0 0; 0.4 1.1 -0.2; 0.9 1.6 0.3; 1.5 1.4 0.9",
+size:0.22, taper:0.65, detail:0.6}` sweeps a smin-blended chain of
+spheres along that path (a clamped Catmull-Rom spline through every
+point, so the chain's first and last nodes land EXACTLY on `0 0 0` and
+`1.5 1.4 0.9` -- aim an endpoint precisely at another part's surface by
+naming that surface's coordinate as a `points` entry) and returns
+`geometry` naming the one `sdf_geometry` chunk (`tmpl_branch1_chain`)
+to bind into a `standard_object.geometry` slot, exactly like every
+other family here.  `taper` shrinks the radius from `size` at the
+first point toward the last (0.65 here: a base three times thicker
+than the tip); every joint's blend radius is floored against the
+realized node spacing, so the chain can never show a visible seam
+regardless of `size`/`taper`/`detail`.  Unlike the other families,
+`blended_chain` takes `points` and `taper` INSTEAD of `aspect` -- the
+path itself is this family's creative essence.
+
+**When the body BRANCHES (more than one limb sharing a joint), reach
+for `skeleton_geometry` instead of chaining `blended_chain` calls.**
+`blended_chain` sweeps ONE spline through a single ordered list of
+points -- exactly right for one limb, but it cannot express two bones
+sharing a joint (a hip with two legs and a tail).  `skeleton_geometry`
+takes the joint GRAPH directly (`joint <name> <parent|none> <x> <y> <z>
+<radius>` per joint, a bone implied between every joint and its
+parent) and expands into one `sdf_geometry` chunk, same as this
+family does.  Use `blended_chain` for a single tapering protrusion;
+use `skeleton_geometry` the moment more than one bone needs to meet at
+the same joint.  See object-modeling-recipes' geometry vocabulary
+table for the chunk's full parameter list.
+
+**Revising a part's FORM is ONE call, exactly like revising its
+colour.**  When a render shows you that a shape is too plain, or the
+wrong form entirely -- the "wings" you built as a thin box, the
+"faceted crystal" that came out a smooth ellipsoid -- do NOT leave it
+and go tune the material instead.  `replace_geometry_scaffold
+{target:"wing_l", family:"blended_chain", name:"wing2", points:"0 0 0;
+0.6 0.3 -0.2; 1.1 0.1 -0.5", size:0.18, taper:0.8, detail:0.6}`
+expands the SAME graph `insert_geometry_scaffold` would and rebinds
+`wing_l`'s `geometry` slot to it, in one call.  `target` is the
+`standard_object`'s name, NOT the geometry chunk's.  The object's
+`position`, `orientation`, `scale`, `material` and every other
+parameter are preserved exactly -- placement you tuned by LOOKING
+survives the new form -- and the old geometry chunk is removed for you
+when nothing else references it (when something does, it is kept and
+the result names what).  Chunks the removal leaves unreferenced one
+hop deeper (e.g. the noise source that only fed the old displaced
+geometry) come back in `orphans` for you to clear with `remove_chunks`
+if you want them gone.  Families are the same five, minus
+`volume_bank` (that one emits its own object, so there is nothing to
+rebind -- use `insert_geometry_scaffold` for it).  The whole thing is
+one atomic edit: one undo step, and nothing changes at all if it is
+refused (check `status`: `"applied"` is the only outcome where
+anything landed).  The one exception is `"diagnosed"`: the Document
+WAS mutated -- the new geometry landed and the slot was rebound -- but
+the re-derive still emitted diagnostics, so `previousGeometry`/
+`orphans` describe something real, not a discarded plan; look at the
+log before touching that part again.
+
+**One override to "reach for the analytic primitives first": turned
+forms.**  If an object's silhouette is a solid of revolution -- bottle,
+jar, flask, retort, vase, cup, bowl, mortar, candlestick, goblet, urn,
+barrel, turned table leg -- do NOT stack cylinders to approximate it.
+A cylinder stack gives a faceted silhouette with a hard right-angle
+step at every joint where the real object curves continuously, and that
+single choice is what makes a render read as cartoonish regardless of
+how good the lighting and materials are.  Author it as a PROFILE
+instead, and the verb for that is `lathe_geometry`: repeated
+`profile_point <r> <h>` lines (radius from the axis, height along it)
+ARE the silhouette, revolved about `axis` (default `y`), with a point at
+`r = 0` collapsing to a pole so a profile that starts and ends there is
+a closed watertight vessel.  The FALLBACK is a chain of `sdf_geometry`
+`roundcone` parts (each one a `<r1> <r2> <h>` frustum = one
+height/radius span) joined with `smin`, whose blend radius fillets the
+joints into a continuous curve -- use it when the turned form must also
+take part in CSG, needs a non-circular cross-section, or has to blend
+into a larger implicit body.
+`sweep_geometry` is NOT the lathe verb, but its cross-section is no
+longer fixed either: `point_scale <sx> <sy>` scales the two profile
+axes INDEPENDENTLY per station (flatter than it is wide, and changing
+that ratio along the spine -- a torso, a fin, a strap, a hull), and a
+second profile (`profile2_point` / `profile2_circle` / `profile2_rect`)
+with per-station `point_morph <t>` changes the OUTLINE along the path
+(a round skull into a narrow muzzle, a round shaft into a square post);
+omitting `point_morph` gives a linear 0 -> 1 ramp, but a closed loop
+instead requires explicit `point_morph` values -- the ramp is refused
+there, since it would jump at the seam.
+What it still cannot do is interpolate more than TWO sections, so it is
+right for a body that follows a curve and changes section once (a
+retort's neck, a spout, a handle, a snout, a limb) and wrong for one
+whose outline changes character three or more times (a belly, then a
+waist, then a shoulder) -- that is a lathe, or two chained sweeps.  Its
+cross-section is `profile_circle <r> [n]` or `profile_rect <w> <h> [r]`
+(one line each) instead of a hand-listed `profile_point` polygon, and
+`path_closed TRUE` sweeps a seamless loop (a handle, a wreath) without
+matching endpoints.  A cylinder is still exactly right when the real
+object's radius does not change along its axis: a straight shaft, a
+peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
+and a rendered profile recipe: object-modeling-recipes, "Turned forms
+are a PROFILE, never a stack of cylinders" and Recipe 4.  The
+roundcone-chain-plus-smin fallback is exactly what `skeleton_geometry`
+now automates for a JOINT GRAPH (see above) -- hand-chain parts only
+for what neither the lathe nor the joint graph reaches (a non-circular
+cross-section, a hollow interior, a form that must blend into a larger
+implicit body).
+
+## Placement and scale sanity
+
+- Scale the OBJECT to the SCENE, not to some absolute unit -- a
+  `radius 1.0` sphere and a camera at `location 0 0 5` fills a
+  comfortable fraction of a 40-degree-fov frame; the same sphere at
+  `location 0 0 50` is a speck.  When in doubt, keep geometry sizes
+  near 1 and move the CAMERA to frame it, then adjust.
+- `lookat` should point at the subject's approximate center, not at
+  the world origin if the subject is not there -- an off-target
+  `lookat` silently crops or empties the frame.
+- **When the camera is GIVEN and you cannot change it** (a build-from-
+  scaffold task hands you a fixed `pinhole_camera`, and the rasterizer/
+  camera chunks are often not agent-editable), read where it already
+  looks -- typically `lookat 0 0 0` -- and place your HERO object THERE,
+  at the focal point, sized to fill a comfortable fraction of the frame.
+  Put the surface it rests on just below it and the supporting/decor
+  geometry AROUND and BEHIND it. Do not build the hero off to one side
+  and hope: the frame is fixed, so an off-origin hero renders as empty
+  space where the subject should be. If "the camera focuses on X" is in
+  the brief, X belongs at the point the given camera is aimed at.
+- A single render angle cannot tell you whether an object is in front
+  of, behind, or intersecting another -- it can only tell you the
+  silhouette agrees.  The second-angle render in the observe loop
+  above is what actually catches depth placement bugs; do not skip it
+  for any placement you are not already sure of.
+
+## Assemblies are subtrees; repeats are one chunk
+
+Objects form a TREE, not a flat list: `parent` makes a node's
+transform LOCAL (and a node with no `geometry` a pure container), and
+`source` + `count_u` repeats a whole node from ONE chunk.  Reach for
+both before you write the tenth near-identical chunk.  When to reach
+for each, the five things that bite, and a worked fence example live
+in object-modeling-recipes, "Assemblies are subtrees; repeats are one
+chunk" -- next to the recipes that repeat parts, where the choice
+actually gets made.
+
+## Complete example 1: blocking out three primitives on a floor
+
+A box pedestal, a sphere, and a cylinder on a `clippedplane` floor,
+lit by one directional key -- the primitive-palette starter for
+blocking out a composition.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	3 3 6
+	lookat		0 0.5 0
+	up			0 1 0
+	fov			45.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.55 0.55 0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_box
+	color	0.7 0.3 0.2
+}
+
+uniformcolor_painter
+{
+	name	pnt_sphere
+	color	0.2 0.5 0.7
+}
+
+uniformcolor_painter
+{
+	name	pnt_cyl
+	color	0.3 0.7 0.3
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+lambertian_material
+{
+	name		mat_box
+	reflectance	pnt_box
+}
+
+lambertian_material
+{
+	name		mat_sphere
+	reflectance	pnt_sphere
+}
+
+lambertian_material
+{
+	name		mat_cyl
+	reflectance	pnt_cyl
+}
+
+# The floor: a bounded quad big enough to hold the three primitives.
+clippedplane_geometry
+{
+	name	floor
+	pta		-4 0 -4
+	ptb		4 0 -4
+	ptc		4 0 4
+	ptd		-4 0 4
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	floor
+	material	mat_floor
+}
+
+# Pedestal: a box, sized directly via width/height/depth.
+box_geometry
+{
+	name	pedestal
+	width	1.2
+	height	0.6
+	depth	1.2
+}
+
+standard_object
+{
+	name		obj_pedestal
+	geometry	pedestal
+	material	mat_box
+	position	0 0.3 0
+}
+
+sphere_geometry
+{
+	name	sph
+	radius	0.5
+}
+
+standard_object
+{
+	name		obj_sphere
+	geometry	sph
+	material	mat_sphere
+	position	0 1.1 0
+	# Genuinely ON TOP of the pedestal: the pedestal top is at y=0.6
+	# (position.y 0.3 + half-height 0.3), so the sphere's center at
+	# y=1.1 rests its radius-0.5 bottom exactly on that surface, same
+	# X/Z as the pedestal underneath it.
+}
+
+# Cylinder: axis "y" stands it upright (default axis is "x", which
+# would lay it on its side).  Placed well clear of the box's footprint
+# on the floor -- from the authored camera it can look close to the
+# pedestal group in silhouette, but the observe loop's second angle
+# (swap X and Z, e.g. location "6 3 3") shows all three primitives as
+# genuinely separate objects instead of one occluding another.
+cylinder_geometry
+{
+	name	cyl
+	axis	y
+	radius	0.35
+	height	1.0
+}
+
+standard_object
+{
+	name		obj_cyl
+	geometry	cyl
+	material	mat_cyl
+	position	1.3 0.5 1.6
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
+## Complete example 2: `csg_object` -- a box with a cylindrical bore
+
+A box with a cylinder subtracted out of its center, demonstrating
+boolean modeling.  Both operand geometries are declared and given
+their own (unused-in-render) placeholder objects first -- `csg_object`
+consumes them by NAME, and the position/orientation-only caveat
+applies to the CSG result, not to its operands.
+
+```rise
+RISE ASCII SCENE 7
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	2.5 2 4
+	lookat		0 0 0
+	up			0 1 0
+	fov			45.0
+}
+
+uniformcolor_painter
+{
+	name	pnt_backdrop
+	color	0.5 0.5 0.55
+}
+
+uniformcolor_painter
+{
+	name	pnt_block_lo
+	color	0.55 0.42 0.22
+}
+
+uniformcolor_painter
+{
+	name	pnt_block_hi
+	color	0.85 0.72 0.42
+}
+
+# Blobby cellular noise reads as aggregate/stone rather than a flat
+# painted block.
+worley3d_painter
+{
+	name	pnt_block
+	colora	pnt_block_lo
+	colorb	pnt_block_hi
+	jitter	1.0
+	output	f1
+	scale	5.0 5.0 5.0
+}
+
+lambertian_material
+{
+	name		mat_backdrop
+	reflectance	pnt_backdrop
+}
+
+lambertian_material
+{
+	name		mat_block
+	reflectance	pnt_block
+}
+
+# Backdrop wall so the render isn't a bore hole floating in a void.
+infiniteplane_geometry
+{
+	name	wall
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_wall
+	geometry	wall
+	material	mat_backdrop
+	position	0 0 -2
+}
+
+# Operand A: the block. Size it here -- csg_object itself has no
+# scale parameter, so the FINAL size is whatever these operand
+# geometries are built at.
+box_geometry
+{
+	name	block
+	width	1.6
+	height	1.6
+	depth	1.6
+}
+
+standard_object
+{
+	name		obj_block
+	geometry	block
+	material	mat_block
+}
+
+# Operand B: the bore, a cylinder wider than the block along its
+# axis so the subtraction cleanly punches all the way through.
+cylinder_geometry
+{
+	name	bore
+	axis	y
+	radius	0.5
+	height	2.2
+}
+
+standard_object
+{
+	name		obj_bore
+	geometry	bore
+	material	mat_block
+}
+
+# The CSG result: subtract the bore from the block.  Only position/
+# orientation are transform-routable here -- a `scale` line would be
+# refused; resize by editing `block`/`bore` above instead.
+csg_object
+{
+	name		obj_drilled
+	obja		obj_block
+	objb		obj_bore
+	operation	subtraction
+	material	mat_block
+	position	0 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.8
+}
+```
+
+## Traps
+
+1. **Camera vectors are exactly 3 numbers.** `location`/`lookat`/`up`
+   in a `render` camera override are each a single string of EXACTLY
+   3 finite numbers `"x y z"` -- extra/missing tokens or a non-numeric
+   component is rejected.  `fov` is a plain number in the exclusive
+   range `(0, 180)`.
+2. **Preview `width`/`height` must be paired, or NEITHER takes effect.**
+   Passing only one is not rejected -- it is silently IGNORED, and the
+   render proceeds at the scene's AUTHORED dimensions (there is no
+   sane way to guess the other dimension, so the default is "do not
+   override" rather than invent an aspect ratio).  A stray one-sided
+   `render {width:160}` on a scene authored at 800x800 quietly costs a
+   full-size render instead of the cheap preview you meant to ask for.
+   Always pass BOTH, and confirm the override actually took by reading
+   `previewWidth`/`previewHeight` back from the result -- if they don't
+   match what you asked for, the pairing was broken.  When both ARE
+   paired, they are clamped to `[16, 512]` and never touch the document
+   (restored after the render).
+3. **`csg_object` refuses `scale`.**  Position/orientation are
+   transform-routable on a CSG result; size the operand geometries
+   (`obja`/`objb`) BEFORE combining them.
+4. **Declare before use, everywhere.**  A geometry/material/painter
+   referenced by an object, and the operand objects referenced by a
+   `csg_object`, must appear EARLIER in the file than their consumer
+   -- same rule as painters-before-materials in the scene-skeleton
+   skill.
+5. **Prefer batch verbs — and `revert_to_revision` is commit-only.**
+   Every insert and every removal validates before applying.  Under
+   `commit` autonomy `revert_to_revision` can restore any prior session
+   revision, whereas under `propose` autonomy it is unavailable, so
+   still prefer the observe loop (small renders between edits) over
+   stacking unverified speculative edits.  When you DO know what you
+   want, batch it: `insert_chunks` adds N chunks in one call
+   (sequential, best-effort -- list them in dependency order),
+   `remove_chunks` deletes N chunks in one call ATOMICALLY
+   (all-or-nothing, order irrelevant -- chunks that reference each other
+   inside the same batch come out together), and `propose_patches`
+   applies multiple parameter edits in one round-trip.  Reach for the
+   singular `insert_chunk` / `remove_chunk` only for a genuinely single
+   edit, or when you need `remove_chunk`'s `kind` disambiguator, which
+   the batch form does not have.
+6. **`cylinder_geometry`'s default axis is `x`.**  A cylinder with no
+   `axis` line lies on its side; use `axis y` to stand it upright
+   under a Y-up camera.

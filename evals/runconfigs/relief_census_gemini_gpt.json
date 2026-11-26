@@ -1,0 +1,12 @@
+{
+  "//": "relief_modifier adoption census (2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md section 9 census block). Identical instrument and providers to addwear_census_gemini_gpt.json (rich_material_closeup x3 x{gemini-3.5-flash, gpt-5.6-terra}) so the delta is attributable to what changed: relief_modifier + modifier_stack exist, the crackle-glaze recipe and the relief reference sit in the summoned read-set, and design-note condition Q (DESIGN_FLAT_RELIEF) fires for varying-colour objects with no modifier. Baseline is post-hoc over the archived addwear_census and curv_census final scenes (12 scenes, 0 bumpmap_modifier, 0 normal_map_modifier -- normal perturbation had 0 adoption before this arc). Measurement is post-hoc over trajectories (relief_modifier / modifier_stack chunk counts in final scenes, DESIGN_FLAT_RELIEF sightings, whether a fired note was acted on) per doc 88 C-MEAS. Single run, token-lean, per user direction.",
+  "scenarios": [
+    "evals/scenarios/rich_material_closeup.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.5-flash", "keyEnvVar": "GEMINI_API_KEY" },
+    { "provider": "openai", "model": "gpt-5.6-terra", "keyEnvVar": "OPENAI_API_KEY" }
+  ],
+  "repeats": 3,
+  "runDir": "evals/runs/relief_census"
+}

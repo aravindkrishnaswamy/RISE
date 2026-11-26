@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   File:           hwss_prism_dispersion_pt.RISEscene                                                      #
 #   Description:    Dispersive glass sphere with HWSS PT to test companion wavelength termination            #
@@ -17,10 +17,10 @@ standard_shader
 	shaderop	pt
 }
 
-pixelintegratingspectral_rasterizer
+# Migrated from pixelintegratingspectral_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode pt, legacy-deprecation Phase 2).
+pathtracing_spectral_rasterizer
 {
 	samples					256
-	lum_samples				1
 	nmbegin					405
 	nmend					705
 	num_wavelengths			8
@@ -36,13 +36,17 @@ file_rasterizeroutput
 	color_space			ProPhotoRGB
 }
 
+film
+{
+	width			256
+	height			256
+}
+
 pinhole_camera
 {
 	location			0.278 0.273 -0.800
 	lookat				0.278 0.273 0
 	up					0 1 0
-	width				256
-	height				256
 	fov					37.0
 }
 
@@ -52,7 +56,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -61,7 +64,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -70,7 +72,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -79,7 +80,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				2.3
 }
 
 spectral_painter
@@ -123,12 +124,18 @@ lambertian_luminaire_material
 	scale				10.0
 	material			none
 }
+scalar_painter
+{
+	name				pnt_trans_scalar
+	file				colors/flat_1.spectra
+}
+
 
 dielectric_material
 {
 	name				glass
-	tau					pnt_trans
-	ior					linear_ior
+	tau			pnt_trans_scalar
+	ior			1.3 1.5 2
 	scattering			1000000
 }
 

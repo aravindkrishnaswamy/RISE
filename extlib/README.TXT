@@ -13,6 +13,237 @@ For more information about OpenEXR:
 http://www.openexr.com/
 
 
+====================================================================
+oidn/  --  Intel Open Image Denoise (added 2026-04-29)
+====================================================================
+
+OIDN is included as a git SUBMODULE pointing at v2.4.1 of
+https://github.com/RenderKit/oidn rather than as vendored source.
+Reason: at full source + trained weights + built-binary scope, OIDN
+is ~120 MB — disproportionate next to libpng / libtiff / openexr in
+this directory (~5 MB total).  The submodule reference is just a
+commit hash and lets `git submodule update --init` reproduce the
+exact upstream tree on every clone.
+
+After cloning RISE:
+
+    git submodule update --init extlib/oidn/source
+
+Then build it with the platform-appropriate script.  The build is
+opt-in: RISE's build configs prefer extlib/oidn/install/ when
+present and fall back to the system-installed OIDN otherwise (see
+docs/OIDN.md OIDN-P0-3 for the install gotcha that motivated this).
+
+macOS / Linux:
+    extlib/oidn/build.sh
+
+Windows (PowerShell):
+    pwsh -File extlib\oidn\build.ps1
+
+Both scripts produce extlib/oidn/install/ with platform-best
+backends compiled in (CPU + Metal on macOS; CPU on Windows by
+default with -EnableCuda / -EnableHip / -EnableSycl flags for GPU).
+
+Prerequisites — Windows
+~~~~~~~~~~~~~~~~~~~~~~~
+
+OIDN's CMake build needs four host-side tools.  The build script
+fails with a specific cmake error when any of them is missing; the
+fixes below are what get you past each one.
+
+  - Visual Studio 2022 or 2026 with the C++ desktop workload + CMake
+    component.  build.ps1 omits cmake's `-G` so it auto-detects the
+    most-recent installed VS — works for VS17 / VS18 / future without
+    edits.
+
+  - cmake (bundled with VS at e.g.
+    `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
+    IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`; add
+    that directory to PATH for this shell).
+
+  - ispc — Intel SPMD Program Compiler.  OIDN uses it for SIMD-
+    parallel code generation on the CPU device.  Try:
+
+        winget install Intel.ImplicitSPMDProgramCompiler
+
+    If winget can't find the package on your machine (the source
+    sometimes drops it depending on region / Microsoft Store state),
+    grab the binary release zip from
+    https://github.com/ispc/ispc/releases — extract anywhere and add
+    its `bin/` to PATH.  Verified working: ispc v1.30.0.
+
+  - Python 3.x — used by OIDN's CMake at configure time for code
+    generation; ZERO runtime dependency on Python.
+
+        winget install Python.Python.3.13
+
+    Then add `%LOCALAPPDATA%\Programs\Python\Python313` (or wherever
+    winget put it) to PATH.
+
+  - oneTBB — required by the OIDN CPU device's `find_package(TBB)`.
+    Two ways to satisfy this:
+      a) Reuse the TBB that already ships with your openpgl install.
+         If you built openpgl from source into e.g.
+         `C:\Dev\openpgl-install`, that dir is a valid `TBB_ROOT`
+         (flat layout: `bin/tbb12.dll`, `lib/tbb12.lib`).  PREFER
+         THIS — it guarantees OIDN and openpgl link the same TBB
+         binary, avoiding the heap-corruption crashes that result
+         from loading two different `tbb12.dll` versions into the
+         same RISE process (observed 2026-04-29: openpgl built
+         against TBB 2021.13 + OIDN built against oneTBB 2022.3.0
+         crashed deep in Qt's allocator).
+      b) Fresh oneTBB binary release zip from
+         https://github.com/uxlfoundation/oneTBB/releases (e.g.
+         `oneapi-tbb-2022.3.0-win.zip`) — extract anywhere and set
+         `TBB_ROOT` to the unzipped root (redist layout:
+         `redist/intel64/vc14/tbb12.dll`).  Use this only if you
+         don't have an openpgl-install handy, AND verify openpgl
+         uses the same major version.  Verified working alone:
+         oneTBB v2022.3.0.
+    `extlib\oidn\build.ps1` probes both layouts (redist + flat)
+    and uses whichever it finds.
+
+  - GPU backends (opt-in, only if you pass `-EnableCuda` / -EnableHip
+    / -EnableSycl): CUDA Toolkit 11+ on PATH; oneAPI Base Toolkit
+    for SYCL; ROCm SDK for HIP.
+
+One-liner that runs the build with all four prereqs wired in:
+
+    pwsh -ExecutionPolicy Bypass -Command "
+      `$env:PATH='C:\Users\<you>\AppData\Local\Programs\Python\Python313;' +
+        'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;' +
+        'C:\Dev\ispc\ispc-v1.30.0-windows\bin;' + `$env:PATH;
+      `$env:TBB_ROOT='C:\Dev\tbb\oneapi-tbb-2022.3.0';
+      cd C:\Dev\GitHub\RISE;
+      & extlib\oidn\build.ps1"
+
+The script's output ends with `==> Done. OIDN install tree: ...` on
+success.  Build time is ~10 min on a modern desktop.
+
+Prerequisites — macOS / Linux
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  - Xcode Command Line Tools (macOS) or gcc/clang + cmake (Linux).
+  - ispc on PATH (`brew install ispc` on macOS;
+    https://github.com/ispc/ispc/releases on Linux).
+  - Python 3 on PATH.
+  - TBB headers + libs.  On macOS: `brew install tbb` and the script
+    finds it through Homebrew's pkg-config.  On Linux: distro
+    package or set `TBB_ROOT`.
+  - For the macOS Metal device backend: a working Xcode Metal
+    toolchain.  build.sh runs `xcodebuild -downloadComponent
+    MetalToolchain` automatically — no manual step needed.
+
+See the script headers for the per-platform invocations and
+optional flags.
+
+For more information about Open Image Denoise:
+https://www.openimagedenoise.org/
+
+
+====================================================================
+stb/  --  stb_image single-header decoder (added 2026-04-29)
+====================================================================
+
+stb_image.h is Sean Barrett's public-domain single-header image
+loader (https://github.com/nothings/stb).  RISE uses it solely to
+decode JPEG textures referenced by `jpg_painter` chunks (and, by
+extension, the JPEG base-color textures that ship with most real-
+world glTF assets) -- see src/Library/RasterImages/JPEGReader.{h,
+cpp}.  PNG / HDR / EXR / TIFF continue to use libpng / RGBE /
+OpenEXR / libtiff respectively, so this is purely a JPEG add-on.
+
+Layout:
+
+    extlib/stb/stb_image.h    -- vendored verbatim from upstream
+                                 (v2.30; ~283 KB, ~8000 lines, no
+                                 external dependencies).
+    extlib/stb/stb_image.cpp  -- single translation unit that emits
+                                 the implementation with
+                                 STBI_ONLY_JPEG so non-JPEG decoder
+                                 paths stay out of the binary.  The
+                                 .cpp extension (rather than the
+                                 upstream-conventional .c) lets the
+                                 existing make / cmake / vcxproj /
+                                 pbxproj recipes -- all C++-only --
+                                 pick it up without bespoke C-
+                                 language rules.
+
+Vendored as plain source rather than a submodule because stb is a
+single header with no build system, and pinning a known-good copy
+keeps clones reproducible without a second `git submodule update`
+step.  No upstream modifications.
+
+stb_image is dual-licensed: public domain (Unlicense) OR MIT.  Full
+notice is at the bottom of extlib/stb/stb_image.h.
+
+
+====================================================================
+cgltf/  --  cgltf single-header glTF 2.0 parser (added 2026-04-29)
+====================================================================
+
+cgltf.h is a single-header C99 glTF 2.0 parser by Johannes Kuhlmann
+(https://github.com/jkuhlmann/cgltf), MIT licensed.  RISE uses it
+solely to parse .gltf / .glb files referenced by `gltfmesh_geometry`
+(Phase 1) and `gltf_import` (Phase 2) chunks -- see
+src/Library/Geometry/TriangleMeshLoaderGLTF.{h,cpp} and the design
+plan in docs/GLTF_IMPORT.md.
+
+cgltf was chosen over tinygltf and fastgltf because:
+
+  - It has zero transitive dependencies (matches the libpng / zlib /
+    libtiff / openexr vendoring pattern in this directory).
+  - It does NOT impose its own image loader -- glTF base-color
+    textures route through RISE's existing png_painter / hdr_painter
+    / exr_painter / tiff_painter / jpg_painter, with no parallel
+    decode path.
+  - C99 portability slots it into all five build projects (make,
+    cmake/Android NDK, VS2022, Xcode, Qt) without grief.
+
+The full library survey is in docs/GLTF_IMPORT.md §2.
+
+Layout:
+
+    extlib/cgltf/cgltf.h    -- vendored verbatim from upstream
+                               (v1.15, ~285 KB, ~7200 lines, no
+                               external dependencies).
+    extlib/cgltf/cgltf.cpp  -- single translation unit that emits
+                               the implementation with
+                               CGLTF_IMPLEMENTATION.  The .cpp
+                               extension (rather than the upstream-
+                               conventional .c) lets the existing
+                               make / cmake / vcxproj / pbxproj
+                               recipes -- all C++-only -- pick it
+                               up without bespoke C-language rules.
+
+Vendored as plain source (rather than a submodule) for the same
+reason as stb: a single header with no build system, pinned to a
+known-good copy so clones reproduce without a second `git submodule
+update` step.  No upstream modifications.
+
+cgltf is MIT-licensed.  Full notice is at the bottom of
+extlib/cgltf/cgltf.h.
+
+
+OPEN IMAGE DENOISE LICENSE (Apache 2.0):
+
+Licensed under the Apache License, Version 2.0 (the "License"); you
+may not use this file except in compliance with the License.  You
+may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied.  See the License for the specific language governing
+permissions and limitations under the License.
+
+Full third-party license details ship with each OIDN release at
+extlib/oidn/install/share/doc/OpenImageDenoise/ once build.sh /
+build.ps1 has been run.
+
+
 LIBPNG LICENSE
 
 

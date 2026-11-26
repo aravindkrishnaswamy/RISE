@@ -1,0 +1,249 @@
+{
+  "appledouble_transport_metadata_count": 66,
+  "archive_sha256": "63987353bd9cdfe64a098e522164537d9bbe1a33591fefbc5ab72b9aeaa14bf8",
+  "members": [
+    {
+      "bytes": 23168912,
+      "path": "bin/tests/FireSequenceTest_r212_e4c9aa79",
+      "sha256": "8e67cdcb66503fddfae5e54ca8cbbbda5a9731613f264027b66c70c7f45a9391"
+    },
+    {
+      "bytes": 23168896,
+      "path": "bin/tests/FireSequenceTest_r212_reference_fdd296e2",
+      "sha256": "3ba1070ce70f39c081896f884d4ebb61147a39e3afde2db916cc527e0742332e"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd"
+    },
+    {
+      "bytes": 193,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "042375c888c4ecf06b0e50e445e8599f898c842df5dcacd479387a365f3a1681"
+    },
+    {
+      "bytes": 4809,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "8163e1f901167b5c114d61ac4795f203dd4503152b7bc1c764387374a53de0d8"
+    },
+    {
+      "bytes": 1842585,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1.log",
+      "sha256": "ef812dc0813cfcb45888fd073851afe73dca7ab670d5c28da8eff96013b089be"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_2.v1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd"
+    },
+    {
+      "bytes": 193,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_2.v1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_2.v1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "997956103344f4c2da8c362f095c0f594707e0336905f4a0fa17c7404ec1dc91"
+    },
+    {
+      "bytes": 4803,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_2.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "66561af269983428b52bfcc889e805a7399c16775eee3808bd33c8f479dd9743"
+    },
+    {
+      "bytes": 1842089,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_2.v1.log",
+      "sha256": "b2e24dc2988be87713626b044a56dab43501f33d6c9daa8cff2b6bceb195b622"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_3.v1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd"
+    },
+    {
+      "bytes": 193,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_3.v1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_3.v1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "d20214113e221040fe3c86acdea72cc8cd5100e8b0885328ca445f1461e69c7c"
+    },
+    {
+      "bytes": 4782,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_3.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "afb40d3b085daa4df0e2bc89973d335ccb90e1c946e7188345ba4833cbeea459"
+    },
+    {
+      "bytes": 1842026,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/hot_profile_3.v1.log",
+      "sha256": "2c9ff676e3eb8afac4b3838c5595a1ce65db714ec972ef9299d3ef2ac3b0e4be"
+    },
+    {
+      "bytes": 1726,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v1.json",
+      "sha256": "1475b789b69ab1749ee0fb3dc9f292e1648187098a61fc06f51325af6911f40b"
+    },
+    {
+      "bytes": 23899,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v1.json.build.log",
+      "sha256": "b1fd7483578f0aea3e29a0ec51edabf4333089d095ba1543f219b1942345a54f"
+    },
+    {
+      "bytes": 888483,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v1.json.owner.log",
+      "sha256": "0c47b03864d3971ee8de211965fa97b85a4b09a120e986ea2819c382b90abdb3"
+    },
+    {
+      "bytes": 647,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v1.json.publication.log",
+      "sha256": "8b64913371583cb22fc690602fbfabb8e62d5e40b8fcc20717387961a72e0a54"
+    },
+    {
+      "bytes": 1726,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.json",
+      "sha256": "f8a7792ca0bb8613dff9b7029a479a766cec573db64cb5656d8778d3e79a22fe"
+    },
+    {
+      "bytes": 23899,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.json.build.log",
+      "sha256": "1a6dd3e4e1948a882584654850e9fe8615b6f8e14cdb4f563a35ae2aa64e113b"
+    },
+    {
+      "bytes": 888483,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.json.owner.log",
+      "sha256": "7cf05d732a051237cedae4b15b12179ab123733ab35cbd71f8432bc1e1723b75"
+    },
+    {
+      "bytes": 647,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.json.publication.log",
+      "sha256": "68309187064ad9ae64e4d2da348c4ef2c978e21dd98660f037c62bb0532fb409"
+    },
+    {
+      "bytes": 123,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v1.driver.log",
+      "sha256": "a25b60bf32752f4398487a8939b1dad75a41cad8330ed6ae7cda686a195eeb94"
+    },
+    {
+      "bytes": 123,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.driver.log",
+      "sha256": "17e9d4f65b2c7c96660c362884fb6e864af2750c403506f657ff664a9b415c2f"
+    },
+    {
+      "bytes": 31962,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/full_sequence.v1.log",
+      "sha256": "f07b21141990d1afa3198b032549606fae30c86af6219fdd508e7e6989f70623"
+    },
+    {
+      "bytes": 31962,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/full_sequence.v2.log",
+      "sha256": "3fd3b6799246f655538836e403ec2d606f2bc5fb97f1d63fc9bd08e759f40c48"
+    },
+    {
+      "bytes": 101,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_tests.v1.log",
+      "sha256": "33060fd73862c5e1af97335504d5b45211fce6d229657f556d8deceeadc52ce4"
+    },
+    {
+      "bytes": 104,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_tests.v3.log",
+      "sha256": "7fef6d6d64671aee4fcdf0e8ff22d837d1191e16cfe6ffdaa1b788dad47e0b10"
+    },
+    {
+      "bytes": 105,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_tests.v4.log",
+      "sha256": "32530a01f9c08a4a138d32af43b2a75edeec9c857d7e2a4e3ab966155a4634a0"
+    },
+    {
+      "bytes": 17669,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_reconciliation.v1.json",
+      "sha256": "9b8bb7f74733d3d16283dd1ed3362d04579cefc806055b128d71bcb7eabd18a6"
+    },
+    {
+      "bytes": 17825,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_reconciliation.v2.json",
+      "sha256": "43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64cedf65a2e6c1"
+    },
+    {
+      "bytes": 17825,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/cost_reconciliation.v3.json",
+      "sha256": "43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64cedf65a2e6c1"
+    },
+    {
+      "bytes": 32902,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v1.log",
+      "sha256": "f400e7cbe593112f007d908741e053a8ba894a1fdbff251547dda330571862f9"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/production_capstone_summary.txt.payload-v2.json",
+      "sha256": "304e83d2e7d4e72b28a7df2c80a3635d0148340e6fcd8f0fae3f1e9d971f1180"
+    },
+    {
+      "bytes": 65415818,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/production_final.checkpoint",
+      "sha256": "4b09b09f31bf5dab4138f21d283a2916992e5060b9d2ccad5b1d8e5090c22e79"
+    },
+    {
+      "bytes": 211,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/monitored_diagnostics.csv",
+      "sha256": "6aaadb2ec673b1b608382ad9dc7673c11a2f302f75c178d70e20046770f675a4"
+    },
+    {
+      "bytes": 35,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/frame_times.csv",
+      "sha256": "e159240993596ce1678e6704655a190e909a423ed38d7e4648cb3929f1d251a6"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/monitored_diagnostics.csv.payload-v2.json",
+      "sha256": "2843c72b6fc2ab33a35a39c54bccbd0136e05611cf05c6228336c1d81704672c"
+    },
+    {
+      "bytes": 759,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/production_capstone_summary.txt",
+      "sha256": "4e0d05178b7b431f79ffd9a9910a6d376b5baffb71796cb15bb1c02fc1c7b8d5"
+    },
+    {
+      "bytes": 409,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/frame_times.csv.payload-v2.json",
+      "sha256": "b27e4975ac9d49a0986d876e86e690bc08180e092f2ea2dfcaef047ec966a6e6"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2/production_final.checkpoint.payload-v2.json",
+      "sha256": "42dc3332b562fbcaa493cc3e1d47047019ce30edc48cab5182253d3aa55a2594"
+    },
+    {
+      "bytes": 32418,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_fixture.v2.log",
+      "sha256": "c9c93229ed1e86e32badeac75417eed3a6c6225873e60a029c28737328b57d22"
+    },
+    {
+      "bytes": 1544,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_refusal_detail.v1.log",
+      "sha256": "c714ca967bc54ff7dad6ca15cfc4239ee51ad432f2f72bb84e2dd6993ffbe531"
+    },
+    {
+      "bytes": 2060,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/temporal_route_refusal_detail.v2.log",
+      "sha256": "672b15d018a49cc9dd7d5a16567b8fa128da23e2443de2620dbb1ae889ea70ae"
+    },
+    {
+      "bytes": 393,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/oracle_tier8_reference.v1/reference_request.v1",
+      "sha256": "2de3ea74d2a30c12d6499ce2db0c05d4ac47b7d9a7fcc2d965a34ab24397eeb5"
+    }
+  ],
+  "restore": "Extract only into a fresh directory; never overwrite live evidence or golden checkpoints",
+  "schema": "rise.fire.r212.qualification-archive.v1",
+  "verification": "streamed solver evidence and executable bytes match original files"
+}

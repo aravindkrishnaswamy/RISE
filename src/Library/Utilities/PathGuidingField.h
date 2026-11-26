@@ -61,9 +61,13 @@ namespace RISE
 		bool			enabled;				///< Master switch
 		unsigned int	trainingIterations;		///< Number of training passes before final render
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
+		bool			combineTrainingIterations;	///< If true, accumulate every training iteration's rendered pixels into the final image weighted by its SPP (Müller 2017 §5).  When false (legacy behaviour) training-iteration pixels are discarded — fine only when total final SPP ≫ training SPP.  At low final SPP, discarding wastes the work and trial-to-trial training non-determinism dominates the variance budget.
+		bool			online;					///< If true, the training-iteration loop IS the entire render — no separate final pass, every sample feeds both the field and the image.  Implies combineTrainingIterations.  Best for low-SPP regimes where the train-then-render two-phase pattern wastes too much budget on discarded training pixels (Vorba 2014 / NASG 2024 style).  Total SPP = pathguiding_iterations × pathguiding_spp; the scene's `samples` parameter is ignored in this mode.
+		unsigned int	warmupIterations;		///< Number of training iterations to render with alpha=0 (pure BSDF sampling) before switching to the configured alpha.  Samples still feed the field — but because they're produced by unguided BDPT, their pixels are statistically clean to keep in the final image when combine/online is on.  Default 1 keeps the FIRST iteration's pixels (sampled against an empty field) out of the final-image bias when combineTrainingIterations is on; raise to 2 in online mode to extend the unbiased-sample window.  Ignored when combineTrainingIterations is false (the iteration's pixels are discarded anyway).
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
-		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
-		unsigned int	maxLightGuidingDepth;	///< Max light subpath bounce depth for guided sampling (0 = disabled)
+		bool			learnedAlpha;			///< Per-cell Adam-learned α (Müller 2017 v2 / Tom94's practical-path-guiding).  When true the per-vertex α used in one-sample MIS is `alpha · 2 · σ(θ_cell)`, with θ_cell updated by Adam on the deferred KL gradient at path completion.  Neutral at low SPP (32), ~2% mean-σ² reduction at 256 SPP.  When false, falls back to fixed `alpha`.
+		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling.  Default 8 matches the typical scene's max_eye_depth so guidance applies through the full eye walk; lower values cap guiding to early bounces and trade convergence on indirect-heavy pixels for slightly less per-vertex OpenPGL overhead.
+		unsigned int	maxLightGuidingDepth;	///< Max light subpath bounce depth for guided sampling (0 = disabled).  Off by default — light-subpath guiding requires a separate trained field (training cost) and we have no measured win on the curated benchmark scenes; opt in per-scene.
 		GuidingSamplingType	samplingType;		///< Directional sampling strategy
 		unsigned int	risCandidates;			///< Reserved for future N>2 RIS; currently only N=2 is implemented
 		bool			completePathGuiding;	///< Experimental BDPT complete-path recorder/guide
@@ -74,8 +78,12 @@ namespace RISE
 		enabled( false ),
 		trainingIterations( 4 ),
 		trainingSPP( 4 ),
+		combineTrainingIterations( true ),
+		online( false ),
+		warmupIterations( 1 ),
 		alpha( 0.5 ),
-		maxGuidingDepth( 3 ),
+		learnedAlpha( true ),
+		maxGuidingDepth( 8 ),
 		maxLightGuidingDepth( 0 ),
 		samplingType( eGuidingOneSampleMIS ),
 		risCandidates( 2 ),
@@ -89,9 +97,32 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 
+// openpgl ships headers that trip -Wdocumentation (empty @brief) and
+// -Wshorten-64-to-32 / C4267 (size_t→int in PGLVMMFactoryArguments)
+// under our project warning level.  Silence them at the include site
+// so our build stays warning-clean.  Upstream issue: openpgl
+// config.h:55-57 assigns `size_t maxSamplesPerLeaf / N` to `int`
+// fields without an explicit cast.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdocumentation"
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#endif
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4267)
+#endif
 #include <openpgl/openpgl.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #include "../Interfaces/IReference.h"
 #include "../Utilities/Reference.h"
+#include <mutex>
+#include <unordered_map>
 
 namespace RISE
 {
@@ -148,6 +179,36 @@ namespace RISE
 			mutable Scalar			sampleEnergy;
 			mutable Scalar			directSampleEnergy;
 			mutable Scalar			indirectSampleEnergySquaredSum;	///< Sum of squared indirect energies for variance estimation
+
+			// Per-cell adaptive alpha (Müller 2017 v2 / Practical Path
+			// Guiding online-learning of bsdfSamplingFraction).  Each
+			// spatial-cell id maps to an Adam state for the logit
+			// θ where α = sigmoid(θ).  Updates apply Adam (β1=0.9,
+			// β2=0.999, lr=0.01) on dL/dθ derived from the per-sample
+			// KL gradient computed at path completion (deferred so f
+			// = BSDF·cos·Li uses the actual incident radiance, not a
+			// BSDF-only proxy).
+			//
+			// Map is NOT cleared on EndTrainingIteration.  OpenPGL's
+			// kdtree only subdivides leaves (existing IDs become
+			// orphaned interior-node ids — never reused); orphaned
+			// entries bloat memory by at most O(field-cells) but
+			// don't cause wrong queries.  The α we learn during early
+			// iterations therefore carries forward into later
+			// iterations and the final render — Tom94's prescribed
+			// "frozen-α-at-render" recipe falls out for free.
+			struct CellAdamState
+			{
+				float		theta;	///< logit; α = σ(θ).  Init: 0 → α = 0.5.
+				float		m;		///< Adam 1st moment of dL/dθ
+				float		v;		///< Adam 2nd moment of dL/dθ
+				uint32_t	t;		///< Adam step count (for bias-correction)
+
+				CellAdamState() : theta( 0.0f ), m( 0.0f ), v( 0.0f ), t( 0 ) {}
+			};
+
+			mutable std::mutex	cellAlphaMutex;
+			mutable std::unordered_map<uint32_t, CellAdamState> cellState;
 
 			virtual ~PathGuidingField();
 
@@ -232,6 +293,68 @@ namespace RISE
 			Scalar IncomingRadiancePdf(
 				GuidingDistributionHandle& handle,
 				const Vector3& direction
+				) const;
+
+			//
+			// Per-cell adaptive alpha — online KL-loss Adam over the
+			// guide-vs-BSDF mixing weight, keyed on OpenPGL's spatial
+			// cell id.  Müller 2017 v2 / Tom94's practical-path-guiding.
+			//
+			// Caller pattern:
+			//   1. At guide sample time:
+			//        cellId = GetCellId(handle)         — snapshot id
+			//        alpha  = GetCellAlpha(handle)     — read live α
+			//        ... use α in one-sample MIS, record (resultBefore,
+			//        throughputBefore, bsdfPdf, guidePdf, combinedPdf,
+			//        cellId) into a per-thread pending list ...
+			//   2. After path completes:
+			//        for each pending update:
+			//          f = lum(deltaResult) * combinedPdf / lum(throughputBefore)
+			//          UpdateCellAlpha(cellId, bsdfPdf, guidePdf, f,
+			//                          combinedPdf, lr)
+			// f from deltaResult uses the actual radiance flowing
+			// through the chosen direction at this vertex, not a
+			// BSDF-only proxy — this is what gives Adam a useful
+			// gradient signal at low SPP.
+
+			/// Stable spatial-cell id for the cell this handle is
+			/// currently initialized at.  Caller should snapshot at
+			/// sample time and pass to UpdateCellAlpha after the path
+			/// completes (the handle itself is reused for later
+			/// vertices, so reading GetId from it later returns the
+			/// wrong cell).
+			uint32_t GetCellId(
+				const GuidingDistributionHandle& handle
+				) const;
+
+			/// Read the learned α at the cell where `handle` is
+			/// currently initialized.  Returns 0.5 (neutral) when the
+			/// cell has no updates yet.  Cheap (lock_guard over
+			/// unordered_map lookup); safe to call on the hot path.
+			Scalar GetCellAlpha(
+				const GuidingDistributionHandle& handle
+				) const;
+
+			/// Adam step on the cell's logit θ after one path-traced
+			/// sample has been drawn from the combined density.
+			/// Pre-computed quantities expected:
+			///   bsdfPdf, guidePdf, combinedPdf — same as sample time
+			///   f          — |BSDF·cos·Li| at the sampled direction
+			///                 (deferred path-completion estimate)
+			/// Internal math:
+			///   dL/dα = -(f / combinedPdf²) · (guidePdf - bsdfPdf)
+			///   dL/dθ = dL/dα · α·(1-α)
+			///   Adam:  m ← β₁·m + (1-β₁)·g
+			///          v ← β₂·v + (1-β₂)·g²
+			///          θ ← θ - lr · (m / (1-β₁ᵗ)) / (√(v / (1-β₂ᵗ)) + ε)
+			/// θ clamped to ±8 so α stays in (~3.4e-4, ~0.9997).
+			void UpdateCellAlpha(
+				uint32_t cellId,
+				Scalar bsdfPdf,
+				Scalar guidePdf,
+				Scalar f,
+				Scalar combinedPdf,
+				Scalar learningRate
 				) const;
 
 			//

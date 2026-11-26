@@ -1,0 +1,199 @@
+RISE ASCII SCENE 7
+# Taxonomy: focused measured-silver enamel comparison.
+
+# ---------------------------------------------------------------------------
+# enamel_swatch_silver.RISEscene — M1 of the vitreous-enamel hero modeling.
+#
+# Upgrades the enamel_swatch_goldruby capstone by replacing the stand-in
+# perfect-mirror floor with a MEASURED-SILVER GGX conductor (Johnson & Christy
+# 1972 n,k), reached via the burial convention (docs/VITREOUS_ENAMEL.md sec
+# 10.1 A).  Because the downward ray is INSIDE the enamel dielectric when it
+# strikes the silver, the IOR stack top is n_enamel(lambda)=1.55, so G6 stamps
+# the conductor's ambient (incident) index to glass automatically — silver
+# under n=1.55 glass reflects measurably LESS than silver in air (sec 10.6),
+# with no slot to author.
+#
+# Substrate rule (sec 10.10 / sec 4): GGX diffuse = BLACK (GGX adds its diffuse
+# lobe unconditionally; a non-black diffuse would graft a fake Lambertian
+# backing under the glass), specular = unity, fresnel_mode conductor, measured
+# silver n/k.  Everything else (dielectric top tau 1.0, gold-ruby medium,
+# integrator, camera) is byte-identical to the goldruby capstone so this
+# increment isolates the single change: mirror -> measured silver.
+#
+# Still a FLAT slab (uniform thickness -> uniform ruby); the domed substrate
+# that turns this into the fume thickness gradient is M2.  Rendered spectral
+# (non-HWSS NM).
+# ---------------------------------------------------------------------------
+
+uniformcolor_painter
+{
+	name pnt_env
+	color 1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name pnt_white
+	color 1.0 1.0 1.0
+}
+
+# Substrate diffuse must be black (sec 10.10) — GGX adds its diffuse lobe
+# unconditionally even in conductor mode.
+uniformcolor_painter
+{
+	name pnt_black
+	color 0.0 0.0 0.0
+}
+
+# Measured silver n,k (Johnson & Christy 1972) — the conductor's complex index.
+scalar_painter
+{
+	name Ag_n
+	file colors/conductors/Ag.n
+}
+
+scalar_painter
+{
+	name Ag_k
+	file colors/conductors/Ag.k
+}
+
+standard_shader
+{
+	name global
+	shaderop DefaultDirectLighting
+}
+
+# Gold-ruby sigma_a(lambda) — inline mirror of goldruby_sigma_a.txt
+# (colloidal-gold plasmon peak ~515nm + blue inter-band shoulder; 1/scene-unit).
+piecewise_linear_function
+{
+	name goldruby_abs
+	cp 400 2.48
+	cp 420 2.61
+	cp 440 2.79
+	cp 460 3.15
+	cp 480 3.69
+	cp 500 4.23
+	cp 515 4.50
+	cp 530 4.37
+	cp 550 3.83
+	cp 570 2.79
+	cp 590 1.80
+	cp 610 1.08
+	cp 630 0.63
+	cp 650 0.36
+	cp 680 0.23
+	cp 700 0.16
+	cp 720 0.14
+}
+
+homogeneous_medium
+{
+	name goldruby
+	absorption 3.5 3.9 0.4
+	scattering 0.0 0.0 0.0
+	absorption_spectral goldruby_abs
+	phase isotropic
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples 256
+	max_volume_bounce 16
+	max_diffuse_bounce 4
+	pixel_filter box
+	nmbegin 380
+	nmend 720
+	num_wavelengths 12
+	spectral_samples 1
+	hwss false
+	radiance_map pnt_env
+	radiance_scale 1.0
+	radiance_background TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern enamel_swatch_silver
+	type PNG
+	bpp 8
+	color_space sRGB
+}
+
+film
+{
+	width 256
+	height 256
+}
+
+pinhole_camera
+{
+	location 0 0 4
+	lookat 0 0 0
+	up 0 1 0
+	fov 20.0
+}
+
+# Fire-polished top interface: IOR 1.55, tau 1.0 (colour-neutral; sec 10.9).
+dielectric_material
+{
+	name enamel_glass
+	tau 1.0
+	ior 1.55
+	scattering 100000
+}
+
+# Measured-silver GGX conductor substrate (replaces the perfect mirror).
+# diffuse=black (sec 10.10); ambient IOR supplied by G6 from the IOR stack
+# (= n_enamel under the burial convention), nothing to author.  alphax/y give
+# a lightly-polished fired-silver surface (near-mirror; M5 may tune).
+ggx_material
+{
+	name floor_silver
+	rd pnt_black
+	rs pnt_white
+	alphax 0.03
+	alphay 0.03
+	fresnel_mode conductor
+	ior Ag_n
+	extinction Ag_k
+}
+
+# Enamel body: top face at z=+0.5 (dielectric interface); bottom face at
+# z=-0.5, buried inside the silver solid below.
+box_geometry
+{
+	name enamelgeom
+	width 3.0
+	height 3.0
+	depth 1.0
+}
+
+# Silver substrate solid: top face at z=0, extends down to z=-1.0.  The
+# enamel's bottom (z=-0.5) sits INSIDE it, so a downward ray in the enamel
+# hits this silver's top (z=0) first — the burial convention (sec 10.1 A).
+box_geometry
+{
+	name floorgeom
+	width 4.0
+	height 4.0
+	depth 1.0
+}
+
+standard_object
+{
+	name enamel
+	geometry enamelgeom
+	position 0 0 0
+	material enamel_glass
+	interior_medium goldruby
+}
+
+standard_object
+{
+	name floor
+	geometry floorgeom
+	position 0 0 -0.5
+	material floor_silver
+}

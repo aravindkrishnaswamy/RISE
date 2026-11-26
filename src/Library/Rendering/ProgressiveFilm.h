@@ -18,6 +18,8 @@
 #define PROGRESSIVE_FILM_
 
 #include "../Interfaces/IReference.h"
+#include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/CheckedSize.h"
 #include <vector>
 #include <cstdint>
 
@@ -25,9 +27,38 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Experiment with alignas(64) to kill false sharing was
+		// found to REGRESS performance significantly (VCM: 28s →
+		// 46s, PT: 9.3s → 13.9s) — likely because the extra 8
+		// bytes per pixel pushes working set beyond L2 for typical
+		// scenes, while the actual false-sharing was lower than
+		// predicted since Morton-ordered tiles already keep threads
+		// on separate regions.  Leave natural layout.
 		struct ProgressivePixel
 		{
-			RISEPel		colorSum;		///< Weighted color accumulator
+			// PBRT-v4 RGBFilm-style storage: per-pixel accumulator is in
+			// CIE XYZ tristimulus (a linear color space, no gamut),
+			// converted to RISEPel (Rec.709 linear RGB) at Resolve / live
+			// display time.  Eliminates the per-sample chromaticity gamut
+			// clip (MoveXYZIntoROMMRGBGamut, fired by the implicit
+			// ROMMRGBPel(XYZPel) path on legacy ROMM builds) that
+			// systematically suppressed out-of-gamut spectral-locus
+			// contributions toward white.
+			//
+			// DL-629: RGB Pel rasterizers must NOT seed a pass's RISEPel
+			// accumulator by reading `RISEPel(colorSum)` on passes k >= 1
+			// and writing `colorSum = colAccrued` back at pass end:
+			// `mxXYZtoRec709 * mxRec709toXYZ` differs from identity by
+			// ~0.73 ppm (rounded 4-decimal Rec.709 primaries), which
+			// compounds linearly across N progressive passes.  Instead,
+			// Pel rasterizers call `LoadPelPassInit()` (zero on passes
+			// k >= 1) to accumulate only the current pass's linear RGB
+			// delta, then call `StorePelPassDelta(passDelta)` to add
+			// `XYZPel(passDelta)` into `colorSum` and return the
+			// cumulative unnormalized `RISEPel` for live tile display
+			// without ever writing an XYZ->RGB conversion back into
+			// `colorSum`.
+			XYZPel		colorSum;		///< Weighted XYZ accumulator (linear, no clip)
 			Scalar		weightSum;		///< Weight accumulator (for averaging)
 			Scalar		alphaSum;		///< Alpha accumulator
 
@@ -49,6 +80,21 @@ namespace RISE
 			  sampleIndex( 0 ),
 			  converged( false )
 			{}
+
+			/// Returns `(0,0,0)` on every progressive pass so the caller
+			/// accumulates only the current pass's `RISEPel` delta.
+			/// Out-of-line by-value HFA ABI preserves register allocation
+			/// in single-pass Pel loops.
+			RISEPel LoadPelPassInit() const;
+
+			/// Adds `passDelta` into `colorSum` (assigning directly when
+			/// `sampleIndex == 0`, adding `XYZPel(passDelta)` on subsequent
+			/// passes so `XYZ->RGB` rounding never feeds back into
+			/// `colorSum`) and returns the cumulative unnormalized `RISEPel`
+			/// (`passDelta` on pass 0, `RISEPel(colorSum)` on passes k >= 1)
+			/// so dividing by cumulative `alphas` yields true luminance for
+			/// live per-tile previews and converged-pixel skips.
+			RISEPel StorePelPassDelta( RISEPel passDelta );
 		};
 
 		class ProgressiveFilm
@@ -65,34 +111,77 @@ namespace RISE
 			  width( w ),
 			  height( h )
 			{
-				pixels.resize( w * h );
+				pixels.resize( CheckedPixelCount<ProgressivePixel>( w, h ) );
 			}
 
 			ProgressivePixel& Get( const unsigned int x, const unsigned int y )
 			{
-				return pixels[y * width + x];
+				return pixels[static_cast<std::size_t>( y ) * width + x];
 			}
 
 			const ProgressivePixel& Get( const unsigned int x, const unsigned int y ) const
 			{
-				return pixels[y * width + x];
+				return pixels[static_cast<std::size_t>( y ) * width + x];
 			}
 
 			bool IsConverged( const unsigned int x, const unsigned int y ) const
 			{
-				return pixels[y * width + x].converged;
+				return pixels[static_cast<std::size_t>( y ) * width + x].converged;
 			}
 
 			/// Resolve the current progressive state into a display image.
 			/// Writes colorSum/weightSum as the running average for each pixel.
-			void Resolve( IRasterImage& target ) const
+			/// XYZ -> RISEPel conversion (standard `ColorUtils::XYZtoRec709RGB`
+			/// post Stage-B colour-space migration: D65→D65, matrix-only, no
+			/// Bradford adapt) happens here, exactly once per pixel.  The
+			/// implicit RISEPel(XYZPel) constructor in RISEColor's argument
+			/// list is the dispatch point.  Earlier ROMM-era revisions
+			/// dispatched to a matrix-only `IntegratorXYZtoROMMRGB` for
+			/// spectral rasterizers; that path was eliminated by
+			/// Stage A of the colour-space migration (`IntegratorXYZto*`
+			/// no longer exists).
+			///
+			/// When `showMap=true && targetSamples>0`, writes a grayscale
+			/// heatmap of `sampleIndex / targetSamples` in place of beauty.
+			/// This is the **only** place adaptive-sample-map visualisation
+			/// can take effect in progressive-rendering mode — the per-pixel
+			/// `cret` return path in IntegratePixel is overwritten by this
+			/// resolve step, so the heatmap must be re-derived from the
+			/// progressive-film state here.
+			void Resolve(
+				IRasterImage& target,
+				bool showMap = false,
+				unsigned int targetSamples = 0,
+				const Rect* region = 0,
+				int fieldParity = -1
+				) const
 			{
-				for( unsigned int y = 0; y < height; y++ ) {
-					for( unsigned int x = 0; x < width; x++ ) {
-						const ProgressivePixel& px = pixels[y * width + x];
-						if( px.weightSum > 0 && px.alphaSum > 0 ) {
-							const RISEPel avg = px.colorSum * (1.0 / px.alphaSum);
-							target.SetPEL( x, y, RISEColor( avg, px.alphaSum / px.weightSum ) );
+				const bool emitMap = showMap && targetSamples > 0;
+				const Scalar invTarget = emitMap ? 1.0 / Scalar( targetSamples ) : 0.0;
+				if( width == 0 || height == 0 ) return;
+				unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+				if( region ) {
+					if( region->left > region->right || region->top > region->bottom ||
+						region->left >= width || region->top >= height ) return;
+					startX = region->left;
+					startY = region->top;
+					endX = r_min( region->right, width - 1 );
+					endY = r_min( region->bottom, height - 1 );
+				}
+				for( unsigned int y = startY; y <= endY; y++ ) {
+					if( fieldParity >= 0 && ( y & 1u ) != static_cast<unsigned int>( fieldParity ) ) {
+						continue;
+					}
+					for( unsigned int x = startX; x <= endX; x++ ) {
+						const ProgressivePixel& px = pixels[static_cast<std::size_t>( y ) * width + x];
+						if( emitMap ) {
+							const Scalar t = Scalar( px.sampleIndex ) * invTarget;
+							target.SetPEL( x, y, RISEColor( RISEPel( t, t, t ), 1.0 ) );
+						} else if( px.weightSum > 0 && px.alphaSum > 0 ) {
+							const XYZPel avgXYZ = px.colorSum * (1.0 / px.alphaSum);
+							target.SetPEL( x, y, RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum ) );
+						} else if( px.weightSum > 0 ) {
+							target.SetPEL( x, y, RISEColor( RISEPel( 0, 0, 0 ), 0.0 ) );
 						}
 					}
 				}
@@ -108,22 +197,42 @@ namespace RISE
 
 			/// Count the number of pixels that have either converged or hit
 			/// the progressive sample budget.
-			unsigned int CountDone( const unsigned int targetSamples ) const
+			uint64_t CountDone(
+				const unsigned int targetSamples,
+				const Rect* region = 0
+				) const
 			{
-				unsigned int count = 0;
-				for( size_t i = 0; i < pixels.size(); i++ ) {
-					if( IsPixelDone( pixels[i], targetSamples ) ) count++;
+				if( width == 0 || height == 0 ) return 0;
+				unsigned int startX = 0, startY = 0, endX = width - 1, endY = height - 1;
+				if( region ) {
+					if( region->left > region->right || region->top > region->bottom ||
+						region->left >= width || region->top >= height ) return 0;
+					startX = region->left;
+					startY = region->top;
+					endX = r_min( region->right, width - 1 );
+					endY = r_min( region->bottom, height - 1 );
+				}
+				uint64_t count = 0;
+				for( unsigned int y = startY; y <= endY; y++ ) {
+					for( unsigned int x = startX; x <= endX; x++ ) {
+						if( IsPixelDone( pixels[static_cast<std::size_t>( y ) * width + x], targetSamples ) ) count++;
+					}
 				}
 				return count;
 			}
 
 			/// Check if all pixels within a rectangular region have either
-			/// converged or hit the progressive sample budget.
+			/// converged or hit the progressive sample budget. Bounds are
+			/// intersected with the film; an empty intersection is complete.
 			bool IsTileDone( const Rect& rect, const unsigned int targetSamples ) const
 			{
-				for( unsigned int y = rect.top; y <= rect.bottom; y++ ) {
-					for( unsigned int x = rect.left; x <= rect.right; x++ ) {
-						if( !IsPixelDone( pixels[y * width + x], targetSamples ) ) {
+				if( width == 0 || height == 0 || rect.left > rect.right || rect.top > rect.bottom ||
+					rect.left >= width || rect.top >= height ) return true;
+				const unsigned int endX = r_min( rect.right, width - 1 );
+				const unsigned int endY = r_min( rect.bottom, height - 1 );
+				for( unsigned int y = rect.top; y <= endY; y++ ) {
+					for( unsigned int x = rect.left; x <= endX; x++ ) {
+						if( !IsPixelDone( pixels[static_cast<std::size_t>( y ) * width + x], targetSamples ) ) {
 							return false;
 						}
 					}

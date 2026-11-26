@@ -30,9 +30,11 @@ PixelBasedSpectralIntegratingRasterizerRGB::PixelBasedSpectralIntegratingRasteri
 		const IFunction1D& spd_g_,
 		const IFunction1D& spd_b_,
 		const bool bSpectralHalton_,
-		const bool bTimeHalton_
-		) : 
-  PixelBasedRasterizerHelper( pCaster_ ),
+		const bool bTimeHalton_,
+		RISE::Implementation::FrameStore* frameStore
+		) :
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_, frameStore ),
 	  lambda_begin( lambda_begin_ ),
 	  lambda_end( lambda_end_ ),
 	  lambda_diff( lambda_end_-lambda_begin_ ),
@@ -45,7 +47,6 @@ PixelBasedSpectralIntegratingRasterizerRGB::PixelBasedSpectralIntegratingRasteri
 	  spd_g( spd_g_ ),
 	  spd_b( spd_b_ )
 {
-	vecSpectralSamples.reserve( nSpectralSamples );
 	spd_r.addref();
 	spd_g.addref();
 	spd_b.addref();
@@ -85,9 +86,16 @@ bool PixelBasedSpectralIntegratingRasterizerRGB::TakeSingleSample(
 			c.a = 1.0;
 		}
 	}
-	else 
+	else
 	{
-		vecSpectralSamples.clear();
+		// Per-thread local buffer — must NOT be a class member.
+		// Worker threads all call this const method concurrently on
+		// the same rasterizer instance; a shared mutable std::vector
+		// would produce the classic scrambled-tile race (the spectral
+		// variant of this class had the same bug before it was
+		// hoisted).
+		std::vector<SPECTRAL_SAMPLE> vecSpectralSamples;
+		vecSpectralSamples.reserve( nSpectralSamples );
 
 		// Take n samples
 		for( unsigned int i=0; i<nSpectralSamples; i++ )
@@ -170,8 +178,8 @@ void PixelBasedSpectralIntegratingRasterizerRGB::IntegratePixel(
 			const Scalar weight = pPixelFilter->warpOnScreen( *m, ptOnScreen, x, height-y );
 			weights += fabs(weight);
 
-			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + ((bTimeHalton?mh.next(0):random.CanonicalRandom())*temporal_exposure) );
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
+				AnimateSceneToSampleTime( pScene, temporal_start + ((bTimeHalton?mh.next(0):random.CanonicalRandom())*temporal_exposure) );
 			}
 
 			Ray ray;
@@ -194,6 +202,5 @@ void PixelBasedSpectralIntegratingRasterizerRGB::IntegratePixel(
 		}
 	}
 }
-
 
 

@@ -1,0 +1,33 @@
+{
+  "reviewed_commit": "bfebaf95",
+  "reviewers": [
+    {
+      "agent": "r246_design_physics_review",
+      "P1": 0,
+      "P2": 1
+    },
+    {
+      "agent": "r246_design_contract_review",
+      "P1": 0,
+      "P2": 2
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "issue": "Changed native fullheight/globalbudget support cannot alone establish common-region sensitivity",
+      "status": "fixed_in_design_fresh_review_pending"
+    },
+    {
+      "severity": "P2",
+      "issue": "Rounded schedule literal differs one binary64ULP",
+      "status": "fixed_exact_original_record_bits_fresh_review_pending"
+    },
+    {
+      "severity": "P2",
+      "issue": "Absolute no-derived-bound-change conflicts with unchanged geometry-dependent formula",
+      "status": "fixed_preserve_formula_record_stricter_values_fresh_review_pending"
+    }
+  ],
+  "qualification_limits": "Preserved discard=2.5 newgeometricflowtimes; originalstatsabout23cyclesat1.57Hz. Coldstart fixedwindow diagnostic, not developedtaller/canonicalpuffingqualification."
+}

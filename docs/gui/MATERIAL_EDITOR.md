@@ -1,0 +1,440 @@
+# Material Editor — Instance-First, then Node Graph, then MaterialX Import
+
+**Material Editor Slices 1–6 ALL SHIPPED on macOS & Windows (through 2026-10-31, `ace0e08d8`):**
+- **Slices 1–3 (C1 Inspector & Inline Painter Widgets):** Descriptor soft-range sliders, pipe-filtered reference presets, inline 18×18 `PainterPreview` slot swatches, `Shared (N)` + `Fork` badge/button, inline RGB/scalar quick-editors, `PainterIntrospection` repeatable `stop[i]`/`param[i]`/`def[i]` editing, and Basic/Advanced disclosure on both `PropertiesPanel.swift` and `ViewportProperties.cpp`.
+- **Slice 4 (C2 Pipe-Coloured Sockets & Scalar Adapter Insertion):** Both desktop graph canvases (`NodeGraphCanvas.swift` and `NodeGraphCanvas.{h,cpp}`) colour input sockets, output handles, and connected wires by pipe (Color gold, Scalar neutral grey, Material green, Function purple; dual Color/Scalar rotation inputs carry a grey outer ring). Eligible Color → Scalar refusals offer **Insert scalar_painter Adapter & Wire**, inserting an R-channel `scalar_painter` adapter immediately after its upstream source and rewiring in one undoable batch.
+- **Slice 5 (Shared 3D `MaterialPreview` Shaderball Engine):** `src/Library/SceneEditor/MaterialPreview.{h,cpp}` renders deterministic 12-wavelength spectral 3D studio shaderballs at 56×56 in the C1 Material inspector header and at 40×40 on C2 Material nodes (`category == 2`) across both macOS and Windows.
+- **Slice 6 (Spectral Differentiators D1–D3 in C1 Inspector, `ace0e08d8`):** D1 Blackbody Kelvin strip & Sellmeier optical glass presets with computed $n_d$ and Abbe $V_d$, D2 CC0 measured-metal `(n, k)` presets (Au/Ag/Cu/Al/Cr/Ti under `colors/conductors/`), and D3 0°–89° thin-film iridescence angle-sweep strip + interactive view-angle slider shipped in shared C++, C-ABI, macOS SwiftUI, and Windows Qt.
+- **Remaining open work:** C2 canvas polish (group frames / sticky comments / OpenPBR uber-node front end), C3 MaterialX / OpenPBR one-way import, A3 viewport drag-to-assign (unbuilt; owned by [APPROACHABILITY_FOUNDATION.md](APPROACHABILITY_FOUNDATION.md)), and remaining D1 widgets (monochromatic slider, CSV SPD import/plot, prism preview). Standalone headless regression coverage ships in `tests/MaterialPreviewTest.cpp` alongside `tests/PainterPreviewTest.cpp`. Windows/MSVC host build verification remains owed on a Windows machine.
+
+> **⚠ ERRATUM (2026-07-02, post-CST-cutover).** The "round-trip save IS shipped, including Phase-B property re-emit / the shipped Mode-A splice path" claims below describe the byte-splice engine **deleted in Model-B P5 Slice 6d (2026-07-01)**. Current reality: every scene loads via `Cst::ParseToCst` + `DeriveToJob`, the `Job` retains the canonical **CST `Document`**, material/slot edits route into it (`Job::ApplyCstParamEdit` and friends), and `SaveEngine::Save` serializes the whole Document (`Cst::SerializeCst` — minimal-diff on edits). Consequences for this spec: **material-entity property persistence still holds** (better than before — no per-edit Refused classes); "extend the SaveEngine Phase-B pass to painters" is now "route painter edits into the retained Document" (the save side is free once the edit op exists — the `PainterIntrospection` / painter edit-op work **SHIPPED in doc 88 S4**: a painter chunk's SINGLE-OCCURRENCE parameters round-trip through the retained Document exactly like a material slot; occurrence-addressed editing of its REPEATABLE parameters followed in doc 88 S4b); and C2 graph-topology serialization means **inserting/removing/rewiring chunks in the retained Document** (`Cst::DocInsertItem` / `DocRemoveItem`, the `ApplyCstInsertCameraChunk` pattern), not new save-engine re-emit machinery. Mentions of Mode A/B, Phase B/C, and `SaveEngineTest.cpp` below are pre-cutover history.
+
+**Status:** **SLICES 1–6 SHIPPED ON MACOS + WINDOWS (C1 instance-first editor + inline painter slot widgets + C2 Phase A/B node graph + Slice 4 pipe-coloured sockets/adapters + Slice 5 3D `MaterialPreview` shaderball + Slice 6 D1–D3 spectral/metal/thin-film inspector cards + standalone `tests/MaterialPreviewTest.cpp` all shipped; C2 frames/uber-node polish, C3 MaterialX import, and remaining D1 monochromatic/CSV/prism widgets remain open).** See the code-verified implementation matrix below (`2026-10-31`). This doc owns the material slice of the §16 confirmed decisions, including `ParameterSemantics`.
+
+> **Code-Verified Implementation Matrix (`2026-10-31`):**
+> - **C1 Instance-First Editor (§2) — SHIPPED (Slices 1–3, 5, 6 landed 2026-10-31):**
+>   - **Shipped:** `MaterialIntrospection` (covers **28** concrete types in `GetTypeName` and **21** in `Inspect`/`GetSlot`/`SetSlot`, including `coated_material`, `fabric_material`, and `weave_material`) + `CstIntrospection::AugmentWithCstRows` (merges CST chunk params into live material rows, upgrading read-only construction-time fields like `fresnel_mode`, `ior`, `hg`, and SSS parameters to editable, copying `kind` (`ValueKind::Enum`), `unitLabel`, and `enumValues` presets, filtering reference presets via `ConnectionLegality::CheckConnection` (`ParameterSemantics.pipe`, `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar`, declaration order, and cycle prevention), and populating `referenceCategories` for right-click Jump to Definition) + descriptor soft-range sliders (`ParameterRangeSpec` on `ParameterDescriptor`, populated across ~110 bounded numeric material/painter parameters and surfaced via `hasRange`/`rangeMin`/`rangeMax`/`rangeStep`) + inline reference-slot painter swatch (18×18 `PainterPreview`), `Shared (N)` + `Fork` badge/button (`ForkReferenceSlotPainter`), and inline constant RGB colour picker (`UniformColor`) / scalar slider+scrub+well (`ScalarValue`) (`SetReferenceSlotPainterValue`) + 56×56 3D `MaterialPreview` shaderball header + Slice 6 spectral cards (D1 Blackbody Kelvin strip & Sellmeier optical glass presets + $n_d$/Abbe $V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured-metal presets, D3 0°–89° thin-film iridescence strip) on both macOS (`PropertiesPanel.swift`) and Windows (`ViewportProperties.cpp`) + `PainterIntrospection` (doc 88 S4/S4b: single-occurrence and repeatable `stop[i]`/`param[i]`/`def[i]` editing, live `pipe` row, and `ExpressionParamSpec` range sliders, plus full `PainterPreview` header swatch, `ramp_painter` strip, and `def[i]` stage thumbnails on both macOS and Windows) + Basic/Advanced progressive disclosure (`maxBasicRows = 8` + `Advanced` toggle on both desktop shells).
+>   - **Remaining optional C1 polish:** curated numeric quick-pick presets on generic material parameters (e.g., roughness preset pills), conditional `fresnel_mode` row filtering (`conductor` vs `schlick_f0` vs `thinfilm` vs `constant`), and a 1-click "Duplicate Material" button inside the Material inspector header (duplication already works from the Outliner and C2 Node Graph).
+> - **C2 Node-Graph Canvas (§3) — Phase A (read-only) & Phase B (editable) SHIPPED (doc 88 S11–S23, [NODE_GRAPH_CANVAS.md](NODE_GRAPH_CANVAS.md)); Slice 4 pipe sockets / adapter action & Slice 5 40×40 Material shaderballs SHIPPED; grouping / uber-material polish OPEN:**
+>   - **Shipped:** `ReferenceGraph` DAG assembler (S11), deterministic Sugiyama layout + `<scene>.risegraph.json` sidecar (S12–S13), `PainterMaterialGraph` + `PainterMaterialGraphFocused` (`All` vs. `Focused` sticky-object subgraph toggle) + `AppearanceClosureForObject` spotlight (S14), `ConnectionLegality` + `ParameterSemantics.pipe` (S17), `CreateChunkNode` + `NodeGraphPalette` with `DL-401` legacy filter (S18), `OwnershipClosure` + `RewireConnection` with `Duplicate & Retry` refusal action (S19), reference-safe `DeleteGraphNode` + `DuplicateGraphNode` + `WouldCycle` (S20), and both desktop canvases (`NodeGraphCanvas.swift` S15/S21, `NodeGraphCanvas.{h,cpp}` S16/S22).
+>   - **Slices 4–5 shipped:** per-port / per-wire pipe colours (including dual-pipe rotation sockets), the 1-click scalar adapter refusal action for raster textures and general Color-capable painters, and 40×40 3D `MaterialPreview` thumbnails on Material nodes.
+>   - **Open in C2:** user-authored group frames / sticky comments in `.risegraph.json`, and the OpenPBR-shaped uber-material front-end node (§3.2).
+> - **Shared Thumbnail / Preview Engine (§4) — 2D `PainterPreview` (doc 88 S10) & 3D `MaterialPreview` Shaderball Engine (Slice 5) SHIPPED** (gated in fast CI by standalone `tests/MaterialPreviewTest.cpp` and `tests/PainterPreviewTest.cpp`):
+>   - `PainterPreview` renders 2D UV/world patches for `IPainter`/`IScalarPainter`, `def[i]` stages, and `ramp_painter` strips.
+>   - `MaterialPreview` ([`MaterialPreview.h`/`.cpp`](../../src/Library/SceneEditor/MaterialPreview.h)) renders deterministic 3D studio shaderballs (analytical sphere + multi-light studio rig + 12-wavelength spectral quadrature `[390, 710] nm` + 2-interface Snell refraction + SSS wrap + luminaire emission + 3D checker backdrop) for both the Material inspector header (`PropertiesPanel.swift` / `ViewportProperties.cpp`) and Material nodes (`category == 2`) on the node-graph canvas (`NodeGraphCanvas.swift` / `NodeGraphCanvas.cpp`).
+> - **`ParameterSemantics` (§6.4) — Core fields SHIPPED (S17):**
+>   - `ParameterSemantics` on `ParameterDescriptor` ([ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h)) ships `pipe` (`ParameterPipe`), `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar` (`DL-16`/`DL-17` dual-pipe `tangent_rotation`/`anisotropy_rotation`), and `note`. Fine-grained `cardinality`, `units`, `colourSpace`, and `spatialVsSpectral` fields remain optional future extensions.
+> - **Slice 6 Spectral Material Widgets ([SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1–D3) — SHIPPED (Kelvin strip, Sellmeier glass presets + $n_d$/$V_d$, CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, 0°–89° thin-film iridescence strip); remaining D1 widgets (monochromatic slider, CSV SPD import/plot, prism preview) & C3 MaterialX / OpenPBR Importer (§5) — OPEN.**
+**Owner:** Aravind Krishnaswamy
+> **Current basis (2026-10-31).** The shipped code and implementation matrix above are authoritative. [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) is a historical June snapshot whose save/pipe claims were superseded by the CST cutover and later editor work. Material and painter edits persist in the retained CST Document, including occurrence-addressed painter rows. `ParameterSemantics` currently carries `pipe`, `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar`, and `note`; richer proposed constraints remain separate future work (§6.4).
+**Scope:** A material-authoring surface for the RISE desktop GUIs (macOS SwiftUI + Obj-C++ bridge, Windows Qt6 + C++ bridge) and a staged Android tier. Three staged deliverables: **C1** an instance-first flat editor over today's descriptor material slots (cheap 80%, *no new serialization*); **C2** a node-graph editor with an OpenPBR-shaped default uber-node, per-node live thumbnails, pipe-typed sockets, and **new scene-language graph serialization** (the heavy lift, gated behind "Advanced"); **C3** MaterialX / OpenPBR *import* (RGB→spectral at the boundary, never native storage). Honors the [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §1 principles: text is canonical, max shared C++, progressive disclosure, one mutation path, differentiate on spectral, Android not left behind.
+
+This doc owns the material slice of the roadmap. It cross-references the **spectral material widgets** (curve editor, measured-metal n,k picker, thin-film slider, gamut warning) to the sibling [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) rather than re-specifying them; here they appear only as the *socket/row editors* the material surfaces invoke.
+
+---
+
+## 0. The one-paragraph thesis
+
+RISE already has the two hard pieces a material editor needs and most renderers fake: (1) a **descriptor-driven property system** ([ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h)) where every material parameter is already a typed, self-describing, editable row surfaced through the bridge as a `RISEViewportProperty` (panel mode `RISEViewportPanelModeMaterial = 6` is already wired), and (2) a **CPU spectral path tracer with no shader-compile step**, so every parameter is a live knob and a per-node preview is just another (small) render. The work is therefore an *interaction layer*, not an engine project. C1 is almost free — it is the existing material property rows given a first-class panel, and as of doc 88 S4 that now includes **the painter-editing path** too (the colour swatch/picker of §2.1): `Painter` is a tracked `EntityCategory` (`DirtyTracker`), and a painter chunk's SINGLE-OCCURRENCE value round-trips through the retained CST Document exactly like a material's own scalar-literal slot. Occurrence-addressed editing of a painter's REPEATABLE parameters (ramp `stop` lines, expression `param`/`def` lines) **also ships now (doc 88 S4b)**, together with the **range-slider row field** for an expression `param`'s authored `min`/`max`/`step`. Both 2D `PainterPreview` thumbnails, 3D `MaterialPreview` studio shaderball swatches (Slice 5), and Slice 6 spectral differentiators (D1–D3) now ship on both desktop platforms (§4). C2's genuinely hard part is **serializing a node graph's *topology* — new chunks and re-wiring — into the descriptor-driven `.RISEscene` grammar** (per-slot *material-* and *painter-*property round-trip both already ship — the material half via the SaveEngine-successor retained-Document path, the painter half via doc 88 S4, audit §1; the canvas widget, thumbnails, and pipe-typed sockets all shipped across S11–S23 and Slices 4–5). C3 is a one-way importer whose single load-bearing responsibility is **encoding the color-vs-scalar routing** that [../ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md) exists to enforce.
+
+---
+
+## 1. The load-bearing concept: `IPainter` (color pipe) vs `IScalarPainter` (scalar pipe)
+
+This distinction is the spine of socket typing (C2) and import routing (C3). It is not cosmetic — getting it wrong is the exact bug [../ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md) was written to kill (a `scattering 1000000` or an IOR routed through `IPainter` gets JH-uplifted through the Jakob–Hanika LUT and silently mangled in every spectral rasterizer — glass renders invisible).
+
+| | `IPainter` (color pipe) | `IScalarPainter` (scalar pipe) |
+|---|---|---|
+| **Carries** | A per-wavelength **color/spectrum** sample (reflectance, emission, tau-as-tint) | A per-wavelength **physical magnitude** (IOR, roughness, scattering, absorption, thickness, exponent, phase `g`) |
+| **Colorspace?** | Yes — `GetColorNM` does JH spectral uplift via the Rec.709 LUT | **None.** `ScalarTriple` is three pure scalars; the interface deliberately has *no* `GetColorNM` |
+| **Socket color (C2)** | **Yellow** (Blender convention for a 3-channel color) | **Grey** (Blender convention for a single value) |
+| **Resolved by** | `IPainterManager` | `IScalarPainterManager` (parser helper `ResolveOrDiagnoseScalar`, [Job.cpp](../../src/Library/Job.cpp)) |
+
+**The oddball: `tangent_rotation` / `anisotropy_rotation` (radians).** Historically plumbed only through the **color pipe** (`IPainter`) so that an `expression_function2d` painter could drive a spatially varying groove direction, `DL-16`/`DL-17` upgraded both `ggx_material.tangent_rotation` and `pbr_metallic_roughness_material.anisotropy_rotation` to **dual-pipe** via `ResolveRotationPainterDual` and tagged their descriptors with `ParameterSemantics::colorAlsoAcceptsScalar = true` ([ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h), [ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)). Consequently, `ConnectionLegality::CheckConnection` now accepts **either** an `IPainter` or an `IScalarPainter` source on those rotation slots.
+
+> **Status update (S17):** `ParameterDescriptor` now carries `ParameterSemantics` ([ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h)) with `pipe` (`ParameterPipe::Color`, `Scalar`, `Material`, `Function1D`, `Function2D`, `Geometry`, `Other`), `requireSingle`, `keywordAllowlist`, and `colorAlsoAcceptsScalar`, and `ConnectionLegality::CheckConnection` ([ConnectionLegality.h](../../src/Library/SceneEditor/ConnectionLegality.h)) enforces pipe + `requireSingle` + `keywordAllowlist` + cycle prevention using the exact `Job::ResolveOrDiagnoseScalar` diagnostic format strings. See §6.4 for details.
+
+---
+
+## 2. C1 — Instance-first editor (the cheap 80%, no new serialization)
+
+**What it is.** A flat, scrollable panel of slider / swatch / preset rows over a *single material instance's* existing slots — the Unreal "material instance" view (override a parameter without recompiling), except RISE has **no recompile cost at all** because it is a CPU path tracer: every edit is live the instant the progressive viewport restarts ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §3, §7). This is the default surface most users ever touch.
+
+**Why it is nearly free.** It already exists in skeleton. The bridge has:
+- `RISEViewportPanelModeMaterial = 6` and `RISEViewportCategoryMaterial = 6` ([RISEViewportBridge.h](../../build/XCode/rise/RISE-GUI/Bridge/RISEViewportBridge.h)).
+- `propertySnapshotFor:(RISEViewportCategory)` / `setPropertyForCategory:name:value:` — per-category read + write that already routes a Material-section edit to the object's bound material even when an Object is the primary selection.
+- `RISEViewportProperty` rows carrying `name / value / describing / kind (ValueKind) / editable / presets / unitLabel`.
+- The thin-film material already surfaces its slots and a **read-only `fresnel_mode` row** through `MaterialIntrospection` (per [../THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md) adversarial-review commit `48d99f04`).
+
+So C1 is "promote the Material panel mode to a first-class, well-laid-out surface," not "build a property system."
+
+### 2.1 What C1 adds on top of today's descriptor infra (little)
+
+| Need | Today | C1 delta |
+|---|---|---|
+| Numeric **slider** with sane range | `kind = Double`, plain line edit + `unitLabel` | Add an optional `range`/`softRange` hint to `ParameterDescriptor` (min/max/step); render a slider when present, fall back to line edit. |
+| **Color swatch** + picker | `Reference` → Painter (string name) | Detect a uniform color painter; show a swatch that opens the **spectral color picker** ([SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1). Inline RGB literal stays editable as text. **Persistence SHIPPED (doc 88 S4)** — this row *edits a painter chunk*, and the painter chunk's own single-occurrence value now routes into the retained CST Document exactly like a material slot; see the note below. The **range-slider** row field SHIPPED in doc 88 S4b (macOS and Windows) for rows that carry an authored range. |
+| **Preset** quick-picks | `presets` already on the descriptor | Populate material presets (roughness "Mirror/Satin/Matte"; IOR "Water 1.33 / Glass 1.5 / Diamond 2.42"; metal n,k named picks → [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D2). |
+| **Enum** rows | `kind = Enum` with `enumValues` | `fresnel_mode` (conductor / schlick_f0 / thinfilm / constant) becomes an editable combo; switching to `thinfilm` reveals the film rows (progressive disclosure, see §2.2). |
+| **Material swatch** at panel top | `panelHeader` string | A small async sphere/shaderball preview of the *whole* material (same renderer; §4 thumbnail engine, reused). |
+| **Assign / duplicate** | object→material binding exists | "Duplicate material" (clone the chunk under a new name) + drag-to-assign hook ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) A3). Duplicate is the instance-first idiom: branch a named material, tweak its knobs. |
+
+> **✅ Painter editing SHIPPED (doc 88 S4).** The §2 framing "C1 is the existing rows given a panel, *no new serialization*" now holds for painter chunks too, not only a material's own slots: `Painter` **is** an `EntityCategory` in `DirtyTracker`, and `PainterIntrospection` is a real read/edit surface layered on the same generic descriptor+CST introspection Material/Geometry already used. The **Color swatch + picker** row above, and every other single-occurrence painter parameter, persists. The three net-new pieces the earlier draft of this note called TO-BUILD are **all shipped**:
+> 1. **`PainterIntrospection`** — a read/edit surface for painter chunks ([`PainterIntrospection.h`/`.cpp`](../../src/Library/SceneEditor/PainterIntrospection.h)); `MaterialIntrospection` still surfaces only the painter *binding name* on a material slot, but the painter's own value is now introspected directly.
+> 2. **Painter edit operations** — routed through the SAME generic agent CST param-edit path Material/Light/Medium/Geometry use (`SceneEditController::SetPropertyForCategory(Category::Painter)` → `ApplyAgentParamEditInner_` → `Job::ApplyCstParamEditChecked`), with prior-value capture, inverse-patch undo/redo, and a re-render kick — no separate `Set*PainterProperty` op was needed.
+> 3. **Painter dirty tracking** — `Painter` is a first-class `DirtyTracker::EntityCategory`; an edited painter flags the Save button via `(Painter, name)`, the same granularity as Material/Light/Medium. Save re-emit was free once the edit op routed into the Document, as this note originally predicted.
+>
+> **✅ Occurrence-addressed repeatable-parameter editing, C1 inline slot widgets, 3D `MaterialPreview` shaderball & D1–D3 spectral cards SHIPPED (doc 88 S4b + C1 Slices 1–3, 5, 6).** A ramp's `stop` lines and an expression painter's `param`/`def` lines surface as EDITABLE rows (`"<param>[<i>]"`, one per occurrence) and round-trip through the same one CST edit pathway: `occ` is threaded end to end (`SceneEditController::SetPropertyForCategory(Painter)` parses and bounds the `[i]`, `ApplyAgentParamEditInner_` / `CaptureAgentPriorParamValue_` take it, `SceneEdit::cstParamOcc` carries it into history, and both mutation arms route it to `Job::ApplyCstParamEditChecked` / `ApplyCstParamRemoveChecked`). A write to `stop[2]` rewrites that line and nothing else, byte-exactly. Undo/Redo of such an edit is **drift-guarded** (`SceneEditor::OccurrenceEditStillAddressable_`): if the occurrence layout moved underneath the history entry, the revert refuses honestly instead of clobbering a neighbour, and the entry stays. BARE repeatable role names (`stop` with no index) remain refused — they do not say which line. Both expression `ExpressionParamSpec` ranges and descriptor-level `ParameterRangeSpec` (`softMin`/`softMax`/`softStep`) populate `CameraProperty::hasRange`/`rangeMin`/`rangeMax`/`rangeStep` through both bridges, and **both** the macOS panel (`ParamSliderCell` in `PropertiesPanel.swift`) and the Windows Qt panel (`QSlider` in `ViewportProperties.cpp`) render a slider above the text field. Material/entity reference slots targeting a painter also render an inline 18×18 `PainterPreview` swatch, a `Shared (N)` + `Fork` badge/button (`ForkReferenceSlotPainter`), and inline constant RGB / scalar quick-editors (`SetReferenceSlotPainterValue`), while the Material inspector header renders a 56×56 3D `MaterialPreview` shaderball (Slice 5) and Slice 6 spectral cards (D1 Kelvin & Sellmeier glass presets + $n_d$/$V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, D3 0°–89° thin-film iridescence strip). **Still open:** remaining D1 widgets (monochromatic slider, CSV SPD import/plot, prism preview), A3 viewport drag-to-assign, and C3 MaterialX import.
+
+### 2.2 Progressive disclosure inside C1
+
+Per principle 4 (≤2 levels). Each material shows a **Basic** band (the 4–6 parameters that matter — base color, roughness, metalness/IOR) and an **Advanced** disclosure (anisotropy, extinction, film slots, SSS coefficients). The `fresnel_mode` combo is the gate: `thinfilm` reveals `film_ior / film_extinction / film_thickness` (which `GetFresnelMode()` already lets the panel show only for a thin-film material); `schlick_f0` and `constant` hide `ior`/`extinction`. No node graph is ever required for a good result (avoid the Houdini trap, §12).
+
+### 2.3 C1 non-negotiables (anti-patterns avoided)
+
+- **No synchronous swatch stalls.** Maya's Hypershade is the cautionary tale — users report ~10 s *per swatch* and ~30 s to open the window ([Autodesk forum](https://forums.autodesk.com/t5/maya-forum/super-slow-hypershade-in-maya-2022-3-solution/td-p/11132437), [Chaos forum](https://forums.chaos.com/forum/chaos-common/chaos-common-public/29969-extremely-slow-swatch-generation-in-the-hypershade)). The material swatch is async + cancellable + cached, never blocking the edit (§4).
+- **One inspector, not mode-swapped panels** (§12; Maya anti-pattern). C1 is *the* material view; C2 is a toggle from it, not a parallel world.
+
+---
+
+## 3. C2 — Node graph (heavy lift, gated "Advanced")
+
+A visual node canvas for users who outgrow flat instance knobs (layered/composite materials, painter graphs, spatially varying inputs). **Gated behind an explicit "Advanced" toggle, never on the default path** ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §12; the KeyShot model — graph is opt-in/Pro, drag-a-material is the default). RISE's advantage over Unreal/Blender is structural: **no shader permutation/recompile** ([Epic docs](https://dev.epicgames.com/documentation/unreal-engine/instanced-materials-in-unreal-engine); [Hoffman, shader permutations](https://medium.com/@lordned/unreal-engine-4-rendering-part-5-shader-permutations-2b975e503dd4)) and Substance's signature per-node live thumbnail comes **for free** because the renderer *is* the preview ([Adobe, Designer 2020.2 thumbnails](https://www.cgchannel.com/2020/10/adobe-unveils-substance-designer-2020-2/)).
+
+### 3.1 Node taxonomy
+
+Nodes are 1:1 with RISE's existing chunk vocabulary so the graph round-trips to text (§5). Categories:
+
+| Node category | Maps to | Examples | Output pipe |
+|---|---|---|---|
+| **Surface / uber** (the default node) | a `*_material` chunk | **OpenPBR-shaped uber node** (§3.2) → resolves to GGX + dielectric + thin-film; plus first-class `lambertian`, `dielectric`, `ggx`, `sheen`, SSS nodes | Material |
+| **Layer / composite** | `composite_material` | Top/Bottom + thickness + extinction (varnished wood, metal-flake-under-clearcoat) | Material |
+| **Color painter** | `IPainter` chunks | `uniformcolor`, `spectral` (→ [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1), `blackbody`, `texture`, `checker`, `blend`, procedural noise, `expression_function2d` | **Color (yellow)** |
+| **Scalar painter** | `IScalarPainter` chunks | `uniform`, `rgb`, `piecewise_linear` (measured n/k drop-in), `sellmeier` (named-glass IOR), `polynomial`, `texture_scalar`, `scaled`, `multiply`, `add` | **Scalar (grey)** |
+| **Texture / input** | image + UV | `texture` / `texture_scalar`, `uv_transform`, `tex_coord` | Color or Scalar by slot |
+| **Bridge** | `scalar_painter` channel adapter | `texture <rasterPainter>` or `painter <colorPainter>`, with `channel R`; explicit action, see §3.4 | Scalar (grey) |
+
+**`tangent_rotation`** is a dual-pipe angle input: a **yellow socket with a grey ring** accepts a Color painter or a single-valued Scalar painter (§1).
+
+### 3.2 The default node = an OpenPBR-shaped uber-material
+
+The node you get when you create a material with no other choice. Its parameter layout follows **OpenPBR Surface** ([Academy Software Foundation OpenPBR](https://academysoftwarefoundation.github.io/OpenPBR/)) — the industry's converging uber-shader — so authors arriving from Blender Principled / Arnold Standard Surface / Substance feel at home, but it **resolves down to RISE's actual materials** (GGX `fresnel_mode {conductor|schlick_f0|thinfilm|constant}` + `dielectric_material` for transmission + the thin-film film slots), exactly as `pbr_metallic_roughness_material` already resolves at scene-build time into a painter graph + a single GGX ([MATERIALS.md](../MATERIALS.md) §8). The uber node is a **front-end convenience that lowers to existing chunks** — not a new C++ material.
+
+OpenPBR-input → RISE mapping (the C2 default node's socket list). Pipe column drives socket color:
+
+| OpenPBR input | OpenPBR type | RISE target | RISE pipe / socket |
+|---|---|---|---|
+| `base_color` | color3 | GGX `rd` (diffuse) / baseColor | **IPainter — yellow** |
+| `base_metalness` | float | routes to GGX `fresnel_mode` + F0=baseColor (the PBR-MR lowering) | **IScalarPainter — grey** |
+| `specular_weight` | float | `specular_factor` (KHR_materials_specular) | IScalarPainter — grey |
+| `specular_color` | color3 | GGX `rs` / `specular_color` tint | **IPainter — yellow** |
+| `specular_roughness` | float | GGX `alphax`/`alphay` (roughness²) | IScalarPainter — grey |
+| `specular_roughness_anisotropy` | float | `anisotropy_factor` → αx≠αy | IScalarPainter — grey |
+| `specular_ior` | float | GGX `ior` *(scalar!)* | **IScalarPainter — grey** |
+| (anisotropy rotation) | float | `tangent_rotation` *(radians)* | **Color or single-valued Scalar — yellow with grey ring (§1)** |
+| `transmission_weight` | float | lower to `dielectric_material` branch | IScalarPainter — grey |
+| `transmission_color` | color3 | dielectric `tau` (tint) | **IPainter — yellow** |
+| `transmission_dispersion_abbe_number` / `_scale` | float | dielectric dispersive IOR (`sellmeier`/per-channel scalar) | IScalarPainter — grey · **spectral superset, see §3.6** |
+| `subsurface_weight` / `_radius` / `_anisotropy` | float | `subsurfacescattering` / `randomwalk_sss` slots | IScalarPainter — grey |
+| `subsurface_color` / `subsurface_radius_scale` | color3 | SSS albedo / radius tint | IPainter — yellow |
+| `coat_weight` / `coat_roughness` | float | `composite_material` clearcoat layer | IScalarPainter — grey |
+| `thin_film_thickness` | float (µm) | GGX `film_thickness` *(nm in RISE — unit convert ×1000)* | **IScalarPainter — grey** |
+| `thin_film_ior` | float | GGX `film_ior` | IScalarPainter — grey |
+| `thin_film_weight` | float | gates `fresnel_mode thinfilm` | IScalarPainter — grey |
+| `geometry_normal` / `geometry_opacity` | vector / float | normal map painter / alpha | per-slot |
+
+Notes the editor must encode:
+- **Unit conversion is real.** OpenPBR `thin_film_thickness` is **µm**; RISE `film_thickness` is **nm** ([../THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md)). The uber node converts (×1000) and labels the row "nm".
+- **`base_metalness`/`transmission_weight` are *routing* knobs**, not direct slots — they pick which RISE material(s) the node lowers to (metal → GGX conductor with F0=baseColor; transmission → dielectric). This is the same lowering `Job::AddPBRMetallicRoughnessMaterial` already does; the node graph just exposes the dials.
+
+### 3.3 Per-node live thumbnails (RISE path-traces for free; async; disableable)
+
+The signature feature. Each node renders a small preview of its output on a shaderball (surface nodes) or a swatch tile (painter/scalar nodes), using the same engine — Substance's per-node thumbnail, except we don't bolt on a separate PBR-render node ([CG Channel](https://www.cgchannel.com/2020/10/adobe-unveils-substance-designer-2020-2/)).
+
+Design rules, all from the **Hypershade anti-pattern** (icon-less nodes, synchronous swatch stalls, manual recompute):
+- **Async + cancellable.** A node-preview render runs on a worker at low spp / tiny resolution, off the interactive path; navigating or editing cancels in-flight previews. Never block an edit (the Maya 10 s/swatch failure).
+- **Cached + invalidation-driven.** Cache keyed on the node's resolved parameters + upstream graph hash; recompute only the dirty subtree on edit (avoid Substance's "only computes on first open / needs manual *Compute Node Thumbnails*" footgun — [Adobe community](https://community.adobe.com/t5/substance-3d-designer-discussions/hotkey-for-compute-node-thumbnails/td-p/12363560)).
+- **Globally disableable + budgeted.** A "Live previews" toggle and a max-concurrent-preview budget; on a big graph, previews degrade gracefully (stale thumbnail kept, "↻" affordance) rather than stalling. Reuses the **same thumbnail engine** as the C1 material swatch and the asset library (§4).
+- **Spectral-honest.** Previews are real spectral renders, so a soap-bubble thin-film node *looks* iridescent and a dispersive-glass node *shows* color fringing in its thumbnail — impossible in an RGB tool. (Whether a *hover-preview* during drag is cheap enough is the open spike in [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.1 — default to commit-on-release if not.)
+
+### 3.4 Socket color = pipe; connection legality from descriptor metadata
+
+- **Socket color encodes the pipe** (§1): **yellow = `IPainter`**, **grey = `IScalarPainter`**, **green = Material** output (Blender's convention: grey = 1 value, yellow = color/3-value, green = shader — [Blender shader sockets](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html)).
+- **Connection legality is enforced from existing metadata, not invented.** A drag from an output to an input is legal iff the input slot's pipe accepts the output's pipe. The truth comes from two existing sources that must be reconciled (§6.4): the descriptor's `referenceCategories` (Painter / Function / Material) *and* the per-slot pipe tag (IPainter vs IScalarPainter). The validation reuses the **same `ResolveOrDiagnoseScalar` logic** that the parser already runs — so the canvas rejects a color-painter-into-scalar-slot drop with the *same* message a hand-edit would get ("bound to `IPainter` chunk … this slot now requires a `scalar_painter`"). One validation authority, three consumers (parser, GUI canvas, MCP `validate`).
+- **The bridge node** is a `scalar_painter` R-channel adapter. Slice 4 offers **Insert scalar_painter Adapter & Wire** for eligible Color → Scalar refusals after the shared cycle, occurrence, ownership, edit-addressing, scalar-form, declaration-order, transaction and head-version checks. A competing scalar form prevents a `base` adapter; `base` plus `scale` remains valid. Raster-image sources use `texture`; general Color-capable painters use `painter`. Both read scalar data without JH uplift. The user explicitly accepts this channel extraction; it does not reconstruct a spectral physical quantity from RGB.
+
+### 3.5 Organization from day one (frames / comments / search)
+
+Not deferred — the lesson from every node editor that grew unmanageable (Maya Hypershade auto-destroys layout; Substance only recently added node Groups for search — [Substance 15.1 cleanup](https://digitalproduction.com/2025/12/15/substance-designer-cleans-up-its-nodes/), [graph instances/subgraphs](https://helpx.adobe.com/substance-3d-designer/substance-compositing-graphs/graph-instances-sub-graphs.html)):
+- **Frames** (labeled, colored bounding boxes grouping related nodes) and **sticky comments**.
+- **Search/add palette** (type-to-add, filtered by what can legally connect to the selected socket).
+- **Node groups / subgraphs** — collapse a reusable cluster (this is also the natural serialization unit for a *named reusable material*, §5).
+- **Deterministic layout persistence.** Node positions/frames are **UI/session state**, not scene semantics — stored in a sidecar layout file or a comment-block annotation (honors the §1 "prefer read-only / don't extend the scene language for UI state" instinct, and the [round-trip prefer-read-only](../../docs/) memory). Never auto-destroy a user's layout (the Hypershade sin).
+
+### 3.6 Spectral is a superset of OpenPBR — surfaced, not hidden
+
+The C2 uber node *defaults* to the OpenPBR RGB-shaped inputs, but each color/scalar socket can be **promoted to its spectral form** in place — a color swatch → a spectral curve / measured SPD ([SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1), an IOR float → a `sellmeier` named-glass node or a measured n,k `piecewise_linear` ([SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D2), thin-film thickness → the angle-reactive thin-film row ([SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D3). OpenPBR's `transmission_dispersion_abbe_number` is the seam: RISE expresses true per-wavelength dispersion (a `sellmeier`/per-channel scalar) that the RGB interchange can only approximate. This is the "differentiate on spectral, don't replicate" mandate realized inside the node editor.
+
+### 3.7 The hard part — new scene-language graph **topology** serialization ("Phase B")
+
+> **Executed design rationale:** topology creation and rewiring shipped in S17–S23; Slice 4 adds the scalar adapter batch. The following paragraphs record the serialization and ownership decisions that led to those implementations.
+
+**Material-entity** *and* **painter-node** *property* round-trip are **both already shipped** (post-cutover: the edit routes into the retained CST Document and the whole-Document save persists it; the pre-cutover "SaveEngine Phase-B re-emit" mechanism was deleted in Slice 6d; the painter half shipped in doc 88 S4, `Painter` now a tracked `EntityCategory`, §2.1 note) — editing a *material* or *painter* node's own SINGLE-OCCURRENCE slot value (a scalar literal, an enum, a painter's `expr`/`color`/numeric params) persists today. As of doc 88 S4b a painter's REPEATABLE parameters (ramp `stop` lines, expression `param`/`def` lines) round-trip too, occurrence by occurrence. Graph **topology** is the larger genuinely-new work regardless: there is no general material-*graph* serialization that survives a save/reload of brand-new nodes and re-wired **edges** (which painter feeds which slot of which material). Two layers:
+
+**Phase A — read-only graph view (no new serialization).** Build the canvas as a *visualizer* over the already-parsed scene: every `*_material` chunk and every painter/scalar-painter chunk becomes a node; every name-reference (`rs ggx_specular`, `film_thickness oxide_thk`) becomes an edge. This is pure introspection over the existing chunk graph + a new bridge call returning `{nodes, edges}`. Ships value (see your material's structure visually, jump to a node) before any serialization risk. Edits in Phase A still go through the C1 per-slot `setProperty` path.
+
+**Phase B — graph mutation + round-trip serialization.** The editor creates/deletes nodes and rewires edges, and that must serialize. **The chunk vocabulary already IS the serialization** — RISE materials and painters are named, reference-by-name chunks, so a graph is *already* expressible as a set of chunks + name-references. The design therefore is **NOT a new `node`/`graph` chunk type** (that would fork the format and fight the descriptor-driven parser). Instead:
+
+- **Serialize the graph AS the chunks it already lowers to.** Creating a node = emitting its `*_material` / `*_painter` chunk with a generated unique name; wiring an edge = writing that name into the consumer slot. **[Mechanism updated post-CST-cutover]** The engine that persists this is the retained CST Document + whole-Document save (`Cst::SerializeCst`, minimal-diff — comments / whitespace preserved; the byte-splice engine of [../ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md) is history). **What is already shipped vs. what is genuinely new:** edits to a **material entity's** *existing* slot values route into the retained Document and persist today — the same path C1's per-slot `setProperty` uses. **`Painter` is now an editable/introspected family too (doc 88 S4)** — editing a *painter node's* SINGLE-OCCURRENCE value persists exactly the same way (the §2.1 note's three pieces: `PainterIntrospection` + painter edit ops routed into the Document + painter dirty tracking, all shipped); occurrence-addressed REPEATABLE-parameter editing **shipped in doc 88 S4b**. The other **genuinely new** work is graph-**topology** serialization: **inserting brand-new `*_material`/`*_painter` chunks into the Document** (`Cst::DocInsertItem`, the `ApplyCstInsertCameraChunk` pattern) and rewriting reference tokens for re-wired edges. **C2 Phase B therefore depends on graph-topology Document ops + reference-rewrite, NOT on "round-trip save landing"** (the material-entity, painter single-occurrence and painter occurrence-addressed halves have all landed). Where a topology edit can't yet be expressed as a surgical chunk insert/reference-rename, the graph editor falls back to rewriting the affected material's **ownership closure** — defined precisely in §3.7a — never to "the material block," because arbitrary scenes have no contiguous block boundary (graph chunks may be scattered, shared between materials, or `FOR`/`DEFINE`-generated). When that closure is ambiguous, the editor **REFUSES** the topology edit with a clear diagnostic rather than guessing a block to clobber.
+
+#### 3.7a — The ownership-closure rewrite rule (what "wholesale" actually means)
+
+"Rewrite the affected material block wholesale" is **undefined** for real scenes: a material's painter graph is a set of named, reference-by-name chunks that the scene file can lay out *anywhere* — adjacent, scattered across the file, **shared** with another material's graph (one painter referenced from two materials, §3.8 copy-vs-link), or **macro/`FOR`-generated** (no single editable source line). There is no guaranteed contiguous text span to "rewrite wholesale." The fallback must therefore be scoped by *ownership*, not by text adjacency:
+
+1. **Compute the ownership closure.** Using the controller's dependency graph (the same `SceneEditController::FindReferencesTo` query and on-demand reference scan that reference-safe deletion relies on — [ENTITY_CREATION.md](ENTITY_CREATION.md) §5, §5.1), walk the chunks reachable from the edited material's roots and keep exactly the set that is **solely owned** by this material's graph: reachable from this material, **not shared** with any other material/object/light (no second referrer), and **not expression-generated** (post-cutover: native-v7 scenes have no `FOR`; the residual concern is a chunk whose identity depends on a `let`/expression the editor can't rewrite as a unit). That solely-owned, single-source, unshared set is the closure.
+2. **Rewrite only the closure.** Re-emit precisely those chunks (and the consumer reference tokens that point into them); leave every other byte of the file — including shared painters, neighbouring unrelated chunks, and `FOR`/`DEFINE` regions — untouched. This preserves the byte-identity guarantee everywhere outside the closure.
+3. **REFUSE when the closure is ambiguous.** If the edit would require rewriting a chunk that is **shared** (≥2 referrers), **scattered across a span the engine can't address as a unit**, or **macro/`FOR`-generated**, the editor returns a `Status::Refused`-shaped diagnostic ("this topology edit touches a painter shared with material *X* / generated by a `FOR` loop — edit the source, or duplicate the node to fork an owned copy") rather than rewriting a guessed block and risking clobbering another material or an expression-driven region. This is the same block-or-refuse discipline ENTITY_CREATION applies to reference-safe deletion (§5.2). *(The pre-cutover analogue — the byte-splice SaveEngine's FOR-generated Refusal — was deleted with that engine; the refusal here is an editor-level policy, not a save-engine one.)*
+
+The user's escape hatch when REFUSED is **"Duplicate node"** (§3.8 copy-vs-link): forking the shared painter into a new, solely-owned chunk makes the closure unambiguous, after which the topology edit proceeds. This keeps the fallback *safe-by-default* — it never silently rewrites a span it doesn't fully own.
+
+The remaining Phase-B mechanics (resuming the §3.7 list):
+
+- **Canvas layout is a sidecar** (§3.5) — never in the semantic chunks.
+- **The reconciliation problem (the genuinely new work):** mapping graph edits ↔ minimal chunk-text edits. Adding a node between two existing ones must (a) emit a new chunk, (b) rename one reference, (c) leave everything else byte-identical. This is the same "structured edit vs wholesale rewrite" question the roadmap flags as an open spike ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.6). **Recommendation:** Phase B uses round-trip save's structured-edit path for *single-slot* rewires (cheap, surgical) and falls back to the **ownership-closure rewrite** (§3.7a — re-emit only the solely-owned, single-source, unshared chunks; REFUSE when the closure is ambiguous) for *topology* changes (add/remove node), which are rarer and where preserving inter-line formatting matters less. The fallback is never "rewrite the material block" — that boundary doesn't exist in an arbitrary scene.
+
+> **Open question (flagged):** whether a **named reusable material library** (a material graph saved once, instanced across scenes — the Unreal master/instance split at the *file* level) needs a light wrapper chunk (e.g. an `#include`-style material import) or is served by copy-in + the C3 importer. Lean toward **no new chunk**; a reusable material is a `.RISEscene` fragment the asset library copies in (consistent with §12 "MaterialX not native, import only" and the no-new-format instinct). Decide in Phase B.
+
+### 3.8 Graph-model completeness — what "the chunks ARE the graph" leaves unspecified
+
+The "named `*_material`/`*_painter` chunks ARE the graph" model (§3.7) is the right *serialization*, but it is **not a complete editing model**. The chunk vocabulary expresses a DAG of name-references; it says nothing about how the editor handles shared nodes, cycles, deletion, generated names, macro-expanded graphs, reusable clusters, or edits whose text spans are scattered. Each is specified here so the canvas behaves predictably and `Phase B` knows what it must reject.
+
+- **Shared-node copy-vs-link semantics.** A painter referenced by name from two material slots is **one node with two out-edges** (a *link*), not two nodes — RISE chunks are reference-by-name, so the default on the canvas is **link** (edit once, both consumers change). Dragging a node's output to a second input *links*; the user must explicitly choose **"Duplicate node"** to fork an independent copy (a new chunk with a deduped name, §3.8 stable-names). This mirrors ENTITY_CREATION §4.3: object duplicate **shares** geometry/material refs by addref (not deep-copy) — "clone Sponza's wall material 1000×" is never the intent. Surface the share visually (a fan-out badge on a multiply-referenced node) so an "edit once" doesn't silently change a node the user thought was private.
+- **Cycle detection / prevention.** The chunk graph **must stay acyclic** — the parser resolves names at chunk-finalize time and the renderer evaluates painters by walking references; a cycle (painter A blends B, B blends A) is non-terminating. The canvas rejects any wire whose addition would create a cycle (a forward reachability check from the proposed target back to the source before committing the edge), with the same `Diagnostic` shape the validator uses, so a hand-edited cyclic scene and a canvas-attempted cycle report identically. This is a *graph* invariant the flat-chunk format can express but never enforces — the editor owns enforcing it.
+- **Deletion / orphan handling.** Deleting a node is exactly the **reference-safe deletion** problem ENTITY_CREATION §5 owns, and its sharpest hazard applies here: **objects (and material slots) hold raw `const` pointers to their painters with manual addref/release and do NOT register through the manager's `RequestItemUse` deletion-callback path** ([ENTITY_CREATION.md](ENTITY_CREATION.md) §5; [Object.cpp](../../src/Library/Objects/Object.cpp) `AssignMaterial`/`AssignGeometry`). So deleting a painter that a still-bound slot references does **not** dangle to freed memory (the addref keeps refcount ≥ 1) but **orphans** it — gone from the manager and the file, still pointed at, un-re-bindable. The material node editor therefore must **compute the reference graph itself** before a delete (`SceneEditController::FindReferencesTo`, ENTITY_CREATION §5.1) and apply the **block-or-cascade** policy (block a painter delete that has consumers; offer reassign-to-neutral or cascade-clear) — it never silently removes a referenced node. Deletion is a transaction (TRANSACTION_MODEL); the whole cascade (rebinds + removal) is **one composite** so undo restores the node *and* re-wires every consumer atomically.
+- **Stable generated names.** Created nodes need durable, predictable names so the serialized graph re-opens to the same topology and round-trips byte-stably. Reuse the **exact dedup algorithm** `CloneActiveCamera` uses, generalized to `UniqueName(IManager&, base)` ([ENTITY_CREATION.md](ENTITY_CREATION.md) §6.1) — `material_1`, `painter_1`, … lowest free index, run **under the same lock as the add** so two concurrent creates can't collide. A generated name is stable for the session and persists verbatim on save; the user may rename, but a persistent rename must rewrite the declaration *and* every reference site in the retained CST Document in one transaction (ENTITY_CREATION §6.3; the CST layer maintains name resolution across renames) — surface any refusal in the rename affordance rather than silently clobbering references.
+- **Macro / `FOR`-generated graphs — mostly obsolete post-cutover.** Native-v7 scenes (the only form the CST loader accepts) have no `FOR`/`ENDFOR`; un-migrated legacy scenes fail to load with a migration message, so the "no single editable source line" hazard largely disappears. What remains is the CST `let`/expression surface: a value driven by a `let` expression should be surfaced as such in the canvas (edit the expression, or take the read-only affordance) rather than silently overwritten with a literal.
+- **Reusable subgraphs.** A collapsed node-group (§3.5) is the natural unit for a *named reusable material* (the §3.7 open question). It serializes as the cluster of chunks it contains; **linking** the same subgraph into two places follows the copy-vs-link rule above (one cluster, multiple consumers) unless the user duplicates it. A cross-scene reusable library leans **copy-in** (a `.RISEscene` fragment the asset library pastes, no new chunk type — §12 non-goal) rather than an `#include`-style wrapper; decide in Phase B.
+- **Topology edits spanning non-contiguous source.** Inserting a node "between" two existing ones, or re-wiring an edge, can touch **scattered, non-adjacent** lines — emit a new chunk in one place, rewrite a reference token elsewhere, possibly across the *declaration-order dependency* (a referent must be declared before its referrer, ENTITY_CREATION §7.3 topological-order rule). The Phase-B reconciliation (§3.7) handles single-slot rewires surgically (a param edit into the retained Document — shipped) and falls back to the **ownership-closure rewrite** (§3.7a) when the edit spans non-contiguous source or crosses declaration order — re-emitting only the solely-owned, single-source, unshared chunks and **REFUSING** when the closure is ambiguous (shared / scattered-beyond-addressable / macro-generated), never blindly rewriting a "material block" that has no contiguous boundary in an arbitrary scene. This is the GUI analogue of the structured-edit-vs-wholesale spike ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.6).
+
+All seven are **graph-level invariants the flat-chunk serialization can represent but cannot enforce** — they live in the shared graph model (§7), not in the scene format. Every graph mutation is a transaction ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)); create/delete and reference-safe deletion route through the ops ENTITY_CREATION defines.
+
+---
+
+## 4. Shared thumbnail / preview engine (used by C1 swatch, C2 node thumbnails, asset library)
+
+**✅ PAINTER previews (doc 88 S10) & 3D MATERIAL shaderball previews (Slice 5) SHIPPED.**
+- **2D Painter Preview (`PainterPreview`):** [`PainterPreview.h`/`.cpp`](../../src/Library/SceneEditor/PainterPreview.h) evaluates a named painter's `GetColor`/`GetValuesAt` directly over a synthetic UV/world-position grid — **no scene render, no light transport** — because a painter is a pure function of a `RayIntersectionGeometric` and has no BSDF/light/camera to simulate. Three entry points: (1) a painter's own output (colour or scalar pipe); (2) for an expression painter, one `def` slot's intermediate value (`ExpressionProgram::EvalDefStage`, an additive const VM accessor — no allocation, same stack-machine contract as `Eval`); (3) a `ramp_painter`'s own colour interpolation over its stop domain as a gradient strip (`RampPainter::EvalAt`, bypassing whatever painter is driving it live). Scalar previews are **auto-range normalized per patch** (reporting `[min,max]`).
+- **3D Material Shaderball Preview (`MaterialPreview`, Slice 5):** [`MaterialPreview.h`/`.cpp`](../../src/Library/SceneEditor/MaterialPreview.h) renders a deterministic, headless 3D studio shaderball for any named `IMaterial` in `IJobPriv::GetMaterials()`. Each pixel ray-intersects a unit sphere centered in an orthographic frame with continuous spherical UV parametrization and a seam-free latitude-longitude `OrthonormalBasis3D(U, V, N)` tangent frame (so anisotropic GGX/Ward materials orient cleanly), sets `ri.glossyFilterWidth = 0.035` so mirror-like `alpha ~ 0.001` materials still resolve softbox highlights on compact `40×40` / `56×56` swatches, and evaluates a 3-light studio rig (warm key, cool fill, neutral rim + studio sky/ground gradient) via **12-wavelength CIE CMF spectral quadrature over `[390, 710] nm`** (`bsdf->valueStatefulNM` + `mat.GetSpecularInfoNM` two-interface Snell refraction through the sphere onto the 3D checker backdrop + `ISubSurfaceDiffusionProfile` wrap lighting + `IEmitter::emittedRadiance`), followed by ACES-like shoulder compression and gamma-2.2 encoding. Wired end to end through `SceneEditController::GetMaterialPreview` (same non-blocking `try_to_lock` + `mRenderOwnsScene` refusal contract and `kMaxSampleBudget = 96×96` decimation as `PainterPreview`) → `RISE_API_SceneEditController_MaterialPreview` → `RISEViewportBridge.materialPreview(for:width:height:)` / `ViewportBridge::materialPreview` → top-of-inspector `MaterialThumbnailView` / `createMaterialSwatchLabel` (`56×56`) and `NodeGraphCanvas` `category == 2` node-box swatches (`40×40`) on both macOS and Windows. Headless-tested in `tests/PainterPreviewTest.cpp`.
+
+One engine, written once in the shared library, consumed by all three surfaces and by the asset library ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) A5):
+- Input: a material name (or a transient material), a preview scene (shaderball + studio HDRI + Lambertian floor), a budget (resolution, spp, deadline).
+- Renders via the existing progressive integrator (Auto/PT) into an off-screen film; returns an HDR tile + a tonemapped preview.
+- **Async, cancellable, cached, budgeted** (§3.3). Cache invalidation keyed on resolved-parameters hash. OIDN on for the final swatch, off/low during scrub (consistent with the "denoise on for finals" rule).
+- This is the antidote to every Hypershade swatch complaint and the enabler of Substance-grade live thumbnails — and it is *generic* (a material → an image) so it serves C1, C2, and the library identically.
+
+---
+
+## 5. C3 — MaterialX / OpenPBR import (Phase 2 of Direction C)
+
+**One-way import only. Native storage stays RISE's spectral superset** ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §3, §12). Adopting MaterialX as RISE's *storage* format would cap RISE at RGB and forfeit its reason to exist — MaterialX has **no spectral type** (the spec says color "is considered to represent a linear RGB color space," and only notes a renderer *may* reinterpret it — [MaterialX PBR spec](https://github.com/AcademySoftwareFoundation/MaterialX/blob/main/documents/Specification/MaterialX.PBRSpec.md)), and **dispersion is unimplemented in the reference backends** (even Unreal Substrate omits OpenPBR transmission dispersion — [4D Pipeline](https://blog.4dpipeline.com/customer-insights-where-are-openpbr-and-material-x-supported); [OpenPBR site](https://academysoftwarefoundation.github.io/OpenPBR/)). RGB-at-the-boundary / spectra-internal is the PBRT/Mitsuba posture RISE already takes via the JH LUT.
+
+### 5.1 The importer's single load-bearing job: encode color-vs-scalar routing
+
+This is the exact bug class [../ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md) documents, re-arising at the import boundary. The naive rule — "MaterialX `color3` → IPainter, MaterialX `float` → IScalarPainter" — is **almost right but has a documented trap**:
+
+| MaterialX input | MaterialX type | Naive routing | **Correct RISE routing** |
+|---|---|---|---|
+| `base_color`, `specular_color`, `transmission_color`, emission | `color3` | IPainter (JH LUT uplift) | ✅ IPainter — `color3`→`uniformcolor_painter` (or `texture`); JH-uplifted on the spectral path |
+| `specular_roughness`, `coat_weight`, `thin_film_thickness`, dielectric `ior` | `float` | IScalarPainter | ✅ IScalarPainter — `float`→`scalar_painter { value … }` (no colorspace) |
+| **`conductor_bsdf` `ior` / `extinction`** | **`color3`** | ❌ IPainter (WRONG — would JH-uplift a complex refractive index) | ✅ **IScalarPainter** — RISE's GGX `ior`/`extinction` are scalar slots; route the per-channel `color3` to an `rgb` scalar painter, **never** through the color pipe |
+
+The third row is why **the importer must route on the RISE *destination slot's* pipe, not on the MaterialX *source* type.** MaterialX types a metal's complex IOR as `color3` ([MaterialX spec: `conductor_bsdf` uses two `color3` inputs `ior` and `extinction`](https://github.com/AcademySoftwareFoundation/MaterialX/blob/main/documents/Specification/MaterialX.PBRSpec.md)); RISE types it as `IScalarPainter` ([GGXMaterial.h](../../src/Library/Materials/GGXMaterial.h)). Routing a metal's `color3` ior through `uniformcolor_painter` would JH-uplift it and mangle the Fresnel — the identical failure mode the refactor killed for inline scalars. **The importer carries the same pipe table as §1/§3.4 and consults it per *RISE slot*.** Concretely it should call the same `ResolveOrDiagnoseScalar`/manager split the parser uses, so an importer mis-route produces the same diagnostic rather than a silent wrong render.
+
+### 5.2 Import mapping (OpenPBR/MaterialX node graph → RISE)
+
+- **OpenPBR Surface node → RISE uber-material lowering** (§3.2 table, run in reverse): `base_metalness`/`transmission_weight` decide whether to emit GGX-conductor / GGX-schlick / `dielectric_material` / `composite_material`.
+- **`color3` constants/textures → `uniformcolor_painter` / `texture`** (yellow pipe).
+- **`float` constants/textures → `scalar_painter { value }` / `texture_scalar`** (grey pipe).
+- **Thin-film** (`KHR_materials_iridescence` / OpenPBR `thin_film_*`) → GGX `fresnel_mode thinfilm` + `film_*` slots (µm→nm convert). RISE's thin-film already aligns ~1:1 with the glTF/OpenPBR model ([../THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md) §4).
+- **Dispersion** (`transmission_dispersion_abbe_number`) → a `sellmeier` scalar painter (RISE *exceeds* the source here; the Abbe number seeds a Sellmeier fit, or maps to a named-glass pick).
+- **Unsupported MaterialX nodes** → a parse-time diagnostic listing the dropped node, never a silent skip (same posture as the parser's unknown-parameter hard-fail).
+
+### 5.3 Import is reuse, not a parallel path
+
+C3 leans on the existing **glTF importer** precedent — `GLTFSceneImporter` already lowers PBR-metallic-roughness + `KHR_materials_transmission` + iridescence into RISE chunks and already learned the IScalarPainter lesson (it switched to inline numeric literals for dielectric scalar slots after Phase 3 broke its `UniformColorPainter` round-trip — [../ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md) Phase 3). C3 is "a MaterialX front-end that emits the same chunk stream," in the shared library, behind the same `IJob::Add*Material` surface.
+
+---
+
+## 6. The IPainter / IScalarPainter mapping table (editor concept → internal type → painter class)
+
+The canonical table the editor (rows + sockets), the serializer, and the importer all consult. **Concept** is what the user sees; **pipe** drives socket color and import routing; **painter class** is what gets emitted.
+
+| Editor concept (row/socket) | Internal pipe | Painter class (chunk) | Notes |
+|---|---|---|---|
+| Base/diffuse color, specular tint, transmission tint, emission | `IPainter` (yellow) | `UniformColorPainter` (`uniformcolor_painter`) | JH-uplifted on spectral path |
+| Spectral color curve / measured SPD | `IPainter` (yellow) | `SpectralColorPainter` (`spectral_painter`) | → [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1 |
+| Blackbody / Kelvin color | `IPainter` (yellow) | `BlackBodyPainter` (`blackbody_painter`) | temperature → SPD |
+| Image texture (color) | `IPainter` (yellow) | `TexturePainter` (`texture`) | sRGB-decoded |
+| Procedural color (checker/noise/expression) | `IPainter` (yellow) | `CheckerPainter`, Perlin/Worley/Voronoi, `ExpressionFunction2DPainter` | |
+| Blend of two colors | `IPainter` (yellow) | `BlendPainter` | PBR-MR uses these chains |
+| **Anisotropy rotation (radians)** | **Color or single-valued Scalar (yellow with grey ring)** | Color painter, single-valued `scalar_painter`, or inline scalar | `ggx_material.tangent_rotation` and PBR-MR `anisotropy_rotation` are dual-pipe slots (`colorAlsoAcceptsScalar`); §1 |
+| Roughness / metalness / weight / coat / SSS weight | `IScalarPainter` (grey) | `UniformScalarPainter` (`scalar_painter { value }`) | no colorspace |
+| Per-channel scalar (RGB-authored IOR/roughness) | `IScalarPainter` (grey) | `RGBScalarPainter` (`scalar_painter { values r g b }`) | rejected by single-scalar slots via `requireSingle` |
+| Measured IOR/extinction n,k curve | `IScalarPainter` (grey) | `PiecewiseLinearScalarPainter` (`scalar_painter { file … }`) | refractiveindex.info drop-in; → [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D2 |
+| Named-glass IOR (BK7/SF11/diamond) | `IScalarPainter` (grey) | `SellmeierScalarPainter` (`scalar_painter { sellmeier … }`) | → [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1 |
+| Polynomial scalar(λ) | `IScalarPainter` (grey) | `PolynomialScalarPainter` (`scalar_painter { polynomial … }`) | |
+| Scalar texture / map (roughness map, thickness map) | `IScalarPainter` (grey) | `TextureScalarPainter` (`scalar_painter { texture <rasterPainter> channel R }`) | grayscale UV |
+| Scaled / multiplied scalar | `IScalarPainter` (grey) | `ScaledScalarPainter` / `MultiplyScalarPainter` | spatial × spectral compose |
+| Function-wrapped scalar | `IScalarPainter` (grey) | `Function1DScalarPainter` / `Function2DScalarPainter` | wraps `IFunction1D/2D` |
+| **Color graph → scalar slot (channel extraction)** | **IScalarPainter bridge** | `PainterChannelScalarPainter` (`scalar_painter { painter <colorPainter> channel R }`); raster sources use `TextureScalarPainter` | §3.4; scalar channel extraction avoids JH uplift |
+| Whole surface (the node output) | Material (green) | `*_material` chunk | GGX / dielectric / composite / SSS / luminaire |
+
+### 6.4 The shipped descriptor field — `ParameterSemantics`
+
+`ParameterDescriptor::semantics` is implemented in
+[`ChunkDescriptor.h`](../../src/Library/Parsers/ChunkDescriptor.h). It is a
+structure of separate constraints, consumed by `ConnectionLegality` and the
+editor; the runtime parser and Job resolvers remain the final authority.
+
+| Shipped field | Meaning |
+|---|---|
+| `pipe` | `Unspecified`, `Color`, `Scalar`, `Material`, `Function1D`, `Function2D`, `Geometry`, or `Other`; identifies the manager/pipe a reference resolves through. |
+| `requireSingle` | The slot requires a single scalar; explicit per-channel scalar values are rejected. |
+| `keywordAllowlist` | Restricts accepted source chunk keywords where the runtime resolver has the same restriction, such as `scalar_painter.texture`. |
+| `colorAlsoAcceptsScalar` | A Color slot also accepts a single-valued Scalar painter; used by GGX `tangent_rotation` and PBR-MR `anisotropy_rotation`. Both set `requireSingle`. |
+| `note` | Explains parameter-specific resolution rules. |
+
+Slice 4 copies `pipe` and `colorAlsoAcceptsScalar` into graph ports and derives
+node output pipes from keyword/category using `ConnectionLegality`. Expression
+`sample`/`sample_scalar` calls carry Color/Scalar input pipes, including dangling
+calls and repeatable `def` occurrences; Function2D `cp` rows carry Function1D. Both desktop
+bridges carry this metadata, so socket colour and adapter availability use the
+same declared constraints as connection validation. The dual rotation sockets
+are yellow with a grey ring; their runtime resolver is `ResolveRotationPainterDual`.
+
+`ConnectionLegality` is a first-pass filter. It recognizes explicit
+`scalar_painter.values` triples, but expression/composite per-channel behavior
+can require the commit-time full-derive check. Adapter insertion also runs that
+check before changing the retained document.
+
+The earlier design proposed additional cardinality, colour-space and
+spatial-versus-spectral fields. Those are future extensions, not fields in the
+current structure. Row units and numeric soft ranges already have their own
+`ParameterDescriptor` fields; import-time unit/colour conversions remain C3 work.
+
+---
+
+## 7. Shared C++ vs platform-specific (per deliverable)
+
+Per principle 2 (max shared C++; platforms are thin shells) and the §10.2 split in the roadmap.
+
+| Deliverable | Shared C++ (library) | Platform-specific (thin shell) |
+|---|---|---|
+| **C1 instance editor** | Material introspection + descriptor rows + the `ParameterSemantics` structure (§6.4); the `setProperty`/`propertySnapshotFor` dispatch; presets; **thumbnail engine** (§4); duplicate-material | The slider / swatch / combo *widgets*; panel layout (SwiftUI / Qt) |
+| **C2 node graph** | **Graph model** (nodes/edges from chunk introspection); **serialization + round-trip reconciliation** (§3.7); connection-legality validator (reuses `ResolveOrDiagnoseScalar`); layout-sidecar read/write; thumbnail engine | The **node-canvas widget** (draw nodes, drag wires, frames, search palette) — the one genuinely large per-platform UI piece |
+| **C3 MaterialX import** | The whole importer (parse MaterialX, lower to `IJob::Add*Material`, color-vs-scalar routing); shares the glTF importer's chunk-emit surface | File-open dialog only |
+
+The pay-off mirrors the roadmap's MCP argument: the graph model, serialization, validator, importer, and thumbnail engine are written **once**; only the node-canvas widget and the row widgets are per-platform. The canvas is the material editor's analogue of "the one big platform widget" (like the viewport's GPU present surface).
+
+---
+
+## 8. Android tier note (§10.4)
+
+Per the roadmap's staged tiering (Android consumes the same C++ via JNI; the UI shell is mobile-first):
+
+- **C1 instance sliders → Tier B (touch-adapted).** Material *instance* sliders/swatches are explicitly Tier B in [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §10.4. The shared introspection + `setProperty` + thumbnail engine come for free over JNI; Android supplies touch-sized slider/swatch widgets and a single-column layout. The spectral picker rows degrade to a compact mobile form (curve view read-mostly; Kelvin/λ sliders touch-native).
+- **C2 node-graph editor → Tier C (deferred / desktop-first).** A wire-dragging canvas is a poor touch target; present it as **"edit the node graph on desktop"** gracefully (show the read-only Phase-A graph *view* — pinch/pan is fine for inspection — but route topology edits to desktop), never a broken half-canvas. This matches §10.4's "node-graph editor … Tier C, edit on desktop."
+- **C3 import → desktop-first** (file-management heavy), but the importer itself, being shared C++, *runs* on Android if a file is handed to it; the UI just isn't a priority.
+- **The LLM path stays Tier A on Android** ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §10.4): "make this gold more like brushed titanium" via chat is *more* natural on mobile than wire-dragging — the agent edits the same material chunks the graph would. The material editor and the agent are two authoring surfaces over the same text (principle 1).
+
+---
+
+## 9. Phasing
+
+Aligns with [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §11: C1 + spectral-widget subset = roadmap **Phase 3**; C2 + C3 = roadmap **Phase 4** (depends on new graph-**topology** serialization — material-*entity*, painter single-occurrence AND painter occurrence-addressed property round-trip all ship via the retained CST Document, doc 88 S4 + S4b).
+
+| Phase | Deliverable | Status (`2026-10-31`) |
+|---|---|---|
+| **C1.0** | Promote Material panel mode to first-class; sliders, swatches, presets, `fresnel_mode` disclosure | **SHIPPED (Slices 1–3):** descriptor kinds/units, pipe-filtered reference presets, soft ranges, inline slot swatches/quick-edit and Windows inspector previews. Optional numeric preset pills, conditional `fresnel_mode` filtering and inspector-header Duplicate remain open. |
+| **C1.1** | Shared **thumbnail engine** (§4) → C1 material swatch; duplicate-material; drag-to-assign hook | **2D `PainterPreview` (S10) & 3D `MaterialPreview` shaderball engine (Slice 5) SHIPPED** (56×56 in C1 headers, 40×40 on C2 Material nodes; gated in fast CI by standalone `tests/MaterialPreviewTest.cpp` and `tests/PainterPreviewTest.cpp`). Outliner/C2 duplicate-material ships; **viewport drag-to-assign (A3) is UNBUILT** ([APPROACHABILITY_FOUNDATION.md](APPROACHABILITY_FOUNDATION.md)). |
+| **C1.2** | Descriptor **`ParameterSemantics` structure** (§6.4); spectral row editors wired (→ [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1–D3) | **`ParameterSemantics` core (`pipe`, `requireSingle`, `keywordAllowlist`, `colorAlsoAcceptsScalar`, `note`) SHIPPED (S17); Slice 6 spectral cards SHIPPED (`ace0e08d8`: D1 Kelvin & Sellmeier glass presets + $n_d$/$V_d$, D2 CC0 Au/Ag/Cu/Al/Cr/Ti measured metals, D3 0°–89° thin-film iridescence strip).** Remaining D1 widgets (monochromatic slider, CSV SPD import/plot, prism preview) are open. |
+| **C2.A** | Read-only **graph view** (introspection → nodes/edges); node thumbnails; `All` vs `Focused` view scope | **SHIPPED (doc 88 S11–S16 + post-S23 `Focused` scope, object-pick spotlight, Slice 5 40×40 Material shaderballs, and sibling `ObjectGraphCanvas`).** |
+| **C2.B** | Graph **topology** serialization (new chunks + edge rewrite, §3.7/§3.8); cycle/orphan/copy-vs-link enforcement; connection-legality validator; layout sidecar | **SHIPPED (doc 88 S17–S23, [NODE_GRAPH_CANVAS.md](NODE_GRAPH_CANVAS.md)).** Pipe-coloured port dots/wires and 1-click `scalar_painter` adapter insertion SHIPPED in Slice 4. Frames/comments and the uber-material front end remain open. |
+| **C3** | MaterialX / OpenPBR **importer** (color-vs-scalar routing); reuse glTF chunk-emit surface | **OPEN.** |
+
+---
+
+## 10. Non-goals / deliberately NOT doing
+
+- **MaterialX is NOT RISE's native storage format.** Import only; native stays RISE's spectral superset ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §12). Adopting it as storage caps RISE at RGB and discards dispersion / measured-spectral / thin-film exactness.
+- **The node editor is NOT on the default path.** Gated behind "Advanced," KeyShot-style ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §12). A good material must be achievable with C1 instance knobs alone — never gate a basic result behind a graph (the Houdini trap).
+- **No second mutation path.** Graph edits, instance edits, hand edits, and AI edits all converge on `SceneEditController` + round-trip save + undo/redo (principle 6). The node graph does not get a private writer.
+- **No new `node`/`graph` chunk type.** A material graph serializes as the named `*_material` + `*_painter` chunks it already lowers to (§3.7); layout is a sidecar. Don't fork the descriptor-driven format.
+- **No synchronous swatch/thumbnail generation** (the Maya Hypershade failure). Async, cancellable, cached, budgeted, disableable — always.
+- **No mode-swapped dual panels for one material** (Maya anti-pattern, §12). One canonical inspector; C2 is a toggle from C1, not a parallel world.
+- **No auto-destroyed graph layout** (Hypershade sin). User layout/frames persist as read-only sidecar state.
+- **No bespoke per-material UI code.** Rows come from the descriptor; new materials surface automatically (the descriptor-driven force multiplier).
+
+---
+
+## 11. Open questions / spikes (flagged uncertainties)
+
+1. **Resolved — dual rotation annotation (§6.4).** The shipped encoding is `pipe = Color`, `colorAlsoAcceptsScalar = true`, and `requireSingle = true` on GGX `tangent_rotation` and PBR-MR `anisotropy_rotation`. Slice 4 exposes the dual-pipe socket indicator. Richer semantic-unit/spatial annotations remain possible future extensions.
+2. **Topology-reconciliation granularity (§3.7/§3.7a/§3.8).** Surgical chunk-insert + reference-rename vs the **ownership-closure rewrite** (§3.7a) for topology changes — the same spike as [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.6. The save path **already exists** (post-cutover: retained-Document edits + whole-Document `SerializeCst`), so this is now settled empirically against the shipped Document edit ops rather than gated on save work. The open detail is only *how often* a real topology edit lands in the REFUSE bucket (ambiguous/shared closure) and so needs the Duplicate-node escape hatch — not whether a "material block" exists to rewrite (it doesn't).
+3. **Spectral hover-preview cost** ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §13.1) — is a live thumbnail-on-drag affordable on a spectral PT, or commit-on-release? Shared with A3/D3; the thumbnail engine's budget knob is where this lands.
+4. **Named reusable material library** — light wrapper chunk vs copy-in via the asset library + C3 (§3.7, §3.8 reusable-subgraphs). Lean copy-in (no new format); decide in C2.B.
+5. **Composed-material editing depth.** `pbr_metallic_roughness` and GGX-emissive are *composed* and gated read-only per-slot upstream (`IJob::IsMaterialComposed` — the editor refuses `SetSlot` on them, per [GGXMaterial.h](../../src/Library/Materials/GGXMaterial.h) comments). In the node graph, do we *decompose* them into their lowered painter graph (editable) or show them as an opaque node with the high-level dials only? Recommend: show the high-level uber-node dials (editable, re-lower on change); offer "unpack to graph" as an explicit, irreversible-ish action. *Flagged — affects how faithfully a glTF-imported material is editable.*
+6. **MaterialX coverage scope** — which OpenPBR/MaterialX node subset C3 targets first (Surface + standard texture/constant nodes, per §5.2) vs the long tail of MaterialX procedural nodes. Start with the OpenPBR Surface graph + image/constant inputs; diagnose-and-drop the rest.
+
+---
+
+## 12. Acceptance criteria (GUI_ROADMAP §15 template, filled in)
+
+Per the [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template every deliverable must fill in. Scoped per deliverable (C1 / C2 / C3) where they differ.
+
+- **Tests.**
+  - *C1 introspection rows:* the Material panel surfaces every editable slot for each of the 20+ material types with the correct `pipe`-driven editor (swatch for color, slider for scalar), and read-only slots (composed `pbr_metallic_roughness`/`ggx_emissive`, audit §3) render disabled — extend `Phase4DescriptorDriven` / `ThinFilmIntrospectionTest`.
+  - *Pipe/constraint conformance:* `tests/ConnectionLegalityTest.cpp` checks descriptor pipe constraints and parser parity; `tests/RewireConnectionTest.cpp` covers commit-time rejection and adapter insertion. `requireSingle` rejects explicit per-channel values where a single scalar is required; the full-derive gate remains necessary for expression/composite cases (§6.4). Additional schema constraints must be validated against actual parser behavior before adoption.
+  - *C2 graph round-trip:* a graph topology edit (add node, rewire edge) saves and **re-opens to the identical graph**, byte-stable on the second save (the whole-Document-save byte-identity signal; extend the CST fidelity pattern of `tests/CstSaveFidelityTest.cpp` — the pre-cutover `SaveEngineTest.cpp` was deleted in Slice 6d). Cycle/orphan/copy-vs-link invariants (§3.8) each have a crafted-input test: a wire that would cycle is rejected; deleting a referenced painter blocks-or-cascades and never orphans; duplicate forks, link shares.
+  - *C2 ownership-closure fallback (§3.7a):* a topology edit whose closure is **solely owned** rewrites only that closure and leaves every other byte (a *shared* painter, a neighbouring unrelated chunk) byte-identical; a topology edit whose closure is **ambiguous** — touches a painter with ≥2 referrers or an expression-driven chunk the editor can't rewrite as a unit — returns a refusal diagnostic and **does not modify the file**; the Duplicate-node escape hatch forks the shared painter and unblocks the same edit. Guards "never rewrite a guessed material block."
+  - *C3 import routing:* a MaterialX `conductor_bsdf` with `color3` ior/extinction routes to the **scalar** pipe (not JH-uplifted), proven by a render-equality check against the hand-authored RISE equivalent (the §5.1 trap).
+  - **Correctness invariant (engine-touching discipline):** the `ParameterSemantics` descriptor structure + the graph model are pure authoring metadata — **integrators stay byte-identical** (no RMSE change on any reference scene); the parser's accept/reject set is unchanged for non-graph scenes (the schema is a filter, the parser stays authority, [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md) §5.3).
+- **Platform parity.** Shared C++: introspection rows + `pipe`/constraints + the graph model + serialization/reconciliation + connection-legality validator + thumbnail engine (§7). macOS / Windows: full C1 panel + the C2 node canvas + C3 import. **Android (per §8):** C1 instance sliders **Tier B** (touch-adapted, JNI-shared core); C2 node graph **Tier C** (read-only Phase-A view; topology edits routed to desktop — never a broken half-canvas); C3 import desktop-first. The LLM "make it brushed titanium" path stays **Tier A** on Android (§16 Android posture). No surface degrades below read-only.
+- **Performance budget.** Painter and material shaderball previews (`PainterPreview` / `MaterialPreview`, max `4096` samples per preview) use budgeted evaluations fetched asynchronously off the main thread. Reference queries use `CstIntrospection`'s cached `name -> chunk` and `target -> referrers` maps. These editor queries stay outside the production pixel loop. Integrator implementations are unchanged.
+- **Memory budget.** Preview-cache caps and concurrent-work limits are bounded by `PainterThumbnailCache` / `m_painterThumbCache` and `MaterialPreview::kMaxSamples` (`4096`). Current graph/layout storage includes nodes, ports, positions, preview buffers and sidecar entries; all-view seeding includes unreferenced painters. Snapshot refreshes allocate copies, so storage is not bounded by material count alone.
+- **Accessibility.** Every row is keyboard-reachable; socket pipe is conveyed by **shape/label as well as colour** (yellow/grey/green is not the only signal — no colour-only dependence); the node canvas exposes a keyboard path to add/connect/delete and a focus order. Diagnostics carry text `message` + `code` + location (shared with the validator, [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md) §6).
+- **Packaging.** No new runtime assets. The `ParameterSemantics` structure is an additive `ParameterDescriptor` extension; any **new** `.cpp`/`.h` for the graph model / thumbnail engine must be added to **all five build projects** per [../../CLAUDE.md](../../CLAUDE.md) (none auto-discovers files). The bridge-enum mirror for the `pipe` enum and the other constraint enums is generated, not hand-maintained.
+- **Migration.** **No scene-format change** for C1/C2 — a serialized graph is the existing named `*_material`/`*_painter` chunks (no new `node`/`graph` chunk, §10 non-goal); layout is a sidecar. The `ParameterSemantics` structure + new controller/graph methods are **ABI-additive** (new non-virtual methods + appended `RISE_API_*` C exports; no shipped signature changes, no new virtuals on frozen interfaces — per the `abi-preserving-api-evolution` skill). C3 is import-only; native storage is unchanged.
+- **Rollback.** C2/C3 are gated behind the "Advanced" toggle (default-off path leaves C1 instance editing intact, §10 non-goal); disabling the node editor cannot affect a saved scene (the chunks it would emit are ordinary materials/painters). The `ParameterSemantics` structure degrades to getter-type introspection if unread (§6.4). Per-family graph-topology emit lands behind the byte-identity tests; an unimplemented topology edit stays the **ownership-closure rewrite** fallback (§3.7a) — or a clean REFUSE when the closure is ambiguous — rather than corrupting a file.
+
+### Android tier note
+Mirrors §8: **C1 → Tier B** (touch slider/swatch over the shared introspection + thumbnail engine via JNI), **C2 → Tier C** (read-only graph *view* is fine for inspection; topology edits are "edit on desktop", never a broken canvas), **C3 → desktop-first** (the importer *runs* on Android as shared C++ if handed a file; the UI isn't a priority). The agent/chat authoring path is **Tier A** on Android and edits the same material chunks the graph would (principle 1).
+
+---
+
+## 13. Cross-references
+
+- Umbrella vision + phasing: [../GUI_ROADMAP.md](../GUI_ROADMAP.md) (§7 Direction C, §11 Phases 3–4, §10.2/§10.4, §12).
+- **Historical audit** (2026-06-19, with a 2026-07-02 erratum): [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md). Its pre-cutover save and pipe-not-in-descriptor statements are superseded by the retained CST Document and shipped `ParameterDescriptor::semantics.pipe` described above.
+- **Spectral material widgets** (curve editor, measured n,k, thin-film slider, gamut warning) — fully specified in the sibling [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) (D1–D4); this doc references them as socket/row editors and does **not** re-specify them.
+- **Graph edits are transactions** (epoch/precondition/conflict/undo-attribution; create-delete-rewire each commit through the one mutation path): [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md).
+- **Material create / delete + reference-safe deletion** (the ops, the dependency graph, block-or-cascade, stable names, the raw-pointer orphan hazard): [ENTITY_CREATION.md](ENTITY_CREATION.md) (§4–§7).
+- **`ParameterSemantics` schema consumption + the conformance test** (how the structure's separate fields feed the generated schema; the parser stays the authority): [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md) (§5.3, §5.4).
+- Material taxonomy + "adding a BSDF" checklist: [../MATERIALS.md](../MATERIALS.md).
+- The color-vs-scalar pipe (the spine of §1/§3.4/§5/§6): [../ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md).
+- Thin-film material the editor must expose: [../THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md).
+- Round-trip persistence (C2 Phase B depends on **topology** Document ops — **material-entity**, painter single-occurrence and painter occurrence-addressed property edits all persist via the retained CST Document today, doc 88 S4 + S4b): [../ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md) (**historical** — its engine was deleted in Slice 6d; see its header).
+- Descriptor-driven parser (the C1 substrate + C2 serialization target): [../../src/Library/Parsers/README.md](../../src/Library/Parsers/README.md), [ChunkDescriptor.h](../../src/Library/Parsers/ChunkDescriptor.h).
+- Bridge property rows (the C1 mechanism): [RISEViewportBridge.h](../../build/XCode/rise/RISE-GUI/Bridge/RISEViewportBridge.h).
+- Painter classes: [../../src/Library/Painters/](../../src/Library/Painters/).
+
+---
+
+## 14. External references (web research)
+
+- Unreal master material / material instance (no shader recompile; scalar/vector/texture parameters): [Epic — Instanced Materials in UE5](https://dev.epicgames.com/documentation/unreal-engine/instanced-materials-in-unreal-engine); [Epic — Making Material Parameters](https://dev.epicgames.com/documentation/en-us/unreal-engine/making-material-parameters); [Hoffman — UE4 Shader Permutations](https://medium.com/@lordned/unreal-engine-4-rendering-part-5-shader-permutations-2b975e503dd4) (why RISE's CPU path tracer has the model *better* — no permutation/recompile cost).
+- Substance Designer per-node live thumbnails (and the manual-recompute footgun to avoid): [CG Channel — Designer 2020.2 thumbnails](https://www.cgchannel.com/2020/10/adobe-unveils-substance-designer-2020-2/); [Adobe — Compute Node Thumbnails hotkey thread](https://community.adobe.com/t5/substance-3d-designer-discussions/hotkey-for-compute-node-thumbnails/td-p/12363560); [Substance 15.1 node cleanup / Groups](https://digitalproduction.com/2025/12/15/substance-designer-cleans-up-its-nodes/); [Adobe — graph instances / subgraphs](https://helpx.adobe.com/substance-3d-designer/substance-compositing-graphs/graph-instances-sub-graphs.html).
+- Blender Principled BSDF uber-shader + color-coded sockets (grey=value, yellow=color, green=shader): [Blender — Principled BSDF](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html).
+- MaterialX / OpenPBR (conceptual model + interchange; RGB-centric, no spectral type, dispersion unimplemented in reference backends): [OpenPBR Surface](https://academysoftwarefoundation.github.io/OpenPBR/); [MaterialX PBR spec — color3 is linear RGB; `conductor_bsdf` ior/extinction are color3](https://github.com/AcademySoftwareFoundation/MaterialX/blob/main/documents/Specification/MaterialX.PBRSpec.md); [4D Pipeline — OpenPBR/MaterialX support (UE Substrate lacks transmission dispersion)](https://blog.4dpipeline.com/customer-insights-where-are-openpbr-and-material-x-supported).
+- Maya Hypershade anti-patterns (synchronous swatch stalls, slow window open): [Autodesk — slow Hypershade solution (~30 s open)](https://forums.autodesk.com/t5/maya-forum/super-slow-hypershade-in-maya-2022-3-solution/td-p/11132437); [Chaos — extremely slow swatch generation (~10 s/swatch)](https://forums.chaos.com/forum/chaos-common/chaos-common-public/29969-extremely-slow-swatch-generation-in-the-hypershade); [Autodesk — pause swatch generation to improve performance](https://knowledge.autodesk.com/support/maya/learn-explore/caas/CloudHelp/cloudhelp/2022/ENU/Maya-LightingShading/files/GUID-9BFB8717-DED0-431F-8F2B-F3A57D59386E-htm.html).
+- KeyShot drag-to-assign default + opt-in/Pro graph (the gating model): [KeyShot — Assigning Materials](https://manual.keyshot.com/manual/materials/assigning-materials/); [KeyShot — Material Graph UI](https://manual.keyshot.com/manual/materials/material-graph/material-graph-user-interface/).

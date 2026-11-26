@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   File:           hwss_cornellbox_bdpt.RISEscene                                                          #
 #   Description:    Cornell box rendered spectrally with HWSS BDPT                                          #
@@ -32,13 +32,17 @@ file_rasterizeroutput
 	color_space			ProPhotoRGB
 }
 
+film
+{
+	width			256
+	height			256
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 0
 	up					0 1 0
-	width				256
-	height				256
 	fov					37.0
 }
 
@@ -48,7 +52,6 @@ spectral_painter
 	file				colors/cornellbox_green.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -57,7 +60,6 @@ spectral_painter
 	file				colors/cornellbox_red.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -66,7 +68,6 @@ spectral_painter
 	file				colors/cornellbox_white.spectra
 	nmbegin				400
 	nmend				700
-	scale				4
 }
 
 spectral_painter
@@ -75,7 +76,7 @@ spectral_painter
 	file				colors/cornellbox_light.spectra
 	nmbegin				386
 	nmend				711
-	scale				4
+	scale				3.2
 }
 
 lambertian_material

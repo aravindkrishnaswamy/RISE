@@ -1,0 +1,32 @@
+{
+  "status": "accepted_after_two_fresh_zero_P1_P2_reviews",
+  "scope": "fixed full command composition; no simulation launched",
+  "commands": {
+    "simulation": "--fire-r246-top-double OUTPUT_DIR",
+    "preview": "--fire-r246-top-preview SIMULATION_DIR PREVIEW_DIR",
+    "spectrum": "--fire-r246-top-spectrum CHECKPOINT SIMULATION_DIR PREVIEW_DIR SPECTRUM_DIR"
+  },
+  "fixed_tier": 6,
+  "cadence_s": 0.0625,
+  "fixed_flags": {
+    "r244LateralDouble": true,
+    "r245AcceptedBudget": true,
+    "r246TopDouble": true
+  },
+  "full_discard_s": 10.531864278900095,
+  "statistics_s": 14.625,
+  "target_s": 25.156864278900095,
+  "frames": 235,
+  "foreign_baseline_consumers_refuse": true,
+  "foreign_outputs_absent": true,
+  "shared_numerical_native_sources_changed": false,
+  "launch_permitted": true,
+  "sha256": {
+    "r246_full_contract_build.v1.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_full_contract_gate.v1/results.json": "61aa8dd04c7fb1ea00fd114d8cf2057aef2fad49c4402b0a8ec15d24f3f07af8",
+    "r246_full_contract_gate.v1/composed_gate.log": "54843d7e13eff463493a8a5ca085364bd5f950dbce4e9b18ffcbe21679b51bfb",
+    "r246_full_contract_gate.v1/foreign_preview_red.log": "0cbd937df7f040b04a1b29a9d15d0cd245bf0fd0b614df39d6686d7e2ef106be",
+    "r246_full_contract_gate.v1/foreign_spectrum_red.log": "21a0d76306dae83f17c940d1884af9ca06b72edc735cc3b13830b85e4daf48a0"
+  },
+  "review_receipt": "r246_full_contract_review.json"
+}

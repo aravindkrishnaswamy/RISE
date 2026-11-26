@@ -37,6 +37,23 @@ namespace RISE
 
 		virtual void SerializeElement( IWriteBuffer& buffer, const T elem ) const = 0;
 		virtual void DeserializeElement( IReadBuffer& buffer, T& ret ) const = 0;
+
+		//! Phase 2 (BVH float filter): if this element type is a triangle
+		//! whose three vertices can be supplied in float, fill the three
+		//! 3-float arrays and return true.  BVH uses this to precompute
+		//! Möller-Trumbore edges per leaf primitive and run a fast float
+		//! intersection filter before the expensive double-precision
+		//! RayElementIntersection.  Default returns false → BVH skips
+		//! the filter for this primitive type and routes every leaf hit
+		//! candidate straight to the full intersection path.
+		//! Non-pure so existing TreeElementProcessor subclasses (Octree,
+		//! BSP, BSSRDF photon-store, etc.) remain source-compatible.
+		virtual bool GetFloatTriangleVertices(
+			const T /*elem*/,
+			float /*v0*/[3], float /*v1*/[3], float /*v2*/[3] ) const
+		{
+			return false;
+		}
 	};
 }
 

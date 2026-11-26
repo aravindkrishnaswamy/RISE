@@ -12,6 +12,7 @@
 
 #include "pch.h"
 #include "PathGuidingField.h"
+#include "FiniteMath.h"
 
 #ifdef RISE_ENABLE_OPENPGL
 
@@ -30,7 +31,7 @@ namespace
 		const Scalar energy =
 			static_cast<Scalar>( sample.weight ) *
 			static_cast<Scalar>( sample.pdf );
-		return (std::isfinite( energy ) && energy > 0) ? energy : 0;
+		return ( RISE::IsFiniteDouble( energy ) && energy > 0 ) ? energy : 0;
 	}
 }
 
@@ -142,13 +143,13 @@ void PathGuidingField::AddSample(
 		return;
 	}
 
-	if( pdf <= 0 || !std::isfinite( luminance ) || luminance < 0 ) {
+	if( pdf <= 0 || !RISE::IsFiniteDouble( luminance ) || luminance < 0 ) {
 		return;
 	}
 
 	// Clamp extreme weights to prevent outliers from corrupting the field
 	const float weight = static_cast<float>( luminance / pdf );
-	if( !std::isfinite( weight ) || weight < 0 ) {
+	if( !RISE::IsFiniteDouble( weight ) || weight < 0 ) {
 		return;
 	}
 
@@ -266,6 +267,15 @@ void PathGuidingField::EndTrainingIteration()
 	// double-train the volume distribution.
 	pglFieldUpdate( field, sampleStorage );
 
+	// Per-cell adaptive-α map is intentionally NOT cleared here.
+	// OpenPGL's kdtree only subdivides leaves — old leaf ids become
+	// orphaned interior-node ids and are never reused.  Stale
+	// entries in cellState therefore just bloat memory by O(field-
+	// cells) without causing wrong queries, while keeping them lets
+	// α learning compound across training iterations and freeze
+	// into the final render — exactly Müller 2017 v2's prescribed
+	// schedule.
+
 	// Query volume sample counts for diagnostics only.
 	const size_t numVolumeSamples = pglSampleStorageGetSizeVolume( sampleStorage );
 	const size_t numZeroValueVolumeSamples =
@@ -363,12 +373,18 @@ Vector3 PathGuidingField::Sample(
 	pglPoint2f( sample, static_cast<float>( xi.x ), static_cast<float>( xi.y ) );
 
 	pgl_vec3f dir;
-	float pdfF = pglSurfaceSamplingDistributionSamplePDF( handle.dist, sample, dir );
-
-	pdf = static_cast<Scalar>( pdfF );
-	return Vector3( static_cast<Scalar>( dir.x ),
-					static_cast<Scalar>( dir.y ),
-					static_cast<Scalar>( dir.z ) );
+	pglSurfaceSamplingDistributionSamplePDF( handle.dist, sample, dir );
+	const Vector3 normalized = Vector3Ops::Normalize(Vector3(
+		static_cast<Scalar>( dir.x ),
+		static_cast<Scalar>( dir.y ),
+		static_cast<Scalar>( dir.z ) ));
+	pglVec3f( dir,
+		static_cast<float>( normalized.x ),
+		static_cast<float>( normalized.y ),
+		static_cast<float>( normalized.z ) );
+	pdf = static_cast<Scalar>(
+		pglSurfaceSamplingDistributionPDF( handle.dist, dir ) );
+	return normalized;
 }
 
 Scalar PathGuidingField::Pdf(
@@ -410,6 +426,105 @@ Scalar PathGuidingField::IncomingRadiancePdf(
 
 
 //
+// Per-cell adaptive alpha (Müller 2017 v2 / practical-path-guiding)
+//
+// Online learning of the guide-vs-BSDF mixing weight, with:
+//   • Adam optimizer (β₁=0.9, β₂=0.999) — far more stable at low
+//     SPP than vanilla SGD because the per-sample gradient is
+//     extremely noisy (most paths see f≈0; rare ones see f much
+//     larger than the mean).
+//   • Deferred f estimate.  At sample time we don't know Li yet;
+//     callers snapshot resultBefore + throughputBefore and compute
+//     f after the path completes via:
+//        f = lum(deltaResult) · combinedPdf / lum(throughputBefore)
+//     This is the per-sample integrand value at the chosen
+//     direction — the same quantity Tom94's reference uses.
+//   • Per-cell state persists across training iterations and into
+//     the final render (no clear in EndTrainingIteration; see
+//     comment there).
+
+uint32_t PathGuidingField::GetCellId(
+	const GuidingDistributionHandle& handle
+	) const
+{
+	return handle.dist ? pglSurfaceSamplingDistributionGetId( handle.dist ) : 0;
+}
+
+Scalar PathGuidingField::GetCellAlpha(
+	const GuidingDistributionHandle& handle
+	) const
+{
+	if( !handle.dist ) {
+		return 0.5;
+	}
+	const uint32_t cellId = pglSurfaceSamplingDistributionGetId( handle.dist );
+
+	std::lock_guard<std::mutex> lock( cellAlphaMutex );
+	auto it = cellState.find( cellId );
+	if( it == cellState.end() ) {
+		return 0.5;
+	}
+	const float theta = it->second.theta;
+	return static_cast<Scalar>( 1.0f / (1.0f + std::exp( -theta )) );
+}
+
+void PathGuidingField::UpdateCellAlpha(
+	uint32_t cellId,
+	Scalar bsdfPdf,
+	Scalar guidePdf,
+	Scalar f,
+	Scalar combinedPdf,
+	Scalar learningRate
+	) const
+{
+	if( combinedPdf <= 0 || !RISE::IsFiniteDouble( f ) || f <= 0 ) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock( cellAlphaMutex );
+	CellAdamState& s = cellState[ cellId ];	// inserts default if missing
+	const float alpha = 1.0f / (1.0f + std::exp( -s.theta ));
+
+	// dL/dα for KL(p_optimal || p_combined), p_optimal ∝ f, single-
+	// sample IS estimator drawn from p_combined.  Negative when
+	// guide is more concentrated where f is large (push α up).
+	const float dL_dalpha = -( static_cast<float>( f ) /
+		static_cast<float>( combinedPdf * combinedPdf ) ) *
+		( static_cast<float>( guidePdf ) - static_cast<float>( bsdfPdf ) );
+
+	// Sigmoid derivative: dα/dθ = α(1-α).
+	const float g = dL_dalpha * alpha * (1.0f - alpha);
+
+	if( !RISE::IsFiniteDouble( g ) ) {
+		return;
+	}
+
+	// Adam update.
+	const float beta1 = 0.9f;
+	const float beta2 = 0.999f;
+	const float eps   = 1e-8f;
+
+	s.t++;
+	s.m = beta1 * s.m + (1.0f - beta1) * g;
+	s.v = beta2 * s.v + (1.0f - beta2) * g * g;
+
+	const float bias1 = 1.0f - std::pow( beta1, static_cast<float>( s.t ) );
+	const float bias2 = 1.0f - std::pow( beta2, static_cast<float>( s.t ) );
+	const float m_hat = s.m / bias1;
+	const float v_hat = s.v / bias2;
+
+	s.theta -= static_cast<float>( learningRate ) * m_hat /
+		( std::sqrt( v_hat ) + eps );
+
+	// Clamp so α stays in (~3.4e-4, ~0.9997); keeps the sigmoid in
+	// its sensitive range while allowing pure-BSDF / pure-guide
+	// modes to be chosen confidently.
+	if( s.theta > 8.0f ) s.theta = 8.0f;
+	if( s.theta < -8.0f ) s.theta = -8.0f;
+}
+
+
+//
 // Volume guiding — training
 //
 
@@ -426,12 +541,12 @@ void PathGuidingField::AddVolumeSample(
 		return;
 	}
 
-	if( pdf <= 0 || !std::isfinite( luminance ) || luminance < 0 ) {
+	if( pdf <= 0 || !RISE::IsFiniteDouble( luminance ) || luminance < 0 ) {
 		return;
 	}
 
 	const float weight = static_cast<float>( luminance / pdf );
-	if( !std::isfinite( weight ) || weight < 0 ) {
+	if( !RISE::IsFiniteDouble( weight ) || weight < 0 ) {
 		return;
 	}
 
@@ -550,12 +665,18 @@ Vector3 PathGuidingField::SampleVolume(
 	pglPoint2f( sample, static_cast<float>( xi.x ), static_cast<float>( xi.y ) );
 
 	pgl_vec3f dir;
-	float pdfF = pglVolumeSamplingDistributionSamplePDF( handle.dist, sample, dir );
-
-	pdf = static_cast<Scalar>( pdfF );
-	return Vector3( static_cast<Scalar>( dir.x ),
-					static_cast<Scalar>( dir.y ),
-					static_cast<Scalar>( dir.z ) );
+	pglVolumeSamplingDistributionSamplePDF( handle.dist, sample, dir );
+	const Vector3 normalized = Vector3Ops::Normalize(Vector3(
+		static_cast<Scalar>( dir.x ),
+		static_cast<Scalar>( dir.y ),
+		static_cast<Scalar>( dir.z ) ));
+	pglVec3f( dir,
+		static_cast<float>( normalized.x ),
+		static_cast<float>( normalized.y ),
+		static_cast<float>( normalized.z ) );
+	pdf = static_cast<Scalar>(
+		pglVolumeSamplingDistributionPDF( handle.dist, dir ) );
+	return normalized;
 }
 
 Scalar PathGuidingField::PdfVolume(

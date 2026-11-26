@@ -22,6 +22,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "GGXBRDF.h"
 
@@ -36,21 +37,49 @@ namespace RISE
 		protected:
 			virtual ~GGXSPF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pAlphaX;
-			const IPainter& pAlphaY;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			//! Pointer storage for the interactive editor (Phase 4);
+			//! see GGXBRDF.h for the rationale + the symmetric
+			//! pattern.  Material's Set* forwards hit both BRDF and
+			//! SPF in lockstep so they never drift.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter*	pAlphaY;
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
+			const FresnelMode fresnelMode;
+			//! Landing 8: optional tangent-frame rotation per
+			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
+			//! same semantics, mirrored here for the SPF path.
+			const IPainter* pTangentRotation;
+			//! DL-16: optional Scalar-pipe alias, preferred over
+			//! `pTangentRotation` when both are non-null.  See
+			//! GGXBRDF.h's `pTangentRotationScalar` for the full
+			//! rationale; mirrored here for the SPF path.
+			const IScalarPainter* pTangentRotationScalar;
+			//! Thin-film (eFresnelThinFilmConductor) FILM slots; see
+			//! GGXBRDF.h for the full contract — film n, film k, film
+			//! thickness (nm) of the oxide layer.  nullptr for every
+			//! other Fresnel mode; only read inside the thin-film
+			//! branch.  Substrate n,k reuse pIOR / pExtinction.
+			const IScalarPainter*	pFilmIOR;
+			const IScalarPainter*	pFilmExtinction;
+			const IScalarPainter*	pFilmThickness;
 
 		public:
 			GGXSPF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr,
+				const IScalarPainter* film_ior = nullptr,
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				);
 
 			void	Scatter(
@@ -80,6 +109,35 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! Read-back of the thin-film FILM slots — POINTER-returning
+			//! (NULLABLE; only bound in the thin-film Fresnel mode).
+			//! GetFresnelMode lets the introspection layer gate the film
+			//! rows.  Mirror of GGXBRDF.h; the Material reads back from the
+			//! BRDF, so these exist primarily for symmetry / direct unit
+			//! tests against the SPF.
+			inline const IScalarPainter* GetFilmIOR()        const { return pFilmIOR; }
+			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
+			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
+			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
+
+			//! Read-back + rebind for the interactive editor.  See
+			//! GGXBRDF.h — every Set* call here is paired with the
+			//! BRDF's matching Set* by Material's forwarder.
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlphaX( const IScalarPainter& v );
+			void SetAlphaY( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
+			//! Thin-film FILM-slot rebind — paired with the BRDF's matching
+			//! Set* by Material's forwarder so the value and sampling paths
+			//! stay in lockstep.  Same release-old / addref-new discipline
+			//! as SetIOR (null-safe via safe_release for the previously-null
+			//! film_extinction case).
+			void SetFilmIOR( const IScalarPainter& v );
+			void SetFilmExtinction( const IScalarPainter& v );
+			void SetFilmThickness( const IScalarPainter& v );
 		};
 	}
 }

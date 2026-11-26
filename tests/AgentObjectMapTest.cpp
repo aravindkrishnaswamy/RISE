@@ -1,0 +1,2276 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentObjectMapTest.cpp - Toolkit slice 3a (the OBJECT-MAP segmentation
+//  render: render{"mode":"objectmap"} + per-object legend).
+//
+//  Proves the identity-render path end-to-end, both at the AgentSession
+//  verb level (WrapJob -> Render(renderTarget=ObjectMap)) and at the
+//  pipeline level (CreateInteractiveObjectMapPipeline directly, for the two
+//  red-proves that need to force a state the AgentSession path structurally
+//  forbids):
+//
+//    * pixel->object: a rendered objectmap PNG decodes (byte-exactly, via a
+//      Rec709RGB_Linear PNGReader that recovers the raw stored byte) so the
+//      center pixel's bytes EQUAL the hit object's legend colorHex, and an
+//      empty (background/miss) pixel is (0,0,0).
+//    * quantizer byte-exactness: for every legend colour, the linear
+//      pre-image the shader emits round-trips through the sRGB encode back
+//      to the exact byte (half-LSB-centered contract).
+//    * legend sanity: one entry per visible object, sum(pixelCounts) +
+//      background == w*h, every visible entry pixelCount > 0.
+//    * determinism: two identical objectmap renders -> byte-identical PNG
+//      AND identical legend (the id shader has no MC noise).
+//    * isolation: an objectmap render leaves the production rasterizer's
+//      FrameStore identity + Generation() untouched (mirrors the S2 draft-
+//      isolation assertions).
+//    * document byte-identity across an objectmap render.
+//    * camera-override composition: aiming at one object makes its
+//      pixelCount dominate.
+//    * a counted `source` -> 4 distinct <chunk>[i,j] legend entries plus the
+//      source itself (which keeps rendering); CSG -> a single root entry.
+//    * PARTICIPATING MEDIUM (2026-08-12 regression): the identity render is
+//      exact and reproducible inside a `global_medium` -- every pixel is a
+//      legend colour, each object's image count equals its shader tally, and
+//      three renders are byte-identical.  See kSceneMedium's header.
+//    * downscale guard (native-size rule): read_image maxEdge box-blends
+//      the identity colours, so the downscaled image carries colours that
+//      do NOT all match a legend entry.
+//    * RED-PROVE (a) the EXACTNESS INVARIANT: forcing a >1-sample kernel +
+//      pixel filter onto the objectmap instance blends boundary pixels into
+//      colours no legend entry carries; a fresh (kernel-free) instance is
+//      exact again (restore).
+//    * RED-PROVE (b) the UNKNOWN-colour rule: skipping one object from the
+//      identity registry makes its region decode to the reserved UNKNOWN
+//      colour (magenta) with a zero legend pixelCount and a nonzero unknown
+//      tally; registering it again restores an exact per-object map.
+//
+//  Also covers Toolkit slice 3b (query_object_at {x,y}, the cheap single-
+//  pixel companion to render mode:"objectmap" -- IMPLEMENTATION CHOICE (a):
+//  reuses the objectmap ephemeral pipeline WHOLESALE, one identity render +
+//  a single-pixel legend match, rather than a bespoke single-ray probe):
+//
+//    * center-of-object query names all 3 objects of kScene3 correctly
+//      (located via a reference objectmap render + pixel scan).
+//    * an empty-region (background) query -> hit:false, a STRUCTURED
+//      result, never an error.
+//    * camera-override composition: aiming at sph_a makes the SAME center
+//      pixel that resolves to sph_b under the default camera resolve to
+//      sph_a instead.
+//    * works on a head with NO active production rasterizer (mirrors the
+//      quality:"draft"/mode:"objectmap" gate) -- a sibling production
+//      render on the same head fails honestly, query_object_at does not.
+//    * document byte-identity across a query (with and without a camera
+//      override).
+//    * the WIRE verb over the JSON-RPC dispatcher: an in-range query
+//      returns the documented {hit,name,kind,pixelX,pixelY,width,height,
+//      message} shape; an out-of-range x or y is a clean -32602
+//      (kInvalidParams), never a structured hit:false.
+//
+//  Self-contained: inline native-v7 scenes, OIDN off, no RISE_MEDIA_PATH.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/AgentRpc.h"
+#include "../src/Library/Agent/Json.h"
+#include "../src/Library/Agent/Base64.h"
+#include "../src/Library/Agent/InMemoryRasterizerOutput.h"
+#include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IEnumCallback.h"
+#include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "../src/Library/Rendering/InteractivePelRasterizer.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"   // P3-a: async+objectmap through the coordinator harness
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <memory>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+#include "TestTempDir.h"
+// Round-8 review P2: per-process temp filenames -- see WriteTemp below.
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
+
+using namespace RISE;
+using namespace RISE::Agent;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const std::string& w )
+{
+	if( c ) ++g_pass;
+	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
+}
+
+//----------------------------------------------------------------------
+// Scenes.
+//----------------------------------------------------------------------
+
+// Three well-separated named spheres (sorted: sph_a, sph_b, sph_c -> ids
+// 0,1,2) in a row across a 64x64 film; the center pixel hits sph_b.  A
+// pathtracing rasterizer + shader are included ONLY so the head has an
+// active production rasterizer with a canonical FrameStore for the
+// isolation test -- the objectmap render never touches them.
+static const char* const kScene3 =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
+// A 2x2 counted `source` named `grid` -> grid[0,0], grid[1,0], grid[0,1],
+// grid[1,1] (Cst.cpp's `InstanceBaseName` `<name>[i,j]` spelling, unchanged
+// from the `instance_array` generator 87 step 3d deleted -- these very
+// assertions are why it was kept byte-compatible).
+//
+// `src` is the SOURCE, and it is a fifth WORLD-VISIBLE object: `source`
+// COPIES, it does not move or hide anything, so the legend carries it too.
+// It sits at the origin, in the hole the 2x2 grid leaves, so every legend
+// entry here still covers real pixels.
+static const char* const kSceneInstances =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 7\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname src\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname grid\n\tsource src\n\tcount_u 2\n\tcount_v 2\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
+
+// Two spheres that OVERLAP in screen space (one partly occludes the other),
+// so a boundary pixel's sub-pixel samples straddle TWO distinct objects.  The
+// well-separated kScene3 spheres never do this: every silhouette is
+// object-vs-background, and IntegratePixel alpha-normalizes (colAccrued /=
+// alphas) so a partially-covered pixel still resolves to the single hit
+// object's EXACT identity colour.  Only an object-vs-object boundary produces
+// a blended colour no identity carries -- which is exactly what the RED half
+// of the exactness red-prove must exercise.  sph_front (id 0) sits closer in Z
+// and occludes part of sph_back (id 1); their shared occlusion edge is the
+// object-object boundary the kernel blends across.
+static const char* const kSceneAdjacent =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_front\n\tgeometry geo\n\tmaterial mat\n\tposition -0.35 0 0.6\n}\n\n"
+	"standard_object\n{\n\tname sph_back\n\tgeometry geo\n\tmaterial mat\n\tposition 0.35 0 0\n}\n";
+
+// A DIRECTLY-VISIBLE EMISSIVE object (a glowing sphere as an area light --
+// the common RISE pattern) at screen center, plus one non-emissive sphere off
+// to the side.  Sorted names: lamp (id 0, center, emissive), side (id 1).
+// Exercises the P1 fix: the objectmap caster must SEE luminaires (an emitter
+// is a real world-visible, selectable object) while the draft/material-preview
+// caster must STILL hide them (studio-preview semantics unchanged).
+static const char* const kSceneEmissive =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname emit\n\tcolor 1 1 1\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lampmat\n\texitance emit\n\tmaterial mat\n\tscale 1.0\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname lamp\n\tgeometry geo\n\tmaterial lampmat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname side\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n";
+
+// A single CSG union of two spheres -> a single composite root object.
+static const char* const kSceneCsg =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname op_a\n\tgeometry geo\n\tmaterial mat\n\tposition -0.4 0 0\n}\n\n"
+	"standard_object\n{\n\tname op_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0.4 0 0\n}\n\n"
+	"csg_object\n{\n\tname csg_root\n\tobja op_a\n\tobjb op_b\n\toperation union\n\tmaterial mat\n}\n";
+
+// The SAME 3-sphere layout as kScene3, but the whole scene sits inside a
+// PARTICIPATING MEDIUM (`global_medium`) -- the regression guard for the
+// 2026-08-12 identity-corruption defect.
+//
+// Before the fix, the objectmap caster ran full volumetric transport, which
+// broke the identity contract three ways at once:
+//   * the medium's free-flight sampler terminated most primary rays at a
+//     scatter event BEFORE any surface, so ObjectIdShader never ran for
+//     those pixels and the legend's pixelCounts collapsed to a fraction of
+//     the covered area;
+//   * a surviving ray's flat identity colour was multiplied by the medium's
+//     per-channel transmittance, so the encoded byte no longer equalled the
+//     object's reserved palette byte;
+//   * an in-scattered radiance term was ADDED on top, and that term is
+//     Monte-Carlo sampled, so the "exact" render was not even reproducible
+//     run to run.
+// Measured on scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene (47
+// objects, `global_medium med_ocean`) at 96x72: ZERO of the 47 registered
+// legend colours appeared anywhere in the image, the frame carried
+// 4964-5080 DISTINCT colours out of 6912 pixels, only ~2200 of 6912 pixels
+// were ever shaded, and every run differed.  query_object_at therefore
+// answered "hit an unregistered/unmapped object" for points visibly on
+// objects -- the exact failure mode behind the arc-79 SS8.2 incident, in
+// which an agent read five such answers and deleted 80 of the 82 SDF parts
+// it had just built.
+//
+// The coefficients below are deliberately dense relative to the ~6-unit
+// camera distance (sigma_t ~ 0.55/unit) so the pre-fix breakage is gross
+// rather than marginal: with the fix reverted this scene's assertions fail
+// by a wide margin, not by an LSB.
+static const char* const kSceneMedium =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"homogeneous_medium\n{\n\tname fog\n\tabsorption 0.15 0.20 0.25\n\tscattering 0.35 0.30 0.28\n\tphase hg 0.4\n}\n\n"
+	"global_medium\n{\n\tmedium fog\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
+// Toolkit slice 3b test (5): the SAME 3-sphere layout as kScene3, but with
+// NO rasterizer chunk (and no standard_shader, which existed only to be
+// resolved by the now-absent rasterizer's Finalize) -- Job::GetRasterizer()
+// resolves nullptr on this head.  Proves query_object_at works on a
+// rasterizer-less head (it reuses the objectmap ephemeral pipeline, which
+// never dereferences the production rasterizer -- mirrors the quality:
+// "draft" / mode:"objectmap" gate).
+static const char* const kScene3NoRasterizer =
+	"RISE ASCII SCENE 7\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname sph_a\n\tgeometry geo\n\tmaterial mat\n\tposition -1.7 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
+
+//----------------------------------------------------------------------
+// Helpers.
+//----------------------------------------------------------------------
+
+static std::string WriteTemp( const char* name, const std::string& text )
+{
+	std::string dir = RISE::TestSupport::ScratchBaseDir();
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
+	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
+	// The round-8 comment justified this by asserting that run_all_tests.sh
+	// runs the suite in PARALLEL.  It did not then (Phase 3 was a sequential
+	// loop).  Since 2026-11-17 the runners do run DIFFERENT tests side by
+	// side, but each gets its own TMPDIR, so that alone never needed a
+	// per-process name either.  The real justification is that
+	// nothing stops two copies of THIS binary from running at once: a
+	// developer runs it by hand while the suite runs, a stray earlier run
+	// has not exited yet, or a repeat-run loop (`for i in $(seq 8); do
+	// ./bin/tests/<name> & done` -- the usual way to chase a suspected
+	// flake) launches several at once.  With a FIXED temp name those
+	// processes clobber each other's scene file mid-load, which surfaces as
+	// a bogus "the test is flaky / there is a race" failure -- that already
+	// cost a reviewer hours once.  The pid prefix makes the path unique per
+	// process.
+	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
+	std::ofstream f( path.c_str(), std::ios::binary );
+	if( !f ) return std::string();
+	f.write( text.data(), (std::streamsize)text.size() );
+	f.close();
+	return path;
+}
+
+typedef std::array<unsigned char, 4> Px;   // r,g,b,a
+
+struct Decoded
+{
+	unsigned int    w = 0, h = 0;
+	std::vector<Px> px;   // row-major
+	const Px& at( unsigned int x, unsigned int y ) const { return px[ (std::size_t)y * w + x ]; }
+};
+
+// Decode PNG bytes into raw stored bytes.  Reading with
+// eColorSpace_Rec709RGB_Linear makes the PNGReader do a bare byte/255 with
+// NO transfer-function conversion, so round(v*255) recovers the EXACT byte
+// that was written -- no sRGB round-trip that could drift an LSB.
+static bool DecodePng( const std::vector<unsigned char>& png, Decoded& out )
+{
+	if( png.empty() ) return false;
+	Implementation::MemoryBuffer* buf = new Implementation::MemoryBuffer(
+		const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+		(unsigned int)png.size(), /*bTakeOwnership*/false );
+	IRasterImageReader* reader = nullptr;
+	if( !RISE_API_CreatePNGReader( &reader, *buf, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+		safe_release( buf );
+		return false;
+	}
+	unsigned int w = 0, h = 0;
+	if( !reader->BeginRead( w, h ) ) { safe_release( reader ); safe_release( buf ); return false; }
+	out.w = w; out.h = h;
+	out.px.resize( (std::size_t)w * h );
+	auto toB = []( double v ) -> unsigned char {
+		int i = (int)( v * 255.0 + 0.5 );
+		if( i < 0 ) i = 0; if( i > 255 ) i = 255;
+		return (unsigned char)i;
+	};
+	for( unsigned int y = 0; y < h; ++y ) {
+		for( unsigned int x = 0; x < w; ++x ) {
+			RISEColor c;
+			reader->ReadColor( c, x, y );
+			Px p = { toB( c.base.r ), toB( c.base.g ), toB( c.base.b ), toB( c.a ) };
+			out.px[ (std::size_t)y * w + x ] = p;
+		}
+	}
+	reader->EndRead();
+	safe_release( reader );
+	safe_release( buf );
+	return true;
+}
+
+// Parse "#RRGGBB" -> byte triple.
+static bool HexToBytes( const std::string& hex, unsigned char b[3] )
+{
+	if( hex.size() != 7 || hex[0] != '#' ) return false;
+	for( int i = 0; i < 3; ++i ) {
+		char buf[3] = { hex[1 + i * 2], hex[2 + i * 2], 0 };
+		char* end = nullptr;
+		long v = std::strtol( buf, &end, 16 );
+		if( end != buf + 2 ) return false;
+		b[i] = (unsigned char)v;
+	}
+	return true;
+}
+
+// Find a legend entry by name; returns nullptr if absent.
+static const LegendEntry* FindLegend( const AgentRenderResult& r, const std::string& name )
+{
+	for( std::size_t i = 0; i < r.legend.size(); ++i )
+		if( r.legend[i].name == name ) return &r.legend[i];
+	return nullptr;
+}
+
+// Toolkit slice 3b: find ANY pixel whose decoded bytes exactly equal
+// `rgb` -- since every hit-pixel of a solid-identity-colour object decodes
+// to the SAME exact byte triple (the objectmap exactness invariant), any
+// matching pixel is an equally valid query_object_at probe point for that
+// object; returns false if none found.
+static bool FindPixelForColor( const Decoded& d, const unsigned char rgb[3],
+                                unsigned int& outX, unsigned int& outY )
+{
+	for( unsigned int y = 0; y < d.h; ++y ) {
+		for( unsigned int x = 0; x < d.w; ++x ) {
+			const Px& p = d.at( x, y );
+			if( p[0] == rgb[0] && p[1] == rgb[1] && p[2] == rgb[2] ) {
+				outX = x; outY = y;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+//----------------------------------------------------------------------
+// (1)+(2)+(3)+(4)+(6): AgentSession-level core objectmap render.
+//----------------------------------------------------------------------
+static void RunCoreTests()
+{
+	std::printf( "=== AgentObjectMapTest: core (pixel->object / quantizer / legend / determinism) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_3.RISEscene", kScene3 );
+	Check( !scenePath.empty(), "wrote the 3-sphere scene" );
+
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "3-sphere scene loads via the CST path" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "WrapJob wraps the locally-owned Job" );
+	if( !session ) { pJob->release(); return; }
+
+	const std::string preDoc = session->ReadDocument();
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+
+	Check( r.ok, "objectmap render succeeds (ok)" );
+	Check( r.renderMode == "objectmap", "renderMode reports \"objectmap\"" );
+	Check( r.width == 64 && r.height == 64, "render dims are the authored 64x64" );
+	Check( r.legend.size() == 3, "legend has exactly one entry per registered object (3)" );
+
+	// (6) Document byte-identity across the render.
+	Check( session->ReadDocument() == preDoc, "objectmap render is side-effect-free on the Document" );
+
+	// Legend names are the 3 objects, in sorted id order.
+	if( r.legend.size() == 3 ) {
+		Check( r.legend[0].name == "sph_a" && r.legend[1].name == "sph_b" && r.legend[2].name == "sph_c",
+		       "legend entries are in deterministic sorted-name order (sph_a, sph_b, sph_c)" );
+	}
+
+	// (2) Quantizer byte-exactness: for each legend colour, the linear
+	// pre-image the shader emits (L = SRGBinv((B+0.5)/255)) re-encodes
+	// (truncating SRGB*255) back to the exact byte.
+	bool quantOk = true;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( !HexToBytes( r.legend[i].colorHex, b ) ) { quantOk = false; continue; }
+		for( int ch = 0; ch < 3; ++ch ) {
+			const Scalar L = ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)b[ch] + 0.5 ) / 255.0 );
+			Scalar enc = ColorUtils::SRGBTransferFunction( L < 0 ? 0 : ( L > 1 ? 1 : L ) );
+			if( enc > 1.0 ) enc = 1.0;
+			const unsigned char back = (unsigned char)( enc * 255.0 );   // TRUNCATING, matching Integerize<sRGBPel>
+			if( back != b[ch] ) quantOk = false;
+		}
+	}
+	Check( quantOk, "quantizer contract holds: every legend colour's linear pre-image re-encodes to its exact byte" );
+
+	// (1) pixel->object: decode the native PNG, check center + a corner.
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "objectmap PNG decodes" );
+	Check( dec.w == 64 && dec.h == 64, "decoded dims are 64x64 (native, not downscaled)" );
+	if( dec.w == 64 && dec.h == 64 && r.legend.size() == 3 ) {
+		unsigned char cb[3];
+		HexToBytes( r.legend[1].colorHex, cb );   // sph_b (center)
+		const Px& center = dec.at( 32, 32 );
+		Check( center[0] == cb[0] && center[1] == cb[1] && center[2] == cb[2],
+		       "MONEY ASSERTION: center pixel bytes EQUAL sph_b's legend colorHex (byte-exact)" );
+		const Px& corner = dec.at( 0, 0 );
+		Check( corner[0] == 0 && corner[1] == 0 && corner[2] == 0,
+		       "an empty (miss) corner pixel is (0,0,0)" );
+		Check( corner[3] == 0, "an empty corner pixel is fully transparent (alpha 0)" );
+	}
+
+	// (3) legend sanity: sum(pixelCounts) + background == w*h; each > 0.
+	std::uint64_t sum = 0;
+	bool allPositive = true;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		sum += r.legend[i].pixelCount;
+		if( r.legend[i].pixelCount == 0 ) allPositive = false;
+	}
+	Check( allPositive, "every visible object's pixelCount is > 0" );
+	// background = pixels that decoded to (0,0,0) alpha 0.
+	std::uint64_t bg = 0;
+	for( std::size_t i = 0; i < dec.px.size(); ++i )
+		if( dec.px[i][3] == 0 ) ++bg;
+	Check( sum + bg == (std::uint64_t)dec.w * dec.h,
+	       "sum(legend pixelCounts) + background == w*h" );
+
+	// (4) determinism: a second identical objectmap render -> byte-identical
+	// PNG AND identical legend (the id shader has no MC noise).
+	AgentRenderResult r2 = session->Render( p );
+	Check( r2.ok && r2.png == r.png, "two identical objectmap renders are byte-identical PNGs (deterministic)" );
+	bool legendSame = ( r2.legend.size() == r.legend.size() );
+	for( std::size_t i = 0; legendSame && i < r.legend.size(); ++i )
+		legendSame = ( r2.legend[i].name == r.legend[i].name
+		            && r2.legend[i].colorHex == r.legend[i].colorHex
+		            && r2.legend[i].pixelCount == r.legend[i].pixelCount );
+	Check( legendSame, "the legend is identical across two renders" );
+
+	// samples / quality are honestly reported as ignored under objectmap.
+	AgentRenderParams pq;
+	pq.renderTarget = AgentRenderTarget::ObjectMap;
+	pq.samples = 64;
+	pq.quality = AgentRenderQuality::Draft;
+	AgentRenderResult rq = session->Render( pq );
+	Check( rq.ok && rq.renderMode == "objectmap", "objectmap render ignores quality:draft (still renderMode==objectmap)" );
+	Check( !rq.samplesOverridden && rq.effectiveSamples == 1,
+	       "objectmap reports 1 spp, samples override not applied" );
+	Check( rq.message.find( "objectmap ignores the samples override" ) != std::string::npos,
+	       "the message honestly states the samples override is ignored under objectmap" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (7) camera-override composition: aim at one object -> its count dominates.
+//----------------------------------------------------------------------
+static void RunCameraOverrideTest()
+{
+	std::printf( "=== AgentObjectMapTest: camera-override composition ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_cam.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "cam scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "cam session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	p.camera.hasLocation = true;  p.camera.location = "-1.7 0 2";
+	p.camera.hasLookAt   = true;  p.camera.lookAt   = "-1.7 0 0";
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.cameraOverridden, "objectmap composes with a camera override (cameraOverridden)" );
+	Check( r.renderMode == "objectmap", "camera-override objectmap still renderMode==objectmap" );
+
+	const LegendEntry* a = FindLegend( r, "sph_a" );
+	const LegendEntry* b = FindLegend( r, "sph_b" );
+	const LegendEntry* c = FindLegend( r, "sph_c" );
+	Check( a && b && c, "all three objects still in the legend after a camera override" );
+	if( a && b && c ) {
+		Check( a->pixelCount > b->pixelCount && a->pixelCount > c->pixelCount,
+		       "MONEY ASSERTION: aiming the camera at sph_a makes its pixelCount dominate" );
+	}
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (8a) a counted `source` -> 4 distinct <chunk>[i,j] entries, plus the
+// source object itself.
+//----------------------------------------------------------------------
+static void RunInstanceArrayTest()
+{
+	std::printf( "=== AgentObjectMapTest: counted-source legend ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_inst.RISEscene", kSceneInstances );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "instance scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "instance session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "counted-source objectmap render succeeds" );
+	Check( FindLegend( r, "grid[0,0]" ) && FindLegend( r, "grid[1,0]" )
+	    && FindLegend( r, "grid[0,1]" ) && FindLegend( r, "grid[1,1]" ),
+	    "each repetition carries its synthesized <chunk>[i,j] name" );
+	// EXACTLY four repetitions, counted by name rather than by legend size, so
+	// the SOURCE entry below is a separate claim instead of slack in this one.
+	std::size_t repetitions = 0;
+	for( std::size_t k = 0; k < r.legend.size(); ++k )
+		if( r.legend[k].name.compare( 0, 5, "grid[" ) == 0 ) ++repetitions;
+	Check( repetitions == 4, "a 2x2 counted `source` yields exactly 4 synthesized entries" );
+	// AND THE SOURCE IS STILL THERE.  `source` copies; it does not move or hide
+	// anything, so `src` is a fifth world-visible object with pixels of its own.
+	// (The `instance_array` generator this fixture replaced had no source OBJECT
+	// -- its `template` was a geometry -- which is why the old assertion read 4.)
+	const LegendEntry* srcEntry = FindLegend( r, "src" );
+	Check( srcEntry && srcEntry->pixelCount > 0,
+	       "the SOURCE object keeps rendering alongside its four copies" );
+	Check( r.legend.size() == 5, "... and it is the only other entry: 4 repetitions + 1 source" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (8b) CSG -> a single composite-root entry.
+//----------------------------------------------------------------------
+static void RunCsgTest()
+{
+	std::printf( "=== AgentObjectMapTest: CSG single-root legend ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_csg.RISEscene", kSceneCsg );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "csg scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "csg session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "CSG objectmap render succeeds" );
+	Check( r.legend.size() == 1, "a CSG composite is a SINGLE world-visible object -> one legend entry" );
+	if( r.legend.size() == 1 ) {
+		Check( r.legend[0].name == "csg_root", "the single entry is the CSG root object" );
+		Check( r.legend[0].pixelCount > 0, "the CSG root covers pixels" );
+	}
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// PARTICIPATING-MEDIUM REGRESSION (2026-08-12): the identity render must be
+// exact and reproducible inside a `global_medium`.  See kSceneMedium's
+// header for the defect this pins and the measurements behind it.
+//
+// The four assertions below are chosen so that each one independently fails
+// on the pre-fix build -- there is no single weak link whose accidental
+// pass would let the defect back in:
+//   (A) EVERY non-background pixel is EXACTLY some legend colour.  Kills the
+//       transmittance-multiply and the in-scattering add: both produce
+//       colours no identity carries.
+//   (B) Per object, the image's count of that colour EQUALS the legend's
+//       shader-side pixelCount, and sum(pixelCount) + background == w*h.
+//       Kills the swallowed-primary-ray failure: a ray that scatters short
+//       of a surface is neither tallied nor background, so the identity
+//       breaks.
+//   (C) Three consecutive renders are byte-identical PNGs with identical
+//       legends.  Kills the Monte-Carlo residue directly -- this is the
+//       assertion that catches a partial fix that gets the mean right.
+//   (D) query_object_at at a known object pixel names THAT object.  The
+//       consumer-level statement of the same contract, and the one whose
+//       pre-fix failure ("hit an unregistered/unmapped object") is what an
+//       agent actually reads.
+//----------------------------------------------------------------------
+static void RunParticipatingMediumExactnessTest()
+{
+	std::printf( "=== AgentObjectMapTest: identity exactness inside a participating medium ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_medium.RISEscene", kSceneMedium );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "medium scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "medium session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "objectmap render succeeds inside a global_medium" );
+	Check( r.legend.size() == 3, "medium scene legend has one entry per object (3)" );
+	if( !r.ok || r.legend.size() != 3 ) { pJob->release(); return; }
+
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "medium-scene objectmap PNG decodes" );
+	if( dec.w != 64 || dec.h != 64 ) { Check( false, "medium-scene dims are 64x64" ); pJob->release(); return; }
+
+	// Build the per-colour image histogram once; every assertion reads it.
+	std::map<std::array<unsigned char, 3>, std::uint64_t> hist;
+	std::uint64_t background = 0;
+	for( std::size_t i = 0; i < dec.px.size(); ++i ) {
+		if( dec.px[i][3] == 0 ) { ++background; continue; }
+		++hist[ std::array<unsigned char, 3>{ dec.px[i][0], dec.px[i][1], dec.px[i][2] } ];
+	}
+
+	// (A) every non-background pixel is exactly SOME legend colour.
+	std::set<std::array<unsigned char, 3> > legendColors;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( HexToBytes( r.legend[i].colorHex, b ) )
+			legendColors.insert( std::array<unsigned char, 3>{ b[0], b[1], b[2] } );
+	}
+	std::uint64_t unregistered = 0;
+	for( std::map<std::array<unsigned char, 3>, std::uint64_t>::const_iterator it = hist.begin();
+	     it != hist.end(); ++it ) {
+		if( legendColors.find( it->first ) == legendColors.end() ) unregistered += it->second;
+	}
+	Check( unregistered == 0,
+	       "MONEY ASSERTION (A): NO pixel carries a colour outside the legend -- the medium neither"
+	       " attenuated nor in-scattered into the identity bytes" );
+
+	// (B) per-object image count == shader tally, and the totals close.
+	bool countsMatch = true;
+	std::uint64_t tallySum = 0;
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( !HexToBytes( r.legend[i].colorHex, b ) ) { countsMatch = false; continue; }
+		std::map<std::array<unsigned char, 3>, std::uint64_t>::const_iterator it =
+			hist.find( std::array<unsigned char, 3>{ b[0], b[1], b[2] } );
+		const std::uint64_t inImage = ( it == hist.end() ) ? 0 : it->second;
+		if( inImage != r.legend[i].pixelCount ) countsMatch = false;
+		if( r.legend[i].pixelCount == 0 ) countsMatch = false;   // all 3 spheres are on screen
+		tallySum += r.legend[i].pixelCount;
+	}
+	Check( countsMatch,
+	       "MONEY ASSERTION (B): every object's IMAGE pixel count equals its shader-side legend"
+	       " pixelCount -- no primary ray was swallowed by a scatter event before its surface" );
+	Check( tallySum + background == (std::uint64_t)dec.w * dec.h,
+	       "sum(legend pixelCounts) + background == w*h inside a medium" );
+
+	// (C) reproducibility: the in-scattering term was Monte-Carlo sampled, so
+	// this is the assertion a mean-only fix cannot pass.
+	bool stable = true;
+	for( int run = 0; run < 2; ++run ) {
+		AgentRenderResult again = session->Render( p );
+		if( !again.ok || again.png != r.png ) stable = false;
+		if( again.legend.size() != r.legend.size() ) { stable = false; continue; }
+		for( std::size_t i = 0; i < again.legend.size(); ++i ) {
+			if( again.legend[i].pixelCount != r.legend[i].pixelCount ||
+			    again.legend[i].colorHex   != r.legend[i].colorHex ) stable = false;
+		}
+	}
+	Check( stable,
+	       "MONEY ASSERTION (C): three consecutive renders inside a medium are byte-identical PNGs"
+	       " with identical legends (no Monte-Carlo residue in an identity render)" );
+
+	// (D) the consumer-level contract: query_object_at names the object.
+	unsigned char cb[3];
+	if( HexToBytes( r.legend[1].colorHex, cb ) ) {   // sph_b, the center sphere
+		unsigned int qx = 0, qy = 0;
+		if( FindPixelForColor( dec, cb, qx, qy ) ) {
+			AgentSession::AgentQueryObjectResult q =
+				session->QueryObjectAt( (int)qx, (int)qy );
+			Check( q.hit && q.name == r.legend[1].name,
+			       "MONEY ASSERTION (D): query_object_at names the object at a known object pixel"
+			       " inside a medium (pre-fix: \"hit an unregistered/unmapped object\")" );
+		} else {
+			Check( false, "found a pixel carrying sph_b's identity colour" );
+		}
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (5) isolation: production FrameStore identity + Generation untouched.
+//----------------------------------------------------------------------
+static void RunIsolationTest()
+{
+	std::printf( "=== AgentObjectMapTest: production FrameStore isolation ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_iso.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "iso scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "iso session" ); return; }
+
+	IRasterizer* rast = pJob->GetRasterizer();
+	Implementation::Rasterizer* concreteRast = dynamic_cast<Implementation::Rasterizer*>( rast );
+	Check( concreteRast != nullptr, "head has a concrete production rasterizer" );
+	if( !concreteRast ) { pJob->release(); return; }
+	Implementation::FrameStore* displayStore = concreteRast->GetFrameStore();
+	Check( displayStore != nullptr, "production rasterizer has a canonical FrameStore before any render" );
+	if( !displayStore ) { pJob->release(); return; }
+
+	const uint64_t genBefore = displayStore->Generation();
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok, "objectmap render succeeds (isolation scene)" );
+	Check( displayStore->Generation() == genBefore,
+	       "MONEY ASSERTION: the production FrameStore's Generation() did NOT advance across an objectmap render" );
+	Check( concreteRast->GetFrameStore() == displayStore,
+	       "the production rasterizer's FrameStore identity is untouched by an objectmap render" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (9) downscale guard (native-size rule).
+//----------------------------------------------------------------------
+static void RunDownscaleGuardTest()
+{
+	std::printf( "=== AgentObjectMapTest: downscale guard (native-size rule) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_ds.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "ds scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "ds session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok, "objectmap render for downscale guard succeeds" );
+
+	// Build the set of legal legend colours (+ background) for matching.
+	std::vector<std::array<unsigned char, 3> > legal;
+	std::array<unsigned char, 3> black = { { 0, 0, 0 } };
+	legal.push_back( black );
+	for( std::size_t i = 0; i < r.legend.size(); ++i ) {
+		unsigned char b[3];
+		if( HexToBytes( r.legend[i].colorHex, b ) ) {
+			std::array<unsigned char, 3> a = { { b[0], b[1], b[2] } };
+			legal.push_back( a );
+		}
+	}
+
+	// Native read: EVERY pixel is a legal colour (exact).
+	unsigned int nw = 0, nh = 0;
+	std::vector<unsigned char> nativePng = session->ReadImage( 0, nw, nh );
+	Decoded natDec;
+	Check( DecodePng( nativePng, natDec ), "native read_image decodes" );
+	bool nativeAllLegal = true;
+	for( std::size_t i = 0; i < natDec.px.size(); ++i ) {
+		bool ok = false;
+		for( std::size_t j = 0; j < legal.size(); ++j )
+			if( natDec.px[i][0] == legal[j][0] && natDec.px[i][1] == legal[j][1] && natDec.px[i][2] == legal[j][2] ) { ok = true; break; }
+		if( !ok ) { nativeAllLegal = false; break; }
+	}
+	Check( nativeAllLegal, "at NATIVE size every objectmap pixel matches a legend colour (or background) exactly" );
+
+	// Downscaled read: box-filter blending produces colours that are NOT
+	// all legal -- documents why the objectmap must be read at native size.
+	unsigned int dw = 0, dh = 0;
+	std::vector<unsigned char> smallPng = session->ReadImage( 16, dw, dh );
+	Decoded smallDec;
+	Check( DecodePng( smallPng, smallDec ), "downscaled read_image decodes" );
+	bool foundBlended = false;
+	for( std::size_t i = 0; i < smallDec.px.size() && !foundBlended; ++i ) {
+		bool legalPix = false;
+		for( std::size_t j = 0; j < legal.size(); ++j )
+			if( smallDec.px[i][0] == legal[j][0] && smallDec.px[i][1] == legal[j][1] && smallDec.px[i][2] == legal[j][2] ) { legalPix = true; break; }
+		if( !legalPix ) foundBlended = true;
+	}
+	Check( foundBlended,
+	       "MONEY ASSERTION: a box-downscaled objectmap carries BLENDED colours no legend entry matches (read it at native size!)" );
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Pipeline-level palette builder (test-local; the production builder is a
+// file-static in AgentSession.cpp).  Assigns a fixed distinct base colour
+// per object and their exact linear pre-images; `skipIndex` omits one
+// object from the identity registry to exercise the UNKNOWN path.
+//----------------------------------------------------------------------
+static RISEPel LinFromBytes( unsigned char r, unsigned char g, unsigned char b )
+{
+	return RISEPel(
+		ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)r + 0.5 ) / 255.0 ),
+		ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)g + 0.5 ) / 255.0 ),
+		ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)b + 0.5 ) / 255.0 ) );
+}
+
+static void BuildTestPalette( IObjectManager* objMgr,
+                              Implementation::ObjectMapPalette& pal,
+                              int skipIndex )
+{
+	struct NC : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> n;
+		bool operator()( const char* const& s ) override { if( s ) n.push_back( std::string( s ) ); return true; }
+	} nc;
+	if( objMgr ) objMgr->EnumerateItemNames( nc );
+	const std::size_t count = nc.n.size();
+
+	static const unsigned char base[5][3] = {
+		{ 230, 25, 75 }, { 60, 180, 75 }, { 0, 130, 200 }, { 245, 130, 48 }, { 145, 30, 180 }
+	};
+
+	pal.names = nc.n;
+	pal.bytes.resize( count );
+	pal.linearColors.resize( count );
+	pal.registry.clear();
+	for( std::size_t id = 0; id < count; ++id ) {
+		const unsigned char* b = base[ id % 5 ];
+		std::array<unsigned char, 3> a = { { b[0], b[1], b[2] } };
+		pal.bytes[id] = a;
+		pal.linearColors[id] = LinFromBytes( b[0], b[1], b[2] );
+		if( (int)id != skipIndex ) {
+			IObjectPriv* o = objMgr ? objMgr->GetItem( nc.n[id].c_str() ) : 0;
+			if( o ) pal.registry[ static_cast<const IObject*>( o ) ] = (std::uint32_t)id;
+		}
+	}
+	std::array<unsigned char, 3> mag = { { 255, 0, 255 } };
+	pal.unknownBytes  = mag;
+	pal.unknownLinear = LinFromBytes( 255, 0, 255 );
+	pal.counts = std::vector<std::atomic<std::uint32_t> >( count + 1 );
+	for( std::size_t i = 0; i < pal.counts.size(); ++i ) pal.counts[i].store( 0u, std::memory_order_relaxed );
+}
+
+// Render one objectmap pass through a fresh (kernel-free) pipeline; if
+// `installKernel` is true, force a >1-sample MultiJittered kernel + box
+// pixel filter onto the instance (the state the AgentSession path forbids).
+// Returns the decoded image.
+static bool RenderPipeline( const IScenePriv& scene,
+                            const Implementation::ObjectMapPalette& pal,
+                            bool installKernel,
+                            Decoded& out )
+{
+	IRasterizer* rast = nullptr;
+	IRayCaster*  caster = nullptr;
+	if( !Implementation::CreateInteractiveObjectMapPipeline( &rast, &caster, pal ) || !rast )
+		return false;
+
+	if( installKernel ) {
+		Implementation::PixelBasedRasterizerHelper* helper =
+			dynamic_cast<Implementation::PixelBasedRasterizerHelper*>( rast );
+		if( helper ) {
+			ISampling2D* kernel = nullptr;
+			RISE_API_CreateMultiJitteredSampling2D( &kernel, 1.0, 1.0 );
+			IPixelFilter* filter = nullptr;
+			RISE_API_CreateBoxPixelFilter( &filter, 1.0, 1.0 );
+			if( kernel ) kernel->SetNumSamples( 16 );
+			helper->SubSampleRays( kernel, filter );   // installs BOTH -> jittered multisampling
+			safe_release( kernel );
+			safe_release( filter );
+		}
+	}
+
+	InMemoryRasterizerOutput* sink = new InMemoryRasterizerOutput();
+	rast->AddRasterizerOutput( sink );
+	rast->RasterizeScene( scene, 0, nullptr );
+	const std::vector<unsigned char> png = sink->ToPng();
+	const bool decoded = DecodePng( png, out );
+	safe_release( sink );
+	safe_release( caster );
+	safe_release( rast );
+	return decoded;
+}
+
+static bool AllPixelsLegal( const Decoded& d, const Implementation::ObjectMapPalette& pal )
+{
+	for( std::size_t i = 0; i < d.px.size(); ++i ) {
+		if( d.px[i][3] == 0 ) continue;   // background
+		bool ok = false;
+		for( std::size_t id = 0; id < pal.bytes.size(); ++id )
+			if( d.px[i][0] == pal.bytes[id][0] && d.px[i][1] == pal.bytes[id][1] && d.px[i][2] == pal.bytes[id][2] ) { ok = true; break; }
+		if( !ok ) return false;
+	}
+	return true;
+}
+
+//----------------------------------------------------------------------
+// RED-PROVE (a): the exactness invariant.
+//----------------------------------------------------------------------
+static void RunExactnessRedProve()
+{
+	std::printf( "=== AgentObjectMapTest: RED-PROVE (a) exactness invariant (no kernel) ===\n" );
+	// Uses OVERLAPPING geometry (kSceneAdjacent) so the RED multisampled pass
+	// has an object-vs-object boundary to blend across; see kSceneAdjacent.
+	const std::string scenePath = WriteTemp( "rise_objmap_exact.RISEscene", kSceneAdjacent );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "exact scene loads" ); return; }
+	const IScenePriv* scene = pJob->GetScene();
+	if( !scene ) { pJob->release(); Check( false, "exact scene priv" ); return; }
+
+	Implementation::ObjectMapPalette pal;
+	BuildTestPalette( pJob->GetObjects(), pal, /*skipIndex*/-1 );
+
+	// GREEN: kernel-free -> every non-background pixel is an EXACT identity
+	// colour (single-ray, no jitter, no filter).
+	Decoded green;
+	Check( RenderPipeline( *scene, pal, /*installKernel*/false, green ), "kernel-free pipeline renders" );
+	Check( AllPixelsLegal( green, pal ),
+	       "kernel-free objectmap: every non-background pixel is an EXACT identity colour" );
+
+	// RED: force a multisampling kernel + filter -> boundary pixels blend
+	// into colours no identity colour carries (the invariant would break).
+	Decoded red;
+	Check( RenderPipeline( *scene, pal, /*installKernel*/true, red ), "kernel+filter pipeline renders" );
+	Check( !AllPixelsLegal( red, pal ),
+	       "RED-PROVE: a >1-sample kernel+filter BLENDS boundary pixels -> NOT all match an identity colour (why the factory installs neither)" );
+
+	// RESTORE: a fresh kernel-free instance is exact again.
+	Decoded restored;
+	Check( RenderPipeline( *scene, pal, /*installKernel*/false, restored ), "restore pipeline renders" );
+	Check( AllPixelsLegal( restored, pal ),
+	       "RESTORE: a fresh kernel-free objectmap is exact again (invariant intact)" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// RED-PROVE (b): the unknown-colour rule.
+//----------------------------------------------------------------------
+static void RunUnknownColorRedProve()
+{
+	std::printf( "=== AgentObjectMapTest: RED-PROVE (b) unknown-colour rule ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_unknown.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "unknown scene loads" ); return; }
+	const IScenePriv* scene = pJob->GetScene();
+	if( !scene ) { pJob->release(); Check( false, "unknown scene priv" ); return; }
+
+	// RED: skip sph_b (id 1, the center) from the registry -> its region
+	// decodes to the reserved UNKNOWN colour (magenta), its tally stays 0,
+	// and the unknown tally is nonzero.
+	{
+		Implementation::ObjectMapPalette pal;
+		BuildTestPalette( pJob->GetObjects(), pal, /*skipIndex*/1 );
+		Decoded d;
+		Check( RenderPipeline( *scene, pal, /*installKernel*/false, d ), "skip-one pipeline renders" );
+		Check( d.w == 64 && d.h == 64, "skip-one image is 64x64" );
+		if( d.w == 64 && d.h == 64 ) {
+			const Px& center = d.at( 32, 32 );
+			Check( center[0] == 255 && center[1] == 0 && center[2] == 255,
+			       "RED-PROVE: an unregistered object's pixels decode to the reserved UNKNOWN colour (magenta)" );
+		}
+		Check( pal.counts[1].load() == 0u, "the skipped object's own tally stays 0 (it never matched)" );
+		Check( pal.counts[ pal.names.size() ].load() > 0u, "the UNKNOWN tally caught the unmapped pixels" );
+	}
+
+	// RESTORE: register all objects -> the center is sph_b's colour again,
+	// and nothing lands in the UNKNOWN tally.
+	{
+		Implementation::ObjectMapPalette pal;
+		BuildTestPalette( pJob->GetObjects(), pal, /*skipIndex*/-1 );
+		Decoded d;
+		Check( RenderPipeline( *scene, pal, /*installKernel*/false, d ), "restore pipeline renders" );
+		if( d.w == 64 && d.h == 64 ) {
+			const Px& center = d.at( 32, 32 );
+			Check( center[0] == pal.bytes[1][0] && center[1] == pal.bytes[1][1] && center[2] == pal.bytes[1][2],
+			       "RESTORE: with sph_b registered, the center decodes to its identity colour" );
+		}
+		Check( pal.counts[ pal.names.size() ].load() == 0u,
+		       "RESTORE: nothing lands in the UNKNOWN tally when every object is registered" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// P1: a directly-visible EMISSIVE object segments into the objectmap
+// (the objectmap caster SEES luminaires), while a DRAFT render of the same
+// scene STILL hides it (studio-preview semantics unchanged).
+//----------------------------------------------------------------------
+static void RunEmissiveVisibilityTest()
+{
+	std::printf( "=== AgentObjectMapTest: emissive object visibility (P1) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_emit.RISEscene", kSceneEmissive );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "emissive scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "emissive session" ); return; }
+
+	// --- objectmap: the emissive `lamp` IS a legend entry with pixelCount>0,
+	// and the center pixel byte-matches its legend colour. ---
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.renderMode == "objectmap", "objectmap render of the emissive scene succeeds" );
+	Check( r.legend.size() == 2, "the emissive scene has exactly two world-visible objects (lamp, side)" );
+
+	const LegendEntry* lamp = FindLegend( r, "lamp" );
+	Check( lamp != nullptr, "the emissive object `lamp` appears in the legend (NOT dropped as a luminaire)" );
+	if( lamp ) {
+		Check( lamp->pixelCount > 0,
+		       "MONEY ASSERTION (P1): the directly-visible emissive object has pixelCount > 0 (it segments into the map, not background)" );
+	}
+
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "emissive objectmap PNG decodes" );
+	if( dec.w == 64 && dec.h == 64 && lamp ) {
+		unsigned char cb[3];
+		HexToBytes( lamp->colorHex, cb );
+		const Px& center = dec.at( 32, 32 );
+		Check( center[0] == cb[0] && center[1] == cb[1] && center[2] == cb[2],
+		       "MONEY ASSERTION (P1): the center pixel (over the emissive lamp) byte-matches lamp's legend colorHex" );
+		Check( center[3] != 0, "the emissive lamp's center pixel is opaque (a real hit, not background)" );
+	}
+
+	// --- draft: the SAME luminaire is STILL hidden (studio-preview default
+	// showLuminaires=false is unchanged).  Its center pixel is background
+	// (transparent), while the non-emissive `side` sphere still renders. ---
+	AgentRenderParams pd;
+	pd.quality = AgentRenderQuality::Draft;
+	AgentRenderResult rd = session->Render( pd );
+	Check( rd.ok && rd.renderMode == "draft", "draft render of the emissive scene succeeds" );
+
+	Decoded draftDec;
+	Check( DecodePng( rd.png, draftDec ), "draft PNG decodes" );
+	if( draftDec.w == 64 && draftDec.h == 64 ) {
+		const Px& center = draftDec.at( 32, 32 );
+		Check( center[3] == 0,
+		       "MONEY ASSERTION (P1 pin): a DRAFT render STILL hides the luminaire -- its center pixel is background/transparent (preview semantics unchanged)" );
+		// Sanity: the draft render is not simply all-background -- the
+		// non-emissive `side` sphere renders (some pixel is opaque).
+		std::uint64_t opaque = 0;
+		for( std::size_t i = 0; i < draftDec.px.size(); ++i )
+			if( draftDec.px[i][3] != 0 ) ++opaque;
+		Check( opaque > 0, "the draft render is not all-background: the non-emissive `side` sphere renders" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// P2-1: the objectmap identity-palette generator, at a large object count,
+// degrades ONLY the min-L1 separation while keeping BYTE-UNIQUENESS and
+// ROUNDTRIP unconditionally.  Unit-tests BuildObjectMapPaletteBytes directly
+// (via the AgentSession::ForTest_ seam) so no 2000-object scene is needed.
+//----------------------------------------------------------------------
+static void RunPaletteExhaustionUnitTest()
+{
+	std::printf( "=== AgentObjectMapTest: palette exhaustion invariants (P2-1) ===\n" );
+	const std::size_t N = 2000;
+	std::vector<std::array<unsigned char, 3> > bytes;
+	unsigned int minDist = 24;
+	AgentSession::ForTest_BuildObjectMapPaletteBytes( N, bytes, minDist );
+	Check( bytes.size() == N, "generator returns exactly N=2000 triples" );
+
+	// (a) BYTE-UNIQUENESS: no two ids share a colour.
+	std::set<std::uint32_t> keys;
+	bool allUnique = true;
+	for( std::size_t i = 0; i < bytes.size(); ++i ) {
+		const std::uint32_t k = ( (std::uint32_t)bytes[i][0] << 16 )
+		                      | ( (std::uint32_t)bytes[i][1] <<  8 )
+		                      |   (std::uint32_t)bytes[i][2];
+		if( !keys.insert( k ).second ) { allUnique = false; break; }
+	}
+	Check( allUnique, "MONEY ASSERTION (P2-1): all 2000 palette colours are BYTE-UNIQUE (no duplicates even under exhaustion)" );
+
+	// (b) ROUNDTRIP: every colour's half-LSB-centered linear pre-image
+	// re-encodes (truncating sRGB*255) back to the exact byte.
+	bool allRoundtrip = true;
+	for( std::size_t i = 0; i < bytes.size() && allRoundtrip; ++i ) {
+		for( int ch = 0; ch < 3; ++ch ) {
+			const unsigned char b = bytes[i][ch];
+			const Scalar L = ColorUtils::SRGBTransferFunctionInverse( ( (Scalar)b + 0.5 ) / 255.0 );
+			Scalar enc = ColorUtils::SRGBTransferFunction( L < 0 ? 0 : ( L > 1 ? 1 : L ) );
+			if( enc > 1.0 ) enc = 1.0;
+			const unsigned char back = (unsigned char)( enc * 255.0 );
+			if( back != b ) { allRoundtrip = false; break; }
+		}
+	}
+	Check( allRoundtrip, "every one of the 2000 palette colours ROUND-TRIPS through the sRGB encode (quantizer contract holds under exhaustion)" );
+
+	// (c) the degrade flag TRIPS: at 2000 objects the default 24 separation is
+	// exhausted, so the generator relaxed below it (but stayed positive).
+	Check( minDist < 24,
+	       "MONEY ASSERTION (P2-1): at 2000 objects the min-L1 separation DEGRADED below the default 24 (the honest-note trigger)" );
+	Check( minDist >= 1, "the degraded separation is still positive (>= 1)" );
+}
+
+//----------------------------------------------------------------------
+// Closing-review P1: the EXHAUSTIVE last-resort scan (the branch below
+// every golden-walk relaxation) starts at rgb=0 -- which IS the reserved
+// background byte (0,0,0), round-trippable and (pre-fix) never interned
+// in takenKeys.  The first id to reach that branch was therefore painted
+// as LITERAL BACKGROUND, indistinguishable from "no object" in the PNG.
+// The 2000-entry test above never reaches the exhaustive branch (the
+// golden walk at min-L1 1 places everything), so this test STARVES the
+// walk via the seam's forTestGoldenTries=0: ids past the 24-entry base
+// list then take the exhaustive scan directly.
+//----------------------------------------------------------------------
+static void RunExhaustiveBranchReservedTest()
+{
+	std::printf( "=== AgentObjectMapTest: exhaustive-branch reserved-colour exclusion (closing P1) ===\n" );
+	const std::size_t N = 30;   // 24 base entries + 6 forced-exhaustive ids
+	std::vector<std::array<unsigned char, 3> > bytes;
+	unsigned int minDist = 24;
+	AgentSession::ForTest_BuildObjectMapPaletteBytes( N, bytes, minDist, /*forTestGoldenTries*/0 );
+	Check( bytes.size() == N, "generator returns exactly N=30 triples with a starved golden walk" );
+
+	// The reserved set the production path uses.
+	const std::array<unsigned char, 3> background = { { 0, 0, 0 } };
+	const std::array<unsigned char, 3> unknown    = { { 255, 0, 255 } };
+
+	bool noReserved = true;
+	bool allUnique  = true;
+	std::set<std::uint32_t> keys;
+	for( std::size_t i = 0; i < bytes.size(); ++i ) {
+		if( bytes[i] == background || bytes[i] == unknown ) { noReserved = false; }
+		const std::uint32_t k = ( (std::uint32_t)bytes[i][0] << 16 )
+		                      | ( (std::uint32_t)bytes[i][1] <<  8 )
+		                      |   (std::uint32_t)bytes[i][2];
+		if( !keys.insert( k ).second ) { allUnique = false; }
+	}
+	Check( noReserved,
+	       "MONEY ASSERTION (closing P1): NO palette entry equals the reserved background (0,0,0) or UNKNOWN (255,0,255) -- "
+	       "the exhaustive scan skips interned reserved bytes (pre-fix, the first exhaustive id painted as background)" );
+	Check( allUnique, "the forced-exhaustive entries remain byte-unique" );
+	Check( minDist == 1, "the exhaustive branch reports the collapsed min-L1 of 1" );
+}
+
+//----------------------------------------------------------------------
+// P3-a: an ASYNC objectmap render through the coordinator produces the SAME
+// result fields (INCLUDING the legend) as the equivalent SYNC render.
+//----------------------------------------------------------------------
+static void RunAsyncObjectMapTest()
+{
+	std::printf( "=== AgentObjectMapTest: async + objectmap through the coordinator (P3-a) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_async.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "async-objmap scene loads" ); return; }
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { controller.Stop(); pJob->release(); Check( false, "async-objmap session" ); return; }
+	session->AttachController( &controller );
+
+	// SYNC reference objectmap render.
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult syncR = session->Render( p );
+	Check( syncR.ok && syncR.renderMode == "objectmap", "SYNC objectmap render succeeds (reference)" );
+
+	// ASYNC objectmap render + wait, then fetch the cached result.
+	const AgentSession::AgentRenderAsyncResult ar = session->RenderAsync( p );
+	Check( ar.accepted && ar.renderJobId != 0, "async objectmap submission is accepted with a nonzero id" );
+	const bool completed = session->RenderWait( ar.renderJobId, 10000 );
+	Check( completed, "the async objectmap render completes within the timeout" );
+
+	const AgentSession::AgentLastAsyncRenderResult last = session->LastAsyncRenderResult( ar.renderJobId );
+	Check( last.found, "the async objectmap render's cached result is retrievable" );
+
+	if( last.found ) {
+		const AgentRenderResult& asyncR = last.result;
+		// Same result-field set INCLUDING the legend: an async objectmap must
+		// not silently drop the segmentation the sync path produces.
+		Check( asyncR.ok == syncR.ok, "async objectmap ok == sync ok" );
+		Check( asyncR.renderMode == "objectmap", "async result renderMode is \"objectmap\" (legend-bearing mode)" );
+		Check( asyncR.width == syncR.width && asyncR.height == syncR.height, "async objectmap dims == sync dims" );
+		Check( asyncR.legend.size() == syncR.legend.size() && asyncR.legend.size() == 3,
+		       "MONEY ASSERTION (P3-a): the async objectmap legend has the SAME entry count as the sync render (INCLUDING legend, not dropped)" );
+		bool legendSame = ( asyncR.legend.size() == syncR.legend.size() );
+		for( std::size_t i = 0; legendSame && i < syncR.legend.size(); ++i )
+			legendSame = ( asyncR.legend[i].name == syncR.legend[i].name
+			            && asyncR.legend[i].colorHex == syncR.legend[i].colorHex
+			            && asyncR.legend[i].pixelCount == syncR.legend[i].pixelCount );
+		Check( legendSame, "the async objectmap legend is entry-for-entry identical to the sync legend (name+colorHex+pixelCount)" );
+	}
+
+	session->AttachController( nullptr );
+	controller.Stop();
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Toolkit slice 3b: query_object_at {x,y} -- the cheap single-pixel
+// companion to render mode:"objectmap".  IMPLEMENTATION CHOICE (a): reuses
+// the SAME ephemeral objectmap pipeline wholesale (one identity render at
+// the effective dims, then decode ONE pixel against that render's legend
+// by exact colorHex byte) rather than a bespoke single-ray probe -- see
+// AgentSession::QueryObjectAt's doc.
+//
+// (1) center-of-object query returns the right name for all 3 objects of
+//     kScene3 (located via a reference objectmap render + pixel scan, so
+//     this does not depend on hand-derived screen-space coordinates).
+// (2) an empty-region (background) query -> hit:false, not an error.
+// (6) query_object_at is side-effect-free on the retained Document.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtCoreTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at core (Toolkit slice 3b) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_core.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa core scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa core session" ); return; }
+
+	const std::string preDoc = session->ReadDocument();
+
+	// Reference objectmap render: locate each object's pixels + legend colours.
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.legend.size() == 3, "reference objectmap render for query_object_at succeeds with 3 objects" );
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "reference objectmap PNG decodes" );
+
+	// (1) center-of-object query for ALL THREE objects returns the right name.
+	static const char* const kNames[3] = { "sph_a", "sph_b", "sph_c" };
+	for( int i = 0; i < 3; ++i ) {
+		const LegendEntry* le = FindLegend( r, kNames[i] );
+		Check( le != nullptr, std::string( "legend has " ) + kNames[i] );
+		if( !le ) continue;
+		unsigned char cb[3];
+		Check( HexToBytes( le->colorHex, cb ), std::string( "legend colorHex parses for " ) + kNames[i] );
+		unsigned int px = 0, py = 0;
+		Check( FindPixelForColor( dec, cb, px, py ), std::string( "found a pixel for " ) + kNames[i] );
+
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)px, (int)py );
+		Check( !qr.outOfRange, std::string( "query_object_at on " ) + kNames[i] + "'s own pixel is NOT out of range" );
+		Check( qr.hit, std::string( "query_object_at hits " ) + kNames[i] );
+		Check( qr.name == kNames[i],
+		       std::string( "MONEY ASSERTION (1): query_object_at names " ) + kNames[i] +
+		       " correctly (got '" + qr.name + "')" );
+		Check( qr.width == 64 && qr.height == 64, "query_object_at reports the effective 64x64 dims" );
+		Check( qr.pixelX == px && qr.pixelY == py, "query_object_at echoes back the queried pixel coords" );
+	}
+
+	// (2) empty-region (background) query -> hit:false, a STRUCTURED
+	// result, not an error/failure.  Corner (0,0) is background (see
+	// RunCoreTests' identical corner assertion).
+	{
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 0, 0 );
+		Check( !qr.outOfRange, "an in-range background pixel is NOT reported as outOfRange" );
+		Check( !qr.hit, "MONEY ASSERTION (2): query_object_at on an empty/background pixel reports hit:false" );
+		Check( qr.name.empty(), "a miss carries an empty name" );
+	}
+
+	// (6) Document byte-identity: query_object_at (like render) never
+	// mutates the retained Document.
+	Check( session->ReadDocument() == preDoc,
+	       "MONEY ASSERTION (6): query_object_at is side-effect-free on the Document" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (4) camera-override composition: aiming the ephemeral camera override at
+// sph_a makes the SAME center pixel (32,32) -- which resolves to sph_b
+// with the DEFAULT camera (see RunCoreTests) -- resolve to sph_a instead.
+// Also re-checks (6) Document byte-identity under a camera override.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtCameraOverrideTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at camera-override composition (4) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_cam.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa cam scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa cam session" ); return; }
+
+	const std::string preDoc = session->ReadDocument();
+
+	AgentQueryObjectParams qp;
+	qp.camera.hasLocation = true;  qp.camera.location = "-1.7 0 2";
+	qp.camera.hasLookAt   = true;  qp.camera.lookAt   = "-1.7 0 0";
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32, qp );
+	Check( !qr.outOfRange, "camera-override query center pixel is in-range" );
+	Check( qr.hit && qr.name == "sph_a",
+	       "MONEY ASSERTION (4): aiming the camera at sph_a makes the CENTER pixel query return sph_a "
+	       "(the default camera resolves that same pixel to sph_b -- see RunCoreTests)" );
+
+	Check( session->ReadDocument() == preDoc,
+	       "(6) query_object_at with a camera override is ALSO side-effect-free on the Document" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (5) query_object_at works on a head with NO active production
+// rasterizer -- it reuses the objectmap ephemeral pipeline, which (like
+// quality:"draft") never dereferences the production rasterizer.  Pins the
+// CORRECT behaviour (works) against the alternative a naive implementation
+// might have: a production render on the SAME head fails honestly with
+// "no active rasterizer", so this test also proves query_object_at does
+// NOT share that fate.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtNoRasterizerTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at on a rasterizer-less head (5) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_norast.RISEscene", kScene3NoRasterizer );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa no-rasterizer scene loads" ); return; }
+	Check( pJob->GetRasterizer() == nullptr, "the head genuinely has no active rasterizer" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa no-rasterizer session" ); return; }
+
+	// Sanity: a PRODUCTION render on this head fails honestly (the
+	// pre-existing contract) -- query_object_at must NOT share that fate.
+	AgentRenderResult prodRes = session->Render( -1 );
+	Check( !prodRes.ok && prodRes.message == "no active rasterizer",
+	       "sanity: a production render on this rasterizer-less head fails honestly" );
+
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
+	Check( !qr.outOfRange,
+	       "MONEY ASSERTION (5): query_object_at on a rasterizer-less head is NOT rejected as out-of-range" );
+	Check( qr.width == 64 && qr.height == 64,
+	       "MONEY ASSERTION (5): query_object_at resolves the effective 64x64 dims on a rasterizer-less head" );
+	Check( qr.message.find( "no active rasterizer" ) == std::string::npos,
+	       "query_object_at does not fail with the production-only \"no active rasterizer\" message" );
+	Check( qr.hit && qr.name == "sph_b",
+	       "MONEY ASSERTION (5): query_object_at correctly identifies sph_b at center on a rasterizer-less head "
+	       "(mirrors the quality:\"draft\"/mode:\"objectmap\" gate -- never needs the production rasterizer)" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// (3)+(7): the query_object_at WIRE verb over the JSON-RPC dispatcher.
+// (7) an in-range query returns the documented result shape; (3) an
+// out-of-range x or y is a clean -32602 (kInvalidParams), NOT a
+// structured hit:false result.
+//----------------------------------------------------------------------
+static std::string QoaReq( double id, int x, int y )
+{
+	JsonValue params = JsonValue::MakeObject();
+	params.set( "x", JsonValue::MakeNumber( (double)x ) );
+	params.set( "y", JsonValue::MakeNumber( (double)y ) );
+	JsonValue r = JsonValue::MakeObject();
+	r.set( "jsonrpc", JsonValue::MakeString( "2.0" ) );
+	r.set( "id", JsonValue::MakeNumber( id ) );
+	r.set( "method", JsonValue::MakeString( "query_object_at" ) );
+	r.set( "params", params );
+	return JsonSerialize( r );
+}
+
+static void RunQueryObjectAtWireTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at wire dispatch (3)+(7) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_wire.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa wire scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa wire session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	// (7) a normal in-range query returns the documented shape.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 1, 32, 32 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "query_object_at wire response parses as JSON" );
+		Check( !env.has( "error" ), "an in-range query_object_at is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( result.get( "hit" ).isBool(), "result carries a boolean 'hit'" );
+		Check( result.get( "name" ).isString(), "result carries a string 'name'" );
+		Check( result.get( "kind" ).isString(), "result carries a string 'kind' (empty today)" );
+		Check( result.get( "pixelX" ).asNumber( -1 ) == 32 && result.get( "pixelY" ).asNumber( -1 ) == 32,
+		       "result echoes back the queried pixel coords" );
+		Check( result.get( "width" ).asNumber( 0 ) == 64 && result.get( "height" ).asNumber( 0 ) == 64,
+		       "result reports the effective 64x64 dims" );
+		Check( result.get( "hit" ).asBool() && result.get( "name" ).asString() == "sph_b",
+		       "MONEY ASSERTION (7): the wire verb identifies sph_b at the center pixel" );
+	}
+
+	// (3) out-of-range x -> -32602 (kInvalidParams), NOT a structured hit:false.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 2, 999, 32 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "out-of-range-x response parses as JSON" );
+		Check( env.has( "error" ),
+		       "MONEY ASSERTION (3): an out-of-range x is a JSON-RPC ERROR, not a structured hit:false" );
+		Check( env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "the out-of-range-x error carries code -32602 (kInvalidParams)" );
+	}
+
+	// (3) a negative y -> also -32602.
+	{
+		const std::string resp = rpc.HandleLine( QoaReq( 3, 10, -1 ) );
+		JsonValue env; std::string err;
+		Check( JsonParse( resp, env, err ), "negative-y response parses as JSON" );
+		Check( env.has( "error" ), "a negative y is ALSO a JSON-RPC error" );
+		Check( env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "negative y carries -32602 too" );
+	}
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
+// Review-round P2 (slice 3b): EVERY other scene in this file places its
+// objects at world y=0, so a y-axis regression -- a flipped or off-by-one
+// vertical pixel mapping in the objectmap render OR in query_object_at --
+// would pass the entire suite undetected (empirically proven: an injected
+// y-flip left all prior checks green while an adversarial probe caught it
+// immediately).  This test is that probe, made permanent: ONE sphere
+// clearly offset in world +Y.  With `up 0 1 0` and the file's standard
+// camera, world +Y is image TOP, i.e. SMALL pixel-y rows in the decoded
+// PNG (the render maps a pixel via Point2(x, height-y)).
+//   (a) render-side lock: the sphere's identity-colour bbox centre lands
+//       in the TOP half of the PNG (a render y-flip moves it to the
+//       bottom half);
+//   (b) query-side lock: query_object_at at the bbox centre HITS the
+//       sphere, and at the vertically MIRRORED point (same x, h-1-y)
+//       MISSES (a query-only y-flip swaps these two outcomes).
+// Assertions are derived from the render itself (bbox scan), so no
+// hand-tuned pixel coordinates can rot.
+//----------------------------------------------------------------------
+// Fix-round-2 P1-A: query_object_at MUST NOT clobber the read_image cache.
+//
+// query_object_at fires a full ephemeral mode:"objectmap" Render()
+// internally, and Render() unconditionally caches every success into the
+// session's last-render pair (mLastPng / mLastSink) -- the pair ReadImage()
+// serves and the `read_image` verb returns.  Unguarded, that leaves a flat
+// SEGMENTATION image sitting where the caller's beauty frame was, so the
+// natural agent sequence
+//
+//     render -> query_object_at -> read_image
+//
+// hands the model the segmentation image and it "judges" the beauty render
+// from it.  That is the same symptom class as the per-session-cache bug this
+// branch fixes; before that fix the GUI's session split masked it, because
+// render and query_object_at landed on DIFFERENT sessions.  Now they share
+// one, so the clobber is live.
+//
+// CompareToReference's split-mask render has had a stash/restore guard for
+// exactly this reason since it shipped (locked by AgentViewportReadTest's
+// "split: cache-survival" block); query_object_at never got one.  Both now
+// take the SAME file-local RAII guard (EphemeralRenderCacheGuard in
+// AgentSession.cpp) so they cannot drift apart again.
+//
+// RED-PROOF SHAPE: the beauty frame is rendered at 48x24 while the internal
+// objectmap runs at the Document's authored 64x64, so the two PNGs cannot
+// coincidentally compare equal -- byte-for-byte equality after the query is
+// only reachable if the cache was genuinely preserved.
+//
+// The second half exercises ReadImage(maxEdge), which re-encodes from
+// mLastSink -- a SEPARATE cached pointer from mLastPng, so the byte
+// comparison above cannot speak for it.  Its failure mode is NOT "goes
+// empty": drop only the sink half of the restore and mLastSink is left
+// pointing at the EPHEMERAL OBJECTMAP sink (non-null), so the downscaling
+// overload cheerfully serves a downscaled SEGMENTATION image -- exactly the
+// shipped bug's shape, one pointer over.  A "did it come back non-empty?"
+// assertion therefore proves nothing.  The DIMS are the discriminator: the
+// beauty frame is deliberately NON-SQUARE (48x24, 2:1) while the objectmap
+// is square (64x64), and ToPngDownscaled preserves aspect, so at maxEdge=16
+// the beauty sink answers 16x8 and the objectmap sink answers 16x16.
+// Asserting dw==16 && dh==8 EXACTLY is the only form of this check that can
+// tell the two sinks apart.
+//----------------------------------------------------------------------
+static void RunQueryObjectAtPreservesImageCacheTest()
+{
+	std::printf( "=== AgentObjectMapTest: query_object_at preserves the read_image cache (P1-A) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_qoa_cache.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "qoa cache scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "qoa cache session" ); return; }
+
+	// A BEAUTY frame at dims that differ from the authored film dims the
+	// internal objectmap render will use -- and deliberately NON-SQUARE, so
+	// the aspect-preserving downscale below identifies WHICH sink answered
+	// (see the header comment's RED-PROOF SHAPE note).
+	AgentRenderParams bp;
+	bp.width  = 48;
+	bp.height = 24;
+	const AgentRenderResult beauty = session->Render( bp );
+	Check( beauty.ok, "beauty render (48x24) succeeds" );
+	Check( !beauty.png.empty(), "beauty render produces PNG bytes" );
+
+	const std::vector<unsigned char> beforeQuery = session->ReadImage();
+	Check( !beforeQuery.empty() && beforeQuery == beauty.png,
+	       "read_image returns the beauty frame BEFORE query_object_at (baseline)" );
+
+	// The pixel choice is irrelevant to this invariant -- any query runs the
+	// same internal objectmap render -- but use a real object centre so the
+	// query is a genuine success path, not an early-out.
+	AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( 32, 32 );
+	Check( qr.hit, "query_object_at hits an object (a real success path ran the internal render)" );
+	Check( qr.width == 64 && qr.height == 64,
+	       "the internal objectmap ran at the authored 64x64 -- DIFFERENT dims (and a DIFFERENT aspect) from the 48x24 beauty frame" );
+
+	const std::vector<unsigned char> afterQuery = session->ReadImage();
+	Check( !afterQuery.empty(),
+	       "MONEY (P1-A): read_image is NOT emptied by query_object_at" );
+	Check( afterQuery == beauty.png,
+	       "MONEY (P1-A): read_image STILL returns the BEAUTY frame byte-for-byte after query_object_at "
+	       "-- not the flat objectmap the internal render produced" );
+
+	// mLastSink half: ReadImage(maxEdge) re-encodes from the cached SINK, a
+	// separate pointer from mLastPng, so nothing above speaks for it.  A
+	// restore that forgets the sink leaves mLastSink pointing at the
+	// EPHEMERAL 64x64 OBJECTMAP sink -- non-null, so the call still returns
+	// bytes; only the DIMS give it away (16x8 from the 48x24 beauty frame
+	// vs 16x16 from the square objectmap).
+	{
+		unsigned int dw = 0, dh = 0;
+		const std::vector<unsigned char> scaled = session->ReadImage( 16, dw, dh );
+		Check( !scaled.empty(),
+		       "MONEY (P1-A): ReadImage(maxEdge) still works after query_object_at -- the cached SINK was restored too" );
+		Check( dw == 16 && dh == 8,
+		       "MONEY (P1-A): the restored sink downscales the 2:1 48x24 BEAUTY frame to EXACTLY 16x8 "
+		       "-- the square 64x64 objectmap sink would have answered 16x16" );
+	}
+
+	// A SECOND query must be idempotent on the cache, not merely
+	// "restores once" -- a guard that restored a stale stash would drift
+	// here.
+	(void)session->QueryObjectAt( 32, 32 );
+	Check( session->ReadImage() == beauty.png,
+	       "MONEY (P1-A): a SECOND query_object_at leaves the beauty frame intact as well" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+static const char* const kSceneVerticalAsym =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 64\n\theight 64\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname geo\n\tradius 0.7\n}\n\n"
+	"standard_object\n{\n\tname high_ball\n\tgeometry geo\n\tmaterial mat\n\tposition 0 1.6 0\n}\n";
+
+static void RunVerticalAsymmetryTest()
+{
+	std::printf( "=== AgentObjectMapTest: vertical-asymmetry y-mapping lock (3b review P2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_vertasym.RISEscene", kSceneVerticalAsym );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "vert-asym scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "vert-asym session" ); return; }
+
+	AgentRenderParams p;
+	p.renderTarget = AgentRenderTarget::ObjectMap;
+	AgentRenderResult r = session->Render( p );
+	Check( r.ok && r.legend.size() == 1, "vert-asym objectmap render succeeds with 1 object" );
+	Decoded dec;
+	Check( DecodePng( r.png, dec ), "vert-asym objectmap PNG decodes" );
+	const LegendEntry* le = FindLegend( r, "high_ball" );
+	Check( le != nullptr, "legend carries high_ball" );
+	if( !le || !r.ok ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	unsigned char cb[3];
+	Check( HexToBytes( le->colorHex, cb ), "high_ball colorHex parses" );
+
+	// Scan the decoded PNG for the sphere's colour bbox.
+	unsigned int minX = dec.w, maxX = 0, minY = dec.h, maxY = 0;
+	unsigned int found = 0;
+	for( unsigned int y = 0; y < dec.h; ++y ) {
+		for( unsigned int x = 0; x < dec.w; ++x ) {
+			const Px& q = dec.at( x, y );
+			if( q[0] == cb[0] && q[1] == cb[1] && q[2] == cb[2] ) {
+				if( x < minX ) minX = x;
+				if( x > maxX ) maxX = x;
+				if( y < minY ) minY = y;
+				if( y > maxY ) maxY = y;
+				++found;
+			}
+		}
+	}
+	Check( found > 0, "the sphere's identity colour appears in the PNG" );
+	if( !found ) { pJob->release(); std::remove( scenePath.c_str() ); return; }
+
+	const unsigned int cx = ( minX + maxX ) / 2;
+	const unsigned int cy = ( minY + maxY ) / 2;
+
+	// (a) render-side lock: world +Y == image TOP == small pixel-y.
+	Check( cy < dec.h / 2,
+	       "MONEY ASSERTION (render y-mapping): the +Y sphere's bbox centre is in the TOP half of the PNG" );
+
+	// (b) query-side lock: hit at the bbox centre, miss at the mirrored y.
+	{
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)cx, (int)cy );
+		Check( qr.hit && qr.name == "high_ball",
+		       "MONEY ASSERTION (query y-mapping): query_object_at at the bbox centre hits high_ball" );
+	}
+	{
+		const unsigned int my = dec.h - 1 - cy;   // vertical mirror -- bottom half, empty
+		AgentSession::AgentQueryObjectResult qr = session->QueryObjectAt( (int)cx, (int)my );
+		Check( !qr.hit,
+		       "MONEY ASSERTION (query y-mapping): the vertically MIRRORED point misses (a y-flip would swap these)" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// render{imageMaxEdge} -- the ONE-CALL observe form.
+//
+// The two-call form (render, then read_image) spent a whole round-trip
+// re-encoding bytes the render had already cached.  `imageMaxEdge` returns
+// them inline.  What must hold, and is proved below:
+//
+//   (a) IDENTITY.  The inline png_base64 EQUALS what a following
+//       read_image{maxEdge:N} returns -- i.e. one encoder, not two.
+//   (b) OPT-IN.  Omitting the parameter leaves the result's key set
+//       exactly what it was: no png_base64/byteLength/imageWidth/
+//       imageHeight, nothing else added or removed.
+//   (c) OBJECTMAP IS REFUSED.  A box-downscale blends the flat identity
+//       colours, so an inline objectmap would be a corrupt map.  The call
+//       is -32602'd BEFORE the render runs -- proved by showing the
+//       read_image cache still holds the earlier beauty frame, byte for
+//       byte.
+//   (d) ASYNC IS REFUSED.  The submit returns before any pixels exist.
+//   (e) A FAILED render carries no image (the cache still holds the
+//       PREVIOUS render; returning those pixels would be a lie).
+//   (f) The bound is CLAMPED to [16,1024], not rejected -- read_image's
+//       own contract, since it is read_image's own code path.
+//----------------------------------------------------------------------
+static std::string RenderReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"render\",\"params\":{" + extraParamsJson + "}}";
+}
+
+static std::string ReadImageReq( double id, const std::string& extraParamsJson )
+{
+	return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( (long)id ) +
+	       ",\"method\":\"read_image\",\"params\":{" + extraParamsJson + "}}";
+}
+
+//! Doc 90 slice R1 (2026-08-22): restore the PRODUCTION build-protocol
+//! default for the width of one fixture.
+//!
+//! main() opts this whole binary OUT of the build-plan gate as a
+//! convenience (its fixtures insert geometry directly).  That is invisible
+//! to almost everything -- but `BuildProtocolActive_()` is
+//! `protocolEnabled && gateEnabled`, so switching the gate off ALSO takes
+//! the phase machinery off, which puts these sessions in the "no staged
+//! build at all" configuration where the iteration ratchet arms on the
+//! FIRST full-frame render instead of waiting for the Compose phase.
+//!
+//! The two fixtures below are about the render -> inline-image PLUMBING --
+//! "one encoder, not two", the clamp is read_image's clamp, the exact key
+//! set -- and those properties are stated for a render with NO composite
+//! mechanism in force.  A production session's early renders are exactly
+//! that (protocol on, still in the Plan phase, nothing anchored), so
+//! turning the gate back on here makes the fixture MATCH production rather
+//! than dodge the ratchet.  Neither fixture creates geometry, so the gate
+//! itself never fires.  The ratchet's own coverage -- including that the
+//! composite REPLACES the frame once armed, and that read_image still
+//! serves the plain frame -- is AgentRenderAnchorTest.
+namespace {
+struct ProductionBuildProtocolForFixture
+{
+	ProductionBuildProtocolForFixture()  { AgentSession::SetBuildPlanGateDefaultEnabled( true ); }
+	~ProductionBuildProtocolForFixture() { AgentSession::SetBuildPlanGateDefaultEnabled( false ); }
+};
+}
+
+static void RunInlineRenderImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} one-call observe ===\n" );
+	const ProductionBuildProtocolForFixture productionProtocol;
+	// Review P3-5 (fixture-coupling): the exact-key-set assertion below
+	// (b) depends on kScene3 tripping design-note condition A (3 bare
+	// spheres, no scalar_painter chunk).  Assert that PRECONDITION
+	// directly and FIRST, on the raw scene text, so if a future edit to
+	// kScene3 (e.g. adding a fourth sphere, or binding a scalar_painter)
+	// stops it tripping the condition, THIS assertion fails with a
+	// self-explaining message instead of the exact-key-count assertion
+	// failing 40 lines below with only a byte-count mismatch to go on.
+	Check( !AgentSession::ComputeDesignNote( kScene3 ).empty(),
+	       "PRECONDITION: kScene3 trips design-note condition A (3 standard_object, "
+	       "no scalar_painter) -- the exact-key-set assertion below depends on this" );
+	const std::string scenePath = WriteTemp( "rise_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "inline-image scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "inline-image session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (b) OPT-IN: a plain render carries no image and no image fields.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ), "plain render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the plain render succeeds" );
+		Check( !r.has( "png_base64" ) && !r.has( "byteLength" ) &&
+		       !r.has( "imageWidth" ) && !r.has( "imageHeight" ),
+		       "MONEY (b): omitting imageMaxEdge carries NO image fields at all" );
+		// The full key set, so a future edit cannot quietly add or drop a
+		// field on the no-parameter path either.  Creative-richness P2:
+		// `note` NOW belongs in this exact set -- kScene3 has exactly 3
+		// standard_object chunks and NO scalar_painter chunk anywhere, so
+		// this plain PRODUCTION render trips design-note condition A
+		// (scalar-pipe unused) and the key is populated, not omitted.  A
+		// scene that didn't trip either condition would omit it instead
+		// (see the dedicated design-note carrier test below for that half).
+		static const char* const kPlainKeys[] = {
+			"ok", "width", "height", "meanR", "meanG", "meanB", "integrator",
+			"previewWidth", "previewHeight", "cameraOverridden", "message",
+			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
+			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes",
+			"note",
+			// Arc 80 (2026-08-12): the SCENE INVENTORY rides every full-scene
+			// beauty render -- "where is everything", answered with the picture
+			// rather than waiting to be asked for (every voluntary consultation
+			// surface this workstream shipped measured 0/64 uses).
+			"inventory",
+			// Arc 81 (2026-08-12): the TONAL FACT rides the same surface, and
+			// unlike the inventory beside it costs NO extra render -- it is
+			// computed from the pixels this call already produced.
+			"tone" };
+		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
+		bool allPresent = true;
+		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
+		Check( allPresent && r.members().size() == nPlain,
+		       "MONEY (b): the no-parameter result key set is EXACTLY today's " +
+		       std::to_string( nPlain ) + " fields (got " +
+		       std::to_string( r.members().size() ) + ")" );
+		Check( r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "the design note fires condition A (scalar-pipe unused) on kScene3's 3 bare spheres" );
+	}
+
+	// (a) IDENTITY: inline bytes == read_image at the same bound.
+	std::string inlineB64;
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"imageMaxEdge\":48" ) ), env, err ),
+		       "inline render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool(), "the inline render succeeds" );
+		inlineB64 = r.get( "png_base64" ).asString();
+		Check( !inlineB64.empty(), "the inline render carries a non-empty png_base64" );
+		Check( r.get( "byteLength" ).asNumber( 0 ) > 0, "it carries byteLength" );
+		Check( r.get( "imageWidth" ).asNumber( 0 ) == 48 && r.get( "imageHeight" ).asNumber( 0 ) == 48,
+		       "imageWidth/imageHeight report the DOWNSCALED image dims (48x48), not the render's" );
+		Check( r.get( "width" ).asNumber( 0 ) == 64 && r.get( "height" ).asNumber( 0 ) == 64,
+		       "width/height still report the RENDER dims (64x64) -- the two pairs are distinct" );
+		std::vector<unsigned char> png;
+		Check( Base64Decode( inlineB64, png ) && png.size() >= 8 &&
+		       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G',
+		       "the inline base64 decodes to real PNG bytes" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 3, "\"maxEdge\":48" ) ), env, err ),
+		       "read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == inlineB64,
+		       "MONEY (a): the inline bytes are IDENTICAL to read_image{maxEdge:48} -- one encoder, "
+		       "not two" );
+	}
+
+	// (f) CLAMPED, not rejected -- and still identical to read_image's own
+	// clamp of the same out-of-range value.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 4, "\"imageMaxEdge\":4" ) ), env, err ),
+		       "below-range imageMaxEdge response parses" );
+		Check( !env.has( "error" ), "an out-of-range imageMaxEdge is CLAMPED, not rejected" );
+		const std::string lowB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) == 16,
+		       "imageMaxEdge 4 clamps up to the [16,1024] floor" );
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 5, "\"maxEdge\":4" ) ), env, err ),
+		       "clamped read_image response parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == lowB64,
+		       "MONEY (f): the clamp is read_image's clamp, byte for byte" );
+	}
+
+	// Freeze the current cache so (c) can prove the refused call rendered
+	// nothing.
+	std::string cachedB64;
+	{
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 6, "" ) ), env, err ), "cache-probe response parses" );
+		cachedB64 = env.get( "result" ).get( "png_base64" ).asString();
+		Check( !cachedB64.empty(), "the beauty frame is cached before the refusal" );
+	}
+
+	// (c) OBJECTMAP: refused, and nothing rendered.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 7, "\"mode\":\"objectmap\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "objectmap+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (c): mode:objectmap + imageMaxEdge is a clean -32602, never a corrupt "
+		       "downscaled identity map" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos &&
+		       env.get( "error" ).get( "message" ).asString().find( "read_image" ) != std::string::npos,
+		       "the refusal names the mode and the read_image route out of it" );
+
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 8, "" ) ), env, err ), "post-refusal probe parses" );
+		Check( env.get( "result" ).get( "png_base64" ).asString() == cachedB64,
+		       "MONEY (c): the refusal happened BEFORE the render -- the cached frame is "
+		       "byte-identical, so no objectmap was rendered and thrown away" );
+
+		// The refusal is specific to the parameter, not to objectmap.
+		Check( JsonParse( rpc.HandleLine( RenderReq( 9, "\"mode\":\"objectmap\"" ) ), env, err ),
+		       "plain objectmap response parses" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "renderMode" ).asString() == "objectmap",
+		       "an objectmap render WITHOUT imageMaxEdge still works" );
+	}
+
+	// (d) ASYNC: refused.
+	{
+		Check( JsonParse( rpc.HandleLine( RenderReq( 10, "\"async\":true,\"imageMaxEdge\":48" ) ), env, err ),
+		       "async+imageMaxEdge response parses" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (d): async + imageMaxEdge is a clean -32602 (the submit returns before "
+		       "pixels exist)" );
+	}
+
+	// (e) A FAILED render carries no image.  Run on a session that ALREADY
+	// has a good frame cached (an unresolvable `view` fails the render
+	// without disturbing the cache) -- so an implementation that attached the
+	// image unconditionally would hand back the PREVIOUS render's pixels
+	// labelled as this failed call's.  That is the failure this catches; a
+	// never-rendered session would not catch it, because the cache is empty
+	// there either way.
+	{
+		Check( JsonParse( rpc.HandleLine(
+			RenderReq( 11, "\"view\":\"no_such_view\",\"imageMaxEdge\":48" ) ), env, err ),
+		       "failed-render response parses" );
+		const JsonValue& r = env.get( "result" );
+		Check( !env.has( "error" ) && !r.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render (ok:false, not an RPC error)" );
+		Check( !r.has( "png_base64" ) && !r.has( "imageWidth" ),
+		       "MONEY (e): a FAILED render carries no inline image, even though the cache still "
+		       "holds a perfectly good EARLIER frame" );
+		// ... and that earlier frame is still readable, so the guard skipped
+		// the attach rather than clearing the cache.
+		Check( JsonParse( rpc.HandleLine( ReadImageReq( 12, "" ) ), env, err ), "post-failure probe parses" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "the cache the failed render declined to serve is still there for read_image" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// render{imageMaxEdge} THROUGH THE GUI DRIVERS' ASYNC DETOUR.
+//
+// THE REGRESSION THIS PINS.  `imageMaxEdge` is refused alongside `async`
+// (see (d) above), and that refusal is right for a raw async caller.  But
+// BOTH GUI chat drivers -- ChatViewModel.executeRenderToolCallAsync (macOS)
+// and ChatPanel::startAsyncRenderToolCall (Windows) -- inject
+// {"async":true} into EVERY render the model makes, transparently; the
+// model is never taught `async` and never asks for it.  So the two
+// collided on a call the model IS taught to make, and the one-call observe
+// form was unreachable from the only transport it was built for.  Measured:
+// in the recorded 2026-07-29 GUI trajectory the model called
+// render{imageMaxEdge:192,samples:32}, got -32602, and reverted to
+// render + read_image for all five of its later looks.
+//
+// THE FIX IS IN THE DRIVERS: strip `imageMaxEdge` before injecting `async`,
+// then re-apply its EFFECT after the render completes by fetching the image
+// at that same bound on the SAME pinned session and folding
+// png_base64/byteLength/imageWidth/imageHeight into the downgraded result.
+//
+// WHAT THIS TEST CAN AND CANNOT PROVE.  The staging/folding code is Swift
+// and Qt and is not compiled here; SourceHygieneTest pins its shape on both
+// platforms.  What IS proved here is the thing that has to be TRUE for that
+// code to be correct -- that the exact call SEQUENCE the drivers perform
+// yields the same model-visible result as the synchronous one-call form:
+//
+//   (g) IDENTITY THROUGH THE DETOUR.  strip -> async submit -> render_wait
+//       -> read_image{maxEdge:N} -> fold produces a result whose key set
+//       and every field (bar the per-job renderJobId) equal the synchronous
+//       render{imageMaxEdge:N}'s.
+//   (h) A PLAIN render through the same detour is unchanged -- no image
+//       fields appear from nowhere.
+//   (i) OBJECTMAP STAYS REFUSED.  The drivers deliberately do NOT stage
+//       imageMaxEdge off an objectmap render, so the RPC still answers it,
+//       and it still answers with the objectmap-specific -32602.
+//   (j) A FAILED render offers nothing to attach: `ok` is false (the
+//       condition the drivers' fold keys off) while the cache still holds
+//       a perfectly good EARLIER frame -- i.e. an unconditional fold would
+//       have handed back the previous render's pixels as this call's.
+//   (k) THE PIXELS ARE CACHE-SCOPED, NOT GLOBAL.  read_image is answered out
+//       of the session's last-render cache, which at the LIBRARY level is
+//       isolated per session by default -- a sibling wrapping the same Job
+//       reads byteLength 0.  Note what this does and does NOT say about the
+//       GUI: the three in-app sessions are deliberately constructed sharing
+//       ONE AgentImageCache (ViewportBridge / RISEViewportBridge, guarded by
+//       SourceHygieneTest), so a fold routed to a sibling there WOULD still
+//       find the pixels.  The drivers pin the session anyway -- for posture
+//       and lifecycle consistency with every other call in the job, and for
+//       render_wait's genuinely per-session `result` -- not because the
+//       pixels would otherwise be unreachable.  What this case pins is the
+//       library default the sharing is an opt-in FROM.
+//----------------------------------------------------------------------
+static void RunDriverAsyncInlineImageTest()
+{
+	std::printf( "=== AgentObjectMapTest: render{imageMaxEdge} through the drivers' async detour ===\n" );
+	// Doc 90 slice R1: same reason as RunInlineRenderImageTest's -- see
+	// ProductionBuildProtocolForFixture.  This one compares the async
+	// detour's result FIELD BY FIELD against the synchronous form, which
+	// only means anything when neither carries a composite whose content
+	// depends on which render came first.
+	const ProductionBuildProtocolForFixture productionProtocol;
+	const std::string scenePath = WriteTemp( "rise_driver_inline_img.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "driver-inline scene loads" ); return; }
+
+	SceneEditController controller( *pJob, /*interactiveRasterizer*/0 );
+	controller.Start( /*suppressInitialRender=*/true );
+
+	std::unique_ptr<AgentSession> owned = AgentSession::WrapJob( pJob );
+	if( !owned ) { controller.Stop(); pJob->release(); Check( false, "driver-inline session" ); return; }
+	owned->AttachController( &controller );
+	AgentSession* session = owned.get();
+	AgentRpcDispatcher rpc( std::move( owned ) );
+
+	JsonValue env; std::string err;
+	auto handle = [&rpc, &env, &err]( const std::string& line, const char* what ) -> const JsonValue& {
+		Check( JsonParse( rpc.HandleLine( line ), env, err ), std::string( what ) + " response parses" );
+		return env;
+	};
+
+	// Drive the drivers' exact call sequence for one model-authored render
+	// line, returning the model-visible result they would deliver.
+	auto driveDriverPath = [&]( int idBase, const std::string& stagedParams,
+	                            bool hasInlineMaxEdge, int inlineMaxEdge ) -> JsonValue {
+		// (1) SUBMIT: the staged line (imageMaxEdge already removed) plus the
+		// driver-injected async.
+		const std::string sep = stagedParams.empty() ? "" : ",";
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase ) +
+		        ",\"method\":\"render\",\"params\":{" + stagedParams + sep + "\"async\":true}}",
+		        "driver submit" );
+		if( env.has( "error" ) ) return env;   // caller inspects the refusal
+		const double jobId = env.get( "result" ).get( "renderJobId" ).asNumber( 0.0 );
+		Check( env.get( "result" ).get( "status" ).asString() == "submitted" && jobId > 0.0,
+		       "driver submit is accepted with a job id" );
+		// (2) POLL: render_wait, exactly the verb both drivers poll with.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 1 ) +
+		        ",\"method\":\"render_wait\",\"params\":{\"renderJobId\":" +
+		        std::to_string( (long long)jobId ) + ",\"timeoutMs\":60000}}", "driver render_wait" );
+		Check( env.get( "result" ).get( "completed" ).asBool(), "the driver's render completes" );
+		JsonValue inner = env.get( "result" ).get( "result" );
+		Check( inner.isObject(), "render_wait echoes the synchronous-shaped result" );
+		// (3) FOLD: only on a SUCCESSFUL render, and only when the model asked.
+		if( !hasInlineMaxEdge || !inner.get( "ok" ).asBool() ) return inner;
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( idBase + 2 ) +
+		        ",\"method\":\"read_image\",\"params\":{\"maxEdge\":" +
+		        std::to_string( inlineMaxEdge ) + "}}", "driver read_image" );
+		const JsonValue& ri = env.get( "result" );
+		if( ri.get( "png_base64" ).asString().empty() ) return inner;
+		inner.set( "png_base64", ri.get( "png_base64" ) );
+		inner.set( "byteLength", ri.get( "byteLength" ) );
+		inner.set( "imageWidth",  ri.get( "width" ) );
+		inner.set( "imageHeight", ri.get( "height" ) );
+		return inner;
+	};
+
+	// PRECONDITION for a byte-strict identity claim: this scene renders
+	// DETERMINISTICALLY, so any difference below is the detour's doing and
+	// not Monte-Carlo noise.
+	JsonValue syncResult;
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #1" );
+		const std::string firstB64 = env.get( "result" ).get( "png_base64" ).asString();
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render\",\"params\":{\"imageMaxEdge\":48}}",
+		        "sync reference render #2" );
+		syncResult = env.get( "result" );
+		Check( !firstB64.empty() && syncResult.get( "png_base64" ).asString() == firstB64,
+		       "PRECONDITION: two identical synchronous renders produce byte-identical pixels "
+		       "(so the comparison below measures the detour, not MC noise)" );
+	}
+
+	// (g) MONEY: the driver detour reproduces the synchronous one-call result.
+	{
+		const JsonValue drv = driveDriverPath( 10, "", /*hasInline*/true, 48 );
+
+		std::set<std::string> syncKeys, drvKeys;
+		for( const auto& kv : syncResult.members() ) syncKeys.insert( kv.first );
+		for( const auto& kv : drv.members() )        drvKeys.insert( kv.first );
+		Check( syncKeys == drvKeys,
+		       "MONEY (g): the driver-path result's KEY SET is exactly the synchronous "
+		       "render{imageMaxEdge:48}'s -- including png_base64/byteLength/imageWidth/imageHeight" );
+
+		// renderJobId is the ONE field that legitimately differs: it names a
+		// call that ran, and these are two different renders.
+		std::vector<std::string> differing;
+		for( const std::string& k : syncKeys ) {
+			if( k == "renderJobId" ) continue;
+			if( JsonSerialize( syncResult.get( k ) ) != JsonSerialize( drv.get( k ) ) )
+				differing.push_back( k );
+		}
+		std::string names;
+		for( const std::string& k : differing ) { names += ' '; names += k; }
+		Check( differing.empty(),
+		       "MONEY (g): every field except renderJobId is IDENTICAL to the synchronous "
+		       "one-call form (differing:" + names + ")" );
+		Check( !drv.get( "png_base64" ).asString().empty() &&
+		       drv.get( "imageWidth" ).asNumber( 0 ) == 48 &&
+		       drv.get( "imageHeight" ).asNumber( 0 ) == 48 &&
+		       drv.get( "byteLength" ).asNumber( 0 ) > 0,
+		       "MONEY (g): ...and the image it carries is a real 48px-bounded PNG payload" );
+	}
+
+	// (h) A PLAIN render through the same detour gains nothing.
+	{
+		const JsonValue drv = driveDriverPath( 20, "", /*hasInline*/false, 0 );
+		Check( !drv.has( "png_base64" ) && !drv.has( "byteLength" ) &&
+		       !drv.has( "imageWidth" ) && !drv.has( "imageHeight" ),
+		       "MONEY (h): a render with NO imageMaxEdge still carries no image fields through "
+		       "the detour -- the fold is opt-in, not always-on" );
+	}
+
+	// (i) OBJECTMAP: the drivers leave the parameter in place, so the RPC
+	// still refuses -- with the objectmap message, not the async one.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"render\",\"params\":"
+		        "{\"mode\":\"objectmap\",\"imageMaxEdge\":48,\"async\":true}}", "objectmap detour" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (i): objectmap + imageMaxEdge is STILL refused when the driver's async "
+		       "rides along -- a downscaled identity map never reaches the model" );
+		Check( env.get( "error" ).get( "message" ).asString().find( "objectmap" ) != std::string::npos,
+		       "MONEY (i): and the message is the OBJECTMAP one (checked before async), so the "
+		       "model is told the read_image route out rather than about an async it never asked for" );
+	}
+
+	// (j) A FAILED render: `ok` false, cache untouched -- so folding
+	// unconditionally would have shipped the previous frame as this one's.
+	{
+		const JsonValue drv = driveDriverPath( 40, "\"view\":\"no_such_view\"", /*hasInline*/true, 48 );
+		Check( !drv.get( "ok" ).asBool(),
+		       "PRECONDITION: an unresolvable view FAILS the render through the detour too" );
+		Check( !drv.has( "png_base64" ) && !drv.has( "imageWidth" ),
+		       "MONEY (j): the failed render carries NO inline image" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":45,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}",
+		        "post-failure cache probe" );
+		Check( !env.get( "result" ).get( "png_base64" ).asString().empty(),
+		       "MONEY (j): ...even though the cache still holds a perfectly good EARLIER frame, "
+		       "which an unconditional fold would have attached as a lie" );
+	}
+
+	// (l) THE STAGING WINDOW.  `imageMaxEdge` is CLAMPED into [16,1024] only
+	// for values ParseClampedUInt accepts; outside its [-2^31, 2^31-1] window
+	// it is REJECTED.  That distinction is invisible until it bites: a driver
+	// that staged such a value would strip it, run the render, and then get the
+	// same rejection back from its own read_image fetch -- handing the model
+	// ok:true with no image AND no error, the one outcome the fold exists to
+	// prevent.  Both halves of that asymmetry are pinned here, because the
+	// drivers' range guard is written against them.
+	{
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"render\",\"params\":{\"imageMaxEdge\":1e30}}",
+		        "out-of-window sync render" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): a finite but out-of-int32 imageMaxEdge is REJECTED by the synchronous "
+		       "form, not clamped -- so a driver must not stage it" );
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"read_image\",\"params\":{\"maxEdge\":1e30}}",
+		        "out-of-window read_image" );
+		Check( env.has( "error" ) && env.get( "error" ).get( "code" ).asNumber( 0 ) == -32602,
+		       "MONEY (l): ...and the fold's own read_image rejects it identically, which is why "
+		       "staging it would silently yield a render with no image and no error" );
+		// The window's edge really is a clamp on the inside, so the guard is a
+		// window and not a blanket rejection of large values.
+		handle( "{\"jsonrpc\":\"2.0\",\"id\":62,\"method\":\"render\",\"params\":{\"imageMaxEdge\":2000000000}}",
+		        "in-window huge render" );
+		Check( !env.has( "error" ) && env.get( "result" ).get( "imageWidth" ).asNumber( 0 ) > 0,
+		       "MONEY (l): a huge but IN-window value is clamped and still returns an image -- the "
+		       "drivers' guard must reproduce the window, not just refuse big numbers" );
+	}
+
+	// (k) The pixels are CACHE-SCOPED: a sibling session over the same Job has
+	// its own last-render cache at the library default, so a fold routed to a
+	// session outside the render's cache group attaches nothing at all.  (The
+	// GUI opts its three in-app sessions into ONE shared cache -- see this
+	// case's heading for why that does not make the pin pointless.)
+	{
+		std::unique_ptr<AgentSession> sibling = AgentSession::WrapJob( pJob );
+		Check( sibling != nullptr, "a sibling session wraps the same Job" );
+		if( sibling ) {
+			AgentRpcDispatcher siblingRpc( std::move( sibling ) );
+			JsonValue sEnv; std::string sErr;
+			Check( JsonParse( siblingRpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"read_image\",\"params\":{\"maxEdge\":48}}" ),
+				sEnv, sErr ), "sibling read_image response parses" );
+			Check( sEnv.get( "result" ).get( "byteLength" ).asNumber( -1 ) == 0,
+			       "MONEY (k): a DEFAULT-isolated sibling session returns byteLength 0 -- the "
+			       "render's pixels live in a cache the fetch has to reach, not in a global slot" );
+		}
+	}
+
+	session->AttachController( nullptr );
+	controller.Stop();
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// by sec 7): the observed-state design note is a BEAUTY-render-only carrier
+// -- populated on "production"/"draft" renderMode, NEVER on "objectmap".
+// kScene3 (3 bare spheres, uniformcolor_painter only, no scalar_painter
+// anywhere) trips design-note condition A, so this is also the MONEY
+// red-proof that the render carrier and the objectmap exclusion actually
+// hold over the wire, on the SAME session/scene/Job -- not just in the
+// AgentSession struct field (RunInlineRenderImageTest above already pins
+// the struct-level key-set for the production case; this test is the
+// dedicated three-way comparison plus the negative/clean-scene control).
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier (P2) ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote.RISEscene", kScene3 );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "design-note scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "design-note session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+
+	// (a) PRODUCTION render: note present, names the fired condition.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+		       "production render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos &&
+		       r.get( "note" ).asString().find( "scalar_painter" ) != std::string::npos,
+		       "MONEY (a): a PRODUCTION render carries the design note (condition A: 3 bare "
+		       "spheres, no scalar_painter anywhere)" );
+	}
+
+	// (b) DRAFT render, SAME scene: note present too.
+	Check( JsonParse( rpc.HandleLine( RenderReq( 2, "\"quality\":\"draft\"" ) ), env, err ),
+	       "draft render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "draft",
+		       "draft render of kScene3 succeeds" );
+		Check( r.has( "note" ) &&
+		       r.get( "note" ).asString().find( "DESIGN NOTE" ) != std::string::npos,
+		       "MONEY (b): a DRAFT render ALSO carries the design note (same fired condition)" );
+	}
+
+	// (c) OBJECTMAP render, the SAME scene/session/Job: note is ABSENT --
+	// deliberately NEVER attached to a segmentation render (sec 2 P2: the
+	// note is anchored to "the model just looked at its finished work",
+	// which an identity map is not).
+	Check( JsonParse( rpc.HandleLine( RenderReq( 3, "\"mode\":\"objectmap\"" ) ), env, err ),
+	       "objectmap render response parses" );
+	{
+		const JsonValue& r = env.get( "result" );
+		Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "objectmap",
+		       "objectmap render of the SAME kScene3 scene succeeds" );
+		Check( !r.has( "note" ),
+		       "MONEY (c): an OBJECTMAP render of the SAME triggering scene carries NO `note` "
+		       "key at all (never objectmap/view modes, only production/draft)" );
+	}
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+//----------------------------------------------------------------------
+// Creative-richness P2 negative control: a scene BELOW the design-note
+// object-count gate (kSceneEmissive has exactly 2 standard_object -- below
+// BOTH condition A's >=3 and condition B's >=4) must omit `note` entirely
+// even on a genuine PRODUCTION render, proving the render carrier does not
+// fire unconditionally.
+//----------------------------------------------------------------------
+static void RunDesignNoteRenderCarrierCleanSceneTest()
+{
+	std::printf( "=== AgentObjectMapTest: design-note render carrier -- clean scene control ===\n" );
+	const std::string scenePath = WriteTemp( "rise_objmap_designnote_clean.RISEscene", kSceneEmissive );
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "clean-control scene loads" ); return; }
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	if( !session ) { pJob->release(); Check( false, "clean-control session" ); return; }
+	AgentRpcDispatcher rpc( std::move( session ) );
+
+	JsonValue env; std::string err;
+	Check( JsonParse( rpc.HandleLine( RenderReq( 1, "" ) ), env, err ),
+	       "production render response parses (clean-control scene)" );
+	const JsonValue& r = env.get( "result" );
+	Check( r.get( "ok" ).asBool() && r.get( "renderMode" ).asString() == "production",
+	       "production render of the 2-object clean-control scene succeeds" );
+	Check( !r.has( "note" ),
+	       "MONEY: a PRODUCTION render of a scene BELOW the object-count gate (2 < 3) omits "
+	       "`note` entirely -- the carrier does not fire unconditionally" );
+
+	pJob->release();
+	std::remove( scenePath.c_str() );
+}
+
+int main()
+{
+	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
+	// construction site nobody remembered to touch gets it -- the fail-safe
+	// polarity).  This binary does not test the gate, and its fixtures insert
+	// geometry directly, so opt OUT once here rather than at every session.
+	// The gate's own coverage lives in AgentChunkCrudTest's G2 block, which
+	// re-enables it explicitly per session.
+	RISE::Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
+	RunCoreTests();
+	RunCameraOverrideTest();
+	RunInstanceArrayTest();
+	RunCsgTest();
+	RunParticipatingMediumExactnessTest();
+	RunIsolationTest();
+	RunDownscaleGuardTest();
+	RunExactnessRedProve();
+	RunUnknownColorRedProve();
+	RunEmissiveVisibilityTest();
+	RunPaletteExhaustionUnitTest();
+	RunExhaustiveBranchReservedTest();
+	RunAsyncObjectMapTest();
+	RunQueryObjectAtCoreTest();
+	RunQueryObjectAtCameraOverrideTest();
+	RunQueryObjectAtNoRasterizerTest();
+	RunQueryObjectAtWireTest();
+	RunQueryObjectAtPreservesImageCacheTest();
+	RunVerticalAsymmetryTest();
+	RunInlineRenderImageTest();
+	RunDriverAsyncInlineImageTest();
+	RunDesignNoteRenderCarrierTest();
+	RunDesignNoteRenderCarrierCleanSceneTest();
+
+	std::printf( "\nAgentObjectMapTest: %d passed, %d failed\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
+}

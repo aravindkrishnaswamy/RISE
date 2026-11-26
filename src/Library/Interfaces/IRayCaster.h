@@ -15,6 +15,7 @@
 #define IRAYCASTER_
 
 #include "IReference.h"
+#include <vector>
 #include "ISampling2D.h"
 #include "IRadianceMap.h"
 #include "../Utilities/Ray.h"
@@ -23,12 +24,26 @@
 
 namespace RISE
 {
+    class ISampler;
+    class RayIntersection;
+    typedef std::vector<RayIntersection> MediumBoundaryHits;
 	class ILuminaryManager;
 	class IScene;
 	class IORStack;
+	class IObject;
 	struct RuntimeContext;
 
 	namespace Implementation { class LightSampler; }
+
+	//! The shadow walk's budget (RayCaster::WalkShadowSegment, the
+	//! transparent-shadow / delta pass-through walk): at most
+	//! kShadowWalkMaxIterations intersections, and the LAST one must find
+	//! the light, so a segment can cross at most kShadowWalkMaxCrossings
+	//! surfaces before the walk conservatively answers "blocked".  BDPT's
+	//! see-through connection and its jump-partition witness (DL-330) read
+	//! the same numbers so the three cannot disagree.
+	static const unsigned int kShadowWalkMaxIterations = 32;
+	static const unsigned int kShadowWalkMaxCrossings = kShadowWalkMaxIterations - 1;
 
 	//! A ray caster traces a ray generated on the virtual screen and traces it through the 
 	//! scene
@@ -55,8 +70,73 @@ namespace RISE
 			unsigned int depth;					///< Number of times the ray has bounced
 			Scalar importance;					///< Importance of this ray
 			bool considerEmission;				///< Should shader consider direct emission
+			//! DL-633: true when this ray's producer wants an emitter hit
+			//! shaded by `EmissionShaderOp` weighted the way the path tracer
+			//! weights its own: the partner density carries the light-
+			//! selection probability, a hit light sampling cannot make (not
+			//! in the light table, or `pNEESelfObject`) keeps full weight,
+			//! and light RIS takes a selectable emitter whole.  Set by the
+			//! path tracer's subsurface continuations and RayCaster's volume
+			//! continuations.  The legacy shader-op producers leave it false:
+			//! that chain is frozen and keeps its pre-DL-633 weight -- except
+			//! after a volume scatter, because RayCaster's volume continuation
+			//! marks its ray whoever cast it (its partner is RayCaster's own
+			//! volume NEE, which does use the selection probability).
+			//! Placed beside `considerEmission` so it occupies that bool's
+			//! existing padding before `type` (DL-103's copy-cost ruling);
+			//! `pNEESelfObject` below is what grows `RAY_STATE`, by 8 bytes.
+			bool emitterHitFollowsLightTable;
 			RayType type;						///< The type of ray
-			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
+			//! The TRUE density the continuation direction was drawn from
+			//! (0 = not set / delta).  This is the throughput denominator:
+			//! under path guiding it is the guided mixture / RIS pdf, not
+			//! the raw material pdf.  Pairs with `bsdfTimesCos` to form the
+			//! optimal-MIS second-moment estimator `(f/p)^2`, so it MUST
+			//! stay the sampling density -- see DL-72.
+			Scalar bsdfPdf;
+			//! The NOMINAL density used as the BSDF-sampling technique's
+			//! MIS partner against light sampling.  It and `LightSampler`'s
+			//! NEE arms evaluate ONE lobe-independent function of
+			//! direction, so the two weights partition to 1.
+			//!
+			//! It is NOT in general equal to `bsdfPdf` (an earlier version
+			//! of this comment said it was "everywhere but under path
+			//! guiding", which DL-103 made false).  For a surface
+			//! continuation the partner is the MATERIAL'S AGGREGATE
+			//! `ISPF::Pdf()` for the traced direction -- guided or not --
+			//! while `bsdfPdf` is the SELECTED lobe's own density; those
+			//! differ at every multi-lobe SPF.  Under guiding the partner
+			//! is additionally blended with the guide density.  The volume
+			//! continuations are the other standing case: `bsdfPdf`
+			//! carries the guided effective pdf while the partner is the
+			//! raw `phasePdf` its NEE arm uses (DL-73).
+			//! DL-74 / docs/DL74_ENV_NEE_GUIDING_PARTITION.md,
+			//! DL-103 / docs/DL103_PT_ESCAPE_MIS_PARTNER.md.
+			//!
+			//! Three-valued, and read through `MisPartnerPdf()` rather
+			//! than directly:
+			//!   < 0  not set -- fall back to `bsdfPdf`.  This is the
+			//!        DEFAULT, so a producer that predates this field (or
+			//!        simply has no guiding to describe) keeps its exact
+			//!        pre-DL-74 weight instead of silently losing it.
+			//!   0    no MIS partner exists.  Since DL-103 this means a
+			//!        DELTA lobe (or a producer that has no partner to
+			//!        describe at all, e.g. a vertex where NEE never
+			//!        fires).  A non-delta surface continuation whose
+			//!        AGGREGATE pdf reads zero in the traced direction
+			//!        does NOT arrive here as 0: giving both sides "no
+			//!        partner" would put weight 1 on each and double
+			//!        count, so the producer substitutes the selected
+			//!        lobe's own density instead (DL-41's SPFs, whose
+			//!        `Pdf()` did not cover their own lobes; DL-41 itself
+			//!        closed 2026-09-18, so this has no known production
+			//!        inhabitant today and guards the next such SPF).  With
+			//!        guiding ACTIVE the producer folds in
+			//!        `alpha_nom * guide` for the same reason (review
+			//!        round 4 of DL-74, rows (h)/(i)).  The weight is 1
+			//!        and the sample is taken whole.
+			//!   > 0  the nominal partner density.
+			Scalar bsdfMisPdf;
 			RISEPel bsdfTimesCos;				///< BSDF * cos at scatter point (RGB), for optimal MIS full-integrand training
 
 			// Per-type bounce counters for StabilityConfig bounce limits
@@ -69,9 +149,112 @@ namespace RISE
 
 			unsigned int volumeBounces;			///< Accumulated volume scattering bounces
 
-			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
+			// SMS emission suppression state, propagated into recursive
+			// CastRay calls (e.g. via SSS / BSSRDF entry, shader-op
+			// chains) so emission through specular chains is correctly
+			// suppressed across the recursion boundary.  See docs/SMS.md.
+			bool smsPassedThroughSpecular;	///< True if path traversed a delta surface since last non-specular bounce
+			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
+			// Placed here (before the 8-byte-aligned `castRRCompensation`) so the two
+			// bools occupy pre-existing tail padding instead of growing sizeof(RAY_STATE)
+			// (DL-103's copy-cost ruling; review of debt-dl170, 2026-09-18).
+			//! DL-171/DL-209 (legacy shader-op chain, chain-aware MIS
+			//! partner): does THIS SHADER's own op list contain a
+			//! `DirectLightingShaderOp` (NEE)?  Set once per `Shade{,NM}`
+			//! call by the owning `StandardShader`/`AdvancedShader`, from
+			//! its own resolved op list (`AdvancedShader` restricts to the
+			//! ops whose `[nMinDepth,nMaxDepth]` covers `depth`, since its
+			//! op list is depth-gated; `StandardShader` has no such
+			//! ranges, so it resolves once at construction).  Read by
+			//! `DistributionTracingShaderOp`'s own continuation: TRUE
+			//! stamps the real aggregate-density MIS partner (a
+			//! `DirectLightingShaderOp` sibling genuinely competes for the
+			//! same light); FALSE stamps 0 (no NEE sibling in this
+			//! shader, so `EmissionShaderOp` must take the traced hit at
+			//! FULL, unweighted credit -- DL-209's shape).  Default TRUE:
+			//! every producer outside the legacy chain (PT, BDPT, the
+			//! entry-point construction below) has always paired
+			//! BSDF-sampling with a real NEE strategy, so this is a no-op
+			//! everywhere else.
+			bool chainHasNEEOp;
+			//! The converse: does THIS shader's own op list contain a
+			//! `DistributionTracingShaderOp` (a non-delta, emission-
+			//! considering BSDF-sampled continuation)?  Read by
+			//! `DirectLightingShaderOp`, forwarded to `LightSampler::
+			//! EvaluateDirectLighting{,NM}`'s `bBsdfSamplingPartnerExists`
+			//! parameter: TRUE weights NEE's own sample against the
+			//! material's aggregate density as before (a competing
+			//! BSDF-sampled strategy exists to partition against); FALSE
+			//! forces weight 1 (no such strategy exists in this shader to
+			//! discount against -- `DirectLightingShaderOp` alone, or with
+			//! only delta `Reflection`/`Refraction` ops (already weight-1
+			//! on their own side, so nothing to partition with either),
+			//! or with `FinalGatherShaderOp` (never considers emission at
+			//! all)).  Default TRUE for the same reason as `chainHasNEEOp`.
+			bool chainHasBsdfContinuationOp;
+
+
+			//! DL-185: `RayCaster::CastRay{,NM,HWSS}` applies its own
+			//! CAST-LEVEL importance Russian roulette (`RC_RR_THRESHOLD`)
+			//! to the COMBINED radiance it returns for THIS call, at the
+			//! very end of the call frame -- see `rrCompensation` in
+			//! RayCaster.cpp.  That factor is known at the top of the call
+			//! (before intersection), but the NEE done while shading this
+			//! same hit (`LightSampler::EvaluateDirectLighting{,NM}`,
+			//! reached through `SelectShader(ri).Shade{,NM,HWSS}`) lives in
+			//! a different call frame and has no visibility into it, so its
+			//! own trained optimal-MIS moment used to disagree with the
+			//! BSDF-escape arm's (DL-148) by exactly this factor.  CastRay
+			//! stamps the LOCAL `rrCompensation` it computed for THIS call
+			//! onto a copy of `rs` handed to `Shade{,NM,HWSS}`, purely for
+			//! that NEE call's `neeTrainingScale` argument -- it is NEVER
+			//! read for anything that changes returned radiance.  Default 1
+			//! (no compensation) for every producer that predates this
+			//! field or is not itself wrapped by that roulette.
+			Scalar castRRCompensation;
+
+			//! DL-408: a CONTACT LAUNCH.  When `pContactTarget` is set, the
+			//! cast first tries the contact ray
+			//! `BSSRDFSampling::ContactRay( contactPoint, ray.Dir() )` (its
+			//! origin backed off INTO the launching body) restricted to that
+			//! one object (`BSSRDFSampling::IntersectContactRay`): the target
+			//! shares the launch point's face, so the hit lies at zero
+			//! distance where no whole-scene cast can resolve it.  The hit
+			//! records `pContactSource` (the launching body) as its
+			//! `RayIntersection::pContactPartner`.  If the restricted cast does
+			//! not land in the band, the cast falls back to the ORDINARY scene
+			//! cast of the ray it was given (the exit's own offset ray), never
+			//! from the backed-off origin, which lies inside the launching body
+			//! (review round 2).  All null / unused on every other cast.  Set
+			//! only by PT's SSS exit continuations.
+			const IObject* pContactTarget;
+			const IObject* pContactSource;
+
+			//! DL-633: the object the vertex that produced this ray stood
+			//! on, when that vertex's light sampling EXCLUDED it (LightSampler
+			//! never selects the luminary it is shading).  A hit on the same
+			//! object then has no light-sampling partner and keeps full
+			//! weight.  Null when nothing was excluded (a volume vertex, a
+			//! camera ray) and from every producer that predates the field.
+			const IObject* pNEESelfObject;
+
+			Point3 contactPoint;				///< DL-408: the launch's surface point (valid when pContactTarget)
+
+			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), emitterHitFollowsLightTable( false ), type( eRayView ), bsdfPdf( 0 ),
+				bsdfMisPdf( -1 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
-				glossyFilterWidth( 0 ), volumeBounces( 0 ) {}
+				glossyFilterWidth( 0 ), volumeBounces( 0 ),
+				smsPassedThroughSpecular( false ), smsHadNonSpecularShading( false ),
+				chainHasNEEOp( true ), chainHasBsdfContinuationOp( true ),
+				castRRCompensation( 1.0 ),
+				pContactTarget( 0 ), pContactSource( 0 ),
+				pNEESelfObject( 0 ), contactPoint( 0, 0, 0 ) {}
+
+			//! The MIS-partner density to weight with -- see `bsdfMisPdf`.
+			Scalar MisPartnerPdf() const
+			{
+				return bsdfMisPdf < 0 ? bsdfPdf : bsdfMisPdf;
+			}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene
@@ -109,7 +292,7 @@ namespace RISE
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const = 0;
 
 		//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
@@ -123,7 +306,7 @@ namespace RISE
 			const Scalar nm,									///< [in] Wavelength to cast
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const = 0;
 
 		//! Casts a ray for a bundle of HWSS wavelengths.
@@ -139,7 +322,7 @@ namespace RISE
 			SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const
 		{
 			bool anyHit = false;
@@ -156,10 +339,17 @@ namespace RISE
 			return anyHit;
 		}
 
-		//! This function casts a ray into the scene and only checks to see if it intersects something.
-		//! Very useful for shadow checks
+		//! LIGHT-VISIBILITY query: is this ray blocked from reaching a light?
+		//! Delegates to IObjectManager::IntersectShadowRay, which honours
+		//! `casts_shadows` -- an object authored `casts_shadows FALSE` is
+		//! invisible to this query BY DESIGN.  Very useful for shadow /
+		//! NEE checks; NOT for a geometry-presence occlusion estimator
+		//! (ambient occlusion and similar) -- use CastOcclusionRay for
+		//! that (added 2026-09-07 after AmbientOcclusionShaderOp was found
+		//! reusing this one; see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+		//! section 8.1).
 		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-		virtual bool CastShadowRay( 
+		virtual bool CastShadowRay(
 			const Ray& ray,										///< [in] Ray to cast
 			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 			) const = 0;
@@ -184,6 +374,10 @@ namespace RISE
 		/// \return The unified light sampler for the current scene, or NULL if not available
 		virtual const Implementation::LightSampler* GetLightSampler() const = 0;
 
+		//! Prepared-render control plane: force the next AttachScene call to
+		//! rebuild all cached light samplers even for an unchanged Scene pointer.
+		virtual void InvalidateLightSamplers() {}
+
 		/// Sets the number of RIS candidates for spatially-aware light
 		/// selection.  Must be called after AttachScene().
 		virtual void SetRISCandidates(
@@ -201,7 +395,75 @@ namespace RISE
 		virtual void SetUseLightBVH(
 			const bool enable									///< [in] True to enable light BVH
 			) = 0;
-	};
+
+		/// True when the rasterizer was built with `radiance_background
+		/// true` (the default) and missed primary rays should display
+		/// the global radiance map.  Integrators that compute their own
+		/// primary-ray miss radiance (PT, BDPT) consult this so an
+		/// `isBackground = false` configuration leaves camera rays
+		/// black while indirect bounces still pick up the IBL.
+		virtual bool IsRadianceMapVisibleAsBackground() const = 0;
+
+		//! GEOMETRY-PRESENCE query: is there ANY geometry in the way,
+		//! independent of whether it casts shadows?  Delegates to
+		//! IObjectManager::IntersectOcclusionRay, which does NOT honour
+		//! `casts_shadows` -- an object authored `casts_shadows FALSE`
+		//! still occludes here, because it has not stopped existing, only
+		//! stopped blocking light for NEE purposes.
+		//!
+		//! Sibling of CastShadowRay above, which answers the OPPOSITE
+		//! question (light visibility, `casts_shadows`-gated).  Use this
+		//! one for ambient-occlusion-style estimators (AmbientOcclusion-
+		//! ShaderOp, InteractivePelRasterizer's preview AO) and anything
+		//! else asking "is this point cavity-like", never for NEE / light
+		//! sampling.  Added 2026-09-07; see
+		//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 8.1.
+		//!
+		//! Appended at the interface TAIL, matching CastShadowRay's own
+		//! evolution on this interface (SetRISCandidates, SetLightSample-
+		//! RRThreshold, SetUseLightBVH, IsRadianceMapVisibleAsBackground
+		//! above were all added the same way) -- RayCaster is this
+		//! interface's sole in-tree implementer, always obtained through
+		//! RISE_API_CreateRayCaster, never constructed by an out-of-tree
+		//! caller, so a new pure virtual here is source- but not silently
+		//! binary-vtable-breaking (contrast IScene/IMaterial, which ARE
+		//! reached through caller-supplied instances and therefore do NOT
+		//! get new virtuals -- see Scene.h's GetLightTopologyGeneration
+		//! comment).  A dynamic_cast-to-concrete-RayCaster alternative
+		//! (the pattern used for e.g. CastShadowRayTransmittance) was
+		//! rejected here because AmbientOcclusionShaderOp only ever holds
+		//! an `const IRayCaster&` and calls this once per AO sample --
+		//! adding a dynamic_cast to that hot loop is both slower and
+		//! uglier than the one appended virtual CastShadowRay already
+		//! established the precedent for.
+		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
+		virtual bool CastOcclusionRay(
+			const Ray& ray,										///< [in] Ray to cast
+			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
+			) const = 0;
+        //! DL-214: transport visibility owns an alpha sampler lane.
+        //! distance is the occlusion end parameter on the ORIGINAL ray.
+        //! Optional physicalDistance extends medium records to the actual
+        //! endpoint; occlusionStart excludes the starting surface. Neither
+        //! exclusion removes physical medium events. Records are complete
+        //! only when visibility succeeds. A negative physicalDistance uses
+        //! distance; without records the extra extent does no work.
+        virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const
+        { (void)sampler; (void)boundaries; (void)physicalDistance; Ray shifted=ray; shifted.Advance(occlusionStart); return CastShadowRay(shifted, distance-occlusionStart); }
+
+		//! DL-463: per-frame refresh of the light-selection tables.  An
+		//! animation frame moves lights and luminaries; the tables
+		//! (alias weights, light BVH boxes / cones, the lights kept at
+		//! all) are rebuilt from the scene's CURRENT state, folding in
+		//! every AccumulateLightMotionSample since the last refresh (the
+		//! scene at each motion-blur sample time of the frame's shutter),
+		//! so no light that emits during the shutter is culled or dropped.
+		//! In place: the LightSampler object (which integrators hold by
+		//! pointer) survives.  Single-threaded, between render passes.
+		//! Defaults are no-ops for casters without a light sampler.
+		virtual void AccumulateLightMotionSample() {}
+		virtual void RefreshLightSamplers() {}
+    };
 }
 
 #include "ILuminaryManager.h"

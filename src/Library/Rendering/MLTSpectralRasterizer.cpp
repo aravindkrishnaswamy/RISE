@@ -47,20 +47,64 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/RenderParallelScope.h"
 #include "MLTSpectralRasterizer.h"
-#include "../Utilities/IndependentSampler.h"
+#include "../Managers/ObjectManager.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
 #include "../Utilities/RTime.h"
+#include "../Utilities/ThreadPool.h"
+#include "ThreadLocalSplatBuffer.h"
+#include "../Interfaces/IOptions.h"
+#include "../Utilities/Threads/Threads.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
 
-#ifdef RISE_ENABLE_OIDN
+// L7 follow-up — `FrameStore.h` needed unconditionally for the AOV
+// propagation utility.  See MLTRasterizer.cpp for the same fix.
+#include "FrameStore.h"
 #include "AOVBuffers.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
+#ifdef RISE_ENABLE_OIDN
 #include "OIDNDenoiser.h"
 #endif
+#include <memory>
+#include "../Cameras/CameraUtilities.h"
+#include "../Utilities/Transformable.h"
+
+// CPP-only lifetime witness shared with the RGB implementation.
+namespace RISE { namespace Implementation { namespace MLTResourceTestHooks
+{
+	void Observe( IReference* resource, bool isFilm );
+}}}
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	// Owns the initial RISE reference through its raw slot. Existing
+	// normal-path releases/ownership transfers null the slot; exceptional
+	// exits release whatever ownership remains.
+	template <typename T>
+	class ReferenceSlotGuard
+	{
+	public:
+		explicit ReferenceSlotGuard( T*& resource_ ) : resource( resource_ ) {}
+		~ReferenceSlotGuard() { safe_release( resource ); }
+
+		ReferenceSlotGuard( const ReferenceSlotGuard& ) = delete;
+		ReferenceSlotGuard& operator=( const ReferenceSlotGuard& ) = delete;
+
+	private:
+		T*& resource;
+	};
+
+	using RasterImageGuard = ReferenceSlotGuard<IRasterImage>;
+}
 
 //////////////////////////////////////////////////////////////////////
 // Constructor / Destructor
@@ -77,14 +121,28 @@ MLTSpectralRasterizer::MLTSpectralRasterizer(
 	const Scalar lambda_begin_,
 	const Scalar lambda_end_,
 	const unsigned int nSpectralSamples_,
-	const bool useHWSS_
+	const bool useHWSS_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  MLTRasterizer( pCaster_, maxEyeDepth, maxLightDepth, nBootstrap_, nChains_, nMutationsPerPixel_, largeStepProb_ ),
+  Rasterizer( frameStore ),
+  MLTRasterizer( pCaster_, maxEyeDepth, maxLightDepth, nBootstrap_, nChains_, nMutationsPerPixel_, largeStepProb_, frameStore ),
   lambda_begin( lambda_begin_ ),
   lambda_end( lambda_end_ ),
   nSpectralSamples( nSpectralSamples_ ),
-  bUseHWSS( useHWSS_ )
+  bUseHWSS( useHWSS_ ),
+  yNormalization( 1.0 )
 {
+	// DL-461.  A uniformly sampled wavelength makes (1/N) sum xbar(l) L(l)
+	// the AVERAGE of the colour-matching integrand over the band; (b - a)
+	// turns it into the integral and 1/k_y makes a unit spectrum resolve to
+	// Y = 1 -- exactly PixelBasedSpectralIntegratingRasterizer's
+	// `mYNormalization`, which PT/BDPT/VCM spectral (pixel AND splat paths,
+	// DL-217) all apply.  This rasterizer averaged over wavelengths only, so
+	// it rendered at 1/3.74 of every other rasterizer.
+	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
+	if( k_y > 0 ) {
+		yNormalization = ( lambda_end_ - lambda_begin_ ) / k_y;
+	}
 }
 
 MLTSpectralRasterizer::~MLTSpectralRasterizer()
@@ -108,9 +166,13 @@ void MLTSpectralRasterizer::RunChainSegmentSpectral(
 	const unsigned int height
 	) const
 {
-	const Scalar totalMutations = static_cast<Scalar>( nMutationsPerPixel ) *
-		static_cast<Scalar>( width ) * static_cast<Scalar>( height );
-	const Scalar invTotalMutations = 1.0 / totalMutations;
+	// Normalize by the mutations ACTUALLY PERFORMED across all rounds
+	// and chains (perChain * chains, see MLTMutationSchedule), not by the
+	// requested budget: the two differ by up to chains-1 mutations, and
+	// the requested product can exceed 32 bits.
+	const MLTMutationSchedule schedule =
+		ComputeMLTMutationSchedule( nMutationsPerPixel, width, height, nChains );
+	const Scalar invTotalMutations = 1.0 / static_cast<Scalar>( schedule.performed );
 
 	for( unsigned int m = 0; m < numMutations; m++ )
 	{
@@ -139,11 +201,18 @@ void MLTSpectralRasterizer::RunChainSegmentSpectral(
 				const MLTStrategySplat& s = proposedSample.splats[k];
 				const RISEPel splatColor = s.color * proposedWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					// Distribute across the filter footprint at the
+					// fractional raster position — see MLTRasterizer
+					// for the detailed rationale.
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					// No filter: round-to-nearest point splat.
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
+					}
 				}
 			}
 		}
@@ -158,11 +227,14 @@ void MLTSpectralRasterizer::RunChainSegmentSpectral(
 				const MLTStrategySplat& s = state.currentSample.splats[k];
 				const RISEPel splatColor = s.color * currentWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
+					}
 				}
 			}
 		}
@@ -189,12 +261,16 @@ void* MLTSpectralRasterizer::SpectralRoundThread_ThreadProc( void* lpParameter )
 {
 	SpectralRoundThreadData* pData = (SpectralRoundThreadData*)lpParameter;
 
+	// Snapshot once — same contract as MLTRasterizer::RoundThread_ThreadProc.
+	const ICamera* pCam = pData->pScene->GetCamera();
+	if( !pCam ) return 0;
+
 	for( unsigned int c = pData->chainStart; c < pData->chainEnd; c++ )
 	{
 		pData->pRasterizer->RunChainSegmentSpectral(
 			pData->pChainStates[c],
 			*pData->pScene,
-			*pData->pScene->GetCamera(),
+			*pCam,
 			*pData->pSplatFilm,
 			pData->mutationsPerChain,
 			pData->normalization,
@@ -204,39 +280,6 @@ void* MLTSpectralRasterizer::SpectralRoundThread_ThreadProc( void* lpParameter )
 	}
 
 	return 0;
-}
-
-//////////////////////////////////////////////////////////////////////
-// EvaluateSingleWavelength - Evaluates BDPT at one wavelength.
-//
-// Generates light and eye subpaths using the NM methods, evaluates
-// all (s,t) connection strategies, and returns the results.
-// The sampler streams are managed by the caller.
-//////////////////////////////////////////////////////////////////////
-
-void MLTSpectralRasterizer::EvaluateSingleWavelength(
-	const IScene& scene,
-	const ICamera& camera,
-	ISampler& sampler,
-	const unsigned int width,
-	const unsigned int height,
-	const Ray& cameraRay,
-	const Point2& screenPos,
-	const Point2& cameraRasterPos,
-	const Scalar nm,
-	const RuntimeContext& rc,
-	std::vector<BDPTIntegrator::ConnectionResultNM>& results,
-	std::vector<BDPTVertex>& lightVerts,
-	std::vector<BDPTVertex>& eyeVerts
-	) const
-{
-	lightVerts.clear();
-	eyeVerts.clear();
-
-	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, nm, rc.random );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, nm );
-
-	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -267,25 +310,79 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 {
 	MLTSample result;
 
-	// Stream 48: film position + wavelength samples.  Must not
-	// conflict with BDPTIntegrator's internal streams (0-47).
-	sampler.StartStream( 48 );
+	// Film position + wavelength samples.  Must not conflict with
+	// BDPTIntegrator's internal streams (0-47, and 2049-4050 for deep
+	// eye/light iterations since DL-286 -- see
+	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This used
+	// to be the literal stream 48, which the eye walk's own
+	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
+	// docs/DL08_PSSMLT_LANE_LAYOUT.md).
+	sampler.StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
 
-	// Pick film position (first 2D sample, same as RGB MLT)
+	// Pick film position + lens position (two independent 2D
+	// primary samples).  See MLTRasterizer::EvaluateSample for
+	// the film-position convention (DL-368: no offset) and on
+	// seeding localRNG from the lens sample so the PSSMLT stream
+	// drives the camera aperture as an independent dimension.
 	const Point2 filmSample = sampler.Get2D();
-	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
-	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
-	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
+	const Point2 lensSample = sampler.Get2D();
+	const Scalar fx = filmSample.x * static_cast<Scalar>( width  );
+	const Scalar fy = filmSample.y * static_cast<Scalar>( height );
+	const Point2 screenPos( fx, static_cast<Scalar>( height ) - fy );
+	const Point2 cameraRasterPos( fx, fy );
 
-	// Generate camera ray
-	RandomNumberGenerator localRNG( px * 65537 + py );
+	// See MLTRasterizer::EvaluateSample — localRNG seeded from film
+	// bits so the camera has a reproducible stream for any random
+	// it might consume beyond the lens, and the actual lens sample
+	// reaches the aperture via GenerateRayWithLensSample to keep
+	// small PSSMLT mutations continuous.
+	const Scalar kMaxUnitBelow1 = std::nextafter( Scalar( 1.0 ), Scalar( 0.0 ) );
+	const Scalar clampedFx = std::min( std::max( filmSample.x, Scalar( 0.0 ) ), kMaxUnitBelow1 );
+	const Scalar clampedFy = std::min( std::max( filmSample.y, Scalar( 0.0 ) ), kMaxUnitBelow1 );
+	const unsigned int fxBits = static_cast<unsigned int>(
+		clampedFx * static_cast<Scalar>( 4294967296.0 ) );
+	const unsigned int fyBits = static_cast<unsigned int>(
+		clampedFy * static_cast<Scalar>( 4294967296.0 ) );
+	const unsigned int sampleSeed = fxBits * 2654435761u + fyBits;
+	RandomNumberGenerator localRNG( sampleSeed );
+	ScopedMediumTileSeed mediumSeed( sampleSeed );
 	RuntimeContext rc( localRNG, RuntimeContext::PASS_NORMAL, false );
 
 	Ray cameraRay;
-	if( !camera.GenerateRay( rc, cameraRay, screenPos ) ) {
+	// See MLTRasterizer::GenerateCameraRayWithLensSample for why this
+	// is a non-virtual helper rather than an ICamera method.
+	if( !GenerateCameraRayWithLensSample( camera, rc, cameraRay, screenPos, lensSample ) ) {
 		return result;
 	}
+
+	// Pre-consume all wavelength samples from the reserved film/lens
+	// stream BEFORE any subpath generation runs.  GenerateLight/
+	// EyeSubpathNM switch to streams 0..47 internally for their own
+	// sampling dimensions, so a `sampler.Get1D()` inside the
+	// per-spectral-sample loop would see whatever BDPT stream was left
+	// active from the previous iteration — making wavelength #N a leak
+	// of path-sampling randomness from wavelength #N-1 instead of an
+	// independent PSSMLT primary dimension.  Pre-consuming locks every
+	// wavelength to the reserved stream at the correct offset.
+	std::vector<Scalar> wavelengthSamples;
+	wavelengthSamples.reserve( nSpectralSamples );
+	for( unsigned int ss = 0; ss < nSpectralSamples; ss++ ) {
+		wavelengthSamples.push_back( sampler.Get1D() );
+	}
+
+	// Debt 28: the point on the camera's entrance APERTURE that the
+	// t==1 light-tracing connections land on.  Drawn from the reserved
+	// film/lens stream (still active here), contiguous after the film,
+	// lens and wavelength samples -- NOT from a dedicated stream,
+	// because PSSMLTSampler multiplexes lanes as
+	// `idx = stream + kNumStreams*sample` and a stream index >=
+	// kNumStreams aliases an existing lane instead of getting a fresh
+	// one.  See MLTRasterizer::EvaluateSample for the lane arithmetic.
+	// A camera whose aperture is a point consumes NOTHING here, so
+	// pinhole MLT chains are unchanged by debt 28.
+	const Point2 cameraLensSample =
+		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
+			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
 
 	// Spectral range
 	const Scalar range = lambda_end - lambda_begin;
@@ -305,8 +402,8 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	// For each strategy index across all wavelengths, accumulate XYZ.
 	// We'll build the final splats after all wavelengths are processed.
 
-	XYZPel totalXYZ( 0, 0, 0 );
 	std::vector<StrategyXYZ> allStrategyXYZ;
+
 
 	if( bUseHWSS )
 	{
@@ -315,18 +412,31 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 		// geometry (same approach as BDPTSpectralRasterizer HWSS).
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
-			const Scalar u = sampler.Get1D();
+			// Wavelength sample was pre-consumed above so the BDPT
+			// stream switches inside the generator calls don't alias
+			// into the next iteration's wavelength.
+			const size_t bundleStart = allStrategyXYZ.size();
+			const Scalar u = wavelengthSamples[ss];
 			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
 
 			const Scalar heroNM = swl.HeroLambda();
 
 			// Generate subpaths once at hero wavelength.
-			// BDPTIntegrator manages its own streams internally (0-47).
+			// BDPTIntegrator manages its own streams internally (0-47, deep
+			// iterations 2049-4050 -- BDPTUtilities::LightWalkStream).
+			// MLT forces threshold=1.0 (single-branch) — see note at the
+			// top-level helper above.
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, heroNM, rc.random );
+			std::vector<uint32_t> lightSubpathStarts;
+			std::vector<uint32_t> eyeSubpathStarts;
+			// HWSS path in MLT: pass &swl so the NM generator uses
+			// max-over-wavelengths RR (PT HWSS firefly fix applies here
+			// too — hero-driven RR still amplifies companions on rare
+			// survivors regardless of MLT's chain acceptance).
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, heroNM );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
 
 			// Helper: accumulate strategy results into allStrategyXYZ
 			auto accumulateResults = [&]( const std::vector<BDPTIntegrator::ConnectionResultNM>& results,
@@ -356,15 +466,27 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 					}
 
 					allStrategyXYZ.push_back( sxyz );
-					totalXYZ = totalXYZ + thisXYZ;
 				}
 			};
 
 			// Evaluate hero wavelength
 			{
 				std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, heroNM );
+					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, heroNM, &sampler );
 				accumulateResults( heroResults, heroNM );
+			}
+
+			// A null-BSDF continuation vertex gives
+			// RecomputeSubpathThroughputNM no companion/hero ratio to
+			// compute, wavelength-independently, so terminate secondaries
+			// here too rather than let those always-zero companions
+			// silently corrupt the companion's own colour.
+			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( lightVerts ) ||	// DL-357
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
+			{
+				swl.TerminateSecondary();
 			}
 
 			// Check for dispersive delta vertices in either subpath.
@@ -397,29 +519,41 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 				std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 					pIntegrator->EvaluateAllStrategiesNM(
-						compLight, compEye, scene, *pCaster, camera, companionNM );
+						compLight, compEye, scene, *pCaster, camera, cameraLensSample, companionNM, &sampler );
 				accumulateResults( compResults, companionNM );
+			}
+			// Termination is final now: normalize ALL strategies from this bundle,
+			// including the hero evaluated before the termination checks.
+			for(size_t i=bundleStart; i<allStrategyXYZ.size(); ++i) {
+				allStrategyXYZ[i].color = swl.BundleAverage(allStrategyXYZ[i].color);
 			}
 		}
 	}
 	else
 	{
-		// Standard spectral: nSpectralSamples independent wavelengths
+		// Standard spectral: nSpectralSamples independent wavelengths.
+		// Wavelength samples were pre-consumed above — see the top of
+		// this function for why.
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
-			const Scalar u = sampler.Get1D();
+			const Scalar u = wavelengthSamples[ss];
 			const Scalar nm = lambda_begin + u * range;
 
-			// BDPTIntegrator manages its own streams internally (0-47).
+			// BDPTIntegrator manages its own streams internally (0-47, deep
+			// iterations 2049-4050 -- BDPTUtilities::LightWalkStream).
 			std::vector<BDPTIntegrator::ConnectionResultNM> results;
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
+			std::vector<uint32_t> lightSubpathStarts;
+			std::vector<uint32_t> eyeSubpathStarts;
 
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, nm, rc.random );
+			// MLT forces threshold=1.0 (single-branch) — see top-level note.
+			// Non-HWSS single-wavelength path: pSwlHWSS = nullptr.
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, nm );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
+			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm, &sampler );
 
 			for( unsigned int r = 0; r < results.size(); r++ )
 			{
@@ -451,17 +585,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 				}
 
 				allStrategyXYZ.push_back( sxyz );
-				totalXYZ = totalXYZ + thisXYZ;
 			}
 		}
 	}
 
-	// Normalize by number of wavelength evaluations
-	const unsigned int totalWavelengths = bUseHWSS
-		? nSpectralSamples * SampledWavelengths::N
-		: nSpectralSamples;
-
-	const Scalar invWavelengths = 1.0 / static_cast<Scalar>( totalWavelengths );
+	// HWSS bundles already carry their active-lane means. Average bundles
+	// (or independent NM samples) in the same measure for splats and target.
+	const Scalar invWavelengths = nSpectralSamples ? yNormalization / static_cast<Scalar>(nSpectralSamples) : Scalar(0);
 
 	// Build final MLTSample splats from accumulated strategy XYZ
 	Scalar totalLuminance = 0;
@@ -470,7 +600,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	{
 		const StrategyXYZ& sxyz = allStrategyXYZ[i];
 
-		// Scale by 1/totalWavelengths for proper averaging
+		// Scale the bundle mean by yNormalization/nSpectralSamples (DL-461).
 		XYZPel scaled = sxyz.color * invWavelengths;
 
 		// Luminance = Y component of XYZ
@@ -479,14 +609,11 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			continue;
 		}
 
-		// Convert XYZ → ROMM RGB (the internal working color space)
-		// so that the SplatFilm accumulates in the correct color space.
-		// Using the ROMMRGBPel(XYZPel) constructor which calls
-		// ColorUtils::XYZtoROMMRGB.
-		ROMMRGBPel rommRGB( scaled );
-
+		// Convert XYZ → RISEPel (the internal working colour space)
+		// so the SplatFilm accumulates in the correct space.  Using
+		// genuine matrix-only XYZtoRec709RGBMatrixOnly (D65→D65, matrix-only).
 		MLTStrategySplat splat;
-		splat.color = rommRGB;
+		splat.color = ColorUtils::XYZtoRec709RGBMatrixOnly( scaled );
 		splat.rasterPos = sxyz.rasterPos;
 
 		result.splats.push_back( splat );
@@ -500,39 +627,41 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 }
 
 //////////////////////////////////////////////////////////////////////
-// RasterizeScene - Spectral MLT rendering entry point.
+// RenderFrameOfMLTSpectral - Spectral analog of MLTRasterizer::
+// RenderFrameOfMLT.  Same structure, but every BDPT path is evaluated
+// at one or more wavelengths via EvaluateSampleSpectral.  Shared by
+// RasterizeScene and RasterizeSceneAnimation; see the base helper
+// for the contract.
 //
-// Identical structure to MLTRasterizer::RasterizeScene but uses
-// EvaluateSampleSpectral instead of EvaluateSample for both
-// bootstrap and chain mutations.
-//
-// The bootstrap phase estimates normalization using spectral samples.
-// Chain initialization and round-based execution use the same
-// infrastructure, with the spectral evaluation replacing RGB.
+// Hero wavelength stratification (HWSS) is part of the primary sample
+// space — the wavelength coordinate evolves as another dimension of
+// the Markov chain, so independent-chains-per-frame works the same
+// way as RGB MLT.  No special spectral handling for animation; the
+// per-frame chain restart picks a fresh hero wavelength via the
+// re-bootstrapped PSSMLTSampler.
 //////////////////////////////////////////////////////////////////////
 
-void MLTSpectralRasterizer::RasterizeScene(
+bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	const IScene& pScene,
-	const Rect* /*pRect*/,
-	IRasterizeSequence* /*pRasterSequence*/
+	const ICamera& pCamera,
+	const unsigned int width,
+	const unsigned int height,
+	IRasterImage*& pImageOut
 	) const
 {
-	const ICamera* pCamera = pScene.GetCamera();
-	if( !pCamera ) {
-		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
-		return;
-	}
+	return RenderFrameOfMLTSpectral( pScene, pCamera, width, height, pImageOut, pProgressFunc );
+}
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
-
-	// AttachScene creates and Prepare()s the unified LightSampler
-	pCaster->AttachScene( &pScene );
-	pScene.GetObjects()->PrepareForRendering();
-
-	// Share the RayCaster's prepared LightSampler with the integrator
-	const LightSampler* pLS = pCaster->GetLightSampler();
-	pIntegrator->SetLightSampler( pLS );
+bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
+	const IScene& pScene,
+	const ICamera& pCamera,
+	const unsigned int width,
+	const unsigned int height,
+	IRasterImage*& pImageOut,
+	IProgressCallback* progress
+	) const
+{
+	pImageOut = 0;
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Starting spectral PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Lambda range: [%.1f, %.1f] nm, Spectral samples: %u, HWSS: %s",
@@ -540,45 +669,59 @@ void MLTSpectralRasterizer::RasterizeScene(
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap: %u, Chains: %u, Mutations/pixel: %u, Large step: %.2f",
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
 
+	// The bootstrap mean divides by nBootstrap and the CDF reads
+	// cdf[nBootstrap-1]: zero samples cannot render.  The parser rejects
+	// bootstrap_samples 0; this covers construction through the API.
+	if( nBootstrap == 0 ) {
+		GlobalLog()->PrintEasyError( "MLTSpectralRasterizer:: bootstrap sample count is 0 -- at least 1 is required; nothing rendered" );
+		return false;
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Phase 1: Bootstrap (spectral)
 	//////////////////////////////////////////////////////////////////
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Bootstrap: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Bootstrap: " );
 	}
 
 	std::vector<BootstrapSample> bootstrapSamples( nBootstrap );
 	Scalar luminanceSum = 0;
 
-	Timer bootstrapTimer;
-	bootstrapTimer.start();
+	const auto bootstrapTimerStart = std::chrono::steady_clock::now();
 
+	// Bootstrap uses a PSSMLTSampler so the path generated for seed i
+	// can be EXACTLY reproduced later by the chain init creating a
+	// PSSMLTSampler with the same seed.  See MLTRasterizer::RasterizeScene
+	// bootstrap loop for the full rationale.
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
-		RandomNumberGenerator bootRNG( i );
-		IndependentSampler bootSampler( bootRNG );
+		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
+		ReferenceSlotGuard<PSSMLTSampler> bootstrapGuard( pBootSampler );
+		pBootSampler->StartIteration();
 
-		MLTSample sample = EvaluateSampleSpectral( pScene, *pCamera, bootSampler, width, height );
+		MLTSample sample = EvaluateSampleSpectral( pScene, pCamera, *pBootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
 		luminanceSum += sample.luminance;
 
-		if( pProgressFunc && (i % 1000 == 0) ) {
-			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
-				return;
+		safe_release( pBootSampler );
+
+		if( progress && (i % 1000 == 0) ) {
+			if( !progress->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
+				return false;
 			}
 		}
 	}
 
-	bootstrapTimer.stop();
+	const auto bootstrapTimerEnd = std::chrono::steady_clock::now();
 
 	const Scalar b_mean = luminanceSum / static_cast<Scalar>( nBootstrap );
 
 	if( b_mean <= 0 ) {
 		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer:: Bootstrap found zero luminance -- scene produces no visible light!", __FILE__, __LINE__ );
-		return;
+		return false;
 	}
 
 	const Scalar numPixels = static_cast<Scalar>( width ) * static_cast<Scalar>( height );
@@ -607,9 +750,14 @@ void MLTSpectralRasterizer::RasterizeScene(
 	// Phase 2: Initialize chain states (using spectral evaluation)
 	//////////////////////////////////////////////////////////////////
 
-	const unsigned int effectiveChains = nChains > 0 ? nChains : 1;
-	const unsigned int totalMutations = nMutationsPerPixel * width * height;
-	const unsigned int mutationsPerChain = totalMutations / effectiveChains;
+	// 64-bit schedule shared with RunChainSegment's normalization (see
+	// MLTMutationSchedule in MLTRasterizer.h).  Every chain runs at least
+	// one mutation, so the performed total may differ from the requested
+	// budget by fewer than effectiveChains mutations.
+	const MLTMutationSchedule schedule =
+		ComputeMLTMutationSchedule( nMutationsPerPixel, width, height, nChains );
+	const unsigned int effectiveChains = schedule.effectiveChains;
+	const std::uint64_t mutationsPerChain = schedule.perChain;
 
 	// Auto-calculate progressive rounds from bootstrap timing
 	int threads = HowManyThreadsToSpawn();
@@ -618,67 +766,101 @@ void MLTSpectralRasterizer::RasterizeScene(
 		threads = MAX_THREADS;
 	}
 
-	unsigned int numRounds = 1;
-	const unsigned int bootstrapMs = bootstrapTimer.getInterval();
+	std::uint64_t numRounds = 1;
+	const unsigned int bootstrapMs = ElapsedMilliseconds(bootstrapTimerStart, bootstrapTimerEnd);
 
 	if( bootstrapMs > 0 && nBootstrap > 0 )
 	{
 		const double msPerSample = static_cast<double>( bootstrapMs ) / static_cast<double>( nBootstrap );
 		const int effectiveThreads = threads > 0 ? threads : 1;
-		const double estTotalMs = msPerSample * static_cast<double>( totalMutations ) / static_cast<double>( effectiveThreads );
-		const double targetRoundMs = 5000.0;
-		const unsigned int computedRounds = static_cast<unsigned int>( estTotalMs / targetRoundMs + 0.5 );
+		const double estTotalMs = msPerSample * static_cast<double>( schedule.performed ) / static_cast<double>( effectiveThreads );
+		// Target 2500 ms per round (instead of 5000 ms) — see
+		// MLTRasterizer.cpp for the rationale.  Adaptive resize in
+		// the render loop below corrects for inaccurate bootstrap
+		// estimates.
+		const double targetRoundMs = 2500.0;
+		// At least 2 rounds, at most mutationsPerChain (see MLTRasterizer.cpp).
+		numRounds = MLTRoundCountFromEstimate( estTotalMs / targetRoundMs + 0.5, 2, mutationsPerChain );
 
-		numRounds = computedRounds < 2 ? 2 : computedRounds;
-		if( numRounds > mutationsPerChain ) {
-			numRounds = mutationsPerChain;
-		}
-
-		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap took %u ms (%.3f ms/sample), est total: %.1f s -> %u rounds",
-			bootstrapMs, msPerSample, estTotalMs / 1000.0, numRounds );
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap took %u ms (%.3f ms/sample), est total: %.1f s -> %llu rounds",
+			bootstrapMs, msPerSample, estTotalMs / 1000.0, static_cast<unsigned long long>( numRounds ) );
 	}
 	else
 	{
-		numRounds = 10;
-		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap too fast to time, using %u rounds", numRounds );
+		// Never more rounds than per-chain mutations.
+		numRounds = ClampMLTRoundCount( 20, mutationsPerChain );
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Bootstrap too fast to time, using %llu rounds",
+			static_cast<unsigned long long>( numRounds ) );
 	}
 
-	const unsigned int mutationsPerChainPerRound = mutationsPerChain / numRounds;
-	const unsigned int effectiveMutPerRound = mutationsPerChainPerRound > 0 ? mutationsPerChainPerRound : 1;
+	// At least 1 mutation per chain per round (clamped to UINT_MAX).
+	unsigned int effectiveMutPerRound = MLTMutationsPerRound( mutationsPerChain, numRounds );
 
-	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Total mutations: %u, Per chain: %u, Per chain per round: %u, Rounds: %u",
-		totalMutations, mutationsPerChain, effectiveMutPerRound, numRounds );
+	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Requested mutations: %llu, Performed: %llu, Per chain: %llu, Per chain per round: %u, Rounds: %llu",
+		static_cast<unsigned long long>( schedule.budget ),
+		static_cast<unsigned long long>( schedule.performed ),
+		static_cast<unsigned long long>( mutationsPerChain ),
+		effectiveMutPerRound, static_cast<unsigned long long>( numRounds ) );
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Init Chains: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Init Chains: " );
 	}
 
 	// Initialize chains using spectral evaluation
 	std::vector<ChainState> chainStates( effectiveChains );
+	SplatFilm* pSplatFilm = nullptr;
+	// Install ownership before the first chain evaluation can throw.
+	// A partial final chain is covered as soon as its sampler is assigned.
+	// Release chains before the film, matching the normal cleanup order.
+	struct FrameResourcesGuard
+	{
+		std::vector<ChainState>& states;
+		SplatFilm*& film;
+		~FrameResourcesGuard()
+		{
+			for( ChainState& state : states ) {
+				safe_release( state.pSampler );
+			}
+			safe_release( film );
+		}
+	} frameResourcesGuard{ chainStates, pSplatFilm };
 
 	for( unsigned int c = 0; c < effectiveChains; c++ )
 	{
 		// Select initial state from bootstrap CDF
-		RandomNumberGenerator selRNG( c * 31337 );
+		RandomNumberGenerator selRNG( PSSMLTSamplerTestHooks::Salted( c * 31337 ) );
 		const Scalar u = selRNG.CanonicalRandom();
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
 
-		// Initialize chain — but we need spectral evaluation
-		// We manually do what InitChain does, but with EvaluateSampleSpectral
+		// Two-phase chain initialization (mirrors MLTRasterizer::InitChain):
+		// Phase 1 — seed PSSMLTSampler with the bootstrap index so its
+		//   first iteration EXACTLY reproduces the bootstrap path the
+		//   CDF selected (preserving importance sampling).
+		// Phase 2 — after the first Accept(), re-seed the proposal RNG
+		//   to a chain-specific value so two chains that picked the
+		//   same bootstrap index immediately diverge via different
+		//   mutations.  The X vector is preserved across the re-seed.
+		const unsigned int chainSeed    = seed.seed * 2654435761u + c;
+		const unsigned int proposalSeed = chainSeed ^ 0xA55A5AA5u;
 		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-		chainStates[c].chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
+		MLTResourceTestHooks::Observe( chainStates[c].pSampler, false );
+		chainStates[c].chainRNG = RandomNumberGenerator( PSSMLTSamplerTestHooks::Salted( chainSeed ) );
 
+		// Phase 1: reproduce the bootstrap path
 		chainStates[c].pSampler->StartIteration();
-		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );
+		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, pCamera, *chainStates[c].pSampler, width, height );
 		chainStates[c].pSampler->Accept();
+
+		// Phase 2: re-seed proposal RNG for divergence
+		chainStates[c].pSampler->ReSeedRNG( proposalSeed );
 
 		if( !chainStates[c].currentSample.valid )
 		{
 			for( unsigned int attempt = 0; attempt < 64; attempt++ )
 			{
 				chainStates[c].pSampler->StartIteration();
-				chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );
+				chainStates[c].currentSample = EvaluateSampleSpectral( pScene, pCamera, *chainStates[c].pSampler, width, height );
 				if( chainStates[c].currentSample.valid ) {
 					chainStates[c].pSampler->Accept();
 					break;
@@ -687,12 +869,9 @@ void MLTSpectralRasterizer::RasterizeScene(
 			}
 		}
 
-		if( pProgressFunc && (c % 10 == 0) ) {
-			if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
-				for( unsigned int j = 0; j <= c; j++ ) {
-					safe_release( chainStates[j].pSampler );
-				}
-				return;
+		if( progress && (c % 10 == 0) ) {
+			if( !progress->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
+				return false;
 			}
 		}
 	}
@@ -706,103 +885,170 @@ void MLTSpectralRasterizer::RasterizeScene(
 	// MLTRasterizer pattern.
 	//////////////////////////////////////////////////////////////////
 
-	SplatFilm* pSplatFilm = new SplatFilm( width, height );
+	pSplatFilm = new SplatFilm( width, height );
+	MLTResourceTestHooks::Observe( pSplatFilm, true );
 
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Spectral Rendering: " );
+	if( progress ) {
+		progress->SetTitle( "MLT Spectral Rendering: " );
 	}
 
 	bool cancelled = false;
 
-	if( pProgressFunc ) {
-		if( !pProgressFunc->Progress( 0, static_cast<double>(numRounds) ) ) {
+	if( progress ) {
+		if( !progress->Progress( 0, static_cast<double>(numRounds) ) ) {
 			cancelled = true;
 		}
 	}
 
-	for( unsigned int round = 0; round < numRounds && !cancelled; round++ )
+	// Adaptive round sizing — see MLTRasterizer.cpp.
+	const double targetRoundWallMs   = 2500.0;
+	std::uint64_t mutationsDonePerChain = 0;
+
+	// The loop is driven by the remaining per-chain work, not by the
+	// (adaptively resized, informational) round count: it ends exactly
+	// when mutationsPerChain mutations have run per chain, or on cancel.
+	for( std::uint64_t round = 0; mutationsDonePerChain < mutationsPerChain && !cancelled; round++ )
 	{
-		const unsigned int mutThisRound = ( round == numRounds - 1 )
-			? ( mutationsPerChain - effectiveMutPerRound * ( numRounds - 1 ) )
-			: effectiveMutPerRound;
+		// The planned last round absorbs the remainder; no round ever
+		// exceeds the remaining work (MLTMutationsThisRound).
+		const unsigned int mutThisRound = MLTMutationsThisRound(
+			mutationsPerChain - mutationsDonePerChain,
+			effectiveMutPerRound,
+			round + 1 >= numRounds );
+
+		const auto roundTimerStart = std::chrono::steady_clock::now();
 
 		if( threads > 1 )
 		{
-			// Multi-threaded: distribute chains across threads
-			const unsigned int chainsPerThread = effectiveChains / threads;
+			// Work-stealing chain dispatch — see MLTRasterizer.cpp
+			// for the rationale (highly variable per-chain cost wrecks
+			// static partitioning).  Each worker MUST flush its splat
+			// buffer before returning so the round's Resolve() sees
+			// every splat below the auto-flush threshold.
+			std::atomic<unsigned int> nextChain( 0 );
+			ThreadPool& pool = GlobalThreadPool();
 
-			std::vector<SpectralRoundThreadData> threadData( threads );
-			RISETHREADID* thread_ids = new RISETHREADID[threads];
-
-			for( int t = 0; t < threads; t++ )
-			{
-				threadData[t].pRasterizer = this;
-				threadData[t].pScene = &pScene;
-				threadData[t].pSplatFilm = pSplatFilm;
-				threadData[t].pChainStates = &chainStates[0];
-				threadData[t].chainStart = t * chainsPerThread;
-				threadData[t].chainEnd = ( t == threads - 1 ) ? effectiveChains : ( t + 1 ) * chainsPerThread;
-				threadData[t].mutationsPerChain = mutThisRound;
-				threadData[t].normalization = b;
-				threadData[t].width = width;
-				threadData[t].height = height;
-
-				Threading::riseCreateThread( SpectralRoundThread_ThreadProc, (void*)&threadData[t], 0, 0, &thread_ids[t] );
-			}
-
-			for( int t = 0; t < threads; t++ ) {
-				Threading::riseWaitUntilThreadFinishes( thread_ids[t], 0 );
-			}
-
-			delete[] thread_ids;
+			// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
+			// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
+			RenderParallelScope renderParallelScope;
+			pool.ParallelFor( static_cast<unsigned int>( threads ),
+				[&]( unsigned int /*workerIdx*/ ) {
+					ThreadLocalSplatBufferTaskScope splatTask;
+					for( ;; ) {
+						const unsigned int c = nextChain.fetch_add(
+							1, std::memory_order_relaxed );
+						if( c >= effectiveChains ) {
+							break;
+						}
+						RunChainSegmentSpectral(
+							chainStates[c], pScene, pCamera, *pSplatFilm,
+							mutThisRound, b, width, height );
+					}
+					FlushCallingThreadSplatBuffer();
+				} );
 		}
 		else
 		{
+			ThreadLocalSplatBufferTaskScope splatTask;
+			// Legacy low-priority mode: see MLTRasterizer.cpp SP
+			// branch for the rationale.
+			if( round == 0 &&
+			    GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+				Threading::riseSetThreadLowPriority( 0 );
+			}
+
 			// Single-threaded: run all chains sequentially
 			for( unsigned int c = 0; c < effectiveChains; c++ )
 			{
-				RunChainSegmentSpectral( chainStates[c], pScene, *pCamera, *pSplatFilm,
+				RunChainSegmentSpectral( chainStates[c], pScene, pCamera, *pSplatFilm,
 					mutThisRound, b, width, height );
+			}
+			FlushCallingThreadSplatBuffer();
+		}
+
+		const auto roundTimerEnd = std::chrono::steady_clock::now();
+		mutationsDonePerChain += mutThisRound;
+		const unsigned int roundWallMs = ElapsedMilliseconds(roundTimerStart, roundTimerEnd);
+
+		// Adaptive round-size correction after round 0 — mirrors
+		// MLTRasterizer.cpp.  See the comment there for rationale.
+		if( round == 0 && roundWallMs > 50 && !cancelled ) {
+			const double actualMsPerChainMut =
+				static_cast<double>( roundWallMs ) /
+				static_cast<double>( mutThisRound );
+			const double desiredMutPerRound =
+				targetRoundWallMs / actualMsPerChainMut;
+			const std::uint64_t remainingMut = mutationsPerChain > mutationsDonePerChain
+				? mutationsPerChain - mutationsDonePerChain
+				: 0u;
+			// Total rounds = 1 (already done) + ceil(remaining / newMutPerRound);
+			// computed without overflow (MLTAdaptiveRoundResize).
+			unsigned int newMutPerRound = 1;
+			std::uint64_t newNumRounds = 1;
+			MLTAdaptiveRoundResize( desiredMutPerRound, remainingMut, newMutPerRound, newNumRounds );
+			if( remainingMut > 0 && newMutPerRound != effectiveMutPerRound ) {
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"MLTSpectralRasterizer:: Adaptive round resize — round 0 took %u ms "
+					"(%.4f ms/mut), adjusting effectiveMutPerRound %u → %u, "
+					"numRounds %llu → %llu for a ~%.1f s UI cadence",
+					roundWallMs, actualMsPerChainMut,
+					effectiveMutPerRound, newMutPerRound,
+					static_cast<unsigned long long>( numRounds ),
+					static_cast<unsigned long long>( newNumRounds ),
+					targetRoundWallMs / 1000.0 );
+
+				effectiveMutPerRound = newMutPerRound;
+				numRounds            = newNumRounds;
 			}
 		}
 
-		// Snapshot: resolve film and output
-		const Scalar fraction = static_cast<Scalar>( round + 1 ) / static_cast<Scalar>( numRounds );
-		const bool isFinalRound = ( round + 1 == numRounds );
+		// Snapshot: resolve film and output.  Fraction uses
+		// mutations-done (stable across adaptive resize).
+		const Scalar fraction =
+			static_cast<Scalar>( mutationsDonePerChain ) /
+			static_cast<Scalar>( mutationsPerChain );
+		const bool isFinalRound = ( mutationsDonePerChain >= mutationsPerChain );
 
+		// Each round allocates a fresh image — SplatFilm::Resolve is
+		// ADDITIVE; reusing one image across rounds would double-count.
+		// Final-round image is transferred to pImageOut for the caller
+		// to denoise + flush at the appropriate frame index.
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
+		RasterImageGuard imageGuard( pImage );
 		pSplatFilm->Resolve( *pImage, fraction );
 
 		if( !isFinalRound )
 		{
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			// See MLTRasterizer.cpp for the full rationale: copy the
+			// resolved round-image into the canonical `mFrameStore`
+			// so a `BindFrameStore`-bound `ViewportFrameStore` sees
+			// per-tile `OnTileComplete` events.  Without this, VFS's
+			// `OutputIntermediateImage` short-circuits and the GUI
+			// never displays per-round previews.  No
+			// `MarkFrameComplete` — progressive, not final.
+			CopyToFrameStore_( *pImage );
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
-		if( pProgressFunc ) {
-			if( !pProgressFunc->Progress( static_cast<double>(round + 1), static_cast<double>(numRounds) ) ) {
+		if( progress ) {
+			if( !progress->Progress(
+					static_cast<double>( mutationsDonePerChain ),
+					static_cast<double>( mutationsPerChain ) ) ) {
 				cancelled = true;
 			}
 		}
 
 		if( isFinalRound || cancelled )
 		{
-#ifdef RISE_ENABLE_OIDN
-			if( bDenoisingEnabled ) {
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
+			if( pImageOut ) {
+				safe_release( pImageOut );
 			}
-#endif
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputImage( *pImage, 0, 0 );
-			}
+			pImageOut = pImage;	// transfer refcount to caller
+			pImage = 0;
 		}
-
-		safe_release( pImage );
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -817,9 +1063,259 @@ void MLTSpectralRasterizer::RasterizeScene(
 		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Rendering complete" );
 	}
 
-	for( unsigned int c = 0; c < effectiveChains; c++ ) {
-		safe_release( chainStates[c].pSampler );
+	return !cancelled;
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeScene - Spectral still-image entry point.  Thin wrapper
+// around RenderFrameOfMLTSpectral; flushes the result with frameIdx=0.
+//////////////////////////////////////////////////////////////////////
+
+void MLTSpectralRasterizer::RasterizeScene(
+	const IScene& pScene,
+	const Rect* /*pRect*/,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
+	// Snapshot once at entry — structural changes serialize against rendering.
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
 	}
 
-	safe_release( pSplatFilm );
+#ifdef RISE_ENABLE_OIDN
+	BeginRenderTimer();
+#endif
+
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
+	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
+
+	IRasterImage* pImage = 0;
+	RasterImageGuard imageGuard( pImage );
+	(void) RenderFrameOfMLTSpectral( pScene, *pCamera, width, height, pImage );
+
+	if( pImage )
+	{
+#ifdef RISE_ENABLE_OIDN
+		const bool willDenoise = bDenoisingEnabled;
+#else
+		const bool willDenoise = false;
+#endif
+		const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+		std::unique_ptr<AOVBuffers> aovBuffers(
+			aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+		if( aovBuffers ) {
+			CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+				willDenoise ? 4u : 1u, mDenoisingPrefilter );
+			PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+			aovBuffers->ReleaseDepthStorage();
+		}
+#ifdef RISE_ENABLE_OIDN
+		if( bDenoisingEnabled ) {
+			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
+			if( pProgressFunc ) {
+				pProgressFunc->SetTitle( "Denoising: " );
+			}
+
+			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				EstimateDenoiseWorkPerMegapixel() );
+
+			FlushDenoisedToOutputs( *pImage, 0, 0 );
+		} else
+#endif
+		{
+			FlushToOutputs( *pImage, 0, 0 );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeSceneAnimation - Spectral animation entry point.
+//
+// Same independent-chains-per-frame strategy as the RGB MLT path.
+// The hero wavelength evolves as part of the primary sample space,
+// so per-frame chain restart picks a fresh wavelength via the
+// re-bootstrapped PSSMLTSampler — no special spectral handling
+// needed.  See MLTRasterizer::RasterizeSceneAnimation for the full
+// rationale.
+//////////////////////////////////////////////////////////////////////
+
+void MLTSpectralRasterizer::RasterizeSceneAnimation(
+	const IScene& pScene,
+	const Scalar time_start,
+	const Scalar time_end,
+	const unsigned int num_frames,
+	const bool /*do_fields*/,
+	const bool /*invert_fields*/,
+	const Rect* /*pRect*/,
+	const unsigned int* specificFrame,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
+	// Snapshot once at entry — structural changes serialize against rendering.
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
+	const Scalar step_size = num_frames > 1
+		? ( time_end - time_start ) / Scalar( num_frames - 1 )
+		: 0;
+
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
+			pObjMgr->SceneHasMixMaterial( &offender ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"MLTSpectralRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"(first object '%s'). Use pathtracing_spectral_rasterizer.",
+				offender.c_str() );
+			return;
+		}
+	}
+	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
+
+	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+	const unsigned int total_frames = specificFrame ? 1 : num_frames;
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"MLTSpectralRasterizer:: Animation render: %u frame(s), time [%.4f, %.4f]",
+		total_frames, time_start, time_end );
+
+	bool cancelled = false;
+	for( unsigned int i = 0; i < total_frames && !cancelled; i++ )
+	{
+		const unsigned int frameIdx = specificFrame ? *specificFrame : i;
+		const Scalar curtime = time_start + Scalar( frameIdx ) * step_size;
+
+		{
+			// A Job render request holds the prepared mutation freeze
+			// (Job::BeginPreparedRequest); this frame-time evaluation is the
+			// render's own internal mutation, as in
+			// PixelBasedRasterizerHelper::PrepareSceneForFrame.  Without the
+			// capability keyframed lights / objects silently keep frame 0's pose.
+			struct PreparedInternalTransformScope {
+				PreparedInternalTransformScope() { Transformable::BeginPreparedInternalMutation(); }
+				~PreparedInternalTransformScope() { Transformable::EndPreparedInternalMutation(); }
+			} preparedTransformScope;
+			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
+			// DL-463 (b): rebuild the light-selection tables for this frame's
+			// light poses / powers (in place: the integrator's pointer stays).
+			if( bHasKeyframedObjects ) {
+				pCaster->RefreshLightSamplers();
+			}
+		}
+		pScene.SetSceneTime( curtime );
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"MLTSpectralRasterizer:: Rasterizing frame %u of %u (t=%.4f)",
+			frameIdx + 1, num_frames, curtime );
+
+#ifdef RISE_ENABLE_OIDN
+		BeginRenderTimer();
+#endif
+
+		IRasterImage* pImage = 0;
+		RasterImageGuard imageGuard( pImage );
+		// Map per-frame progress into this frame's whole-animation slot.
+		// Pass the stack adapter explicitly: the authored callback member
+		// remains valid even if rendering or a progress callback throws.
+		IProgressCallback* const savedProgress = pProgressFunc;
+		FrameSlotProgressCallback frameSlotProgress( savedProgress, i, total_frames );
+		const bool completed = RenderFrameOfMLTSpectral( pScene, *pCamera, width, height,
+			pImage, savedProgress ? &frameSlotProgress : nullptr );
+
+		if( !completed )
+		{
+			cancelled = true;
+			if( nBootstrap == 0 ) {
+				// Not a cancel: RenderFrameOfMLT refuses zero bootstrap samples.
+				GlobalLog()->PrintEx( eLog_Error,
+					"MLTSpectralRasterizer:: Animation failed at frame %u of %u: bootstrap sample count is 0; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			} else {
+				GlobalLog()->PrintEx( eLog_Event,
+					"MLTSpectralRasterizer:: Animation cancelled during frame %u of %u; "
+					"skipping remaining frames",
+					frameIdx + 1, num_frames );
+			}
+			break;
+		}
+
+		if( pImage )
+		{
+#ifdef RISE_ENABLE_OIDN
+			const bool willDenoise = bDenoisingEnabled;
+#else
+			const bool willDenoise = false;
+#endif
+			const AOVBuffers::Plan aovPlan = MakeAOVPlan( mFrameStore, willDenoise );
+			std::unique_ptr<AOVBuffers> aovBuffers(
+				aovPlan.Any() ? new AOVBuffers( width, height, aovPlan ) : nullptr );
+			if( aovBuffers ) {
+				CollectFirstHitAOVs( pScene, *pCaster, *aovBuffers,
+					willDenoise ? 4u : 1u, mDenoisingPrefilter );
+				PropagateAOVsToFrameStore( mFrameStore, *aovBuffers );
+				aovBuffers->ReleaseDepthStorage();
+			}
+#ifdef RISE_ENABLE_OIDN
+			if( bDenoisingEnabled ) {
+				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
+
+				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+					EstimateDenoiseWorkPerMegapixel() );
+
+				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
+			} else
+#endif
+			{
+				FlushToOutputs( *pImage, 0, frameIdx );
+			}
+		}
+	}
+
+	if( cancelled && nBootstrap == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error, "MLTSpectralRasterizer:: Animation failed: bootstrap sample count is 0" );
+	} else if( cancelled ) {
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation cancelled by user" );
+	} else {
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation complete" );
+	}
 }

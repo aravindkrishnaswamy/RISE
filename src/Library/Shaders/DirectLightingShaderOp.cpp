@@ -5,7 +5,7 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 28, 2005
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -15,20 +15,16 @@
 #include "DirectLightingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/MediumTracking.h"
+#include "../Lights/LightSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 DirectLightingShaderOp::DirectLightingShaderOp(
-	const IMaterial* pBSDF_,
-	const bool nonmeshlights_,
-	const bool meshlights_,
-	const bool cache_
-	) : 
-  pBSDF( pBSDF_ ),
-  nonmeshlights( nonmeshlights_ ),
-  meshlights( meshlights_ ),
-  cache( cache_ )
+	const IMaterial* pBSDF_
+	) :
+  pBSDF( pBSDF_ )
 {
 	if( pBSDF ) {
 		pBSDF->addref();
@@ -45,11 +41,11 @@ DirectLightingShaderOp::~DirectLightingShaderOp( )
 //! Tells the shader to apply shade to the given intersection point
 void DirectLightingShaderOp::PerformOperation(
 	const RuntimeContext& rc,					///< [in] Runtime context
-	const RayIntersection& ri,					///< [in] Intersection information 
+	const RayIntersection& ri,					///< [in] Intersection information
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -63,51 +59,83 @@ void DirectLightingShaderOp::PerformOperation(
 	const IScene* pScene = caster.GetAttachedScene();
 	const IBSDF* pBRDF = pBSDF ? pBSDF->GetBSDF() : (ri.pMaterial ? ri.pMaterial->GetBSDF() : 0);
 
-	if( pScene && pBRDF ) {
-
-		// Lets check our rasterizer state to see if we even need to do work!
-		if( cache ) {
-			if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast ) ) {
-				// State hasn't changed, use the value already there
-				return;
-			}
-		}
-
-		const ILightManager* pLM = pScene->GetLights();
-		if( pLM && nonmeshlights ) {
-			pLM->ComputeDirectLighting( ri.geometric, caster, *pBRDF, ri.pObject->DoesReceiveShadows(), c );
-		}
-
-		// Account for lights from luminaries
-		const ILuminaryManager* pLumManager = caster.GetLuminaries();
-		if( pLumManager && meshlights) {
-			IndependentSampler fallbackSampler( rc.random );
-			ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-			c = c + pLumManager->ComputeDirectLighting( ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
-		}
-
-		// Add the result to the rasterizer state cache
-		if( cache ) {
-			rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast );
-		}
+	if( !pScene || !pBRDF ) {
+		return;
 	}
+
+	// Route through the unified LightSampler.  Handles analytic
+	// lights (ambient, directional, point, spot) and mesh luminaires
+	// through a single MIS-weighted estimator that honours the Light
+	// BVH / RIS / alias-table selection configured on the sampler.
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) {
+		return;
+	}
+
+	IndependentSampler fallbackSampler( rc.random );
+	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
+	c = pLS->EvaluateDirectLighting(
+		ri.geometric,
+		*pBRDF,
+		ri.pMaterial,
+		caster,
+		sampler,
+		ri.pObject,
+		pMedium,
+		false,	// isVolumeScatter
+		pMediumObject,	// fire: medium resolved from the enclosure stack above
+		// DL-74 P2: no guiding hook on the legacy chain, but the
+		// MIS-partner aggregate pdf must still be evaluated under the LIVE
+		// IOR stack -- this arm's partner is EmissionShaderOp's
+		// `rs.MisPartnerPdf()`, a density the previous vertex's SPF
+		// produced under exactly this stack.
+		/*pGuidedBlend*/ 0,
+		&ior_stack,
+		// DL-185: `RayCaster::CastRay{,NM,HWSS}` stamps its own local
+		// cast-level RR compensation onto `rs` before dispatching to this
+		// shader op (see `RAY_STATE::castRRCompensation`) -- fold it into
+		// the training integrand so this NEE arm's trained optimal-MIS
+		// moment agrees with the BSDF-escape arm's (DL-148).  Default 1
+		// for every producer that predates the field.
+		rs.castRRCompensation,
+		// DL-171/DL-209: does a competing BSDF-sampled strategy actually
+		// exist in THIS shader's own op list?  Stamped by the owning
+		// StandardShader/AdvancedShader (see RAY_STATE::
+		// chainHasBsdfContinuationOp's doc) -- default TRUE for every
+		// caller that predates the field, so this is a no-op everywhere
+		// but the legacy shader-op chain.
+		rs.chainHasBsdfContinuationOp,
+		// DL-292: price the NEE segment's graded-index factor (DL-09) from
+		// this hit's stack.  RayCaster::CastRay{,NM,HWSS} Advances that
+		// stack to the hit before shading it (and scales the whole shade by
+		// the factor of the segment that reached it), so its top is n(hit)
+		// and every BSDF-sampled sibling -- a distribution-tracing /
+		// reflection / refraction continuation, or a PathTracingShaderOp --
+		// prices its arrival at an emitter from the same value.  Before
+		// DL-292 this passed nothing and the legacy chain kept the
+		// pre-DL-09 accounting.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire: full outer-to-inner medium state for the shadow-medium walk.
+		&ior_stack );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
-/// \return Amplitude of spectral function 
+/// \return Amplitude of spectral function
 Scalar DirectLightingShaderOp::PerformOperationNM(
 	const RuntimeContext& rc,					///< [in] Runtime context
-	const RayIntersection& ri,					///< [in] Intersection information 
+	const RayIntersection& ri,					///< [in] Intersection information
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
-	Scalar c=0;
-
 	// Only do stuff on a normal pass or on final gather
 	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
@@ -116,15 +144,41 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 	const IScene* pScene = caster.GetAttachedScene();
 	const IBSDF* pBRDF = pBSDF ? pBSDF->GetBSDF() : (ri.pMaterial ? ri.pMaterial->GetBSDF() : 0);
 
-	if( pScene && pBRDF ) {
-		// Account for lights from luminaries
-		const ILuminaryManager* pLumManager = caster.GetLuminaries();
-		if( pLumManager && meshlights ) {
-			IndependentSampler fallbackSamplerNM( rc.random );
-			ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
-			c = pLumManager->ComputeDirectLightingNM( ri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
-		}
+	if( !pScene || !pBRDF ) {
+		return 0;
 	}
 
-	return c;
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) {
+		return 0;
+	}
+
+	IndependentSampler fallbackSampler( rc.random );
+	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
+	return pLS->EvaluateDirectLightingNM(
+		ri.geometric,
+		*pBRDF,
+		ri.pMaterial,
+		nm,
+		caster,
+		sampler,
+		ri.pObject,
+		pMedium,
+		false,	// isVolumeScatter
+		pMediumObject,	// fire -- see the RGB twin above
+		// DL-74 P2 -- see the RGB twin above.
+		/*pGuidedBlend*/ 0,
+		&ior_stack,
+		// DL-185 -- see the RGB twin above.
+		rs.castRRCompensation,
+		// DL-171/DL-209 -- see the RGB twin above.
+		rs.chainHasBsdfContinuationOp,
+		// DL-292 -- see the RGB twin above.
+		&ior_stack,
+		/*bSMSCoversDeltaLights*/ false,
+		// Fire -- see the RGB twin above.
+		&ior_stack );
 }

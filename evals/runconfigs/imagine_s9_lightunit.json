@@ -1,0 +1,15 @@
+{
+ "//": "Arc-83 slice-1 test (2026-08-12): lighting rebuilt so each LIGHT gets its own completion. Two pre-committed falsifiers from 83 SS6.1: (1) light COUNT should stay ~6-8 -- a jump means the unit is still wrong; (2) AREA-LIGHT SHARE should rise sharply with kLightPalette byte-identical, and if it does not, cost was never the mechanism and the principle does not transfer from construction to lighting. Reference: gemini area lights were 1/0/0/0/2 across five runs pre-slice, always with 6-8 lights. Also watch completions spent (1+N) and whether the emitters land in frame.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s9_lightunit"
+}

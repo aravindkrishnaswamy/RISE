@@ -341,8 +341,13 @@ void DetectorSphere::PerformMeasurement(
 
 			IndependentSampler samplerWrapper( random );
 			IORStack iorStack( 1.0 );
+			// NO eta^2 basic-radiance factor (debt 30): a detector sphere is a
+			// FLUX measurement rig, not a radiance gather.  Its walk starts at
+			// the emitter and the quantity it integrates is power on the
+			// detector, so the basic-radiance factor does not enter.
 			pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
-			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+			Scalar selectedProbability=0;
+			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 
 			if( pScat )
 			{
@@ -411,7 +416,7 @@ void DetectorSphere::PerformMeasurement(
 							if( !patch ) {
 								GlobalLog()->PrintEx( eLog_Warning, "DetectorSphere::PerformMeasurement, Couldn't find patch, phi: %f, theta: %f", phi, theta );
 							} else {
-								patch->dRatio += power_each_sample*ColorMath::MaxValue(pScat->kray);
+								patch->dRatio += (power_each_sample/selectedProbability)*ColorMath::MaxValue(pScat->kray);
 							}
 						}
 					}

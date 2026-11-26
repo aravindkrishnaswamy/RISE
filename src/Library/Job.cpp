@@ -12,24 +12,1708 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include "PhotonMapping/GlobalPelPhotonMap.h"
+#include "PhotonMapping/GlobalSpectralPhotonMap.h"
+#include "PhotonMapping/CausticSpectralPhotonMap.h"
+#include "PhotonMapping/CausticPelPhotonMap.h"
+#include "PhotonMapping/TranslucentPelPhotonMap.h"
+#include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
+#include <climits>   // UINT_MAX for max_bounces validation
+#include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
+#include "Cameras/CameraCommon.h"
+#include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
+#include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
+#include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
+#include "Geometry/SDFGeometry.h"
+#include "Geometry/HairGenerator.h"	// ValidateHairGuides (AddHairGuides shares the generator's checks)
+#include "Materials/CoatedMaterial.h"	// AddCoatedMaterial: the substrate allowlist predicate + its text
+#include "Materials/FabricMaterial.h"	// AddFabricMaterial: the allowlist predicate + the preset-mismatch check
+#include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
+#include "Materials/WeavePresets.h"	// AddWeaveMaterial: the `weave` draft enum + the Phase-2 `fabric` preset table
+#include "Utilities/Color/ColorUtils.h"
+#include "Utilities/DiskFileWriteBuffer.h"
+#include <cstring>
+#include <cstdint>
+#include <typeinfo>
+#define _USE_MATH_DEFINES
 #include "Job.h"
+#include "SceneEditor/CancellableProgressCallback.h"
+#include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>   // P5 Slice 4: capture the loaded file's mtime/size for the CST-save external-mod guard
 #include "RISE_API.h"
+#include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
+#include "Utilities/FiniteMath.h"
+#include "Utilities/RISECBOR64.h"
+#include "Utilities/FireSequence.h"
+#include "Simulation/SimulationTimeline.h"
+#include "Utilities/FireSimulationRecords.h"
+#include "Version.h"
+#include "Utilities/Transformable.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include "Geometry/GeometryUtilities.h"
+#include "Geometry/TriangleMeshGeometry.h"
+#include "Geometry/TriangleMeshGeometryIndexed.h"
+#include "Geometry/SimulatedMeshGeometry.h"
+#include "Animation/Animator.h"
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include "Importers/GLTFSceneImporter.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
 #include "Shaders/DirectLightingShaderOp.h"
 #include "Shaders/DistributionTracingShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
+#include "Rendering/FrameStore.h"
+#include "Rendering/FileRasterizerOutput.h"
+#include "Rendering/Rasterizer.h"
+#include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
+#include "Rendering/BlockRasterizeSequence.h"
+#include "Rendering/AdaptiveTileSizer.h"
+#include "Cameras/PinholeCamera.h"
+#include "Cameras/ThinLensCamera.h"
+#include "Cameras/FisheyeCamera.h"
+#include "Cameras/OrthographicCamera.h"
 #include "Utilities/RString.h"
+#include "Utilities/Math3D/Constants.h"   // DEG_TO_RAD / RAD_TO_DEG for radiance_orient round-trip
+#include "Utilities/RasterizerDefaults.h"
+#include "SceneEditor/ChunkDescriptorRegistry.h"   // F5 S2 round 2: insert positioning + rasterizer-class detection by ChunkCategory
 #include <stdio.h>
+#include <set>
 #include "Utilities/MediaPathLocator.h"
+#include "Utilities/ThreadPool.h"
+#include "Utilities/CPUTopology.h"
 #include "Interfaces/IOptions.h"
+#include "Interfaces/IScalarPainter.h"
+#include "Interfaces/IPainterManager.h"
+#include "Painters/PainterToScalarAdapter.h"
+#include "Materials/HeterogeneousMedium.h"
+#include "Materials/HenyeyGreensteinPhaseFunction.h"
+#include "Painters/ExpressionPainter.h"	// Implementation::BuildExpressionProgramFromChunkFields (AddExpressionPainter)
+#include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (AddRampPainter)
 #include "Intersection/RayIntersectionGeometric.h"
+#include <cctype>
+#include <cstdlib>
+#include <atomic>   // Facet 5 slice 1a: process-global CST head-uuid mint (NextCstHeadUuid)
+#include <filesystem>
+
+#if __has_include("RendererBuildIdentity.generated.h")
+#include "RendererBuildIdentity.generated.h"
+#else
+#define RISE_BUILD_SOURCE_REVISION ""
+#define RISE_BUILD_DIRTY_STATE "unavailable"
+#define RISE_BUILD_DIRTY_DIFF_SHA256 ""
+#define RISE_BUILD_FP_CONTRACTION_MODE ""
+#define RISE_BUILD_OPTIMIZATION_MODE ""
+#define RISE_BUILD_LTO_MODE ""
+#endif
+
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#include <zlib.h>
+#endif
+#ifndef NO_TIFF_SUPPORT
+#include <tiffvers.h>
+#endif
+#ifndef NO_EXR_SUPPORT
+#include <OpenEXR/OpenEXRConfig.h>
+#include <Imath/ImathConfig.h>
+#endif
+#ifdef RISE_ENABLE_OIDN
+#include <OpenImageDenoise/config.h>
+#endif
+#ifdef RISE_ENABLE_OPENPGL
+#include <openpgl/version.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach/mach_init.h>
+#include <mach/task_info.h>
+#include <mach-o/dyld.h>
+#include <mach-o/dyld_images.h>
+#include <mach-o/loader.h>
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <dlfcn.h>
+#include <link.h>
+#include <unistd.h>
+#elif defined(_WIN32)
+#include <psapi.h>
+#include <winver.h>
+#endif
 
 using namespace RISE;
+
+bool RISE::Implementation::BuildIdentityModuleNameMatches(
+	const std::string& path,
+	const std::vector<std::string>& acceptedNames )
+{
+	const std::size_t slash = path.find_last_of("/\\");
+	std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+	std::transform(name.begin(),name.end(),name.begin(),
+		[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+	if( name.compare(0u,3u,"lib") == 0 ) name.erase(0u,3u);
+	for( std::string accepted : acceptedNames ) {
+		std::transform(accepted.begin(),accepted.end(),accepted.begin(),
+			[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+		if( name.compare(0u,accepted.size(),accepted) != 0 ) continue;
+		if( name.size() == accepted.size() ) return true;
+		const unsigned char boundary =
+			static_cast<unsigned char>(name[accepted.size()]);
+		if( boundary == '.' || boundary == '-' || boundary == '_' ||
+			std::isdigit(boundary) ) return true;
+	}
+	return false;
+}
+
+bool RISE::Implementation::ReadStoredAPKBuildIdentity(
+	const std::string& modulePath,
+	std::vector<unsigned char>& bytes )
+{
+	const std::size_t separator = modulePath.find("!/");
+	if( separator == std::string::npos || separator == 0u ||
+		separator+2u >= modulePath.size() ) return false;
+	const std::string archivePath = modulePath.substr(0u,separator);
+	const std::string entryName = modulePath.substr(separator+2u);
+	std::ifstream input(archivePath,std::ios::binary);
+	if( !input ) return false;
+	input.seekg(0,std::ios::end);
+	const std::streamoff fileSize = input.tellg();
+	if( fileSize < 22 ) return false;
+	auto readAt = [&input,fileSize]( const std::uint64_t offset,
+		unsigned char* destination, const std::size_t count ) {
+		if( offset > static_cast<std::uint64_t>(fileSize) ||
+			count > static_cast<std::uint64_t>(fileSize)-offset ) return false;
+		input.clear();
+		input.seekg(static_cast<std::streamoff>(offset),std::ios::beg);
+		input.read(reinterpret_cast<char*>(destination),
+			static_cast<std::streamsize>(count));
+		return input.good() || (input.eof() &&
+			static_cast<std::size_t>(input.gcount()) == count);
+	};
+	auto little16 = []( const unsigned char* value ) {
+		return static_cast<std::uint16_t>(value[0]) |
+			(static_cast<std::uint16_t>(value[1])<<8u);
+	};
+	auto little32 = []( const unsigned char* value ) {
+		return static_cast<std::uint32_t>(value[0]) |
+			(static_cast<std::uint32_t>(value[1])<<8u) |
+			(static_cast<std::uint32_t>(value[2])<<16u) |
+			(static_cast<std::uint32_t>(value[3])<<24u);
+	};
+	const std::size_t tailSize = static_cast<std::size_t>(std::min<std::streamoff>(
+		fileSize,static_cast<std::streamoff>(65557u)));
+	std::vector<unsigned char> tail(tailSize);
+	if( !readAt(static_cast<std::uint64_t>(fileSize)-tailSize,
+		tail.data(),tail.size()) ) return false;
+	std::size_t endOffset = 0u;
+	bool foundEnd = false;
+	for( std::size_t position=tail.size()-22u+1u; position-- > 0u; ) {
+		const unsigned char* candidate = &tail[position];
+		if( little32(candidate) != 0x06054b50u ) continue;
+		const std::uint16_t commentSize = little16(candidate+20u);
+		if( position+22u+commentSize != tail.size() ) continue;
+		endOffset = position;
+		foundEnd = true;
+		break;
+	}
+	if( !foundEnd ) return false;
+	const unsigned char* end = &tail[endOffset];
+	const std::uint16_t disk = little16(end+4u);
+	const std::uint16_t centralDisk = little16(end+6u);
+	const std::uint16_t diskEntries = little16(end+8u);
+	const std::uint16_t totalEntries = little16(end+10u);
+	const std::uint32_t centralSize = little32(end+12u);
+	const std::uint32_t centralOffset = little32(end+16u);
+	if( disk != 0u || centralDisk != 0u || diskEntries != totalEntries ||
+		totalEntries == 0xffffu || centralSize == 0xffffffffu ||
+		centralOffset == 0xffffffffu ||
+		static_cast<std::uint64_t>(centralOffset)+centralSize >
+			static_cast<std::uint64_t>(fileSize) ) return false;
+	std::uint64_t cursor = centralOffset;
+	for( std::uint16_t entry=0u; entry<totalEntries; ++entry ) {
+		unsigned char central[46];
+		if( !readAt(cursor,central,sizeof(central)) ||
+			little32(central) != 0x02014b50u ) return false;
+		const std::uint16_t flags = little16(central+8u);
+		const std::uint16_t method = little16(central+10u);
+		const std::uint32_t compressedSize = little32(central+20u);
+		const std::uint32_t uncompressedSize = little32(central+24u);
+		const std::uint16_t nameSize = little16(central+28u);
+		const std::uint16_t extraSize = little16(central+30u);
+		const std::uint16_t commentSize = little16(central+32u);
+		const std::uint16_t startDisk = little16(central+34u);
+		const std::uint32_t localOffset = little32(central+42u);
+		std::vector<unsigned char> encodedName(nameSize);
+		if( !readAt(cursor+sizeof(central),encodedName.data(),encodedName.size()) ) {
+			return false;
+		}
+		const std::string name(encodedName.begin(),encodedName.end());
+		if( name == entryName ) {
+			if( (flags&1u) || method != 0u || compressedSize != uncompressedSize ||
+				startDisk != 0u || compressedSize == 0xffffffffu ||
+				localOffset == 0xffffffffu ) return false;
+			unsigned char local[30];
+			if( !readAt(localOffset,local,sizeof(local)) ||
+				little32(local) != 0x04034b50u || little16(local+8u) != 0u ||
+				(little16(local+6u)&1u) ) return false;
+			const std::uint16_t localNameSize = little16(local+26u);
+			const std::uint16_t localExtraSize = little16(local+28u);
+			std::vector<unsigned char> localName(localNameSize);
+			if( !readAt(static_cast<std::uint64_t>(localOffset)+sizeof(local),
+				localName.data(),localName.size()) ||
+				std::string(localName.begin(),localName.end()) != entryName ) return false;
+			const std::uint64_t dataOffset = static_cast<std::uint64_t>(localOffset)+
+				sizeof(local)+localNameSize+localExtraSize;
+			bytes.resize(uncompressedSize);
+			return readAt(dataOffset,bytes.data(),bytes.size());
+		}
+		cursor += sizeof(central)+nameSize+extraSize+commentSize;
+		if( cursor > static_cast<std::uint64_t>(centralOffset)+centralSize ) return false;
+	}
+	return false;
+}
+
+// P2a: a Job-level edit that changes the emitter or environment set must
+// bump the Scene's light-topology generation, so a REUSED RayCaster rebuilds
+// its LightSampler/EnvironmentSampler on the next AttachScene (mirrors the
+// SceneEditor path).  Downcast like SceneEditor::BumpSceneLightGeneration.
+static void BumpSceneLightGen( RISE::IScenePriv* pScene )
+{
+	if( RISE::Implementation::Scene* sc = dynamic_cast<RISE::Implementation::Scene*>( pScene ) )
+		sc->BumpLightTopologyGeneration();
+}
+
+namespace
+{
+	RISECBOR64::Value FireText( const char* value )
+	{
+		return RISECBOR64::Value::String(value ? value : "");
+	}
+
+	RISECBOR64::Value FireBool( const bool value )
+	{
+		return RISECBOR64::Value::Bool(value);
+	}
+
+	RISECBOR64::Value FireUnsigned( const unsigned int value )
+	{
+		return RISECBOR64::Value::Unsigned(value);
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, std::size_t count );
+
+	bool FireEncodeRecord(
+		const RISECBOR64::Value& value,
+		RISECBOR64::Bytes& bytes,
+		const char* recordName )
+	{
+		std::string error;
+		if( RISECBOR64::Encode(value,bytes,&error) ) return true;
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: could not encode %s: %s",recordName,error.c_str());
+		return false;
+	}
+
+	bool ReadIdentityFile(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes )
+	{
+		std::ifstream input(path,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		return input.good() || input.eof();
+	}
+
+	bool ReadLoadedBinaryIdentity(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes,
+		std::string& hashBasis )
+	{
+		if( ReadIdentityFile(path,bytes) ) {
+			hashBasis = "file_bytes";
+			return true;
+		}
+#if defined(__APPLE__)
+		if( __builtin_available(macOS 11.0, *) ) {
+			if( _dyld_shared_cache_contains_path(path.c_str()) ) {
+				task_dyld_info_data_t taskDyld = {};
+				mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+				if( task_info(mach_task_self(),TASK_DYLD_INFO,
+					reinterpret_cast<task_info_t>(&taskDyld),&count) != KERN_SUCCESS ||
+					!taskDyld.all_image_info_addr ) return false;
+				const dyld_all_image_infos* infos =
+					reinterpret_cast<const dyld_all_image_infos*>(
+						taskDyld.all_image_info_addr);
+				if( infos->version < 13u ) return false;
+				bool nonzeroUUID = false;
+				bytes.assign(infos->sharedCacheUUID,infos->sharedCacheUUID+16u);
+				for( unsigned char value : bytes ) nonzeroUUID = nonzeroUUID || value != 0u;
+				if( !nonzeroUUID ) return false;
+				bool foundImageUUID = false;
+				const std::uint32_t imageCount = _dyld_image_count();
+				for( std::uint32_t i=0u; i<imageCount && !foundImageUUID; ++i ) {
+					const char* imagePath = _dyld_get_image_name(i);
+					if( !imagePath || path != imagePath ) continue;
+					const mach_header* header = _dyld_get_image_header(i);
+					if( !header || header->magic != MH_MAGIC_64 ) return false;
+					const mach_header_64* header64 =
+						reinterpret_cast<const mach_header_64*>(header);
+					const load_command* command = reinterpret_cast<const load_command*>(
+						reinterpret_cast<const unsigned char*>(header64)+sizeof(mach_header_64));
+					for( std::uint32_t j=0u; j<header64->ncmds; ++j ) {
+						if( command->cmd == LC_UUID &&
+							command->cmdsize >= sizeof(uuid_command) ) {
+							const uuid_command* imageUUID =
+								reinterpret_cast<const uuid_command*>(command);
+							bytes.insert(bytes.end(),imageUUID->uuid,imageUUID->uuid+16u);
+							foundImageUUID = true;
+							break;
+						}
+						if( command->cmdsize < sizeof(load_command) ) return false;
+						command = reinterpret_cast<const load_command*>(
+							reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+					}
+				}
+				if( !foundImageUUID ) return false;
+				bytes.push_back(0u);
+				bytes.insert(bytes.end(),path.begin(),path.end());
+				hashBasis = "dyld_shared_cache_and_image_uuids";
+				return true;
+			}
+		}
+#endif
+#if defined(__ANDROID__)
+		if( RISE::Implementation::ReadStoredAPKBuildIdentity(path,bytes) ) {
+			hashBasis = "apk_stored_entry_bytes";
+			return true;
+		}
+#endif
+		return false;
+	}
+
+	std::string LoadedRuntimeBinaryVersion( const std::string& path )
+	{
+#if defined(__APPLE__)
+		const std::uint32_t imageCount = _dyld_image_count();
+		for( std::uint32_t i=0u; i<imageCount; ++i ) {
+			const char* imagePath = _dyld_get_image_name(i);
+			if( !imagePath || path != imagePath ) continue;
+			const mach_header* header = _dyld_get_image_header(i);
+			if( !header || (header->magic != MH_MAGIC && header->magic != MH_MAGIC_64) ) {
+				return std::string();
+			}
+			const std::size_t headerSize = header->magic == MH_MAGIC_64 ?
+				sizeof(mach_header_64) : sizeof(mach_header);
+			const load_command* command = reinterpret_cast<const load_command*>(
+				reinterpret_cast<const unsigned char*>(header)+headerSize);
+			for( std::uint32_t j=0u; j<header->ncmds; ++j ) {
+				if( command->cmdsize < sizeof(load_command) ) return std::string();
+				if( command->cmd == LC_ID_DYLIB && command->cmdsize >= sizeof(dylib_command) ) {
+					const std::uint32_t version =
+						reinterpret_cast<const dylib_command*>(command)->dylib.current_version;
+					return "mach_o_current_version:"+
+						std::to_string((version>>16u)&0xffffu)+"."+
+						std::to_string((version>>8u)&0xffu)+"."+
+						std::to_string(version&0xffu);
+				}
+				command = reinterpret_cast<const load_command*>(
+					reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+			}
+			return std::string();
+		}
+		return std::string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		const std::size_t slash = path.find_last_of('/');
+		const std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+		const std::size_t suffix = name.find(".so.");
+		return suffix != std::string::npos && suffix+4u < name.size() ?
+			"elf_soname_suffix:"+name.substr(suffix+4u) : std::string();
+#elif defined(_WIN32)
+		HMODULE versionLibrary = GetModuleHandleA("version.dll");
+		bool releaseVersionLibrary = false;
+		if( !versionLibrary ) {
+			versionLibrary = LoadLibraryA("version.dll");
+			releaseVersionLibrary = versionLibrary != nullptr;
+		}
+		if( !versionLibrary ) return std::string();
+		using SizeFunction = DWORD (WINAPI*)(LPCSTR,LPDWORD);
+		using InfoFunction = BOOL (WINAPI*)(LPCSTR,DWORD,DWORD,LPVOID);
+		using QueryFunction = BOOL (WINAPI*)(LPCVOID,LPCSTR,LPVOID*,PUINT);
+		const SizeFunction sizeFunction = reinterpret_cast<SizeFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoSizeA"));
+		const InfoFunction infoFunction = reinterpret_cast<InfoFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoA"));
+		const QueryFunction queryFunction = reinterpret_cast<QueryFunction>(
+			GetProcAddress(versionLibrary,"VerQueryValueA"));
+		DWORD ignored = 0u;
+		const DWORD size = sizeFunction ? sizeFunction(path.c_str(),&ignored) : 0u;
+		std::vector<unsigned char> data(size);
+		LPVOID raw = nullptr;
+		UINT rawSize = 0u;
+		const bool read = size && infoFunction && queryFunction &&
+			infoFunction(path.c_str(),0u,size,data.data()) &&
+			queryFunction(data.data(),"\\",&raw,&rawSize) &&
+			rawSize >= sizeof(VS_FIXEDFILEINFO);
+		std::string version;
+		if( read ) {
+			const VS_FIXEDFILEINFO* fixed = static_cast<const VS_FIXEDFILEINFO*>(raw);
+			if( fixed->dwSignature == 0xfeef04bdu ) {
+				version = "pe_file_version:"+
+					std::to_string(HIWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(HIWORD(fixed->dwFileVersionLS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionLS));
+			}
+		}
+		if( releaseVersionLibrary ) FreeLibrary(versionLibrary);
+		return version;
+#else
+		(void)path;
+		return std::string();
+#endif
+	}
+
+	std::string CurrentRendererBinaryPath()
+	{
+#if defined(__ANDROID__)
+		Dl_info info = {};
+		if( dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath),&info) == 0 ||
+			!info.dli_fname || !info.dli_fname[0] ) return std::string();
+		std::error_code error;
+		const std::filesystem::path canonical =
+			std::filesystem::weakly_canonical(info.dli_fname,error);
+		return error ? std::string(info.dli_fname) : canonical.string();
+#elif defined(__APPLE__)
+		std::uint32_t size = 0u;
+		_NSGetExecutablePath(nullptr,&size);
+		std::vector<char> path(size);
+		if( _NSGetExecutablePath(path.data(),&size) != 0 ) return std::string();
+		return std::filesystem::weakly_canonical(path.data()).string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		std::vector<char> path(4096u);
+		const ssize_t size = readlink("/proc/self/exe",path.data(),path.size()-1u);
+		if( size <= 0 ) return std::string();
+		path[static_cast<std::size_t>(size)] = '\0';
+		return std::string(path.data());
+#elif defined(_WIN32)
+		std::vector<char> path(32768u);
+		const DWORD size = GetModuleFileNameA(nullptr,path.data(),
+			static_cast<DWORD>(path.size()));
+		return size && size < static_cast<DWORD>(path.size()) ?
+			std::string(path.data(),size) : std::string();
+#else
+		return std::string();
+#endif
+	}
+
+	std::vector<std::string> LoadedBinaryPaths()
+	{
+		std::vector<std::string> paths;
+#if defined(__APPLE__)
+		const std::uint32_t count = _dyld_image_count();
+		for( std::uint32_t i=0u; i<count; ++i ) {
+			const char* path = _dyld_get_image_name(i);
+			if( path && path[0] ) paths.push_back(path);
+		}
+#elif defined(__linux__) || defined(__ANDROID__)
+		struct Collector {
+			static int Append( dl_phdr_info* info, std::size_t, void* opaque )
+			{
+				std::vector<std::string>& output =
+					*static_cast<std::vector<std::string>*>(opaque);
+				if( info->dlpi_name && info->dlpi_name[0] ) output.push_back(info->dlpi_name);
+				return 0;
+			}
+		};
+		dl_iterate_phdr(&Collector::Append,&paths);
+#elif defined(_WIN32)
+		HMODULE modules[1024];
+		DWORD bytes = 0;
+		if( EnumProcessModules(GetCurrentProcess(),modules,sizeof(modules),&bytes) ) {
+			const DWORD count = std::min<DWORD>(
+				bytes/static_cast<DWORD>(sizeof(HMODULE)),1024u);
+			for( DWORD i=0; i<count; ++i ) {
+				char path[32768];
+				const DWORD size = GetModuleFileNameA(modules[i],path,
+					static_cast<DWORD>(sizeof(path)));
+				if( size ) paths.push_back(std::string(path,size));
+			}
+		}
+#endif
+		std::sort(paths.begin(),paths.end());
+		paths.erase(std::unique(paths.begin(),paths.end()),paths.end());
+		return paths;
+	}
+
+	RISECBOR64::Value DependencyBuildIdentity(
+		const std::vector<std::string>& acceptedBinaryNames,
+		const char* version,
+		const bool enabled,
+		const bool embedded,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		if( enabled && !embedded ) {
+			for( const std::string& path : loadedPaths ) {
+				if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+					path,acceptedBinaryNames) ) continue;
+				RISECBOR64::Bytes fileBytes;
+				std::string hashBasis;
+				if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
+					complete = false;
+					continue;
+				}
+				binaries.push_back(Value::MapValue({
+					{ "hash_basis", Value::String(hashBasis) },
+					{ "path", Value::String(path) },
+					{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
+				}));
+			}
+			if( binaries.empty() ) complete = false;
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(enabled ? "linked" : "not_linked") },
+			{ "linkage", Value::String(enabled ? (embedded ? "embedded" : "dynamic") : "not_linked") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(enabled ? version : "not_linked") }
+		});
+	}
+
+	RISECBOR64::Value RuntimeDependencyBuildIdentity(
+		const std::vector<std::string>& acceptedBinaryNames,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		std::vector<std::string> binaryVersions;
+		for( const std::string& path : loadedPaths ) {
+			if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+				path,acceptedBinaryNames) ) continue;
+			RISECBOR64::Bytes fileBytes;
+			std::string hashBasis;
+			if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
+				complete = false;
+				continue;
+			}
+			const std::size_t slash = path.find_last_of("/\\");
+			const std::string binaryHash = RISECBOR64::SHA256Hex(fileBytes);
+			const std::string binaryVersion = LoadedRuntimeBinaryVersion(path);
+			if( binaryVersion.empty() ) {
+				complete = false;
+				continue;
+			}
+			binaryVersions.push_back(path.substr(
+				slash == std::string::npos ? 0u : slash+1u)+"@version="+
+				binaryVersion+"@sha256="+binaryHash);
+			binaries.push_back(Value::MapValue({
+				{ "hash_basis", Value::String(hashBasis) },
+				{ "path", Value::String(path) },
+				{ "sha256", Value::String(binaryHash) }
+			}));
+		}
+		std::string version = "not_loaded";
+		if( !binaryVersions.empty() ) {
+			version = "runtime_binaries_v1:";
+			for( std::size_t i=0u; i<binaryVersions.size(); ++i ) {
+				if( i ) version += ',';
+				version += binaryVersions[i];
+			}
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(
+				binaries.empty() ? "not_loaded" : "loaded") },
+			{ "linkage", Value::String(
+				binaries.empty() ? "runtime_optional" : "runtime_loaded") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(version) }
+		});
+	}
+
+	bool BuildRendererBuildIdentity(
+		RISECBOR64::Bytes& bytes,
+		std::string& identity )
+	{
+		if( !RISE_BUILD_SOURCE_REVISION[0] || !RISE_BUILD_DIRTY_DIFF_SHA256[0] ||
+			!RISE_BUILD_FP_CONTRACTION_MODE[0] || !RISE_BUILD_OPTIMIZATION_MODE[0] ||
+			!RISE_BUILD_LTO_MODE[0] ) {
+			return false;
+		}
+		const std::string contractionMode = RISE_BUILD_FP_CONTRACTION_MODE;
+		const std::string optimizationMode = RISE_BUILD_OPTIMIZATION_MODE;
+		const std::string ltoMode = RISE_BUILD_LTO_MODE;
+		if( contractionMode != "off" && contractionMode != "on" &&
+			contractionMode != "fast" && contractionMode != "compiler_default" ) {
+			return false;
+		}
+		if( optimizationMode != "disabled" && optimizationMode != "O1" &&
+			optimizationMode != "O2" && optimizationMode != "O3" &&
+			optimizationMode != "Os" && optimizationMode != "Oz" &&
+			optimizationMode != "compiler_default" ) return false;
+		if( ltoMode != "off" && ltoMode != "thin" && ltoMode != "full" &&
+			ltoMode != "compiler_default" ) return false;
+		const char* compiler =
+#if defined(__clang_version__)
+			__clang_version__;
+#elif defined(__VERSION__)
+			__VERSION__;
+#else
+			"unknown";
+#endif
+		const char* platform =
+#if defined(_WIN32)
+			"windows";
+#elif defined(__ANDROID__)
+			"android";
+#elif defined(__APPLE__)
+			"macos";
+#elif defined(__linux__)
+			"linux";
+#else
+			"unknown";
+#endif
+		const char* architecture =
+#if defined(__aarch64__) || defined(_M_ARM64)
+			"arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+			"x86_64";
+#else
+			"unknown";
+#endif
+		const bool fastMath =
+#if defined(__FAST_MATH__)
+			true;
+#else
+			false;
+#endif
+		const bool finiteMathOnly =
+#if defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+			true;
+#else
+			false;
+#endif
+		const std::string rendererVersion =
+			std::to_string(RISE_VER_MAJOR_VERSION)+"."+
+			std::to_string(RISE_VER_MINOR_VERSION)+"."+
+			std::to_string(RISE_VER_REVISION_VERSION)+"+"+
+			std::to_string(RISE_VER_BUILD_VERSION);
+		const std::string rendererBinaryPath = CurrentRendererBinaryPath();
+		RISECBOR64::Bytes rendererBinaryBytes;
+		std::string rendererBinaryHashBasis;
+		if( rendererBinaryPath.empty() ||
+			!ReadLoadedBinaryIdentity(rendererBinaryPath,rendererBinaryBytes,
+				rendererBinaryHashBasis) ) {
+			return false;
+		}
+		const std::vector<std::string> loadedPaths = LoadedBinaryPaths();
+		bool dependenciesComplete = true;
+		const char* oidnVersion =
+#ifdef RISE_ENABLE_OIDN
+			OIDN_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openexrVersion =
+#ifndef NO_EXR_SUPPORT
+			OPENEXR_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openpglVersion =
+#ifdef RISE_ENABLE_OPENPGL
+			OPENPGL_VERSION;
+#else
+			"not_linked";
+#endif
+		const char* pngVersion =
+#ifndef NO_PNG_SUPPORT
+			PNG_LIBPNG_VER_STRING;
+#else
+			"not_linked";
+#endif
+		const char* zlibVersion =
+#ifndef NO_PNG_SUPPORT
+			ZLIB_VERSION;
+#else
+			"not_linked";
+#endif
+		const char* tiffVersion =
+#ifndef NO_TIFF_SUPPORT
+			TIFFLIB_VERSION_STR;
+#else
+			"not_linked";
+#endif
+		const char* imathVersion =
+#ifndef NO_EXR_SUPPORT
+			IMATH_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+#ifndef NO_PNG_SUPPORT
+		const bool embeddedPngZlib =
+#if defined(__ANDROID__)
+			true;
+#else
+			false;
+#endif
+#endif
+		using RISECBOR64::Value;
+		const Value record = Value::MapValue({
+			{ "compiler", Value::MapValue({
+				{ "identity", Value::String(compiler) },
+				{ "language_standard", Value::String("c++17") },
+				{ "lto_mode", Value::String(ltoMode) },
+				{ "optimization_mode", Value::String(optimizationMode) } }) },
+			{ "dependency_builds", Value::MapValue({
+				{ "avcodec", RuntimeDependencyBuildIdentity(
+					{"avcodec"},loadedPaths,dependenciesComplete) },
+				{ "avfoundation", RuntimeDependencyBuildIdentity(
+					{"avfoundation"},loadedPaths,dependenciesComplete) },
+				{ "avformat", RuntimeDependencyBuildIdentity(
+					{"avformat"},loadedPaths,dependenciesComplete) },
+				{ "avutil", RuntimeDependencyBuildIdentity(
+					{"avutil"},loadedPaths,dependenciesComplete) },
+				{ "iex", DependencyBuildIdentity({"iex"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "ilmthread", DependencyBuildIdentity({"ilmthread"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "imath", DependencyBuildIdentity({"imath"},imathVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "oidn", DependencyBuildIdentity({"openimagedenoise"},oidnVersion,
+#ifdef RISE_ENABLE_OIDN
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openexr", DependencyBuildIdentity({"openexr"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openpgl", DependencyBuildIdentity({"openpgl"},openpglVersion,
+#ifdef RISE_ENABLE_OPENPGL
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "png", DependencyBuildIdentity({"png"},pngVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "tiff", DependencyBuildIdentity({"tiff"},tiffVersion,
+#ifndef NO_TIFF_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "swscale", RuntimeDependencyBuildIdentity(
+					{"swscale"},loadedPaths,dependenciesComplete) },
+				{ "videotoolbox", RuntimeDependencyBuildIdentity(
+					{"videotoolbox"},loadedPaths,dependenciesComplete) },
+				{ "x265", RuntimeDependencyBuildIdentity(
+					{"x265"},loadedPaths,dependenciesComplete) },
+				{ "zlib", DependencyBuildIdentity({"z","zlib"},zlibVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) } }) },
+			{ "dirty_state", Value::MapValue({
+				{ "diff_sha256", Value::String(RISE_BUILD_DIRTY_DIFF_SHA256) },
+				{ "state", Value::String(RISE_BUILD_DIRTY_STATE) } }) },
+			{ "renderer_binary", Value::MapValue({
+#if defined(__ANDROID__)
+				{ "kind", Value::String("module") },
+#else
+				{ "kind", Value::String("executable") },
+#endif
+				{ "hash_basis", Value::String(rendererBinaryHashBasis) },
+				{ "path", Value::String(rendererBinaryPath) },
+				{ "sha256", Value::String(RISECBOR64::SHA256Hex(rendererBinaryBytes)) } }) },
+			{ "fp_settings", Value::MapValue({
+				{ "contraction_mode", Value::String(contractionMode) },
+				{ "fast_math", FireBool(fastMath) },
+				{ "finite_math_only", FireBool(finiteMathOnly) } }) },
+			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
+			{ "record_kind", Value::String("renderer_build_v1") },
+			{ "renderer_version", Value::String(rendererVersion) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "solver_schema_versions", Value::ArrayValue({
+				Value::String("fire_optics_schema_v3"),
+				Value::String("fire_output_provenance_schema_v1") }) },
+			{ "source_revision", Value::String(RISE_BUILD_SOURCE_REVISION) },
+			{ "target", Value::MapValue({
+				{ "architecture", Value::String(architecture) },
+				{ "platform", Value::String(platform) } }) }
+		});
+		if( !dependenciesComplete ) return false;
+		if( !FireEncodeRecord(record,bytes,"renderer_build_v1") ) return false;
+		identity = RISECBOR64::SHA256Hex(bytes);
+		return true;
+	}
+
+	bool BuildResolvedRenderConfig(
+		const Job::RasterizerParams& p,
+		const char* rasterizerKind,
+		const char* effectiveIntegrator,
+		const IScene& scene,
+		const FrameStore* store,
+		const FireExternalRenderConfig* external,
+		const double animationTimeStart,
+		const double animationTimeEnd,
+		const unsigned int animationFrames,
+		const bool animationFields,
+		const bool animationInvertFields,
+		const unsigned int* animationFrame,
+		const Rect* renderRegion,
+		ResolvedRasterSequence* resolvedSequence,
+		const ResolvedRasterSequence* fixedSequence,
+		RISECBOR64::Bytes& bytes )
+	{
+		using RISECBOR64::Value;
+		Value::Values aovs;
+		if( store ) {
+			static const char* const names[] = {
+				"beauty","alpha","albedo","normal","depth","object_id","primitive_id" };
+			for( unsigned int i=0; i<static_cast<unsigned int>(FrameStoreOutput::ChannelId::COUNT); ++i ) {
+				if( store->HasChannel(static_cast<FrameStoreOutput::ChannelId>(i)) ) {
+					aovs.push_back(Value::String(names[i]));
+				}
+			}
+		}
+		const IFilm* film = scene.GetFilm();
+		const ICamera* camera = external && external->cameraOverride ?
+			external->cameraOverride : scene.GetCamera();
+		Value::Values cameraLocation;
+		Value::Values cameraMatrix;
+		if( camera ) {
+			const Point3 location = camera->GetLocation();
+			cameraLocation = { Value::Float(location.x), Value::Float(location.y),
+				Value::Float(location.z) };
+			const Matrix4 matrix = camera->GetMatrix();
+			const Scalar values[16] = {
+				matrix._00,matrix._01,matrix._02,matrix._03,
+				matrix._10,matrix._11,matrix._12,matrix._13,
+				matrix._20,matrix._21,matrix._22,matrix._23,
+				matrix._30,matrix._31,matrix._32,matrix._33 };
+			for( unsigned int i=0; i<16u; ++i ) cameraMatrix.push_back(Value::Float(values[i]));
+		}
+		std::string cameraKind = camera ? "" : "none";
+		Value projection = Value::MapValue({});
+		if( camera && typeid(*camera) == typeid(Implementation::PinholeCamera) ) {
+			const Implementation::PinholeCamera* pinhole =
+				dynamic_cast<const Implementation::PinholeCamera*>(camera);
+			cameraKind = "pinhole";
+			projection = Value::MapValue({
+				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
+				{ "fstop", Value::Float(pinhole->GetFstop()) },
+				{ "iso", Value::Float(pinhole->GetIsoStored()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::ThinLensCamera) ) {
+			const Implementation::ThinLensCamera* thin =
+				dynamic_cast<const Implementation::ThinLensCamera*>(camera);
+			cameraKind = "thin_lens";
+			projection = Value::MapValue({
+				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
+				{ "aperture_blades", Value::Unsigned(thin->GetApertureBlades()) },
+				{ "aperture_rotation", Value::Float(thin->GetApertureRotation()) },
+				{ "focal_length_mm", Value::Float(thin->GetFocalLengthStored()) },
+				{ "focus_distance_scene_units", Value::Float(thin->GetFocusDistanceStored()) },
+				{ "fstop", Value::Float(thin->GetFstop()) },
+				{ "iso", Value::Float(thin->GetIsoStored()) },
+				{ "scene_unit_meters", Value::Float(thin->GetSceneUnitMeters()) },
+				{ "sensor_size_mm", Value::Float(thin->GetSensorSize()) },
+				{ "shift_x_mm", Value::Float(thin->GetShiftX()) },
+				{ "shift_y_mm", Value::Float(thin->GetShiftY()) },
+				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
+				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::FisheyeCamera) ) {
+			const Implementation::FisheyeCamera* fisheye =
+				dynamic_cast<const Implementation::FisheyeCamera*>(camera);
+			cameraKind = "fisheye";
+			projection = Value::MapValue({
+				{ "scale", Value::Float(fisheye->GetScaleStored()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::OrthographicCamera) ) {
+			const Implementation::OrthographicCamera* orthographic =
+				dynamic_cast<const Implementation::OrthographicCamera*>(camera);
+			cameraKind = "orthographic";
+			const Vector2 scale = orthographic->GetViewportScaleStored();
+			projection = Value::MapValue({
+				{ "viewport_scale", Value::ArrayValue({
+					Value::Float(scale.x),Value::Float(scale.y) }) }
+			});
+		}
+		if( camera && cameraKind.empty() ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render camera parameters are not canonically introspectable");
+			return false;
+		}
+		Value externalRuntime;
+		if( external ) {
+			externalRuntime = Value::MapValue({
+				{ "camera_override", FireBool(external->cameraOverride != nullptr) },
+				{ "clay_override", FireBool(external->clayOverride) },
+				{ "idle_max_passes", FireUnsigned(external->idleMaxPasses) },
+				{ "idle_mode", FireBool(external->idleMode) },
+				{ "indirect_only", FireBool(external->indirectOnly) },
+				{ "live_samples_per_pass", FireUnsigned(external->liveSamplesPerPass) },
+				{ "max_path_depth", FireUnsigned(external->maxPathDepth) },
+				{ "preview_scale", FireUnsigned(external->previewScale) },
+				{ "progressive_on_idle", FireBool(external->progressiveOnIdle) },
+				{ "region", Value::MapValue({
+					{ "active", FireBool(external->regionActive) },
+					{ "bottom", FireUnsigned(external->regionBottom) },
+					{ "left", FireUnsigned(external->regionLeft) },
+					{ "right", FireUnsigned(external->regionRight) },
+					{ "top", FireUnsigned(external->regionTop) } }) },
+				{ "tile_order", FireUnsigned(external->tileOrder) },
+				{ "variant_pipeline", FireBool(external->variantPipeline) },
+				{ "view_mode", Value::String(external->viewportMode) },
+				{ "view_mode_caster_installed", FireBool(external->viewModeCasterInstalled) },
+				{ "xray", FireBool(external->xray) }
+			});
+		}
+		IOptions& globalOptions = GlobalOptions();
+		const unsigned int autoProbeSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_spp",4)));
+		const unsigned int autoProbeScale = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_scale",4)));
+		const unsigned int autoProbeVarianceRenders = static_cast<unsigned int>(std::max(
+			2,globalOptions.ReadInt("auto_probe_variance_renders",2)));
+		const unsigned int autoProbeActivationSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
+		const int forcedWorkerCount = globalOptions.ReadInt("force_number_of_threads",0);
+		const int maximumWorkerCount = globalOptions.ReadInt(
+			"maximum_thread_count",0x7FFFFFFF);
+		const int reservedWorkerCount = globalOptions.ReadInt(
+			"render_thread_reserve_count",1);
+		const unsigned int effectiveWorkerTaskCount = std::max(
+			1u,Implementation::ComputeRenderPoolSize());
+		const char* randomStreamPolicy =
+#if defined(MERSENNE53)
+			"per_dispatch_task_mersenne53_seeded_from_c_rand";
+#elif defined(MERSENNE)
+			"per_dispatch_task_mersenne_seeded_from_c_rand";
+#elif defined(DRAND48)
+			"process_shared_drand48";
+#else
+			"process_shared_c_rand";
+#endif
+		ResolvedRasterSequence sequence;
+		if( external ) {
+			const unsigned int workers = std::max(
+				1u,Implementation::ComputeRenderPoolSize());
+			const unsigned int width = film ? film->GetWidth() : 0u;
+			const unsigned int height = film ? film->GetHeight() : 0u;
+			unsigned int tileSize = Implementation::ComputeTileSize(
+				width,height,workers,8u,8u,64u);
+			if( store && store->Width() == width && store->Height() == height ) {
+				tileSize = Implementation::AlignTileSizeToFrameStore(
+					tileSize,static_cast<unsigned int>(store->TileEdge()));
+			}
+			if( external->variantPipeline ) {
+				sequence.kind = RasterSequenceKind::Morton;
+				sequence.tileSize = tileSize;
+			} else {
+				sequence.kind = RasterSequenceKind::Block;
+				sequence.blockWidth = tileSize;
+				sequence.blockHeight = tileSize;
+				if( external->tileOrder == 1u ) sequence.blockOrder = 2u;
+				else if( external->tileOrder == 2u ) {
+					sequence.blockOrder = 1u;
+					sequence.hasShuffleSeed = true;
+					sequence.shuffleSeed = 0u;
+				}
+			}
+		} else if( fixedSequence ) {
+			sequence = *fixedSequence;
+			if( resolvedSequence ) *resolvedSequence = sequence;
+		} else {
+			const RISE::String options = globalOptions.ReadString(
+				"raster_sequence_options","");
+			sequence = ResolveRasterSequence(
+				globalOptions.ReadInt("raster_sequence_type",4),options.c_str(),
+				[]() { return GlobalRNG().CanonicalRandom(); });
+			if( resolvedSequence ) *resolvedSequence = sequence;
+		}
+		Value rasterSequence;
+		switch( sequence.kind ) {
+		case RasterSequenceKind::Morton:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("morton") },
+				{ "tile_size", FireUnsigned(sequence.tileSize) } });
+			break;
+		case RasterSequenceKind::Block:
+			rasterSequence = Value::MapValue({
+				{ "height", FireUnsigned(sequence.blockHeight) },
+				{ "kind", Value::String("block") },
+				{ "order", FireUnsigned(sequence.blockOrder) },
+				{ "shuffle_seed", FireUnsigned(sequence.shuffleSeed) },
+				{ "shuffle_seed_active", FireBool(sequence.hasShuffleSeed) },
+				{ "width", FireUnsigned(sequence.blockWidth) } });
+			break;
+		case RasterSequenceKind::Hilbert:
+			rasterSequence = Value::MapValue({
+				{ "depth", FireUnsigned(sequence.hilbertDepth) },
+				{ "kind", Value::String("hilbert") } });
+			break;
+		case RasterSequenceKind::Scanline:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("scanline") } });
+			break;
+		case RasterSequenceKind::RasterizerDefault:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("rasterizer_default") } });
+			break;
+		}
+		const Value record = Value::MapValue({
+			{ "animation", Value::MapValue({
+				{ "do_fields", FireBool(animationFields) },
+				{ "frame_selection", Value::MapValue({
+					{ "active", FireBool(animationFrame != nullptr) },
+					{ "index", FireUnsigned(animationFrame ? *animationFrame : 0u) } }) },
+				{ "invert_fields", FireBool(animationInvertFields) },
+				{ "num_frames", FireUnsigned(animationFrames) },
+				{ "time_end", Value::Float(animationTimeEnd) },
+				{ "time_start", Value::Float(animationTimeStart) } }) },
+			{ "aov", Value::MapValue({ { "channels", Value::ArrayValue(aovs) } }) },
+			{ "camera", Value::MapValue({
+				{ "exposure_compensation_ev", Value::Float(camera ? camera->GetExposureCompensationEV() : 0.0) },
+				{ "exposure_time", Value::Float(camera ? camera->GetExposureTime() : 0.0) },
+				{ "kind", Value::String(cameraKind) },
+				{ "location", Value::ArrayValue(cameraLocation) },
+				{ "matrix", Value::ArrayValue(cameraMatrix) },
+				{ "near_clip", Value::Float(dynamic_cast<const RISE::Implementation::CameraCommon*>(camera) ? dynamic_cast<const RISE::Implementation::CameraCommon*>(camera)->GetNearClip() : 0.0) },
+				{ "pixel_rate", Value::Float(camera ? camera->GetPixelRate() : 0.0) },
+				{ "projection", projection },
+				{ "scanning_rate", Value::Float(camera ? camera->GetScanningRate() : 0.0) } }) },
+			{ "clamp", Value::MapValue({
+				{ "direct", Value::Float(p.stability.directClamp) },
+				{ "indirect", Value::Float(p.stability.indirectClamp) } }) },
+			{ "depth", Value::MapValue({
+				{ "max_diffuse_bounce", FireUnsigned(p.stability.maxDiffuseBounce) },
+				{ "max_eye_depth", FireUnsigned(p.maxEyeDepth) },
+				{ "max_glossy_bounce", FireUnsigned(p.stability.maxGlossyBounce) },
+				{ "max_light_depth", FireUnsigned(p.maxLightDepth) },
+				{ "max_recursion", FireUnsigned(p.maxRecursion) },
+				{ "max_translucent_bounce", FireUnsigned(p.stability.maxTranslucentBounce) },
+				{ "max_transmission_bounce", FireUnsigned(p.stability.maxTransmissionBounce) },
+				{ "max_volume_bounce", FireUnsigned(p.stability.maxVolumeBounce) } }) },
+			{ "evaluated_camera_states", Value::ArrayValue({}) },
+			{ "film", Value::MapValue({
+				{ "height", Value::Unsigned(film ? film->GetHeight() : 0) },
+				{ "pixel_aspect_ratio", Value::Float(film ? film->GetPixelAR() : 1.0) },
+				{ "width", Value::Unsigned(film ? film->GetWidth() : 0) } }) },
+			{ "filter", Value::MapValue({
+				{ "height", Value::Float(p.pixelFilter.height) },
+				{ "name", Value::String(p.pixelFilter.filter.c_str()) },
+				{ "param_a", Value::Float(p.pixelFilter.paramA) },
+				{ "param_b", Value::Float(p.pixelFilter.paramB) },
+				{ "width", Value::Float(p.pixelFilter.width) } }) },
+			{ "external_runtime", externalRuntime },
+			{ "execution", Value::MapValue({
+				{ "effective_worker_task_count", FireUnsigned(effectiveWorkerTaskCount) },
+				{ "force_number_of_threads", Value::Signed(forcedWorkerCount) },
+				{ "maximum_thread_count", Value::Signed(maximumWorkerCount) },
+				{ "random_stream_policy", Value::String(randomStreamPolicy) },
+				{ "render_thread_reserve_count", Value::Signed(reservedWorkerCount) } }) },
+			{ "global_render_options", Value::MapValue({
+				{ "auto_probe", Value::MapValue({
+					{ "activation_spp", FireUnsigned(autoProbeActivationSPP) },
+					{ "reach_winsor_percentile", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_reach_winsor_pct",0.99)) },
+					{ "scale", FireUnsigned(autoProbeScale) },
+					{ "spp", FireUnsigned(autoProbeSPP) },
+					{ "tau_bdpt", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_bdpt",1.35)) },
+					{ "tau_caustic", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_caustic",1.30)) },
+					{ "tau_reach", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_reach",1.50)) },
+					{ "variance_renders", FireUnsigned(autoProbeVarianceRenders) } }) },
+				{ "time_indexed_motion_blur", FireBool(globalOptions.ReadBool(
+					"time_indexed_motion_blur",true)) },
+				{ "vcm", Value::MapValue({
+					{ "progressive_radius_enabled", FireBool(!globalOptions.ReadBool(
+						"vcm_disable_progressive_radius",false)) },
+					{ "throughput_clamp_multiplier", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_multiplier",20.0)) },
+					{ "throughput_clamp_percentile", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_percentile",0.99)) },
+					{ "volume_merge_footprints", Value::Float(globalOptions.ReadDouble(
+						"vcm_volume_merge_footprints",2.0)) },
+					{ "volume_merge_max_vertices", Value::Float(globalOptions.ReadDouble(
+						"vcm_volume_merge_max_vertices",250000.0)) },
+					{ "volume_merge_neighbours", Value::Float(globalOptions.ReadDouble(
+						"vcm_volume_merge_neighbours",0.01)) } }) } }) },
+			{ "integrator", Value::MapValue({
+				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
+				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },
+				{ "effective_kind", FireText(effectiveIntegrator) },
+				{ "enable_vertex_connection", FireBool(p.enableVC) },
+				{ "enable_vertex_merging", FireBool(p.enableVM) },
+				{ "integrate_rgb", FireBool(p.integrateRGB) },
+				{ "kind", FireText(rasterizerKind) },
+				{ "merge_radius", Value::Float(p.mergeRadius) },
+				{ "path_guiding", Value::MapValue({
+					{ "alpha", Value::Float(p.pathGuiding.alpha) },
+					{ "combine_training_iterations", FireBool(p.pathGuiding.combineTrainingIterations) },
+					{ "complete_path_guiding", FireBool(p.pathGuiding.completePathGuiding) },
+					{ "complete_path_strategy_samples", FireUnsigned(p.pathGuiding.completePathStrategySamples) },
+					{ "complete_path_strategy_selection", FireBool(p.pathGuiding.completePathStrategySelection) },
+					{ "enabled", FireBool(p.pathGuiding.enabled) },
+					{ "learned_alpha", FireBool(p.pathGuiding.learnedAlpha) },
+					{ "max_guiding_depth", FireUnsigned(p.pathGuiding.maxGuidingDepth) },
+					{ "max_light_guiding_depth", FireUnsigned(p.pathGuiding.maxLightGuidingDepth) },
+					{ "online", FireBool(p.pathGuiding.online) },
+					{ "ris_candidates", FireUnsigned(p.pathGuiding.risCandidates) },
+					{ "sampling_type", Value::Unsigned(static_cast<unsigned int>(p.pathGuiding.samplingType)) },
+					{ "training_iterations", FireUnsigned(p.pathGuiding.trainingIterations) },
+					{ "training_spp", FireUnsigned(p.pathGuiding.trainingSPP) },
+					{ "warmup_iterations", FireUnsigned(p.pathGuiding.warmupIterations) } }) },
+				{ "show_luminaires", FireBool(p.showLuminaires) },
+				{ "sms", Value::MapValue({
+					{ "bernoulli_trials", FireUnsigned(p.sms.bernoulliTrials) },
+					{ "biased", FireBool(p.sms.biased) },
+					{ "enabled", FireBool(p.sms.enabled) },
+					{ "extended", FireBool(p.sms.extended) },
+					{ "max_chain_depth", FireUnsigned(p.sms.maxChainDepth) },
+					{ "max_iterations", FireUnsigned(p.sms.maxIterations) },
+					{ "max_photon_seeds_per_shading_point", FireUnsigned(p.sms.maxPhotonSeedsPerShadingPoint) },
+					{ "multi_trials", FireUnsigned(p.sms.multiTrials) },
+					{ "photon_count", FireUnsigned(p.sms.photonCount) },
+					{ "seeding_mode", Value::Unsigned(static_cast<unsigned int>(p.sms.seedingMode)) },
+					{ "target_bounces", FireUnsigned(p.sms.targetBounces) },
+					{ "threshold", Value::Float(p.sms.threshold) },
+					{ "two_stage", FireBool(p.sms.twoStage) },
+					{ "use_levenberg_marquardt", FireBool(p.sms.useLevenbergMarquardt) } }) } }) },
+			{ "light_sampling", Value::MapValue({
+				{ "rr_threshold", Value::Float(p.lightSampleRRThreshold) } }) },
+			{ "record_kind", Value::String("resolved_render_configuration_v1") },
+			{ "raster_sequence", rasterSequence },
+			{ "render_region", Value::MapValue({
+				{ "active", FireBool(renderRegion != nullptr) },
+				{ "bottom", FireUnsigned(renderRegion ? renderRegion->bottom : 0u) },
+				{ "left", FireUnsigned(renderRegion ? renderRegion->left : 0u) },
+				{ "right", FireUnsigned(renderRegion ? renderRegion->right : 0u) },
+				{ "top", FireUnsigned(renderRegion ? renderRegion->top : 0u) } }) },
+			{ "sampler", Value::MapValue({
+				{ "adaptive", Value::MapValue({
+					{ "max_samples", FireUnsigned(p.adaptive.maxSamples) },
+					{ "show_map", FireBool(p.adaptive.showMap) },
+					{ "threshold", Value::Float(p.adaptive.threshold) } }) },
+				{ "blue_noise", FireBool(p.pixelFilter.blueNoiseSampler) },
+				{ "large_step_probability", Value::Float(p.largeStepProb) },
+				{ "luminary_sampler", Value::String(p.luminarySampler) },
+				{ "luminary_sampler_param", Value::Float(p.luminarySamplerParam) },
+				{ "mlt_bootstrap_samples", FireUnsigned(p.nBootstrap) },
+				{ "mlt_chains", FireUnsigned(p.nChains) },
+				{ "mlt_mutations_per_pixel", FireUnsigned(p.nMutationsPerPixel) },
+				{ "num_luminary_samples", FireUnsigned(p.numLumSamples) },
+				{ "pixel_sampler", Value::String(p.pixelFilter.pixelSampler.c_str()) },
+				{ "pixel_sampler_param", Value::Float(p.pixelFilter.pixelSamplerParam) },
+				{ "pixel_samples", FireUnsigned(p.numPixelSamples) },
+				{ "progressive", Value::MapValue({
+					{ "enabled", FireBool(p.progressive.enabled) },
+					{ "samples_per_pass", FireUnsigned(p.progressive.samplesPerPass) } }) },
+				{ "spectral", Value::MapValue({
+					{ "hwss", FireBool(p.spectral.useHWSS) },
+					{ "nm_begin", Value::Float(p.spectral.nmBegin) },
+					{ "nm_end", Value::Float(p.spectral.nmEnd) },
+					{ "num_wavelengths", FireUnsigned(p.spectral.numWavelengths) },
+					{ "spectral_samples", FireUnsigned(p.spectral.spectralSamples) } }) } }) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "shader", Value::String(p.shader) },
+			{ "stability", Value::MapValue({
+				{ "filter_glossy", Value::Float(p.stability.filterGlossy) },
+				{ "optimal_mis", FireBool(p.stability.optimalMIS) },
+				{ "optimal_mis_tile_size", FireUnsigned(p.stability.optimalMISTileSize) },
+				{ "optimal_mis_training_iterations", FireUnsigned(p.stability.optimalMISTrainingIterations) },
+				{ "rr_min_depth", FireUnsigned(p.stability.rrMinDepth) },
+				{ "rr_threshold", Value::Float(p.stability.rrThreshold) },
+				{ "transparent_shadows", FireBool(p.stability.transparentShadows) },
+				{ "use_light_bvh", FireBool(p.stability.useLightBVH) } }) },
+			{ "transport", Value::MapValue({
+				{ "oidn", FireBool(p.oidnDenoise) },
+				{ "oidn_device", Value::Unsigned(static_cast<unsigned int>(p.oidnDevice)) },
+				{ "oidn_prefilter", Value::Unsigned(static_cast<unsigned int>(p.oidnPrefilter)) },
+				{ "oidn_quality", Value::Unsigned(static_cast<unsigned int>(p.oidnQuality)) },
+				{ "radiance_map", Value::MapValue({
+					{ "background", FireBool(p.radianceMap.isBackground) },
+					{ "name", Value::String(p.radianceMap.name.c_str()) },
+					{ "orientation", FireFloatArray(p.radianceMap.orientation,3) },
+					{ "scale", Value::Float(p.radianceMap.scale) } }) } }) }
+		});
+		return FireEncodeRecord(record,bytes,"resolved_render_configuration_v1");
+	}
+
+	bool ResolvedConfigMatchesLeasedMetadata(
+		const RISECBOR64::Bytes& currentBytes,
+		const RISECBOR64::Bytes& leasedBytes )
+	{
+		using RISECBOR64::Value;
+		Value current;
+		Value leased;
+		std::string error;
+		if( !RISECBOR64::DecodeCanonical(currentBytes,current,&error) ||
+			!RISECBOR64::DecodeCanonical(leasedBytes,leased,&error) ||
+			current.GetType() != Value::Map || leased.GetType() != Value::Map ) return false;
+		const Value* evaluated = leased.Find("evaluated_camera_states");
+		if( !evaluated || evaluated->GetType() != Value::Array ) return false;
+		Value::Members adjusted = current.GetMap();
+		bool replaced = false;
+		for( Value::Members::value_type& member : adjusted ) {
+			if( member.first == "evaluated_camera_states" ) {
+				member.second = *evaluated;
+				replaced = true;
+				break;
+			}
+		}
+		RISECBOR64::Bytes adjustedBytes;
+		return replaced && RISECBOR64::Encode(
+			Value::MapValue(adjusted),adjustedBytes,&error) && adjustedBytes == leasedBytes;
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, const std::size_t count )
+	{
+		RISECBOR64::Value::Values encoded;
+		encoded.reserve(count);
+		for( std::size_t i=0; i<count; ++i ) {
+			encoded.push_back(RISECBOR64::Value::Float(values[i]));
+		}
+		return RISECBOR64::Value::ArrayValue(encoded);
+	}
+
+	RISECBOR64::Value FireUInt3(
+		const unsigned int x,
+		const unsigned int y,
+		const unsigned int z )
+	{
+		return RISECBOR64::Value::ArrayValue({
+			RISECBOR64::Value::Unsigned(x),
+			RISECBOR64::Value::Unsigned(y),
+			RISECBOR64::Value::Unsigned(z) });
+	}
+
+	bool FireCanonicalRecord(
+		RISECBOR64::Value::Members members,
+		const char* recordKind,
+		const char* diagnosticName,
+		RISECBOR64::Bytes& bytes )
+	{
+		members.push_back(std::make_pair("record_kind",
+			RISECBOR64::Value::String(recordKind)));
+		members.push_back(std::make_pair("schema_version",
+			RISECBOR64::Value::Unsigned(1)));
+		bytes.clear();
+		std::string error;
+		if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue(members),bytes,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: could not canonically encode %s: %s",diagnosticName,error.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	RISECBOR64::Bytes FireAuthoredParameterRecord(
+		RISECBOR64::Value::Members members )
+	{
+		RISECBOR64::Bytes bytes;
+		FireCanonicalRecord(members,"static_fire_medium_parameters_v1",
+			"static fire-medium parameters",bytes);
+		return bytes;
+	}
+
+	RISECBOR64::Value FireCommonAuthoring(
+		const char* name,
+		const char* carbonPainter,
+		const char* temperaturePainter,
+		const char* condensedPainter,
+		const unsigned int bakeWidth,
+		const unsigned int bakeHeight,
+		const unsigned int bakeDepth,
+		const double bboxMin[3],
+		const double bboxMax[3],
+		const double sceneUnitMeters )
+	{
+		return RISECBOR64::Value::MapValue({
+			{ "bake_resolution", FireUInt3(bakeWidth,bakeHeight,bakeDepth) },
+			{ "bbox_max", FireFloatArray(bboxMax,3) },
+			{ "bbox_min", FireFloatArray(bboxMin,3) },
+			{ "channel_carbon_painter", FireText(carbonPainter) },
+			{ "channel_condensed_painter", FireText(condensedPainter) },
+			{ "channel_temperature_painter", FireText(temperaturePainter) },
+			{ "manager_name", FireText(name) },
+			{ "scene_unit_meters", RISECBOR64::Value::Float(sceneUnitMeters) }
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-name registration helpers (honor IManager::AddItem's bool).
+//
+// GenericManager::AddItem REFUSES a duplicate name (logs "Item of same name
+// already exists" + returns false).  Historically every Job::Add* IGNORED that
+// bool and returned true, so a second entity sharing a name was silently dropped
+// (first-wins) while the add still reported SUCCESS -- no parse- or derive-time
+// error.  These helpers make the add report the truth: a clear, kind-specific
+// diagnostic + a false return.  The CST derive turns that into a refused apply:
+// `DeriveToJob`'s PASS-2 diagnoses the failing chunk BY NAME and, since the
+// 2026-08-28 bug-fix wave, keeps applying every later chunk instead of
+// stopping there (the overall derive is still refused whenever `diags` is
+// non-empty); `DeriveToJobIncremental` (the live-Job-mutating fast path) keeps
+// strict abort-on-first-failure + rollback, since "keep going" cannot compose
+// with restoring an already-live Job to its exact pre-edit state on failure.
+// (The legacy, non-CST `AsciiSceneParser` this comment used to also describe
+// was deleted in the Model-B P5 legacy-parser retirement; the CST derive is
+// now the sole scene-load path.)
+// ---------------------------------------------------------------------------
+namespace {
+
+	//! Emit the canonical duplicate-name diagnostic.  Shared by the manager-backed
+	//! RegisterOrDiag below AND the mediaMap-backed medium adders (which bypass
+	//! GenericManager), so the wording can never drift between the two paths.
+	//! `what` is the human-facing entity kind ("object", "geometry", "medium", ...).
+	void DiagDuplicateName( const char* what, const char* name )
+	{
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job:: duplicate %s name `%s` -- another %s of this name already exists; "
+			"names must be unique within their kind (the duplicate was NOT added)",
+			what, name ? name : "(null)", what );
+	}
+
+	//! Register pItem in mgr under name, honoring AddItem's bool.  On refusal
+	//! (duplicate name) logs the kind-specific diagnostic and returns false.
+	//! `what` is the human-facing entity kind ("object", "geometry", ...).
+	template< class Mgr, class T >
+	bool RegisterOrDiag( Mgr* mgr, T* pItem, const char* name, const char* what )
+	{
+		if( mgr->AddItem( pItem, name ) ) {
+			return true;
+		}
+		DiagDuplicateName( what, name );
+		return false;
+	}
+
+	//! Painters dual-register: the colour-painter manager (PRIMARY, authoritative)
+	//! and the function-2D manager (SECONDARY index, so a painter is usable wherever
+	//! a 2D function is expected).  Honor the PRIMARY's bool; attach the secondary
+	//! ONLY when the primary accepted.  A duplicate painter name is refused by the
+	//! primary; a standalone function_2d already occupying the secondary slot
+	//! legitimately coexists (RemovePainter drops the secondary identity-gated), so a
+	//! secondary collision must NOT count as a painter-add failure -- which is exactly
+	//! why the secondary is gated on, and reports through, the primary.
+	bool RegisterPainterDual( IPainterManager* pnt, IFunction2DManager* f2d,
+	                          IPainter* p, const char* name )
+	{
+		if( !RegisterOrDiag( pnt, p, name, "painter" ) ) {
+			return false;
+		}
+		f2d->AddItem( p, name );   // secondary index (gated on primary; coexist-safe)
+		return true;
+	}
+
+	//! THE colour-space name -> RISEPel conversion.  ONE switch, and the ONLY
+	//! one: every Add* that takes an authored RGB triple plus a colour-space
+	//! name routes here -- `uniformcolor_painter`, `vertexcolor_painter`'s
+	//! fallback, `ramp_painter`'s stops, `stochastic_tile_painter`'s mean, and
+	//! -- since 2026-09-02 -- the four zero-area lights.  They cannot drift
+	//! apart on which names they accept or on what each one means, which is
+	//! the whole point: a light and a painter handed the same `colorspace`
+	//! land on the same RISEPel by construction, not by five switches
+	//! happening to agree.  Adding a colour space is one arm here (plus the
+	//! `enumValues` list each chunk descriptor offers its authors).
+	//!
+	//! `cspace` must be non-null; each caller supplies its OWN null-default
+	//! (the painters historically default to "sRGB", the lights to
+	//! "Rec709RGB_Linear") because the two conventions differ.  Returns false
+	//! and logs, with `out` untouched, on an unrecognised name.
+	bool ColorSpaceNameToRISEPel( const char* cspace, const double rgb[3],
+	                              const char* context, const char* name, RISEPel& out )
+	{
+		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
+			out = RISEPel( Rec709RGBPel( rgb ) );
+		} else if( strcmp( cspace, "sRGB" ) == 0 ) {
+			out = RISEPel( sRGBPel( rgb ) );
+		} else if( strcmp( cspace, "ROMMRGB_Linear" ) == 0 ) {
+			out = RISEPel( ROMMRGBPel( rgb ) );
+		} else if( strcmp( cspace, "ProPhotoRGB" ) == 0 ) {
+			out = RISEPel( ProPhotoRGBPel( rgb ) );
+		} else if( strcmp( cspace, "RISERGB" ) == 0 ) {
+			out = RISEPel( rgb );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "%s `%s`: unknown color space `%s`",
+				context, name ? name : "noname", cspace );
+			return false;
+		}
+		return true;
+	}
+
+} // anonymous namespace
+
 using namespace RISE::Implementation;
+
+// Forward declarations for scalar-painter resolution helpers — full
+// definitions live alongside the first `AddDielectricMaterial` and
+// are shared by every material conversion in this file.
+// On an ERANGE strtod result, classify the consumed token [tok,end) as
+// UNDERFLOW (-> finite 0/subnormal) vs OVERFLOW (-> non-finite HUGE_VAL)
+// at the STRING layer.  An exponent-SIGN heuristic alone is spoofable --
+// a 320-digit mantissa with `e-1` still overflows to +inf yet carries
+// `e-` in the token -- so compute the SIGN of the token's net magnitude:
+// the order of the leading significant digit plus the explicit exponent
+// (decimal digits count in powers of 10; C99 hex-float mantissa digits
+// count 4 bits each against the BINARY `p` exponent).  ERANGE guarantees
+// the value is hundreds of orders outside [DBL_MIN, DBL_MAX], so the +-3
+// bit slop of the leading hex digit can never flip the sign.
+// KEEP IN LOCKSTEP with the identical helper in ChunkParserRegistry.cpp.
+static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
+{
+	const char* p = ( tok < end && ( *tok == '+' || *tok == '-' ) ) ? tok + 1 : tok;
+	bool isHex = false;
+	if( end - p > 1 && p[0] == '0' && ( p[1] == 'x' || p[1] == 'X' ) ) { isHex = true; p += 2; }
+	long order = 0;                    // order of the leading significant digit
+	bool seenSig = false, seenPoint = false;
+	long intDigits = 0, fracZeros = 0;
+	for( ; p < end; ++p ) {
+		const char c = *p;
+		if( c == '.' && !seenPoint ) { seenPoint = true; continue; }
+		const bool dig = isHex ? !!isxdigit( (unsigned char)c ) : !!isdigit( (unsigned char)c );
+		if( !dig ) break;                       // exponent marker
+		if( !seenSig ) {
+			if( c == '0' ) { if( seenPoint ) ++fracZeros; continue; }
+			seenSig = true;
+			if( !seenPoint ) intDigits = 1; else order = -( fracZeros + 1 );
+		} else if( !seenPoint ) {
+			++intDigits;
+		}
+	}
+	if( !seenSig ) return true;        // literal zero never ERANGEs; harmless
+	if( intDigits > 0 ) order = intDigits - 1;
+	long expVal = 0;
+	if( p < end && ( ( !isHex && ( *p == 'e' || *p == 'E' ) ) || ( isHex && ( *p == 'p' || *p == 'P' ) ) ) ) {
+		++p;
+		long sign = 1;
+		if( p < end && ( *p == '+' || *p == '-' ) ) { if( *p == '-' ) sign = -1; ++p; }
+		long v = 0;
+		for( ; p < end && isdigit( (unsigned char)*p ); ++p ) { if( v < 100000000L ) v = v * 10 + ( *p - '0' ); }
+		expVal = sign * v;
+	}
+	const long net = isHex ? ( 4 * order + expVal ) : ( order + expVal );
+	return net < 0;
+}
+
+// True IFF s parses as a NON-FINITE number (nan/inf spelling, or ERANGE overflow).
+// A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
+// path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
+// inline values for Reference-kind material scalars (g, roughness) that bypass the
+// descriptor's AllTokensAreFiniteNumbers gate; value-level isfinite is unreliable
+// under -ffast-math, so this is a STRING-layer check.
+static bool ScalarLiteralIsNonFinite( const char* s )
+{
+	if( !s ) return false;
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;		// strtod consumed nothing -> not a number (painter name / garbage)
+	// strtod DID parse a numeric prefix; this returns true iff that value is
+	// non-finite (nan/inf spelling or ERANGE overflow), regardless of what trails
+	// -- a trailing "# comment" or junk still yields a non-finite atof() value, so
+	// `inf # comment`, `1e999 # comment`, and `1e999x` are all flagged.  NOTE: this
+	// also flags a longer identifier with a nan/inf prefix (e.g. "inflection_map",
+	// which strtod reads as "inf"); callers whose slot accepts a painter NAME must
+	// therefore consult the painter manager FIRST and apply this only on the inline
+	// fallback (a registered name never reaches here).
+	if( errno == ERANGE ) {
+		// ERANGE is set on overflow (-> non-finite HUGE_VAL) AND underflow (-> finite
+		// 0/subnormal, e.g. 5e-400).  Only overflow is non-finite.  Classify at the
+		// STRING layer by net-magnitude sign over the consumed token [s, end) --
+		// an exponent-sign scan alone is spoofable by a huge mantissa with a small
+		// negative exponent (`1<320 zeros>e-1` -> +inf).  See ERangeTokenIsUnderflow.
+		return !ERangeTokenIsUnderflow( s, end );	// overflow -> non-finite
+	}
+	const char* p = s;
+	while( *p == ' ' || *p == '\t' ) ++p;
+	const char* t = ( *p == '+' || *p == '-' ) ? p + 1 : p;
+	return ( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' );	// strtod parsed nan/inf
+}
+
+// True iff `s` is a COMPLETE, finite numeric literal: strtod consumes a non-empty
+// prefix, the value is finite (not a nan/inf spelling, not an ERANGE overflow), and
+// only whitespace or a `#` comment trails the consumed token.  STRICTER than
+// !ScalarLiteralIsNonFinite -- it also rejects finite junk that atof() would silently
+// coerce (`0.5rad`->0.5, `nope`->0, a mistyped painter name `roughnes_tex`->0).
+// Callers whose slot also accepts a painter NAME must consult the painter manager(s)
+// FIRST and apply this only to the inline-scalar fallback (a registered name / the
+// "none" sentinel is a painter and never reaches here).
+static bool ScalarLiteralIsFiniteNumber( const char* s )
+{
+	if( !s || *s == '\0' ) return false;
+	if( ScalarLiteralIsNonFinite( s ) ) return false;	// nan / inf / overflow
+	char* end = nullptr;
+	errno = 0;
+	(void)std::strtod( s, &end );
+	if( end == s ) return false;						// no numeric prefix (name / garbage)
+	while( *end == ' ' || *end == '\t' ) ++end;		// tolerate trailing ws / # comment
+	return ( *end == '\0' || *end == '#' );
+}
+
+static IScalarPainter* ResolveScalarPainterArg(
+	IScalarPainterManager* mgr,
+	const char* value,
+	bool requireSingle = false );
+static IScalarPainter* ResolveOrDiagnoseScalar(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	bool requireSingle = false );
+
+// DL-16: resolve a rotation-angle-in-radians parameter that accepts EITHER
+// pipe, preferring Scalar over the legacy Color-pipe binding (the
+// documented oddball -- an angle by MEANING, plumbed through IPainter so
+// an expression_function2d painter could drive a spatially-varying
+// direction before IScalarPainter grew its own spatial painters).  Used by
+// `ggx_material`/`ggx_emissive_material`'s `tangent_rotation` and
+// `pbr_metallic_roughness_material`'s `anisotropy_rotation` -- same
+// pattern, same fix, one helper (audit-by-bug-pattern).
+//
+// Resolution order: (1) "none"/empty -> no rotation, both outputs null;
+// (2) a NAMED scalar_painter (single-valued only -- this slot reads one
+// angle) -> *outScalar, Scalar pipe, preferred; (3) a NAMED legacy colour
+// painter -> *outColor, Color pipe, deprecated but kept working; (4) a
+// finite inline literal -> *outScalar (a UniformScalarPainter -- numerically
+// identical to the pre-DL-16 UniformColorPainter fallback since GetValuesAt
+// ().v[0] == MaxValue(GetColor()) for an r==g==b triple, but now the
+// physically-correct pipe).  Exactly one of *outScalar/*outColor is
+// non-null on success with a non-"none" value.  Returns false (diagnostic
+// already logged) when `value` names neither pipe and isn't a literal.
+static bool ResolveRotationPainterDual(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	IScalarPainter** outScalar,
+	IPainter** outColor )
+{
+	*outScalar = nullptr;
+	*outColor = nullptr;
+	if( !value || !*value || std::string( value ) == "none" ) {
+		return true;
+	}
+
+	if( smgr ) {
+		IScalarPainter* named = smgr->GetItem( value );
+		if( named ) {
+			if( named->HasPerChannelVariation() ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s `%s`: `%s` is bound to per-channel scalar_painter `%s`, but this slot reads a "
+					"single angle -- author a single-valued scalar_painter.",
+					chunkKind, chunkName, paramName, value );
+				return false;
+			}
+			named->addref();
+			*outScalar = named;
+			return true;
+		}
+	}
+
+	IPainter* legacy = pmgr ? pmgr->GetItem( value ) : nullptr;
+	if( legacy ) {
+		legacy->addref();
+		*outColor = legacy;
+		return true;
+	}
+
+	if( ScalarLiteralIsFiniteNumber( value ) ) {
+		IScalarPainter* p = nullptr;
+		RISE_API_CreateUniformScalarPainter( &p, Scalar( atof( value ) ) );
+		*outScalar = p;
+		return true;
+	}
+
+	GlobalLog()->PrintEx( eLog_Error,
+		"%s `%s`: `%s` must be a finite rotation, a scalar_painter name, or a legacy colour-painter "
+		"name (got `%s`)", chunkKind, chunkName, paramName, value );
+	return false;
+}
+
+namespace {
+
+// Adapter that exposes an `IPainter` graph as an `IScalarPainter` —
+// used internally by `Job::AddPBRMetallicRoughnessMaterial` so it can
+// keep composing roughness / anisotropy through `BlendPainter` (which
+// is colour-typed) while still feeding the scalar-typed `alphaX` /
+// `alphaY` / `ior` / `ext` slots on the new GGX construction surface.
+//
+// Reads the underlying IPainter via `GetColor` / `GetColorNM`.  This
+// preserves the existing PBR painter-graph composition and avoids
+// rebuilding it on a scalar-painter substrate (which doesn't yet have
+// the equivalent of `BlendPainter`).  PBR scenes have always routed
+// these values through the `IPainter` colour-space (zero - point04 -
+// roughness² inputs are all bounded < 1, so the JH spectral-uplift
+// concerns that motivated the rest of the IScalarPainter refactor
+// don't bite here).
+// Phase 5 cleanup (2026-05-14): the local `IPainterToScalarAdapter`
+// class previously defined here was a duplicate of the public
+// `Painters/PainterToScalarAdapter.h` header.  Removed; callers
+// below now construct `PainterToScalarAdapter` directly.
+
+} // namespace
 
 namespace RISE
 {
+	bool Implementation::CurrentRendererBuildIdentity(
+		RISECBOR64::Bytes& bytes,std::string& identity )
+	{
+		return BuildRendererBuildIdentity(bytes,identity);
+	}
+
 	//! Creates a new empty job
 	bool RISE_CreateJob(
 			IJob** ppi										///< [out] Pointer to recieve the job
@@ -63,12 +1747,188 @@ namespace RISE
 
 Job::Job( )
 {
+	m_bIncrementalRepoint = false;   // slice 3: only the CST incremental loop sets it true (transiently)
+	simulationGraph.reset( new Simulation::SceneSimulationGraph() );
 	InitializeContainers();
 }
 
 Job::~Job( )
 {
-	DestroyContainers();
+	{
+		std::unique_lock<std::mutex> lock(m_preparedRequestMutex);
+		m_destroyingPreparedInputs=true;
+		m_preparedRequestCondition.wait(lock,[this]() {
+			return m_activePreparedRequests==0u;
+		});
+	}
+	DestroyContainers();	// also drops the callback-output registry
+}
+
+namespace
+{
+	bool SceneHasActiveFireMedium( const IScene& scene );	// defined with the fire render helpers below
+}
+
+bool Job::BeginPreparedRequest()
+{
+	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
+	if( m_destroyingPreparedInputs ) return false;
+	if( m_activePreparedRequests ) {
+		GlobalLog()->PrintEasyError("prepared_request_already_active");
+		return false;
+	}
+	// The scene-mutation freeze (keyframe / transform / camera / light /
+	// painter / geometry setters refuse external callers) exists for fire
+	// renders: the prepared frame, the provenance captured at preflight and
+	// the temporal hold must describe exactly what is rendered.  A render
+	// without fire media does not take it, so master's render-internal scene
+	// moves (frame time, shutter samples, photon time strata, hierarchy
+	// re-composition, the Auto probe's film resize) run as they do on master.
+	// The Job-level lock above (PreparedMutationLocked) still covers every
+	// render.  Fire media cannot be bound mid-request: binding goes through
+	// Job setters, which that lock refuses.
+	m_preparedRequestFrozeScene = pScene &&
+		(SceneHasActiveFireMedium(*pScene) || pScene->HasTimeVaryingMedia());
+	if( m_preparedRequestFrozeScene ) Transformable::BeginPreparedMutationFreeze();
+	++m_activePreparedRequests;
+	return true;
+}
+
+void Job::EndPreparedRequest()
+{
+	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
+	if( m_activePreparedRequests ) --m_activePreparedRequests;
+	if( m_preparedRequestFrozeScene ) {
+		m_preparedRequestFrozeScene = false;
+		Transformable::EndPreparedMutationFreeze();
+	}
+	if( !m_activePreparedRequests ) m_preparedRequestCondition.notify_all();
+}
+
+bool Job::PreparedProgressSafe() const
+{
+	const auto* progress = pGlobalProgress.load(std::memory_order_acquire);
+	if( !pScene || !pScene->HasTimeVaryingMedia() || !progress ||
+		dynamic_cast<const PreparedRenderProgress*>(progress) ) return true;
+	GlobalLog()->PrintEasyError("unsafe_progress_callback");
+	return false;
+}
+
+// L6b — lazy-allocate (or reuse) the canonical FrameStore.  The
+// FrameStore is reused across rasterizer swaps (per docs/FRAMESTORE_-
+// DESIGN.md §7.5) — a Set*Rasterizer call with the same active-
+// camera dims keeps the existing FrameStore so that file outputs +
+// platform UI viewport observers stay attached.  Reallocation
+// happens only when:
+//   - the FrameStore hasn't been allocated yet, OR
+//   - the caller's (width,height) differs from the allocated dims
+//     (camera resolution change — rare in production, typical
+//     during interactive viewport preview-scale stepping).
+//
+// On reallocation, the previous FrameStore is released by Job;
+// any rasterizer or observer that still holds a counted reference
+// keeps it alive until they release.  The new FrameStore is
+// returned with refcount = 1 (Reference's default), addref'd by
+// the caller (the rasterizer's ctor) when it's stored.
+//
+// Returns nullptr if width or height are zero — caller should pass
+// nullptr to the factory in that case (Phase 1 fallback to internal
+// IRasterImage path).
+//
+// Naming convention "_locked" is forward-looking: when L6c ships the
+// helper rewrite, this method will need a chain-mutex pattern
+// analogous to ViewportFrameStore's chainMutex_ to coordinate with
+// reader threads (UI viewports, encoders).  L6b's single-threaded
+// "Job is parked while rasterizer is mutated" contract from
+// SceneEditController removes the need for the lock today.
+RISE::Implementation::FrameStore* Job::ResolveJobFrameStoreForActiveCamera()
+{
+	// Camera dims live on the scene-level Film (Phase A 45aa217 split:
+	// ICamera no longer exposes GetWidth/GetHeight; the canonical pixel
+	// grid is `Scene::GetFilm()`).  Phase B2 (scene format v6) made the
+	// `film` chunk the sole authoring surface; Film is always present
+	// post-InitializeContainers, so this bail-out is defensive only.
+	if( !pScene ) return nullptr;
+	const IFilm* film = pScene->GetFilm();
+	if( !film ) return nullptr;
+	return EnsureJobFrameStore_locked( film->GetWidth(), film->GetHeight() );
+}
+
+RISE::Implementation::FrameStore* Job::EnsureJobFrameStore_locked(
+	unsigned int width, unsigned int height )
+{
+	if( width == 0 || height == 0 ) {
+		return nullptr;
+	}
+	if( m_jobFrameStore ) {
+		const unsigned int curW =
+			static_cast<unsigned int>( m_jobFrameStore->Width() );
+		const unsigned int curH =
+			static_cast<unsigned int>( m_jobFrameStore->Height() );
+		if( curW == width && curH == height ) {
+			return m_jobFrameStore;  // reuse — survives rasterizer swap
+		}
+		// Dims differ → reallocate.  Release Job's reference; any
+		// rasterizer / observer still holding a ref keeps the OLD
+		// store alive until they themselves release.
+		safe_release( m_jobFrameStore );
+	}
+	RISE::Implementation::FrameStore::Spec spec;
+	spec.width    = width;
+	spec.height   = height;
+	spec.tileEdge = 32;  // matches the rasterizer's typical block size
+
+#ifdef RISE_ENABLE_OIDN
+	// L7 — request AOV channels (Albedo + Normal) when OIDN is
+	// compiled in.  These are populated by the rasterizer's AOV
+	// collection pass (`OIDNDenoiser::CollectFirstHitAOVs` for PT,
+	// per-block `Accumulate*` for BDPT) inside the
+	// `bDenoisingEnabled` branch — see
+	// `PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_` for
+	// the contract.  Exposed via `FrameStore::GetChannel<Albedo>()`
+	// / `<Normal>()` for downstream consumers (multichannel EXR
+	// encoders, denoiser GUIs, AOV-aware viewports).
+	//
+	// Memory cost (at 4K = 3840×2160 = ~8.3M pixels):
+	//   * Albedo: `Channel<RISEPel>` = 3 × `Chel`/double per pixel
+	//     = 24 B/pixel × 8.3M ≈ 199 MB.
+	//   * Normal: `Channel<Vector3>` = 3 × `Scalar`/double per
+	//     pixel = 24 B/pixel × 8.3M ≈ 199 MB.
+	//   * Combined: ~400 MB.
+	// Acceptable when OIDN is enabled — OIDN's own working
+	// buffers are larger.  When OIDN is compiled OUT
+	// (`RISE_ENABLE_OIDN=0`), the channels would still be
+	// requested but never written → ~400 MB of dead memory.
+	// Compile-time gate avoids that regression.
+	//
+	// Runtime caveat: when OIDN is compiled in but
+	// `bDenoisingEnabled=false` for a particular render (user
+	// disabled denoise via scene config), AOV propagation is
+	// skipped — channels stay zero.  Downstream consumers reading
+	// AOVs in that mode see black.  Out-of-scope for L7; future
+	// work could add an "AOV-only collect" path that runs
+	// independent of denoise, or expose `bAOVPopulated` on the
+	// FrameStore so consumers can early-skip empty AOVs.
+	//
+	// Pre-L7: `aovChannels` left empty → AOV channels in FrameStore
+	// stayed null, even though OIDN collected the same data per
+	// frame and threw it away after denoise.  L7 retains the data
+	// in the canonical store for the lifetime of the FrameStore.
+	spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Albedo );
+	spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Normal );
+#endif  // RISE_ENABLE_OIDN
+
+	m_jobFrameStore = new RISE::Implementation::FrameStore( spec );
+	GlobalLog()->PrintEx( eLog_Info,
+		"Job:: allocated canonical FrameStore (%ux%u, tileEdge=%u, AOVs=%s).",
+		width, height, static_cast<unsigned>( spec.tileEdge ),
+#ifdef RISE_ENABLE_OIDN
+		"Albedo+Normal"
+#else
+		"(none; OIDN compiled out)"
+#endif
+		);
+	return m_jobFrameStore;
 }
 
 void Job::InitializeContainers()
@@ -77,21 +1937,92 @@ void Job::InitializeContainers()
 	pRasterizer = 0;
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
+	m_firePredictiveRequested = false;
+	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
+	// 87 step 4a round-4 (P1-A): NOT reset -- INCREMENTED.  This is the "the managers you were
+	// looking at no longer exist" signal, and it is only meaningful if it survives the rebuild it
+	// counts.  Every serial the managers below hand out restarts from 1, so without this a
+	// ClearAll + re-derive is invisible to anything caching (name, serial).
+	++m_containerRebuildCount;
+	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
+	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
+
+	// Allocate the load-time transform snapshots up front so
+	// IJobPriv::Get{Base,Loaded}TransformSnapshot return stable
+	// pointers for the Job's lifetime.
+	// P5 Slice 6d: the legacy SourceSpanIndex / OverrideSpanIndex
+	// byte-splice metadata was deleted (unreachable since loading went
+	// CST-only).  mCstLoadFileIdentity (the Job member) survives ClearAll
+	// on its own, and the CST-save external-mod guard reads it directly
+	// via GetCstLoadFileIdentity.
+	pBaseTransforms.reset(   new TransformSnapshot() );
+	pLoadedTransforms.reset( new TransformSnapshot() );
 
 	RISE_API_CreateScene( &pScene );
 	RISE_API_CreateGeometryManager( &pGeomManager );
 	RISE_API_CreateMaterialManager( &pMatManager );
 	RISE_API_CreateShaderManager( &pShaderManager );
 	RISE_API_CreateShaderOpManager( &pShaderOpManager );
+	RISE_API_CreateCameraManager( &pCameraManager );
 	RISE_API_CreatePainterManager( &pPntManager );
+	RISE_API_CreateScalarPainterManager( &pScalarPntManager );
 	RISE_API_CreateFunction1DManager( &pFunc1DManager );
 	RISE_API_CreateFunction2DManager( &pFunc2DManager );
-	RISE_API_CreateObjectManager( &pObjectManager, false, false, 0, 0 );
+	// Top-level acceleration default: SAH BVH (BVH4-collapsed, SIMD AABB
+	// test) over scene objects.  Pre-2026-05 the default was
+	// (false, false, 0, 0) — i.e., no top-level structure, so every ray
+	// fell through to ObjectManager's linear loop over every IObject in
+	// the scene.  Profiling on sponza_new (155 mesh objects) showed
+	// ~64 % of CPU in IntersectRay because each ray was paying ~633
+	// AABB tests / 6 mesh-BVH descents to reach the actual intersection.
+	// Constructor flag `bUseBSPtree` is the historical name; semantically
+	// it now means "build a top-level BVH" (the BSPTreeSAH path was
+	// removed when ObjectManager moved to BVH<>).  Leaf-target=4 +
+	// depth-cap=32 + an explicit higher SAH intersection cost in
+	// CreateBVH() bias the build toward small leaves (each leaf hit
+	// triggers a per-mesh sub-BVH descent, so leaves should be small).
+	// ObjectManager's own gate `items.size() > nMaxObjectsPerNode`
+	// keeps tiny scenes (≤4 objects) on the linear path where BVH
+	// build/traverse overhead would dominate.
+	RISE_API_CreateObjectManager( &pObjectManager, true, false, 4, 32 );
 	RISE_API_CreateLightManager( &pLightManager );
 	RISE_API_CreateModifierManager( &pModManager );
 
+	pScene->SetCameraManager( pCameraManager );
 	pScene->SetObjectManager( pObjectManager );
 	pScene->SetLightManager( pLightManager );
+	// H3 (P-INVALIDATE): make the light manager self-invalidate.  Adding or
+	// removing a light now AUTOMATICALLY bumps the scene's light-topology
+	// generation, so no light mutator (present or future) has to remember.
+	// The conditional cases (emissive object/material, environment, in-place
+	// light-property edit) stay explicit via BumpSceneLightGen / SceneEditor --
+	// they are inherently mutation-layer DECISIONS, not forgettable bumps.
+	if( RISE::Implementation::LightManager* lm = dynamic_cast<RISE::Implementation::LightManager*>( pLightManager ) ) {
+		lm->SetOnLightSetChanged( [this]{ BumpSceneLightGen( pScene ); } );
+	} else {
+		// Fail LOUD: the only in-tree ILightManager is LightManager, so this
+		// cannot happen today.  But a future out-of-tree manager would null the
+		// cast and light add/remove would silently invalidate NOTHING (the
+		// explicit bumps were removed) -> reused RayCasters keep stale samplers.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job: light manager is not the expected LightManager type -- light add/"
+			"remove self-invalidation NOT installed; a reused RayCaster may keep "
+			"stale light samplers after a light is added or removed." );
+	}
+
+	// Default film: quarter HD (qHD) at square pixels.  Chosen as a
+	// fast iteration default for test renders — agents and humans
+	// authoring scenes don't have to set width/height for a quick
+	// preview.  Override via a `film` chunk in the scene file or
+	// via the CLI flags --width / --height / --pixel-ar.  Defaults
+	// (and upper bound) live in Rendering/Film.h as the single
+	// source of truth.
+	{
+		IFilm* pDefaultFilm = 0;
+		RISE_API_CreateFilm( &pDefaultFilm, kDefaultFilmWidth, kDefaultFilmHeight, kDefaultFilmPixelAR );
+		pScene->SetFilm( pDefaultFilm );
+		safe_release( pDefaultFilm );
+	}
 
 	// Adding null painter and null material
 	{
@@ -111,26 +2042,58 @@ void Job::InitializeContainers()
 		this->AddReflectionShaderOp( "DefaultReflection" );
 		this->AddRefractionShaderOp( "DefaultRefraction" );
 		this->AddEmissionShaderOp( "DefaultEmission" );
-		this->AddDirectLightingShaderOp( "DefaultDirectLighting", 0, true, true, false );
+		this->AddDirectLightingShaderOp( "DefaultDirectLighting", 0 );
 		this->AddCausticPelPhotonMapShaderOp( "DefaultCausticPelPhotonMap" );
 		this->AddCausticSpectralPhotonMapShaderOp( "DefaultCausticSpectralPhotonMap" );
 		this->AddGlobalPelPhotonMapShaderOp( "DefaultGlobalPelPhotonMap" );
 		this->AddGlobalSpectralPhotonMapShaderOp( "DefaultGlobalSpectralPhotonMap" );
 		this->AddTranslucentPelPhotonMapShaderOp( "DefaultTranslucentPelPhotonMap" );
 		this->AddShadowPhotonMapShaderOp( "DefaultShadowPhotonMap" );
-		this->AddPathTracingShaderOp( "DefaultPathTracing", true, false, 20, 1e-5, 10,  true );
+		this->AddPathTracingShaderOp( "DefaultPathTracing", false, 20, 1e-5, 10,  true );
 	}
 }
 
 void Job::DestroyContainers()
 {
+	// Every registered rasterizer (and with it every callback output)
+	// is released below; drop the callback-output registry first.
+	DropCallbackOutputRegistry_();
 	safe_shutdown_and_release( pScene );
-	safe_release( pRasterizer );
+	// pRasterizer is a borrowed pointer into rasterizerRegistry; the
+	// map below owns the addrefs.  Walk the registry and release each
+	// entry, then null out the active pointer so subsequent destructor
+	// passes can't double-release.
+	for( RasterizerRegistry::iterator it = rasterizerRegistry.begin();
+	     it != rasterizerRegistry.end(); ++it )
+	{
+		safe_release( it->second.instance );
+	}
+	rasterizerRegistry.clear();
+	pRasterizer = 0;
+	activeRasterizerName.clear();
+
+	// L6b — release the canonical FrameStore.  Each rasterizer that
+	// the registry just released also held its own counted reference
+	// (per Rasterizer::~Rasterizer in src/Library/Rendering/Rasterizer.cpp
+	// L6a-1), so this Job-side release is the LAST holder once the
+	// registry is drained — the FrameStore is destroyed here.
+	safe_release( m_jobFrameStore );
 
 	safe_shutdown_and_release( pGeomManager );
+	safe_shutdown_and_release( pCameraManager );
 	safe_shutdown_and_release( pPntManager );
+	safe_shutdown_and_release( pScalarPntManager );
+	fireFunction1DDefinitionRecords.clear();
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
+	// P1-#8: clear the H3 self-invalidation callback BEFORE releasing the
+	// manager.  The callback captured `this` (Job) + reads pScene; if any
+	// holder retained a counted ref to the light manager it would outlive the
+	// Job, and a later add/remove would deref a destroyed Job / stale scene.
+	// Severing the callback here makes a retained manager inert.
+	if( RISE::Implementation::LightManager* lm = dynamic_cast<RISE::Implementation::LightManager*>( pLightManager ) ) {
+		lm->SetOnLightSetChanged( nullptr );
+	}
 	safe_shutdown_and_release( pLightManager );
 	safe_shutdown_and_release( pMatManager );
 	safe_shutdown_and_release( pModManager );
@@ -140,12 +2103,26 @@ void Job::DestroyContainers()
 
 	// Release all named media
 	{
+		fireAuthoredConfigDigests.clear();
+		fireSequenceControllers.clear();
+		fireSequenceManifests.clear();
 		MediumMap::iterator it;
 		for( it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
 			safe_release( it->second );
 		}
 		mediaMap.clear();
 	}
+
+	// Drop the named hair guide sets.  Plain data (no refcount), and no
+	// live groom can be holding a borrow: `HairGeometry`'s deferred
+	// constructor deep-copies whatever guide arrays it was handed.
+	hairGuidesMap.clear();
+
+	// Simulation M4: the declared simulations and the mesh bindings (plain
+	// data; the graph's Configure memo is content-keyed and survives).
+	simulationsMap.clear();
+	simulationOrder.clear();
+	simulatedGeometries.clear();
 }
 
 //
@@ -162,6 +2139,8 @@ bool Job::SetPrimaryAcceleration(
 	const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	if( pObjectManager ) {
 		pObjectManager->Shutdown();
 		pObjectManager->release();
@@ -171,6 +2150,16 @@ bool Job::SetPrimaryAcceleration(
 	RISE_API_CreateObjectManager( &pObjectManager, bUseBSPtree, bUseOctree, nMaxObjectsPerNode, nMaxTreeDepth );
 	pScene->SetObjectManager( pObjectManager );
 
+	// 87 step 4a: this is the SECOND site that replaces a manager, and it does
+	// not go through InitializeContainers.  The fresh ObjectManager's serial
+	// counter starts at 0, so the next objects registered get serials
+	// byte-identical to the ones just destroyed -- which is exactly the
+	// condition SceneEditController's tree-snapshot identity relies on this
+	// count to detect.  Bump it here too, or a caller that swaps the
+	// accelerator under a live controller leaves every outstanding tree handle
+	// resolving to an object that no longer exists.
+	++m_containerRebuildCount;
+
 	return true;
 }
 
@@ -178,136 +2167,386 @@ bool Job::SetLightSampleRRThreshold(
 	const double threshold
 	)
 {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	lightSampleRRThreshold = threshold;
 	return true;
 }
 
-
-//
-// Sets the camera
-//
-
-//! Sets a pinhole camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetPinholeCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const double fov,										///< [in] Field of view in radians
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2]						///< [in] Orientation relative to a target
+bool Job::SetFilm(
+	const unsigned int width,
+	const unsigned int height,
+	const double pixelAR
 	)
 {
-	ICamera* pCamera = 0;
-	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
-	pScene->SetCamera( pCamera );
-	safe_release( pCamera );
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	// Reject zero dims and non-finite / non-positive pixelAR.  `NaN <=
+	// 0.0` is false (NaN comparisons always return false), so the plain
+	// `pixelAR <= 0.0` check used to let NaN through and poison every
+	// camera's projection matrix on the resync.  pixelAR arrives as a double
+	// through the public API, so there is no string layer to reject at and
+	// the test must be one that survives -ffast-math.
+	const bool bPixelARFinite = RISE::IsFiniteDouble( pixelAR );
+	if( width == 0 || height == 0 || !bPixelARFinite || pixelAR <= 0.0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetFilm: zero / non-finite / negative dims rejected (width=%u, height=%u, pixelAR=%g).  "
+			"Active Film unchanged.", width, height, pixelAR );
+		return false;
+	}
+	if( width > kMaxFilmWidth || height > kMaxFilmHeight ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetFilm: dims exceed sanity bound (width=%u, height=%u; max=%u x %u).  "
+			"Active Film unchanged.  If this is intentional, raise kMaxFilm{Width,Height} in Rendering/Film.h.",
+			width, height, kMaxFilmWidth, kMaxFilmHeight );
+		return false;
+	}
+
+	// Same-dim short-circuit: a panel edit that types the current value
+	// back (or the parser declaring the same Film via the chunk default)
+	// would otherwise allocate a fresh IFilm, swap-release the previous
+	// one, and call SetDimensionsAndPixelAR on every camera — wasted
+	// work plus a render-thread cancel-and-park that flickers the
+	// preview for no reason.  Bail when nothing actually changed.
+	if( pScene ) {
+		const IFilm* pCurFilm = pScene->GetFilm();
+		if( pCurFilm
+			&& pCurFilm->GetWidth()   == width
+			&& pCurFilm->GetHeight()  == height
+			&& pCurFilm->GetPixelAR() == pixelAR )
+		{
+			return true;
+		}
+	}
+
+	IFilm* pNewFilm = 0;
+	if( !RISE_API_CreateFilm( &pNewFilm, width, height, pixelAR ) ) {
+		return false;
+	}
+	pScene->SetFilm( pNewFilm );
+	safe_release( pNewFilm );
+
+	// L6b — Film dims drive the canonical FrameStore.  Without this
+	// push, every rasterizer in the registry keeps its old FrameStore
+	// at the previous dims, and any consumer reading `Job::GetFrameStore`
+	// after SetFilm sees a stale store sized for the previous Film.
+	// `PushJobFrameStoreToRasterizers` internally calls
+	// `ResolveJobFrameStoreForActiveCamera` → `EnsureJobFrameStore_locked`
+	// which reallocates the FrameStore if dims changed and addref-
+	// swap-releases each rasterizer's reference in lockstep.  Same
+	// pattern `SetActiveCamera` uses for the same reason.
+	PushJobFrameStoreToRasterizers();
 	return true;
 }
 
-//! Sets a pinhole camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetPinholeCameraONB(
-	const double ONB_U[3],									///< [in] U vector of orthonormal basis
-	const double ONB_V[3],									///< [in] V vector of orthonormal basis
-	const double ONB_W[3],									///< [in] W vector of orthonormal basis
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double fov,										///< [in] Field of view in radians
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate									///< [in] Rate at which each pixel is recorded
+bool Job::ScaleFilmToFit(
+	const unsigned int maxSurfaceW,
+	const unsigned int maxSurfaceH,
+	const unsigned int maxLongEdge
 	)
 {
+	if( maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::ScaleFilmToFit: zero argument rejected (surface=%ux%u, longEdge=%u).",
+			maxSurfaceW, maxSurfaceH, maxLongEdge );
+		return false;
+	}
+	if( !pScene ) return false;
+	const IFilm* pFilm = pScene->GetFilm();
+	if( !pFilm ) return false;
+
+	const unsigned int origW   = pFilm->GetWidth();
+	const unsigned int origH   = pFilm->GetHeight();
+	const double       origPAR = pFilm->GetPixelAR();
+	if( origW == 0 || origH == 0 ) return false;
+
+	// Pick the largest scale factor s such that every constraint
+	// holds: s*origW <= maxSurfaceW, s*origH <= maxSurfaceH,
+	// s*max(origW,origH) <= maxLongEdge.  Capping at 1.0 ensures we
+	// only ever shrink — a tiny scene authored at 128 x 128 stays at
+	// 128 x 128 and gets stretched by the viewport widget instead of
+	// being needlessly re-rendered at a larger resolution.
+	const unsigned int longOrig = origW >= origH ? origW : origH;
+	const double s = std::min( { 1.0,
+	                             double( maxSurfaceW )  / double( origW ),
+	                             double( maxSurfaceH )  / double( origH ),
+	                             double( maxLongEdge )  / double( longOrig ) } );
+	const unsigned int newW = static_cast<unsigned int>( std::max< long long >(
+		1, static_cast<long long>( std::round( s * origW ) ) ) );
+	const unsigned int newH = static_cast<unsigned int>( std::max< long long >(
+		1, static_cast<long long>( std::round( s * origH ) ) ) );
+
+	// SetFilm has its own same-dim short-circuit, but bail early to
+	// avoid the GlobalLog noise SetFilm would emit on a successful
+	// no-op.
+	if( newW == origW && newH == origH ) return true;
+	return SetFilm( newW, newH, origPAR );
+}
+
+// P5 (Model-B): cache the interactive viewport screen-fit params THEN apply the fit.  The GUI bridges call this
+// (instead of ScaleFilmToFit directly) at scene-load and on viewport resize so the cache always reflects the real
+// current viewport size.  With the cache populated, a D2 full re-derive (RederiveCstWithVariant /
+// DeriveEditedCstDocument_) can re-apply the SAME fit at its tail -- otherwise the re-derive would revert the live
+// film to the Document's AUTHORED (full) dims and the preview would jump from screen-fit to full-res.  The cache is
+// live-only: it NEVER patches the retained CST Document, so a save still reproduces the authored dims.  Headless CLI
+// never calls this -> mHasViewportFit stays false -> the D2 tails skip the re-fit -> CLI renders authored full-res.
+bool Job::SetViewportFit(
+	const unsigned int surfaceW,
+	const unsigned int surfaceH,
+	const unsigned int maxLongEdge
+	)
+{
+	// Reject zero args exactly as ScaleFilmToFit does, and do NOT cache a zero fit (a cached zero would make the
+	// D2 re-fit call ScaleFilmToFit with a zero arg, which it rejects anyway -- but leaving mHasViewportFit false
+	// keeps the "unset -> skip" headless contract crisp).
+	if( surfaceW == 0 || surfaceH == 0 || maxLongEdge == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetViewportFit: zero argument rejected (surface=%ux%u, longEdge=%u).",
+			surfaceW, surfaceH, maxLongEdge );
+		return false;
+	}
+	mViewportFitSurfaceW = surfaceW;
+	mViewportFitSurfaceH = surfaceH;
+	mViewportFitLongEdge = maxLongEdge;
+	mHasViewportFit      = true;
+	return ScaleFilmToFit( surfaceW, surfaceH, maxLongEdge );
+}
+
+
+//
+// Cameras
+//
+// Each AddXxxCamera creates the ICamera, registers it under `name` in
+// the scene's camera manager (which makes it active by policy), then
+// drops the local strong ref.  The manager retains the addref taken
+// by AddItem.
+
+// Helper: read xres/yres/pixelAR from the Scene's active Film for the
+// camera factories (which still take dims as ctor args for their
+// internal Frame projection math).  Single point of truth, cuts
+// repetitive `pScene->GetFilm()->GetWidth()` boilerplate in every
+// Add*Camera body.  Caller is responsible for SetFilm-ing whatever
+// dims they actually want — InitializeContainers installs the qHD
+// default so this is always non-null.
+void Job::ReadFilmDims( unsigned int& xres, unsigned int& yres, double& pixelAR ) const
+{
+	const IFilm* pFilm = pScene ? pScene->GetFilm() : nullptr;
+	if( pFilm ) {
+		xres    = pFilm->GetWidth();
+		yres    = pFilm->GetHeight();
+		pixelAR = pFilm->GetPixelAR();
+	} else {
+		xres    = kDefaultFilmWidth;
+		yres    = kDefaultFilmHeight;
+		pixelAR = kDefaultFilmPixelAR;
+	}
+}
+
+bool Job::AddPinholeCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double fov,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2],
+	const double iso,
+	const double fstop
+	)
+{
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
+	ICamera* pCamera = 0;
+	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), iso, fstop );
+	const bool ok = pScene->AddCamera( name, pCamera );
+	safe_release( pCamera );
+	return ok;
+}
+
+bool Job::AddPinholeCameraONB(
+	const char* name,
+	const double ONB_U[3],
+	const double ONB_V[3],
+	const double ONB_W[3],
+	const double ptLocation[3],
+	const double fov,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double iso,
+	const double fstop
+	)
+{
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
+	// Phase B2: dims read from Scene's active Film via ReadFilmDims
+	// (called above).  Programmatic callers and importers drive Film
+	// via SetFilm before AddXxxCamera; the parser does the same via
+	// the `film` chunk.
 	OrthonormalBasis3D onb = OrthonormalBasis3D( Vector3(ONB_U), Vector3(ONB_V), Vector3(ONB_W) );
 	ICamera* pCamera = 0;
-	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
-	pScene->SetCamera( pCamera );
+	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets a camera based on thin lens model
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetThinlensCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const double fov,										///< [in] Field of view in radians
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2],						///< [in] Orientation relative to a target
-	const double aperture,									///< [in] Size of the aperture
-	const double focalLength,								///< [in] Focal length
-	const double focusDistance								///< [in] Focus distance
+bool Job::AddThinlensCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double sensorSize,
+	const double focalLength,
+	const double fstop,
+	const double focusDistance,
+	const double sceneUnitMeters,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2],
+	const unsigned int apertureBlades,
+	const double apertureRotation,
+	const double anamorphicSqueeze,
+	const double tiltX,
+	const double tiltY,
+	const double shiftX,
+	const double shiftY,
+	const double iso
 	)
 {
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
 	ICamera* pCamera = 0;
-	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), aperture, focalLength, focusDistance );
-	pScene->SetCamera( pCamera );
+	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets a fisheye camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetFisheyeCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2],						///< [in] Orientation relative to a target
-	const double scale										///< [in] Scale factor to exagerrate the effects
+bool Job::AddFisheyeCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2],
+	const double scale
 	)
 {
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
 	ICamera* pCamera = 0;
 	RISE_API_CreateFisheyeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), scale );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
+	return ok;
+}
+
+bool Job::AddOrthographicCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double vpScale[2],
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2]
+	)
+{
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
+	// Phase B2: dims read from Scene's active Film via ReadFilmDims
+	// (called above).  Programmatic callers and importers drive Film
+	// via SetFilm before AddXxxCamera; the parser does the same via
+	// the `film` chunk.
+	ICamera* pCamera = 0;
+	RISE_API_CreateOrthographicCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, Vector2(vpScale), pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
+	const bool ok = pScene->AddCamera( name, pCamera );
+	safe_release( pCamera );
+	return ok;
+}
+
+bool Job::SetActiveCamera( const char* name )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !pScene ) return false;
+	const bool ok = pScene->SetActiveCamera( name );
+	if( ok ) {
+		// L6b — when the active camera changes, its dimensions may
+		// differ from the previously-active camera's, so the
+		// canonical FrameStore needs to be re-resolved (which
+		// triggers reallocation in `EnsureJobFrameStore_locked` if
+		// dims differ) and pushed to every rasterizer in the
+		// registry.  Without this, switching to a camera with
+		// different dimensions leaves rasterizers holding the OLD
+		// FrameStore + `GetFrameStore()` exposes the stale store.
+		PushJobFrameStoreToRasterizers();
+	}
+	return ok;
+}
+
+bool Job::SetCameraNearClip( const char* name, const double nearClip )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !pScene ) return false;
+	if( !RISE::IsFiniteDouble( nearClip ) || nearClip < 0.0 ) {
+		char msg[160];
+		std::snprintf( msg, sizeof( msg ), "invalid nearClip %g (must be finite and >= 0)", nearClip );
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetCameraNearClip: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+	Implementation::Scene* pSceneImpl = dynamic_cast<Implementation::Scene*>( pScene );
+	if( !pSceneImpl ) return false;
+	ICamera* pCam = nullptr;
+	if( name && name[0] ) {
+		ICameraManager* pCamMgr = pSceneImpl->GetCamerasMutable();
+		if( pCamMgr ) {
+			pCam = pCamMgr->GetItem( name );
+		}
+	} else {
+		pCam = pSceneImpl->GetCameraMutable();
+	}
+	Implementation::CameraCommon* pCamCommon = dynamic_cast<Implementation::CameraCommon*>( pCam );
+	if( !pCamCommon ) {
+		char msg[192];
+		std::snprintf( msg, sizeof( msg ), "camera '%s' not found or does not support near clip",
+			( name && name[0] ) ? name : "<active>" );
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetCameraNearClip: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+	pCamCommon->SetNearClip( Scalar( nearClip ) );
 	return true;
 }
 
-//! Sets an orthographic camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetOrthographicCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double vpScale[2],								///< [in] Viewport scale factor
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2]						///< [in] Orientation relative to a target
-	)
+std::string Job::GetActiveCameraName() const
 {
-	ICamera* pCamera = 0;
-	RISE_API_CreateOrthographicCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, Vector2(vpScale), pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
-	pScene->SetCamera( pCamera );
-	safe_release( pCamera );
-	return true;
+	if( !pScene ) return std::string();
+	// IScene::GetActiveCameraName returns a `String` (= std::vector<char>
+	// derivative) by value; convert to std::string for IJob's portable
+	// signature.  Empty when no camera has ever been added or all of
+	// them have been removed.
+	const RISE::String s = pScene->GetActiveCameraName();
+	return s.empty() ? std::string() : std::string( s.c_str() );
+}
+
+bool Job::RemoveCamera( const char* name )
+{
+	if( !pScene ) return false;
+	return pScene->RemoveCamera( name );
 }
 
 //
@@ -333,10 +2572,9 @@ bool Job::AddCheckerPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateCheckerPainter( &pPainter, size, *pA, *pB );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 
@@ -360,10 +2598,9 @@ bool Job::AddLinesPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateLinesPainter( &pPainter, size, *pA, *pB, bvert );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a mandelbrot fractal painter
@@ -388,10 +2625,9 @@ bool Job::AddMandelbrotFractalPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateMandelbrotFractalPainter( &pPainter, *pA, *pB, lower_x, upper_x, lower_y, upper_y, exp );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Adds a 2D perlin noise painter
@@ -416,10 +2652,540 @@ bool Job::AddPerlin2DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreatePerlin2DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector2(vScale), Vector2(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
+}
+
+//! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddControlledSmoothness2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const double centerU,
+							const double centerV,
+							const double radius,
+							const double amplitude,
+							const unsigned int smoothnessMode
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateControlledSmoothness2DPainter(
+		&pPainter, *pA, *pB,
+		centerU, centerV, radius, amplitude, smoothnessMode );
+	if( !pPainter ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a polynomial-based Function2D painter.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPolynomialFunction2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const unsigned int polynomialType,
+							const double center[2],
+							const double scale[2],
+							const double amplitude,
+							const unsigned int degree,
+							const unsigned int powerX,
+							const unsigned int powerY,
+							const double* pCoeffs,
+							const unsigned int nCoeffs
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreatePolynomialFunction2DPainter(
+		&pPainter, *pA, *pB,
+		polynomialType,
+		center[0], center[1],
+		scale[0],  scale[1],
+		amplitude,
+		degree, powerX, powerY,
+		pCoeffs, nCoeffs );
+	if( !pPainter ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a composable Function2D painter that combines two operand
+//! Function2Ds per a binary operator.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCompositeFunction2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const char* childA,
+							const char* childB,
+							const unsigned int op,
+							const double weightA,
+							const double uvScaleA[2],
+							const double uvOffsetA[2],
+							const double weightB,
+							const double uvScaleB[2],
+							const double uvOffsetB[2],
+							const double lerpT,
+							const double outputScale,
+							const double outputOffset
+							)
+{
+	IPainter* pColA = pPntManager->GetItem( pa );
+	IPainter* pColB = pPntManager->GetItem( pb );
+
+	if( !pColA || !pColB ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddCompositeFunction2DPainter '%s': color painter lookup failed (colora='%s', colorb='%s')",
+			name, pa, pb );
+		return false;
+	}
+
+	// Children must already be registered as Function2Ds — i.e. a painter
+	// whose implementation derives from `Painter` (which exposes the
+	// IFunction2D Evaluate hook).  pPntManager + pFunc2DManager are kept
+	// in lockstep by the Add*Painter helpers above, so a failure here
+	// means the named painter doesn't actually evaluate as a Function2D.
+	IFunction2D* pChildA = pFunc2DManager->GetItem( childA );
+	IFunction2D* pChildB = pFunc2DManager->GetItem( childB );
+
+	if( !pChildA || !pChildB ) {
+		// round-1 P3: not a fixed whitelist -- RegisterPainterDual dual-
+		// indexes EVERY successfully-added colour painter into
+		// pFunc2DManager except expression_painter (single-registered) and
+		// scalar_painter (a separate manager entirely); see
+		// ConnectionLegality::IsFunction2DCapable for the authoritative set.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddCompositeFunction2DPainter '%s': child Function2D lookup failed (child_a='%s', child_b='%s'); "
+			"both children must already be a registered, non-none colour painter in this scene "
+			"(expression_painter and scalar_painter do not qualify)",
+			name, childA, childB );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateCompositeFunction2DPainter(
+		&pPainter,
+		*pColA, *pColB,
+		*pChildA, *pChildB,
+		op,
+		weightA,
+		uvScaleA[0], uvScaleA[1], uvOffsetA[0], uvOffsetA[1],
+		weightB,
+		uvScaleB[0], uvScaleB[1], uvOffsetB[0], uvOffsetB[1],
+		lerpT,
+		outputScale,
+		outputOffset );
+	if( !pPainter ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a sum-of-sines water-wave painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGerstnerWavePainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const unsigned int numWaves,
+							const double medianWavelength,
+							const double wavelengthRange,
+							const double medianAmplitude,
+							const double amplitudePower,
+							const double windDir[2],
+							const double directionalSpread,
+							const double dispersionSpeed,
+							const unsigned int seed,
+							const double time
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateGerstnerWavePainter(
+		&pPainter,
+		*pA, *pB,
+		numWaves,
+		medianWavelength, wavelengthRange,
+		medianAmplitude, amplitudePower,
+		windDir[0], windDir[1],
+		directionalSpread,
+		dispersionSpeed,
+		seed,
+		time );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds an expression_painter (doc 88 P1, S2)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddExpressionPainter(
+							const char* name,
+							const char* expr,
+							const char* const* params,
+							const unsigned int numParams,
+							const char* const* defs,
+							const unsigned int numDefs,
+							const double seed,
+							const double time
+							)
+{
+	std::vector<std::string> paramLines;
+	paramLines.reserve( numParams );
+	for( unsigned int i = 0; i < numParams; ++i ) {
+		paramLines.push_back( ( params && params[i] ) ? params[i] : "" );
+	}
+	std::vector<std::string> defLines;
+	defLines.reserve( numDefs );
+	for( unsigned int i = 0; i < numDefs; ++i ) {
+		defLines.push_back( ( defs && defs[i] ) ? defs[i] : "" );
+	}
+
+	const std::string context = std::string( "expression_painter `" ) + ( name ? name : "noname" ) + "`";
+	Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+	std::vector<Implementation::ParamSpec> specs;
+
+	// DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g)): resolves
+	// sample()/sample_scalar() painter-name references against THIS job's
+	// own painter managers -- the same GetItem lookups every other
+	// name-referencing chunk form uses (function1d/function2d/base/
+	// multiply/add/painter, ScalarPainterAsciiChunkParser).  A name equal
+	// to the chunk's OWN name is refused with a specific diagnostic rather
+	// than falling through to the generic "not found" -- the painter
+	// manager genuinely does not have it yet (AddItem below runs only
+	// AFTER this call succeeds), so "not found" would be technically true
+	// but would read as a typo rather than a self-reference.
+	//
+	// DL-25 review P3 -- THE CHECK IS PER MANAGER, NOT PER NAME.  The
+	// colour and physical-scalar painters live in two INDEPENDENT named
+	// managers, so an `expression_painter` called `grain` and a
+	// `scalar_painter` called `grain` are two different chunks.  This is
+	// the COLOUR chunk's resolver, so only `ResolveColorPainter` can
+	// possibly be looking at the chunk being built; `sample_scalar(grain)`
+	// here names the already-registered SCALAR `grain` and must resolve
+	// normally.  The first implementation compared the bare name in BOTH
+	// and refused a legitimate cross-manager reference as a
+	// self-reference.
+	class SelfReferenceCheckedResolver : public Implementation::IExpressionPainterRefResolver
+	{
+	public:
+		Job& job;
+		std::string selfName;
+		SelfReferenceCheckedResolver( Job& j, const std::string& self ) : job( j ), selfName( self ) {}
+		bool ResolveColorPainter( const std::string& nm, IPainter*& out, std::string& err ) override
+		{
+			if( nm == selfName ) {
+				err = "references itself -- a painter cannot sample its own not-yet-registered chunk";
+				return false;
+			}
+			out = job.GetPainters()->GetItem( nm.c_str() );
+			if( !out ) { err = "painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+			return true;
+		}
+		bool ResolveScalarPainter( const std::string& nm, IScalarPainter*& out, std::string& err ) override
+		{
+			// NO self-name check here -- see the class comment: this is an
+			// expression_painter (COLOUR) being built, so a scalar_painter
+			// of the same name is a DIFFERENT, already-registered chunk.
+			out = job.GetScalarPainters()->GetItem( nm.c_str() );
+			if( !out ) { err = "scalar_painter `" + nm + "` not found (declare it before this chunk, or check the name)"; return false; }
+			return true;
+		}
+	} painterRefResolver( *this, name ? name : "noname" );
+
+	// true/true: full context vars + auto-registered `seed`, this
+	// function's ORIGINAL (pre-unification) behavior -- see
+	// BuildExpressionProgramFromChunkFields's own doc comment
+	// (ExpressionPainter.h) for the false/false expression_function2d
+	// case this parameter pair also now serves.
+	std::string exprErr;
+	if( !Implementation::BuildExpressionProgramFromChunkFields(
+			context, paramLines, defLines, Scalar( seed ), expr ? expr : "", prog, specs,
+			/*enableContextVars=*/true, /*autoRegisterSeed=*/true, &exprErr, &painterRefResolver ) ) {
+		// Thread the SPECIFIC compiler diagnostic (already logged above,
+		// via GlobalLog()) into the CST finalize-diag sink -- see
+		// GenericManager.h's contract -- so a bad expression_painter no
+		// longer reads to the agent surface as the generic "apply failed
+		// (e.g. unresolved reference); see log" fallback (Cst.cpp's
+		// DeriveToJob apply loop).
+		RISE::SetFinalizeDiagIfEmpty( exprErr );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateExpressionPainter( &pPainter, prog, specs, Scalar( time ) ) ) {
+		return false;
+	}
+	// Deliberately SINGLE-manager registration -- NOT RegisterPainterDual.
+	// expression_painter is a full-3D-context surface; registering it in
+	// the IFunction2D manager would let it be reached via Evaluate(u,v)
+	// alone (e.g. a displaced_geometry `function` reference), where the
+	// default IFunction2D hook (Painter::Evaluate) builds a dummy
+	// RayIntersectionGeometric with P/Po/N held at zero -- silently
+	// freezing any P/Po/N-dependent field to a constant.  See
+	// ExpressionPainter.h's file header comment.
+	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "painter" );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a ramp_painter (doc 88 P2.2, S3)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddRampPainter(
+							const char* name,
+							const char* input,
+							const unsigned int channel,
+							const unsigned int interpolation,
+							const double* stopPositions,
+							const double* stopColors,
+							const unsigned int numStops,
+							const char* colorSpace
+							)
+{
+	IPainter* pInput = pPntManager->GetItem( input );
+	if( !pInput ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: input painter `%s` not found", name ? name : "noname", input ? input : "" );
+		return false;
+	}
+	if( numStops < 2 || !stopPositions || !stopColors ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: needs at least 2 stops", name ? name : "noname" );
+		return false;
+	}
+
+	std::vector<Implementation::RampPainter::Stop> stops;
+	stops.reserve( numStops );
+	for( unsigned int i = 0; i < numStops; ++i ) {
+		const double rgbIn[3] = { stopColors[i * 3 + 0], stopColors[i * 3 + 1], stopColors[i * 3 + 2] };
+		// THE shared colour-space switch (ColorSpaceNameToRISEPel), applied per stop.
+		// Painters default to sRGB when the chunk omits `colorspace`; the helper takes
+		// a non-null name so that default lives HERE, at the surface that owns it.
+		RISEPel c;
+		if( !ColorSpaceNameToRISEPel( colorSpace ? colorSpace : "sRGB", rgbIn,
+		                              "AddRampPainter", name, c ) ) {
+			return false;
+		}
+		stops.push_back( Implementation::RampPainter::Stop( Scalar( stopPositions[i] ), c ) );
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateRampPainter( &pPainter, *pInput, channel, interpolation, stops ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a mapping_painter (doc 88 P2.3)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddMappingPainter(
+							const char* name,
+							const char* source,
+							const unsigned int projection,
+							const double scale[3],
+							const double rotateDeg[3],
+							const double translate[3],
+							const double blendSharpness
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddMappingPainter `%s`: source painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+
+	const Vector3 vScale{ Scalar( scale[0] ), Scalar( scale[1] ), Scalar( scale[2] ) };
+	const Vector3 vRotateDeg{ Scalar( rotateDeg[0] ), Scalar( rotateDeg[1] ), Scalar( rotateDeg[2] ) };
+	const Vector3 vTranslate{ Scalar( translate[0] ), Scalar( translate[1] ), Scalar( translate[2] ) };
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateMappingPainter( &pPainter, *pSource, projection, vScale, vRotateDeg, vTranslate, Scalar( blendSharpness ) ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! P1-A fix (S7 review round 1): new tail-appended virtual carrying the
+//! P2.5 `space` parameter -- see IJob.h for the ABI rationale.  Body is
+//! identical to AddVoronoi3DPainter below except for the extra argument
+//! threaded through to RISE_API_CreateVoronoi3DPainterWithSpace.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddVoronoi3DPainterWithSpace(
+							const char* name,				///< [in] Name of the painter
+							const double pt_x[],			///< [in] X co-ordinates of generators
+							const double pt_y[],			///< [in] Y co-ordinates of generators
+							const double pt_z[],			///< [in] Z co-ordinates of generators
+							const char** painters,			///< [in] The painters for each generator
+							const unsigned int count,		///< [in] Number of the generators
+							const char* border,				///< [in] Name of the painter for the border
+							const double bsize,				///< [in] Size of the border
+							const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+							)
+{
+	if( count < 2 ) {
+		return false;
+	}
+
+	IPainter* pBorder = pPntManager->GetItem( border );
+
+	if( !pBorder ) {
+		return false;
+	}
+
+	std::vector<Point3> pts;
+	std::vector<IPainter*> ptrs;
+
+	for( unsigned int i=0; i<count; i++ ) {
+		pts.push_back( Point3( pt_x[i], pt_y[i], pt_z[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainterWithSpace:: `%s`: %s", name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+		ptrs.push_back( pGen );
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateVoronoi3DPainterWithSpace( &pPainter, pts, ptrs, *pBorder, bsize, worldSpace );
+
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+
+	return ok;
+}
+
+//! P1-A fix (S7 review round 1): new tail-appended virtual carrying the
+//! P2.4 `mode` parameter -- see IJob.h for the ABI rationale.  Body is
+//! identical to AddBlendPainter below except for the extra argument
+//! threaded through to RISE_API_CreateBlendPainterWithMode.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddBlendPainterWithMode(
+							const char* name,				///< [in] Name of the painter
+							const char* pa,					///< [in] First painter
+							const char* pb,					///< [in] Second painter
+							const char* mask,				///< [in] Mask painter
+							const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	IPainter* pMask = pPntManager->GetItem( mask );
+
+	if( !pA || !pB || !pMask ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateBlendPainterWithMode( &pPainter, *pA, *pB, *pMask, mode );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a stochastic_tile_painter (doc 88 P3.1, S8)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddStochasticTilePainter(
+							const char* name,
+							const char* source,
+							const double tileScale,
+							const unsigned int seed,
+							const double mean[3],
+							const double blendGamma,
+							const char* colorSpace
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddStochasticTilePainter `%s`: source painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel); painter sRGB default.
+	RISEPel meanPel;
+	if( !ColorSpaceNameToRISEPel( colorSpace ? colorSpace : "sRGB", mean,
+	                              "AddStochasticTilePainter", name, meanPel ) ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateStochasticTilePainter( &pPainter, *pSource, Scalar( tileScale ), seed, meanPel, Scalar( blendGamma ) ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a scatter_painter (doc 88 P3.2, S8)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddScatterPainter(
+							const char* name,
+							const char* source,
+							const char* background,
+							const double cellScale,
+							const double stampScale,
+							const double jitterPosition,
+							const double jitterRotationDeg,
+							const double jitterScale,
+							const double probability,
+							const unsigned int seed
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddScatterPainter `%s`: source (stamp) painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+	IPainter* pBackground = pPntManager->GetItem( background );
+	if( !pBackground ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddScatterPainter `%s`: background painter `%s` not found", name ? name : "noname", background ? background : "" );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateScatterPainter( &pPainter, *pSource, *pBackground, Scalar( cellScale ), Scalar( stampScale ),
+			Scalar( jitterPosition ), Scalar( jitterRotationDeg ), Scalar( jitterScale ), Scalar( probability ), seed ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
 }
 
 //! Adds a 2D perlin noise painter
@@ -443,10 +3209,265 @@ bool Job::AddPerlin3DPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreatePerlin3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
+}
+
+bool Job::AddWavelet3DPainter(
+								const char* name,
+								const unsigned int nTileSize,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	if( !pA || !pB ) return false;
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateWavelet3DPainter( &pPainter, nTileSize, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddReactionDiffusion3DPainter(
+								const char* name,
+								const unsigned int nGridSize,
+								const double dDa,
+								const double dDb,
+								const double dFeed,
+								const double dKill,
+								const unsigned int nIterations,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	if( !pA || !pB ) return false;
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateReactionDiffusion3DPainter( &pPainter, nGridSize, dDa, dDb, dFeed, dKill, nIterations, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddGabor3DPainter(
+								const char* name,
+								const double dFrequency,
+								const double dBandwidth,
+								const double vOrientation[3],
+								const double dImpulseDensity,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateGabor3DPainter( &pPainter, dFrequency, dBandwidth, Vector3(vOrientation), dImpulseDensity, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddSimplex3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateSimplex3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddSDF3DPainter(
+								const char* name,
+								const unsigned int nType,
+								const double dParam1,
+								const double dParam2,
+								const double dParam3,
+								const double dShellThickness,
+								const double dNoiseAmplitude,
+								const double dNoiseFrequency,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateSDF3DPainter( &pPainter, nType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddCurlNoise3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dEpsilon,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateCurlNoise3DPainter( &pPainter, dPersistence, nOctaves, dEpsilon, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddDomainWarp3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateDomainWarp3DPainter( &pPainter, dPersistence, nOctaves, dWarpAmplitude, nWarpLevels, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddPerlinWorley3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dWorleyJitter,
+								const double dBlend,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreatePerlinWorley3DPainter( &pPainter, dPersistence, nOctaves, dWorleyJitter, dBlend, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a 3D Worley (cellular) noise painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddWorley3DPainter(
+								const char* name,
+								const double dJitter,
+								const unsigned int nMetric,
+								const unsigned int nOutput,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateWorley3DPainter( &pPainter, dJitter, nMetric, nOutput, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a 3D turbulence noise painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddTurbulence3DPainter(
+								const char* name,				///< [in] Name of the painter
+								const double dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const char* pa,					///< [in] First painter
+								const char* pb,					///< [in] Second painter
+								const double vScale[3],			///< [in] How much to scale the function by
+								const double vShift[3]			///< [in] How much to shift the function by
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTurbulence3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
 }
 
 //! Adds a spectral color painter
@@ -472,32 +3493,34 @@ bool Job::AddSpectralColorPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateSpectralColorPainter( &pPainter, spectrum, scale );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 	safe_release( pFunc );
-	return true;
+	return ok;
 }
 
-static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image )
+static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image,
+	const char wrap_s = eRasterWrap_ClampToEdge, const char wrap_t = eRasterWrap_ClampToEdge,
+	const bool mipmap = true,	// Landing 2: opt out by passing false for vector-quantity textures (normal maps)
+	const bool supersample = false )	// Landing 2: footprint stochastic supersampling (lowmem-friendly LOD)
 {
 	IRasterImageAccessor* pRIA = 0;
 
 	switch( filter_type )
 	{
 	case 0:
-		RISE_API_CreateNNBRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateNNBRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 	default:
 		GlobalLog()->PrintEasyWarning( "Unknown texture filter type, using bilinear" );
 	case 1:
-		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image, wrap_s, wrap_t, mipmap, supersample );
 		break;
 	case 2:
-		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 	case 3:
-		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 
 	};
@@ -508,21 +3531,17 @@ static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type
 //! Adds a texture painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPNGTexturePainter(
-							const char* name,				///< [in] Name of the painter
-							const char* filename,			///< [in] Name of the file that contains the texture
-							const char color_space,			///< [in] Color space in the file
-															///		0 - Rec709 RGB linear
-															///		1 - sRGB profile
-															///		2 - ROMM RGB (ProPhotoRGB) linear
-															///		3 - ROMM RGB (ProPhotoRGB) non-linear
-							const char filter_type,			///< [in] Type of texture filtering
-																///     0 - Nearest neighbour
-																///     1 - Bilinear
-																///     2 - Catmull Rom Bicubic
-																///     3 - Uniform BSpline Bicubic
-							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
-							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const char* name,
+							const char* filename,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap,	// Landing 2: build mip pyramid + LOD-aware sampling
+							const SpectrumKind spectrumKind	// Landing 3: spectral-uplift role
 							)
 {
 	IRasterImage* pImage = 0;
@@ -574,12 +3593,18 @@ bool Job::AddPNGTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -587,7 +3612,521 @@ bool Job::AddPNGTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
+}
+
+//! Adds a PNG texture painter from an in-memory byte buffer (e.g., a
+//! glTF .glb embedded image bufferView).  Behaves identically to
+//! AddPNGTexturePainter except the byte source is supplied directly,
+//! avoiding the disk round-trip the importer used to make.  The byte
+//! buffer is consumed during decode and may be freed by the caller
+//! once this call returns.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddInMemoryPNGTexturePainter(
+							const char* name,
+							const unsigned char* bytes,
+							const size_t numBytes,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap,
+							const SpectrumKind spectrumKind
+							)
+{
+	if( !name || !bytes || numBytes == 0 ) {
+		return false;
+	}
+
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	// Wrap the caller's bytes in an IMemoryBuffer (which is-a IReadBuffer)
+	// without taking ownership.  PNGReader copies pixel data into the
+	// IRasterImage during LoadImage, so the caller's bytes only need to
+	// live for the duration of this function.
+	IMemoryBuffer* pMemBuffer = 0;
+	RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+		const_cast<char*>( reinterpret_cast<const char*>( bytes ) ),
+		static_cast<unsigned int>( numBytes ), false );
+	if( !pMemBuffer ) {
+		safe_release( pImage );
+		return false;
+	}
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+	case 1: gc = eColorSpace_sRGB;             break;
+	case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+	case 3: gc = eColorSpace_ProPhotoRGB;      break;
+	}
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreatePNGReader( &pImageReader, *pMemBuffer, gc );
+	pImage->LoadImage( pImageReader );
+
+	// LoadImage doesn't propagate a hard failure for malformed PNG bytes;
+	// instead the image is left empty (0 x 0).  Reject here so we don't
+	// silently register a working-but-blank painter.
+	if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddInMemoryPNGTexturePainter:: PNG decode failed for `%s` "
+			"(0x%zu bytes)", name, numBytes );
+		safe_release( pImageReader );
+		safe_release( pMemBuffer );
+		safe_release( pImage );
+		return false;
+	}
+
+	if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+	if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pMemBuffer );
+	safe_release( pImage );
+
+	return ok;
+}
+
+//! Adds a JPEG texture painter from an in-memory byte buffer.  See
+//! AddInMemoryPNGTexturePainter for the rationale and lifetime contract.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddInMemoryJPEGTexturePainter(
+							const char* name,
+							const unsigned char* bytes,
+							const size_t numBytes,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap,
+							const SpectrumKind spectrumKind
+							)
+{
+	if( !name || !bytes || numBytes == 0 ) {
+		return false;
+	}
+
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	IMemoryBuffer* pMemBuffer = 0;
+	RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+		const_cast<char*>( reinterpret_cast<const char*>( bytes ) ),
+		static_cast<unsigned int>( numBytes ), false );
+	if( !pMemBuffer ) {
+		safe_release( pImage );
+		return false;
+	}
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+	case 1: gc = eColorSpace_sRGB;             break;
+	case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+	case 3: gc = eColorSpace_ProPhotoRGB;      break;
+	}
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreateJPEGReader( &pImageReader, *pMemBuffer, gc );
+	pImage->LoadImage( pImageReader );
+
+	if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddInMemoryJPEGTexturePainter:: JPEG decode failed for `%s` "
+			"(0x%zu bytes)", name, numBytes );
+		safe_release( pImageReader );
+		safe_release( pMemBuffer );
+		safe_release( pImage );
+		return false;
+	}
+
+	if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+	if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pMemBuffer );
+	safe_release( pImage );
+
+	return ok;
+}
+
+//! Adds a JPEG texture painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddJPEGTexturePainter(
+							const char* name,
+							const char* filename,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap,	// Landing 2: build mip pyramid + LOD-aware sampling
+							const SpectrumKind spectrumKind	// Landing 3: spectral-uplift role
+							)
+{
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	IReadBuffer* pReadBuffer = 0;
+	RISE_API_CreateDiskFileReadBuffer( &pReadBuffer, filename );
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 1:
+		gc = eColorSpace_sRGB;
+		break;
+	case 0:
+		gc = eColorSpace_Rec709RGB_Linear;
+		break;
+	case 2:
+		gc = eColorSpace_ROMMRGB_Linear;
+		break;
+	case 3:
+		gc = eColorSpace_ProPhotoRGB;
+		break;
+	};
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreateJPEGReader( &pImageReader, *pReadBuffer, gc );
+
+	pImage->LoadImage( pImageReader );
+
+	// Apply the scale and/or shift operators
+	{
+		if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+			IOneColorOperator* pOp = 0;
+			RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+			Apply1ColorOperator( *pImage, *pOp );
+			safe_release( pOp );
+		}
+
+		if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+			IOneColorOperator* pOp = 0;
+			RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+			Apply1ColorOperator( *pImage, *pOp );
+			safe_release( pOp );
+		}
+	}
+
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pReadBuffer );
+	safe_release( pImage );
+
+	return ok;
+}
+
+//! Decodes N PNG/JPEG texture painters in parallel via the global
+//! ThreadPool, then registers each with the painter / function-2D
+//! managers serially in this thread.  See IJob.h for the full contract.
+bool Job::AddTexturePaintersBatch(
+								const TexturePainterBatchRequest* requests,
+								size_t numRequests,
+								bool* outRequestSuccess
+								)
+{
+	if( !requests || numRequests == 0 ) {
+		return true;
+	}
+
+	// Each request decodes into its own IRasterImage* + IRasterImageAccessor*
+	// + IPainter*, fully independent of the other workers' state.  All three
+	// stay alive until after the manager AddItem step, then release in
+	// reverse order.
+	//
+	// Decoded owns whatever non-null pointers a worker leaves in it.  The
+	// serial registration loop below is the normal owner: on success it
+	// safe_release()s (which also nulls, per safe_release's by-reference
+	// contract) every field it consumes.  ~Decoded() is purely a release-
+	// on-throw safety net: since commit 2692d1af, ThreadPool::ParallelFor
+	// propagates a worker exception (e.g. std::bad_alloc) to this caller
+	// instead of std::terminate'ing, which unwinds straight through the
+	// registration loop below and would otherwise leak every
+	// already-decoded slot.  Non-copyable so a slot's ownership is never
+	// duplicated; `decoded` is sized once via vector(count) and never
+	// reallocated, so no copy/move is ever needed.
+	struct Decoded
+	{
+		IPainter*               pPainter;     // null on decode failure
+		IRasterImageAccessor*   pRIA;
+		IRasterImage*           pImage;
+
+		Decoded() : pPainter( nullptr ), pRIA( nullptr ), pImage( nullptr ) {}
+		Decoded( const Decoded& ) = delete;
+		Decoded& operator=( const Decoded& ) = delete;
+
+		~Decoded()
+		{
+			safe_release( pPainter );
+			safe_release( pRIA );
+			safe_release( pImage );
+		}
+	};
+	std::vector<Decoded> decoded( numRequests );
+
+	// Parallel decode.  Worker bodies touch only their own slot of
+	// `decoded[]` and the constant `requests[i]`; no shared mutable state.
+	// Each worker:
+	//   1. Allocates an IRasterImage (low-mem variant defers color convert).
+	//   2. Wraps the source bytes (file or in-memory) in an IReadBuffer.
+	//   3. Creates a PNG or JPEG reader bound to that buffer + the requested
+	//      colour space.
+	//   4. LoadImage (the heavy libpng/libjpeg work).
+	//   5. Optionally applies scale/shift colour ops on the decoded pixels.
+	//   6. Builds the IRasterImageAccessor and IPainter for the decoded image.
+	//   7. Stores the painter ptr in decoded[i].pPainter; null on failure.
+	Implementation::GlobalThreadPool().ParallelFor(
+		static_cast<unsigned int>( numRequests ),
+		[&]( unsigned int i )
+		{
+			const TexturePainterBatchRequest& req = requests[i];
+
+			// Argument validation — must be exactly one of (filePath, bytes).
+			const bool hasFile  = ( req.filePath  != NULL );
+			const bool hasBytes = ( req.bytes     != NULL && req.numBytes > 0 );
+			if( hasFile == hasBytes ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: request `%s` must set exactly "
+					"one of filePath or bytes (got %s)",
+					req.name ? req.name : "(null)",
+					( hasFile && hasBytes ) ? "both" : "neither" );
+				return;
+			}
+			if( !req.name ) {
+				GlobalLog()->PrintEasyError(
+					"Job::AddTexturePaintersBatch:: request has NULL name; skipping" );
+				return;
+			}
+
+			IRasterImage* pImage = 0;
+			if( req.lowmemory ) {
+				RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+			} else {
+				RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor( 0, 0, 0, 0 ) );
+			}
+			if( !pImage ) {
+				return;
+			}
+
+			// Source buffer.  In-memory path uses an IMemoryBuffer with non-
+			// owning pointer (.glb embedded images); on-disk path opens its
+			// own file handle (.gltf JSON-form sidecar).  Both produce a
+			// buffer the PNG/JPEG readers consume identically.
+			IReadBuffer* pReadBuffer = 0;
+			if( hasFile ) {
+				RISE_API_CreateDiskFileReadBuffer( &pReadBuffer, req.filePath );
+			} else {
+				IMemoryBuffer* pMemBuffer = 0;
+				RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+					const_cast<char*>( reinterpret_cast<const char*>( req.bytes ) ),
+					static_cast<unsigned int>( req.numBytes ), false );
+				pReadBuffer = pMemBuffer;	// IMemoryBuffer is-a IReadBuffer
+			}
+			if( !pReadBuffer ) {
+				safe_release( pImage );
+				return;
+			}
+
+			COLOR_SPACE gc = eColorSpace_sRGB;
+			switch( req.colorSpace )
+			{
+			case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+			case 1: gc = eColorSpace_sRGB;             break;
+			case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+			case 3: gc = eColorSpace_ProPhotoRGB;      break;
+			}
+
+			IRasterImageReader* pImageReader = 0;
+			if( req.format == 0 ) {
+				RISE_API_CreatePNGReader( &pImageReader, *pReadBuffer, gc );
+			} else if( req.format == 1 ) {
+				RISE_API_CreateJPEGReader( &pImageReader, *pReadBuffer, gc );
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: request `%s` has unknown format byte %d "
+					"(expected 0=PNG, 1=JPEG)", req.name, (int)req.format );
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+			if( !pImageReader ) {
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+
+			pImage->LoadImage( pImageReader );
+
+			// LoadImage doesn't propagate a hard error for malformed bytes;
+			// it leaves the image at 0x0.  Reject so we don't register an
+			// empty painter.
+			if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: image decode failed for `%s`",
+					req.name );
+				safe_release( pImageReader );
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+
+			if( req.scale[0] != 1 || req.scale[1] != 1 || req.scale[2] != 1 ) {
+				IOneColorOperator* pOp = 0;
+				RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel( req.scale ), 1.0 ) );
+				Apply1ColorOperator( *pImage, *pOp );
+				safe_release( pOp );
+			}
+			if( req.shift[0] != 0 || req.shift[1] != 0 || req.shift[2] != 0 ) {
+				IOneColorOperator* pOp = 0;
+				RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel( req.shift ), 0 ) );
+				Apply1ColorOperator( *pImage, *pOp );
+				safe_release( pOp );
+			}
+
+			// Landing 2: same lowmem composition as the per-painter path.
+			const bool effective_mipmap     = req.mipmap && !req.lowmemory;
+			const bool effective_supersample = req.mipmap && req.lowmemory;
+			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage, req.wrap_s, req.wrap_t, effective_mipmap, effective_supersample );
+
+			IPainter* pPainter = 0;
+			RISE_API_CreateTexturePainter( &pPainter, pRIA, req.spectrumKind );
+
+			// Worker done.  pPainter, pRIA, pImage all outlive the manager
+			// AddItem step (which holds its own ref); the reader and read-
+			// buffer are no longer needed once decode is complete, so release
+			// them here.
+			safe_release( pImageReader );
+			safe_release( pReadBuffer );
+
+			decoded[i].pPainter = pPainter;
+			decoded[i].pRIA     = pRIA;
+			decoded[i].pImage   = pImage;
+		} );
+
+	// Serial registration.  pPntManager / pFunc2DManager are not
+	// thread-safe (std::map insert under the hood); only the calling
+	// thread touches them here.  Per-request success requires BOTH
+	// decode AND manager registration to have succeeded — a duplicate
+	// name causes pPntManager->AddItem to refuse the addref, so the
+	// painter is never reachable by name even though the decode worked.
+	// Report both failure modes as `outRequestSuccess[i] = false`;
+	// callers that memoize "this painter is registered" use that flag
+	// to decide whether to fast-path future lookups vs fall back to a
+	// per-call decode (or a uniform-color sentinel).
+	bool allOk = true;
+	for( size_t i = 0; i < numRequests; ++i ) {
+		Decoded& d = decoded[i];
+		bool requestOk = false;
+		if( d.pPainter ) {
+			// AddItem returns true on success; both managers should
+			// agree (same name, same painter, same outcome) but we
+			// require the painter manager — the function-2D manager
+			// is a secondary index that downstream lookups don't use
+			// for material assembly.
+			const bool pntOk = pPntManager->AddItem( d.pPainter, requests[i].name );
+			pFunc2DManager->AddItem( d.pPainter, requests[i].name );
+			requestOk = pntOk;
+			safe_release( d.pPainter );
+			safe_release( d.pRIA );
+			safe_release( d.pImage );
+		}
+		if( outRequestSuccess ) {
+			outRequestSuccess[i] = requestOk;
+		}
+		if( !requestOk ) {
+			allOk = false;
+		}
+	}
+	return allOk;
 }
 
 //! Adds a texture painter
@@ -602,7 +4141,10 @@ bool Job::AddHDRTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t,				///< [in] V-axis wrap mode
+							const SpectrumKind spectrumKind	///< [in] Spectral-uplift role (default Unbounded for HDR)
 							)
 {
 	IRasterImage* pImage = 0;
@@ -637,12 +4179,11 @@ bool Job::AddHDRTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -650,7 +4191,7 @@ bool Job::AddHDRTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds an EXR texture painter
@@ -670,7 +4211,10 @@ bool Job::AddEXRTexturePainter(
 															///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t,				///< [in] V-axis wrap mode
+							const SpectrumKind spectrumKind	///< [in] Spectral-uplift role (default Unbounded for EXR)
 							)
 {
 	IRasterImage* pImage = 0;
@@ -722,12 +4266,11 @@ bool Job::AddEXRTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -735,7 +4278,7 @@ bool Job::AddEXRTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a texture painter
@@ -755,7 +4298,9 @@ bool Job::AddTIFFTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -807,12 +4352,11 @@ bool Job::AddTIFFTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
 	safe_release( pRIA );
@@ -820,7 +4364,7 @@ bool Job::AddTIFFTexturePainter(
 	safe_release( pReadBuffer );
 	safe_release( pImage );
 
-	return true;
+	return ok;
 }
 
 //! Adds a painter that paints a uniform color
@@ -831,32 +4375,43 @@ bool Job::AddUniformColorPainter(
 							const char* cspace				///< [in] Color space of the given color
 							)
 {
-	IPainter* pPainter = 0;
-	if( cspace )
-	{
-		// Then a type of color is specified
-		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, Rec709RGBPel(pel) );
-		} else if ( strcmp( cspace, "sRGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, sRGBPel(pel) );
-		} else if ( strcmp( cspace, "ROMMRGB_Linear" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, ROMMRGBPel(pel) );
-		} else if ( strcmp( cspace, "ProPhotoRGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, ProPhotoRGBPel(pel) );
-		} else if ( strcmp( cspace, "RISERGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, RISEPel(pel) );
-		} else {
-			GlobalLog()->PrintEx( eLog_Error, "Unknown color space: %s", cspace );
-			return false;
-		}
-	} else {	// we assume SRGB values by default
-		RISE_API_CreateUniformColorPainter( &pPainter, sRGBPel(pel) );
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel).  This surface is the
+	// one the lights were made to match; a null `cspace` keeps its historical sRGB
+	// default (the lights' default is linear -- see ColorSpaceNameToRISEPel's doc).
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( cspace ? cspace : "sRGB", pel,
+	                              "AddUniformColorPainter", name, c ) ) {
+		return false;
 	}
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	IPainter* pPainter = 0;
+	RISE_API_CreateUniformColorPainter( &pPainter, c );
+
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
+}
+
+bool Job::AddVertexColorPainter(
+							const char* name,
+							const double fallback[3],
+							const char* cspace
+							)
+{
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel); null `cspace` keeps
+	// the historical sRGB default (matches AddUniformColorPainter).
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( cspace ? cspace : "sRGB", fallback,
+	                              "AddVertexColorPainter", name, c ) ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateVertexColorPainter( &pPainter, c );
+
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
 }
 
 //! Adds a painter that paints a voronoi diagram
@@ -886,17 +4441,26 @@ bool Job::AddVoronoi2DPainter(
 
 	for( unsigned int i=0; i<count; i++ ) {
 		pts.push_back( Point2( pt_x[i], pt_y[i] ) );
-		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi2DPainter:: `%s`: %s", name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+		ptrs.push_back( pGen );
 	}
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateVoronoi2DPainter( &pPainter, pts, ptrs, *pBorder, bsize );
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
-	return true;
+	return ok;
 }
 
 //! Adds a painter that paints a voronoi diagram in 3D
@@ -927,17 +4491,26 @@ bool Job::AddVoronoi3DPainter(
 
 	for( unsigned int i=0; i<count; i++ ) {
 		pts.push_back( Point3( pt_x[i], pt_y[i], pt_z[i] ) );
-		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+
+		IPainter* pGen = pPntManager->GetItem( painters[i] );
+		if( !pGen ) {
+			char msg[300];
+			std::snprintf( msg, sizeof( msg ),
+				"gen %u painter '%s' not found", i, painters[i] ? painters[i] : "" );
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddVoronoi3DPainter:: `%s`: %s", name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+		ptrs.push_back( pGen );
 	}
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateVoronoi3DPainter( &pPainter, pts, ptrs, *pBorder, bsize );
 
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
 
-	return true;
+	return ok;
 }
 
 //! Adds a iridescent painter (a painter whose color changes as viewing angle changes)
@@ -958,10 +4531,9 @@ bool Job::AddIridescentPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateIridescentPainter( &pPainter, *pA, *pB, bias );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //! Creates a black body radiator painter
@@ -978,10 +4550,183 @@ bool Job::AddBlackBodyPainter(
 {
 	IPainter* pPainter = 0;
 	RISE_API_CreateBlackBodyPainter( &pPainter, temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a channel-extraction painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddChannelPainter(
+							const char* name,
+							const char* source,
+							const char  channel,
+							const double scale,
+							const double bias
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddChannelPainter:: source painter `%s` not found", source );
+		return false;
+	}
+	if( channel < 0 || channel > 3 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddChannelPainter:: channel %d out of range (0=R, 1=G, 2=B, 3=A)", (int)channel );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateChannelPainter( &pPainter, *pSrc, channel, scale, bias );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPainterChannelScalarPainter(
+							const char* name,
+							const char* source,
+							const char  channel,
+							const double scale,
+							const double bias
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPainterChannelScalarPainter:: source painter `%s` not found", source );
+		return false;
+	}
+	if( channel < 0 || channel > 3 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPainterChannelScalarPainter:: channel %d out of range (0=R, 1=G, 2=B, 3=A)", (int)channel );
+		return false;
+	}
+
+	IScalarPainter* pPainter = 0;
+	RISE_API_CreatePainterChannelScalarPainter( &pPainter, *pSrc, channel, scale, bias );
+	const bool ok = pPainter ? RegisterOrDiag( pScalarPntManager, pPainter, name, "scalar painter" ) : false;
+	safe_release( pPainter );
+	return ok;
+}
+
+//! Adds a TEXCOORD_1 selector painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddTexCoord1Painter(
+							const char* name,
+							const char* source
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddTexCoord1Painter:: source painter `%s` not found", source );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexCoord1Painter( &pPainter, *pSrc );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
+{
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !pRm ) {
+		return false;
+	}
+	if( !pScene ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetGlobalRadianceMap:: no scene yet" );
+		return false;
+	}
+	pScene->SetGlobalRadianceMap( pRm );
+	BumpSceneLightGen( pScene );   // P2a: environment replaced -> env sampler stale
 	return true;
+}
+
+bool Job::ClearGlobalRadianceMap()
+{
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !pScene ) return false;
+	// Un-install the environment map from the LIVE scene.  Needed by the editor's
+	// RemoveEnvironment: a rasterizer rebuild with radiance_map "none" does NOT
+	// clear the previously-installed map (rasterizer setup only ever INSTALLS one),
+	// so without this the stale IRadianceMap keeps rendering until a reload.
+	pScene->SetGlobalRadianceMap( nullptr );   // null CLEARS (Scene::SetGlobalRadianceMap)
+	BumpSceneLightGen( pScene );               // environment removed -> env sampler stale
+	return true;
+}
+
+bool Job::AddHosekWilkieSkylight(
+	const double solarElevationDegrees,
+	const double solarAzimuthDegrees,
+	const double turbidity,
+	const double groundAlbedo[3],
+	const double skyIntensityScale,
+	const double sunIntensityScale,
+	const bool   createSun )
+{
+	IRadianceMap* pRm = 0;
+	RISE_API_CreateHosekWilkieRadianceMap(
+		&pRm,
+		solarElevationDegrees, solarAzimuthDegrees, turbidity,
+		RISEPel( groundAlbedo ), skyIntensityScale );
+	if( !pRm ) {
+		return false;
+	}
+	SetGlobalRadianceMap( pRm );
+
+	if( createSun ) {
+		// RISE convention: direction is FROM surface TO light.
+		const double el = solarElevationDegrees * (M_PI / 180.0);
+		const double az = solarAzimuthDegrees   * (M_PI / 180.0);
+		double dir[3] = {
+			std::cos(el) * std::sin(az),
+			std::sin(el),
+			std::cos(el) * std::cos(az)
+		};
+		double color[3] = { 1.0, 1.0, 1.0 };
+		// Neutral white; explicit linear so the call reads unambiguously
+		// (1 1 1 is a fixed point of every colour-space conversion anyway).
+		AddDirectionalLight( "__hw_sun__", sunIntensityScale, color, "Rec709RGB_Linear", dir );
+	}
+
+	pRm->release();
+	return true;
+}
+
+//! Adds a UV-transform wrapper painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddUVTransformPainter(
+							const char* name,
+							const char* source,
+							const double offset_u,
+							const double offset_v,
+							const double rotation,
+							const double scale_u,
+							const double scale_v
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddUVTransformPainter:: source painter `%s` not found", source );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateUVTransformPainter( &pPainter, *pSrc, offset_u, offset_v, rotation, scale_u, scale_v );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
 }
 
 //! Adds a blend painter
@@ -1003,16 +4748,29 @@ bool Job::AddBlendPainter(
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateBlendPainter( &pPainter, *pA, *pB, *pMask );
-	pPntManager->AddItem( pPainter, name );
-	pFunc2DManager->AddItem( pPainter, name );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
-	return true;
+	return ok;
 }
 
 //
 // Adding materials
 //
 
+
+//! Creates a unit-transmission medium boundary
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddNullBoundaryMaterial(
+	const char* name
+	)
+{
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateNullBoundaryMaterial( &pMaterial );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
 
 //! Creates Lambertian material
 /// \return TRUE if successful, FALSE otherwise
@@ -1029,10 +4787,10 @@ bool Job::AddLambertianMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateLambertianMaterial( &pMaterial, *pRef );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a Polished material
@@ -1047,132 +4805,898 @@ bool Job::AddPolishedMaterial(
 							)
 {
 	IPainter* pRef = pPntManager->GetItem( ref );
-	IPainter* pTau = pPntManager->GetItem( tau );
-	if( !pRef || !pTau ) {
+	if( !pRef ) {
 		return false;
 	}
 
-	IPainter*		sc = pPntManager->GetItem( scat );
-	IPainter*		refract = pPntManager->GetItem( Nt );
+	IScalarPainter* pTau     = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "tau",        tau );
+	IScalarPainter* pRefract = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "ior",        Nt );
+	IScalarPainter* pScat    = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "scattering", scat );
 
-	if( !sc )
-	{
-		double fScat = atof(scat);
-		RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
-	} else {
-		sc->addref();
-	}
-
-	if( !refract )
-	{
-		double fRefract = atof(Nt);
-		RISE_API_CreateUniformColorPainter( &refract, RISEPel(fRefract,fRefract,fRefract) );
-	} else {
-		refract->addref();
+	if( !pTau || !pRefract || !pScat ) {
+		safe_release( pTau );
+		safe_release( pRefract );
+		safe_release( pScat );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreatePolishedMaterial( &pMaterial, *pRef, *pTau, *refract, *sc, hg );
+	RISE_API_CreatePolishedMaterial( &pMaterial, *pRef, *pTau, *pRefract, *pScat, hg );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
-	safe_release( sc );
-	safe_release( refract );
+	safe_release( pTau );
+	safe_release( pRefract );
+	safe_release( pScat );
 
-	return true;
+	return ok;
+}
+
+//! Adds a Coated material (docs/WETNESS_COAT_DESIGN.md Phase 2, item 6).
+//!
+//! The substrate ALLOWLIST is enforced here, at parse time, because 7.2
+//! is explicit: "refuse anything else at parse time with a message
+//! naming the allowlist, rather than rendering something quietly wrong."
+//! RISE_API_CreateCoatedMaterial repeats the check for callers that do
+//! not come through the scene language; this site exists so the author
+//! of a scene file gets the diagnostic with THEIR material's name in it.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCoatedMaterial(
+							const char* name,				///< [in] Name of the material
+							const char* base,				///< [in] Name of the substrate material
+							const char* coat_weight,		///< [in] [0,1] coat coverage
+							const char* coat_ior,			///< [in] Coat index of refraction
+							const char* coat_roughness,		///< [in] Coat GGX alpha
+							const char* coat_thickness,		///< [in] Coat thickness, world length
+							const char* coat_absorption,	///< [in] Coat absorption, 1/length
+							const char* coat_tint			///< [in] Coat transmission colour
+							)
+{
+	// IJob's vtable is append-only -- see AddCoatedMaterialEx's own doc
+	// (IJob.h) for why DL-192's coat-normal slot is a NEW virtual rather
+	// than a parameter added here.  "none" = no perturbation, bit-
+	// identical to a pre-DL-192 render.
+	return AddCoatedMaterialEx( name, base, coat_weight, coat_ior, coat_roughness,
+	                            coat_thickness, coat_absorption, coat_tint,
+	                            "none", 1.0 );
+}
+
+//! DL-192: see IJob.h's own doc for the coat-normal contract.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCoatedMaterialEx(
+							const char* name,
+							const char* base,
+							const char* coat_weight,
+							const char* coat_ior,
+							const char* coat_roughness,
+							const char* coat_thickness,
+							const char* coat_absorption,
+							const char* coat_tint,
+							const char* coat_normal,
+							const double coat_normal_scale
+							)
+{
+	IMaterial* pBase = pMatManager->GetItem( base );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: base material `%s` is not a registered material",
+			name, base );
+		return false;
+	}
+
+	const char* why = 0;
+	if( !CoatedMaterial::IsSupportedSubstrate( *pBase, &why ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: base `%s` is not a supported substrate -- %s.  "
+			"Supported: %s.  (pbr_metallic_roughness_material resolves to a "
+			"ggx_material at scene-build time, so it is accepted.)",
+			name, base, why ? why : "unsupported",
+			CoatedMaterial::SubstrateAllowlistText() );
+		return false;
+	}
+
+	// coat_tint: `none` / empty means UNTINTED.  Resolving it through
+	// the painter manager would bind the built-in "none" painter, which
+	// is BLACK -- an opaque coat, the opposite of the intended default
+	// -- so an owned white painter is synthesised instead.  Named
+	// painters still resolve normally, so an author who genuinely wants
+	// a black coat binds one explicitly.
+	IPainter* pTintOwned = 0;
+	IPainter* pTint = 0;
+	const bool tintUnset = ( !coat_tint || !coat_tint[0] || std::string( coat_tint ) == "none" );
+	if( tintUnset ) {
+		RISE_API_CreateUniformColorPainter( &pTintOwned, RISEPel( 1.0, 1.0, 1.0 ) );
+		pTint = pTintOwned;
+	} else {
+		pTint = pPntManager->GetItem( coat_tint );
+	}
+	if( !pTint ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: coat_tint `%s` is not a registered colour painter",
+			name, coat_tint );
+		return false;
+	}
+
+	// requireSingle=true on ALL FIVE: every coat scalar is read as a
+	// single value (`.v[0]` / GetValueAtNM) by CoatedBRDF::ResolveCoat.
+	// A per-channel painter bound here would have its green and blue
+	// silently ignored on the RGB pipe while the spectral pipe read a
+	// DIFFERENT number through GetValueAtNM -- an RGB-vs-spectral
+	// divergence that renders as "the spectral render disagrees and
+	// nobody knows why".  Refuse it at parse time instead.
+	IScalarPainter* pWeight     = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_weight",     coat_weight,     /*requireSingle*/ true );
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_ior",        coat_ior,        /*requireSingle*/ true );
+	IScalarPainter* pRoughness  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_roughness",  coat_roughness,  /*requireSingle*/ true );
+	IScalarPainter* pThickness  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_thickness",  coat_thickness,  /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_absorption", coat_absorption, /*requireSingle*/ true );
+
+	if( !pWeight || !pIOR || !pRoughness || !pThickness || !pAbsorption ) {
+		safe_release( pWeight );
+		safe_release( pIOR );
+		safe_release( pRoughness );
+		safe_release( pThickness );
+		safe_release( pAbsorption );
+		safe_release( pTintOwned );
+		return false;
+	}
+
+	// DL-192: `coat_normal` names an already-registered COLOUR painter
+	// (a normal-map texture) -- NULL/empty/`"none"` means no coat-lobe
+	// perturbation, the same sentinel convention `normal_map_modifier`'s
+	// own `normal_map` parameter uses.  Unlike `coat_tint`, there is no
+	// "none resolves to a synthesised default" step: an unset coat
+	// normal is simply absent (CoatedBRDF's `pCoatNormal == 0` case),
+	// not a painter standing in for identity.
+	IPainter* pCoatNormal = 0;
+	const bool coatNormalUnset = ( !coat_normal || !coat_normal[0] || std::string( coat_normal ) == "none" );
+	if( !coatNormalUnset ) {
+		pCoatNormal = pPntManager->GetItem( coat_normal );
+		if( !pCoatNormal ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"coated_material `%s`: coat_normal `%s` is not a registered colour painter",
+				name, coat_normal );
+			safe_release( pWeight );
+			safe_release( pIOR );
+			safe_release( pRoughness );
+			safe_release( pThickness );
+			safe_release( pAbsorption );
+			safe_release( pTintOwned );
+			return false;
+		}
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateCoatedMaterial( &pMaterial, *pBase, *pWeight, *pIOR, *pRoughness,
+	                               *pThickness, *pAbsorption, *pTint,
+	                               pCoatNormal, coat_normal_scale );
+
+	const bool ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+
+	safe_release( pMaterial );
+	safe_release( pWeight );
+	safe_release( pIOR );
+	safe_release( pRoughness );
+	safe_release( pThickness );
+	safe_release( pAbsorption );
+	safe_release( pTintOwned );
+
+	return ok;
+}
+
+//! Adds a Fabric material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.2-9.3).
+//!
+//! THREE THINGS HAPPEN HERE THAT CANNOT HAPPEN IN THE PARSER, and they
+//! are the whole reason the preset name is forwarded this far:
+//!
+//!  1. The substrate ALLOWLIST is enforced (an ERROR, refusing the
+//!     material), because the layered model consumes the substrate's
+//!     `hemisphericalAlbedo` and an arbitrary material cannot supply
+//!     one.  RISE_API_CreateFabricMaterial repeats the check for
+//!     callers that bypass the scene language; this site exists so the
+//!     author of a scene file gets the diagnostic with THEIR material's
+//!     name in it.
+//!
+//!  2. The PRESET-vs-SUBSTRATE mismatch is diagnosed (a WARNING, NOT an
+//!     error).  `IAsciiChunkParser::Finalize` sees only the substrate's
+//!     NAME -- a string -- and has no way to learn its runtime class;
+//!     the check has to happen after `pMatManager->GetItem` has
+//!     resolved it.  Note the deliberate contrast with
+//!     `coated_material`, which ERRORS on an unsupported substrate:
+//!     there the substrate is outside the BSDF's evaluable set, whereas
+//!     here it is merely not the one the preset was calibrated for, and
+//!     the composition is legal (`fabric satin` over a Lambertian is
+//!     chalk with a faint sheen -- a real thing, just not satin).
+//!
+//!  3. An omitted `sheen_color` becomes the PRESET's colour where the
+//!     preset sets one (velvet), otherwise an OWNED UNIFORM WHITE
+//!     painter.  The preset's colour is an RGB triple, not a painter
+//!     name, so only this layer can honour it -- and resolving the
+//!     unset name through the painter manager would bind the built-in
+//!     `none` painter, which is BLACK: a sheen lobe switched off, the
+//!     opposite of the intended default.  That is exactly the trap
+//!     `coated_material`'s `coat_tint` already documented (see
+//!     AddCoatedMaterial above).  A named painter still resolves
+//!     normally, so an author who genuinely wants a black (disabled)
+//!     sheen binds one explicitly.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddFabricMaterial(
+							const char* name,				///< [in] Name of the material
+							const char* fabric,				///< [in] Preset name
+							const char* base,				///< [in] Name of the substrate material
+							const char* sheen_color,		///< [in] Sheen / dye tint
+							const char* sheen_roughness,	///< [in] Charlie alpha
+							const char* weave_rotation		///< [in] Weave angle in radians
+							)
+{
+	IMaterial* pBase = pMatManager->GetItem( base );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: base material `%s` is not a registered material",
+			name, base );
+		return false;
+	}
+
+	const char* why = 0;
+	if( !FabricMaterial::IsSupportedSubstrate( *pBase, &why ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: base `%s` is not a supported substrate -- %s.  "
+			"Supported: %s.  (pbr_metallic_roughness_material resolves to a "
+			"ggx_material at scene-build time, so it is accepted.)",
+			name, base, why ? why : "unsupported",
+			FabricMaterial::SubstrateAllowlistText() );
+		return false;
+	}
+
+	const FabricPreset& preset = LookupFabricPreset( fabric );
+
+	// WARN, not error: the composition is legal and may be deliberate.
+	if( !FabricMaterial::MatchesPresetSubstrate( *pBase, preset ) ) {
+		// Name the class the author ACTUALLY bound, not just its name --
+		// docs/CLOTH_FABRIC_DESIGN.md 9.3's worked message is
+		// "bound to %s `%s`" (class + name).  Without the class the
+		// author learns what was expected but not what they wrote, which
+		// is the half of the diagnostic they cannot look up themselves.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"fabric_material `%s`: fabric `%s` expects a %s substrate for its "
+			"characteristic highlight, but `base` is bound to %s `%s`; the sheen "
+			"lobe will apply but the weave/anisotropy the preset implies will "
+			"not.  See docs/CLOTH_FABRIC_DESIGN.md 9.3, or call make_fabric "
+			"which mints a matching substrate.",
+			name, preset.name, FabricSubstrateClassText( preset.substrate ),
+			FabricMaterial::SubstrateClassText( *pBase ), base );
+	}
+
+	IPainter* pColorOwned = 0;
+	IPainter* pColor = 0;
+	const bool colorUnset = ( !sheen_color || !sheen_color[0] || std::string( sheen_color ) == "none" );
+	if( colorUnset ) {
+		RISE_API_CreateUniformColorPainter( &pColorOwned,
+			preset.setsSheenColor ? preset.sheenColor : RISEPel( 1.0, 1.0, 1.0 ) );
+		pColor = pColorOwned;
+	} else {
+		pColor = pPntManager->GetItem( sheen_color );
+	}
+	if( !pColor ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: sheen_color `%s` is not a registered colour painter",
+			name, sheen_color );
+		return false;
+	}
+
+	// requireSingle=true on BOTH scalars.  `sheen_roughness` is read as
+	// `.v[0]` / GetValueAtNM by FabricBRDF::ResolveFabric, and
+	// `weave_rotation` is ONE angle; a per-channel painter bound to
+	// either would have its green and blue silently ignored on the RGB
+	// pipe while the spectral pipe read a DIFFERENT number through
+	// GetValueAtNM.  Refuse at parse time instead.
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "fabric_material", name, "sheen_roughness", sheen_roughness, /*requireSingle*/ true );
+	IScalarPainter* pRotation  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "fabric_material", name, "weave_rotation",  weave_rotation,  /*requireSingle*/ true );
+
+	if( !pRoughness || !pRotation ) {
+		safe_release( pRoughness );
+		safe_release( pRotation );
+		safe_release( pColorOwned );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateFabricMaterial( &pMaterial, *pBase, *pColor, *pRoughness, *pRotation );
+
+	const bool ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+	safe_release( pRotation );
+	safe_release( pColorOwned );
+
+	return ok;
+}
+
+//! Adds a Weave material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice
+//! P2-A + P2-B thin-cloth transmission).
+//!
+//! P2-B's `transmission` follows `weave`'s own pattern exactly: empty
+//! string wins the preset's value, an authored one overrides it.  `gap`
+//! is UNCHANGED -- the chunk parser accepts `sheer` as an alias for the
+//! identical slot (both spellings reach this method as the one `gap`
+//! parameter; see WeaveMaterialAsciiChunkParser::Finalize) -- and
+//! `warp_transmit`/`weft_transmit` follow every other per-family scalar's
+//! seeding rule below.
+//!
+//! ALL PRESET SEEDING HAPPENS HERE, in ONE place, and that is a
+//! deliberate departure from `fabric_material`.  There the parser seeds
+//! `sheen_roughness` while this layer seeds the sheen COLOUR, because
+//! the colour is an RGB triple rather than a painter name and only a
+//! layer able to synthesise an owned painter can honour it.  This
+//! material has EIGHTEEN slots and TWO such colours; splitting the rule
+//! across two files would have meant eighteen chances for the two
+//! halves to disagree about what "the author did not write this" means.
+//! So the parser forwards the AUTHORED string or an EMPTY one, and
+//! every empty slot is filled from the preset below.
+//!
+//! An empty string is therefore the wire protocol for "unset", which is
+//! why the parser must NOT substitute its own defaults -- if it did,
+//! selecting `fabric satin` would silently get `plain`'s numbers.
+//!
+//! There is NO substrate here and therefore neither of
+//! `AddFabricMaterial`'s two diagnostics: no allowlist to enforce
+//! (this material IS the BSDF, not a layer over one) and no
+//! preset-vs-substrate mismatch to warn about.  What IS diagnosed is
+//! the one authoring mistake this chunk makes possible: selecting the
+//! `custom` draft and then not binding a `coverage` field, which would
+//! otherwise render as a uniform 50/50 blend of the two families with
+//! no structure at all -- a fabric silently missing the very thing the
+//! material exists to produce.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddWeaveMaterial(
+							const char* name,
+							const char* weave,
+							const char* fabric,
+							const char* transmission,
+							const char* weave_scale,
+							const char* weave_rotation,
+							const char* weft_skew,
+							const char* coverage,
+							const char* gap,
+							const char* warp_color,
+							const char* weft_color,
+							const char* warp_ior,
+							const char* weft_ior,
+							const char* warp_width,
+							const char* weft_width,
+							const char* warp_azimuth,
+							const char* weft_azimuth,
+							const char* warp_kd,
+							const char* weft_kd,
+							const char* warp_tilt,
+							const char* weft_tilt,
+							const char* warp_transmit,
+							const char* weft_transmit
+							)
+{
+	const WeavePreset& P = LookupWeavePreset( fabric );
+
+	// `weave` wins over the preset's draft when the author wrote one.
+	const bool  weaveSet = ( weave && weave[0] );
+	const char* weaveName = weaveSet ? weave : WeavePatternText( P.weave );
+	const WeavePatternKind pattern = LookupWeavePattern( weaveName );
+
+	// P2-B.  `transmission` wins over the preset's when the author wrote
+	// one, exactly like `weave` above.  `RISE_API_CreateWeaveMaterial`
+	// re-resolves `transName` through `LookupWeaveTransmission` itself
+	// (the same `weaveName`/`LookupWeavePattern` split `weave` already
+	// uses), so no local `WeaveTransmissionKind` is needed here.
+	const bool  transSet  = ( transmission && transmission[0] );
+	const char* transName = transSet ? transmission : WeaveTransmissionText( P.transmission );
+
+	// %.17g round-trips a double exactly, so a seeded value is
+	// bit-identical to the table's rather than merely close.
+	struct Fmt {
+		char buf[64];
+		const char* operator()( const Scalar v ) {
+			std::snprintf( buf, sizeof(buf), "%.17g", (double)v );
+			return buf;
+		}
+	};
+	// One formatter per slot: `Fmt::operator()` returns a pointer into
+	// its OWN buffer, so a single shared instance would leave every
+	// earlier string pointing at the last value formatted.
+	Fmt fScale, fSkew, fGap;
+	Fmt fWIor, fFIor, fWWid, fFWid, fWAzi, fFAzi, fWKd, fFKd, fWTilt, fFTilt;
+	Fmt fWTrans, fFTrans;		///< P2-B
+
+	auto pick = []( const char* authored, const char* seeded ) -> const char* {
+		return ( authored && authored[0] ) ? authored : seeded;
+	};
+
+	const char* sScale = pick( weave_scale,    fScale( P.weaveScale ) );
+	const char* sRot   = pick( weave_rotation, "0.0" );		// no preset paints an angle field
+	const char* sSkew  = pick( weft_skew,      fSkew( Scalar(0) ) );
+	const char* sGap   = pick( gap,            fGap( P.gap ) );
+
+	const char* sWIor  = pick( warp_ior,     fWIor( P.warp.ior ) );
+	const char* sFIor  = pick( weft_ior,     fFIor( P.weft.ior ) );
+	const char* sWWid  = pick( warp_width,   fWWid( P.warp.width ) );
+	const char* sFWid  = pick( weft_width,   fFWid( P.weft.width ) );
+	const char* sWAzi  = pick( warp_azimuth, fWAzi( P.warp.azimuth ) );
+	const char* sFAzi  = pick( weft_azimuth, fFAzi( P.weft.azimuth ) );
+	const char* sWKd   = pick( warp_kd,      fWKd( P.warp.kd ) );
+	const char* sFKd   = pick( weft_kd,      fFKd( P.weft.kd ) );
+	const char* sWTilt = pick( warp_tilt,    fWTilt( P.warp.tilt ) );
+	const char* sFTilt = pick( weft_tilt,    fFTilt( P.weft.tilt ) );
+	// P2-B.  Empty (unauthored) resolves to the PRESET's `transmit`,
+	// which is 0.0 for every row whose `transmission` is `none` (denim,
+	// custom) -- so an unauthored `warp_transmit`/`weft_transmit` on a
+	// `transmission none` material is always 0, matching the "read
+	// unconditionally, gate at use" defence in WeaveBRDF.cpp.
+	const char* sWTrans = pick( warp_transmit, fWTrans( P.warp.transmit ) );
+	const char* sFTrans = pick( weft_transmit, fFTrans( P.weft.transmit ) );
+
+	// The two DYES.  An unset slot becomes an OWNED uniform painter
+	// carrying the preset's colour, or WHITE where the preset sets none
+	// (`custom`).  Resolving an unset name through the painter manager
+	// would instead bind the built-in `none` painter, which is BLACK --
+	// a weave whose volume lobe is switched off, i.e. the specular
+	// skeleton of a fabric with no cloth in it.  That is exactly the
+	// trap `coated_material`'s `coat_tint` and `fabric_material`'s
+	// `sheen_color` already documented; an author who genuinely wants a
+	// black thread binds an explicit black painter by name.
+	IPainter* pWarpOwned = 0;
+	IPainter* pWeftOwned = 0;
+	IPainter* pWarpCol   = 0;
+	IPainter* pWeftCol   = 0;
+
+	const bool warpUnset = ( !warp_color || !warp_color[0] || std::string( warp_color ) == "none" );
+	const bool weftUnset = ( !weft_color || !weft_color[0] || std::string( weft_color ) == "none" );
+
+	if( warpUnset ) {
+		RISE_API_CreateUniformColorPainter( &pWarpOwned,
+			P.setsSlots ? P.warp.color : RISEPel( 1.0, 1.0, 1.0 ) );
+		pWarpCol = pWarpOwned;
+	} else {
+		pWarpCol = pPntManager->GetItem( warp_color );
+	}
+	if( weftUnset ) {
+		RISE_API_CreateUniformColorPainter( &pWeftOwned,
+			P.setsSlots ? P.weft.color : RISEPel( 1.0, 1.0, 1.0 ) );
+		pWeftCol = pWeftOwned;
+	} else {
+		pWeftCol = pPntManager->GetItem( weft_color );
+	}
+
+	if( !pWarpCol || !pWeftCol ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"weave_material `%s`: %s `%s` is not a registered colour painter",
+			name,
+			!pWarpCol ? "warp_color" : "weft_color",
+			!pWarpCol ? warp_color : weft_color );
+		safe_release( pWarpOwned );
+		safe_release( pWeftOwned );
+		return false;
+	}
+
+	// requireSingle = true on EVERY scalar.  All fourteen are read as
+	// `.v[0]` by `WeaveBRDF::ResolveWeave`, so a per-channel painter
+	// bound to any of them would have its green and blue silently
+	// ignored on the RGB pipe while the spectral pipe read a DIFFERENT
+	// number through `GetValueAtNM`.  Refuse at parse time instead.
+	IScalarPainter* pScale = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weave_scale",    sScale, true );
+	IScalarPainter* pRot   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weave_rotation", sRot,   true );
+	IScalarPainter* pSkew  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_skew",      sSkew,  true );
+	IScalarPainter* pGap   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "gap",            sGap,   true );
+	IScalarPainter* pWIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_ior",       sWIor,  true );
+	IScalarPainter* pFIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_ior",       sFIor,  true );
+	IScalarPainter* pWWid  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_width",     sWWid,  true );
+	IScalarPainter* pFWid  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_width",     sFWid,  true );
+	IScalarPainter* pWAzi  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_azimuth",   sWAzi,  true );
+	IScalarPainter* pFAzi  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_azimuth",   sFAzi,  true );
+	IScalarPainter* pWKd   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_kd",        sWKd,   true );
+	IScalarPainter* pFKd   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_kd",        sFKd,   true );
+	IScalarPainter* pWTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_tilt",      sWTilt, true );
+	IScalarPainter* pFTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_tilt",      sFTilt, true );
+	IScalarPainter* pWTrans = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_transmit", sWTrans, true );
+	IScalarPainter* pFTrans = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_transmit", sFTrans, true );
+
+	// `coverage` is bound ONLY for the `custom` draft.  Binding it under
+	// a built-in draft would be a slot nothing reads.
+	IScalarPainter* pCov = 0;
+	if( pattern == eWeaveCustom ) {
+		if( coverage && coverage[0] ) {
+			pCov = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "coverage", coverage, true );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"weave_material `%s`: `weave custom` selects an AUTHORED coverage field but no "
+				"`coverage` painter is bound, so the warp and weft will blend uniformly at 50/50 "
+				"and the material will have no weave structure at all.  Bind a scalar painter "
+				"whose value is the warp's share in [0,1], or pick a built-in draft (%s).",
+				name, WeavePatternNamesText() );
+		}
+	} else if( coverage && coverage[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"weave_material `%s`: `coverage` is bound but `weave` is `%s`, which computes its own "
+			"coverage field from the draft; the painter will be IGNORED.  Set `weave custom` to "
+			"use it.",
+			name, WeavePatternText( pattern ) );
+	}
+
+	const bool resolved = pScale && pRot && pSkew && pGap
+	                   && pWIor && pFIor && pWWid && pFWid && pWAzi && pFAzi
+	                   && pWKd && pFKd && pWTilt && pFTilt && pWTrans && pFTrans;
+
+	IMaterial* pMaterial = 0;
+	bool ok = false;
+	if( resolved ) {
+		RISE_API_CreateWeaveMaterial( &pMaterial, weaveName, transName,
+			*pScale, *pRot, *pSkew, pCov, *pGap,
+			*pWarpCol, *pWIor, *pWWid, *pWAzi, *pWKd, *pWTilt, *pWTrans,
+			*pWeftCol, *pFIor, *pFWid, *pFAzi, *pFKd, *pFTilt, *pFTrans );
+		ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+	}
+
+	safe_release( pMaterial );
+	safe_release( pCov );
+	safe_release( pFTrans );
+	safe_release( pWTrans );
+	safe_release( pFTilt );
+	safe_release( pWTilt );
+	safe_release( pFKd );
+	safe_release( pWKd );
+	safe_release( pFAzi );
+	safe_release( pWAzi );
+	safe_release( pFWid );
+	safe_release( pWWid );
+	safe_release( pFIor );
+	safe_release( pWIor );
+	safe_release( pGap );
+	safe_release( pSkew );
+	safe_release( pRot );
+	safe_release( pScale );
+	safe_release( pWeftOwned );
+	safe_release( pWarpOwned );
+
+	return ok;
+}
+
+// Resolve a `const char*` material-parameter string to an `IScalarPainter*`
+// owned by the caller (refcount 1, must be released).  Accepts:
+//   - The name of a registered `scalar_painter` chunk → looked up via
+//     `pScalarPntManager`.
+//   - An inline 3-double triple "r g b" → `RGBScalarPainter`.
+//   - An inline single double "v" → `UniformScalarPainter`.
+// Returns nullptr if the string is neither a known name nor parseable as
+// a numeric literal.
+//
+// This is the scalar-side equivalent of the named-or-inline pattern
+// used elsewhere in Job.cpp for `IPainter`, except it stays in the
+// physical-scalar domain — no JH spectral uplift, no colorspace
+// conversion.  Numeric literals like `scattering 1000000` round-trip
+// exactly through the spectral path.
+// Resolve a scalar painter from a `const char*`.  `requireSingle =
+// true` rejects per-channel painters (RGB triples, RGBScalarPainter
+// names, etc.) — used by material slots that read `.v[0]` only and
+// would silently lose the G/B channels.  Returns nullptr on any
+// failure; the targeted diagnostic is emitted by
+// `ResolveOrDiagnoseScalar` (the caller-facing wrapper).
+static IScalarPainter* ResolveScalarPainterArg(
+	IScalarPainterManager* mgr,
+	const char* value,
+	bool requireSingle )
+{
+	if( !mgr || !value ) return nullptr;
+
+	IScalarPainter* named = mgr->GetItem( value );
+	if( named ) {
+		if( requireSingle && named->HasPerChannelVariation() ) {
+			// Caller emits the diagnostic — return nullptr so the
+			// "bound-to-per-channel" branch in ResolveOrDiagnoseScalar
+			// can fire with the chunk name + param name.
+			return nullptr;
+		}
+		named->addref();
+		return named;
+	}
+
+	auto onlyTrailingWhitespace = []( const char* p ) -> bool {
+		while( *p ) {
+			if( !std::isspace( static_cast<unsigned char>( *p ) ) ) return false;
+			++p;
+		}
+		return true;
+	};
+
+	// Reject non-finite SPELLINGS (nan / inf / infinity) at the STRING layer.
+	// These Reference-kind painter slots bypass the descriptor's
+	// AllTokensAreFiniteNumbers gate (it runs only for Double/Vec/UInt kinds), and
+	// value-level isfinite/isnan was unreliable under bare -ffast-math (fixed 2026-07-29; the string layer is still preferred) -- so the same
+	// spelling check must live here.  (errno==ERANGE below only catches overflow
+	// like 1e999; strtod("inf")/strtod("nan") set no errno.)  Runs AFTER the
+	// named-painter lookup above, so a painter literally named "inf" is unaffected.
+	for( const char* q = value; *q; ) {
+		while( *q == ' ' || *q == '\t' ) ++q;
+		if( !*q ) break;
+		const char* t = ( *q == '+' || *q == '-' ) ? q + 1 : q;
+		if( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' ) {
+			return nullptr;	// nan / inf / infinity -> reject loudly; caller diagnoses
+		}
+		while( *q && *q != ' ' && *q != '\t' ) ++q;
+	}
+
+	// 3-double inline triple — more specific, tried first.
+	{
+		char* end1 = nullptr;
+		errno = 0;
+		const double r = std::strtod( value, &end1 );
+		if( end1 != value ) {
+			char* end2 = nullptr;
+			const double g = std::strtod( end1, &end2 );
+			if( end2 != end1 ) {
+				char* end3 = nullptr;
+				const double b = std::strtod( end2, &end3 );
+				if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+					if( errno == ERANGE ) {
+						return nullptr;	// inline numeric overflow (e.g. 1e999) -> reject loudly; caller diagnoses
+					}
+					if( requireSingle && !( r == g && g == b ) ) {
+						return nullptr;
+					}
+					IScalarPainter* p = nullptr;
+					if( requireSingle ) {
+						RISE_API_CreateUniformScalarPainter( &p,
+							Scalar( r ) );
+					} else {
+						RISE_API_CreateRGBScalarPainter( &p,
+							Scalar( r ), Scalar( g ), Scalar( b ) );
+					}
+					return p;
+				}
+			}
+		}
+	}
+
+	// Single-double scalar.
+	{
+		char* end = nullptr;
+		errno = 0;
+		const double v = std::strtod( value, &end );
+		if( end != value && onlyTrailingWhitespace( end ) ) {
+			if( errno == ERANGE ) {
+				return nullptr;	// inline numeric overflow -> reject loudly
+			}
+			IScalarPainter* p = nullptr;
+			RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
+			return p;
+		}
+	}
+
+	return nullptr;
+}
+
+// Helper: resolve a scalar parameter and emit a targeted diagnostic
+// (distinguishing legacy-`IPainter`-binding, per-channel-painter-in-
+// single-slot, and unknown-name) when resolution fails.  Returns the
+// resolved painter (caller owns, refcount 1) or nullptr on failure
+// with the diagnostic already logged.
+//
+// `requireSingle = true` is used by material slots that internally
+// read `.v[0]` only — without the check, an author binding
+// `roughness 1 0 0` or a `values 0.1 0.4 0.9` RGBScalarPainter would
+// silently lose the G/B channels in the RGB path but interpolate
+// wavelength-dependently in the spectral path, producing physically
+// incoherent results.
+static IScalarPainter* ResolveOrDiagnoseScalar(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	bool requireSingle )
+{
+	IScalarPainter* p = ResolveScalarPainterArg( smgr, value, requireSingle );
+	if( p ) return p;
+
+	// Distinguish three failure modes for actionable diagnostics:
+	//   (a) the name is bound to a per-channel scalar_painter but
+	//       the slot only reads one value;
+	//   (b) the name is bound to a legacy `IPainter` chunk; or
+	//   (c) the name is unknown.
+	if( requireSingle && smgr ) {
+		IScalarPainter* named = smgr->GetItem( value );
+		if( named && named->HasPerChannelVariation() ) {
+			// DL-29: distinguish a per-channel painter whose triple was
+			// AUTHORED channel-by-channel (an `r g b` triple, a
+			// `scalar_painter { values ... }`) from one whose triple is
+			// a SPECTRAL SAMPLING of a single authored curve (a
+			// `scalar_painter { file ... }`, sampled at
+			// `ScalarPainterRGB::kChannelNM`).  The first is an
+			// authoring mistake and stays a hard error.  The second is
+			// not: such a binding LOADED before the curve's triple
+			// became per-channel (it resolved to one representative
+			// wavelength), several shipped material slots take it
+			// (`coated_material`'s coat_*, `subsurfacescattering_material`
+			// / `randomwalk_sss_material` / `hair_material`'s `ior`,
+			// `weave_material`'s warp/weft_ior and siblings,
+			// `fabric_material`'s sheen_roughness / weave_rotation,
+			// `generichumantissue_material`'s g / sca), and hard-failing
+			// them would break those scenes for no physical reason.
+			// Bind a single-scalar view instead: same curve through
+			// `GetValueAtNM` (the spectral renderers see NO change),
+			// green (549 nm) sample through `GetValuesAt`, so the slot's
+			// `.v[0]` read is a named wavelength rather than whichever
+			// channel happens to sit first.
+			IScalarPainter* view = named->MakeSingleScalarSlotView();
+			if( view ) {
+				// Freshly allocated at refcount 1, owned by this caller
+				// exactly like every `RISE_API_Create*ScalarPainter`
+				// return above.
+				GlobalLog()->PrintNew( view, __FILE__, __LINE__, "single-scalar-slot scalar painter view" );
+				GlobalLog()->PrintEx( eLog_Warning,
+					"%s `%s`: parameter `%s` is bound to spectral-curve scalar_painter `%s`, but this slot reads a single scalar \xE2\x80\x94 using the curve at %g nm for RGB rendering; the spectral rasterizers still evaluate the full curve.",
+					chunkKind, chunkName, paramName, value,
+					double( ScalarPainterRGB::kChannelNM[ ScalarPainterRGB::kSingleSampleChannel ] ) );
+				return view;
+			}
+			GlobalLog()->PrintEx( eLog_Error,
+				kScalarBoundToPerChannelFmt,
+				chunkKind, chunkName, paramName, value );
+			return nullptr;
+		}
+	}
+
+	IPainter* legacy = pmgr ? pmgr->GetItem( value ) : nullptr;
+	if( legacy ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			kScalarBoundToIPainterFmt,
+			chunkKind, chunkName, paramName, value );
+	} else if( requireSingle ) {
+		// Inline-triple-in-single-slot path: scrub the value to see
+		// whether it parses as 3 numbers, and if so emit the specific
+		// "per-channel triple supplied where single scalar required"
+		// message instead of the generic one.
+		char* end1 = nullptr;
+		(void)std::strtod( value, &end1 );
+		char* end2 = nullptr;
+		(void)std::strtod( end1, &end2 );
+		char* end3 = nullptr;
+		(void)std::strtod( end2, &end3 );
+		const bool tripleShaped = ( end3 != end2 && end2 != end1 && end1 != value );
+		if( tripleShaped ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"%s `%s`: parameter `%s` value `%s` is a per-channel RGB triple but this slot reads a single scalar — use one number, not three.",
+				chunkKind, chunkName, paramName, value );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error,
+				kScalarUnknownFmt,
+				chunkKind, chunkName, paramName, value );
+		}
+	} else {
+		GlobalLog()->PrintEx( eLog_Error,
+			kScalarUnknownFmt,
+			chunkKind, chunkName, paramName, value );
+	}
+	return nullptr;
+}
+
+//! DL-292: refuse a refractor `ior` that asks for a graded-index medium
+//! the engine cannot price.  An `ior` that is a single-scalar world-position
+//! field (IScalarPainter::IsWorldPositionField -- a scalar `expression` of
+//! `P` alone, or a scaled / added / multiplied composite of such fields and
+//! constants) is graded (DL-09).  One that READS `P` but is not such a
+//! field -- a per-channel (`vec3`) expression of P, P mixed with u / v / N
+//! / a surface signal, a composite with such an operand -- has no single
+//! value at an interior point of the medium, and before DL-292 it silently
+//! rendered with the pre-DL-09 accounting (every interior gather priced at
+//! the ENTRY index).  Per DL-32's convention a silent downgrade of an
+//! explicit request is a hard error with a diagnostic.  A P-free surface
+//! form (a u/v/N-driven or textured `ior`) is NOT refused: it asks for no
+//! interior variation, and its documented convention is the surface index
+//! at the entry point, which nets exactly on every through-trip.
+static bool RefuseUngradableWorldPositionIor(
+	const char* chunkKind, const char* chunkName, const char* paramValue, const IScalarPainter& ior )
+{
+	if( ior.ReadsWorldPosition() && !ior.IsWorldPositionField() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s `%s`: `ior` painter `%s` reads the world position P but is not a single-scalar "
+			"world-position field (it is per-channel, or it also reads u / v / N / a surface "
+			"signal / another painter), so the index is undefined inside the medium "
+			"(DL-292).  Write it as a scalar expression of P alone (a composite of such "
+			"expressions and constants via `base`/`scale`, `add` or `multiply` also works), "
+			"or drop P for a surface-driven index.",
+			chunkKind, chunkName, paramValue ? paramValue : "" );
+		return true;
+	}
+	return false;
 }
 
 //! Creates a Dielectric material
 /// \return TRUE if successful, FALSE otherwise
+bool Job::AddRoughDielectricMaterial(const char* name, const char* ior,
+    const char* alphaX, const char* alphaY)
+{
+    IScalarPainter* n = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"ior",ior,true);
+    IScalarPainter* ax = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"alphax",alphaX,true);
+    IScalarPainter* ay = ResolveOrDiagnoseScalar(pScalarPntManager,pPntManager,"rough_dielectric_material",name,"alphay",alphaY,true);
+    IMaterial* material = nullptr;
+    const bool created = n && ax && ay && RISE_API_CreateRoughDielectricMaterial(&material,*n,*ax,*ay);
+    if(n && (n->ReadsWorldPosition() || n->IsWorldPositionField())) {
+        GlobalLog()->PrintEx(eLog_Error,"rough_dielectric_material '%s': world-position IOR fields are not supported",name);
+    }
+    const bool ok = created && RegisterOrDiag(pMatManager,material,name,"material");
+    safe_release(material);
+    safe_release(n); safe_release(ax); safe_release(ay);
+    return ok;
+}
+
 bool Job::AddDielectricMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* tau,				///< [in] Transmittance painter
 							const char* rIndex,				///< [in] Index of refraction
 							const char* scat,				///< [in] Scattering function (either Phong or HG)
-							const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+							const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+							const Scalar* arN,
+							const Scalar* arK,
+							const Scalar* arThickness,
+							const unsigned int arNLayers
 							)
 {
-	IPainter* pTau = pPntManager->GetItem( tau );
-	if( !pTau )
-	{
-		double fTau = atof(tau);
-		if( fTau > 0 ) {
-			RISE_API_CreateUniformColorPainter( &pTau, RISEPel(fTau,fTau,fTau) );
-		} else {
-			return false;
-		}
-	} else {
-		pTau->addref();
+	// tau/ior/scattering are all physical scalars carried by
+	// `IScalarPainter`.  Previously they routed through `IPainter` →
+	// `UniformColorPainter::GetColorNM` → JH spectral uplift, which
+	// silently mangled inline-numeric values like `scattering 1000000`
+	// in every spectral rasterizer (clamped to ~1.0, glass rendered
+	// invisible).  The scalar painter path never touches colorspace.
+	IScalarPainter* pTau  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "tau",        tau );
+	IScalarPainter* pIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "ior",        rIndex );
+	IScalarPainter* pScat = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "scattering", scat );
+
+	if( !pTau || !pIor || !pScat ||
+		RefuseUngradableWorldPositionIor( "dielectric_material", name, rIndex, *pIor ) ) {
+		safe_release( pTau );
+		safe_release( pIor );
+		safe_release( pScat );
+		return false;
 	}
 
-	IPainter*		rindex = pPntManager->GetItem( rIndex );
-	IPainter*		sc = pPntManager->GetItem( scat );
-
-	// IOR and scattering are physical quantities, not perceptual colors.
-	// When specified as inline numeric values, create painters directly
-	// in native color space (ROMM RGB) to avoid sRGB conversion artifacts
-	// that introduce per-channel differences for uniform values.
-	// Support both single-value and 3-component inline specifications.
-	if( !sc )
+	// DL-28: Check if tau values exceed 1.0 (transmittance base must be in [0, 1]).
+	// A published sigma_a (absorption coefficient) table pasted directly without
+	// converting via tau = exp(-sigma_a * unitLength) will have values > 1.
 	{
-		double sv[3] = {0, 0, 0};
-		if( sscanf(scat, "%lf %lf %lf", &sv[0], &sv[1], &sv[2]) == 3 ) {
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(sv[0],sv[1],sv[2]) );
-		} else {
-			double fScat = atof(scat);
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
+		const RayIntersectionGeometric dummyRi( Ray(), nullRasterizerState );
+		const ScalarTriple rgb = pTau->GetValuesAt( dummyRi );
+		bool tauExceedsOne = (rgb.v[0] > 1.0 || rgb.v[1] > 1.0 || rgb.v[2] > 1.0);
+		Scalar maxVal = rgb.v[0];
+		if( rgb.v[1] > maxVal ) maxVal = rgb.v[1];
+		if( rgb.v[2] > maxVal ) maxVal = rgb.v[2];
+		if( !tauExceedsOne ) {
+			for( Scalar nm = 380.0; nm <= 780.0; nm += 10.0 ) {
+				const Scalar val = pTau->GetValueAtNM( dummyRi, nm );
+				if( val > 1.0 ) {
+					tauExceedsOne = true;
+					if( val > maxVal ) maxVal = val;
+				}
+			}
 		}
-	} else {
-		// Painter resolved by name — it may have gone through sRGB-to-ROMM
-		// color space conversion, which introduces per-channel differences
-		// for intentionally uniform physical quantities.  Detect this and
-		// normalize to exact grey to prevent false chromatic dispersion.
-		sc->addref();
-		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
-		const RISEPel scColor = sc->GetColor( dummyRig );
-		const Scalar scMax = r_max( r_max( scColor[0], scColor[1] ), scColor[2] );
-		const Scalar scMin = r_min( r_min( scColor[0], scColor[1] ), scColor[2] );
-		if( scMax > NEARZERO && (scMax - scMin) / scMax < 0.1 ) {
-			const Scalar avg = (scColor[0] + scColor[1] + scColor[2]) / 3.0;
-			safe_release( sc );
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(avg,avg,avg) );
-		}
-	}
-
-	if( !rindex )
-	{
-		double iv[3] = {0, 0, 0};
-		if( sscanf(rIndex, "%lf %lf %lf", &iv[0], &iv[1], &iv[2]) == 3 ) {
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(iv[0],iv[1],iv[2]) );
-		} else {
-			double frindex = atof(rIndex);
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(frindex,frindex,frindex) );
-		}
-	} else {
-		rindex->addref();
-		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
-		const RISEPel iorColor = rindex->GetColor( dummyRig );
-		const Scalar iorMax = r_max( r_max( iorColor[0], iorColor[1] ), iorColor[2] );
-		const Scalar iorMin = r_min( r_min( iorColor[0], iorColor[1] ), iorColor[2] );
-		if( iorMax > NEARZERO && (iorMax - iorMin) / iorMax < 0.1 ) {
-			const Scalar avg = (iorColor[0] + iorColor[1] + iorColor[2]) / 3.0;
-			safe_release( rindex );
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(avg,avg,avg) );
+		if( tauExceedsOne ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::AddDielectricMaterial: material '%s' tau painter '%s' has value %lf (> 1.0); "
+				"dielectric tau is a unit transmittance base applied as pow(tau, distance) in [0, 1], "
+				"not an absorption coefficient (convert via tau = exp(-sigma_a * unitLength))",
+				name, tau, maxVal );
 		}
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *rindex, *sc, hg );
+	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness, arNLayers );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pTau );
-	safe_release( sc );
-	safe_release( rindex );
+	safe_release( pIor );
+	safe_release( pScat );
 
-	return true;
+	return ok;
 }
 
 //! Creates a SubSurface Scattering material
@@ -1186,47 +5710,46 @@ bool Job::AddSubSurfaceScatteringMaterial(
 							const char* roughness			///< [in] Surface roughness [0,1]
 							)
 {
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	if( !pIOR )
-	{
-		double fIOR = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fIOR,fIOR,fIOR) );
-	} else {
-		pIOR->addref();
+	// ior is a single scalar (BSDF/SPF read `.v[0]` only).  Absorption
+	// and scattering are per-channel (the diffusion profile evaluates
+	// each RGB channel independently for sigma_a / sigma_s).
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "ior",        ior,        /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "absorption", absorption );
+	IScalarPainter* pScattering = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "scattering", scattering );
+
+	if( !pIOR || !pAbsorption || !pScattering ) {
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
 
-	IPainter* pAbsorption = pPntManager->GetItem( absorption );
-	if( !pAbsorption )
-	{
-		double fAbsorption = atof(absorption);
-		RISE_API_CreateUniformColorPainter( &pAbsorption, RISEPel(fAbsorption,fAbsorption,fAbsorption) );
-	} else {
-		pAbsorption->addref();
+	// g / roughness are BAKED into the SPF as plain doubles -- a painter
+	// name here is NOT plumbed (it used to pass validation and silently
+	// atof to 0.0), so only finite numeric literals are accepted.
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "subsurfacescattering_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
-
-	IPainter* pScattering = pPntManager->GetItem( scattering );
-	if( !pScattering )
-	{
-		double fScattering = atof(scattering);
-		RISE_API_CreateUniformColorPainter( &pScattering, RISEPel(fScattering,fScattering,fScattering) );
-	} else {
-		pScattering->addref();
-	}
-
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateSubSurfaceScatteringMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pIOR );
 	safe_release( pAbsorption );
 	safe_release( pScattering );
 
-	return true;
+	return ok;
 }
 
 //! Creates a Random Walk SSS material
@@ -1241,48 +5764,56 @@ bool Job::AddRandomWalkSSSMaterial(
 							const char* maxBounces			///< [in] Maximum walk steps
 							)
 {
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	if( !pIOR )
-	{
-		double fIOR = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fIOR,fIOR,fIOR) );
-	} else {
-		pIOR->addref();
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "ior",        ior,        /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "absorption", absorption );
+	IScalarPainter* pScattering = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "scattering", scattering );
+
+	if( !pIOR || !pAbsorption || !pScattering ) {
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
 
-	IPainter* pAbsorption = pPntManager->GetItem( absorption );
-	if( !pAbsorption )
-	{
-		double fAbsorption = atof(absorption);
-		RISE_API_CreateUniformColorPainter( &pAbsorption, RISEPel(fAbsorption,fAbsorption,fAbsorption) );
-	} else {
-		pAbsorption->addref();
+	// g / roughness are BAKED plain doubles (see subsurfacescattering_material).
+	const bool gBad = !ScalarLiteralIsFiniteNumber( g );
+	const bool rBad = !ScalarLiteralIsFiniteNumber( roughness );
+	if( gBad || rBad ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `g` / `roughness` are baked scalars and must be finite numbers -- painter names are not supported here (got g=`%s`, roughness=`%s`)", name, g, roughness );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
-
-	IPainter* pScattering = pPntManager->GetItem( scattering );
-	if( !pScattering )
-	{
-		double fScattering = atof(scattering);
-		RISE_API_CreateUniformColorPainter( &pScattering, RISEPel(fScattering,fScattering,fScattering) );
-	} else {
-		pScattering->addref();
+	// max_bounces is Reference-kind (bypasses the descriptor's finite gate) but is a
+	// non-negative integer count; atoi() silently yields 0 on inf/nan/misspelled input.
+	char* mbEnd = nullptr;
+	errno = 0;
+	const long mb = std::strtol( maxBounces, &mbEnd, 10 );
+	const char* mbTail = mbEnd;
+	while( *mbTail == ' ' || *mbTail == '\t' ) ++mbTail;	// tolerate trailing whitespace / # comment
+	if( mbEnd == maxBounces || ( *mbTail != '\0' && *mbTail != '#' ) || mb < 0 || errno == ERANGE || (unsigned long)mb > UINT_MAX ) {
+		GlobalLog()->PrintEx( eLog_Error, "randomwalksss_material `%s`: `max_bounces` must be a non-negative integer <= UINT_MAX (got `%s`)", name, maxBounces );
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
-
 	double gVal = atof(g);
 	double roughnessVal = atof(roughness);
-	unsigned int maxBouncesVal = atoi(maxBounces);
+	unsigned int maxBouncesVal = (unsigned int)mb;
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateRandomWalkSSSMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal, maxBouncesVal );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = pMaterial && RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pIOR );
 	safe_release( pAbsorption );
 	safe_release( pScattering );
 
-	return true;
+	return ok;
 }
 
 //! Creates an isotropic phong material
@@ -1291,7 +5822,7 @@ bool Job::AddIsotropicPhongMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* rd,					///< [in] Diffuse reflectance painter
 							const char* rs,					///< [in] Specular reflectance painter
-							const char* exponent			///< [in] Phong exponent
+							const char* exponent			///< [in] Phong exponent (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(rd);
@@ -1301,25 +5832,21 @@ bool Job::AddIsotropicPhongMaterial(
 		return false;
 	}
 
-	IPainter*		pExp = pPntManager->GetItem( exponent );
-
-	if( !pExp )
-	{
-		double fexp = atof(exponent);
-		RISE_API_CreateUniformColorPainter( &pExp, RISEPel(fexp,fexp,fexp) );
-	} else {
-		pExp->addref();
+	IScalarPainter* pExp = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "isotropic_phong_material", name, "exponent", exponent );
+	if( !pExp ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateIsotropicPhongMaterial( &pMaterial, *pRd, *pRs, *pExp );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pExp );
 
-	return true;
+	return ok;
 }
 
 //! Creates the anisotropic phong material of Ashikmin and Shirley
@@ -1328,8 +5855,8 @@ bool Job::AddAshikminShirleyAnisotropicPhongMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* rd,					///< [in] Diffuse reflectance painter
 							const char* rs,					///< [in] Specular reflectance painter
-							const char* Nu,					///< [in] Phong exponent in U
-							const char* Nv					///< [in] Phong exponent in V
+							const char* Nu,					///< [in] Phong exponent in U (physical scalar)
+							const char* Nv					///< [in] Phong exponent in V (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(rd);
@@ -1339,36 +5866,27 @@ bool Job::AddAshikminShirleyAnisotropicPhongMaterial(
 		return false;
 	}
 
-	IPainter*		pNu = pPntManager->GetItem( Nu );
-	IPainter*		pNv = pPntManager->GetItem( Nv );
+	IScalarPainter* pNu = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ashikminshirley_anisotropicphong_material", name, "Nu", Nu );
+	IScalarPainter* pNv = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ashikminshirley_anisotropicphong_material", name, "Nv", Nv );
 
-	if( !pNu )
-	{
-		double fnu = atof(Nu);
-		RISE_API_CreateUniformColorPainter( &pNu, RISEPel(fnu,fnu,fnu) );
-	} else {
-		pNu->addref();
+	if( !pNu || !pNv ) {
+		safe_release( pNu );
+		safe_release( pNv );
+		return false;
 	}
-
-	if( !pNv )
-	{
-		double fnv = atof(Nv);
-		RISE_API_CreateUniformColorPainter( &pNv, RISEPel(fnv,fnv,fnv) );
-	} else {
-		pNv->addref();
-	}
-
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial( &pMaterial, *pRd, *pRs, *pNu, *pNv );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pNu );
 	safe_release( pNv );
 
-	return true;
+	return ok;
 }
 
 //! Creates a perfect reflector
@@ -1387,10 +5905,10 @@ bool Job::AddPerfectReflectorMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePerfectReflectorMaterial( &pMaterial, *pRd );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a perfect refractor
@@ -1398,35 +5916,33 @@ bool Job::AddPerfectReflectorMaterial(
 bool Job::AddPerfectRefractorMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* ref,				///< [in] Amount of refraction painter
-							const char* ior					///< [in] Index of refraction
+							const char* ior					///< [in] Index of refraction (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(ref);
-
 	if( !pRd ) {
 		return false;
 	}
 
-	IPainter*		pIOR = pPntManager->GetItem( ior );
-
-	if( !pIOR )
-	{
-		double fior = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fior,fior,fior) );
-	} else {
-		pIOR->addref();
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager,
+		"perfectrefractor_material", name, "ior", ior );
+	if( !pIOR ) {
+		return false;
 	}
-
+	if( RefuseUngradableWorldPositionIor( "perfectrefractor_material", name, ior, *pIOR ) ) {
+		safe_release( pIOR );
+		return false;
+	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePerfectRefractorMaterial( &pMaterial, *pRd, *pIOR );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pIOR );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a translucent material
@@ -1440,45 +5956,35 @@ bool Job::AddTranslucentMaterial(
 							const char* scat				///< [in] Multiple scattering component
 							)
 {
-	IPainter* pRf = pPntManager->GetItem(rF);
+	IPainter* pRf  = pPntManager->GetItem(rF);
 	IPainter* pTau = pPntManager->GetItem(T);
-	IPainter* pExt = pPntManager->GetItem(ext);
 
-	if( !pRf || !pTau || !pExt ) {
+	if( !pRf || !pTau ) {
 		return false;
 	}
 
-	IPainter*		pN = pPntManager->GetItem( N );
+	IScalarPainter* pExt  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "extinction", ext );
+	IScalarPainter* pN    = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "N",          N );
+	IScalarPainter* pScat = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "scattering", scat );
 
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	if( !pExt || !pN || !pScat ) {
+		safe_release( pExt );
+		safe_release( pN );
+		safe_release( pScat );
+		return false;
 	}
-
-	IPainter*		pScat = pPntManager->GetItem( scat );
-
-	if( !pScat )
-	{
-		double fscat = atof(scat);
-		RISE_API_CreateUniformColorPainter( &pScat, RISEPel(fscat,fscat,fscat) );
-	} else {
-		pScat->addref();
-	}
-
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateTranslucentMaterial( &pMaterial, *pRf, *pTau, *pExt, *pN, *pScat );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
+	safe_release( pExt );
 	safe_release( pN );
 	safe_release( pScat );
 	safe_release( pMaterial );
 
-	return true;
+	return ok;
 }
 
 bool Job::AddBioSpecSkinMaterial(
@@ -1505,59 +6011,57 @@ bool Job::AddBioSpecSkinMaterial(
 	const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 
-	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
-	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
-	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
-	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
-	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
-	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
-	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
-	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
-	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
-	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
-	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
-	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
-	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
-	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
-	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
-	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
-	IPainter* pnt_folds_aspect_ratio_ = pPntManager->GetItem( folds_aspect_ratio_ );
+	// Resolve every BioSpec parameter to an IScalarPainter (physical
+	// scalars).  Every slot here reads `.v[0]` inside the SPF —
+	// `requireSingle = true` so per-channel inputs are rejected at
+	// parse time instead of silently dropping G/B channels.  If any
+	// fails to resolve, release whatever we have and bail with a
+	// clear per-parameter diagnostic.
+#define RESOLVE_BIOSPEC( x ) \
+	IScalarPainter* pnt_##x = ResolveOrDiagnoseScalar( \
+		pScalarPntManager, pPntManager, "biospec_skin_material", name, #x, x, /*requireSingle*/ true )
 
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
+	RESOLVE_BIOSPEC(thickness_SC_);
+	RESOLVE_BIOSPEC(thickness_epidermis_);
+	RESOLVE_BIOSPEC(thickness_papillary_dermis_);
+	RESOLVE_BIOSPEC(thickness_reticular_dermis_);
+	RESOLVE_BIOSPEC(ior_SC_);
+	RESOLVE_BIOSPEC(ior_epidermis_);
+	RESOLVE_BIOSPEC(ior_papillary_dermis_);
+	RESOLVE_BIOSPEC(ior_reticular_dermis_);
+	RESOLVE_BIOSPEC(concentration_eumelanin_);
+	RESOLVE_BIOSPEC(concentration_pheomelanin_);
+	RESOLVE_BIOSPEC(melanosomes_in_epidermis_);
+	RESOLVE_BIOSPEC(hb_ratio_);
+	RESOLVE_BIOSPEC(whole_blood_in_papillary_dermis_);
+	RESOLVE_BIOSPEC(whole_blood_in_reticular_dermis_);
+	RESOLVE_BIOSPEC(bilirubin_concentration_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_SC_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_epidermis_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_dermis_);
+	RESOLVE_BIOSPEC(folds_aspect_ratio_);
+
+#undef RESOLVE_BIOSPEC
+
+	IScalarPainter* all[19] = {
+		pnt_thickness_SC_, pnt_thickness_epidermis_, pnt_thickness_papillary_dermis_,
+		pnt_thickness_reticular_dermis_, pnt_ior_SC_, pnt_ior_epidermis_,
+		pnt_ior_papillary_dermis_, pnt_ior_reticular_dermis_,
+		pnt_concentration_eumelanin_, pnt_concentration_pheomelanin_,
+		pnt_melanosomes_in_epidermis_, pnt_hb_ratio_,
+		pnt_whole_blood_in_papillary_dermis_, pnt_whole_blood_in_reticular_dermis_,
+		pnt_bilirubin_concentration_,
+		pnt_betacarotene_concentration_SC_, pnt_betacarotene_concentration_epidermis_,
+		pnt_betacarotene_concentration_dermis_, pnt_folds_aspect_ratio_,
+	};
+	for( int i=0; i<19; ++i ) {
+		if( !all[i] ) {
+			for( int j=0; j<19; ++j ) safe_release( all[j] );
+			return false;
 		}
-
-	CHECK_FOR_VALUE(thickness_SC_);
-	CHECK_FOR_VALUE(thickness_epidermis_);
-	CHECK_FOR_VALUE(thickness_papillary_dermis_);
-	CHECK_FOR_VALUE(thickness_reticular_dermis_);
-	CHECK_FOR_VALUE(ior_SC_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_papillary_dermis_);
-	CHECK_FOR_VALUE(ior_reticular_dermis_);
-	CHECK_FOR_VALUE(concentration_eumelanin_);
-	CHECK_FOR_VALUE(concentration_pheomelanin_);
-	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
-	CHECK_FOR_VALUE(hb_ratio_);
-	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
-	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
-	CHECK_FOR_VALUE(bilirubin_concentration_);
-	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
-	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
-	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
-	CHECK_FOR_VALUE(folds_aspect_ratio_);
-
-#undef CHECK_FOR_VALUE
 	}
 
 	IMaterial* pMaterial = 0;
@@ -1584,239 +6088,15 @@ bool Job::AddBioSpecSkinMaterial(
 		bSubdermalLayer
 		);
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
+	// Release the 19 resolved scalar painters — the SPF holds its
+	// own refs (taken in `BioSpecSkinSPF` ctor), so releasing here
+	// drops them back to refcount 1 instead of leaking at 2.
+	for( int i = 0; i < 19; ++i ) safe_release( all[i] );
 
-	return true;
-}
-
-//! Adds a BioSpec skin BSSRDF material (BDPT-compatible)
-/// \return TRUE if successful, FALSE otherwise
-bool Job::AddBioSpecSkinBSSRDFMaterial(
-	const char* name,
-	const char* thickness_SC_,
-	const char* thickness_epidermis_,
-	const char* thickness_papillary_dermis_,
-	const char* thickness_reticular_dermis_,
-	const char* ior_SC_,
-	const char* ior_epidermis_,
-	const char* ior_papillary_dermis_,
-	const char* ior_reticular_dermis_,
-	const char* concentration_eumelanin_,
-	const char* concentration_pheomelanin_,
-	const char* melanosomes_in_epidermis_,
-	const char* hb_ratio_,
-	const char* whole_blood_in_papillary_dermis_,
-	const char* whole_blood_in_reticular_dermis_,
-	const char* bilirubin_concentration_,
-	const char* betacarotene_concentration_SC_,
-	const char* betacarotene_concentration_epidermis_,
-	const char* betacarotene_concentration_dermis_,
-	const char* folds_aspect_ratio_,
-	const bool bSubdermalLayer,
-	const char* roughness
-	)
-{
-
-	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
-	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
-	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
-	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
-	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
-	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
-	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
-	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
-	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
-	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
-	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
-	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
-	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
-	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
-	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
-	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
-	IPainter* pnt_folds_aspect_ratio_ = pPntManager->GetItem( folds_aspect_ratio_ );
-
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
-		}
-
-	CHECK_FOR_VALUE(thickness_SC_);
-	CHECK_FOR_VALUE(thickness_epidermis_);
-	CHECK_FOR_VALUE(thickness_papillary_dermis_);
-	CHECK_FOR_VALUE(thickness_reticular_dermis_);
-	CHECK_FOR_VALUE(ior_SC_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_papillary_dermis_);
-	CHECK_FOR_VALUE(ior_reticular_dermis_);
-	CHECK_FOR_VALUE(concentration_eumelanin_);
-	CHECK_FOR_VALUE(concentration_pheomelanin_);
-	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
-	CHECK_FOR_VALUE(hb_ratio_);
-	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
-	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
-	CHECK_FOR_VALUE(bilirubin_concentration_);
-	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
-	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
-	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
-	CHECK_FOR_VALUE(folds_aspect_ratio_);
-
-#undef CHECK_FOR_VALUE
-	}
-
-	const double roughnessVal = atof( roughness );
-
-	IMaterial* pMaterial = 0;
-	RISE_API_CreateBioSpecSkinBSSRDFMaterial( &pMaterial,
-		*pnt_thickness_SC_,
-		*pnt_thickness_epidermis_,
-		*pnt_thickness_papillary_dermis_,
-		*pnt_thickness_reticular_dermis_,
-		*pnt_ior_SC_,
-		*pnt_ior_epidermis_,
-		*pnt_ior_papillary_dermis_,
-		*pnt_ior_reticular_dermis_,
-		*pnt_concentration_eumelanin_,
-		*pnt_concentration_pheomelanin_,
-		*pnt_melanosomes_in_epidermis_,
-		*pnt_hb_ratio_,
-		*pnt_whole_blood_in_papillary_dermis_,
-		*pnt_whole_blood_in_reticular_dermis_,
-		*pnt_bilirubin_concentration_,
-		*pnt_betacarotene_concentration_SC_,
-		*pnt_betacarotene_concentration_epidermis_,
-		*pnt_betacarotene_concentration_dermis_,
-		*pnt_folds_aspect_ratio_,
-		bSubdermalLayer,
-		roughnessVal
-		);
-
-	pMatManager->AddItem( pMaterial, name );
-
-	safe_release( pMaterial );
-
-	return true;
-}
-
-//! Adds a BioSpec skin random-walk SSS material
-bool Job::AddBioSpecSkinRWMaterial(
-	const char* name,
-	const char* thickness_SC_,
-	const char* thickness_epidermis_,
-	const char* thickness_papillary_dermis_,
-	const char* thickness_reticular_dermis_,
-	const char* ior_SC_,
-	const char* ior_epidermis_,
-	const char* ior_papillary_dermis_,
-	const char* ior_reticular_dermis_,
-	const char* concentration_eumelanin_,
-	const char* concentration_pheomelanin_,
-	const char* melanosomes_in_epidermis_,
-	const char* hb_ratio_,
-	const char* whole_blood_in_papillary_dermis_,
-	const char* whole_blood_in_reticular_dermis_,
-	const char* bilirubin_concentration_,
-	const char* betacarotene_concentration_SC_,
-	const char* betacarotene_concentration_epidermis_,
-	const char* betacarotene_concentration_dermis_,
-	const char* roughness,
-	const char* maxBounces
-	)
-{
-
-	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
-	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
-	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
-	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
-	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
-	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
-	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
-	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
-	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
-	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
-	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
-	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
-	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
-	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
-	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
-	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
-
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
-		}
-
-	CHECK_FOR_VALUE(thickness_SC_);
-	CHECK_FOR_VALUE(thickness_epidermis_);
-	CHECK_FOR_VALUE(thickness_papillary_dermis_);
-	CHECK_FOR_VALUE(thickness_reticular_dermis_);
-	CHECK_FOR_VALUE(ior_SC_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_papillary_dermis_);
-	CHECK_FOR_VALUE(ior_reticular_dermis_);
-	CHECK_FOR_VALUE(concentration_eumelanin_);
-	CHECK_FOR_VALUE(concentration_pheomelanin_);
-	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
-	CHECK_FOR_VALUE(hb_ratio_);
-	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
-	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
-	CHECK_FOR_VALUE(bilirubin_concentration_);
-	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
-	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
-	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
-
-#undef CHECK_FOR_VALUE
-	}
-
-	const double roughnessVal = atof( roughness );
-	const unsigned int maxBouncesVal = (unsigned int) atoi( maxBounces );
-
-	IMaterial* pMaterial = 0;
-	RISE_API_CreateBioSpecSkinRWMaterial( &pMaterial,
-		*pnt_thickness_SC_,
-		*pnt_thickness_epidermis_,
-		*pnt_thickness_papillary_dermis_,
-		*pnt_thickness_reticular_dermis_,
-		*pnt_ior_SC_,
-		*pnt_ior_epidermis_,
-		*pnt_ior_papillary_dermis_,
-		*pnt_ior_reticular_dermis_,
-		*pnt_concentration_eumelanin_,
-		*pnt_concentration_pheomelanin_,
-		*pnt_melanosomes_in_epidermis_,
-		*pnt_hb_ratio_,
-		*pnt_whole_blood_in_papillary_dermis_,
-		*pnt_whole_blood_in_reticular_dermis_,
-		*pnt_bilirubin_concentration_,
-		*pnt_betacarotene_concentration_SC_,
-		*pnt_betacarotene_concentration_epidermis_,
-		*pnt_betacarotene_concentration_dermis_,
-		roughnessVal,
-		maxBouncesVal
-		);
-
-	pMatManager->AddItem( pMaterial, name );
-
-	safe_release( pMaterial );
-
-	return true;
+	return ok;
 }
 
 bool Job::AddDonnerJensenSkinBSSRDFMaterial(
@@ -1833,40 +6113,43 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 	const char* roughness
 	)
 {
-	IPainter* pnt_melanin_fraction_ = pPntManager->GetItem( melanin_fraction_ );
-	IPainter* pnt_melanin_blend_ = pPntManager->GetItem( melanin_blend_ );
-	IPainter* pnt_hemoglobin_epidermis_ = pPntManager->GetItem( hemoglobin_epidermis_ );
-	IPainter* pnt_carotene_fraction_ = pPntManager->GetItem( carotene_fraction_ );
-	IPainter* pnt_hemoglobin_dermis_ = pPntManager->GetItem( hemoglobin_dermis_ );
-	IPainter* pnt_epidermis_thickness_ = pPntManager->GetItem( epidermis_thickness_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_dermis_ = pPntManager->GetItem( ior_dermis_ );
-	IPainter* pnt_blood_oxygenation_ = pPntManager->GetItem( blood_oxygenation_ );
+	// All 9 Donner-Jensen slots are read as `.v[0]` inside the
+	// diffusion profile — `requireSingle = true` rejects per-channel
+	// inputs at parse time.
+#define RESOLVE_DJ( x ) \
+	IScalarPainter* pnt_##x = ResolveOrDiagnoseScalar( \
+		pScalarPntManager, pPntManager, "donnerjensenskin_bssrdf_material", name, #x, x, /*requireSingle*/ true )
 
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
+	RESOLVE_DJ(melanin_fraction_);
+	RESOLVE_DJ(melanin_blend_);
+	RESOLVE_DJ(hemoglobin_epidermis_);
+	RESOLVE_DJ(carotene_fraction_);
+	RESOLVE_DJ(hemoglobin_dermis_);
+	RESOLVE_DJ(epidermis_thickness_);
+	RESOLVE_DJ(ior_epidermis_);
+	RESOLVE_DJ(ior_dermis_);
+	RESOLVE_DJ(blood_oxygenation_);
+
+#undef RESOLVE_DJ
+
+	IScalarPainter* all_dj[9] = {
+		pnt_melanin_fraction_, pnt_melanin_blend_, pnt_hemoglobin_epidermis_,
+		pnt_carotene_fraction_, pnt_hemoglobin_dermis_, pnt_epidermis_thickness_,
+		pnt_ior_epidermis_, pnt_ior_dermis_, pnt_blood_oxygenation_,
+	};
+	for( int i=0; i<9; ++i ) {
+		if( !all_dj[i] ) {
+			for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
+			return false;
 		}
-
-	CHECK_FOR_VALUE(melanin_fraction_);
-	CHECK_FOR_VALUE(melanin_blend_);
-	CHECK_FOR_VALUE(hemoglobin_epidermis_);
-	CHECK_FOR_VALUE(carotene_fraction_);
-	CHECK_FOR_VALUE(hemoglobin_dermis_);
-	CHECK_FOR_VALUE(epidermis_thickness_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_dermis_);
-	CHECK_FOR_VALUE(blood_oxygenation_);
-
-#undef CHECK_FOR_VALUE
 	}
 
+	// roughness is a BAKED plain double (see subsurfacescattering_material).
+	if( !ScalarLiteralIsFiniteNumber( roughness ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "material `%s`: `roughness` is a baked scalar and must be a finite number -- painter names are not supported here (got `%s`)", name, roughness );
+		for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
+		return false;
+	}
 	const double roughnessVal = atof( roughness );
 
 	IMaterial* pMaterial = 0;
@@ -1883,11 +6166,14 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 		roughnessVal
 		);
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = pMaterial && RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
+	// Release the 9 resolved scalar painters — the material's
+	// diffusion profile holds its own refs.
+	for( int i = 0; i < 9; ++i ) safe_release( all_dj[i] );
 
-	return true;
+	return ok;
 }
 
 //! Adds a generic human tissue material based on BioSpec
@@ -1905,19 +6191,13 @@ bool Job::AddGenericHumanTissueMaterial(
 {
 	GlobalLog()->PrintEasyWarning( "Job::AddGenericHumanTissueMaterial:: This is an experiment and has not bee tested or verfied, its use is not recommended" );
 
-	IPainter* pG = pPntManager->GetItem(g);
+	IScalarPainter* pG   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "generichumantissue_material", name, "g",   g,   /*requireSingle*/ true );
+	IScalarPainter* pSca = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "generichumantissue_material", name, "sca", sca, /*requireSingle*/ true );
 
-	if( !pG ) {
+	if( !pG || !pSca ) {
+		safe_release( pG );
+		safe_release( pSca );
 		return false;
-	}
-
-	IPainter* pSca = pPntManager->GetItem(sca);
-
-	if( !pSca ) {
-		double d = atof( sca );
-		RISE_API_CreateUniformColorPainter( &pSca, RISEPel(d,d,d) );
-	} else {
-		pSca->addref();
 	}
 
 	IMaterial* pMaterial = 0;
@@ -1930,10 +6210,12 @@ bool Job::AddGenericHumanTissueMaterial(
 		betacarotene_concentration_,
 		diffuse );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
+	safe_release( pSca );
+	safe_release( pG );
 
-	return true;
+	return ok;
 }
 
 //! Adds Composite material
@@ -1942,11 +6224,11 @@ bool Job::AddCompositeMaterial(
 							const char* name,											///< [in] Name of the material
 							const char* top,											///< [in] Name of material on top
 							const char* bottom,											///< [in] Name of material on bottom
-							const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-							const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-							const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-							const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-							const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+							const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+							const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+							const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+							const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+							const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 							const double thickness,										///< [in] Thickness between the materials
 							const char* extinction										///< [in] Extinction painter name
 							)
@@ -1957,20 +6239,40 @@ bool Job::AddCompositeMaterial(
 	if( !pTop || !pBottom ) {
 		return false;
 	}
+	if( pTop->IsUnresolvedMix() || pBottom->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"composite_material `%s`: a mix_material cannot be wrapped inside a composite_material (mix_material must be outermost)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a composite_material" );
+		return false;
+	}
 
-	IPainter* pExt = pPntManager->GetItem( extinction );
+	// `extinction` is a Beer-Lambert coefficient (an inverse length), not a
+	// colour: authored values well above 1 are ordinary.  Routing it through
+	// `IPainter` sent the SPECTRAL walk's read into `GetColorNM` -> the
+	// Jakob-Hanika ALBEDO uplift, which is bounded to [0,1], so every
+	// extinction above ~1 silently saturated in every spectral rasterizer
+	// while the RGB walk used the authored value.  Per-channel input stays
+	// legal (`requireSingle` false, like translucent_material's `ext`) --
+	// Beer-Lambert is evaluated per channel.
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "composite_material", name, "extinction", extinction );
 
 	if( !pExt ) {
 		return false;
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt );
+	if( !RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt ) ) {
+		safe_release( pExt );
+		return false;
+	}
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
+	safe_release( pExt );
 
-	return true;
+	return ok;
 }
 
 //! Adds Composite material
@@ -1990,25 +6292,21 @@ bool Job::AddWardIsotropicGaussianMaterial(
 		return false;
 	}
 
-	IPainter*		pAlpha = pPntManager->GetItem( alpha );
-
-	if( !pAlpha )
-	{
-		double fa = atof(alpha);
-		RISE_API_CreateUniformColorPainter( &pAlpha, RISEPel(fa,fa,fa) );
-	} else {
-		pAlpha->addref();
+	IScalarPainter* pAlpha = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_isotropic_material", name, "alpha", alpha );
+	if( !pAlpha ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateWardIsotropicGaussianMaterial( &pMaterial, *pRd, *pRs, *pAlpha );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlpha );
 
-	return true;
+	return ok;
 }
 
 //! Adds Ward's anisotropic elliptical gaussian material
@@ -2028,39 +6326,52 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 		return false;
 	}
 
-	IPainter*		pAlphaX = pPntManager->GetItem( alphax );
-	IPainter*		pAlphaY = pPntManager->GetItem( alphay );
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_anisotropic_material", name, "alphax", alphax );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_anisotropic_material", name, "alphay", alphay );
 
-	if( !pAlphaX )
-	{
-		double fa = atof(alphax);
-		RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaX->addref();
-	}
-
-	if( !pAlphaY )
-	{
-		double fa = atof(alphay);
-		RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaY->addref();
+	if( !pAlphaX || !pAlphaY ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateWardAnisotropicEllipticalGaussianMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlphaX );
 	safe_release( pAlphaY );
 
-	return true;
+	return ok;
 }
 
 //! Adds Cook Torrance material
 /// \return TRUE if successful, FALSE otherwise
+// Resolves a `const char*` fresnel-mode selector into the FresnelMode enum.
+// Empty / NULL strings map to conductor (preserves the no-mode call sites).
+// Unknown values fall back to conductor with a per-string-once warning, so
+// a scene with a thousand materials sharing the same typo doesn't generate
+// a thousand warning lines.
+static FresnelMode ResolveFresnelMode( const char* mode )
+{
+	if( !mode || !mode[0] ) return eFresnelConductor;
+	if( strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
+	if( strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
+	if( strcmp( mode, "thinfilm"   ) == 0 ) return eFresnelThinFilmConductor;
+	if( strcmp( mode, "constant"   ) == 0 ) return eFresnelConstant;
+
+	static std::set<std::string> seen;
+	if( seen.insert( std::string(mode) ).second ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0, thinfilm, constant", mode );
+	}
+	return eFresnelConductor;
+}
+
 bool Job::AddGGXMaterial(
 	const char* name,
 	const char* diffuse,
@@ -2068,65 +6379,625 @@ bool Job::AddGGXMaterial(
 	const char* alphaX,
 	const char* alphaY,
 	const char* ior,
-	const char* ext
+	const char* ext,
+	const char* fresnel_mode,
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
 	)
 {
+	// DL-16: tangent_rotation now accepts EITHER pipe -- validate up front
+	// (diagnostic already logged on failure) so a bad name fails before
+	// any allocation below, matching the pre-existing gate's behaviour.
+	IScalarPainter* pTangentRotationScalarProbe = nullptr;
+	IPainter* pTangentRotationColorProbe = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "ggx_material", name,
+			"tangent_rotation", tangent_rotation, &pTangentRotationScalarProbe, &pTangentRotationColorProbe ) ) {
+		return false;
+	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
 	if( !pRd || !pRs ) {
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
-	IPainter* pAlphaX = pPntManager->GetItem( alphaX );
-	IPainter* pAlphaY = pPntManager->GetItem( alphaY );
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	IPainter* pExt = pPntManager->GetItem( ext );
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "alphax", alphaX );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "alphay", alphaY );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "ext", ext );
 
-	if( !pAlphaX )
-	{
-		double fa = atof(alphaX);
-		RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaX->addref();
+	if( !pAlphaX || !pAlphaY || !pIOR || !pExt ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		safe_release( pIOR );
+		safe_release( pExt );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
 	}
 
-	if( !pAlphaY )
-	{
-		double fa = atof(alphaY);
-		RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaY->addref();
+	// Thin-film FILM slots (eFresnelThinFilmConductor).  These are physical
+	// scalars (oxide n / k / thickness-nm) and MUST resolve as IScalarPainter
+	// (no JH spectral uplift), exactly like ior / ext above.  "none" => no
+	// film painter (nullptr passed through).  Resolved unconditionally so a
+	// stray film_* on a non-thinfilm material still gets a real diagnostic if
+	// it names a bad painter; the thinfilm-mode presence contract is enforced
+	// below.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_thickness", film_thickness );
 	}
 
-	if( !pIOR )
-	{
-		double fa = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fa,fa,fa) );
-	} else {
-		pIOR->addref();
+	// If a film_* slot was requested but failed to resolve, that is a hard
+	// error (the painter name was bad) regardless of fresnel_mode.
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
 	}
 
-	if( !pExt )
-	{
-		double fa = atof(ext);
-		RISE_API_CreateUniformColorPainter( &pExt, RISEPel(fa,fa,fa) );
-	} else {
-		pExt->addref();
+	// thinfilm-mode presence contract: the P2-B BSDF dereferences the film
+	// painters whenever eFresnelThinFilmConductor is active, so film_ior and
+	// film_thickness MUST be present (film_extinction defaults to a transparent
+	// k = 0 film and is optional).  Reject at parse time with a clear message
+	// rather than letting the renderer null-deref.
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
 	}
+
+	// DL-16: use the dual-resolved tangent rotation probed at the top of
+	// this function (Scalar pipe preferred, legacy Color pipe kept
+	// working).  Exactly one of the two is non-null for a non-"none" value.
+	IPainter* pTangentRotation = pTangentRotationColorProbe;
+	IScalarPainter* pTangentRotationScalar = pTangentRotationScalarProbe;
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt );
+	RISE_API_CreateGGXMaterialThinFilm( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk, pTangentRotationScalar );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pAlphaX );
 	safe_release( pAlphaY );
 	safe_release( pIOR );
 	safe_release( pExt );
+	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
 
-	return true;
+	return ok;
+}
+
+//! AddGGXEmissiveMaterial -- GGX with an optional LambertianEmitter folded
+//! in.  Passing emissive=="none" / NULL produces the same material as
+//! AddGGXMaterial; otherwise the emissive painter feeds a LambertianEmitter
+//! at radiance scaled by emissive_scale, and the material's GetEmitter()
+//! returns it.  Used by pbr_metallic_roughness_material when the source
+//! has an emissiveFactor / emissiveTexture.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGGXEmissiveMaterial(
+	const char* name,
+	const char* diffuse,
+	const char* specular,
+	const char* alphaX,
+	const char* alphaY,
+	const char* ior,
+	const char* ext,
+	const char* emissive,
+	const double emissive_scale,
+	const char* fresnel_mode,
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
+	)
+{
+	// DL-16: see AddGGXMaterial above for the resolution order.
+	IScalarPainter* pTangentRotationScalarProbe = nullptr;
+	IPainter* pTangentRotationColorProbe = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "ggx_emissive_material", name,
+			"tangent_rotation", tangent_rotation, &pTangentRotationScalarProbe, &pTangentRotationColorProbe ) ) {
+		return false;
+	}
+	IPainter* pRd = pPntManager->GetItem(diffuse);
+	IPainter* pRs = pPntManager->GetItem(specular);
+
+	if( !pRd || !pRs ) {
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
+	}
+
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "alphax", alphaX );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "alphay", alphaY );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "ext", ext );
+
+	if( !pAlphaX || !pAlphaY || !pIOR || !pExt ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		safe_release( pIOR );
+		safe_release( pExt );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
+	}
+
+	// Resolve the optional emissive painter.  "none" / NULL means no emitter.
+	IPainter* pEmissive = 0;
+	const bool wantEmissive = ( emissive && std::string( emissive ) != "none" );
+	if( wantEmissive ) {
+		pEmissive = pPntManager->GetItem( emissive );
+		if( !pEmissive ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddGGXEmissiveMaterial:: emissive painter `%s` not found", emissive );
+			safe_release( pAlphaX );
+			safe_release( pAlphaY );
+			safe_release( pIOR );
+			safe_release( pExt );
+			safe_release( pTangentRotationScalarProbe );
+			safe_release( pTangentRotationColorProbe );
+			return false;
+		}
+	}
+
+	// Thin-film FILM slots (eFresnelThinFilmConductor) — same resolve +
+	// presence-contract logic as AddGGXMaterial above.  IScalarPainter
+	// (no JH uplift); "none" => nullptr.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_thickness", film_thickness );
+	}
+
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
+	}
+
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
+		return false;
+	}
+
+	// DL-16: use the dual-resolved tangent rotation probed at the top of
+	// this function.
+	IPainter* pTangentRotation = pTangentRotationColorProbe;
+	IScalarPainter* pTangentRotationScalar = pTangentRotationScalarProbe;
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateGGXEmissiveMaterialThinFilm(
+		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk, pTangentRotationScalar );
+
+	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	// Only mark as composed when AddItem actually registered the
+	// new material — a duplicate-name failure (existing direct
+	// material under the same name) would otherwise mark THAT
+	// pre-existing material as composed, falsely freezing its
+	// slot rows in the interactive editor.
+	if( added ) {
+		composedMaterialNames.insert( String( name ) );
+	}
+
+	safe_release( pMaterial );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
+	safe_release( pIOR );
+	safe_release( pExt );
+	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
+
+	return added;
+}
+
+//! AddPBRMetallicRoughnessMaterial: glTF-spec PBR material composition.
+//!
+//! Builds the painter graph that maps glTF metallicRoughness inputs onto
+//! ggx_material's interface, then registers a final ggx (with optional
+//! emissive) under `name`.  Internal helper painters are registered under
+//! `__pbrmr_<name>__<role>` so they don't clash with user names.
+//!
+//! See IJob.h for the math; see docs/GLTF_IMPORT.md §4 for the design
+//! rationale.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPBRMetallicRoughnessMaterial(
+	const char* name,
+	const char* base_color,
+	const char* metallic,
+	const char* roughness,
+	const double ior,
+	const char* emissive,
+	const double emissive_scale,
+	const char* specular_factor,
+	const char* specular_color,
+	const char* anisotropy_factor,
+	const char* anisotropy_rotation
+	)
+{
+	// DL-17 sibling fix (same pattern as DL-16's ggx_material.tangent_rotation):
+	// `anisotropy_rotation` now accepts EITHER pipe -- a named scalar_painter
+	// (Scalar, preferred; lets a glTF-importer-built atan2 scalar_painter
+	// drive per-texel KHR_materials_anisotropy rotation), a named legacy
+	// colour painter (Color, deprecated), or a finite literal.  This is a
+	// validate-and-discard probe (mirrors the upfront-validate-then-really-
+	// resolve-later shape the scalar factors below already use); the real
+	// resolution happens where `pTangentRotation` is built further down.
+	{
+		IScalarPainter* probeScalar = nullptr;
+		IPainter* probeColor = nullptr;
+		if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "pbrmetallicroughness_material",
+				name, "anisotropy_rotation", anisotropy_rotation, &probeScalar, &probeColor ) ) {
+			return false;
+		}
+		safe_release( probeScalar );
+		safe_release( probeColor );
+	}
+	// The scalar factors (metallic / roughness / specular_factor / anisotropy_factor)
+	// fall back to atof() in resolveOrSynth below when not a painter name, so an
+	// inline non-finite value would synthesise a non-finite uniform-colour painter.
+	// Reject those up front (a painter NAME is not flagged; "none" is not flagged).
+	{
+		const struct { const char* v; const char* role; } pbrScalars[] = {
+			{ metallic,          "metallic"          },
+			{ roughness,         "roughness"         },
+			{ specular_factor,   "specular_factor"   },
+			{ anisotropy_factor, "anisotropy_factor" },
+		};
+		for( unsigned int i = 0; i < sizeof(pbrScalars)/sizeof(pbrScalars[0]); ++i ) {
+			if( !ScalarLiteralIsFiniteNumber( pbrScalars[i].v ) && pPntManager->GetItem( pbrScalars[i].v ) == 0 ) {
+				GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `%s` must be a finite scalar or a painter name (got `%s`)", name, pbrScalars[i].role, pbrScalars[i].v );
+				return false;
+			}
+		}
+	}
+	// Resolve the base_color painter.  Must already exist.
+	if( !pPntManager->GetItem( base_color ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPBRMetallicRoughnessMaterial:: base_color painter `%s` not found", base_color );
+		return false;
+	}
+
+	// metallic / roughness / specular_* / anisotropy_* can be either a
+	// painter name or a scalar string like "0.5".  When the painter
+	// manager doesn't have an entry under the given name, fall back to
+	// atof() and synthesise a uniform-color painter (named after the
+	// role + scalar value) to drive downstream blends.
+	std::string nameStr( name );
+	const std::string prefix = "__pbrmr_" + nameStr + "__";
+
+	auto resolveOrSynth = [&]( const char* in, const char* role ) -> std::string {
+		if( pPntManager->GetItem( in ) ) {
+			return std::string( in );
+		}
+		// Synth uniformcolor from scalar.
+		const double v = atof( in );
+		const std::string synthName = prefix + std::string( role ) + "_scalar";
+		const double pel[3] = { v, v, v };
+		AddUniformColorPainter( synthName.c_str(), pel, "Rec709RGB_Linear" );
+		return synthName;
+	};
+
+	const std::string metallicName  = resolveOrSynth( metallic,  "metallic"  );
+	const std::string roughnessName = resolveOrSynth( roughness, "roughness" );
+
+	// Internal helper painters.  All in linear (Rec709 -> ROMM applied at
+	// load), since we're treating these as numeric weights / multipliers,
+	// not display colours.  The blend painter does per-channel arithmetic
+	// without further colour conversion.
+	//
+	// Note: prior revisions also created an `f96` retention painter that
+	// pre-multiplied diffuse by (1 - 0.04).  That's been removed because
+	// the GGX BSDF's schlick_f0 mode applies (1 - max(F0)) at evaluation
+	// time per the glTF spec (which gives ≈ 0.96 for dielectric F0 = 0.04
+	// AND the correct ≈ 0 for metallic F0 = baseColor).  Pre-multiplying
+	// would double-apply.
+	const double zero[3]    = { 0.0, 0.0, 0.0 };
+	const double white[3]   = { 1.0, 1.0, 1.0 };
+	const double point04[3] = { 0.04, 0.04, 0.04 };
+	const double iorVec[3]  = { ior, ior, ior };
+
+	const std::string nZero     = prefix + "zero";
+	const std::string nWhite    = prefix + "white";
+	const std::string nPoint04  = prefix + "point04";
+	const std::string nF0Diel   = prefix + "f0diel";
+	const std::string nIORPnt   = prefix + "ior";
+
+	AddUniformColorPainter( nZero.c_str(),    zero,    "Rec709RGB_Linear" );
+	AddUniformColorPainter( nWhite.c_str(),   white,   "Rec709RGB_Linear" );
+	AddUniformColorPainter( nPoint04.c_str(), point04, "Rec709RGB_Linear" );
+	AddUniformColorPainter( nIORPnt.c_str(),  iorVec,  "Rec709RGB_Linear" );
+
+	// one_minus_met = (1 - metallic) = blend(zero, white, metallic)
+	// (BlendPainter convention: blend(a, b, mask) = a*mask + b*(1-mask),
+	// so a=zero, b=white, mask=metallic gives white * (1-metallic).)
+	const std::string nOneMinusMet = prefix + "one_minus_met";
+	AddBlendPainter( nOneMinusMet.c_str(), nZero.c_str(), nWhite.c_str(), metallicName.c_str() );
+
+	// rd = base_color * (1 - metallic) — diffuse-color mixer per glTF spec.
+	// The (1 - max(F0)) split is applied inside the BSDF's schlick_f0 path.
+	const std::string nRd = prefix + "rd";
+	AddBlendPainter( nRd.c_str(), base_color, nZero.c_str(), nOneMinusMet.c_str() );
+
+	// Landing 7 — KHR_materials_specular.  glTF formula:
+	//   F0_dielectric = min(0.04 × specular_color × specular_factor, 1.0)
+	//   F0            = lerp(F0_dielectric, baseColor, metallic)
+	// With defaults specular_factor="1.0" and specular_color="none"
+	// (treated as white), F0_dielectric collapses to 0.04 — bit-identical
+	// to the pre-L7 path.  When EITHER is non-default, we build the
+	// painter chain to compute F0_dielectric per-pixel.
+	//
+	// We omit the min(..., 1.0) clamp here because (a) defaults stay well
+	// below 1, (b) painter-graph clamps don't compose cleanly with the
+	// BlendPainter primitive without a new MinPainter, and (c) the BSDF
+	// already clamps F at evaluation.  Author scenes that push specular
+	// inputs > 1 will get a soft saturation rather than exact spec
+	// compliance — acceptable until a use case shows otherwise.
+	const bool hasSpecFactor = ( specular_factor && *specular_factor &&
+	                              strcmp( specular_factor, "1.0" ) != 0 &&
+	                              strcmp( specular_factor, "1" )   != 0 );
+	const bool hasSpecColor  = ( specular_color  && *specular_color &&
+	                              strcmp( specular_color, "none" )  != 0 );
+
+	if( !hasSpecFactor && !hasSpecColor ) {
+		// Default path: F0_dielectric = 0.04 constant (unchanged from
+		// pre-L7).  Cheaper than the painter chain since it's one
+		// uniform painter lookup vs. three blend evaluations per ray.
+		AddUniformColorPainter( nF0Diel.c_str(), point04, "Rec709RGB_Linear" );
+	} else {
+		// KHR_materials_specular path: build the chain.
+		const std::string specFactorName = resolveOrSynth(
+			(hasSpecFactor ? specular_factor : "1.0"), "specfactor" );
+		const std::string specColorName = hasSpecColor
+			? std::string( specular_color )
+			: nWhite;	// default tint = no tint
+
+		// f0_aux = 0.04 × specular_color
+		// = blend(specular_color, zero, point04) = specular_color * 0.04 + zero * 0.96
+		const std::string nF0Aux = prefix + "f0_aux";
+		AddBlendPainter( nF0Aux.c_str(), specColorName.c_str(), nZero.c_str(), nPoint04.c_str() );
+
+		// f0_diel = f0_aux × specular_factor
+		// = blend(f0_aux, zero, specular_factor) = f0_aux * factor + zero * (1-factor)
+		AddBlendPainter( nF0Diel.c_str(), nF0Aux.c_str(), nZero.c_str(), specFactorName.c_str() );
+	}
+
+	// rs = lerp(F0_dielectric, base_color, metallic) = blend(base_color, f0diel, metallic).
+	// In schlick_f0 mode the BSDF treats this as F0 directly.
+	const std::string nRs = prefix + "rs";
+	AddBlendPainter( nRs.c_str(), base_color, nF0Diel.c_str(), metallicName.c_str() );
+
+	// rough_sq = roughness * roughness = blend(roughness, zero, roughness)
+	const std::string nRoughSq = prefix + "rough_sq";
+	AddBlendPainter( nRoughSq.c_str(), roughnessName.c_str(), nZero.c_str(), roughnessName.c_str() );
+
+	// Landing 8 — KHR_materials_anisotropy.  glTF formula:
+	//   α_t = mix(α, 1.0, anisotropy²)
+	//   α_b = α
+	// With default anisotropy_factor="0.0", α_t = α (isotropic) — bit-
+	// identical to the pre-L8 path.  Non-zero factor stretches the
+	// specular lobe along the tangent (X) axis.
+	//
+	// anisotropy_rotation is now (round-2 fix) plumbed through to
+	// GGX{BRDF,SPF} via AddGGXEmissiveMaterial's `tangent_rotation`
+	// parameter; the BSDF rotates the (u, v) basis around w by the
+	// painter-evaluated angle before sampling.  The rotation is a
+	// no-op when the parameter resolves to 0, so default-disabled
+	// anisotropy materials stay bit-identical.
+	const bool hasAnisotropy = ( anisotropy_factor && *anisotropy_factor &&
+	                              strcmp( anisotropy_factor, "0.0" ) != 0 &&
+	                              strcmp( anisotropy_factor, "0" )   != 0 );
+
+	std::string nAlphaX = nRoughSq;
+	std::string nAlphaY = nRoughSq;
+	if( hasAnisotropy ) {
+		const std::string anisoName = resolveOrSynth( anisotropy_factor, "aniso" );
+
+		// aniso_sq = anisotropy²
+		const std::string nAnisoSq = prefix + "aniso_sq";
+		AddBlendPainter( nAnisoSq.c_str(), anisoName.c_str(), nZero.c_str(), anisoName.c_str() );
+
+		// alpha_t = mix(α, 1, aniso²) = lerp from rough_sq to white as
+		// aniso² grows.  blend(white, rough_sq, aniso_sq) = white*aniso² + rough_sq*(1-aniso²).
+		const std::string nAlphaT = prefix + "alpha_t";
+		AddBlendPainter( nAlphaT.c_str(), nWhite.c_str(), nRoughSq.c_str(), nAnisoSq.c_str() );
+
+		nAlphaX = nAlphaT;	// tangent direction (stretched)
+		// nAlphaY stays at nRoughSq (bitangent direction)
+	}
+
+	// Build the final GGX material with these inputs.  Extinction is zero
+	// (opaque); ior is preserved but unused in schlick_f0 mode.  Emissive
+	// flows through unchanged.  Anisotropy rotation flows through as the
+	// `tangent_rotation` painter; "0.0" / unset → no rotation.
+	//
+	// alphaX / alphaY / ior / ext are scalar-typed slots on the new GGX
+	// construction surface, but PBR's internal composition lives in the
+	// IPainter graph (BlendPainter etc., colour-typed).  We adapt each
+	// composed IPainter back into an `IScalarPainter` here via
+	// `Painters/PainterToScalarAdapter.h` so the painter graph keeps
+	// its existing composition without needing scalar-domain blend ops.
+	IPainter* pRdPnt    = pPntManager->GetItem( nRd.c_str() );
+	IPainter* pRsPnt    = pPntManager->GetItem( nRs.c_str() );
+	IPainter* pAlphaXP  = pPntManager->GetItem( nAlphaX.c_str() );
+	IPainter* pAlphaYP  = pPntManager->GetItem( nAlphaY.c_str() );
+	IPainter* pIORPnt   = pPntManager->GetItem( nIORPnt.c_str() );
+	IPainter* pZeroPnt  = pPntManager->GetItem( nZero.c_str() );
+
+	if( !pRdPnt || !pRsPnt || !pAlphaXP || !pAlphaYP || !pIORPnt || !pZeroPnt ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPBRMetallicRoughnessMaterial:: internal painter lookup failed for `%s`", name );
+		return false;
+	}
+
+	// Adapt the four scalar slots.  Each adapter takes its own ref on
+	// the underlying IPainter (inside its ctor) and is released after
+	// the material steals its own ref via the GGX{BRDF,SPF} ctors.
+	// `Reference`-derived objects start at refcount 1, so the local
+	// pointer owns that ref; no extra addref() is needed.  (Removing
+	// the explicit addref() here in 2026-05 — the prior code left
+	// every adapter permanently at refcount = 2, leaking one ref per
+	// PBR material instantiated.)
+	IScalarPainter* pAlphaXSc = new PainterToScalarAdapter( *pAlphaXP );
+	IScalarPainter* pAlphaYSc = new PainterToScalarAdapter( *pAlphaYP );
+	IScalarPainter* pIORSc    = new PainterToScalarAdapter( *pIORPnt );
+	IScalarPainter* pExtSc    = new PainterToScalarAdapter( *pZeroPnt );
+
+	// Resolve the optional emissive painter.
+	IPainter* pEmissive = 0;
+	const bool wantEmissive = ( emissive && std::string( emissive ) != "none" );
+	if( wantEmissive ) {
+		pEmissive = pPntManager->GetItem( emissive );
+		if( !pEmissive ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddPBRMetallicRoughnessMaterial:: emissive painter `%s` not found", emissive );
+			safe_release( pAlphaXSc );
+			safe_release( pAlphaYSc );
+			safe_release( pIORSc );
+			safe_release( pExtSc );
+			return false;
+		}
+	}
+
+	// DL-17: dual-pipe resolution (Scalar preferred, legacy Color kept
+	// working) -- see ResolveRotationPainterDual / AddGGXMaterial.  Already
+	// validated above; this call cannot fail here in practice (same inputs),
+	// but a genuine failure still fails the material rather than crashing.
+	IPainter* pTangentRotation = nullptr;
+	IScalarPainter* pTangentRotationScalar = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "pbrmetallicroughness_material",
+			name, "anisotropy_rotation", anisotropy_rotation, &pTangentRotationScalar, &pTangentRotation ) ) {
+		safe_release( pAlphaXSc );
+		safe_release( pAlphaYSc );
+		safe_release( pIORSc );
+		safe_release( pExtSc );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateGGXEmissiveMaterialThinFilm(
+		&pMaterial, *pRdPnt, *pRsPnt, *pAlphaXSc, *pAlphaYSc, *pIORSc, *pExtSc,
+		pEmissive, emissive_scale,
+		ResolveFresnelMode( "schlick_f0" ),
+		pTangentRotation, nullptr, nullptr, nullptr, pTangentRotationScalar );
+
+	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	// Only mark as composed on successful registration — see the
+	// matching guard in AddGGXEmissiveMaterial for rationale.
+	if( added ) {
+		composedMaterialNames.insert( String( name ) );
+	}
+
+	safe_release( pMaterial );
+	safe_release( pAlphaXSc );
+	safe_release( pAlphaYSc );
+	safe_release( pIORSc );
+	safe_release( pExtSc );
+	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
+
+	return added;
+}
+
+bool Job::AddSheenMaterial(
+	const char* name,
+	const char* sheen_color,
+	const char* sheen_roughness
+	)
+{
+	IPainter* pColor = pPntManager->GetItem( sheen_color );
+	if( !pColor ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSheenMaterial:: sheen_color painter `%s` not found", sheen_color );
+		return false;
+	}
+
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "sheen_material", name, "sheen_roughness", sheen_roughness, /*requireSingle*/ true );
+	if( !pRoughness ) {
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateSheenMaterial( &pMaterial, *pColor, *pRoughness );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+	return ok;
 }
 
 bool Job::AddCookTorranceMaterial(
@@ -2145,45 +7016,31 @@ bool Job::AddCookTorranceMaterial(
 		return false;
 	}
 
-	IPainter*		pFacet = pPntManager->GetItem( facet );
-	IPainter*		pIOR = pPntManager->GetItem( ior );
-	IPainter*		pExt = pPntManager->GetItem( ext );
+	IScalarPainter* pFacet = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "facet", facet );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "ext", ext );
 
-	if( !pFacet )
-	{
-		double fa = atof(facet);
-		RISE_API_CreateUniformColorPainter( &pFacet, RISEPel(fa,fa,fa) );
-	} else {
-		pFacet->addref();
-	}
-
-	if( !pIOR )
-	{
-		double fa = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fa,fa,fa) );
-	} else {
-		pIOR->addref();
-	}
-
-	if( !pExt )
-	{
-		double fa = atof(ext);
-		RISE_API_CreateUniformColorPainter( &pExt, RISEPel(fa,fa,fa) );
-	} else {
-		pExt->addref();
+	if( !pFacet || !pIOR || !pExt ) {
+		safe_release( pFacet );
+		safe_release( pIOR );
+		safe_release( pExt );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateCookTorranceMaterial( &pMaterial, *pRd, *pRs, *pFacet, *pIOR, *pExt );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pFacet );
 	safe_release( pIOR );
 	safe_release( pExt );
 
-	return true;
+	return ok;
 }
 
 //! Adds Oren-Nayar material
@@ -2191,7 +7048,7 @@ bool Job::AddCookTorranceMaterial(
 bool Job::AddOrenNayarMaterial(
 	const char* name,											///< [in] Name of the material
 	const char* reflectance,									///< [in] Reflectance
-	const char* roughness										///< [in] Roughness factor
+	const char* roughness										///< [in] Roughness factor (physical scalar)
 	)
 {
 	IPainter* pRef = pPntManager->GetItem(reflectance);
@@ -2200,25 +7057,199 @@ bool Job::AddOrenNayarMaterial(
 		return false;
 	}
 
-	IPainter*		pRoughness = pPntManager->GetItem( roughness );
-
-	if( !pRoughness )
-	{
-		double fa = atof(roughness);
-		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel(fa,fa,fa) );
-	} else {
-		pRoughness->addref();
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "orennayar_material", name, "roughness", roughness );
+	if( !pRoughness ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateOrenNayarMaterial( &pMaterial, *pRef, *pRoughness );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pRoughness );
 
-	return true;
+	return ok;
+}
+
+bool Job::AddOrenNayarMaterialModel(
+	const char* name,
+	const char* reflectance,
+	const char* roughness,
+	const char* model
+	)
+{
+	const std::string m = model ? model : "";
+	if( m.empty() || m == "classic" ) {
+		return AddOrenNayarMaterial( name, reflectance, roughness );
+	}
+	if( m != "energy_preserving" ) {
+		char msg[300];
+		std::snprintf( msg, sizeof( msg ),
+			"unknown model `%s`.  Valid: classic, energy_preserving", m.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "orennayar_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IPainter* pRef = pPntManager->GetItem(reflectance);
+	if( !pRef ) {
+		return false;
+	}
+
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "orennayar_material", name, "roughness", roughness );
+	if( !pRoughness ) {
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateOrenNayarMaterialModel( &pMaterial, *pRef, *pRoughness, true );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+
+	return ok;
+}
+
+bool Job::AddMixMaterial(
+	const char* name,
+	const char* const* children,
+	const char* const* weights,
+	const char* const* modifiers,
+	const unsigned int numChildren,
+	const char* passthroughWeight
+	)
+{
+	if( numChildren == 0 || !children || !weights ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"mix_material `%s`: requires at least one child entry", name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "mix_material requires at least one child entry" );
+		return false;
+	}
+
+	std::vector<const IMaterial*> childMats( numChildren, 0 );
+	std::vector<const IScalarPainter*> childWeights( numChildren, 0 );
+	std::vector<const IRayIntersectionModifier*> childMods( numChildren, 0 );
+	std::vector<IScalarPainter*> ownedScalars;
+	ownedScalars.reserve( numChildren + 1 );
+
+	auto cleanupOwned = [&]() {
+		for( size_t k = 0; k < ownedScalars.size(); ++k ) {
+			safe_release( ownedScalars[k] );
+		}
+	};
+
+	for( unsigned int i = 0; i < numChildren; ++i ) {
+		const char* matName = children[i];
+		if( matName && matName[0] != '\0' && std::strcmp( matName, "none" ) != 0 ) {
+			IMaterial* pMat = pMatManager->GetItem( matName );
+			if( !pMat ) {
+				char msg[256];
+				std::snprintf( msg, sizeof( msg ),
+					"child %u material `%s` is not a registered material", i, matName );
+				GlobalLog()->PrintEx( eLog_Error, "mix_material `%s`: %s", name ? name : "", msg );
+				RISE::SetFinalizeDiagIfEmpty( msg );
+				cleanupOwned();
+				return false;
+			}
+			childMats[i] = pMat;
+		}
+
+		IScalarPainter* pW = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "mix_material", name, "weight", weights[i], /*requireSingle*/ true );
+		if( !pW ) {
+			cleanupOwned();
+			return false;
+		}
+		ownedScalars.push_back( pW );
+		childWeights[i] = pW;
+
+		const char* modName = modifiers ? modifiers[i] : 0;
+		if( modName && modName[0] != '\0' && std::strcmp( modName, "none" ) != 0 ) {
+			IRayIntersectionModifier* pMod = pModManager->GetItem( modName );
+			if( !pMod ) {
+				char msg[256];
+				std::snprintf( msg, sizeof( msg ),
+					"child %u modifier `%s` is not a registered modifier", i, modName );
+				GlobalLog()->PrintEx( eLog_Error, "mix_material `%s`: %s", name ? name : "", msg );
+				RISE::SetFinalizeDiagIfEmpty( msg );
+				cleanupOwned();
+				return false;
+			}
+			childMods[i] = pMod;
+		}
+	}
+
+	const IScalarPainter* pPass = 0;
+	if( passthroughWeight && passthroughWeight[0] != '\0' && std::strcmp( passthroughWeight, "none" ) != 0 ) {
+		IScalarPainter* pPW = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "mix_material", name, "passthrough", passthroughWeight, /*requireSingle*/ true );
+		if( !pPW ) {
+			cleanupOwned();
+			return false;
+		}
+		ownedScalars.push_back( pPW );
+		pPass = pPW;
+	}
+
+	IMaterial* pMaterial = 0;
+	if( !RISE_API_CreateMixMaterial(
+			&pMaterial, childMats.data(), childWeights.data(), childMods.data(),
+			numChildren, pPass ) || !pMaterial )
+	{
+		RISE::SetFinalizeDiagIfEmpty(
+			"mix_material child validation failed (nested mix or containment-tracking/refracting child)" );
+		cleanupOwned();
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	cleanupOwned();
+	return ok;
+}
+
+bool Job::AddDiffuseTransmissionMaterial(
+	const char* name,
+	const char* reflectance,
+	const char* transmittance
+	)
+{
+	const char* refName   = ( reflectance && reflectance[0] ) ? reflectance : "none";
+	const char* transName = ( transmittance && transmittance[0] ) ? transmittance : "none";
+
+	IPainter* pRefl = pPntManager->GetItem( refName );
+	if( !pRefl ) {
+		char msg[256];
+		std::snprintf( msg, sizeof( msg ), "reflectance painter `%s` not found", refName );
+		GlobalLog()->PrintEx( eLog_Error, "diffuse_transmission_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IPainter* pTrans = pPntManager->GetItem( transName );
+	if( !pTrans ) {
+		char msg[256];
+		std::snprintf( msg, sizeof( msg ), "transmittance painter `%s` not found", transName );
+		GlobalLog()->PrintEx( eLog_Error, "diffuse_transmission_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	if( !RISE_API_CreateDiffuseTransmissionMaterial( &pMaterial, *pRefl, *pTrans ) || !pMaterial ) {
+		RISE::SetFinalizeDiagIfEmpty( "diffuse_transmission_material creation failed" );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
 }
 
 //! Adds Schlick material
@@ -2238,36 +7269,27 @@ bool Job::AddSchlickMaterial(
 		return false;
 	}
 
-	IPainter*		pRoughness = pPntManager->GetItem( roughness );
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "schlick_material", name, "roughness", roughness );
+	IScalarPainter* pIsotropy = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "schlick_material", name, "isotropy", isotropy );
 
-	if( !pRoughness )
-	{
-		double fa = atof(roughness);
-		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel(fa,fa,fa) );
-	} else {
-		pRoughness->addref();
-	}
-
-	IPainter*		pIsotropy = pPntManager->GetItem( isotropy );
-
-	if( !pIsotropy )
-	{
-		double fa = atof(isotropy);
-		RISE_API_CreateUniformColorPainter( &pIsotropy, RISEPel(fa,fa,fa) );
-	} else {
-		pIsotropy->addref();
+	if( !pRoughness || !pIsotropy ) {
+		safe_release( pRoughness );
+		safe_release( pIsotropy );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateSchlickMaterial( &pMaterial, *pRd, *pRs, *pRoughness, *pIsotropy );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
 	safe_release( pRoughness );
 	safe_release( pIsotropy );
 
-	return true;
+	return ok;
 }
 
 //! Adds a data driven material
@@ -2280,10 +7302,10 @@ bool Job::AddDataDrivenMaterial(
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateDataDrivenMaterial( &pMaterial, filename );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
 	safe_release( pMaterial );
-    return true;
+    return ok;
 }
 
 //! Creates a lambertian luminaire material
@@ -2301,14 +7323,21 @@ bool Job::AddLambertianLuminaireMaterial(
 	if( !pRadEx || !pMaterial ) {
 		return false;
 	}
+	if( pMaterial->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"lambertian_luminaire_material `%s`: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a lambertian_luminaire_material" );
+		return false;
+	}
 
 	IMaterial* pLumMaterial = 0;
 	RISE_API_CreateLambertianLuminaireMaterial( &pLumMaterial, *pRadEx, *pMaterial, scale );
 
-	pMatManager->AddItem( pLumMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pLumMaterial, name, "material" );
 	safe_release( pLumMaterial );
 
-	return true;
+	return ok;
 }
 
 //! Creates a phong luminaire material
@@ -2327,26 +7356,191 @@ bool Job::AddPhongLuminaireMaterial(
 	if( !pRadEx || !pMaterial ) {
 		return false;
 	}
+	if( pMaterial->IsUnresolvedMix() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"phong_luminaire_material `%s`: a mix_material cannot be wrapped inside a luminaire (wrap individual leaves instead)",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "a mix_material cannot be wrapped inside a phong_luminaire_material" );
+		return false;
+	}
 
-	IPainter*	pN = pPntManager->GetItem( N );
-
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	IScalarPainter* pN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "phongluminaire_material", name, "exponent", N );
+	if( !pN ) {
+		return false;
 	}
 
 	IMaterial* pLumMaterial = 0;
 	RISE_API_CreatePhongLuminaireMaterial( &pLumMaterial, *pRadEx, *pMaterial, *pN, scale );
 
-	pMatManager->AddItem( pLumMaterial, name );
+	const bool ok = RegisterOrDiag( pMatManager, pLumMaterial, name, "material" );
 
 	safe_release( pN );
 	safe_release( pLumMaterial );
 
-	return true;
+	return ok;
+}
+
+//! Creates a hair material (Chiang et al. 2016 near-field hair/fur
+//! BCSDF; docs/HAIR_FUR_DESIGN.md).  Exactly ONE colour tier must be
+//! bound -- `color`, `sigma_a`, or the melanin pair (`eumelanin` /
+//! `pheomelanin`, which count as a SINGLE tier) -- checked here at
+//! parse time.  This is IN ADDITION TO, not a replacement for,
+//! HairScatteringBase's own mid-brown fallback (HairBSDF.h section 4):
+//! that fallback stays as defense-in-depth for any future caller that
+//! bypasses this chunk-level gate.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairMaterial(
+	const char* name,											///< [in] Name of the material
+	const char* color,											///< [in] Tier 3: artist reflectance; "none" = not bound
+	const char* sigma_a,										///< [in] Tier 2: direct absorption; "none" = not bound
+	const char* eumelanin,										///< [in] Tier 1a: eumelanin concentration; "none" = not bound
+	const char* pheomelanin,									///< [in] Tier 1b: pheomelanin concentration; "none" = not bound
+	const char* beta_m,										///< [in] Longitudinal roughness
+	const char* beta_n,										///< [in] Azimuthal roughness
+	const char* alpha,											///< [in] Cuticle scale tilt, degrees
+	const char* ior,											///< [in] Fibre index of refraction
+	const char* medulla_ratio,									///< [in] Yan 2017 medulla radius ratio kappa; "0" = no medulla
+	const char* medulla_scatter,								///< [in] Medulla scattering coefficient sigma_m
+	const char* medulla_g										///< [in] Medulla Henyey-Greenstein anisotropy
+	)
+{
+	const bool wantColor       = ( color       && std::string( color )       != "none" );
+	const bool wantSigmaA      = ( sigma_a     && std::string( sigma_a )     != "none" );
+	const bool wantEumelanin   = ( eumelanin   && std::string( eumelanin )   != "none" );
+	const bool wantPheomelanin = ( pheomelanin && std::string( pheomelanin ) != "none" );
+	const bool wantMelanin     = ( wantEumelanin || wantPheomelanin );
+
+	// Tier exclusivity, at PARSE time (docs/HAIR_FUR_DESIGN.md section
+	// 3.1): the melanin pair counts as ONE tier regardless of whether
+	// one or both of eumelanin/pheomelanin are bound.
+	const int tierCount = ( wantColor ? 1 : 0 ) + ( wantSigmaA ? 1 : 0 ) + ( wantMelanin ? 1 : 0 );
+	if( tierCount != 1 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"hair_material `%s`: exactly one colour tier must be supplied -- bind ONE of "
+			"`color` (Tier 3, artist reflectance), `sigma_a` (Tier 2, direct absorption), "
+			"or `eumelanin`/`pheomelanin` (Tier 1, melanin concentration -- either or both "
+			"count as ONE tier); got %d bound (color=%s, sigma_a=%s, eumelanin=%s, pheomelanin=%s).",
+			name ? name : "noname", tierCount,
+			wantColor ? "yes" : "no", wantSigmaA ? "yes" : "no",
+			wantEumelanin ? "yes" : "no", wantPheomelanin ? "yes" : "no" );
+		return false;
+	}
+
+	IPainter* pColor = 0;
+	if( wantColor ) {
+		pColor = pPntManager->GetItem( color );
+		if( !pColor ) {
+			GlobalLog()->PrintEx( eLog_Error, "hair_material `%s`: `color` painter `%s` not found", name, color );
+			return false;
+		}
+	}
+
+	// sigma_a is a genuine per-channel RGB triple (HairScatteringBase::
+	// SigmaARGB reads all three components), so it resolves WITHOUT
+	// requireSingle -- matching the absorption/scattering slots on
+	// subsurfacescattering_material / randomwalk_sss_material.
+	IScalarPainter* pSigmaA = 0;
+	if( wantSigmaA ) {
+		pSigmaA = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "sigma_a", sigma_a );
+		if( !pSigmaA ) {
+			return false;
+		}
+	}
+
+	// eumelanin / pheomelanin / beta_m / beta_n / alpha / ior all read
+	// ONLY `.v[0]` (HairBSDF.cpp's HairScatteringBase::Resolve /
+	// SigmaARGB / SigmaANM) -- requireSingle=true so a per-channel
+	// scalar_painter or an inline RGB triple bound here gets the
+	// targeted diagnostic instead of silently dropping G/B, matching
+	// the `ior` slot on subsurfacescattering_material / randomwalk_sss_material.
+	IScalarPainter* pEumelanin = 0;
+	if( wantEumelanin ) {
+		pEumelanin = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "eumelanin", eumelanin, /*requireSingle*/ true );
+		if( !pEumelanin ) {
+			safe_release( pSigmaA );
+			return false;
+		}
+	}
+
+	IScalarPainter* pPheomelanin = 0;
+	if( wantPheomelanin ) {
+		pPheomelanin = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "pheomelanin", pheomelanin, /*requireSingle*/ true );
+		if( !pPheomelanin ) {
+			safe_release( pSigmaA );
+			safe_release( pEumelanin );
+			return false;
+		}
+	}
+
+	IScalarPainter* pBetaM = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "beta_m", beta_m, /*requireSingle*/ true );
+	IScalarPainter* pBetaN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "beta_n", beta_n, /*requireSingle*/ true );
+	IScalarPainter* pAlpha = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "alpha",  alpha,  /*requireSingle*/ true );
+	IScalarPainter* pIOR   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "ior",    ior,    /*requireSingle*/ true );
+
+	// The three Yan 2017 medulla slots (docs/HAIR_FUR_DESIGN.md Phase 3).
+	// Same requireSingle=true discipline as beta_m / alpha / ior --
+	// HairScatteringBase::Resolve reads only `.v[0]` from each, and reads
+	// them ACHROMATICALLY (never GetValueAtNM), because the sampling pdf
+	// must stay wavelength independent.  They are always bound here (the
+	// descriptor defaults to the inline literals "0" / "0.5" / "0.4"), and
+	// a kappa of 0 -- the default -- makes HairBSDF take the pre-Phase-3
+	// path bit for bit.
+	IScalarPainter* pMedullaRatio   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_ratio",   medulla_ratio,   /*requireSingle*/ true );
+	IScalarPainter* pMedullaScatter = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_scatter", medulla_scatter, /*requireSingle*/ true );
+	IScalarPainter* pMedullaG       = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_material", name, "medulla_g",       medulla_g,       /*requireSingle*/ true );
+
+	if( !pBetaM || !pBetaN || !pAlpha || !pIOR ||
+	    !pMedullaRatio || !pMedullaScatter || !pMedullaG ) {
+		safe_release( pSigmaA );
+		safe_release( pEumelanin );
+		safe_release( pPheomelanin );
+		safe_release( pBetaM );
+		safe_release( pBetaN );
+		safe_release( pAlpha );
+		safe_release( pIOR );
+		safe_release( pMedullaRatio );
+		safe_release( pMedullaScatter );
+		safe_release( pMedullaG );
+		return false;
+	}
+
+	// PERFORMANCE, not semantics: pass a NULL kappa slot when the scene
+	// left `medulla_ratio` at its "0" default.  `HairScatteringBase::
+	// Resolve` skips the whole medulla block on a null pointer, so a
+	// human-hair material pays exactly the pre-Phase-3 per-hit cost --
+	// no painter virtual call on every value / valueNM / Pdf / Scatter,
+	// and three fewer painter allocations per material.  The result is
+	// bit-identical either way (HairBSDFTest group 15b renders both
+	// configurations and compares with ==), which is why this can be a
+	// pure optimisation.
+	//
+	// The three painters are still RESOLVED above, unconditionally, so
+	// a misbound `medulla_scatter` / `medulla_g` still gets its
+	// diagnostic even on a material whose medulla is off --
+	// HairMaterialChunkTest's medulla group pins exactly that.
+	const bool bMedullaOffByDefault =
+		( medulla_ratio && std::string( medulla_ratio ) == "0" );
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateHairMaterial( &pMaterial, pEumelanin, pPheomelanin, pSigmaA, pColor,
+		*pBetaM, *pBetaN, *pAlpha, *pIOR,
+		bMedullaOffByDefault ? 0 : pMedullaRatio, pMedullaScatter, pMedullaG );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+
+	safe_release( pMaterial );
+	safe_release( pSigmaA );
+	safe_release( pEumelanin );
+	safe_release( pPheomelanin );
+	safe_release( pBetaM );
+	safe_release( pBetaN );
+	safe_release( pAlpha );
+	safe_release( pIOR );
+	safe_release( pMedullaRatio );
+	safe_release( pMedullaScatter );
+	safe_release( pMedullaG );
+
+	return ok;
 }
 
 
@@ -2366,9 +7560,9 @@ bool Job::AddBoxGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateBoxGeometry( &pGeometry, width, height, depth );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a circular disk at the origin
@@ -2382,9 +7576,9 @@ bool Job::AddCircularDiskGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateCircularDiskGeometry( &pGeometry, radius, axis );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a clipped plane, defined by four points
@@ -2406,9 +7600,9 @@ bool Job::AddClippedPlaneGeometry(
 	pts[3] = Point3( ptD );
 	RISE_API_CreateClippedPlaneGeometry( &pGeometry, pts, doublesided );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a Cylinder at the origin
@@ -2417,15 +7611,16 @@ bool Job::AddCylinderGeometry(
 							 const char* name,				///< [in] Name of the geometry
 							 const char axis,				///< [in] (x|y|z) Which axis the cylinder is sitting on
 							 const double radius,			///< [in] Radius of the cylinder
-							 const double height			///< [in] Height of the cylinder
+							 const double height,			///< [in] Height of the cylinder
+							 const bool capped				///< [in] TRUE: closed solid (end caps); FALSE: open tube
 							 )
 {
 	IGeometry* pGeometry = 0;
-	RISE_API_CreateCylinderGeometry( &pGeometry, axis, radius, height );
+	RISE_API_CreateCylinderGeometry( &pGeometry, axis, radius, height, capped );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates an infinite plane that passes through the origin
@@ -2440,9 +7635,9 @@ bool Job::AddInfinitePlaneGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateInfinitePlaneGeometry( &pGeometry, xt, yt );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a sphere at the origin
@@ -2455,9 +7650,9 @@ bool Job::AddSphereGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateSphereGeometry( &pGeometry, radius );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates an ellipsoid at the origin
@@ -2470,9 +7665,9 @@ bool Job::AddEllipsoidGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateEllipsoidGeometry( &pGeometry, Vector3(radii) );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a torus at the origin
@@ -2486,13 +7681,463 @@ bool Job::AddTorusGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateTorusGeometry( &pGeometry, majorRad, minorRad );
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
+	return ok;
+}
+
+//! Adds a signed-distance-field (implicit) geometry from inline part lines
+//! (the normal path) or an external parts file (for very large SDFs).
+//! Construction (part-grammar parse + token validation + sphere-trace build)
+//! is delegated to the C-API factory RISE_API_CreateSDFGeometry -- the single
+//! construction boundary -- after applying the media-path search to the file
+//! name (inline parts need no path resolution).  The exactly-one-source rule
+//! is diagnosed HERE with the geometry's name so scene authors get chunk-level
+//! context; the factory re-checks it for direct C-API callers.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* szParts, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+	const bool hasParts = ( szParts && szParts[0] );
+	if( hasFile == hasParts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFGeometry:: `%s`: provide exactly one SDF source -- either inline `part` lines or a `file`%s",
+			name ? name : "(unnamed)",
+			hasFile ? " (both were given)" : " (neither was given)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFGeometry( &pGeometry,
+			hasFile ? GlobalMediaPathLocator().Find(szFileName).c_str() : 0,
+			hasParts ? szParts : 0,
+			maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged the source / line / token reason
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+//! Heightfield SDF geometry: the exact analytic surface z = scale*field(u,v),
+//! sphere-traced.  Resolves the named IFunction2D here (chunk-level context in
+//! the diagnostic), then delegates construction to the C-API factory
+//! RISE_API_CreateSDFHeightfieldGeometry.  Mirrors Job::AddSDFGeometry's
+//! manager-add + release lifetime; the field is addref'd by the geometry.
+bool Job::AddSDFHeightfieldGeometry( const char* name, const char* heightfieldFunction, const double radius, const double scale, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	IFunction2D* pField = pFunc2DManager->GetItem( heightfieldFunction ? heightfieldFunction : "" );
+	if( !pField ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFHeightfieldGeometry:: `%s`: heightfield function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", heightfieldFunction ? heightfieldFunction : "(none)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFHeightfieldGeometry( &pGeometry, pField, radius, scale, maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged why
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateCartesianDiskGeometry( &pGeometry, radius, meshN ) ) {
+		return false;   // the factory already logged why
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, const double scale, const double bias )
+{
+	IFunction2D* pFunc = pFunc2DManager->GetItem( szFunction ? szFunction : "" );
+	if( !pFunc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddFunction2DColorPainter:: `%s`: source function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szFunction ? szFunction : "(none)" );
+		return false;
+	}
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateFunction2DColorPainter( &pPainter, pFunc, scale, bias ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateSweepGeometry( &pGeometry, desc ) ) {
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `sweep_geometry: ` to whatever lands here.
+		// Without this a scene with several sweeps reports a factory-level
+		// refusal with no way to tell WHICH chunk it came from.  Mirrors
+		// AddLatheGeometry immediately below.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddLatheGeometry( const char* name, const LatheDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateLatheGeometry( &pGeometry, desc ) ) {
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `lathe_geometry: ` to whatever lands here.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddSkinGeometry( const char* name, const SkinDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateSkinGeometry( &pGeometry, desc ) ) {
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `skin_geometry: ` to whatever lands here.
+		// Identical to AddLatheGeometry immediately above.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+//! Creates a painter-driven hair groom (docs/HAIR_FUR_DESIGN.md
+//! section 5.3).  Resolves the four references and hands the resolved
+//! recipe to the construction API, which validates it and builds a
+//! HairGeometry in deferred-groom mode.
+//!
+//! PAINTER PIPE ROUTING, and why it is not uniform across the three
+//! slots (docs/ISCALARPAINTER_REFACTOR.md):
+//!   * `density` and `length_painter` are PHYSICAL SCALARS -- a [0,1]
+//!     mask and a length multiplier.  Neither is a colour, so both go
+//!     through IScalarPainter and never touch the JH spectral uplift.
+//!     They are read as `.v[0]`, so `requireSingle` is set: a
+//!     per-channel painter bound there gets the established targeted
+//!     diagnostic instead of silently dropping G and B.
+//!   * `comb` is a genuine COLOUR-typed painter, because its three
+//!     channels carry a DIRECTION (the normal-map convention
+//!     d = 2*rgb - 1).  It resolves against the IPainter manager so the
+//!     whole existing procedural-painter zoo -- perlin, voronoi,
+//!     domain-warp, an image of a hand-painted comb map -- works as a
+//!     comb field with no new painter code.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairGeometry( const char* name, const HairGroomDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	// The scene-language "not bound" spellings, in one place.
+	auto bound = []( const char* s ) -> bool {
+		return s && s[0] && strcmp( s, "none" ) != 0;
+	};
+
+	if( !bound( desc.baseGeometry ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometry:: `%s`: `base_geometry` is required -- hair grows on a surface", who );
+		return false;
+	}
+
+	IGeometry* pBase = pGeomManager->GetItem( desc.baseGeometry );
+	if( !pBase ) {
+		// KEPT AS DEFENCE-IN-DEPTH, and as the diagnostic that actually
+		// reaches a scene author.  Since the category split a `hair_guides`
+		// set carries ChunkCategory::HairGuides, so the GUI/agent connection
+		// checker already refuses a guide name dropped on `base_geometry`
+		// (a Geometry-typed port) at WIRE time.  Hand-authored scene TEXT
+		// never passes through that checker, though -- it arrives straight
+		// here -- and without this probe it would get a bare "not found"
+		// with no clue why: the name DID get declared, just into a different
+		// table.  So the check stays, and says so directly.
+		const bool isGuideSet = hairGuidesMap.find( desc.baseGeometry ) != hairGuidesMap.end();
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometry:: `%s`: base geometry `%s` not found (declare it first)%s",
+			who, desc.baseGeometry,
+			isGuideSet
+				? " -- note: that name is a hair_guides set; guides bind to `guides`, not `base_geometry`"
+				: "" );
+		return false;
+	}
+
+	IScalarPainter* pDensity = 0;
+	if( bound( desc.density ) ) {
+		pDensity = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_geometry", who, "density", desc.density, /*requireSingle*/ true );
+		if( !pDensity ) {
+			return false;
+		}
+	}
+
+	IScalarPainter* pLength = 0;
+	if( bound( desc.lengthPainter ) ) {
+		pLength = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "hair_geometry", who, "length_painter", desc.lengthPainter, /*requireSingle*/ true );
+		if( !pLength ) {
+			safe_release( pDensity );
+			return false;
+		}
+	}
+
+	IPainter* pComb = 0;
+	if( bound( desc.comb ) ) {
+		pComb = pPntManager->GetItem( desc.comb );
+		if( !pComb ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHairGeometry:: `%s`: `comb` painter `%s` not found", who, desc.comb );
+			safe_release( pDensity );
+			safe_release( pLength );
+			return false;
+		}
+	}
+
+	HairGroomRecipe recipe;
+	recipe.pBase        = pBase;
+	recipe.pDensity     = pDensity;
+	recipe.pLengthScale = pLength;
+	recipe.pComb        = pComb;
+	recipe.p            = desc.p;
+
+	// `guides` resolves against the Job-side guide table (a `hair_guides`
+	// chunk), not against any manager -- see IJob::AddHairGuides.  The
+	// recipe BORROWS the stored arrays; HairGeometry's constructor deep-
+	// copies them, so the borrow does not outlive this call.
+	if( bound( desc.guides ) ) {
+		std::map<String, HairGuideStore>::const_iterator gi = hairGuidesMap.find( desc.guides );
+		if( gi == hairGuidesMap.end() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHairGeometry:: `%s`: `guides` set `%s` not found -- declare a `hair_guides` chunk "
+				"of that name BEFORE this one", who, desc.guides );
+			safe_release( pDensity );
+			safe_release( pLength );
+			return false;
+		}
+		recipe.guidePoints      = &gi->second.points[0];
+		recipe.guidePointCounts = &gi->second.counts[0];
+		recipe.numGuides        = (unsigned int)gi->second.counts.size();
+		// D35: RESOLVED guide set (hairGuidesMap bypasses GenericManager)
+		if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &gi->second ) );
+	}
+
+	IGeometry* pGeometry = 0;
+	const bool built = RISE_API_CreateHairGeometryGroom( &pGeometry, recipe, who );
+
+	// ResolveOrDiagnoseScalar hands back an OWNED reference (unlike
+	// GetItem, which is borrowed -- hence no release for pBase / pComb),
+	// and HairGeometry's constructor took its own addref on everything
+	// it kept, so ours go back regardless of the outcome.
+	safe_release( pDensity );
+	safe_release( pLength );
+
+	if( !built || !pGeometry ) {
+		// The factory logged the specific parameter that failed.
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddHairGuides( const char* name, const HairGuidesDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	if( !name || !name[0] ) {
+		GlobalLog()->Print( eLog_Error, "Job::AddHairGuides:: a guide set needs a `name`" );
+		return false;
+	}
+
+	// Same "unique within their kind" contract the manager-backed adders
+	// get from GenericManager::AddItem, spelled out here because this
+	// table -- like mediaMap -- bypasses that chokepoint.
+	if( hairGuidesMap.find( name ) != hairGuidesMap.end() ) {
+		DiagDuplicateName( "hair guide set", name );
+		return false;
+	}
+
+	// Validated with the SAME function the generator's recipe check calls,
+	// so an author gets the identical diagnostic whether they arrived
+	// through the chunk or through the direct RISE_API recipe.
+	if( !ValidateHairGuides( desc, who ) ) {
+		return false;
+	}
+
+	std::size_t totalPoints = 0;
+	for( unsigned int g = 0; g < desc.numGuides; ++g ) {
+		totalPoints += desc.pointCounts[g];
+	}
+
+	HairGuideStore store;
+	store.counts.assign( desc.pointCounts, desc.pointCounts + desc.numGuides );
+	store.points.assign( desc.points, desc.points + totalPoints * 3 );
+	hairGuidesMap[name] = store;
+
+	// D35: PRODUCED guide set (hairGuidesMap bypasses GenericManager).
+	// std::map node stability is what makes this address a durable key.
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( &hairGuidesMap[name] ) );
+
 	return true;
+}
+
+//! Adds an IMPORTED hair groom -- the `file` half of the
+//! `hair_geometry` chunk (Phase 2).  The whole of the work is in the
+//! factory (which reads and validates the file) and in
+//! `HairFileLoader`; this function's own job is the two things every
+//! `Add*` does: name the authoring chunk in the diagnostic, and
+//! register the result.
+//!
+//! Deliberately NOT sharing a body with `AddHairGeometry`: the two
+//! modes resolve nothing in common (that one looks up a base geometry
+//! and up to three painters against three managers; this one resolves
+//! a path against the media-path locator), so a shared body would be
+//! two disjoint branches under one name.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddHairGeometryFromFile( const char* name, const HairFileGroomDescriptor& desc )
+{
+	const char* who = name ? name : "(unnamed)";
+
+	if( !desc.file || !desc.file[0] || strcmp( desc.file, "none" ) == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddHairGeometryFromFile:: `%s`: `file` is required -- name a .hair file to import", who );
+		return false;
+	}
+
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateHairGeometryFromFile( &pGeometry, desc, who ) || !pGeometry ) {
+		// The loader logged the specific reason (bad magic, truncated,
+		// over a cap, every strand rejected...).
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
+{
+	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );
+	if( !pTemplate ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPathInstancesGeometry:: `%s`: template geometry `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szTemplate ? szTemplate : "(none)" );
+		return false;
+	}
+	PathInstancesDescriptor d = desc;
+	d.pGeometry = pTemplate;
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreatePathInstancesGeometry( &pGeometry, d ) ) {
+		return false;   // the factory already logged why
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
 }
 
 //! Adds a triangle mesh geometry from the pointers passed it
 /// \return TRUE if successful, FALSE otherwise
+bool Job::AddIndexedTriangleMeshGeometryWithTangents(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents)
+{ return AddIndexedMeshDirections(name,vertices,normals,coords,vertexface,uvwface,normalface,numpts,numnormals,numcoords,numfaces,double_sided,face_normals,corner_tangents,numtangents,false); }
+
+bool Job::AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents)
+{ return AddIndexedMeshDirections(name,vertices,normals,coords,vertexface,uvwface,normalface,numpts,numnormals,numcoords,numfaces,double_sided,face_normals,corner_tangents,numtangents,true); }
+
+bool Job::AddIndexedMeshDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents, const bool shader_direction)
+{
+    if (!corner_tangents && !numtangents) {
+        return AddIndexedTriangleMeshGeometry(name, vertices, normals, coords, vertexface,
+            uvwface, normalface, numpts, numnormals, numcoords, numfaces, double_sided, face_normals);
+    }
+    if (!name || !vertices || !vertexface || !corner_tangents || !numfaces ||
+        numfaces > std::numeric_limits<unsigned int>::max()/3 || numtangents != numfaces*3) return false;
+    for (unsigned int c=0; c<numtangents; ++c) {
+        const float* t=corner_tangents+c*4;
+        if (vertexface[c]>=numpts || (normals && !face_normals && (!normalface || normalface[c]>=numnormals)) ||
+            (coords && (!uvwface || uvwface[c]>=numcoords)) ||
+            !std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2]) ||
+            (t[0]==0 && t[1]==0 && t[2]==0) || (t[3]!=1 && t[3]!=-1)) return false;
+    }
+    ITriangleMeshGeometryIndexed* geometry=0;
+    RISE_API_CreateTriangleMeshGeometryIndexed(&geometry, double_sided, face_normals);
+    ITriangleMeshGeometryIndexed4* mesh=dynamic_cast<ITriangleMeshGeometryIndexed4*>(geometry);
+    if (!mesh) { safe_release(geometry); return false; }
+    // Compute smooth normals on the ORIGINAL topology before corner expansion.
+    NormalsListType generatedNormals;
+    if (!normals && !face_normals) {
+        VerticesListType positions; IndexTriangleListType triangles;
+        for (unsigned int v=0; v<numpts; ++v) positions.push_back(Vertex(vertices[v*3],vertices[v*3+1],vertices[v*3+2]));
+        for (unsigned int f=0; f<numfaces; ++f) triangles.push_back(MakeIndexedTriangleSameIdx(vertexface[f*3],vertexface[f*3+1],vertexface[f*3+2]));
+        if (!CalculateVertexNormals(triangles,generatedNormals,positions)) { safe_release(geometry); return false; }
+    }
+    mesh->BeginIndexedTriangles();
+    for (unsigned int c=0; c<numtangents; ++c) {
+        const unsigned int v=vertexface[c];
+        mesh->AddVertex(Vertex(vertices[v*3],vertices[v*3+1],vertices[v*3+2]));
+        if (normals && !face_normals) {
+            const unsigned int n=normalface[c];
+            mesh->AddNormal(Normal(normals[n*3],normals[n*3+1],normals[n*3+2]));
+        }
+        if (!normals && !face_normals) mesh->AddNormal(generatedNormals[v]);
+        if (coords) {
+            const unsigned int u=uvwface[c]; mesh->AddTexCoord(TexCoord(coords[u*3],coords[u*3+1]));
+        } else mesh->AddTexCoord(TexCoord(0,0));
+        Tangent4 t; t.dir=Vector3(corner_tangents[c*4],corner_tangents[c*4+1],corner_tangents[c*4+2]);
+        t.bitangentSign=corner_tangents[c*4+3];
+        if (shader_direction) mesh->AddShaderDirection(t.dir); else mesh->AddTangent(t);
+    }
+    for (unsigned int f=0; f<numfaces; ++f) {
+        IndexedTriangle t;
+        for (unsigned int k=0; k<3; ++k) t.iVertices[k]=t.iNormals[k]=t.iCoords[k]=f*3+k;
+        mesh->AddIndexedTriangle(t);
+    }
+    mesh->DoneIndexedTriangles();
+    const bool ok=AddPrebuiltTriangleMeshGeometry(name,mesh); safe_release(geometry); return ok;
+}
+
 bool Job::AddIndexedTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const float* vertices,					///< [in] List of vertices
@@ -2505,10 +8150,7 @@ bool Job::AddIndexedTriangleMeshGeometry(
 					const unsigned int numnormals,			///< [in] Number of normals
 					const unsigned int numcoords,			///< [in] Number of texture co-ordinate points
 					const unsigned int numfaces,			///< [in] Number of faces
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
@@ -2517,7 +8159,7 @@ bool Job::AddIndexedTriangleMeshGeometry(
 	}
 
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	pGeometry->BeginIndexedTriangles();
 
@@ -2577,15 +8219,12 @@ bool Job::AddIndexedTriangleMeshGeometry(
 bool Job::Add3DSTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* filename,					///< [in] The 3DS file to load
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	IReadBuffer* pBuffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &pBuffer, filename );
@@ -2595,7 +8234,7 @@ bool Job::Add3DSTriangleMeshGeometry(
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -2610,21 +8249,18 @@ bool Job::Add3DSTriangleMeshGeometry(
 bool Job::AddRAWTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+					const bool double_sided					///< [in] Are the triangles double sided ?
 					)
 {
 	ITriangleMeshGeometry* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometry( &pGeometry, max_polys, max_recur, double_sided, use_bsp );
+	RISE_API_CreateTriangleMeshGeometry( &pGeometry, double_sided );
 
 	ITriangleMeshLoader* pLoader = 0;
 	RISE_API_CreateRAWTriangleMeshLoader( &pLoader, szFileName );
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -2640,22 +8276,19 @@ bool Job::AddRAWTriangleMeshGeometry(
 bool Job::AddRAW2TriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	ITriangleMeshLoaderIndexed* pLoader = 0;
 	RISE_API_CreateRAW2TriangleMeshLoader( &pLoader, szFileName );
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
@@ -2664,78 +8297,147 @@ bool Job::AddRAW2TriangleMeshGeometry(
 	return bRet;
 }
 
-
-//! Creates a triangle mesh geometry from a series of bezier patches
-/// \return TRUE if successful, FALSE otherwise
-/// \todo this is deprecated and should be removed
-bool Job::AddBezierTriangleMeshGeometry(
-					const char* name,						///< [in] Name of the geometry
-					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int detail,				///< [in] Level of tesselation
-					const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-					const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-					const bool face_normals,				///< [in] Use face normals rather than vertex normals
-					const char* displacement,				///< [in] Displacement function for static displacement mapping
-					const double disp_scale					///< [in] Displacement scale factor
-					)
-{
-	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
-
-	IFunction2D* pFunc = 0;
-	if( displacement ) {
-		pFunc = pFunc2DManager->GetItem( displacement );
-		if( !pFunc ) {
-			GlobalLog()->PrintEx( eLog_Error, "Job::AddBezierTriangleMeshGeometry:: Displacement function `%s` not found", displacement );
-		}
-	}
-
-	ITriangleMeshLoaderIndexed* pLoader = 0;
-	RISE_API_CreateBezierTriangleMeshLoader( &pLoader, szFileName, detail, bCombineSharedVertices, bCenterObject, pFunc, disp_scale );
-
-	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
-	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
-	}
-
-	safe_release( pGeometry );
-
-	safe_release( pLoader );
-	return bRet;
-}
 
 //! Creates a triangle mesh geometry from a ply file
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPLYTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool bInvertFaces,				///< [in] Should the faces be inverted?
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	ITriangleMeshLoaderIndexed* pLoader = 0;
 	RISE_API_CreatePLYTriangleMeshLoader( &pLoader, szFileName, bInvertFaces );
 
 	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
 	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+		bRet = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	}
 
 	safe_release( pGeometry );
 
 	safe_release( pLoader );
 	return bRet;
+}
+
+//! Imports a glTF 2.0 scene.  Constructs a GLTFSceneImporter (which runs
+//! the cgltf parse + buffer-load + validate once) and delegates to
+//! ImportScene.  See docs/GLTF_IMPORT.md and Importers/GLTFSceneImporter.h
+//! for the design.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::ImportGLTFScene(
+					const char* filename,
+					const char* name_prefix,
+					const unsigned int scene_index,
+					const bool import_meshes,
+					const bool import_materials,
+					const bool import_lights,
+					const bool import_cameras,
+					const bool import_normal_maps,
+					const bool lowmem_textures,
+					const double lights_intensity_override,
+					const double directional_intensity_override,
+					const double point_intensity_override,
+					const double spot_intensity_override,
+					const bool respect_baked_occlusion,
+					const double emissive_intensity_scale,
+					const double emissive_tint_r,
+					const double emissive_tint_g,
+					const double emissive_tint_b
+					)
+{
+	// Prefix-collision guard (the "clean named diagnostic" layer -- see Job.h's
+	// mGltfImportPrefixes doc).  Every entity this importer registers is keyed off
+	// `name_prefix` (gltf.pnt.*, gltf.mat.0, gltf.geom.m0.p0, __pbrmr_* ...), so TWO
+	// imports sharing a prefix in the same derive would silently race every one of
+	// those GenericManager::AddItem calls -- the second import's entities lose and
+	// vanish, and (pre-fix) ImportScene's unconditional `return true` hid it entirely.
+	// Distinct prefixes are the supported multi-import idiom (sponza_new_ivy.RISEscene
+	// carries 2+ with an in-file comment blessing it) -- only a REPEAT prefix is refused.
+	// Checked BEFORE constructing the importer (no need to even open the file) so the
+	// failure is cheap and the diagnostic is precise.
+	const std::string prefixKey = ( name_prefix && name_prefix[0] ) ? name_prefix : "gltf";
+	if( !mGltfImportPrefixes.insert( prefixKey ).second ) {
+		char msg[256];
+		// NOTE: no "gltf_import: " prefix here -- DeriveToJob's PASS-2 apply loop
+		// (Cst.cpp) already prepends `<keyword>: ` to whatever this sink carries.
+		std::snprintf( msg, sizeof( msg ),
+			"name_prefix '%s' collides with an existing import -- give each import a unique name_prefix",
+			prefixKey.c_str() );
+		GlobalLog()->PrintEx( eLog_Error, "Job::ImportGLTFScene:: gltf_import: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
+	GLTFSceneImporter importer( filename );
+	if( !importer.IsValid() ) {
+		return false;	// constructor already logged the parse failure
+	}
+	GLTFImportOptions opts;
+	opts.namePrefix             = name_prefix;
+	opts.sceneIndex             = scene_index;
+	opts.importMeshes           = import_meshes;
+	opts.importMaterials        = import_materials;
+	opts.importLights           = import_lights;
+	opts.importCameras          = import_cameras;
+	opts.importNormalMaps       = import_normal_maps;
+	opts.lowmemTextures         = lowmem_textures;
+	opts.lightsIntensityOverride       = lights_intensity_override;
+	opts.directionalIntensityOverride  = directional_intensity_override;
+	opts.pointIntensityOverride        = point_intensity_override;
+	opts.spotIntensityOverride         = spot_intensity_override;
+	opts.respectBakedOcclusion         = respect_baked_occlusion;
+	opts.emissiveIntensityScale        = emissive_intensity_scale;
+	opts.emissiveTint[0]               = emissive_tint_r;
+	opts.emissiveTint[1]               = emissive_tint_g;
+	opts.emissiveTint[2]               = emissive_tint_b;
+	return importer.ImportScene( *this, opts );
+}
+
+//! Creates a triangle mesh geometry from a single primitive of a glTF 2.0
+//! file (.gltf or .glb).  This is the entry point used by the
+//! `gltf_geometry` chunk parser; the bulk `gltf_import` chunk goes through
+//! ImportGLTFScene above.  Both routes go through the same
+//! GLTFSceneImporter — the cgltf parse runs once per call, in the
+//! importer's constructor.  See docs/GLTF_IMPORT.md for the phased plan.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGLTFTriangleMeshGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szFileName,					///< [in] .gltf or .glb file to load
+					const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+					const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+					const bool double_sided,				///< [in] Are the triangles double sided?
+					const bool face_normals,				///< [in] Use face normals rather than vertex normals
+					const bool flip_v						///< [in] Flip TEXCOORD V at load
+					)
+{
+	GLTFSceneImporter importer( szFileName );
+	if( !importer.IsValid() ) {
+		return false;	// constructor already logged the parse failure
+	}
+	return importer.ImportPrimitive(
+		*this, name, mesh_index, primitive_index,
+		double_sided, face_normals, flip_v );
+}
+
+bool Job::AddPrebuiltTriangleMeshGeometry(
+					const char* name,
+					ITriangleMeshGeometryIndexed* pGeom
+					)
+{
+	if( !name || !pGeom ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddPrebuiltTriangleMeshGeometry:: NULL name or geometry" );
+		return false;
+	}
+	// pGeomManager->AddItem refcounts the geometry; the caller retains
+	// its own reference and is responsible for releasing it.
+	return pGeomManager->AddItem( pGeom, name );
 }
 
 //! Creates a mesh from a .risemesh file
@@ -2748,7 +8450,7 @@ bool Job::AddRISEMeshTriangleMeshGeometry(
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, 0, 0, false, true, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, false, face_normals );
 
 	bool bLoaded = false;
 
@@ -2801,24 +8503,15 @@ bool Job::AddRISEMeshTriangleMeshGeometry(
 	return bRet;
 }
 
-//! Creates a bezier patch geometry
+//! Creates a bezier patch geometry (analytic rendering always).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddBezierPatchGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-					const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-					const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-					const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-					const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-					const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-					const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-					const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-					const unsigned int detail,				///< [in] Level of tesselation for polygons
-					const char* displacement,				///< [in] Displacement function for static displacement mapping
-					const double disp_scale					///< [in] Displacement scale factor
+					const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+					const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+					const bool use_bsp,						///< [in] Use BSP tree (true) or Octree (false) for the patch accelerator
+					const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 					)
 {
 	FILE* inputFile = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "r" );
@@ -2828,16 +8521,12 @@ bool Job::AddBezierPatchGeometry(
 		return false;
 	}
 
-	IFunction2D* pFunc = 0;
-	if( displacement ) {
-		pFunc = pFunc2DManager->GetItem( displacement );
-		if( !pFunc ) {
-			GlobalLog()->PrintEx( eLog_Error, "Job::AddBezierPatchGeometry:: Displacement function `%s` not found", displacement );
-		}
-	}
-
 	IBezierPatchGeometry* pGeometry = 0;
-	RISE_API_CreateBezierPatchGeometry( &pGeometry, max_patches, max_recur, use_bsp, bAnalytic, cache_size, max_polys, max_poly_recursion, bDoubleSided, bPolyUseBSP, bUseFaceNormals, detail, pFunc, disp_scale );
+	RISE_API_CreateBezierPatchGeometry( &pGeometry, max_patches, max_recur, use_bsp );
+
+	// Load all patches first so we can optionally recenter them before
+	// handing them to the geometry's BSP/Octree build in Prepare().
+	BezierPatchesListType loadedPatches;
 
 	char line[4096] = {0};
 
@@ -2846,6 +8535,7 @@ bool Job::AddBezierPatchGeometry(
 		// patches are dealing with here
 		unsigned int	numPatches = 0;
 		sscanf( line, "%u", &numPatches );
+		loadedPatches.reserve( numPatches );
 
 		for( unsigned int i=0; i<numPatches; i++ )
 		{
@@ -2856,7 +8546,9 @@ bool Job::AddBezierPatchGeometry(
 				for( int k=0; k<4; k++ ) {
 					double x, y, z;
 					if( fscanf( inputFile, "%lf %lf %lf", &x, &y, &z ) == EOF ) {
-						GlobalLog()->PrintSourceError( "TriangleMeshLoaderBezier:: Fatal error while reading file.  Nothing will be loaded", __FILE__, __LINE__ );
+						GlobalLog()->PrintSourceError( "Job::AddBezierPatchGeometry:: Fatal error while reading file.  Nothing will be loaded", __FILE__, __LINE__ );
+						fclose( inputFile );
+						safe_release( pGeometry );
 						return false;
 					}
 
@@ -2864,15 +8556,53 @@ bool Job::AddBezierPatchGeometry(
 				}
 			}
 
-			pGeometry->AddPatch( patch );
+			loadedPatches.push_back( patch );
+		}
+
+		// Recenter the object around the origin by shifting every control
+		// point by -bbox_center.  Mirrors the mesh-path CenterObject() in
+		// GeometryUtilities — operating on control points is equivalent
+		// because the Bezier surface lies inside the convex hull of its
+		// control net, so the bbox of control points bounds the surface.
+		if( bCenterObject && !loadedPatches.empty() ) {
+			Point3 vMin(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY );
+			Point3 vMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+			for( BezierPatchesListType::const_iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+				for( int j = 0; j < 4; j++ ) {
+					for( int k = 0; k < 4; k++ ) {
+						const Point3& p = it->c[j].pts[k];
+						if( p.x < vMin.x ) vMin.x = p.x;
+						if( p.y < vMin.y ) vMin.y = p.y;
+						if( p.z < vMin.z ) vMin.z = p.z;
+						if( p.x > vMax.x ) vMax.x = p.x;
+						if( p.y > vMax.y ) vMax.y = p.y;
+						if( p.z > vMax.z ) vMax.z = p.z;
+					}
+				}
+			}
+			const Point3 center = Point3Ops::WeightedAverage2( vMax, vMin, 0.5 );
+			const Vector3 offset = Vector3Ops::mkVector3( center, Point3(0,0,0) );
+			for( BezierPatchesListType::iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+				for( int j = 0; j < 4; j++ ) {
+					for( int k = 0; k < 4; k++ ) {
+						it->c[j].pts[k] = Point3Ops::mkPoint3( it->c[j].pts[k], -offset );
+					}
+				}
+			}
+		}
+
+		for( BezierPatchesListType::const_iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+			pGeometry->AddPatch( *it );
 		}
 
 		pGeometry->Prepare();
 	}
 
-	pGeomManager->AddItem( pGeometry, name );
+	fclose( inputFile );
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
 }
 
 //! Creates a bilinear patch geometry
@@ -2926,13 +8656,129 @@ bool Job::AddBilinearPatchGeometry(
 		pGeometry->Prepare();
 	}
 
-	pGeomManager->AddItem( pGeometry, name );
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
 	safe_release( pGeometry );
-	return true;
+	return ok;
+}
+
+bool Job::AddDisplacedGeometry(
+	const char*         name,
+	const char*         base_geometry_name,
+	const unsigned int  detail,
+	const char*         displacement,
+	const Scalar        disp_scale,
+	const bool          double_sided,
+	const bool          face_normals,
+	const bool          seam_fold
+	)
+{
+	// The pre-2026-09-06 entry point, kept VERBATIM in signature (IJob's
+	// vtable is append-only) and reduced to a forward: one implementation,
+	// so the IFunction2D route cannot drift between the two doors.
+	return AddDisplacedGeometryWithHeight(
+		name, base_geometry_name, detail, displacement, /*height*/ 0,
+		disp_scale, double_sided, face_normals, seam_fold );
+}
+
+bool Job::AddDisplacedGeometryWithHeight(
+	const char*         name,
+	const char*         base_geometry_name,
+	const unsigned int  detail,
+	const char*         displacement,
+	const char*         height,
+	const Scalar        disp_scale,
+	const bool          double_sided,
+	const bool          face_normals,
+	const bool          seam_fold
+	)
+{
+	if( !name || !base_geometry_name ) {
+		GlobalLog()->Print( eLog_Error, "Job::AddDisplacedGeometry:: name and base_geometry are required" );
+		return false;
+	}
+
+	// "none" is the parser's absent-parameter sentinel on both slots.
+	const bool bHasDisplacement = ( displacement && displacement[0] && strcmp( displacement, "none" ) != 0 );
+	const bool bHasHeight       = ( height       && height[0]       && strcmp( height,       "none" ) != 0 );
+
+	// MUTUAL EXCLUSION, refused by NAME.  Two height sources with one
+	// `disp_scale` has no defensible resolution -- summing them is not what
+	// either author meant, and silently preferring one is the
+	// plausible-looking wrong answer.  The diagnostic names BOTH parameters
+	// and says which is which, because the failure is almost always a
+	// half-finished migration from the UV route to the field route.
+	if( bHasDisplacement && bHasHeight ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"displaced_geometry `%s`: `displacement` (`%s`) and `height` (`%s`) are mutually exclusive -- "
+			"spell exactly one.  `displacement` is the UV route: an IFunction2D sampled as f(u,v).  "
+			"`height` is the FIELD route: an IScalarPainter evaluated at each vertex's object-space "
+			"position, which is what lets ONE scalar_painter drive both this displacement and a "
+			"relief_modifier on the same object.  `disp_scale` applies to whichever you keep.",
+			name, displacement, height );
+		return false;
+	}
+
+	IGeometry* pBase = pGeomManager->GetItem( base_geometry_name );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: base geometry `%s` not found", base_geometry_name );
+		return false;
+	}
+
+	IFunction2D* pFunc = 0;
+	if( bHasDisplacement ) {
+		pFunc = pFunc2DManager->GetItem( displacement );
+		if( !pFunc ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: displacement function `%s` not found", displacement );
+			return false;
+		}
+	}
+
+	// Height is a LENGTH, a physical scalar -- never a colour, so it must
+	// not pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
+	// standing three-way diagnostic (per-channel painter in a single-scalar
+	// slot / an IPainter name bound to a scalar slot, with the
+	// `scalar_painter { painter X channel R }` fix / an unknown name).
+	// requireSingle: the vertex offset reads `.v[0]` only.
+	IScalarPainter* pHeight = 0;
+	if( bHasHeight ) {
+		pHeight = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager,
+			"displaced_geometry", name, "height", height, /*requireSingle*/ true );
+		if( !pHeight ) {
+			return false;
+		}
+	}
+
+	IGeometry* pGeometry = 0;
+	const bool bOK = RISE_API_CreateDisplacedGeometry(
+		&pGeometry, pBase, detail, pFunc, disp_scale,
+		double_sided, face_normals, seam_fold, pHeight );
+
+	// The geometry addref'd the height painter (or refused, in which case
+	// nobody did); either way this local reference is done.
+	safe_release( pHeight );
+
+	if( !bOK || !pGeometry ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
 }
 
 //
 //  Adds lights
+//
+//  COLOUR CONVENTION (2026-09-02).  `color` is LINEAR (Rec.709) unless
+//  `colorspace` says otherwise -- the same reading uniformcolor_painter
+//  and every emissive material's exitance already had.  These four used
+//  to gamma-DECODE the triple as sRGB unconditionally, so an authored
+//  `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033).  The
+//  conversion goes through the SAME ColorSpaceNameToRISEPel switch the
+//  painters use, so a light and a painter given the same `colorspace`
+//  land on the same RISEPel.
 //
 
 //! Creates a infinite point omni light, located at the origin
@@ -2940,18 +8786,25 @@ bool Job::AddBilinearPatchGeometry(
 bool Job::AddPointOmniLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double pos[3],									///< [in] Position of the light
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddPointOmniLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), shootPhotons );
+	RISE_API_CreatePointOmniLight( &pLight, power, c, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Creates a infinite point spot light
@@ -2959,7 +8812,8 @@ bool Job::AddPointOmniLight(
 bool Job::AddPointSpotLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double foc[3],									///< [in] Point the center of the light is focussing on
 	const double inner,										///< [in] Angle of the inner cone in radians
 	const double outer,										///< [in] Angle of the outer cone in radians
@@ -2967,13 +8821,19 @@ bool Job::AddPointSpotLight(
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddPointSpotLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb), Point3(foc), inner, outer, shootPhotons );
+	RISE_API_CreatePointSpotLight( &pLight, power, c, Point3(foc), inner, outer, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Creates the ambient light
@@ -2981,14 +8841,21 @@ bool Job::AddPointSpotLight(
 bool Job::AddAmbientLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddAmbientLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreateAmbientLight( &pLight, power, sRGBPel(srgb) );
-	pLightManager->AddItem( pLight, name );
+	RISE_API_CreateAmbientLight( &pLight, power, c );
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //! Adds an infinite directional light, shining in a particular direction
@@ -2996,15 +8863,22 @@ bool Job::AddAmbientLight(
 bool Job::AddDirectionalLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double dir[3]										///< [in] Direction of the light
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddDirectionalLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreateDirectionalLight( &pLight, power, sRGBPel(srgb), Vector3(dir) );
-	pLightManager->AddItem( pLight, name );
+	RISE_API_CreateDirectionalLight( &pLight, power, c, Vector3(dir) );
+	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
-	return true;
+	return ok;
 }
 
 //
@@ -3036,13 +8910,34 @@ bool Job::AddPiecewiseLinearFunction(
 	IPainter* pPainter = 0;
 	RISE_API_CreateFunction1DSpectralPainter( &pPainter, *pFunction );
 
-	pPntManager->AddItem( pPainter, name );
+	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "function" );
 	safe_release( pPainter );
 
-	pFunc1DManager->AddItem( pFunction, name );
+	if( ok ) {
+		pFunc1DManager->AddItem( pFunction, name );   // primary's source func1D, gated on the painter add; its own bool stays intentionally unchecked -- a remove-then-re-add leaves a stale func1D (documented known limitation; see RemovePainter)
+		if( pFunc1DManager->GetItem(name) == pFunction ) {
+			RISECBOR64::Value::Values controlPoints;
+			controlPoints.reserve(num);
+			for( unsigned int i=0; i<num; ++i ) {
+				controlPoints.push_back(RISECBOR64::Value::ArrayValue({
+					RISECBOR64::Value::Float(x[i]),
+					RISECBOR64::Value::Float(y[i]) }));
+			}
+			RISECBOR64::Bytes definitionRecord;
+			const bool definitionEncoded = FireCanonicalRecord({
+				{ "control_points", RISECBOR64::Value::ArrayValue(controlPoints) },
+				{ "lut_size", RISECBOR64::Value::Unsigned(lutsize) },
+				{ "use_lut", RISECBOR64::Value::Bool(bUseLUTs) }
+			},"piecewise_linear_function_1d_authoring","1D function authoring",
+				definitionRecord);
+			if( definitionEncoded ) {
+				fireFunction1DDefinitionRecords[pFunction] = definitionRecord;
+			}
+		}
+	}
 	safe_release( pFunction );
 
-	return true;
+	return ok;
 }
 
 //! Adds a 2D piecewise linear function built up of other functions
@@ -3055,6 +8950,8 @@ bool Job::AddPiecewiseLinearFunction2D(
 {
 	IPiecewiseFunction2D* pFunction = 0;
 	RISE_API_CreatePiecewiseLinearFunction2D( &pFunction );
+	const auto release = []( IPiecewiseFunction2D* function ) { function->release(); };
+	std::unique_ptr<IPiecewiseFunction2D, decltype(release)> function( pFunction, release );
 
 	for( unsigned int i=0; i<num; i++ ) {
 		IFunction1D* pFunc = pFunc1DManager->GetItem( y[i] );
@@ -3062,19 +8959,25 @@ bool Job::AddPiecewiseLinearFunction2D(
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddPiecewiseLinearFunction2D:: Failed to find function '%s'", y[i] );
 			return false;
 		}
-		pFunction->addControlPoint( x[i], pFunc );
+		function->addControlPoint( x[i], pFunc );
 	}
 
-	pFunc2DManager->AddItem( pFunction, name );
-	safe_release( pFunction );
-
-	return true;
+	return RegisterOrDiag( pFunc2DManager, function.get(), name, "function" );
 }
 
 //
 // Adding modifiers
 //
 
+//! LEGACY SHIM (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  The `bumpmap_modifier`
+//! chunk and the `BumpMap` class were removed 2026-09-06; this virtual's
+//! SIGNATURE is ABI-frozen (the Blender bridge calls it), so it stays and
+//! registers a `ReliefModifier` in the UV domain instead.  The amplitude fold
+//! and the `window <= 0` inert case live in `RISE_API_CreateBumpMapModifierEx`
+//! -- one place, so the shim and the chunk-level migrator cannot drift.  New
+//! in-tree callers want `Job::AddReliefModifierEx` (the plain
+//! `Job::AddReliefModifier` is itself only a no-clamp forwarding shim, kept
+//! for ABI -- see its own comment below).
 bool Job::AddBumpMapModifier(
 	const char* name,										///< [in] Name of the modifiers
 	const char* func,										///< [in] The function to use as the bump generator
@@ -3090,26 +8993,651 @@ bool Job::AddBumpMapModifier(
 	IRayIntersectionModifier* pModifier = 0;
 	RISE_API_CreateBumpMapModifier( &pModifier, *pFunc, scale, window );
 
-	pModManager->AddItem( pModifier, name );
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
 	safe_release( pModifier );
-	return true;
+	return ok;
+}
+
+bool Job::AddNormalMapModifier(
+	const char* name,										///< [in] Name of the modifier
+	const char* painter,									///< [in] Linear-RGB normal-map painter
+	const double scale										///< [in] glTF normalTexture.scale
+	)
+{
+	IPainter* pPainter = pPntManager->GetItem( painter );
+	if( !pPainter ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddNormalMapModifier:: painter `%s` not found", painter );
+		return false;
+	}
+
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateNormalMapModifier( &pModifier, *pPainter, scale );
+
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return ok;
+}
+
+bool Job::AddGlintModifier(
+	const char* name,										///< [in] Name of the modifier
+	const double density,									///< [in] cells per object-space unit; <= 0 inert
+	const double coverage,									///< [in] per-cell facet existence probability [0,1]
+	const double fill,										///< [in] facet disc radius fraction of the half-cell (0,1]; <= 0 inert
+	const double spread,									///< [in] facet tilt Rayleigh scale in DEGREES; <= 0 inert
+	const double scale[3],									///< [in] anisotropic cell stretch
+	const double shift[3],									///< [in] cell-space offset
+	const unsigned int seed									///< [in] hash seed
+	)
+{
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateGlintModifier( &pModifier, density, coverage, fill, spread,
+		Vector3( scale[0], scale[1], scale[2] ),
+		Vector3( shift[0], shift[1], shift[2] ),
+		seed );
+
+	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return ok;
+}
+
+bool Job::AddReliefModifier(
+	const char* name,										///< [in] Name of the modifier
+	const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+	const double scale,										///< [in] Amplitude
+	const char* domain,										///< [in] "surface" (default) or "uv"
+	const double step										///< [in] Central-difference half-step; <= 0 = auto
+	)
+{
+	// maxSlope 0 -- no clamp.  This signature predates the clamp and is
+	// kept verbatim because IJob's vtable is append-only; every scene and
+	// caller that never mentions `max_slope` lands here and gets exactly
+	// the behaviour it always had.
+	return AddReliefModifierEx( name, height, scale, domain, step, 0.0 );
+}
+
+bool Job::AddReliefModifierEx(
+	const char* name,										///< [in] Name of the modifier
+	const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+	const double scale,										///< [in] Amplitude
+	const char* domain,										///< [in] "surface" (default) or "uv"
+	const double step,										///< [in] Central-difference half-step; <= 0 = auto
+	const double maxSlope									///< [in] Tilt bound as a slope; 0 = unclamped, negative refused
+	)
+{
+	// `domain` first: a typo here is an authoring mistake with a silent,
+	// plausible-looking wrong answer (a 3D field sampled in UV reads flat
+	// on anything without texcoords), so refuse it LOUDLY and name both
+	// legal values rather than defaulting.
+	Implementation::ReliefDomain eDomain = Implementation::ReliefDomain::Surface;
+	if( !domain || !domain[0] || strcmp( domain, "surface" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::Surface;
+	} else if( strcmp( domain, "uv" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::UV;
+	} else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"relief_modifier `%s`: parameter `domain` value `%s` is not recognized -- "
+			"use `surface` (the default: the height is a 3D field, the step is taken in "
+			"the tangent plane in world units, no texcoords required) or `uv` (the height "
+			"is a function of (u,v), the step is taken in texture units -- for scenes "
+			"migrated off the removed `bumpmap_modifier` and for image heightfields "
+			"authored in UV).",
+			name, domain );
+		return false;
+	}
+
+	// `max_slope` next, before anything is allocated.  A NEGATIVE bound
+	// cannot mean anything -- the clamp compares a MAGNITUDE against it --
+	// and quietly folding it to "off" would turn a typo (a sign slip on
+	// `0.7`) into an invisible loss of the very protection the author was
+	// asking for.  Refuse it by name.  Zero IS meaningful and is the
+	// default: no clamp.  A non-finite value is refused for the same
+	// reason (`> 0` is false for NaN, so it too would silently mean "off").
+	if( !( maxSlope >= 0.0 ) || !std::isfinite( maxSlope ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"relief_modifier `%s`: parameter `max_slope` value %g is not usable -- "
+			"it is an upper bound on the tangent-plane tilt |scale*grad h| expressed "
+			"as a SLOPE (1.0 = 45 degrees, 0.577 = 30), so it must be finite and "
+			"non-negative.  Use 0 for no clamp (the default), or a positive slope "
+			"such as 0.5-1.0 when raising `scale` to make a fine field legible -- that "
+			"band is for a near-face-on surface; on a surface seen at grazing angle phi "
+			"the tilt budget before the shading normal faces away from the ray shrinks "
+			"to roughly tan(phi), e.g. 0.30 on a plane viewed at 10-15 degrees grazing.",
+			name, maxSlope );
+		return false;
+	}
+
+	// Height is a PHYSICAL SCALAR (a length), never a colour: it must not
+	// pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
+	// standing three-way diagnostic -- per-channel painter in a
+	// single-scalar slot, an IPainter name bound to a scalar slot (with
+	// the `scalar_painter { painter X channel R }` fix), or an unknown
+	// name.  requireSingle: this modifier reads `.v[0]` only.
+	IScalarPainter* pHeight = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager,
+		"relief_modifier", name, "height", height, /*requireSingle*/ true );
+	if( !pHeight ) {
+		return false;
+	}
+
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateReliefModifierEx( &pModifier, *pHeight, scale, eDomain, step, maxSlope );
+	safe_release( pHeight );
+
+	const bool okRelief = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return okRelief;
+}
+
+//! Adds an atan2-combinator scalar painter: atan2(y, x) + offset.  See
+//! IJob.h for the DL-17 rationale.  `y`/`x` must already be registered
+//! scalar_painters; `offset` is folded in via an internal AddScalarPainter
+//! so the caller doesn't need a second round-trip through Job.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddAtan2ScalarPainter(
+	const char* name,
+	const char* y,
+	const char* x,
+	const double offset
+	)
+{
+	IScalarPainter* pY = pScalarPntManager->GetItem( y );
+	if( !pY ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddAtan2ScalarPainter:: `%s`: y operand scalar_painter `%s` not found", name, y );
+		return false;
+	}
+	IScalarPainter* pX = pScalarPntManager->GetItem( x );
+	if( !pX ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddAtan2ScalarPainter:: `%s`: x operand scalar_painter `%s` not found", name, x );
+		return false;
+	}
+
+	IScalarPainter* pAtan2 = 0;
+	RISE_API_CreateAtan2ScalarPainter( &pAtan2, pY, pX );
+	if( !pAtan2 ) {
+		return false;
+	}
+
+	IScalarPainter* pFinal = pAtan2;
+	pFinal->addref();
+	if( offset != 0.0 ) {
+		IScalarPainter* pOffset = 0;
+		RISE_API_CreateUniformScalarPainter( &pOffset, Scalar( offset ) );
+		IScalarPainter* pSummed = 0;
+		RISE_API_CreateAddScalarPainter( &pSummed, pAtan2, pOffset, Scalar( 1.0 ), Scalar( 1.0 ) );
+		safe_release( pOffset );
+		safe_release( pFinal );
+		pFinal = pSummed;
+	}
+
+	const bool ok = pFinal ? RegisterOrDiag( pScalarPntManager, pFinal, name, "scalar painter" ) : false;
+	safe_release( pFinal );
+	safe_release( pAtan2 );
+	return ok;
+}
+
+bool Job::AddModifierStack(
+	const char* name,										///< [in] Name of the modifier stack
+	const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+	const unsigned int count								///< [in] Number of members; 0 is rejected
+	)
+{
+	// An empty stack is a parse-time mistake, not a legitimate no-op --
+	// matching glint_modifier's stance that an authored no-op chunk is
+	// worth refusing loudly rather than silently accepting.
+	if( count == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: no `modifier` members were given -- an empty stack is refused (author at least one `modifier <name>` line)",
+			name );
+		return false;
+	}
+
+	std::vector<const IRayIntersectionModifier*> members;
+	members.reserve( count );
+	for( unsigned int i = 0; i < count; i++ ) {
+		const IRayIntersectionModifier* pMember = pModManager->GetItem( modifierNames[i] );
+		if( !pMember ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"modifier_stack `%s`: member modifier `%s` not found",
+				name, modifierNames[i] );
+			return false;
+		}
+		members.push_back( pMember );
+	}
+
+	IRayIntersectionModifier* pStack = 0;
+	if( !RISE_API_CreateModifierStack( &pStack, &members[0], count ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: RISE_API_CreateModifierStack failed",
+			name );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pModManager, pStack, name, "modifier" );
+	safe_release( pStack );
+	return ok;
+}
+
+bool Job::AddBlendedModifier(
+	const char* name,
+	const char* modAName,
+	const char* modBName,
+	const char* weight
+	)
+{
+	const auto isUnset = []( const char* s ) -> bool {
+		return !s || !s[0] || std::strcmp( s, "none" ) == 0;
+	};
+
+	const IRayIntersectionModifier* pModA = 0;
+	if( !isUnset( modAName ) ) {
+		pModA = pModManager->GetItem( modAName );
+		if( !pModA ) {
+			char msg[256];
+			std::snprintf( msg, sizeof( msg ), "modifier_a `%s` not found", modAName );
+			GlobalLog()->PrintEx( eLog_Error,
+				"blended_modifier `%s`: %s",
+				name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+	}
+
+	const IRayIntersectionModifier* pModB = 0;
+	if( !isUnset( modBName ) ) {
+		pModB = pModManager->GetItem( modBName );
+		if( !pModB ) {
+			char msg[256];
+			std::snprintf( msg, sizeof( msg ), "modifier_b `%s` not found", modBName );
+			GlobalLog()->PrintEx( eLog_Error,
+				"blended_modifier `%s`: %s",
+				name ? name : "noname", msg );
+			RISE::SetFinalizeDiagIfEmpty( msg );
+			return false;
+		}
+	}
+
+	if( !pModA && !pModB ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"blended_modifier `%s`: at least one of `modifier_a` or `modifier_b` must name a modifier",
+			name ? name : "noname" );
+		RISE::SetFinalizeDiagIfEmpty( "at least one of `modifier_a` or `modifier_b` must name a modifier" );
+		return false;
+	}
+
+	IScalarPainter* pWeight = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager,
+		"blended_modifier", name ? name : "noname", "weight",
+		weight ? weight : "0.5", /*requireSingle*/ true );
+	if( !pWeight ) {
+		return false;
+	}
+
+	IRayIntersectionModifier* pBlend = 0;
+	const bool created = RISE_API_CreateBlendedModifier( &pBlend, pModA, pModB, *pWeight );
+	safe_release( pWeight );
+	if( !created || !pBlend ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"blended_modifier `%s`: RISE_API_CreateBlendedModifier failed",
+			name ? name : "noname" );
+		RISE::SetFinalizeDiagIfEmpty( "blended_modifier creation failed" );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pModManager, pBlend, name, "modifier" );
+	safe_release( pBlend );
+	return ok;
 }
 
 //
 // Adding objects
 //
 
+//! 87 recursive scene graph: is this `geometry` reference the "no geometry"
+//! form?  A `standard_object` that names no geometry (or the universal
+//! no-reference sentinel `none`) is a CONTAINER node -- a pure transform in the
+//! authored tree.  Note this is a real semantic change: before 87, an object
+//! chunk that omitted `geometry` hard-failed with "Geometry not found `none`".
+static inline bool IsContainerGeometryRef_( const char* geom )
+{
+	return !geom || !geom[0] || ( strcmp( geom, "none" ) == 0 );
+}
+
+//! Create either an ordinary geometry-bearing object or a CONTAINER node.
+//!
+//! A container is world-INVISIBLE, following `CSGObject`'s precedent for a node
+//! that exists in the manager but must not appear in the world: that single
+//! flag is what keeps all nine world-visible enumeration consumers -- the
+//! luminary list, both light-sampler scans, the SMS caustic-caster scan, the
+//! auto-rasterizer's integrator choice, BDPT setup, the two extent scans and
+//! the editor -- from ever seeing a geometry-less node.  It is also what keeps
+//! it out of the TLAS, whose leaf contract is a real intersectable.
+static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGeometry* pGeometry, const bool bContainer )
+{
+	if( bContainer ) {
+		RISE_API_CreateContainerObject( ppObject );
+		if( *ppObject ) (*ppObject)->SetWorldVisible( false );
+		return;
+	}
+	RISE_API_CreateObject( ppObject, pGeometry );
+}
+
+//! Is `obj` currently an OPERAND of some csg_object in this manager?
+//!
+//! Answered by a DIRECT identity scan over the composites, not by inspecting
+//! `obj` itself, because no property of a single object answers it.  "Hidden
+//! and has geometry" does NOT mean operand -- a nested composite operand is
+//! hidden and has NONE (a CSGObject takes its shape from its operands and
+//! never assigns pGeometry), which is the same confusion that produced the
+//! isolate-diagnostic bug fixed in 1bb143c3.  And "hidden and has geometry"
+//! stops being true of a LEAF operand at exactly the moment that matters here:
+//! the leaf -> container re-point this predicate exists to catch is the edit
+//! that takes its geometry away.  See IsContainerObject_ below for the
+//! canonical container test.
+static bool IsLiveCsgOperand_( const IObjectManager* objMgr, const IObjectPriv* obj )
+{
+	if( !objMgr || !obj ) return false;
+	// EnumerateItemNames + GetItem rather than EnumerateObjects: the latter
+	// filters on world-visibility, and a NESTED composite is itself hidden by
+	// its outer csg_object -- so its own operands would be invisible to the
+	// scan and slip past this guard.
+	struct NameScan : public IEnumCallback<const char*>
+	{
+		const IObjectManager* mgr = 0;
+		const IObjectPriv* target = 0;
+		bool found = false;
+		bool operator()( const char* const& n ) override
+		{
+			if( !n || !mgr ) return true;
+			const IObjectPriv* cand = mgr->GetItem( n );
+			const Implementation::CSGObject* csg =
+				dynamic_cast<const Implementation::CSGObject*>( cand );
+			if( csg && ( csg->GetOperandA() == target || csg->GetOperandB() == target ) ) found = true;
+			return !found;
+		}
+	} nameScan;
+	nameScan.mgr    = objMgr;
+	nameScan.target = obj;
+	const_cast<IObjectManager*>( objMgr )->EnumerateItemNames( nameScan );
+	return nameScan.found;
+}
+
+//! Is this object a 87 CONTAINER -- a pure transform node?  Distinguished from
+//! the OTHER null-geometry object in the tree, a CSGObject, whose shape comes
+//! from its two operands rather than from a geometry slot.  Nested CSG is
+//! supported, so "no geometry" on its own would wrongly reject an inner
+//! composite used as an operand.
+static bool IsContainerObject_( const IObjectPriv* obj )
+{
+	if( !obj ) return false;
+	if( obj->GetGeometry() ) return false;
+	return dynamic_cast<const Implementation::CSGObject*>( obj ) == 0;
+}
+
+//! Null out any surface binding named on a CONTAINER chunk, with one warning
+//! that names the object and the slots dropped.  Silently ignoring them would
+//! be worse: a container with an emissive `material` would look, in the scene
+//! text, exactly like a light that never lights anything.
+static void DropContainerSurfaceBindings_( const char* name, const bool bContainer,
+                                           IMaterial*& pMat, IRayIntersectionModifier*& pMod,
+                                           IShader*& pShaderObj, IPainter*& pRadPnt )
+{
+	if( !bContainer ) return;
+	if( !pMat && !pMod && !pShaderObj && !pRadPnt ) return;
+	// Comma-join the slots actually bound.  The earlier space-join left a
+	// double space before "binding(s)" and read as a run-on -- and this is the
+	// message for the single most common container mistake, so it is the one
+	// most likely to be pasted into a bug report or read by an agent.
+	std::string slots;
+	if( pMat )       { slots += "material"; }
+	if( pMod )       { if( !slots.empty() ) slots += ", "; slots += "modifier"; }
+	if( pShaderObj ) { if( !slots.empty() ) slots += ", "; slots += "shader"; }
+	if( pRadPnt )    { if( !slots.empty() ) slots += ", "; slots += "radiance_map"; }
+	GlobalLog()->PrintEx( eLog_Warning,
+		"Job:: object `%s` names no `geometry`, so it is a CONTAINER node -- a pure transform with no "
+		"surface.  Its `%s` binding(s) are IGNORED; put them on a child object that has geometry.",
+		name ? name : "(unnamed)", slots.c_str() );
+	pMat = 0; pMod = 0; pShaderObj = 0; pRadPnt = 0;
+}
+
+//! Re-point an EXISTING object between the geometry-bearing and container
+//! forms.  Visibility is only touched when the form actually CHANGES: a
+//! re-pointed CSG operand is a geometry-bearing object that `Job::AddCSGObject`
+//! deliberately hid, and unconditionally re-showing it here would resurrect
+//! every operand into the world.
+static void ApplyGeometryOrContainer_( IObjectPriv& object, const IGeometry* pGeometry,
+                                       const bool bContainer, const bool wasContainer )
+{
+	if( bContainer ) {
+		object.ClearGeometry();
+		// Also drop any binding the object held as a LEAF.  DropContainerSurfaceBindings_
+		// only stops NEW ones being assigned; without this, an object re-pointed
+		// leaf -> container by an edit that deleted its `geometry` line keeps its old
+		// material -- and "a container never carries a material" is the premise the
+		// agent's non-sampling-emitter audit rests on (AgentSession's
+		// CollectNullGeometryEmitters_).
+		object.ClearMaterial();
+		object.ClearModifier();
+		object.ClearShader();
+		object.ClearRadianceMap();
+		object.ClearInteriorMedium();
+		if( !wasContainer ) object.SetWorldVisible( false );
+		return;
+	}
+	if( pGeometry ) object.AssignGeometry( *pGeometry );
+	if( wasContainer ) object.SetWorldVisible( true );
+}
+
+bool Job::SetObjectParent( const char* child, const char* parent )
+{
+	// Does not compose for a RE-PARENT: a caller wiring up a graph makes many
+	// links and wants ONE walk afterwards, which is what the derive tail does,
+	// and a new link is visible to the per-frame RebakeHierarchy anyway.  A
+	// DETACH is different and the manager composes it itself -- the ex-child
+	// has left the link map, so no later walk can find it.
+	//
+	// What this layer owes either way is the LIGHT-TOPOLOGY bump, which the
+	// manager cannot do (it has no Scene).  Detect a real link change by
+	// reading the link before and after rather than trusting the accepted-bool:
+	// the derive calls this once per object chunk, unconditionally, including
+	// with no parent, so "accepted" is true thousands of times for calls that
+	// changed nothing, and bumping on those would churn the light generation
+	// through every load.
+	//
+	// The TLAS half is handled underneath -- SetObjectParent's detach path
+	// invalidates, and a re-parent is caught by RebakeHierarchy at the next
+	// prepare -- but this bumps it too, for the same reason Job::RemoveObject
+	// invalidates unconditionally: a moved emitter with a stale LightSampler
+	// samples the luminaire at its old world position while the geometry
+	// renders at the new one.
+	if( !pObjectManager ) return false;
+	const char* prevRaw = pObjectManager->GetObjectParent( child );
+	const String before( prevRaw ? prevRaw : "" );
+	if( !pObjectManager->SetObjectParent( child, parent ) ) return false;
+	const char* nowRaw = pObjectManager->GetObjectParent( child );
+	const String after( nowRaw ? nowRaw : "" );
+	if( !( before == after ) ) {
+		pObjectManager->InvalidateSpatialStructure();
+		BumpSceneLightGen( pScene );
+	}
+	return true;
+}
+
+bool Job::SetObjectMirror( const char* object_name, const char* axis )
+{
+	if( !pObjectManager || !object_name ) return false;
+
+	// DECODE FIRST, MUTATE SECOND.  A bad axis must fail the whole call with the
+	// object untouched -- the same refuse-before-any-mutation discipline
+	// Job::AddObject's reference resolution follows.
+	int axisIdx = -1;
+	const std::string a = axis ? std::string( axis ) : std::string();
+	if     ( a.empty() || a == "none" ) axisIdx = -1;
+	else if( a == "x" )                 axisIdx = 0;
+	else if( a == "y" )                 axisIdx = 1;
+	else if( a == "z" )                 axisIdx = 2;
+	else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s`: mirror axis `%s` must be x, y or z (lower case), "
+			"or `none` to clear it", object_name, a.c_str() );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( object_name );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMirror:: Object not found `%s`", object_name );
+		return false;
+	}
+
+	// The mirror lives on Implementation::Transformable as a NON-virtual member --
+	// no interface vtable grows for it -- so it is reached the way
+	// SetFinalTransformMatrix is reached from AddObjectMatrix.
+	Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( pObj );
+	if( !t ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s` is not a Transformable, so it cannot carry a mirror", object_name );
+		return false;
+	}
+
+	// NOTHING TO DO IS NOT NOTHING TO SKIP -- except for the invariants.  The
+	// parser calls this on EVERY standard_object, mirror or not, so the
+	// overwhelmingly common case is "-1 was already -1"; re-finalizing and bumping
+	// the light generation on those would churn the whole scene through every load,
+	// which is exactly the trap SetObjectParent's before/after comparison exists to
+	// avoid.  Compare, and do the expensive half only on a real change.
+	if( t->GetMirrorAxis() == axisIdx ) return true;
+
+	// A csg_object is REFUSED BY NAME, and the reason is not "it is a different
+	// class" -- a CSGObject IS a Transformable and would happily carry the matrix.
+	// It is that a composite's transform is COMMITTED as `position` + `orientation`
+	// (the csg_object chunk has no `matrix` param; CstObjectTransformKind answers 2
+	// for it and SceneEditor::DecomposeRigid refuses a negative determinant
+	// outright), so a mirror set here would RENDER and could never round-trip to
+	// disk -- the live scene diverging from its file, which is the failure mode the
+	// whole commit gate exists to prevent.  Unreachable from a scene file (the
+	// `csg_object` grammar declares no `mirror` param, so the descriptor-driven
+	// parser rejects the line before this call), but IJob is public API and the
+	// console can name any object.  Same shape, and the same dynamic_cast, as
+	// Job::AddObject's csg re-point refusal.
+	//
+	// PLACED AFTER THE NO-CHANGE EARLY-OUT, deliberately: the refusal exists to
+	// keep an UNSAVEABLE state unreachable, and `mirror none` on a composite that
+	// already has none reaches no state at all.  Refusing it too would make a
+	// caller that clears mirrors across a whole selection fail on every csg in it,
+	// for a call that would have done nothing.
+	if( dynamic_cast<Implementation::CSGObject*>( pObj ) != 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMirror:: `%s` names a csg_object, which cannot carry a mirror -- a composite's "
+			"transform is saved as position + orientation, and neither can express a reflection.  Mirror the "
+			"operands, or parent the csg_object under a mirrored standard_object container",
+			object_name );
+		return false;
+	}
+
+	if( !t->SetMirrorAxis( axisIdx ) ) return false;   // unreachable: axisIdx is already in range
+	pObj->FinalizeTransformations();
+	pObj->ResetRuntimeData();   // this node's own world-space caches, sampled at the un-reflected pose
+
+	// NO ComposeObjectHierarchy HERE, and that is SetObjectParent's reasoning, not
+	// SetObjectPosition's -- because this shares SetObjectParent's CALL SITE, not
+	// that one's.  The `standard_object` parser calls this once per object chunk,
+	// so a walk per call is O(N^2) over the whole derive: measured 1.10 s vs
+	// 0.07 s on a synthetic 1500-mirrored-child scene, a 16x regression on load.
+	// (`SetObjectPosition` and friends compose because they are one-shot API
+	// calls; the same choice here is the O(N^2) trap `Job::AddObject`'s own
+	// comment refuses for exactly the same reason.)
+	//
+	// The descendants are composed anyway, by BOTH of the two paths that can
+	// reach this:
+	//   * a DERIVE walks the whole graph once at the tail (Cst.cpp), which is
+	//     what makes `source` + `mirror` land its subtree correctly -- pinned by
+	//     ObjectMirrorTest's D2 / D5 blocks, which read a grandchild's world
+	//     matrix straight after the derive;
+	//   * an API caller's next render / pick goes through
+	//     ObjectManager::Prepare, whose per-frame `RebakeHierarchy()`
+	//     recomposes every parented node against its parent's CURRENT world.
+	// What neither of them does is invalidate on OUR behalf before that point,
+	// so both invariants that do not survive a stale structure are maintained
+	// here and now: a reflected object has a different world bounding box (stale
+	// TLAS leaf -> unhittable and unpickable), and it may BE, or carry, an
+	// emitter that the LightSampler would keep sampling at the un-reflected pose.
+	// Bumped unconditionally on a real change rather than gated on this node's
+	// own material, because a mirrored CONTAINER carries no material at all and
+	// is the case the feature exists for -- the same gate argument
+	// SetObjectPosition spells out.
+	pObjectManager->InvalidateSpatialStructure();
+	BumpSceneLightGen( pScene );
+	return true;
+}
+
+bool Job::ComposeObjectHierarchy( )
+{
+	if( !pObjectManager ) return false;
+	const bool moved = pObjectManager->ComposeWorldTransforms();
+	if( moved ) {
+		// Moving objects changes their world bounding boxes and may move an
+		// emitter, and this is the entry point an API host uses directly -- it
+		// has no SceneEditor and no derive to do it.  The two in-tree callers
+		// (Cst's incremental apply, SceneEditor's invariant chain) drive their
+		// own gates off the RETURN value and would otherwise do this twice;
+		// InvalidateSpatialStructure is idempotent and BumpSceneLightGen is a
+		// counter, so a duplicate is harmless.
+		pObjectManager->InvalidateSpatialStructure();
+		BumpSceneLightGen( pScene );
+	}
+	return moved;
+}
+
 //! Adds an object
 /// \return TRUE if successful, FALSE otherwise
+// DL-409: the DL-382 planar certificate or an exactly flat enclosing box
+// proves that this geometry cannot bound a volume. Do not infer this from
+// bOpenSheet or failed watertightness:
+// those also describe closed imported meshes the certificate cannot classify.
+static bool ObjectHasMixMaterial_( const IObject* pObj )
+{
+	if( !pObj ) return false;
+	struct MixScan : public IEnumCallback<IMaterial>
+	{
+		bool found = false;
+		bool operator()( const IMaterial& m ) override
+		{
+			if( m.IsUnresolvedMix() ) {
+				found = true;
+				return false;
+			}
+			return true;
+		}
+	} scan;
+	pObj->EnumerateEffectiveMaterials( scan );
+	return scan.found;
+}
+
+static bool RefuseVolumeFreeRandomWalk_(const IGeometry* geometry, const IMaterial* material,
+    const char* objectName)
+{
+    if(!geometry || !material || !material->HasRandomWalkSSSLeaf()) return false;
+    const auto* indexed=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(geometry);
+    const auto* triangles=dynamic_cast<const Implementation::TriangleMeshGeometry*>(geometry);
+    const bool certified=(indexed && indexed->IsZeroVolumeSheet()) ||
+        (triangles && triangles->IsZeroVolumeSheet());
+    const BoundingBox box=geometry->GenerateBoundingBox();
+    if(!certified && box.ll.x!=box.ur.x && box.ll.y!=box.ur.y && box.ll.z!=box.ur.z) return false;
+    GlobalLog()->PrintEx(eLog_Error,
+        "randomwalk_sss_material (DL-409): object `%s` has provably zero-volume geometry; "
+        "author a closed thin slab for random-walk subsurface transport", objectName);
+    return true;
+}
+
 bool Job::AddObject(
 	const char* name,										///< [in] Name of the object
 	const char* geom,										///< [in] Name of the geometry for the object
 	const char* material,									///< [in] Name of the material
 	const char* modifier,									///< [in] Name of the modifier
 	const char* shader,										///< [in] Name of the shader
-	const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-	const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-	const double radiance_orient[3],						///< [in] Orientation of the object
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` ignored here
 	const double pos[3],									///< [in] Position of the object
 	const double orient[3],									///< [in] Orientation of the object
 	const double scale[3],									///< [in] Object scaling
@@ -3117,71 +9645,256 @@ bool Job::AddObject(
 	const bool bReceivesShadows								///< [in] Does the object receive shadows?
    )
 {
-	IGeometry* pGeometry = pGeomManager->GetItem( geom );
+	// RESOLVE every reference FIRST, BEFORE any mutation (review P1.7 atomicity): a
+	// missing material/modifier/shader/radiance-painter must fail the WHOLE call without
+	// having created a new object OR half-re-pointed an existing one.  Only once all
+	// references resolve do we create-or-re-point and assign.
+	const bool bContainer = IsContainerGeometryRef_( geom );
+	IGeometry* pGeometry = bContainer ? 0 : pGeomManager->GetItem( geom );
+	if( !bContainer && !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom ); return false; }
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
 
-	if( !pGeometry ) {
-		GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom );
+	if(RefuseVolumeFreeRandomWalk_(pGeometry,pMat,name)) return false;
+
+	// Slice 3 (stable-object apply): in incremental re-point mode an EXISTING same-named
+	// object is re-pointed IN PLACE (its address, which the top-level BVH stores raw, is
+	// preserved); in a full derive the flag is false and no object pre-exists, so this is
+	// byte-identical to the historical create path.  From here on nothing can fail.
+	IObjectPriv* object = 0;
+	bool repoint = false;
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		// 87: re-point a plain Object only.  A name held by a CSGObject belongs
+		// to a different chunk kind, and re-pointing it would be actively
+		// destructive: a CSGObject has null geometry, so `wasContainer` below
+		// would be TRUE, and ApplyGeometryOrContainer_ would AssignGeometry over
+		// the composite and then SetWorldVisible( true ) -- resurrecting a hidden
+		// nested operand into the world, the exact resurrection that function's
+		// own doc exists to prevent.  Unreachable today (a param edit cannot
+		// change a chunk's keyword, and the incremental closure refuses any
+		// object chunk that is not standard_object / csg_object), but
+		// AddCSGObject's mirror-image lookup already requires
+		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		//
+		// It is also the SECOND unreachability argument the incremental apply's
+		// atomicity now rests on.  That loop's rollback is entity-only, and its
+		// stated justification is that a re-Finalize failure is ALWAYS at an
+		// entity, BEFORE any object is re-pointed (Cst.cpp, "PART A atomicity").
+		// A partial object re-point is exactly what it cannot undo.  The first
+		// such argument is written up in Cst.cpp's "87 CAVEAT" block
+		// (SetObjectParent's semantic refusals); this is the second.  If either
+		// becomes reachable, that rollback needs to cover objects too.
+		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddObject:: `%s` already names a csg_object, so a standard_object cannot re-point it",
+				name );
+			return false;
+		}
+		repoint = ( object != 0 );
+	}
+	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	// An edit that DELETES an operand's `geometry` line would turn it into a
+	// container while its csg_object still holds it -- a boolean over a shape
+	// that no longer exists, silently wrong rather than a crash (Object's null
+	// guards return no hit).  Before 87 that edit hard-failed on the missing
+	// geometry reference; keep it failing.
+	if( repoint && bContainer && !wasContainer && IsLiveCsgOperand_( pObjectManager, object ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObject:: `%s` is an operand of a csg_object, so it cannot drop its `geometry` and "
+			"become a container node -- the boolean would have nothing to intersect", name );
+		return false;
+	}
+	// A CONTAINER has no surface, so it takes no surface bindings.  Dropping
+	// them (loudly) rather than assigning them is what keeps "an object with
+	// null geometry and an emissive material" a csg_object-only shape -- the
+	// premise the agent's non-sampling-emitter audit is built on.  A container
+	// carrying an emissive material would be an emitter that no light sampler
+	// can ever sample, which is exactly the class that audit exists to catch.
+	// Run BEFORE ApplyGeometryOrContainer_ so any semantic refusal below
+	// leaves an existing object's geometry untouched (Slice 3 R2 P1-3).
+	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );
+
+	if( repoint && pMat && pMat->IsUnresolvedMix() && object->GetInteriorMedium() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObject:: `%s` already has an interior_medium and cannot be reassigned a mix_material",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to an object with an interior_medium" );
 		return false;
 	}
 
-	IObjectPriv* object = 0;
-	RISE_API_CreateObject( &object, pGeometry );
+	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
+	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
-
-	if( material ) {
-		IMaterial* pMat = pMatManager->GetItem(material);
-		if( pMat ) {
-			object->AssignMaterial( *pMat );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material );
-			return false;
-		}
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );          // recreate-and-re-wrap (replaces any prior map)
+		safe_release( pRadianceMap );
 	}
 
-	if( modifier ) {
-		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
-		if( pMod ) {
-			object->AssignModifier( *pMod );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Modifier not found `%s`", modifier );
-			return false;
-		}
-	}
-
-	if( shader ) {
-		IShader* pShader = pShaderManager->GetItem(shader);
-		if( pShader ) {
-			object->AssignShader( *pShader );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader );
-			return false;
-		}
-	}
-
-	if( radiancemap ) {
-		IPainter* pPnt = pPntManager->GetItem(radiancemap);
-		if( pPnt ) {
-			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radiancemap_scale );
-			pRadianceMap->SetOrientation( Vector3( radiance_orient ) );
-			object->AssignRadianceMap( *pRadianceMap );
-			safe_release( pRadianceMap );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radiancemap );
-			return false;
-		}
-	}
-
+	// Reset ALL transforms (stack + component) before the component form (review P1.1):
+	// a re-point of a previously MATRIX-authored object must not COMPOSE the stale stacked
+	// matrix with the new Euler form in FinalizeTransformations.  No-op on the create path.
+	object->ClearAllTransforms();
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->SetStretch( Vector3( scale[0], scale[1], scale[2] ) );
+	// No ComposeObjectHierarchy here, unlike SetObjectPosition and friends.
+	// This runs inside a derive, where the whole graph is walked once at the
+	// tail (Cst.cpp) -- composing per object would be O(N^2) and would compose
+	// against links that do not exist yet.  The no-argument finalize still
+	// re-composes THIS node against its own stored parent world, so a re-point
+	// mid-derive is never left un-parented.
 	object->FinalizeTransformations();
 
-	pObjectManager->AddItem( object, name );
+	if( repoint ) {
+		object->ResetRuntimeData();   // stable object re-pointed: already in the manager, manager owns it; reset stale caches
+		return true;
+	}
+	const bool ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+	if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
+	return ok;
+}
 
-	return true;
+bool Job::AddObjectMatrix(
+	const char* name,
+	const char* geom,
+	const char* material,
+	const char* modifier,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const double matrix[16],
+	const bool bCastsShadows,
+	const bool bReceivesShadows
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	// RESOLVE every reference FIRST, before any mutation (review P1.7 atomicity) -- see AddObject.
+	const bool bContainer = IsContainerGeometryRef_( geom );
+	IGeometry* pGeometry = bContainer ? 0 : pGeomManager->GetItem( geom );
+	if( !bContainer && !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom ); return false; }
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
+
+	IObjectPriv* object = 0;
+	bool repoint = false;
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		// 87: re-point a plain Object only.  A name held by a CSGObject belongs
+		// to a different chunk kind, and re-pointing it would be actively
+		// destructive: a CSGObject has null geometry, so `wasContainer` below
+		// would be TRUE, and ApplyGeometryOrContainer_ would AssignGeometry over
+		// the composite and then SetWorldVisible( true ) -- resurrecting a hidden
+		// nested operand into the world, the exact resurrection that function's
+		// own doc exists to prevent.  Unreachable today (a param edit cannot
+		// change a chunk's keyword, and the incremental closure refuses any
+		// object chunk that is not standard_object / csg_object), but
+		// AddCSGObject's mirror-image lookup already requires
+		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		//
+		// It is also the SECOND unreachability argument the incremental apply's
+		// atomicity now rests on.  That loop's rollback is entity-only, and its
+		// stated justification is that a re-Finalize failure is ALWAYS at an
+		// entity, BEFORE any object is re-pointed (Cst.cpp, "PART A atomicity").
+		// A partial object re-point is exactly what it cannot undo.  The first
+		// such argument is written up in Cst.cpp's "87 CAVEAT" block
+		// (SetObjectParent's semantic refusals); this is the second.  If either
+		// becomes reachable, that rollback needs to cover objects too.
+		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddObjectMatrix:: `%s` already names a csg_object, so a standard_object cannot re-point it",
+				name );
+			return false;
+		}
+		repoint = ( object != 0 );
+	}
+	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	if( repoint && bContainer && !wasContainer && IsLiveCsgOperand_( pObjectManager, object ) ) {   // see AddObject
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObjectMatrix:: `%s` is an operand of a csg_object, so it cannot drop its `geometry` "
+			"and become a container node", name );
+		return false;
+	}
+	// Validate all semantic refusals BEFORE mutating `object`'s geometry on
+	// incremental repoint (Slice 3 R2 P1-3).
+	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );   // see AddObject
+
+	if( RefuseVolumeFreeRandomWalk_( pGeometry, pMat, name ) ) {
+		return false;
+	}
+	if( repoint && pMat && pMat->IsUnresolvedMix() && object->GetInteriorMedium() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObjectMatrix:: `%s` already has an interior_medium and cannot be reassigned a mix_material",
+			name ? name : "" );
+		RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to an object with an interior_medium" );
+		return false;
+	}
+
+	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );
+	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );
+
+	object->SetShadowParams( bCastsShadows, bReceivesShadows );
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );
+		safe_release( pRadianceMap );
+	}
+
+	// Build a Matrix4 from the 16-double column-major input.  RISE's Matrix4 indexes
+	// `_<i><j>` as (column=i, row=j); glTF stores `nodes[i].matrix` column-major, so
+	// element `c*4 + r` maps directly to `_<c><r>`.
+	Matrix4 mx;
+	mx._00 = matrix[ 0]; mx._01 = matrix[ 1]; mx._02 = matrix[ 2]; mx._03 = matrix[ 3];
+	mx._10 = matrix[ 4]; mx._11 = matrix[ 5]; mx._12 = matrix[ 6]; mx._13 = matrix[ 7];
+	mx._20 = matrix[ 8]; mx._21 = matrix[ 9]; mx._22 = matrix[10]; mx._23 = matrix[11];
+	mx._30 = matrix[12]; mx._31 = matrix[13]; mx._32 = matrix[14]; mx._33 = matrix[15];
+
+	// FinalizeTransformations composes (P*O*Stretch*Scale) * stack-bottom, so leave the
+	// component transforms identity and push the supplied matrix onto the (cleared) stack.
+	if( Implementation::Transformable* transformable =
+		dynamic_cast<Implementation::Transformable*>( object ) ) {
+		transformable->SetFinalTransformMatrix( mx );
+	} else {
+		object->ClearAllTransforms();
+		object->PushTopTransStack( mx );
+	}
+	object->FinalizeTransformations();
+
+	if( repoint ) {
+		object->ResetRuntimeData();
+		return true;
+	}
+	const bool ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+	if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
+	safe_release( object );
+	return ok;
 }
 
 ///////////////////////////////////////////////////////////
@@ -3217,14 +9930,121 @@ bool Job::AddHomogeneousMedium(
 
 	safe_release( pPhase );
 
-	// Store in our map
-	MediumMap::iterator existing = mediaMap.find( name );
-	if( existing != mediaMap.end() ) {
-		safe_release( existing->second );
-		existing->second = pMedium;
-	} else {
-		mediaMap[name] = pMedium;
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
 	}
+	mediaMap[name] = pMedium;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
+
+	return true;
+}
+
+bool Job::AddHomogeneousMediumSpectral(
+	const char* name,										///< [in] Name of the medium
+	const double sigma_a[3],								///< [in] Absorption coefficient (RGB preview)
+	const double sigma_s[3],								///< [in] Scattering coefficient (RGB preview)
+	const double emission[3],								///< [in] Volumetric emission (RGB)
+	const char* absorption_spectral,						///< [in] Name of sigma_a(lambda) IFunction1D, or null/""
+	const char* scattering_spectral,						///< [in] Name of sigma_s(lambda) IFunction1D, or null/""
+	const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+	const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+	)
+{
+	// Resolve the optional spectral coefficient curves by name.  A null /
+	// empty / "none" reference means "no curve" for that coefficient.
+	// Per HomogeneousMedium::GetCoefficientsNM, once EITHER curve is bound
+	// the NM path is curve-driven and a null sibling contributes ZERO for
+	// its coefficient (NOT the RGB triple's luminance — that whole-chunk
+	// fallback only fires when BOTH curves are null, a state this adder is
+	// never called in since the parser routes here only when at least one
+	// ref is present).  GetItem returns a BORROWED reference; the medium
+	// ctor addrefs it, so we must not release it here.  A name that is
+	// given but not found is author error and fails the add (do NOT
+	// silently drop the intended spectral behaviour).
+	bool refError = false;
+	auto resolveCurve = [&]( const char* ref ) -> IFunction1D* {
+		if( !ref || ref[0] == '\0' || strcmp( ref, "none" ) == 0 ) {
+			return 0;
+		}
+		IFunction1D* f = pFunc1DManager->GetItem( ref );
+		if( !f ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddHomogeneousMediumSpectral:: spectral curve `%s` not found", ref );
+			refError = true;
+		}
+		return f;
+	};
+	IFunction1D* pAbsSpectral = resolveCurve( absorption_spectral );
+	IFunction1D* pScaSpectral = resolveCurve( scattering_spectral );
+	if( refError ) {
+		return false;
+	}
+
+	// Partial-binding ergonomic guard: if exactly ONE spectral curve is
+	// bound while the OTHER coefficient's RGB triple is non-zero, that
+	// non-zero RGB value is silently ZERO in the spectral (NM) render
+	// (curve-driven path, null sibling => 0).  That is a silent no-op
+	// foot-gun for an author who expected the RGB value to keep absorbing
+	// / scattering in spectral mode.  Warn (non-fatal) rather than accept
+	// the surprise; the intended fix is to bind both curves.
+	auto anyNonZero = [&]( const double c[3] ) {
+		return c[0] != 0.0 || c[1] != 0.0 || c[2] != 0.0;
+	};
+	if( pAbsSpectral && !pScaSpectral && anyNonZero( sigma_s ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds absorption_spectral but not "
+			"scattering_spectral; its RGB scattering (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind scattering_spectral (or set scattering 0 0 0) to silence this.",
+			name, sigma_s[0], sigma_s[1], sigma_s[2] );
+	}
+	if( pScaSpectral && !pAbsSpectral && anyNonZero( sigma_a ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddHomogeneousMediumSpectral:: medium `%s` binds scattering_spectral but not "
+			"absorption_spectral; its RGB absorption (%g %g %g) is ZERO in the spectral (NM) "
+			"render.  Bind absorption_spectral (or set absorption 0 0 0) to silence this.",
+			name, sigma_a[0], sigma_a[1], sigma_a[2] );
+	}
+
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddHomogeneousMediumSpectral:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium
+	IMedium* pMedium = 0;
+	RISE_API_CreateHomogeneousMediumSpectral( &pMedium,
+		RISEPel( sigma_a[0], sigma_a[1], sigma_a[2] ),
+		RISEPel( sigma_s[0], sigma_s[1], sigma_s[2] ),
+		RISEPel( emission[0], emission[1], emission[2] ),
+		pAbsSpectral, pScaSpectral,
+		*pPhase );
+
+	safe_release( pPhase );
+
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (matches AddHomogeneousMedium above).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
+	}
+	mediaMap[name] = pMedium;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
 }
@@ -3284,15 +10104,577 @@ bool Job::AddHeterogeneousMedium(
 
 	safe_release( pPhase );
 
-	// Store in our map
-	MediumMap::iterator existing = mediaMap.find( name );
-	if( existing != mediaMap.end() ) {
-		safe_release( existing->second );
-		existing->second = pMedium;
-	} else {
-		mediaMap[name] = pMedium;
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
+	}
+	mediaMap[name] = pMedium;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
+
+	return true;
+}
+
+bool Job::AddPainterHeterogeneousMedium(
+	const char* name,
+	const double max_sigma_a[3],
+	const double max_sigma_s[3],
+	const double emission[3],
+	const char* phase_type,
+	const double phase_g,
+	const char* density_painter,
+	const unsigned int virtualResolution,
+	const char colorToScalar,
+	const double bboxMin[3],
+	const double bboxMax[3]
+	)
+{
+	// Look up the painter
+	IPainter* pPainter = pPntManager->GetItem( density_painter );
+	if( !pPainter ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddPainterHeterogeneousMedium:: Painter not found `%s`", density_painter );
+		return false;
 	}
 
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddPainterHeterogeneousMedium:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium (with or without emission)
+	IMedium* pMedium = 0;
+	const RISEPel emissionPel( emission[0], emission[1], emission[2] );
+
+	if( ColorMath::MaxValue( emissionPel ) > 0 ) {
+		RISE_API_CreatePainterHeterogeneousMediumWithEmission( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			emissionPel, *pPhase,
+			*pPainter, virtualResolution, colorToScalar,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	} else {
+		RISE_API_CreatePainterHeterogeneousMedium( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			*pPhase,
+			*pPainter, virtualResolution, colorToScalar,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	}
+
+	safe_release( pPhase );
+
+	// Store in our map.  Reject a duplicate name: media bypass GenericManager
+	// (they live in mediaMap), so the "unique within their kind" contract that
+	// every manager-backed Job::Add* now enforces is honored explicitly here
+	// (previously a duplicate medium silently LAST-won and reported success).
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		safe_release( pMedium );
+		return false;
+	}
+	mediaMap[name] = pMedium;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
+
+	return true;
+}
+
+std::string Job::FinalizeFireAuthoredConfigDigest(
+	const IMedium& medium,
+	const std::vector<unsigned char>& authoredParameterRecord,
+	const IFunction1D* const chemSPDs[3]
+	)
+{
+	const MultichannelHeterogeneousMedium* fire =
+		dynamic_cast<const MultichannelHeterogeneousMedium*>(&medium);
+	RISECBOR64::Bytes bakedChannelRecord;
+	RISECBOR64::Value authoredParameters;
+	RISECBOR64::Value bakedChannels;
+	std::string error;
+	if( !fire || authoredParameterRecord.empty() ||
+		!RISECBOR64::DecodeCanonical(authoredParameterRecord,authoredParameters,&error) ||
+		!fire->BuildBakedChannelRecord(bakedChannelRecord) ||
+		!RISECBOR64::DecodeCanonical(bakedChannelRecord,bakedChannels,&error) ) {
+		GlobalLog()->PrintEasyError(
+			"Job:: could not bind static fire-medium provenance to its direct parameter and channel-bake records" );
+		return std::string();
+	}
+	RISECBOR64::Value::Values chemDefinitions;
+	for( unsigned int band=0; band<3u; ++band ) {
+		if( !chemSPDs || !chemSPDs[band] ) continue;
+		const std::map<const IFunction1D*,std::vector<unsigned char> >::const_iterator definition =
+			fireFunction1DDefinitionRecords.find(chemSPDs[band]);
+		if( definition == fireFunction1DDefinitionRecords.end() ||
+			definition->second.empty() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: could not bind static fire-medium provenance to a chem SPD definition" );
+			return std::string();
+		}
+		RISECBOR64::Value definitionRecord;
+		if( !RISECBOR64::DecodeCanonical(definition->second,definitionRecord,&error) ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: chem SPD authoring record is noncanonical" );
+			return std::string();
+		}
+		chemDefinitions.push_back(definitionRecord);
+	}
+	RISECBOR64::Bytes resolvedRecord;
+	if( !FireCanonicalRecord({
+		{ "authored_parameters", authoredParameters },
+		{ "baked_channels", bakedChannels },
+		{ "chem_spd_definitions", RISECBOR64::Value::ArrayValue(chemDefinitions) }
+	},"static_fire_medium_authored_config_v1",
+		"resolved static fire-medium authoring",resolvedRecord) ) return std::string();
+	return RISECBOR64::SHA256Hex(resolvedRecord);
+}
+
+bool Job::AddMultichannelHeterogeneousMedium(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	if( !carbon || !temperature ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMedium:: scalar painter not found (carbon `%s`, temperature `%s`)",
+			carbon_painter, temperature_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMedium:: carbon and temperature require single-valued scalar painters" );
+		return false;
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_two_channel") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,0,bake_width,bake_height,bake_depth,bboxMin,
+			bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMedium(
+		&medium, *carbon, *temperature,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ) ) || !medium ) {
+		return false;
+	}
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,0);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !condensed_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	IScalarPainter* condensed = pScalarPntManager->GetItem( condensed_painter );
+	if( !carbon || !temperature || !condensed ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: scalar painter not found (carbon `%s`, temperature `%s`, condensed `%s`)",
+			carbon_painter, temperature_painter, condensed_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		condensed->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: physical channels require single-valued scalar painters" );
+		return false;
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_condensed") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		&medium, *carbon, *temperature, *condensed,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ),
+		Scalar( smoke_km_cond ), Scalar( smoke_n_cond ),
+		Scalar( smoke_albedo_cond ), Scalar( smoke_g_cond ) ) || !medium ) {
+		return false;
+	}
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,0);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithChem(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ||
+		!chem_ch_painter || !chem_c2_painter || !chem_co2_painter ||
+		!chem_spd_ch || !chem_spd_c2 || !chem_spd_co2 ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	IScalarPainter* painters[6] = {
+		pScalarPntManager->GetItem(carbon_painter),
+		pScalarPntManager->GetItem(temperature_painter),
+		condensed_painter && condensed_painter[0]
+			? pScalarPntManager->GetItem(condensed_painter) : 0,
+		pScalarPntManager->GetItem(chem_ch_painter),
+		pScalarPntManager->GetItem(chem_c2_painter),
+		pScalarPntManager->GetItem(chem_co2_painter) };
+	IFunction1D* curves[3] = {
+		pFunc1DManager->GetItem(chem_spd_ch),
+		pFunc1DManager->GetItem(chem_spd_c2),
+		pFunc1DManager->GetItem(chem_spd_co2) };
+	if( !painters[0] || !painters[1] ||
+		(condensed_painter && condensed_painter[0] && !painters[2]) ||
+		!painters[3] || !painters[4] || !painters[5] ||
+		!curves[0] || !curves[1] || !curves[2] ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithChem:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	for( unsigned int i = 0; i < 6u; ++i ) {
+		if( painters[i] && painters[i]->HasPerChannelVariation() ) {
+			GlobalLog()->PrintEasyError(
+				"Job::AddMultichannelHeterogeneousMediumWithChem:: physical channels require single-valued scalar painters" );
+			return false;
+		}
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_chem") },
+		{ "chemistry", RISECBOR64::Value::MapValue({
+			{ "c2_interval_nm", FireFloatArray(chem_interval_c2,2) },
+			{ "c2_painter", FireText(chem_c2_painter) },
+			{ "c2_spd", FireText(chem_spd_c2) },
+			{ "ch_interval_nm", FireFloatArray(chem_interval_ch,2) },
+			{ "ch_painter", FireText(chem_ch_painter) },
+			{ "ch_spd", FireText(chem_spd_ch) },
+			{ "co2_interval_nm", FireFloatArray(chem_interval_co2,2) },
+			{ "co2_painter", FireText(chem_co2_painter) },
+			{ "co2_spd", FireText(chem_spd_co2) } }) },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+		&medium, *painters[0], *painters[1], painters[2],
+		*painters[3], *painters[4], *painters[5],
+		*curves[0], *curves[1], *curves[2],
+		Scalar(chem_interval_ch[0]), Scalar(chem_interval_ch[1]),
+		Scalar(chem_interval_c2[0]), Scalar(chem_interval_c2[1]),
+		Scalar(chem_interval_co2[0]), Scalar(chem_interval_co2[1]),
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), Scalar(soot_em), Scalar(soot_density),
+		Scalar(soot_albedo_hot), Scalar(soot_g_hot),
+		Scalar(smoke_km_carbon), Scalar(smoke_n_carbon),
+		Scalar(smoke_albedo_carbon), Scalar(smoke_g_carbon),
+		Scalar(smoke_km_cond), Scalar(smoke_n_cond),
+		Scalar(smoke_albedo_cond), Scalar(smoke_g_cond)) || !medium ) return false;
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,curves);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithPreset(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const char* optical_record
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !bboxMin ||
+		!bboxMax || !optical_record ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	const auto hasName = []( const char* value ) {
+		return value && value[0];
+	};
+	const bool chemFields[9] = {
+		hasName(chem_ch_painter), hasName(chem_c2_painter), hasName(chem_co2_painter),
+		hasName(chem_spd_ch), hasName(chem_spd_c2), hasName(chem_spd_co2),
+		chem_interval_ch != 0, chem_interval_c2 != 0, chem_interval_co2 != 0 };
+	bool hasAnyChem = false;
+	bool hasAllChem = true;
+	for( unsigned int i=0; i<9u; ++i ) {
+		hasAnyChem = hasAnyChem || chemFields[i];
+		hasAllChem = hasAllChem && chemFields[i];
+	}
+	if( hasAnyChem && !hasAllChem ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: chem bundle is incomplete" );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem(carbon_painter);
+	IScalarPainter* temperature = pScalarPntManager->GetItem(temperature_painter);
+	IScalarPainter* condensed = hasName(condensed_painter) ?
+		pScalarPntManager->GetItem(condensed_painter) : 0;
+	IScalarPainter* chemPainters[3] = { 0, 0, 0 };
+	IFunction1D* chemSPDs[3] = { 0, 0, 0 };
+	if( hasAllChem ) {
+		chemPainters[0] = pScalarPntManager->GetItem(chem_ch_painter);
+		chemPainters[1] = pScalarPntManager->GetItem(chem_c2_painter);
+		chemPainters[2] = pScalarPntManager->GetItem(chem_co2_painter);
+		chemSPDs[0] = pFunc1DManager->GetItem(chem_spd_ch);
+		chemSPDs[1] = pFunc1DManager->GetItem(chem_spd_c2);
+		chemSPDs[2] = pFunc1DManager->GetItem(chem_spd_co2);
+	}
+	if( !carbon || !temperature || (hasName(condensed_painter) && !condensed) ||
+		(hasAllChem && (!chemPainters[0] || !chemPainters[1] || !chemPainters[2] ||
+			!chemSPDs[0] || !chemSPDs[1] || !chemSPDs[2])) ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		(condensed && condensed->HasPerChannelVariation()) ) return false;
+	for( unsigned int i=0; i<3u; ++i ) {
+		if( chemPainters[i] && chemPainters[i]->HasPerChannelVariation() ) return false;
+	}
+	RISECBOR64::Value chemistry = RISECBOR64::Value::MapValue({
+		{ "c2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_c2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "c2_painter", FireText(chem_c2_painter) },
+		{ "c2_spd", FireText(chem_spd_c2) },
+		{ "ch_interval_nm", hasAllChem ? FireFloatArray(chem_interval_ch,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "ch_painter", FireText(chem_ch_painter) },
+		{ "ch_spd", FireText(chem_spd_ch) },
+		{ "co2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_co2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "co2_painter", FireText(chem_co2_painter) },
+		{ "co2_spd", FireText(chem_spd_co2) },
+		{ "model", RISECBOR64::Value::String(hasAllChem ? "synthetic_fixture" : "none") }
+	});
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
+		{ "chemistry", chemistry },
+		{ "optical_record", FireText(optical_record) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		&medium, *carbon, *temperature, condensed,
+		chemPainters[0], chemPainters[1], chemPainters[2],
+		chemSPDs[0], chemSPDs[1], chemSPDs[2],
+		hasAllChem ? Scalar(chem_interval_ch[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_ch[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[1]) : 0.0,
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), optical_record ) || !medium ) return false;
+	const IFunction1D* const consumedSPDs[3] = {
+		chemSPDs[0], chemSPDs[1], chemSPDs[2] };
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,consumedSPDs);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
 	return true;
 }
 
@@ -3300,14 +10682,794 @@ bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	MediumMap::iterator it = mediaMap.find( name );
 	if( it == mediaMap.end() ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetGlobalMedium:: Medium not found `%s`", name );
 		return false;
 	}
 
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (global_medium)
 	pScene->SetGlobalMedium( it->second );
 	return true;
+}
+
+bool Job::AddFireMedium( const char* name, const char* sequenceManifest )
+
+{
+	return AddFireMediumBound(name,sequenceManifest,"carbon","temperature","",
+		"reaction","","","","velocity",true);
+}
+
+bool Job::AddFireMediumBound(
+	const char* name, const char* sequenceManifest,
+	const char* channelCarbon, const char* channelTemperature,
+	const char* channelCondensed, const char* channelReaction,
+	const char* channelChemCH, const char* channelChemC2,
+	const char* channelChemCO2, const char* channelVelocity,
+	const bool chemModelNone )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !sequenceManifest || !sequenceManifest[0] ||
+		mediaMap.find(name) != mediaMap.end() ) return false;
+	const std::string resolved = GlobalMediaPathLocator().Find(sequenceManifest).c_str();
+	std::shared_ptr<Implementation::FireSequenceManifest> manifest(
+		new Implementation::FireSequenceManifest());
+	std::string error;
+	if( !manifest->LoadPlaybackFile(resolved,error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
+		return false;
+	}
+	const auto bound = [](const char* value) { return value && value[0]; };
+	const auto exact = [&bound](const char* value,const char* expected) {
+		return !bound(value) || std::strcmp(value,expected)==0;
+	};
+	if( !bound(channelCarbon) || !bound(channelTemperature) ||
+		!exact(channelCarbon,"carbon") || !exact(channelTemperature,"temperature") ||
+		!exact(channelCondensed,"condensed") || !exact(channelReaction,"reaction") ||
+		!exact(channelChemCH,"chem_CH") || !exact(channelChemC2,"chem_C2") ||
+		!exact(channelChemCO2,"chem_CO2") || !exact(channelVelocity,"velocity") ) return false;
+	const bool boundChem=bound(channelChemCH)||bound(channelChemC2)||bound(channelChemCO2);
+	if( chemModelNone==boundChem || (boundChem && !(bound(channelChemCH)&&
+		bound(channelChemC2)&&bound(channelChemCO2))) ) return false;
+	const auto manifestHas=[&manifest](const char* name) {
+		for( const auto& channel : manifest->Channels() ) if( channel.name==name ) return true;
+		return false;
+	};
+	for( const char* selected : {channelCarbon,channelTemperature,channelCondensed,
+		channelReaction,channelChemCH,channelChemC2,channelChemCO2,channelVelocity} )
+		if( bound(selected) && !manifestHas(selected) ) return false;
+	for( const char* optional : {"condensed","reaction","velocity"} ) {
+		const bool selected = (std::strcmp(optional,"condensed")==0 && bound(channelCondensed)) ||
+			(std::strcmp(optional,"reaction")==0 && bound(channelReaction)) ||
+			(std::strcmp(optional,"velocity")==0 && bound(channelVelocity));
+		if( manifestHas(optional) != selected ) return false;
+	}
+	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
+		manifestHas("chem_CO2") != boundChem ) return false;
+	// Preview verifies each payload on demand. Explicit eager preflight is useful
+	// for offline audits; a preview setting cannot relax predictive admission.
+	const char* preflight = std::getenv("RISE_FIRE_SEQUENCE_PREFLIGHT");
+	if( (m_firePredictiveRequested && !manifest->PreflightPredictive(error)) ||
+		(!m_firePredictiveRequested && preflight && std::strcmp(preflight,"all")==0 &&
+		 !manifest->PreflightAllFrames(error)) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: sequence preflight: %s",error.c_str());
+		return false;
+	}
+	Implementation::FireSequenceMappedTime initialTime;
+	if( !manifest->MapSceneTime(manifest->TimeMap().sceneTimeOrigin,initialTime,error) ) return false;
+	Implementation::FireSequencePreparedFrame initialFrame;
+	if( !manifest->LoadFrame(initialTime.baseFrameIndex,initialFrame,error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
+		return false;
+	}
+	FireOpticsPreset optics;
+	if( !optics.LoadCanonicalRecord(manifest->OpticalRecord(),&error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: optical record: %s",error.c_str());
+		return false;
+	}
+	const RISECBOR64::Bytes* fuelBytes = manifest->EmbeddedRecord("fuel_record");
+	const RISECBOR64::Bytes* thermoBytes = manifest->EmbeddedRecord("gas_thermochemistry_record");
+	const RISECBOR64::Bytes* transportBytes = manifest->EmbeddedRecord("transport_closure_record");
+	const RISECBOR64::Bytes* opacityBytes = manifest->EmbeddedRecord("gas_opacity_record");
+	FireSimulationMethaneRecord fuel;
+	FireSimulationThermochemistryRecord thermochemistry;
+	FireSimulationTransportRecord transport;
+	FireSimulationGasOpacityRecord opacity;
+	if( !fuelBytes || !thermoBytes || !transportBytes || !opacityBytes ||
+		!fuel.LoadCanonicalRecord(*fuelBytes,&error) ||
+		!thermochemistry.LoadCanonicalRecord(*thermoBytes,&error) ||
+		!transport.LoadCanonicalRecord(*transportBytes,&error) ||
+		!opacity.LoadCanonicalRecord(*opacityBytes,&error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: embedded physical record: %s",error.c_str());
+		return false;
+	}
+	double resolvedSootDensityKGPerM3 = 0.0;
+	if( !fuel.ResolveSootDensityKGPerM3(optics,resolvedSootDensityKGPerM3,&error) ||
+		!std::isfinite(resolvedSootDensityKGPerM3) || resolvedSootDensityKGPerM3<=0.0 ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::AddFireMedium:: fuel/optics soot-density binding: %s",error.c_str());
+		return false;
+	}
+	const double commonMinimum = std::max({fuel.TemperatureMinK(),
+		thermochemistry.TemperatureMinK(),transport.TemperatureMinK(),
+		opacity.TemperatureMinK()});
+	const double commonMaximum = std::min({fuel.TemperatureMaxK(),
+		thermochemistry.TemperatureMaxK(),transport.TemperatureMaxK(),
+		opacity.TemperatureMaxK()});
+	if( manifest->TemperatureDomainMinimumK() != commonMinimum ||
+		manifest->TemperatureDomainMaximumK() != commonMaximum ) {
+		GlobalLog()->PrintEasyError("Job::AddFireMedium:: declared common temperature domain is not the embedded-record intersection");
+		return false;
+	}
+	const Implementation::FireSequenceChannelDescriptor* carbon = nullptr;
+	for( const Implementation::FireSequenceChannelDescriptor& channel : manifest->Channels() )
+		if( channel.name == "carbon" ) carbon = &channel;
+	if( !carbon || carbon->dimensions[0] > UINT_MAX || carbon->dimensions[1] > UINT_MAX ||
+		carbon->dimensions[2] > UINT_MAX ) return false;
+	const double scale = manifest->SceneUnitMeters();
+	const std::array<double,3>& translation = manifest->SceneTranslation();
+	const Point3 minimum((carbon->coreFaceBoundsMeters[0]+translation[0])/scale,
+		(carbon->coreFaceBoundsMeters[1]+translation[1])/scale,
+		(carbon->coreFaceBoundsMeters[2]+translation[2])/scale);
+	const Point3 maximum((carbon->coreFaceBoundsMeters[3]+translation[0])/scale,
+		(carbon->coreFaceBoundsMeters[4]+translation[1])/scale,
+		(carbon->coreFaceBoundsMeters[5]+translation[2])/scale);
+	HenyeyGreensteinPhaseFunction* phase = new HenyeyGreensteinPhaseFunction(0.0);
+	MultichannelHeterogeneousMedium* medium = new MultichannelHeterogeneousMedium(
+		initialFrame,manifest->ChemNormalizationIntervalsNM(),
+		static_cast<unsigned int>(carbon->dimensions[0]),
+		static_cast<unsigned int>(carbon->dimensions[1]),
+		static_cast<unsigned int>(carbon->dimensions[2]),minimum,maximum,scale,optics,*phase);
+	phase->release();
+	if( !medium->IsValid() ) {
+		medium->release();
+		GlobalLog()->PrintEasyError("Job::AddFireMedium:: prepared sequence medium is invalid");
+		return false;
+	}
+	std::shared_ptr<Implementation::FireSequencePreparationController> controller(
+		new Implementation::FireSequencePreparationController(*manifest));
+	RISECBOR64::Bytes installerBytes;
+	const RISECBOR64::Value installerRecord = RISECBOR64::Value::MapValue({
+		{"cdf_algorithm",RISECBOR64::Value::String("thermal_emission_alias_v1")},
+		{"manager_name",RISECBOR64::Value::String(name)},
+		{"majorant_algorithm",RISECBOR64::Value::String("fire_trilinear_block_majorant_v1")},
+		{"optical_record_id",RISECBOR64::Value::String(optics.RecordId())},
+		{"scene_unit_meters",RISECBOR64::Value::Float(scale)},
+		{"sequence_id",RISECBOR64::Value::String(manifest->SequenceId())}
+	});
+	if( !RISECBOR64::Encode(installerRecord,installerBytes,&error) ||
+		!medium->BindSequencePreparationController(*controller,
+			RISECBOR64::SHA256Hex(installerBytes),error) ) {
+		medium->release();
+		return false;
+	}
+	RISECBOR64::Bytes initialBindingBytes;
+	if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+		{"bindings",RISECBOR64::Value::ArrayValue({})},
+		{"manager_name",RISECBOR64::Value::String(name)}
+	}),initialBindingBytes,&error) || !controller->SetActiveBindingIdentity(
+		RISECBOR64::SHA256Hex(initialBindingBytes),error) ) {
+		medium->release(); return false;
+	}
+	Implementation::FireSequenceRenderTimeSupport support{
+		manifest->TimeMap().sceneTimeOrigin,manifest->TimeMap().sceneTimeOrigin,
+		manifest->TimeMap().sceneTimeOrigin};
+	if( !controller->PrepareMediaForRender(support,false,error) ) {
+		medium->release();
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireSequenceManifests[medium] = manifest;
+	fireSequenceControllers[medium] = controller;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	return true;
+}
+
+std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> >
+Job::ActiveFireSequenceControllers( std::string& error )
+{
+	std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > > bindings;
+	if( const IMedium* global = pScene ? pScene->GetGlobalMedium() : nullptr )
+		bindings[global].push_back({"global_medium","scene"});
+	if( pScene && pScene->GetObjects() ) {
+		struct Collector : public IEnumCallback<const char*>
+		{
+			const IObjectManager& objects;
+			std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > >& bindings;
+			Collector(const IObjectManager& source,
+				std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > >& target)
+				: objects(source), bindings(target) {}
+			bool operator()(const char* const& name) override
+			{
+				const IObject* object=objects.GetItem(name);
+				if( object && object->GetInteriorMedium() ) bindings[object->GetInteriorMedium()].push_back(
+					{"object_interior_medium",name ? name : ""});
+				return true;
+			}
+		} collector(*pScene->GetObjects(),bindings);
+		pScene->GetObjects()->EnumerateItemNames(collector);
+	}
+	std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > result;
+	for( auto& item : bindings ) {
+		const auto found=fireSequenceControllers.find(item.first);
+		if( found==fireSequenceControllers.end() ) continue;
+		std::sort(item.second.begin(),item.second.end());
+		RISECBOR64::Value::Values encodedBindings;
+		for( const auto& binding : item.second ) encodedBindings.push_back(
+			RISECBOR64::Value::MapValue({
+				{"binding_kind",RISECBOR64::Value::String(binding.first)},
+				{"binding_owner",RISECBOR64::Value::String(binding.second)}}));
+		std::string managerName;
+		for( const auto& medium : mediaMap ) if( medium.second==item.first ) {
+			managerName=medium.first.c_str(); break;
+		}
+		RISECBOR64::Bytes bytes;
+		if( managerName.empty() || !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+			{"bindings",RISECBOR64::Value::ArrayValue(encodedBindings)},
+			{"manager_name",RISECBOR64::Value::String(managerName)}
+		}),bytes,&error) || !found->second->SetActiveBindingIdentity(
+			RISECBOR64::SHA256Hex(bytes),error) ) return {};
+		result.push_back(found->second);
+	}
+	return result;
+}
+
+// Simulation M3b: the simulated meshes some object of the scene renders (an
+// unbound geometry needs no per-frame install), with the scene's shared pose
+// clock attached for their deformation blur.
+std::vector<ITimeVaryingAssetProvider*> Job::ActiveTimeVaryingAssets()
+{
+	std::vector<ITimeVaryingAssetProvider*> result;
+	if( !pScene || !pScene->GetObjects() || !pGeomManager ) return result;
+	std::set<const IGeometry*> bound;
+	struct Objects : public IEnumCallback<IObject>
+	{
+		std::set<const IGeometry*>& geometries;
+		explicit Objects( std::set<const IGeometry*>& target ) : geometries(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( object.GetGeometry() ) geometries.insert(object.GetGeometry());
+			return true;
+		}
+	} objects(bound);
+	pScene->GetObjects()->EnumerateObjects(objects);
+	if( bound.empty() ) return result;
+	struct Geometries : public IEnumCallback<const char*>
+	{
+		const IGeometryManager& manager;
+		const std::set<const IGeometry*>& bound;
+		std::vector<Implementation::SimulatedMeshGeometry*> found;
+		Geometries( const IGeometryManager& m, const std::set<const IGeometry*>& b ) : manager(m), bound(b) {}
+		bool operator()( const char* const& name ) override
+		{
+			IGeometry* geometry = manager.GetItem(name);
+			Implementation::SimulatedMeshGeometry* mesh =
+				dynamic_cast<Implementation::SimulatedMeshGeometry*>(geometry);
+			if( mesh && bound.count(geometry) ) found.push_back(mesh);
+			return true;
+		}
+	} geometries(*pGeomManager,bound);
+	pGeomManager->EnumerateItemNames(geometries);
+	const Implementation::Animator* clock =
+		dynamic_cast<const Implementation::Animator*>(pScene->GetAnimator());
+	for( Implementation::SimulatedMeshGeometry* mesh : geometries.found ) {
+		mesh->SetSampleClock(clock);
+		result.push_back(mesh);
+	}
+	return result;
+}
+
+bool Job::HasTimeVaryingAssets()
+{
+	return pScene && (pScene->HasTimeVaryingMedia() || !ActiveTimeVaryingAssets().empty());
+}
+
+// Simulation M3c: the timeline's view of the time-varying assets.
+bool Job::DescribeTimeVaryingAssets( std::vector<Simulation::TimelineRange>& ranges,
+	const bool availability )
+{
+	ranges.clear();
+	if( !pScene || !pGeomManager ) return false;
+	// Simulated meshes some object renders, by geometry name.
+	std::set<const IGeometry*> bound;
+	struct Objects : public IEnumCallback<IObject>
+	{
+		std::set<const IGeometry*>& geometries;
+		explicit Objects( std::set<const IGeometry*>& target ) : geometries(target) {}
+		bool operator()( const IObject& object ) override
+		{
+			if( object.GetGeometry() ) geometries.insert(object.GetGeometry());
+			return true;
+		}
+	} objects(bound);
+	if( pScene->GetObjects() ) pScene->GetObjects()->EnumerateObjects(objects);
+	struct Names : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> names;
+		bool operator()( const char* const& name ) override { names.push_back(name); return true; }
+	} names;
+	pGeomManager->EnumerateItemNames(names);
+	bool ok = true;
+	for( const std::string& name : names.names ) {
+		const Implementation::SimulatedMeshGeometry* mesh =
+			dynamic_cast<const Implementation::SimulatedMeshGeometry*>(pGeomManager->GetItem(name.c_str()));
+		if( !mesh || !bound.count(mesh) || !mesh->HasSource() ) continue;	// M4: an unbound mesh has no frames
+		Simulation::TimelineRange range;
+		std::string error;
+		if( !Simulation::DescribeMeshSource(mesh->Source(),availability,range,error) ) {
+			GlobalLog()->PrintEx(eLog_Warning,"Job::DescribeTimeVaryingAssets:: `%s`: %s",name.c_str(),error.c_str());
+			ok = false;
+			continue;
+		}
+		range.name = name;
+		ranges.push_back(std::move(range));
+	}
+	// Fire media bound to a sequence.  Their frames are the manifest's; a
+	// native cache that is still growing reports partial.
+	for( const auto& binding : fireSequenceManifests ) {
+		const Implementation::FireSequenceManifest& m = *binding.second;
+		if( !m.IsValid() || m.Frames().empty() ) continue;
+		const Implementation::FireSequenceTimeMap& map = m.TimeMap();
+		if( !(map.sceneToSimulationScale != 0.0) || !(map.frameStepSeconds > 0.0) ) continue;
+		Simulation::TimelineRange range;
+		range.kind = Simulation::TimelineRange::FireMedium;
+		for( const auto& named : mediaMap ) if( named.second == binding.first ) { range.name = named.first.c_str(); break; }
+		const double step = map.frameStepSeconds/map.sceneToSimulationScale;
+		const double a = map.sceneTimeOrigin;
+		const double b = map.sceneTimeOrigin + double(m.Frames().size()-1)*step;
+		range.start = std::min(a,b);
+		range.end = std::max(a,b);
+		range.availableEnd = range.end;
+		range.interval = std::fabs(step);
+		range.framesAvailable = range.framesTotal = m.Frames().size();
+		range.state = m.IsComplete() ? Simulation::TimelineRange::Complete : Simulation::TimelineRange::Partial;
+		range.fidelity = m.SourceQualification() == "predictive_qualified" ? "predictive" : "preview";
+		range.availabilityKnown = true;
+		ranges.push_back(std::move(range));
+	}
+	return ok;
+}
+
+namespace
+{
+	// The binding options of simulated_mesh_geometry (both forms).
+	bool ParseSimulatedMeshOptions( const char* who, const char* output,
+		const double time_offset, const double time_scale,
+		const char* end_policy, const char* missing_frame, const char* fidelity,
+		const bool motion_blur, const bool face_normals, const bool double_sided,
+		Implementation::SimulatedMeshGeometry::Options& options )
+	{
+		options.source.output = output && output[0] ? output : "surface";
+		options.source.timeOffset = time_offset;
+		options.source.timeScale = time_scale;
+		options.motionBlur = motion_blur;
+		options.faceNormals = face_normals;
+		options.doubleSided = double_sided;
+		const std::string end = end_policy ? end_policy : "cache";
+		if( end == "cache" ) options.source.end = Simulation::MeshEndPolicy::Cache;
+		else if( end == "hold" ) options.source.end = Simulation::MeshEndPolicy::Hold;
+		else if( end == "loop" ) options.source.end = Simulation::MeshEndPolicy::Loop;
+		else if( end == "error" ) options.source.end = Simulation::MeshEndPolicy::Error;
+		else {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown end policy `%s`",who,end.c_str());
+			return false;
+		}
+		const std::string missing = missing_frame ? missing_frame : "hold";
+		if( missing == "hold" ) options.source.missing = Simulation::MeshMissingPolicy::Hold;
+		else if( missing == "hide" ) options.source.missing = Simulation::MeshMissingPolicy::Hide;
+		else {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown missing-frame policy `%s`",who,missing.c_str());
+			return false;
+		}
+		const std::string mode = fidelity ? fidelity : "preview";
+		if( mode != "preview" && mode != "predictive" ) {
+			GlobalLog()->PrintEx(eLog_Error,"%s:: unknown fidelity `%s`",who,mode.c_str());
+			return false;
+		}
+		options.source.predictive = mode == "predictive";
+		return true;
+	}
+
+	// `~/` is the user's home.
+	bool ExpandHome( std::string& path )
+	{
+		if( path.size() >= 2 && path[0] == '~' && (path[1] == '/' || path[1] == '\\') ) {
+#if defined(_WIN32)
+			const char* home = std::getenv("USERPROFILE");
+#else
+			const char* home = std::getenv("HOME");
+#endif
+			if( !home || !home[0] ) return false;
+			path = std::string(home) + path.substr(1);
+		}
+		return true;
+	}
+}
+
+bool Job::AddSimulatedMeshGeometry(
+	const char* name, const char* cache, const char* output,
+	const double time_offset, const double time_scale,
+	const char* end_policy, const char* missing_frame, const char* fidelity,
+	const bool motion_blur, const bool face_normals, const bool double_sided )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !cache || !cache[0] ) return false;
+	Implementation::SimulatedMeshGeometry::Options options;
+	if( !ParseSimulatedMeshOptions( "Job::AddSimulatedMeshGeometry", output, time_offset, time_scale,
+		end_policy, missing_frame, fidelity, motion_blur, face_normals, double_sided, options ) ) return false;
+	const std::string mode = options.source.predictive ? "predictive" : "preview";
+	// `~/` is the user's home (caches live in a private per-user directory);
+	// any other relative path goes through the media path, by its manifest.
+	std::string root = cache;
+	if( root.size() >= 2 && root[0] == '~' && (root[1] == '/' || root[1] == '\\') ) {
+		if( !ExpandHome( root ) ) {
+			GlobalLog()->PrintEasyError("Job::AddSimulatedMeshGeometry:: `~/` cache path without a home directory");
+			return false;
+		}
+	} else if( !std::filesystem::path(root).is_absolute() ) {
+		const std::string manifest = GlobalMediaPathLocator().Find((root + "/manifest.cbor").c_str()).c_str();
+		root = std::filesystem::path(manifest).parent_path().string();
+	}
+	std::string error;
+	Implementation::SimulatedMeshGeometry* geometry =
+		Implementation::SimulatedMeshGeometry::Create(root,options,error);
+	if( !geometry ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddSimulatedMeshGeometry:: `%s`: %s",name,error.c_str());
+		return false;
+	}
+	GlobalLog()->PrintNew( geometry, __FILE__, __LINE__, "simulated mesh geometry" );
+	const Simulation::CacheDescription& d = geometry->Source().Description();
+	GlobalLog()->PrintEx(eLog_Info,
+		"Job::AddSimulatedMeshGeometry:: `%s` bound to %s output `%s` (%u vertices, %u triangles, %llu frames, %s cache, %s binding)",
+		name,root.c_str(),options.source.output.c_str(),geometry->Source().VertexCount(),
+		static_cast<unsigned int>(geometry->Source().Indices().size()/3),
+		static_cast<unsigned long long>(d.count),d.fidelity.c_str(),mode.c_str());
+	const bool added = pGeomManager->AddItem(geometry,name);
+	if( added ) {
+		SimulatedGeometryRecord record;
+		record.geometry = geometry;
+		record.binding.output = options.source.output;
+		record.binding.cacheDir = root;
+		record.binding.options = options.source;
+		simulatedGeometries[name] = record;
+	}
+	safe_release(geometry);
+	return added;
+}
+
+// ---------------------------------------------------------------- Simulation M4
+
+bool Job::SetSimulationSceneDirectory( const char* directory )
+{
+	if( !directory ) return false;
+	std::error_code ec;
+	const std::filesystem::path dir = directory[0] ? std::filesystem::absolute( directory, ec ) : std::filesystem::path();
+	if( ec ) return false;
+	simulationSceneDirectory = dir.lexically_normal().string();
+	return true;
+}
+
+bool Job::ResolveSimulationCache( const std::string& name, const std::string& authored,
+	std::filesystem::path& dir, std::string& error ) const
+{
+	std::string path = authored.empty() ? std::string("caches/") + name : authored;
+	if( !ExpandHome( path ) ) { error = "`~/` cache path without a home directory"; return false; }
+	std::filesystem::path p( path );
+	if( p.is_relative() ) {
+		std::error_code ec;
+		p = simulationSceneDirectory.empty() ? std::filesystem::absolute( p, ec ) :
+			std::filesystem::path( simulationSceneDirectory ) / p;
+		if( ec ) { error = "cannot resolve cache path " + path; return false; }
+	}
+	dir = p.lexically_normal();
+	return true;
+}
+
+bool Job::AddSimulation( const SimulationDescriptor& desc )
+{
+	const auto fail = []( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddSimulation:: %s", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = message;
+		return false;
+	};
+	if( desc.name.empty() ) return fail( desc.keyword + ": a simulation needs a `name`" );
+	if( desc.name.find( '.' ) != std::string::npos )
+		return fail( desc.keyword + " `" + desc.name + "`: a simulation name may not contain `.` (it separates the output in `source`)" );
+	if( simulationsMap.count( desc.name ) ) {
+		DiagDuplicateName( "simulation", desc.name.c_str() );
+		return false;
+	}
+	Simulation::SceneSimulationSpec spec;
+	spec.keyword = desc.keyword;
+	spec.name = desc.name;
+	spec.solverId = desc.solverId;
+	spec.sceneInputs = desc.sceneInputs;
+	spec.outputs = desc.outputs;
+	std::string error;
+	if( !desc.solverId.empty() ) {
+		if( !RISECBOR64::DecodeCanonical( desc.parameters, spec.parameters, &error ) ||
+			spec.parameters.GetType() != RISECBOR64::Value::Map )
+			return fail( desc.keyword + " `" + desc.name + "`: invalid parameter record: " + error );
+	} else {
+		spec.parameters = RISECBOR64::Value::MapValue( {} );
+	}
+	if( !ResolveSimulationCache( desc.name, desc.cache, spec.cacheDir, error ) )
+		return fail( desc.keyword + " `" + desc.name + "`: " + error );
+	simulationOrder.push_back( desc.name );
+	simulationsMap[desc.name] = spec;
+	// D35: PRODUCED simulation (the table bypasses GenericManager).
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( &simulationsMap[desc.name] ) );
+	GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulation:: %s `%s`%s%s, cache %s", desc.keyword.c_str(), desc.name.c_str(),
+		desc.solverId.empty() ? "" : " solver ", desc.solverId.c_str(), spec.cacheDir.string().c_str() );
+	return true;
+}
+
+bool Job::RemoveSimulation( const char* name )
+{
+	if( !name ) return false;
+	const auto it = simulationsMap.find( name );
+	if( it == simulationsMap.end() ) return false;
+	simulationsMap.erase( it );
+	simulationOrder.erase( std::remove( simulationOrder.begin(), simulationOrder.end(), std::string( name ) ),
+		simulationOrder.end() );
+	return true;
+}
+
+void Job::EnumerateSimulationNames( IEnumCallback<const char*>& cb ) const
+{
+	for( const std::string& n : simulationOrder ) {
+		const char* p = n.c_str();
+		if( !cb( p ) ) return;
+	}
+}
+
+std::vector<Simulation::SceneSimulationSpec> Job::SimulationSpecs() const
+{
+	std::vector<Simulation::SceneSimulationSpec> specs;
+	for( const std::string& n : simulationOrder ) {
+		const auto it = simulationsMap.find( n );
+		if( it != simulationsMap.end() ) specs.push_back( it->second );
+	}
+	return specs;
+}
+
+bool Job::SimulatedGeometryBindingOf( const IGeometry* geometry, Simulation::SimulatedGeometryBinding& binding ) const
+{
+	if( !geometry ) return false;
+	for( const auto& g : simulatedGeometries ) {
+		if( g.second.geometry != geometry ) continue;
+		// Still the scene's geometry under that name (not a stale record).
+		if( !pGeomManager || pGeomManager->GetItem( g.first.c_str() ) != geometry ) return false;
+		binding = g.second.binding;
+		return true;
+	}
+	return false;
+}
+
+bool Job::SimulationOfGeometry( const char* geometry, std::string& simulation, std::string& output ) const
+{
+	if( !geometry ) return false;
+	const auto it = simulatedGeometries.find( geometry );
+	if( it == simulatedGeometries.end() || it->second.binding.simulation.empty() ) return false;
+	simulation = it->second.binding.simulation;
+	output = it->second.binding.output;
+	return true;
+}
+
+bool Job::PlanSimulations( std::vector<Simulation::SceneSimulationPlan>& plans,
+	std::vector<Simulation::SceneSimulationSpec>& specs, std::string& error )
+{
+	plans.clear();
+	specs = SimulationSpecs();
+	if( specs.empty() ) return true;
+	if( !pScene ) { error = "no scene"; return false; }
+	Simulation::SceneObjectInputProvider provider( *pScene,
+		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	return simulationGraph->Plan( specs, provider, plans, error );
+}
+
+bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error )
+{
+	statuses.clear();
+	const std::vector<Simulation::SceneSimulationSpec> specs = SimulationSpecs();
+	if( specs.empty() ) return true;
+	if( !pScene ) { error = "no scene"; return false; }
+	Simulation::SceneObjectInputProvider provider( *pScene,
+		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
+	if( !simulationGraph->Describe( specs, provider, statuses, error ) ) return false;
+	// M5: which consumer geometries show each simulation (the GUI's live
+	// controls address a live run by its geometry).
+	for( Simulation::SceneSimulationStatus& status : statuses )
+		for( const auto& g : simulatedGeometries )
+			if( g.second.binding.simulation == status.name ) status.meshConsumers.push_back( g.first );
+	return true;
+}
+
+bool Job::AddFireMediumFromSimulation(
+	const char* name, const char* source,
+	const char* channel_carbon, const char* channel_temperature,
+	const char* channel_condensed, const char* channel_reaction,
+	const char* channel_chem_ch, const char* channel_chem_c2,
+	const char* channel_chem_co2, const char* channel_velocity,
+	const bool chem_model_none )
+{
+	const auto fail = [name]( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddFireMedium:: `%s`: %s", name ? name : "", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = std::string( "fire_medium `" ) + ( name ? name : "" ) + "`: " + message;
+		return false;
+	};
+	if( !name || !name[0] || !source || !source[0] ) return false;
+	std::string sim = source, out;
+	const std::size_t dot = sim.find( '.' );
+	if( dot != std::string::npos ) { out = sim.substr( dot + 1 ); sim.resize( dot ); }
+	const auto it = simulationsMap.find( sim );
+	if( it == simulationsMap.end() )
+		return fail( "`source` names `" + sim + "`, which is not a simulation declared before this medium" );
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &it->second ) );   // D35: RESOLVED simulation
+	const Simulation::SceneSimulationSpec& spec = it->second;
+	if( out.empty() ) out = spec.outputs.empty() ? "volume" : spec.outputs.front().first;
+	// Connection legality: only a fire-compatible grid output binds a fire medium.
+	if( !spec.outputs.empty() ) {
+		const auto o = std::find_if( spec.outputs.begin(), spec.outputs.end(),
+			[&]( const std::pair<std::string,std::string>& x ) { return x.first == out; } );
+		if( o == spec.outputs.end() ) return fail( "simulation `" + sim + "` has no output `" + out + "`" );
+		if( o->second != "grid.v1" )
+			return fail( "output `" + sim + "." + out + "` is " + o->second + "; fire_medium binds a fire grid output (grid.v1) only" );
+	}
+	std::string error;
+	const Simulation::CacheState disk = Simulation::InspectCache( spec.cacheDir, std::size_t(256) << 20, error );
+	if( disk == Simulation::CacheState::Missing ) {
+		if( m_firePredictiveRequested )
+			return fail( "simulation `" + sim + "` has no cache at " + spec.cacheDir.string() + "; a predictive fire fails closed" );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFireMedium:: `%s`: simulation `%s` has no cache yet (%s); the medium is empty until it is baked "
+			"(rise-sim bake <scene> %s)", name, sim.c_str(), spec.cacheDir.string().c_str(), sim.c_str() );
+		const double zero[3] = { 0, 0, 0 };
+		return AddHomogeneousMedium( name, zero, zero, "isotropic", 0.0 );
+	}
+	if( spec.solverId.empty() ) {
+		// A foreign cache: the output must be a grid carrying the fire channels.
+		Simulation::CacheSnapshot snapshot;
+		if( !Simulation::CacheSnapshot::Open( spec.cacheDir, std::size_t(256) << 20, snapshot, error ) )
+			return fail( "cache " + spec.cacheDir.string() + ": " + error );
+		const auto& outs = snapshot.Description().outputs;
+		const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == out; } );
+		if( o == outs.end() ) return fail( "cache " + spec.cacheDir.string() + " has no output `" + out + "`" );
+		const auto has = [&]( const char* c ) {
+			return std::any_of( o->channels.begin(), o->channels.end(), [&]( const Simulation::CacheChannel& ch ) { return ch.name == c; } );
+		};
+		if( o->type != "grid.v1" || !has( "carbon" ) || !has( "temperature" ) )
+			return fail( "output `" + sim + "." + out + "` is not a fire grid (grid.v1 with carbon and temperature)" );
+	}
+	const std::string manifest = ( spec.cacheDir / "manifest.cbor" ).string();
+	return AddFireMediumBound( name, manifest.c_str(), channel_carbon, channel_temperature, channel_condensed,
+		channel_reaction, channel_chem_ch, channel_chem_c2, channel_chem_co2, channel_velocity, chem_model_none );
+}
+
+bool Job::AddSimulatedMeshGeometryFromSimulation(
+	const char* name, const char* simulation, const char* output,
+	const double time_offset, const double time_scale,
+	const char* end_policy, const char* missing_frame, const char* fidelity,
+	const bool motion_blur, const bool face_normals, const bool double_sided )
+{
+	const auto fail = [name]( const std::string& message ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddSimulatedMeshGeometry:: `%s`: %s", name ? name : "", message.c_str() );
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = std::string( "simulated_mesh_geometry `" ) + ( name ? name : "" ) + "`: " + message;
+		return false;
+	};
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !simulation || !simulation[0] ) return false;
+	// `source sim.output` or `source sim` with `output`.
+	std::string sim = simulation, out = output && output[0] ? output : "";
+	const std::size_t dot = sim.find( '.' );
+	if( dot != std::string::npos ) {
+		const std::string named = sim.substr( dot + 1 );
+		sim.resize( dot );
+		if( !out.empty() && out != named )
+			return fail( "`source " + std::string( simulation ) + "` names output `" + named + "` but `output` says `" + out + "`" );
+		out = named;
+	}
+	const auto it = simulationsMap.find( sim );
+	if( it == simulationsMap.end() )
+		return fail( "`source` names `" + sim + "`, which is not a simulation declared before this geometry" );
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( &it->second ) );   // D35: RESOLVED simulation
+	const Simulation::SceneSimulationSpec& spec = it->second;
+	if( out.empty() ) out = spec.outputs.empty() ? "surface" : spec.outputs.front().first;
+	Implementation::SimulatedMeshGeometry::Options options;
+	if( !ParseSimulatedMeshOptions( "Job::AddSimulatedMeshGeometry", out.c_str(), time_offset, time_scale,
+		end_policy, missing_frame, fidelity, motion_blur, face_normals, double_sided, options ) ) return false;
+	// Connection legality: only a mesh output binds a simulated mesh.
+	const auto meshCodec = []( const std::string& c ) { return c == "mesh.v1" || c == "mesh.v2"; };
+	if( !spec.outputs.empty() ) {
+		const auto o = std::find_if( spec.outputs.begin(), spec.outputs.end(),
+			[&]( const std::pair<std::string,std::string>& x ) { return x.first == out; } );
+		if( o == spec.outputs.end() ) {
+			std::string names;
+			for( const auto& x : spec.outputs ) names += ( names.empty() ? "" : ", " ) + x.first;
+			return fail( "simulation `" + sim + "` has no output `" + out + "` (it has: " + names + ")" );
+		}
+		if( !meshCodec( o->second ) )
+			return fail( "output `" + sim + "." + out + "` is " + o->second + "; simulated_mesh_geometry binds a mesh output (mesh.v1 or mesh.v2) only" );
+	}
+	std::string error;
+	Implementation::SimulatedMeshGeometry* geometry = nullptr;
+	const Simulation::CacheState disk = Simulation::InspectCache( spec.cacheDir, std::size_t(256) << 20, error );
+	if( disk == Simulation::CacheState::Missing ) {
+		if( options.source.predictive )
+			return fail( "simulation `" + sim + "` has no cache at " + spec.cacheDir.string() + "; a predictive binding fails closed (bake it: rise-sim bake <scene> " + sim + ")" );
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddSimulatedMeshGeometry:: `%s`: simulation `%s` has no cache yet (%s); the mesh is empty and hidden "
+			"until it is baked (rise-sim bake <scene> %s) or a live session runs it", name, sim.c_str(),
+			spec.cacheDir.string().c_str(), sim.c_str() );
+		geometry = Implementation::SimulatedMeshGeometry::CreateUnbound( options );
+	} else {
+		if( spec.solverId.empty() && spec.outputs.empty() ) {
+			// A foreign cache: check the output's codec from its manifest.
+			Simulation::CacheSnapshot snapshot;
+			if( Simulation::CacheSnapshot::Open( spec.cacheDir, std::size_t(256) << 20, snapshot, error ) ) {
+				const auto& outs = snapshot.Description().outputs;
+				const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == out; } );
+				if( o == outs.end() ) return fail( "cache " + spec.cacheDir.string() + " has no output `" + out + "`" );
+				if( !meshCodec( o->type ) )
+					return fail( "output `" + sim + "." + out + "` is " + o->type + "; simulated_mesh_geometry binds a mesh output only" );
+			}
+		}
+		geometry = Implementation::SimulatedMeshGeometry::Create( spec.cacheDir.string(), options, error );
+		if( !geometry ) return fail( "simulation `" + sim + "` cache " + spec.cacheDir.string() + ": " + error );
+	}
+	GlobalLog()->PrintNew( geometry, __FILE__, __LINE__, "simulated mesh geometry" );
+	if( geometry->HasSource() )
+		GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulatedMeshGeometry:: `%s` bound to simulation `%s` output `%s` (%s, %u vertices)",
+			name, sim.c_str(), out.c_str(), spec.cacheDir.string().c_str(), geometry->Source().VertexCount() );
+	const bool added = pGeomManager->AddItem( geometry, name );
+	if( added ) {
+		SimulatedGeometryRecord record;
+		record.geometry = geometry;
+		record.binding.simulation = sim;
+		record.binding.output = out;
+		record.binding.cacheDir = spec.cacheDir;
+		record.binding.options = options.source;
+		simulatedGeometries[name] = record;
+	}
+	safe_release( geometry );
+	return added;
+}
+
+bool Job::SetFireFidelityMode( const char* mode )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !mode ) {
+		return false;
+	}
+	if( std::strcmp(mode, "preview") == 0 ) {
+		for( const auto& binding : fireSequenceManifests ) binding.second->ReleasePredictiveGeneration();
+		m_firePredictiveRequested = false;
+		return true;
+	}
+	if( std::strcmp(mode, "predictive") == 0 ) {
+		// Qualify all bindings before installing any new generation pins.
+		std::vector<std::pair<Implementation::FireSequenceManifest*,Implementation::FireSequenceManifest>> qualified;
+		for( const auto& binding : fireSequenceManifests ) {
+			auto& candidate = qualified.emplace_back(binding.second.get(),*binding.second).second;
+			std::string error;
+			if( !candidate.PreflightPredictive(error) ) {
+				GlobalLog()->PrintEx(eLog_Error,"Job::SetFireFidelityMode:: %s",error.c_str());
+				return false;
+			}
+		}
+		for( auto& item : qualified ) *item.first = std::move(item.second);
+		m_firePredictiveRequested = true;
+		return true;
+	}
+	GlobalLog()->PrintEx( eLog_Error,
+		"Job::SetFireFidelityMode:: unknown fidelity mode `%s`", mode );
+	return false;
 }
 
 bool Job::SetObjectInteriorMedium(
@@ -3315,9 +11477,31 @@ bool Job::SetObjectInteriorMedium(
 	const char* medium_name									///< [in] Name of the medium
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IObjectPriv* pObj = pObjectManager->GetItem( object_name );
 	if( !pObj ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectInteriorMedium:: Object not found `%s`", object_name );
+		return false;
+	}
+
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (the parser skips `interior_medium` for a container)
+	// and so does the editor, but THIS is the API the non-CST embedding binds
+	// through.  (No console form reaches here -- `modify object` supports only
+	// `material` and `shader` -- but IJob is public surface and the sibling
+	// setters ARE console-reachable, so the rule holds at all three.)
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectInteriorMedium:: `%s` is a container node (no geometry), so it takes no interior medium (no surface means no interior to be inside of); "
+			"bind it to a child that has geometry", object_name );
+		return false;
+	}
+	if( ObjectHasMixMaterial_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectInteriorMedium:: `%s` uses a mix_material (directly or via CSG operand) and cannot host an interior_medium (containment cannot enter through one leaf and exit through another)",
+			object_name );
+		RISE::SetFinalizeDiagIfEmpty( "an object carrying a mix_material cannot host an interior_medium" );
 		return false;
 	}
 
@@ -3327,12 +11511,112 @@ bool Job::SetObjectInteriorMedium(
 		return false;
 	}
 
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (interior_medium)
 	pObj->AssignInteriorMedium( *(it->second) );
+	// LightSampler caches both object-medium presence and the Phase-A fire
+	// routing bit.  Reused casters rebuild those caches on the next attach.
+	BumpSceneLightGen( pScene );
 	return true;
+}
+
+const IMedium* Job::GetMedium( const char* name ) const
+{
+	if( !name ) return 0;
+	MediumMap::const_iterator it = mediaMap.find( String( name ) );
+	return it == mediaMap.end() ? 0 : it->second;
+}
+
+bool Job::ForTest_SetFireEffectiveAbsorptionAblation(
+	const char* name,
+	const unsigned int ablation
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !name ) return false;
+	MediumMap::iterator it = mediaMap.find( String( name ) );
+	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
+		dynamic_cast<MultichannelHeterogeneousMedium*>(it->second);
+	return medium && medium->ForTest_SetEffectiveAbsorptionAblation(
+		static_cast<MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation>(ablation));
+}
+
+bool Job::ForTest_SetBlockFireDerivedRebuild(
+	const char* name,
+	const bool block
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !name ) return false;
+	MediumMap::iterator it = mediaMap.find( String(name) );
+	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
+		dynamic_cast<MultichannelHeterogeneousMedium*>(it->second);
+	if( !medium ) return false;
+	medium->ForTest_SetBlockFireDerivedRebuild(block);
+	return true;
+}
+
+void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
+{
+	for( MediumMap::const_iterator it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
+		const char* n = it->first.c_str();
+		if( !cb( n ) ) return;
+	}
+}
+
+void Job::EnumerateHairGuideNames( IEnumCallback<const char*>& cb ) const
+{
+	for( std::map<String, HairGuideStore>::const_iterator it = hairGuidesMap.begin(); it != hairGuidesMap.end(); ++it ) {
+		const char* n = it->first.c_str();
+		if( !cb( n ) ) return;
+	}
+}
+
+const IGeometry* Job::GetGeometry( const char* name ) const
+{
+	if( !name || !pGeomManager ) return 0;
+	return pGeomManager->GetItem( name );
+}
+
+void Job::EnumerateGeometryNames( IEnumCallback<const char*>& cb ) const
+{
+	if( !pGeomManager ) return;
+	pGeomManager->EnumerateItemNames( cb );
+}
+
+bool Job::IsMaterialComposed( const char* name ) const
+{
+	if( !name ) return false;
+	return composedMaterialNames.find( String( name ) ) != composedMaterialNames.end();
 }
 
 //! Creates a CSG object
 /// \return TRUE if successful, FALSE otherwise
+//! Exact VALUE compare against identity, matching ViewTransform.cpp's
+//! `IsIdentityWB` convention (see its comment for why exact compare, not an
+//! epsilon, is the right test here) -- NOT a bit-compare: every field below
+//! is a plain double `==`, and that distinction matters, because `-0.0 ==
+//! 0.0` is TRUE under `==` (a memcmp would reject it).  A rotation-by-zero
+//! can leave a signed `-0.0` in an off-diagonal (cos/sin combine with a
+//! sign that depends on axis order), and that must still read as identity.
+//! `GetFinalTransformMatrix()` is exact identity here for a transform-less
+//! operand not because SetPosition/SetOrientation were never called --
+//! Job::AddObject always calls both, even with the neutral defaults
+//! `(0,0,0)` -- but because SetPosition(0,0,0)/SetOrientation(0,0,0) compose
+//! to an EXACT identity: sin(0) == 0.0 and cos(0) == 1.0 hold bit-for-bit in
+//! IEEE double, so the neutral-default compose is the Matrix4 identity
+//! exactly, not an epsilon-close approximation.  An operand that DID get a
+//! non-neutral SetPosition/SetOrientation is what this warning
+//! (Job::AddCSGObject, below) needs to name.
+static bool IsIdentityTransform4_( const Matrix4& m )
+{
+	return ( m._00 == 1.0 && m._01 == 0.0 && m._02 == 0.0 && m._03 == 0.0
+	      && m._10 == 0.0 && m._11 == 1.0 && m._12 == 0.0 && m._13 == 0.0
+	      && m._20 == 0.0 && m._21 == 0.0 && m._22 == 1.0 && m._23 == 0.0
+	      && m._30 == 0.0 && m._31 == 0.0 && m._32 == 0.0 && m._33 == 1.0 );
+}
+
 bool Job::AddCSGObject(
 	const char* name,										///< [in] Name of the object
 	const char* objA,										///< [in] Name of the first object
@@ -3345,69 +11629,245 @@ bool Job::AddCSGObject(
 	const char* material,									///< [in] Name of the material
 	const char* modifier,									///< [in] Name of the modifier
 	const char* shader,										///< [in] Name of the shader
-	const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-	const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-	const double radiance_orient[3],						///< [in] Orientation of the object
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` ignored here
 	const double pos[3],									///< [in] Position of the object
 	const double orient[3],									///< [in] Orientation of the object
 	const bool bCastsShadows,								///< [in] Does the object cast shadows?
-	const bool bReceivesShadows								///< [in] Does the object receive shadows?
+	const bool bReceivesShadows,							///< [in] Does the object receive shadows?
+	const bool bAllowTransformedOperands					///< [in] Acknowledges an intentional operand-rebase (author set
+															///<      `allow_transformed_operands TRUE`); suppresses the
+															///<      operand-rebase advisory below.
 	)
 {
+	// RESOLVE every reference FIRST, BEFORE any mutation (atomicity, mirror AddObject): a missing
+	// operand / material / modifier / shader / radiance-painter fails the WHOLE call without
+	// creating a new object OR half-re-pointing an existing one.
+	// NOTE: this is STRICTER than the pre-#3c body (a dangling material/modifier/shader/operand
+	// now FAILS the whole derive instead of logging + silently dropping the slot) -- required
+	// for the re-point's atomicity, and it matches AddObject.  Both derive paths share this
+	// function, so CstDeriveDifferentialTest (CST-derive == legacy-parse) stays equivalent.
+	IObjectPriv* pA = pObjectManager->GetItem( objA );
+	if( !pA ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A not found `%s`", objA ); return false; }
+	IObjectPriv* pB = pObjectManager->GetItem( objB );
+	if( !pB ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B not found `%s`", objB ); return false; }
+	// 87: a CONTAINER (a `standard_object` with no `geometry`) is a pure
+	// transform, not a shape, so it cannot be a CSG operand -- the boolean has
+	// nothing to intersect.  Refuse rather than accept it: `AssignObjects`
+	// un-hides an OUTGOING operand on a re-point, which would flip a container
+	// to world-visible and leak a zero-area, zero-extent node into the TLAS and
+	// into every world-visible enumeration.
+	//
+	// "No geometry" alone is NOT the test.  A CSGObject also carries a null
+	// pGeometry -- its shape is synthesized from its own two operands -- and
+	// NESTED CSG is a supported, in-corpus construction
+	// (scenes/Tests/Geometry/csg_comprehensive.RISEscene's `csg_nested` takes
+	// `r3c_inner_csg` as an operand).  A container is the node that has neither
+	// geometry NOR operands.
+	if( IsContainerObject_( pA ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A `%s` is a container node (a transform with no geometry and no operands), not a shape", objA ); return false; }
+	if( IsContainerObject_( pB ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B `%s` is a container node (a transform with no geometry and no operands), not a shape", objB ); return false; }
+
+	// 87: an operand is not a scene-graph node -- CSGObject::IntersectRay reads
+	// its matrix as CSG-LOCAL, so composing a world parent into it puts the
+	// operand somewhere nobody asked for.  ObjectManager::SetObjectParent
+	// refuses that, but it identifies an operand as "hidden and not a
+	// container", and an operand is only hidden once ITS csg_object is
+	// applied -- which declare-before-use forces to come AFTER it.  From a
+	// scene file the child-side gate can therefore never fire.  This is the
+	// reciprocal check, at the point where operand-ness is actually decided.
+	{
+		const char* const names[2] = { objA, objB };
+		for( int k = 0; k < 2; ++k ) {
+			const char* pn = pObjectManager->GetObjectParent( names[k] );
+			if( pn && pn[0] ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddCSGObject:: `%s` cannot be a CSG operand -- it is parented to `%s`, and an "
+					"operand's transform is interpreted in this csg_object's frame, not the world's.  "
+					"Parent the csg_object instead.", names[k], pn );
+				return false;
+			}
+			if( pObjectManager->HasChildren( names[k] ) ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddCSGObject:: `%s` cannot be a CSG operand -- other objects are parented to it, "
+					"and they would be placed as if this csg_object had no transform.  Parent them to the "
+					"csg_object instead.", names[k] );
+				return false;
+			}
+		}
+	}
+
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
+
+	// 87: the reciprocal of the operand-parent-refusal comment above, made
+	// audible.  An operand's transform is read in THIS csg_object's LOCAL
+	// frame -- so when the csg_object ALSO carries its own position/
+	// orientation, that transform RE-BASES every already-positioned operand:
+	// the composite lands at (this csg_object's transform composed with the
+	// operand's transform), not at the operand's authored world coordinates.
+	// That composition is exactly once and exactly correct
+	// (CSGObject::IntersectRay), so this is NOT a bug -- it is a valid,
+	// supported construction (an already-authored sub-assembly can
+	// legitimately be rebased as a unit).  But a caller who separately
+	// positioned the operands AND the csg_object, expecting the operands to
+	// keep their authored place, can get a shifted -- or entirely
+	// out-of-frustum, all-black -- composite with no visual clue why.  One
+	// advisory, not an error: refusing would break the legitimate use.
+	//
+	// PLACEMENT: this runs AFTER the material/modifier/shader/radiance-
+	// painter resolution above (all of which can `return false`), not
+	// before -- so a call that is going to fail never gets to warn about an
+	// object it is not going to create.  Placing it any earlier described a
+	// composite that never came into being.
+	//
+	// SCOPE: a csg_object placed via `parent` (ObjectManager::SetObjectParent,
+	// applied AFTER this call returns, by the chunk parser) re-bases its
+	// operands the exact same way -- parenting composes into the csg_object's
+	// own final transform just like an inline `position`/`orientation` does.
+	// It deliberately does NOT trip this advisory: parenting the csg_object
+	// is this codebase's explicitly recommended grouping idiom (see the
+	// operand-parent gate above -- its own error message says "Parent the
+	// csg_object instead"), which is itself an expression of intent
+	// equivalent to `allow_transformed_operands TRUE`.  This advisory targets
+	// only the DUAL-INLINE-AUTHORING confusion: operand `position` and
+	// csg_object `position` written in the same document, with nothing else
+	// signalling the rebase was deliberate.
+	//
+	// ACKNOWLEDGMENT: `allow_transformed_operands TRUE` on this csg_object
+	// suppresses the advisory below -- the idiom mirrors
+	// `allow_non_sampling_emitter` on the same chunk (ChunkParserRegistry.cpp
+	// descriptor), except that flag is semantically inert to Job and read
+	// separately by AgentSession, while this one is read by, and changes the
+	// behaviour of, this very function.
+	if( !bAllowTransformedOperands ) {
+		const bool csgTransformed = pos[0] != 0.0 || pos[1] != 0.0 || pos[2] != 0.0
+		                          || orient[0] != 0.0 || orient[1] != 0.0 || orient[2] != 0.0;
+		if( csgTransformed ) {
+			const bool aTransformed = !IsIdentityTransform4_( pA->GetFinalTransformMatrix() );
+			const bool bTransformed = !IsIdentityTransform4_( pB->GetFinalTransformMatrix() );
+			if( aTransformed || bTransformed ) {
+				const bool bothTransformed = aTransformed && bTransformed;
+				std::string operandDesc;
+				if( bothTransformed )   { operandDesc = std::string( "`" ) + objA + "` and `" + objB + "`"; }
+				else if( aTransformed ) { operandDesc = std::string( "`" ) + objA + "`"; }
+				else                    { operandDesc = std::string( "`" ) + objB + "`"; }
+				const char* const which    = bothTransformed ? "operands" : "operand";
+				const char* const isAre    = bothTransformed ? "are"      : "is";
+				const char* const itThem   = bothTransformed ? "them"     : "it";
+				const char* const eachThe  = bothTransformed ? "each"     : "the";
+				const char* const authored = bothTransformed ? "operands'" : "operand's";
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Job::AddCSGObject:: `%s` carries its own position/orientation on top of %s %s, "
+					"which %s already transformed -- an operand's transform is interpreted in `%s`'s "
+					"LOCAL frame, not the world's, so `%s`'s own transform RE-BASES %s: the composite "
+					"lands at (`%s`'s transform composed with %s operand's transform), NOT at the %s "
+					"authored coordinates.  This is a valid construction (a sub-assembly rebased as a "
+					"unit); if it is what you intend, set `allow_transformed_operands TRUE` to "
+					"acknowledge it.  But if the composite renders shifted, empty, or entirely out of "
+					"view (an all-black frame), this composition is the likely reason -- either "
+					"position the composite solely through `%s` (author its operands untransformed), "
+					"or drop `%s`'s own position/orientation.",
+					name, which, operandDesc.c_str(), isAre, name, name, itThem, name, eachThe,
+					authored, name, name );
+			}
+		}
+	}
+
+	// Slice 3 / workstream #3 (stable-object apply): in incremental re-point mode an EXISTING
+	// same-named CSGObject is re-pointed IN PLACE (its address -- which the TLAS stores raw, and
+	// which a parent CSG's operand pointer may hold -- is preserved); AssignObjects re-binds the
+	// operands (un-hiding the old, hiding the new) and SetOperation re-sets the op.  A full derive
+	// has the flag false and no object pre-exists, so this is byte-identical to the create path.
+	// From here on nothing can fail.
 	IObjectPriv* object = 0;
-	RISE_API_CreateCSGObject(
-		&object,
-		pObjectManager->GetItem(objA),
-		pObjectManager->GetItem(objB),
-		op );
+	bool repoint = false;
+	bool ok = true;   // re-point path always succeeds (object already in manager); create path sets this from AddItem
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		repoint = ( object != 0 && dynamic_cast<CSGObject*>( object ) != 0 );
+	}
+	if( repoint ) {
+		if( object->GetInteriorMedium() &&
+			( ( pMat && pMat->IsUnresolvedMix() ) ||
+			  ( !pMat && ( ObjectHasMixMaterial_( pA ) || ObjectHasMixMaterial_( pB ) ) ) ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddCSGObject:: `%s` already has an interior_medium and cannot be bound to a mix_material",
+				name ? name : "" );
+			RISE::SetFinalizeDiagIfEmpty( "cannot assign mix_material to a CSG object with an interior_medium" );
+			return false;
+		}
+		CSGObject* csg = dynamic_cast<CSGObject*>( object );
+		csg->AssignObjects( pA, pB );
+		csg->SetOperation( CsgOpFromChar( op ) );
+	} else {
+		RISE_API_CreateCSGObject( &object, pA, pB, op );
+	}
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
-
-	if( material ) {
-		IMaterial* pMat = pMatManager->GetItem(material);
-		if( pMat ) {
-			object->AssignMaterial( *pMat );
-		}
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );   // recreate-and-re-wrap (replaces any prior map)
+		safe_release( pRadianceMap );
 	}
 
-	if( modifier ) {
-		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
-		if( pMod ) {
-			object->AssignModifier( *pMod );
-		}
-	}
-
-	if( shader ) {
-		IShader* pShader = pShaderManager->GetItem(shader);
-		if( pShader ) {
-			object->AssignShader( *pShader );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", modifier );
-		}
-	}
-
-	if( radiancemap ) {
-		IPainter* pPnt = pPntManager->GetItem(radiancemap);
-		if( pPnt ) {
-			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radiancemap_scale );
-			pRadianceMap->SetOrientation( Vector3( radiance_orient ) );
-			object->AssignRadianceMap( *pRadianceMap );
-			safe_release( pRadianceMap );
-			safe_release( pPnt );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radiancemap );
-		}
-	}
-
+	// Reset ALL transforms (stack + component) before the component form -- the same reset
+	// AddObject has done since review P1.1, and for one more reason than it had.  This function
+	// is BOTH the create path and the incremental re-point, and on the re-point the object it
+	// lands on is the LIVE one the user just dragged: SceneEditor's transform ops push their
+	// delta onto the transform STACK (SceneEdit::SetObjectPosition -> Transformable::
+	// TranslateObject -> PushBottomTransStack), and the commit that follows routes here through
+	// ApplyCstObjectComponentsEdit.  FinalizeTransformations folds the stack UNDER the component
+	// matrices and never clears it, so setting `position` while the gesture's T(5) is still on
+	// the stack composes T(5)*T(5) and the object commits to twice the pose the user asked for
+	// (measured: a panel `position 5 0 0` on an authored csg_object landed at bbox centre 10.25
+	// instead of 5.25, with the commit reporting success).  It compounds across gestures, and
+	// not by a constant factor -- the next absolute edit's delta is computed against the doubled
+	// pose, so the error changes SIGN (measured: a following `position 3 0 0` committed to 1.25).
+	//
+	// Clearing is the fix rather than subtracting the stack out, because the invariant that
+	// makes an incremental re-point sound is that it leaves the object where a FULL derive of
+	// the same document would: a full derive builds a fresh object with an EMPTY stack, so a
+	// surviving stack entry is by definition live state the document does not describe.  It is
+	// also why the pose must not instead be written the way the MATRIX route writes it
+	// (SetFinalTransformMatrix -> ReplaceFinalStack_): that route is immune only because the
+	// matrix it stores subsumes the stack, and putting a composed pose onto the stack here would
+	// spread the very pattern doc 87 forbids ("composition MUST go through FinalizeTransformations
+	// (parentWorld), never through the transform stack") into the path that authors position +
+	// orientation as components -- where `override_object`'s per-field arm, which replaces
+	// component matrices only, then composes on top of a stacked translation instead of
+	// replacing it.
+	//
+	// No-op on the create path (a fresh CSGObject has nothing to clear), and no-op on the FULL
+	// derive, which never re-points.  It does NOT reset m_mxParentWorld, so a re-pointed node
+	// keeps its place in the 87 scene graph (see Transformable::ClearAllTransforms).
+	object->ClearAllTransforms();
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->FinalizeTransformations();
 
-	pObjectManager->AddItem( object, name );
-	safe_release( object );
+	if( repoint ) {
+		// Already in the manager; do NOT AddItem / safe_release (we did not create it).  The
+		// caller's closure-gated invariant pass handles the light-topology bump (via wasEmissive),
+		// so -- like AddObject's re-point branch -- skip the create-path BumpSceneLightGen here.
+	} else {
+		ok = RegisterOrDiag( pObjectManager, object, name, "object" );
+		if( ok && object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+			BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
+		safe_release( object );
+	}
 
-	return true;
+	return ok;
 }
 
 //
@@ -3420,9 +11880,9 @@ bool Job::AddReflectionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateReflectionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddRefractionShaderOp(
@@ -3432,9 +11892,9 @@ bool Job::AddRefractionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateRefractionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddEmissionShaderOp(
@@ -3444,17 +11904,14 @@ bool Job::AddEmissionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateEmissionShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDirectLightingShaderOp(
 	const char* name,										///< [in] Name of the shaderop
-	const char* bsdf,										///< [in] BSDF to use when computing radiance (overrides object BSDF)
-	const bool nonmeshlights,								///< [in] Compute lighting from non mesh lights?
-	const bool meshlights,									///< [in] Compute lighting from mesh lights (area light sources)?
-	const bool cache										///< [in] Should the rasterizer state cache be used?
+	const char* bsdf										///< [in] BSDF to use when computing radiance (overrides object BSDF)
 	)
 {
 	IMaterial* pBSDF = 0;
@@ -3463,11 +11920,11 @@ bool Job::AddDirectLightingShaderOp(
 	}
 
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateDirectLightingShaderOp( &pShaderOp, pBSDF, nonmeshlights, meshlights, cache );
+	RISE_API_CreateDirectLightingShaderOp( &pShaderOp, pBSDF );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddCausticPelPhotonMapShaderOp(
@@ -3477,9 +11934,9 @@ bool Job::AddCausticPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateCausticPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddCausticSpectralPhotonMapShaderOp(
@@ -3489,9 +11946,9 @@ bool Job::AddCausticSpectralPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateCausticSpectralPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddGlobalPelPhotonMapShaderOp(
@@ -3501,9 +11958,9 @@ bool Job::AddGlobalPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateGlobalPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddGlobalSpectralPhotonMapShaderOp(
@@ -3513,9 +11970,9 @@ bool Job::AddGlobalSpectralPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateGlobalSpectralPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddTranslucentPelPhotonMapShaderOp(
@@ -3525,9 +11982,9 @@ bool Job::AddTranslucentPelPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateTranslucentPelPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddShadowPhotonMapShaderOp(
@@ -3537,9 +11994,9 @@ bool Job::AddShadowPhotonMapShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateShadowPhotonMapShaderOp( &pShaderOp );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDistributionTracingShaderOp(
@@ -3547,7 +12004,6 @@ bool Job::AddDistributionTracingShaderOp(
 	const unsigned int samples,								///< [in] Number of sample to use in distribution
 	const bool irradiancecaching,							///< [in] Should irradiance caching be used if available?
 	const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-	const bool branch,										///< [in] Should we branch when doing scattering?
 	const bool reflections,									///< [in] Should reflections be traced?
 	const bool refractions,									///< [in] Should refractions be traced?
 	const bool diffuse,										///< [in] Should diffuse rays be traced?
@@ -3555,11 +12011,11 @@ bool Job::AddDistributionTracingShaderOp(
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateDistributionTracingShaderOp( &pShaderOp, samples, irradiancecaching, forcecheckemitters, branch, reflections, refractions, diffuse, translucents );
+	RISE_API_CreateDistributionTracingShaderOp( &pShaderOp, samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddFinalGatherShaderOp(
@@ -3575,14 +12031,13 @@ bool Job::AddFinalGatherShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddPathTracingShaderOp(
 	const char* name,
-	const bool branch,
 	const bool smsEnabled,
 	const unsigned int smsMaxIterations,
 	const double smsThreshold,
@@ -3591,10 +12046,10 @@ bool Job::AddPathTracingShaderOp(
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreatePathTracingShaderOp( &pShaderOp, branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
-	pShaderOpManager->AddItem( pShaderOp, name );
+	RISE_API_CreatePathTracingShaderOp( &pShaderOp, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddSMSShaderOp(
@@ -3607,9 +12062,9 @@ bool Job::AddSMSShaderOp(
 {
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateSMSShaderOp( &pShaderOp, maxIterations, threshold, maxChainDepth, biased );
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddAmbientOcclusionShaderOp(
@@ -3623,9 +12078,9 @@ bool Job::AddAmbientOcclusionShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateAmbientOcclusionShaderOp( &pShaderOp, numtheta, numphi, multiplybrdf, irradiance_cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddSimpleSubSurfaceScatteringShaderOp(
@@ -3653,9 +12108,9 @@ bool Job::AddSimpleSubSurfaceScatteringShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateSimpleSubSurfaceScatteringShaderOp( &pShaderOp, numPoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, *pShader, cache, low_discrepancy, RISEPel(extinction) );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDiffusionApproximationSubSurfaceScatteringShaderOp(
@@ -3686,9 +12141,9 @@ bool Job::AddDiffusionApproximationSubSurfaceScatteringShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateDiffusionApproximationSubSurfaceScatteringShaderOp( &pShaderOp, numPoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, *pShader, cache, low_discrepancy, RISEPel(scattering), RISEPel(absorption), ior, g );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddDonnerJensenSkinSSSShaderOp(
@@ -3737,9 +12192,9 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 		pOffMel, pOffHbEpi, pOffHbDerm );
 	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
 }
 
 bool Job::AddAreaLightShaderOp(
@@ -3757,29 +12212,33 @@ bool Job::AddAreaLightShaderOp(
 		)
 
 {
+	// N (Phong/directionality exponent) is a physical SCALAR -- it is an exponent
+	// in (N+1)*pow(fDot,N), not a colour.  Routing it through IPainter's
+	// GetColorNM (eSpectrumKind_Albedo) clamps values > 1 to ~1 before the
+	// Jakob-Hanika LUT, so an authored `N 5` silently became N=1 in every
+	// spectral rasterizer while the RGB path used the true value -- see
+	// docs/ISCALARPAINTER_REFACTOR.md.  Resolved through the scalar-painter
+	// pipe: a named scalar_painter, or an inline finite scalar/triple literal.
+	// `requireSingle=true` because the consumption sites read `.v[0]` /
+	// GetValueAtNM only (a single exponent, not a per-channel one).
 	IPainter* pEmm = pPntManager->GetItem( emm );
 	if( !pEmm ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddAreaLightShaderOp: Painter not found '%s'", emm );
 		return false;
 	}
 
-	IPainter*		pN = pPntManager->GetItem( N );
-
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	IScalarPainter* pN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "arealight_shaderop", name, "N", N, /*requireSingle*/ true );
+	if( !pN ) {
+		return false;
 	}
 
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateAreaLightShaderOp( &pShaderOp, width, height, Point3(location), Vector3Ops::Normalize(Vector3(dir)), samples, *pEmm, power, *pN, hotSpot, cache );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
 	safe_release( pN );
-	return true;
+	return ok;
 }
 
 bool Job::AddTransparencyShaderOp(
@@ -3797,9 +12256,29 @@ bool Job::AddTransparencyShaderOp(
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateTransparencyShaderOp( &pShaderOp, *pTrans, one_sided );
 
-	pShaderOpManager->AddItem( pShaderOp, name );
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
 	safe_release( pShaderOp );
-	return true;
+	return ok;
+}
+
+bool Job::AddAlphaTestShaderOp(
+		const char* name,
+		const char* alpha_painter,
+		const double cutoff
+		)
+{
+	IPainter* pAlpha = pPntManager->GetItem( alpha_painter );
+	if( !pAlpha ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddAlphaTestShaderOp: Painter not found '%s'", alpha_painter );
+		return false;
+	}
+
+	IShaderOp* pShaderOp = 0;
+	RISE_API_CreateAlphaTestShaderOp( &pShaderOp, *pAlpha, cutoff );
+
+	const bool ok = RegisterOrDiag( pShaderOpManager, pShaderOp, name, "shader operation" );
+	safe_release( pShaderOp );
+	return ok;
 }
 
 //
@@ -3838,6 +12317,15 @@ bool Job::AddStandardShader(
 			shops.push_back( pEmission );
 		}
 	}
+	// NOTE: emission is the ONLY op added implicitly.  A chain that lists
+	// just DefaultDirectLighting is direct lighting only -- no op in it
+	// reports RequireSPF(), so StandardShader::Shade never scatters a
+	// continuation and every non-BSDF lobe (dielectric transmission, a
+	// weave's delta gap, a mirror) is silently dropped.  Authors add
+	// DefaultRefraction / DefaultReflection per transport mode, or use
+	// pathtracing_pel_rasterizer.  docs/SCENE_CONVENTIONS.md 8.1;
+	// CLOTH_FABRIC_DESIGN.md 15 debt 26 measured it (0.41x on a gapped
+	// weave, 0 on a dielectric pane).
 
 	for( unsigned int i=0; i<count; i++ ) {
 		IShaderOp* pShaderOp = pShaderOpManager->GetItem( shaderops[i] );
@@ -3889,9 +12377,9 @@ bool Job::AddStandardShader(
 
 	RISE_API_CreateStandardShader( &pShader, shops );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddAdvancedShader(
@@ -3922,9 +12410,9 @@ bool Job::AddAdvancedShader(
 
 	RISE_API_CreateAdvancedShader( &pShader, shops, mins, maxs, operations );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddDirectVolumeRenderingShader(
@@ -3986,9 +12474,9 @@ bool Job::AddDirectVolumeRenderingShader(
 	RISE_API_CreateDirectVolumeRenderingShader( &pShader, szVolumeFilePattern, width, height, startz, endz, accessor,
 		gradient, composite, dThresholdStart, dThresholdEnd, *pSampler, *pRed, *pGreen, *pBlue, *pAlpha, pISOShader );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 bool Job::AddSpectralDirectVolumeRenderingShader(
@@ -4052,9 +12540,9 @@ bool Job::AddSpectralDirectVolumeRenderingShader(
 	RISE_API_CreateSpectralDirectVolumeRenderingShader( &pShader, szVolumeFilePattern, width, height, startz, endz, accessor,
 		gradient, composite, dThresholdStart, dThresholdEnd, *pSampler, *pAlpha, *pSpectral, pISOShader );
 
-	pShaderManager->AddItem( pShader, name );
+	const bool ok = RegisterOrDiag( pShaderManager, pShader, name, "shader" );
 	safe_release( pShader );
-	return true;
+	return ok;
 }
 
 //
@@ -4067,90 +12555,91 @@ bool GetSamplingAndFilterElements(
 	IPixelFilter** pPixelFilter,
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / lumin
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig				///< [in] Pixel sampling + reconstruction filter
 	)
 {
 	if( numPixelSamples > 1) {
-		if( pixelSampler ) {
-			String sPixelSampler( pixelSampler );
-			if( sPixelSampler == "nrooks" ) {
-				RISE_API_CreateNRooksSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "uniform" ) {
-				RISE_API_CreateUniformSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "random" ) {
-				RISE_API_CreateRandomSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "stratified" ) {
-				RISE_API_CreateStratifiedSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "poisson" ) {
-				RISE_API_CreatePoissonDiskSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "multijittered" ) {
-				RISE_API_CreateMultiJitteredSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "halton" ) {
-				RISE_API_CreateHaltonPointsSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "sobol" ) {
-				RISE_API_CreateSobolSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else {
-				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
-				return false;
-			}
-		} else {
+		const String& sPixelSampler = pixelFilterConfig.pixelSampler;
+		const double pixelSamplerParam = pixelFilterConfig.pixelSamplerParam;
+		if( sPixelSampler == "nrooks" ) {
+			RISE_API_CreateNRooksSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "uniform" ) {
+			RISE_API_CreateUniformSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "random" ) {
+			RISE_API_CreateRandomSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "stratified" ) {
+			RISE_API_CreateStratifiedSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "poisson" ) {
+			RISE_API_CreatePoissonDiskSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "multijittered" ) {
 			RISE_API_CreateMultiJitteredSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "halton" ) {
+			RISE_API_CreateHaltonPointsSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "sobol" ) {
+			RISE_API_CreateSobolSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", sPixelSampler.c_str() );
+			return false;
 		}
 		(*pPixelSampler)->SetNumSamples( numPixelSamples );
 
-		if( pixelFilter ) {
-			String sPixelFilter( pixelFilter );
-			if( sPixelFilter == "box" ) {
-				RISE_API_CreateBoxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "tent" ) {
-				RISE_API_CreateTrianglePixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "gaussian" ) {
-				RISE_API_CreateGaussianPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "sinc" ) {
-				RISE_API_CreateSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_box" ) {
-				RISE_API_CreateBoxWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_bartlett" ) {
-				RISE_API_CreateBartlettWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_welch" ) {
-				RISE_API_CreateWelchWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_hanning" ) {
-				RISE_API_CreateHanningWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_hamming" ) {
-				RISE_API_CreateHammingWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_blackman" ) {
-				RISE_API_CreateBlackmanWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_lanczos" ) {
-				RISE_API_CreateLanczosWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_kaiser" ) {
-				RISE_API_CreateKaiserWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA );
-			} else if( sPixelFilter == "cook" ) {
-				RISE_API_CreateCookPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "max" ) {
-				RISE_API_CreateMaxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "mitchell-netravali" ) {
-				RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "lanczos" ) {
-				RISE_API_CreateLanczosPixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "catmull-rom" ) {
-				RISE_API_CreateCatmullRomPixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "cubic_bspline" ) {
-				RISE_API_CreateCubicBSplinePixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "quadratic_bspline" ) {
-				RISE_API_CreateQuadraticBSplinePixelFilter( pPixelFilter );
-			} else {
-				GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", pixelFilter );
-			}
+		const String& sPixelFilter = pixelFilterConfig.filter;
+		const double pixelFilterWidth = pixelFilterConfig.width;
+		const double pixelFilterHeight = pixelFilterConfig.height;
+		const double pixelFilterParamA = pixelFilterConfig.paramA;
+		const double pixelFilterParamB = pixelFilterConfig.paramB;
+		if( sPixelFilter == "none" ) {
+			// Explicit opt-out: leave pPixelFilter null, caller
+			// renders without sub-pixel reconstruction.
+		} else if( sPixelFilter == "box" ) {
+			RISE_API_CreateBoxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "tent" ) {
+			RISE_API_CreateTrianglePixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "gaussian" ) {
+			RISE_API_CreateGaussianPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "sinc" ) {
+			RISE_API_CreateSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_box" ) {
+			RISE_API_CreateBoxWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_bartlett" ) {
+			RISE_API_CreateBartlettWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_welch" ) {
+			RISE_API_CreateWelchWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_hanning" ) {
+			RISE_API_CreateHanningWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_hamming" ) {
+			RISE_API_CreateHammingWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_blackman" ) {
+			RISE_API_CreateBlackmanWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_lanczos" ) {
+			RISE_API_CreateLanczosWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_kaiser" ) {
+			RISE_API_CreateKaiserWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA );
+		} else if( sPixelFilter == "cook" ) {
+			RISE_API_CreateCookPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "max" ) {
+			RISE_API_CreateMaxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "mitchell-netravali" ) {
+			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "lanczos" ) {
+			RISE_API_CreateLanczosPixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "catmull-rom" ) {
+			RISE_API_CreateCatmullRomPixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "cubic_bspline" ) {
+			RISE_API_CreateCubicBSplinePixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "quadratic_bspline" ) {
+			RISE_API_CreateQuadraticBSplinePixelFilter( pPixelFilter );
 		} else {
-			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, 1.0/3.0, 1.0/3.0 );
+			// Mirrors the pixel-sampler branch above — a typo in a
+			// scene file must fail loudly rather than silently
+			// rendering without a filter.  Before this fix an
+			// unknown name produced an error log but left
+			// pPixelFilter null and returned true, so the render
+			// silently proceeded unfiltered.
+			GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", sPixelFilter.c_str() );
+			return false;
 		}
 	}
 
@@ -4174,7 +12663,7 @@ bool GetSamplingAndFilterElements(
 			} else if( sLuminarySampler == "sobol" ) {
 				RISE_API_CreateSobolSampling2D( pLumSampler, 1.0, 1.0 );
 			} else {
-				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
+				GlobalLog()->PrintEx( eLog_Error, "Unknown luminary sampler type: `%s`", luminarySampler );
 				return false;
 			}
 		} else {
@@ -4193,35 +12682,29 @@ bool Job::SetPixelBasedPelRasterizer(
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
 	const char* shader,										///< [in] The default shader
-	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-	const bool bBackground,									///< [in] Is the radiance map a background object
-	const double scale,										///< [in] How much to scale the radiance values
-	const double orient[3],									///< [in] Euler angles for orienting the radiance map
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 	const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol,									///< [in] Use Z-Sobol sampler
 	const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		luminarySampler, luminarySamplerParam, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4233,15 +12716,15 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, maxRecur, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4263,9 +12746,14 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4273,38 +12761,39 @@ bool Job::SetPixelBasedPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.numLumSamples   = numLumSamples;
+	snap.maxRecursion    = maxRecur;
+	snap.shader          = shader ? shader : "";
+	snap.luminarySampler = luminarySampler ? luminarySampler : "none";
+	snap.luminarySamplerParam = luminarySamplerParam;
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "pixelpel_rasterizer", pRaster, snap );
 }
 
 //! Sets the rasterizer type to be pixel based spectral integrating
 bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-	const unsigned int specSamples,							///< [in] Number of spectral samples / pixel
-	const double lambda_begin,								///< [in] Wavelength to start sampling at
-	const double lambda_end,								///< [in] Wavelength to finish sampling at
-	const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
+	const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
 	const char* shader,										///< [in] The default shader
-	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-	const bool bBackground,									///< [in] Is the radiance map a background object
-	const double scale,										///< [in] How much to scale the radiance values
-	const double orient[3],									///< [in] Euler angles for orienting the radiance map
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 	const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
 	const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
@@ -4312,17 +12801,20 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol,									///< [in] Use Z-Sobol sampler
-	const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		luminarySampler, luminarySamplerParam, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4334,15 +12826,15 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, maxRecur, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4383,7 +12875,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 			green->addControlPoints( numSPDvalues, rgb_spd_frequencies, rgb_spd_g );
 			blue->addControlPoints( numSPDvalues, rgb_spd_frequencies, rgb_spd_b );
 
-			RISE_API_CreatePixelBasedSpectralIntegratingRasterizerRGB( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, *red, *green, *blue );
+			RISE_API_CreatePixelBasedSpectralIntegratingRasterizerRGB( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, *red, *green, *blue );
 
 			safe_release( red );
 			safe_release( green );
@@ -4393,18 +12885,33 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise, stabilityConfig, useZSobol, useHWSS );
+		RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 	}
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.numLumSamples   = numLumSamples;
+	snap.maxRecursion    = maxRecur;
+	snap.shader          = shader ? shader : "";
+	snap.luminarySampler = luminarySampler ? luminarySampler : "none";
+	snap.luminarySamplerParam = luminarySamplerParam;
+	snap.showLuminaires  = bShowLuminaires;
+	snap.integrateRGB    = bIntegrateRGB;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.stability       = stabilityConfig;
+	return RegisterAndActivateRasterizer( "pixelintegratingspectral_rasterizer", pRaster, snap );
 }
 
 //! Sets the rasterizer type to be adaptive pixel based PEL
@@ -4414,39 +12921,27 @@ bool Job::SetBDPTPelRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
 	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4458,15 +12953,15 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4484,10 +12979,15 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4495,11 +12995,24 @@ bool Job::SetBDPTPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "bdpt_pel_rasterizer", pRaster, snap );
 }
 
 bool Job::SetBDPTSpectralRasterizer(
@@ -4507,43 +13020,28 @@ bool Job::SetBDPTSpectralRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
+	const SpectralConfig& spectralConfig,
 	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
 	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
-	const bool useHWSS,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4555,15 +13053,15 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4581,11 +13079,16 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateBDPTSpectralRasterizerAdaptive( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4593,49 +13096,518 @@ bool Job::SetBDPTSpectralRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "bdpt_spectral_rasterizer", pRaster, snap );
 }
 
-bool Job::SetPathTracingPelRasterizer(
+bool Job::SetVCMPelRasterizer(
 	const unsigned int numPixelSamples,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
+	const double mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
 	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetVCMPelRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
+
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetVCMPelRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateVCMPelRasterizer(
+		&pRaster,
+		pCaster,
+		pPixelSampler,
+		pPixelFilter,
+		maxEyeDepth,
+		maxLightDepth,
+		mergeRadius,
+		enableVC,
+		enableVM,
+		oidnDenoise,
+		oidnQuality,
+		oidnDevice,
+		oidnPrefilter,
+		guidingConfig,
+		adaptiveConfig,
+		stabilityConfig,
+		pixelFilterConfig.blueNoiseSampler, _jobFs);
+
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.mergeRadius     = mergeRadius;
+	snap.enableVC        = enableVC;
+	snap.enableVM        = enableVM;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "vcm_pel_rasterizer", pRaster, snap );
+}
+
+bool Job::SetVCMSpectralRasterizer(
+	const unsigned int numPixelSamples,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
+	const bool bShowLuminaires,
+	const SpectralConfig& spectralConfig,
+	const double mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
+	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const ProgressiveConfig& progressiveConfig
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		0, 0, pixelFilterConfig ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetVCMSpectralRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
+
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetVCMSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateVCMSpectralRasterizer(
+		&pRaster,
+		pCaster,
+		pPixelSampler,
+		pPixelFilter,
+		maxEyeDepth,
+		maxLightDepth,
+		spectralConfig.nmBegin,
+		spectralConfig.nmEnd,
+		spectralConfig.numWavelengths,
+		spectralConfig.spectralSamples,
+		mergeRadius,
+		enableVC,
+		enableVM,
+		oidnDenoise,
+		oidnQuality,
+		oidnDevice,
+		oidnPrefilter,
+		guidingConfig,
+		adaptiveConfig,
+		stabilityConfig,
+		pixelFilterConfig.blueNoiseSampler,
+		spectralConfig.useHWSS, _jobFs);
+
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.mergeRadius     = mergeRadius;
+	snap.enableVC        = enableVC;
+	snap.enableVM        = enableVM;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "vcm_spectral_rasterizer", pRaster, snap );
+}
+
+bool Job::SetAutoRasterizer(
+	const AutoIntegratorChoice integrator,
+	const unsigned int numPixelSamples,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
+	const bool bShowLuminaires,
+	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const ProgressiveConfig& progressiveConfig,
+	const bool probeEnabled
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	// The shared setup (sampler/filter, shader, caster, radiance map, RR
+	// threshold, light BVH) is integrator-agnostic and IDENTICAL to the
+	// PT/BDPT/VCM setters — the dispatcher delegates to a rasterizer built
+	// from exactly these inputs, so pinning `auto` to `pt` produces the
+	// same image as a bare pathtracing_pel_rasterizer.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		0, 0, pixelFilterConfig ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetAutoRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
+
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetAutoRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateAutoRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, integrator,
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig,
+		pixelFilterConfig.blueNoiseSampler, progressiveConfig, probeEnabled, _jobFs );
+
+	// NOTE: the wrapper applies progressiveConfig to its delegate itself
+	// (RISE_API_SetRasterizerProgressiveRendering down-casts to
+	// PixelBasedRasterizerHelper, which the wrapper is not) — so we do NOT
+	// call it on pRaster here the way the concrete setters do.
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+
+	RasterizerParams snap;
+	snap.autoIntegrator  = integrator;
+	snap.autoProbeEnabled = probeEnabled;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "auto_rasterizer", pRaster, snap );
+}
+
+bool Job::SetAutoSpectralRasterizer(
+	const AutoIntegratorChoice integrator,
+	const unsigned int numPixelSamples,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
+	const bool bShowLuminaires,
+	const SpectralConfig& spectralConfig,
+	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const ProgressiveConfig& progressiveConfig,
+	const bool probeEnabled
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	// Mirrors Job::SetAutoRasterizer; the ONLY differences are the SPECTRAL
+	// delegate factory (RISE_API_CreateAutoSpectralRasterizer) and the
+	// spectral-core param bundle in place of path-guiding.  The shared setup
+	// (sampler/filter, shader, caster, radiance map, RR threshold, light BVH)
+	// is integrator-agnostic and identical to the *_spectral_ setters, so
+	// pinning `auto` to `pt` produces the same image as pathtracing_spectral.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		0, 0, pixelFilterConfig ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetAutoSpectralRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
+
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetAutoSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateAutoSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, integrator,
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples, spectralConfig.useHWSS,
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig,
+		pixelFilterConfig.blueNoiseSampler, progressiveConfig, probeEnabled, _jobFs );
+
+	// The wrapper applies progressiveConfig to its delegate itself (see
+	// SetAutoRasterizer) — so do NOT call RISE_API_SetRasterizerProgressiveRendering here.
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+
+	RasterizerParams snap;
+	snap.autoIntegrator  = integrator;
+	snap.autoProbeEnabled = probeEnabled;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "auto_spectral_rasterizer", pRaster, snap );
+}
+
+// DL-344: with SMS on, the `transparent_shadows` walk is off for an
+// omni / spot light at the surface points where SMS is evaluated (PT's
+// PART-2 NEE): SMS estimates that light through the caster, and the
+// straight walk on top of it counted it twice (PT+SMS, omni through a 1.5
+// glass box: 2.46x).  The gate is per evaluation point (LightSampler's
+// `bSMSCoversDeltaLights`); this only wires the flag and says so.
+static void WireTransparentShadows( RISE::Implementation::RayCaster& caster, const bool transparentShadows, const bool smsEnabled )
+{
+	caster.SetTransparentShadows( transparentShadows );
+	if( transparentShadows && smsEnabled ) {
+		GlobalLog()->PrintEasyWarning( "Job:: with `sms_enabled TRUE`, `transparent_shadows TRUE` does not see omni / spot light through a specular caster at the surface points SMS evaluates (SMS estimates it there; both together count it twice, DL-344); directional lights, volume receivers and subsurface entry points keep the walk" );
+	}
+}
+
+bool Job::SetPathTracingPelRasterizer(
+	const unsigned int numPixelSamples,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
+	const bool bShowLuminaires,
+	const SMSConfig& smsConfig,
+	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const ProgressiveConfig& progressiveConfig
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4647,15 +13619,15 @@ bool Job::SetPathTracingPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4672,11 +13644,30 @@ bool Job::SetPathTracingPelRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
-	IRasterizer* pRaster = 0;
-	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in.  Routed through the concrete RayCaster (LightSampler
+	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
+	// this — their NEE stays binary.  DL-344: the walk applies to delta
+	// lights only, and not at a PT surface vertex where SMS already
+	// estimated that delta light (per evaluation point, DL-344 round 3).
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
+		}
+	}
 
-	if( pRaster && progressiveConfig.enabled ) {
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreatePathTracingPelRasterizerEx( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, smsConfig.extended, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
+
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4684,53 +13675,50 @@ bool Job::SetPathTracingPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "pathtracing_pel_rasterizer", pRaster, snap );
 }
 
 bool Job::SetPathTracingSpectralRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
+	const SpectralConfig& spectralConfig,
+	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
-	const bool useHWSS,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4742,15 +13730,15 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4767,12 +13755,28 @@ bool Job::SetPathTracingSpectralRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
-	IRasterizer* pRaster = 0;
-	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in (spectral path).  See the pel PT factory for rationale
+	// (DL-344: delta lights only; not where SMS ran at that vertex).
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
+		}
+	}
 
-	if( pRaster && progressiveConfig.enabled ) {
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreatePathTracingSpectralRasterizerEx( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, smsConfig.extended, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
+
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4780,11 +13784,23 @@ bool Job::SetPathTracingSpectralRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.spectral        = spectralConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	return RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTRasterizer(
@@ -4796,11 +13812,16 @@ bool Job::SetMLTRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IShader* pShader = pShaderManager->GetItem( shader );
 	if( !pShader ) {
 		GlobalLog()->PrintEasyError( "Job::SetMLTRasterizer:: Default shader not found" );
@@ -4808,22 +13829,56 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// Build the pixel filter.  MLT does not use a conventional pixel
+	// sampler (it generates its own film samples via the Markov chain)
+	// but it still wants a reconstruction filter — without one, splats
+	// land at integer pixels and the image shows aliasing / hard edges.
+	// We pass a dummy pixel-sampler count of 2 so GetSamplingAndFilter-
+	// Elements actually builds the filter object; the sampler it also
+	// creates is stored but never read by the MLT render loop.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
+		0, 0.0, pixelFilterConfig ) )
+	{
+		safe_release( pCaster );
+		return false;
+	}
+
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
-		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise );
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateMLTRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+		pPixelSampler, pPixelFilter, _jobFs);
 
 	safe_release( pCaster );
-	safe_release( pRasterizer );
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.maxEyeDepth        = maxEyeDepth;
+	snap.maxLightDepth      = maxLightDepth;
+	snap.nBootstrap         = nBootstrap;
+	snap.nChains            = nChains;
+	snap.nMutationsPerPixel = nMutationsPerPixel;
+	snap.largeStepProb      = largeStepProb;
+	snap.shader             = shader ? shader : "";
+	snap.showLuminaires     = bShowLuminaires;
+	snap.oidnDenoise        = oidnDenoise;
+	snap.oidnQuality        = oidnQuality;
+	snap.oidnDevice         = oidnDevice;
+	snap.oidnPrefilter      = oidnPrefilter;
+	snap.pixelFilter        = pixelFilterConfig;
+	snap.stability          = stabilityConfig;
+	return RegisterAndActivateRasterizer( "mlt_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTSpectralRasterizer(
@@ -4835,15 +13890,17 @@ bool Job::SetMLTSpectralRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int nSpectralSamples,
-	const bool useHWSS,
+	const SpectralConfig& spectralConfig,
 	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IShader* pShader = pShaderManager->GetItem( shader );
 	if( !pShader ) {
 		GlobalLog()->PrintEasyError( "Job::SetMLTSpectralRasterizer:: Default shader not found" );
@@ -4851,23 +13908,52 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// See SetMLTRasterizer above for why we request a filter here.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
+		0, 0.0, pixelFilterConfig ) )
+	{
+		safe_release( pCaster );
+		return false;
+	}
+
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateMLTSpectralRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateMLTSpectralRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-		nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise );
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.spectralSamples, spectralConfig.useHWSS, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+		pPixelSampler, pPixelFilter, _jobFs);
 
 	safe_release( pCaster );
-	safe_release( pRasterizer );
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
 
-	pRasterizer = pRaster;
-
-	return true;
+	RasterizerParams snap;
+	snap.maxEyeDepth        = maxEyeDepth;
+	snap.maxLightDepth      = maxLightDepth;
+	snap.nBootstrap         = nBootstrap;
+	snap.nChains            = nChains;
+	snap.nMutationsPerPixel = nMutationsPerPixel;
+	snap.largeStepProb      = largeStepProb;
+	snap.shader             = shader ? shader : "";
+	snap.showLuminaires     = bShowLuminaires;
+	snap.oidnDenoise        = oidnDenoise;
+	snap.oidnQuality        = oidnQuality;
+	snap.oidnDevice         = oidnDevice;
+	snap.oidnPrefilter      = oidnPrefilter;
+	snap.spectral           = spectralConfig;
+	snap.pixelFilter        = pixelFilterConfig;
+	snap.stability          = stabilityConfig;
+	return RegisterAndActivateRasterizer( "mlt_spectral_rasterizer", pRaster, snap );
 }
 
 //
@@ -4889,18 +13975,36 @@ bool Job::AddFileRasterizerOutput(
 															///		3 - HDR
 															///     4 - TIFF
 															///		5 - RGBEA
+															///		6 - EXR
 	const unsigned char bpp,								///< [in] Bits / pixel for the file
-	const char color_space									///< [in] Color space to apply
+	const char color_space,									///< [in] Color space to apply
 															///		0 - Rec709 RGB linear
 															///		1 - sRGB profile
 															///		2 - ROMM RGB (ProPhotoRGB) linear
 															///		3 - ROMM RGB (ProPhotoRGB) non-linear
+	const double exposureEV,
+	const char display_transform,
+	const char exr_compression,
+	const bool exr_with_alpha
 	)
 {
-	if( !pRasterizer ) {
-		return false;
+	// L5d — GUI hosts set m_suppressFileRasterizerOutputs at
+	// construction so loading a scene with `file_rasterizeroutput`
+	// chunks doesn't litter the user's filesystem with auto-generated
+	// PNGs / EXRs every time they hit Render in the UI.  We log the
+	// dropped pattern + return true so the parser doesn't fail (the
+	// scene is otherwise valid; the only side effect omitted is the
+	// auto-write itself).  CLI keeps the default false → byte-
+	// identical legacy behaviour.
+	if( m_suppressFileRasterizerOutputs ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"Job:: dropping file_rasterizeroutput \"%s\" "
+			"(GUI mode — interactive renders no longer write "
+			"to scene-author-specified paths; use File > Save "
+			"Rendered Image to write to a user-chosen path).",
+			szPattern ? szPattern : "(null)" );
+		return true;
 	}
-
 	COLOR_SPACE gc = eColorSpace_sRGB;
 	switch( color_space )
 	{
@@ -4918,8 +14022,62 @@ bool Job::AddFileRasterizerOutput(
 		break;
 	};
 
+	// Map display_transform char code to enum.  Out-of-range falls
+	// back to ACES (the documented default) with a warning so the
+	// user notices a typo.
+	DISPLAY_TRANSFORM dt = eDisplayTransform_ACES;
+	switch( display_transform )
+	{
+	case 0: dt = eDisplayTransform_None;     break;
+	case 1: dt = eDisplayTransform_Reinhard; break;
+	case 2: dt = eDisplayTransform_ACES;     break;
+	case 3: dt = eDisplayTransform_AgX;      break;
+	case 4: dt = eDisplayTransform_Hable;    break;
+	default:
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFileRasterizerOutput:: unknown display_transform=%d, defaulting to ACES",
+			(int)display_transform );
+		dt = eDisplayTransform_ACES;
+		break;
+	}
+
+	// Map exr_compression char code to enum.  Out-of-range falls back to PIZ.
+	EXR_COMPRESSION exrc = eExrCompression_Piz;
+	switch( exr_compression )
+	{
+	case 0: exrc = eExrCompression_None; break;
+	case 1: exrc = eExrCompression_Zip;  break;
+	case 2: exrc = eExrCompression_Piz;  break;
+	case 3: exrc = eExrCompression_Dwaa; break;
+	default:
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFileRasterizerOutput:: unknown exr_compression=%d, defaulting to PIZ",
+			(int)exr_compression );
+		exrc = eExrCompression_Piz;
+		break;
+	}
+
+	// A file output attaches to the ACTIVE rasterizer (IJob.h: "This should
+	// be called after a rasterizer has been set").  With none set there is
+	// nothing to attach to -- fail the parse with a precise diagnostic.
+	// Pre-fix this was a null deref: any scene whose file_rasterizeroutput
+	// chunk preceded its rasterizer chunk (or that had no rasterizer chunk
+	// at all) segfaulted at load.
+	if( !pRasterizer ) {
+		static const char* const msg =
+			"no rasterizer is set -- declare a rasterizer chunk (e.g. "
+			"pathtracing_pel_rasterizer) BEFORE the file_rasterizeroutput chunk";
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddFileRasterizerOutput:: %s", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+
 	IRasterizerOutput* ro = 0;
-	RISE_API_CreateFileRasterizerOutput( &ro, szPattern, bMultiple, type, bpp, gc );
+	if( !RISE_API_CreateFileRasterizerOutput(
+		&ro, szPattern, bMultiple, type, bpp, gc,
+		(Scalar)exposureEV, dt, exrc, exr_with_alpha ) || !ro ) {
+		return false;
+	}
 
 	pRasterizer->AddRasterizerOutput( ro );
 	safe_release( ro );
@@ -4931,7 +14089,8 @@ namespace RISE {
 	namespace Implementation {
 		//! This is out dispatcher that handles the rasterizer output calls and pipes them off
 		//! to the client application
-		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput, public virtual Reference
+		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		protected:
 			IJobRasterizerOutput&	pObj;
@@ -4940,21 +14099,39 @@ namespace RISE {
 			unsigned int			height;
 			bool					bPremultipliedAlpha;
 			COLOR_SPACE				color_space;
+			std::mutex				dispatchMutex;
+			// Float delivery buffer, reused across intermediate deliveries
+			// like pBuffer (both guarded by dispatchMutex, both freed after a
+			// final OutputImage and whenever a Job render entry point starts
+			// or ends, see ReleaseRenderBuffers).  The receiver contract is a FULL-FRAME
+			// array indexed (y*width+x)*4 with the valid rect passed
+			// alongside, so the buffer is frame-sized.  Outside the delivered
+			// rect it holds zeros or earlier tiles of the same render.
+			std::vector<float>		floatBuffer;
 
-			virtual ~CallbackRasterizerOutputDispatch()
+			void ClearBuffer_()
 			{
 				if( pBuffer ) {
 					GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-					delete pBuffer;
-					pBuffer = 0;
+					delete[] pBuffer;
+					pBuffer = nullptr;
 				}
+				std::vector<float>().swap( floatBuffer );
+				width = height = 0;
 			}
+
+			// INVARIANT: must never call the receiver (pObj): the Job's
+			// registry may release the last reference after the host has
+			// destroyed its receiver.
+			virtual ~CallbackRasterizerOutputDispatch() { ClearBuffer_(); }
 
 		public:
 
 			CallbackRasterizerOutputDispatch( const CallbackRasterizerOutputDispatch& o ) :
-			  pObj( o.pObj ), pBuffer( 0 ), width( o.width ), height( o.height ), bPremultipliedAlpha( o.bPremultipliedAlpha ), color_space( o.color_space )
+			  pObj( o.pObj ), pBuffer( 0 ), width( 0 ), height( 0 ), bPremultipliedAlpha( false ), color_space( eColorSpace_sRGB )
 			{
+				// The copy owns a fresh mutex/cache; do not read a live adapter's
+				// mutable conversion state while its render workers may use it.
 			}
 
 			CallbackRasterizerOutputDispatch( IJobRasterizerOutput& pObj_ ) :
@@ -4962,91 +14139,278 @@ namespace RISE {
 			{
 			}
 
+			//! Ends the render's use of the frame-sized conversion buffers.
+			//! Called by the owning Job when any render entry point starts
+			//! and when it returns or unwinds (Job::CallbackOutputRenderScope),
+			//! so a render that never reaches a final OutputImage (a throw,
+			//! a cancel, a cancelled animation) neither keeps the buffers for
+			//! the Job's lifetime nor hands its pixels to the next render.
+			//! Takes dispatchMutex, so it waits for an in-progress receiver
+			//! call rather than freeing under it; at a render's exit the
+			//! workers have joined and no delivery is in flight.
+			//! INVARIANT: must never call the receiver (pObj) -- it runs at
+			//! render entry/exit and from registry drops, possibly after the
+			//! host has torn its receiver down.
+			void ReleaseRenderBuffers()
+			{
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				ClearBuffer_();
+			}
+
+			//! Test hook: whether either conversion buffer currently owns
+			//! storage.  Unsynchronized by design (a const reader cannot take
+			//! dispatchMutex without making it mutable): call it only while no
+			//! render is delivering to this output.
+			bool HoldsRenderBuffersUnsynchronized() const
+			{
+				return pBuffer!=nullptr || floatBuffer.capacity()!=0;
+			}
+
 			//! Outputs an intermediate scanline of rasterized data
 			void OutputIntermediateImage(
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
-				)
+				) override
 			{
-				if( !pBuffer ) {
-					width = pImage.GetWidth();
-					height = pImage.GetHeight();
-					pBuffer = new RGBA16[ width*height ];
-					GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
-					bPremultipliedAlpha = pObj.PremultipliedAlpha();
-					int cp = pObj.GetColorSpace();
-					switch( cp )
-					{
-					case 0:
-						color_space = eColorSpace_Rec709RGB_Linear;
-						break;
-					case 1:
-					default:
-						color_space = eColorSpace_sRGB;
-						break;
-					case 2:
-						color_space = eColorSpace_ROMMRGB_Linear;
-						break;
-					case 3:
-						color_space = eColorSpace_ProPhotoRGB;
-						break;
-					};
-				}
-
-				// Set the appropriate bytes
-				Rect rc( 0, 0, height-1, width-1 );
-				if( pRegion ) {
-					rc.left = pRegion->left;
-					rc.top = pRegion->top;
-					rc.right = pRegion->right;
-					rc.bottom = pRegion->bottom;
-				}
-
-				for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
-					for( unsigned int x=rc.left; x<= rc.right; x++ ) {
-
-						RGBA16 conv;
-
-						switch( color_space )
-						{
-						case eColorSpace_sRGB:
-							conv = pImage.GetPEL(x,y).Integerize<sRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_Rec709RGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<Rec709RGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ROMMRGB_Linear:
-							conv = pImage.GetPEL(x,y).Integerize<ROMMRGBPel,unsigned short>( 65535.0 );
-							break;
-						case eColorSpace_ProPhotoRGB:
-							conv = pImage.GetPEL(x,y).Integerize<ProPhotoRGBPel,unsigned short>( 65535.0 );
-							break;
-						};
-
-						if( bPremultipliedAlpha ) {
-							pBuffer[y*width+x] = ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>( conv );
-						} else {
-							pBuffer[y*width+x] = conv;
-						}
-					}
-				}
-
-				// Send the data off
-				pObj.OutputImageRGBA16(	(unsigned short*)pBuffer, width, height, rc.top, rc.left, rc.bottom, rc.right );
+				// Rasterizer workers may deliver distinct tiles concurrently.
+				// Keep conversion storage and receiver access serialized while
+				// the caller's tile bracket (if any) continues to protect pixels.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				Deliver_( pImage, pRegion );
 			}
 
 			//! A full rasterization was complete, and the full image should be output
 			void OutputImage(
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
-				const unsigned int frame
+				const unsigned int /*frame*/
+				) override
+			{
+				// A final delivery ends the render: the frame-sized conversion
+				// buffers are held only while a render is delivering tiles, and
+				// the next render starts from freshly zeroed storage, so a
+				// receiver reading the whole buffer never sees the previous
+				// render's pixels.  Freed on unwind too.
+				std::lock_guard<std::mutex> lock(dispatchMutex);
+				try {
+					Deliver_( pImage, pRegion );
+				} catch( ... ) {
+					ClearBuffer_();
+					throw;
+				}
+				ClearBuffer_();
+			}
+
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::UnavailableArtifact; }
+
+		private:
+			//! Converts the clamped region and calls the receiver.  Caller
+			//! holds dispatchMutex.  The buffers are frame-sized because the
+			//! receiver contract is a full-frame array with the valid rect
+			//! alongside; they are reused between intermediate deliveries and
+			//! zeroed whenever (re)allocated.
+			void Deliver_(
+				const IRasterImage& pImage,
+				const Rect* pRegion
 				)
 			{
-				OutputIntermediateImage( pImage, pRegion );
+				const unsigned int curW=pImage.GetWidth(),curH=pImage.GetHeight();
+				// Legacy callback addressing cannot represent more than UINT_MAX
+				// pixels. Check counts before products, allocations, or height-1.
+				const size_t maxCount=std::min<size_t>(
+					std::numeric_limits<unsigned int>::max(),std::numeric_limits<size_t>::max());
+				if(!curW || !curH || curW>maxCount/curH) {
+					ClearBuffer_();return;
+				}
+				Rect rc(0,0,curH-1,curW-1);
+				if(pRegion) {
+					if(pRegion->left>pRegion->right || pRegion->top>pRegion->bottom ||
+						pRegion->left>=curW || pRegion->top>=curH)return;
+					rc.left=pRegion->left;rc.top=pRegion->top;
+					rc.right=std::min(pRegion->right,curW-1);
+					rc.bottom=std::min(pRegion->bottom,curH-1);
+				}
+				const bool wantsFloat=pObj.WantsFloat32();
+				const size_t pixelBytes=wantsFloat?4*sizeof(float):sizeof(RGBA16);
+				const size_t count=static_cast<size_t>(curW)*curH;
+				if(count>std::numeric_limits<size_t>::max()/pixelBytes) { ClearBuffer_();return; }
+				bPremultipliedAlpha=pObj.PremultipliedAlpha();
+				switch(pObj.GetColorSpace()) {
+				case 0: color_space=eColorSpace_Rec709RGB_Linear;break;
+				case 2: color_space=eColorSpace_ROMMRGB_Linear;break;
+				case 3: color_space=eColorSpace_ProPhotoRGB;break;
+				case 1:
+				default: color_space=eColorSpace_sRGB;break;
+				}
+				if(wantsFloat) {
+					// Float delivery owns only its chosen format, not an unused
+					// cached RGBA16 image alongside it.  Reallocate only when the
+					// format or the dimensions change (per-tile calls reuse it).
+					if(pBuffer || width!=curW || height!=curH || floatBuffer.size()!=count*4) {
+						ClearBuffer_();
+						floatBuffer.assign(count*4,0.0f);
+						width=curW;height=curH;
+					}
+					std::vector<float>& fbuf=floatBuffer;
+					for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+						for(unsigned int x=rc.left;x<=rc.right;++x) {
+							const RISEColor c=pImage.GetPEL(x,y);
+							const size_t idx=(static_cast<size_t>(y)*width+x)*4;
+							// Associate at source precision before narrowing: a source
+							// RGB or alpha outside binary32 can still have a finite
+							// representable product. Alpha is delivered independently.
+							fbuf[idx]=static_cast<float>(bPremultipliedAlpha?c.base.r*c.a:c.base.r);
+							fbuf[idx+1]=static_cast<float>(bPremultipliedAlpha?c.base.g*c.a:c.base.g);
+							fbuf[idx+2]=static_cast<float>(bPremultipliedAlpha?c.base.b*c.a:c.base.b);
+							fbuf[idx+3]=static_cast<float>(c.a);
+						}
+					}
+					pObj.OutputImageRGBA32F(fbuf.data(),width,height,rc.top,rc.left,rc.bottom,rc.right);
+					return;
+				}
+				if(!pBuffer || width!=curW || height!=curH) {
+					ClearBuffer_();
+					pBuffer=new RGBA16[count]();
+					width=curW;height=curH;
+					GlobalLog()->PrintNew(pBuffer,__FILE__,__LINE__,"callback pixels");
+				}
+				for(unsigned int y=rc.top;y<=rc.bottom;++y) {
+					for(unsigned int x=rc.left;x<=rc.right;++x) {
+						const RISEColor c=pImage.GetPEL(x,y);
+						RGBA16 conv;
+						switch(color_space) {
+						case eColorSpace_sRGB: conv=c.Integerize<sRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_Rec709RGB_Linear: conv=c.Integerize<Rec709RGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ROMMRGB_Linear: conv=c.Integerize<ROMMRGBPel,unsigned short>(65535.0);break;
+						case eColorSpace_ProPhotoRGB: conv=c.Integerize<ProPhotoRGBPel,unsigned short>(65535.0);break;
+						}
+						const size_t idx=static_cast<size_t>(y)*width+x;
+						pBuffer[idx]=bPremultipliedAlpha?ColorUtils::PremultiplyAlphaRGB<RGBA16,0xFFFF>(conv):conv;
+					}
+				}
+				pObj.OutputImageRGBA16(reinterpret_cast<const unsigned short*>(pBuffer),width,height,rc.top,rc.left,rc.bottom,rc.right);
 			}
+
 		};
+
+		static IRasterizerOutput* CreateCallbackRasterizerOutputDispatch_(IJobRasterizerOutput& receiver)
+		{
+			auto* output=new CallbackRasterizerOutputDispatch(receiver);
+			GlobalLog()->PrintNew(output,__FILE__,__LINE__,"callback rasterizer output dispatch");
+			return output;
+		}
+
+		// Test-only construction seam; uses the same actual dispatcher factory
+		// as Job without exposing its cpp-local type or changing any interface.
+		IRasterizerOutput* ForTest_CreateCallbackRasterizerOutput(IJobRasterizerOutput& receiver)
+		{
+			return CreateCallbackRasterizerOutputDispatch_(receiver);
+		}
+
+		// Test-only probe: whether any callback dispatcher attached to
+		// `rasterizer` still owns a conversion buffer.  Call only between
+		// renders (see HoldsRenderBuffersUnsynchronized).
+		bool ForTest_CallbackOutputsHoldRenderBuffers(const IRasterizer& rasterizer)
+		{
+			struct Probe final : IEnumCallback<IRasterizerOutput> {
+				bool holds=false;
+				bool operator()(const IRasterizerOutput& output) override {
+					if(const auto* dispatch=dynamic_cast<const CallbackRasterizerOutputDispatch*>(&output))
+						holds = holds || dispatch->HoldsRenderBuffersUnsynchronized();
+					return true;
+				}
+			} probe;
+			rasterizer.EnumerateRasterizerOutputs(probe);
+			return probe.holds;
+		}
 	}
 }
+
+//! RAII bracket around one render of a Job entry point: releases every
+//! registered callback dispatcher's conversion buffers on entry and on
+//! every exit (return or unwind).  Entry release guarantees a render never
+//! starts with a previous render's pixels even if that render bypassed the
+//! Job entry points (see Job.h's mCallbackOutputs comment).
+class Job::CallbackOutputRenderScope
+{
+public:
+	explicit CallbackOutputRenderScope( Job& job ) : mJob( job ) { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	~CallbackOutputRenderScope() { mJob.ReleaseCallbackOutputRenderBuffers_(); }
+	CallbackOutputRenderScope( const CallbackOutputRenderScope& ) = delete;
+	CallbackOutputRenderScope& operator=( const CallbackOutputRenderScope& ) = delete;
+private:
+	Job& mJob;
+};
+
+namespace
+{
+	//! Releases a render entry point's raster sequence on every exit.
+	//! Declared BEFORE the CallbackOutputRenderScope so the sequence is
+	//! released after that scope ends.
+	struct ScopedRasterizeSequenceRelease
+	{
+		IRasterizeSequence*& seq;
+		~ScopedRasterizeSequenceRelease() { safe_release( seq ); }
+	};
+}
+
+void Job::ReleaseCallbackOutputRenderBuffers_() noexcept
+{
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		for( const CallbackOutputEntry& entry : mCallbackOutputs ) {
+			entry.dispatch->ReleaseRenderBuffers();
+		}
+	} catch( ... ) {
+		// std::mutex::lock can only fail with a system_error on a
+		// resource-deadlock/OS error; a release is best-effort (the
+		// dispatcher still frees after its next final delivery and in
+		// its destructor) and must not escape a destructor.
+		GlobalLog()->PrintEasyError( "Job: failed to release callback output render buffers" );
+	}
+}
+
+void Job::DropCallbackOutputRegistry_( const IRasterizer* owner ) noexcept
+{
+	// Partition in place (no allocation, cannot throw once locked); the
+	// dropped references are released after the registry lock is gone.
+	std::vector<CallbackOutputEntry> dropped;
+	try {
+		std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+		if( !owner ) {
+			dropped.swap( mCallbackOutputs );
+		} else {
+			const auto keepEnd = std::stable_partition( mCallbackOutputs.begin(), mCallbackOutputs.end(),
+				[owner]( const CallbackOutputEntry& e ) { return e.owner != owner; } );
+			dropped.assign( keepEnd, mCallbackOutputs.end() );
+			mCallbackOutputs.erase( keepEnd, mCallbackOutputs.end() );
+		}
+	} catch( ... ) {
+		GlobalLog()->PrintEasyError( "Job: failed to drop the callback output registry" );
+		return;
+	}
+	for( CallbackOutputEntry& entry : dropped ) {
+		entry.dispatch->ReleaseRenderBuffers();
+		safe_release( entry.dispatch );
+	}
+}
+
+size_t Job::ForTest_CallbackOutputRegistrySize()
+{
+	std::lock_guard<std::mutex> lock( mCallbackOutputsMutex );
+	return mCallbackOutputs.size();
+}
+
+namespace RISE { namespace Implementation {
+	// Test-only: the callback-output registry size of a Job, or SIZE_MAX if
+	// `job` is not a Job.
+	size_t ForTest_JobCallbackOutputRegistrySize( IJob& job )
+	{
+		Job* concrete = dynamic_cast<Job*>( &job );
+		return concrete ? concrete->ForTest_CallbackOutputRegistrySize() : static_cast<size_t>( -1 );
+	}
+} }
 
 //! Creates a user callback rasterizer output
 //! This should be called after a rasterizer has been set
@@ -5060,11 +14424,23 @@ bool Job::AddCallbackRasterizerOutput(
 		return false;
 	}
 
-	IRasterizerOutput* pRo = new CallbackRasterizerOutputDispatch( *pObj );
+	// Reserve the registry slot first so the registration below cannot
+	// fail after the rasterizer already owns the dispatcher.
+	std::lock_guard<std::mutex> registryLock( mCallbackOutputsMutex );
+	mCallbackOutputs.reserve( mCallbackOutputs.size()+1 );
+
+	Implementation::CallbackRasterizerOutputDispatch* pRo =
+		new Implementation::CallbackRasterizerOutputDispatch( *pObj );
 	GlobalLog()->PrintNew( pRo, __FILE__, __LINE__, "callback rasterizer output dispatch" );
 
-	pRasterizer->AddRasterizerOutput( pRo );
-	safe_release( pRo );
+	try {
+		pRasterizer->AddRasterizerOutput( pRo );
+	} catch( ... ) {
+		safe_release( pRo );
+		throw;
+	}
+	// The creation reference becomes the registry's reference.
+	mCallbackOutputs.push_back( CallbackOutputEntry{ pRo, pRasterizer } );
 
 	return true;
 }
@@ -5082,13 +14458,13 @@ bool Job::SetCausticPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	// Always record on scene: applied to the map after BuildPendingPhotonMaps
+	// shoots.  If the map already exists (e.g. loaded from disk), apply now too.
+	pScene->QueueCausticPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5101,13 +14477,11 @@ bool Job::SetGlobalPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueGlobalPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5120,13 +14494,11 @@ bool Job::SetTranslucentPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueTranslucentPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5140,13 +14512,11 @@ bool Job::SetCausticSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
+	pScene->QueueCausticSpectralGatherParams( radius, ellipse_ratio, min, max, nm_range );
 	ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	}
-
-	pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	return true;
 }
 
@@ -5160,13 +14530,11 @@ bool Job::SetGlobalSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
+	pScene->QueueGlobalSpectralGatherParams( radius, ellipse_ratio, min, max, nm_range );
 	ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	}
-
-	pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	return true;
 }
 
@@ -5179,13 +14547,11 @@ bool Job::SetShadowGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueShadowGatherParams( radius, ellipse_ratio, min, max );
 	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5209,6 +14575,18 @@ bool Job::SetIrradianceCacheParameters(
 	return true;
 }
 
+namespace
+{
+	bool SavePhotonMap( const ISerializable& map, const char* filename )
+	{
+		if( !filename ) return false;
+		return DiskFileWriteBuffer::WriteAtomically( filename, [&map]( DiskFileWriteBuffer& buffer ) {
+			map.Serialize( buffer );
+			return true;
+		} );
+	}
+}
+
 //! Saves the caustic pel photon map to disk
 bool Job::SaveCausticPelPhotonmap(
 	const char* file_name							///< [in] Name of the file to save it to
@@ -5218,8 +14596,6 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
 
@@ -5228,10 +14604,7 @@ bool Job::SaveCausticPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global pel photon map to disk
@@ -5243,8 +14616,6 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
 
@@ -5253,10 +14624,7 @@ bool Job::SaveGlobalPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the translucent pel photon map to disk
@@ -5268,8 +14636,6 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
 
@@ -5278,10 +14644,7 @@ bool Job::SaveTranslucentPelPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the caustic spectral photon map to disk
@@ -5293,8 +14656,6 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMap();
 
@@ -5303,10 +14664,7 @@ bool Job::SaveCausticSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Saves the global spectral photon map to disk
@@ -5318,8 +14676,6 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	const ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMap();
 
@@ -5328,10 +14684,7 @@ bool Job::SaveGlobalSpectralPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 //! Loads the shadow photon map to disk
@@ -5343,8 +14696,6 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	IWriteBuffer* buffer = 0;
-	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
 	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
 
@@ -5353,10 +14704,7 @@ bool Job::SaveShadowPhotonmap(
 		return false;
 	}
 
-	pMap->Serialize( *buffer );
-
-	safe_release( buffer );
-	return true;
+	return SavePhotonMap( *pMap, file_name );
 }
 
 
@@ -5372,15 +14720,13 @@ bool Job::LoadCausticPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateCausticPelPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetCausticPelMap( pmap );
+	CausticPelPhotonMap* pmap = new CausticPelPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetCausticPelMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the global pel photon map from disk
@@ -5395,15 +14741,15 @@ bool Job::LoadGlobalPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateGlobalPelPhotonMap( &pmap, 0 );
+	GlobalPelPhotonMap* pmap = new GlobalPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "GlobalPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetGlobalPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetGlobalPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the translucent pel photon map from disk
@@ -5418,15 +14764,15 @@ bool Job::LoadTranslucentPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateTranslucentPelPhotonMap( &pmap, 0 );
+	TranslucentPelPhotonMap* pmap = new TranslucentPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "TranslucentPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetTranslucentPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetTranslucentPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the caustic spectral photon map from disk
@@ -5442,15 +14788,13 @@ bool Job::LoadCausticSpectralPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	ISpectralPhotonMap* pmap = 0;
-	RISE_API_CreateCausticSpectralPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetCausticSpectralMap( pmap );
+	CausticSpectralPhotonMap* pmap = new CausticSpectralPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetCausticSpectralMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the caustic spectral photon map from disk
@@ -5466,15 +14810,13 @@ bool Job::LoadGlobalSpectralPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	ISpectralPhotonMap* pmap = 0;
-	RISE_API_CreateGlobalSpectralPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetGlobalSpectralMap( pmap );
+	GlobalSpectralPhotonMap* pmap = new GlobalSpectralPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetGlobalSpectralMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the shadow photon map from disk
@@ -5505,7 +14847,8 @@ bool Job::LoadShadowPhotonmap(
 // Commands
 //
 
-//! Shoots caustic photons and populates the caustic pel photon map
+//! Queues a caustic pel photon-map shoot.  Actual tracing is deferred to the
+//! start of RasterizeScene, where Scene::BuildPendingPhotonMaps executes it.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootCausticPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5521,17 +14864,23 @@ bool Job::ShootCausticPelPhotons(
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
+	PendingCausticPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.branch = branch;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueCausticPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots global photons and populates the global pel photon map
+//! Queues a global pel photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootGlobalPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5545,18 +14894,21 @@ bool Job::ShootGlobalPelPhotons(
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingGlobalPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.branch = branch;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueGlobalPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots translucent photons and populates the translucent pel photon map
+//! Queues a translucent pel photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootTranslucentPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5574,17 +14926,23 @@ bool Job::ShootTranslucentPelPhotons(
 {
 	GlobalLog()->PrintEasyWarning( "The Translucent PhotonMap is deprecated.  You should consider using one of the subsurface scattering shaders instead." );
 
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateTranslucentPelPhotonTracer( &pTracer, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
+	PendingTranslucentPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.directTranslucent = direct_translucent;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueTranslucentPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots caustic photons and populates the caustic spectral photon map
+//! Queues a caustic spectral photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootCausticSpectralPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5601,18 +14959,24 @@ bool Job::ShootCausticSpectralPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, reflect, refract, power_scale, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingCausticSpectralShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.nmBegin = nm_begin;
+	req.nmEnd = nm_end;
+	req.numWavelengths = num_wavelengths;
+	req.branch = branch;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueCausticSpectralPhotonShoot( req );
 	return true;
 }
 
-//! Shoots global photons and populates the global spectral photon map
+//! Queues a global spectral photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootGlobalSpectralPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5627,18 +14991,22 @@ bool Job::ShootGlobalSpectralPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, power_scale, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingGlobalSpectralShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.nmBegin = nm_begin;
+	req.nmEnd = nm_end;
+	req.numWavelengths = num_wavelengths;
+	req.branch = branch;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueGlobalSpectralPhotonShoot( req );
 	return true;
 }
 
-//! Shoots shadow photons and populates the shadow photon map
+//! Queues a shadow photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootShadowPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -5646,15 +15014,111 @@ bool Job::ShootShadowPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateShadowPhotonTracer( &pTracer, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingShadowShoot req = {};
+	req.num = num;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueShadowPhotonShoot( req );
 	return true;
+}
+
+namespace
+{
+	// A failed later medium or fidelity check rolls back every prior install.
+	class PreparedFireChanges
+	{
+		std::vector<std::function<void()>> undo_;
+	public:
+		~PreparedFireChanges() {
+			for( auto i=undo_.rbegin(); i!=undo_.rend(); ++i ) if( *i ) (*i)();
+		}
+		bool Prepare(Implementation::FireSequencePreparationController& controller,
+			const Implementation::FireSequenceRenderTimeSupport& support,std::string& error) {
+			undo_.emplace_back();
+			return controller.PrepareMediaForRender(support,false,error,&undo_.back());
+		}
+		//! Simulation M3b: a time-varying asset (a simulated mesh) joins the
+		//! same transaction; its undo restores the previously installed frame.
+		bool PrepareAsset(ITimeVaryingAssetProvider& asset,const RenderTimeSupport& support,
+			std::string& error) {
+			undo_.emplace_back();
+			return asset.PrepareAssetForRender(support,error,&undo_.back());
+		}
+		void Commit() { undo_.clear(); }
+	};
+
+	//! The per-frame preparation controller handed to the rasterizer: fire
+	//! sequence media, then (simulation M3b) every other time-varying asset
+	//! of the render -- one transaction, one freeze.
+	class FireSequencePreparationGroup : public IRenderPreparationController
+	{
+		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers_;
+		std::vector<Implementation::FireSequencePreparationController::RenderLease> leases_;
+		std::function<bool(const RenderTimeSupport&)> afterPrepare_;
+		std::vector<ITimeVaryingAssetProvider*> assets_;
+		std::vector<ITimeVaryingAssetProvider*> frozenAssets_;
+		bool assetsAtNominal_ = false;
+		bool Frozen() const { return !leases_.empty() || !frozenAssets_.empty(); }
+	public:
+		FireSequencePreparationGroup(
+			std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers,
+			std::function<bool(const RenderTimeSupport&)> afterPrepare,
+			std::vector<ITimeVaryingAssetProvider*> assets = {} )
+			: controllers_(std::move(controllers)), afterPrepare_(std::move(afterPrepare)),
+			  assets_(std::move(assets)) {}
+		//! Simulation M3c: a still rendered through RasterizeScene (the
+		//! editor's viewport) gives no ray a sample time, so deformation keys
+		//! would only widen the mesh's boxes: assets install at the nominal
+		//! time.  Fire media keep the full shutter support.
+		void InstallAssetsAtNominal() { assetsAtNominal_ = true; }
+		bool PrepareMediaForRender(const RenderTimeSupport& support,std::string& error) override
+		{
+			if( Frozen() ) { error="mutation_frozen"; return false; }
+			const Implementation::FireSequenceRenderTimeSupport fireSupport{
+				support.nominal,support.open,support.close};
+			PreparedFireChanges changes;
+			for( const auto& controller : controllers_ )
+				if( !changes.Prepare(*controller,fireSupport,error) ) return false;
+			const RenderTimeSupport assetSupport = assetsAtNominal_ ?
+				RenderTimeSupport{support.nominal,support.nominal,support.nominal} : support;
+			for( ITimeVaryingAssetProvider* asset : assets_ )
+				if( !changes.PrepareAsset(*asset,assetSupport,error) ) return false;
+			if( afterPrepare_ && !afterPrepare_(support) ) {
+				error="prepared fire fidelity publication failed"; return false;
+			}
+			changes.Commit();
+			return true;
+		}
+		bool AcquireRenderFreeze(std::string& error) override
+		{
+			if( Frozen() ) { error="mutation_frozen"; return false; }
+			for( const auto& controller : controllers_ ) {
+				auto lease=controller->AcquireRenderLease(error);
+				if( !lease.IsValid() ) { leases_.clear(); return false; }
+				leases_.push_back(std::move(lease));
+			}
+			for( ITimeVaryingAssetProvider* asset : assets_ ) {
+				if( !asset->AcquireAssetFreeze(error) ) {
+					std::string ignored;
+					for( ITimeVaryingAssetProvider* held : frozenAssets_ ) held->ReleaseAssetFreeze(ignored);
+					frozenAssets_.clear(); leases_.clear(); return false;
+				}
+				frozenAssets_.push_back(asset);
+			}
+			return true;
+		}
+		bool ReleaseRenderFreeze(std::string& error) override
+		{
+			bool stable=leases_.size()==controllers_.size() && frozenAssets_.size()==assets_.size();
+			for( const auto& lease : leases_ ) stable=lease.StateStayedFrozen() && stable;
+			leases_.clear();
+			std::string assetError;
+			for( ITimeVaryingAssetProvider* asset : frozenAssets_ ) stable=asset->ReleaseAssetFreeze(assetError) && stable;
+			frozenAssets_.clear();
+			if( !stable ) error=assetError.empty() ? "prepared media mutated during render" : assetError;
+			return stable;
+		}
+	};
 }
 
 //! Predicts the amount of time in ms it will take to rasterize the current scene
@@ -5665,7 +15129,9 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer ) {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	if( !pRasterizer || num == 0 || !PrepareFireRenderFidelityMetadata(false) ) {
 		return false;
 	}
 
@@ -5673,71 +15139,845 @@ bool Job::PredictRasterizationTime(
 	RISE_API_CreateNRooksSampling2D( &pSampling, 1.0, 1.0, 1.0 );
 	pSampling->SetNumSamples( num );
 
-	unsigned int nMs = pRasterizer->PredictTimeToRasterizeScene( *pScene, *pSampling, actual );
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Prediction) ) {
+		safe_release(pSampling);
+		return false;
+	}
+	unsigned int nMs = 0xFFFFFFFFu;
+	if( HasTimeVaryingAssets() ) {
+		std::string preparationError;
+		auto controllers=ActiveFireSequenceControllers(preparationError);
+		if( controllers.empty() && pScene->HasTimeVaryingMedia() ) { safe_release(pSampling); return false; }
+		FireSequencePreparationGroup preparation(std::move(controllers),
+			[this](const RenderTimeSupport&) {
+				return PrepareFireRenderFidelityMetadata(false) &&
+					AuthorizeFireRasterizer(pRasterizer,
+						FireRenderPreflightAuthorization::Prediction);
+			},ActiveTimeVaryingAssets());
+		nMs=pRasterizer->PredictTimeToRasterizeScenePrepared(*pScene,*pSampling,
+			actual,Scalar(animOptions.time_start),preparation);
+	} else {
+		nMs=pRasterizer->PredictTimeToRasterizeScene(*pScene,*pSampling,actual);
+	}
+	if( nMs == 0xFFFFFFFFu ) { safe_release(pSampling); return false; }
 
 	if( ms ) {
 		*ms = nMs;
 	}
 
 	safe_release( pSampling );
+	return nMs != std::numeric_limits<unsigned int>::max();
+}
+
+static IRasterizeSequence* RasterizeSequenceFromResolution(
+	const ResolvedRasterSequence& resolved )
+{
+	IRasterizeSequence* pSeq = 0;
+	switch( resolved.kind ) {
+	case RasterSequenceKind::Morton:
+		RISE_API_CreateMortonRasterizeSequence( &pSeq, resolved.tileSize );
+		break;
+	case RasterSequenceKind::Block:
+		pSeq = new RISE::Implementation::BlockRasterizeSequence(
+			resolved.blockWidth,resolved.blockHeight,
+			static_cast<char>(resolved.blockOrder),resolved.shuffleSeed);
+		GlobalLog()->PrintNew( pSeq, __FILE__, __LINE__, "resolved block raster sequence" );
+		break;
+	case RasterSequenceKind::Scanline:
+		RISE_API_CreateScanlineRasterizeSequence( &pSeq );
+		break;
+	case RasterSequenceKind::Hilbert:
+		RISE_API_CreateHilbertRasterizeSequence( &pSeq, resolved.hilbertDepth );
+		break;
+	case RasterSequenceKind::RasterizerDefault:
+		break;
+	}
+	return pSeq;
+}
+
+namespace
+{
+	bool SceneHasActiveFireMedium( const IScene& scene )
+	{
+		const IMedium* global = scene.GetGlobalMedium();
+		if( global && global->IsFireMedium() ) return true;
+		const IObjectManager* objects = scene.GetObjects();
+		if( !objects ) return false;
+		struct Collector : public IEnumCallback<const char*>
+		{
+			const IObjectManager& objects;
+			bool found = false;
+			explicit Collector( const IObjectManager& source ) : objects(source) {}
+			bool operator()( const char* const& name ) override
+			{
+				const IObject* object = objects.GetItem(name);
+				const IMedium* medium = object ? object->GetInteriorMedium() : nullptr;
+				found = medium && medium->IsFireMedium();
+				return !found;
+			}
+		} collector(*objects);
+		objects->EnumerateItemNames(collector);
+		return collector.found;
+	}
+
+	class FrameRenderRollback
+	{
+	public:
+		explicit FrameRenderRollback( RISE::Implementation::FrameStore* store )
+			: store_(store), original_(store ? store->Meta() : RISE::FrameStoreOutput::Metadata()),
+			  committed_(false)
+		{
+			if( store_ ) store_->addref();
+		}
+		~FrameRenderRollback()
+		{
+			if( store_ && !committed_ ) {
+				try {
+					if( snapshot_ ) {
+						if( !store_->RestoreSnapshot(*snapshot_) ) store_->SetMetadata(original_);
+					} else {
+						store_->SetMetadata(original_);
+					}
+				}
+				catch( ... ) {
+					GlobalLog()->PrintEasyError(
+						"output_provenance_unavailable: fire frame rollback could not restore metadata");
+				}
+			}
+			safe_release(store_);
+		}
+		bool ArmPixelStateForFire()
+		{
+			if( !store_ || (original_.renderFidelityStatus.empty() &&
+				store_->Meta().renderFidelityStatus.empty()) ) return false;
+			snapshot_.reset(new RISE::Implementation::FrameStore::Snapshot(
+				store_->CaptureSnapshot()));
+			snapshot_->metadata = original_;
+			return true;
+		}
+		bool PreparedFire() const
+		{
+			return store_ && (!original_.renderFidelityStatus.empty() ||
+				!store_->Meta().renderFidelityStatus.empty());
+		}
+		void Commit()
+		{
+			if( store_ ) store_->CompleteFireRenderPublication();
+			committed_ = true;
+		}
+
+	private:
+		RISE::Implementation::FrameStore* store_;
+		RISE::FrameStoreOutput::Metadata original_;
+		std::unique_ptr<RISE::Implementation::FrameStore::Snapshot> snapshot_;
+		bool committed_;
+	};
+}
+
+bool Job::ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const
+{
+	if( !rasterizer || !pScene || !SceneHasActiveFireMedium(*pScene) ) return true;
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	if( !state || !state->ResolveForFirePreflight(*pScene) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire rasterizer has no preflight capability");
+		return false;
+	}
 	return true;
 }
 
-static IRasterizeSequence* RasterizeSequenceFromOptions()
+void Job::ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const
 {
-	// Read the raster sequence options from the options file
-	IOptions& options = GlobalOptions();
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( concrete ) concrete->ClearFireRenderPreflightAuthorization();
+}
 
-	const int raster_sequence_type = options.ReadInt( "raster_sequence_type", 4 );
-	RISE::String raster_sequence = options.ReadString( "raster_sequence_options", "" );
+bool Job::AuthorizeFireRasterizer(
+	IRasterizer* rasterizer,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	if( !rasterizer || !pScene ) return true;
+	const Implementation::FrameStore* store = rasterizer->GetFrameStore();
+	const bool preparedFire = store && !store->Meta().renderFidelityStatus.empty();
+	if( !SceneHasActiveFireMedium(*pScene) && !preparedFire ) return true;
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( !concrete || !concrete->AuthorizeFireRenderPreflight(*pScene,authorization) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: Job could not bind fire preflight authorization");
+		return false;
+	}
+	return true;
+}
 
-	IRasterizeSequence* pSeq = 0;
-	// parse the options
-	// Get the raster sequence type
-	switch( raster_sequence_type )
+bool Job::FireRasterizerLastRenderCompleted( const IRasterizer* rasterizer ) const
+{
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	return !state || state->LastRenderCompleted();
+}
+
+bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
+
+{
+	return PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,nullptr,nullptr,publishMetadata);
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	const double animationTimeStart,
+	const double animationTimeEnd,
+	const unsigned int animationFrames,
+	const bool animationFields,
+	const bool animationInvertFields,
+	const unsigned int* animationFrame,
+	const Rect* renderRegion,
+	ResolvedRasterSequence* resolvedSequence,
+	const bool publishMetadata )
+{
+	if( !pScene || !pRasterizer ) {
+		return false;
+	}
+	ClearFireRasterizerAuthorization(pRasterizer);
+	if( !SceneHasActiveFireMedium(*pScene) ) {
+		pScene->SetFireTemporalHold(false);
+		if( resolvedSequence ) {
+			const String options = GlobalOptions().ReadString(
+				"raster_sequence_options","");
+			*resolvedSequence = ResolveRasterSequence(
+				GlobalOptions().ReadInt("raster_sequence_type",4),options.c_str(),
+				[]() { return GlobalRNG().CanonicalRandom(); });
+		}
+		if( publishMetadata ) {
+			FrameStore* store = pRasterizer->GetFrameStore();
+			if( store ) store->SetFireFidelityMetadata("",{},{});
+		}
+		return true;
+	}
+	if( !ResolveFireRasterizerForPreflight(pRasterizer) ) return false;
+
+	Scalar wavelengthMin = 380.0;
+	Scalar wavelengthMax = 780.0;
+	bool useHWSS = false;
+	AutoIntegratorChoice autoIntegrator = AutoIntegratorChoice::Auto;
+	bool oidnDenoise = false;
+	bool radianceClampEnabled = false;
+	bool pathRegularizationEnabled = false;
+	bool smsEnabled = false;
+	const RasterizerParams* resolvedParams = 0;
+	const RasterizerRegistry::const_iterator active =
+		rasterizerRegistry.find(activeRasterizerName);
+	if( active != rasterizerRegistry.end() ) {
+		resolvedParams = &active->second.params;
+		wavelengthMin = active->second.params.spectral.nmBegin;
+		wavelengthMax = active->second.params.spectral.nmEnd;
+		useHWSS = active->second.params.spectral.useHWSS;
+		autoIntegrator = active->second.params.autoIntegrator;
+		oidnDenoise = active->second.params.oidnDenoise;
+		radianceClampEnabled = active->second.params.stability.directClamp > Scalar(0) ||
+			active->second.params.stability.indirectClamp > Scalar(0);
+		pathRegularizationEnabled = active->second.params.stability.filterGlossy > Scalar(0);
+		smsEnabled = active->second.params.sms.enabled;
+	}
+	ResolvedRasterSequence localResolvedSequence;
+	ResolvedRasterSequence* const effectiveResolvedSequence = resolvedSequence ?
+		resolvedSequence : &localResolvedSequence;
+	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = pRasterizer->ResolvedIntegratorName();
+	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
+		*resolvedParams,activeRasterizerName.c_str(),
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			activeRasterizerName.c_str(),*pScene,
+		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
+		animationTimeEnd,animationFrames,animationFields,
+		animationInvertFields,animationFrame,renderRegion,effectiveResolvedSequence,
+		nullptr,resolvedConfig)) ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: fire render has no canonical resolved configuration");
+		return false;
+	}
+	const bool prepared = PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
+		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
+		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,resolvedConfig,
+		nullptr,publishMetadata);
+	if( prepared && publishMetadata ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(pRasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = pRasterizer;
+		const std::string expectedRasterizerName = activeRasterizerName;
+		const std::string expectedIntegrator = resolvedIntegrator && resolvedIntegrator[0] ?
+			resolvedIntegrator : activeRasterizerName;
+		const bool hasAnimationFrame = animationFrame != nullptr;
+		const unsigned int selectedAnimationFrame = animationFrame ? *animationFrame : 0u;
+		const bool hasRenderRegion = renderRegion != nullptr;
+		const Rect selectedRenderRegion = renderRegion ? *renderRegion : Rect(0,0,0,0);
+		const ResolvedRasterSequence selectedSequence = *effectiveResolvedSequence;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerName,expectedIntegrator,
+			animationTimeStart,animationTimeEnd,animationFrames,animationFields,
+			animationInvertFields,hasAnimationFrame,selectedAnimationFrame,
+			hasRenderRegion,selectedRenderRegion,selectedSequence]() {
+			if( !pScene || pRasterizer != expectedRasterizer ||
+				activeRasterizerName != expectedRasterizerName ) return false;
+			const RasterizerRegistry::const_iterator current =
+				rasterizerRegistry.find(expectedRasterizerName);
+			if( current == rasterizerRegistry.end() ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(current->second.params,
+				expectedRasterizerName.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,nullptr,animationTimeStart,
+				animationTimeEnd,animationFrames,animationFields,animationInvertFields,
+				hasAnimationFrame ? &selectedAnimationFrame : nullptr,
+				hasRenderRegion ? &selectedRenderRegion : nullptr,nullptr,
+				&selectedSequence,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
+	return prepared;
+}
+
+bool Job::PrepareFireRenderForExternalRasterizer(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled )
+{
+	FireExternalRenderConfig config;
+	config.oidnDenoise = oidnDenoise;
+	config.radianceClampEnabled = radianceClampEnabled;
+	config.pathRegularizationEnabled = pathRegularizationEnabled;
+	config.smsEnabled = smsEnabled;
+	return PrepareFireRenderForExternalRasterizerResolved(
+		rasterizer,rasterizerKind,config);
+}
+
+bool Job::PrepareFireRenderForExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config )
+{
+	const Scalar t = animOptions.time_start;
+	const Implementation::FireSequenceRenderTimeSupport support{t,t,t};
+	return PrepareExternalFireAtTime(rasterizer,rasterizerKind,config,&support);
+}
+
+bool Job::PrepareExternalFireAtTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Implementation::FireSequenceRenderTimeSupport* support )
+{
+	ClearFireRasterizerAuthorization(rasterizer);
+	if( pScene && !SceneHasActiveFireMedium(*pScene) ) {
+		pScene->SetFireTemporalHold(false);
+		FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+		if( store ) store->SetFireFidelityMetadata("",{},{});
+		return true;
+	}
+	if( !ResolveFireRasterizerForPreflight(rasterizer) ) return false;
+	RasterizerParams external;
+	external.numPixelSamples = config.samplesPerPixel;
+	external.oidnDenoise = config.oidnDenoise;
+	external.integrateRGB = true;
+	external.stability.directClamp = config.radianceClampEnabled ? Scalar(1) : Scalar(0);
+	external.stability.filterGlossy =
+		config.pathRegularizationEnabled ? Scalar(1) : Scalar(0);
+	external.sms.enabled = config.smsEnabled;
+	external.lightSampleRRThreshold = lightSampleRRThreshold;
+	external.spectral.nmBegin = Scalar(380);
+	external.spectral.nmEnd = Scalar(780);
+	if( config.variantPipeline ) external.pixelFilter.filter = "box";
+	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = rasterizer ? rasterizer->ResolvedIntegratorName() : "";
+	if( !pScene || !BuildResolvedRenderConfig(external,
+		rasterizerKind ? rasterizerKind : "",
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			(rasterizerKind ? rasterizerKind : ""),*pScene,
+		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
+	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
+		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
+		false,AutoIntegratorChoice::PT,config.oidnDenoise,
+		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
+		resolvedConfig,support,true);
+	if( prepared ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = rasterizer;
+		const std::string expectedRasterizerKind = rasterizerKind ? rasterizerKind : "";
+		const std::string expectedIntegrator =
+			resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			expectedRasterizerKind;
+		const RasterizerParams expectedParams = external;
+		const FireExternalRenderConfig expectedExternal = config;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerKind,expectedIntegrator,expectedParams,expectedExternal]() {
+			if( !pScene ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(expectedParams,
+				expectedRasterizerKind.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,&expectedExternal,
+				animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+				animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+				nullptr,nullptr,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
+	return prepared;
+}
+
+bool Job::RasterizeExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config,
+	const Rect* region )
+{
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,nullptr);
+}
+
+bool Job::RasterizeExternalRasterizerAtSceneTime(
+	IRasterizer* rasterizer, const char* rasterizerKind, const FireExternalRenderConfig& config,
+	const Rect* region, const Scalar nominalTime )
+{
+	return RasterizeExternalStillAtTime(rasterizer,rasterizerKind,config,region,&nominalTime);
+}
+
+bool Job::RasterizeExternalStillAtTime(IRasterizer* rasterizer, const char* rasterizerKind,
+	const FireExternalRenderConfig& config, const Rect* region, const Scalar* selectedTime)
+{
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
+	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
+	// RasterizeScenePrepared supplies the actual shutter window to the group.
+	if( !rasterizer || !PrepareExternalFireAtTime(
+		rasterizer,rasterizerKind,config,nullptr) ) return false;
+	renderRollback.ArmPixelStateForFire();
+	std::string preparationError;
+	auto controllers=ActiveFireSequenceControllers(preparationError);
+	if( pScene->HasTimeVaryingMedia() && controllers.empty() ) return false;
+	FireSequencePreparationGroup preparation(std::move(controllers),
+		[this,rasterizer,rasterizerKind,config](const RenderTimeSupport&) {
+			// The group has already installed the full nominal/shutter support.
+			return PrepareExternalFireAtTime(
+				rasterizer,rasterizerKind,config,nullptr) && AuthorizeFireRasterizer(
+					rasterizer,FireRenderPreflightAuthorization::Render);
+		},ActiveTimeVaryingAssets());
+	preparation.InstallAssetsAtNominal();
+	if( !AuthorizeFireRasterizer(
+		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
+	if( HasTimeVaryingAssets() ) rasterizer->RasterizeScenePrepared(
+		*pScene,nominalTime,preparation,region,nullptr);
+	else rasterizer->RasterizeScene(*pScene,region,nullptr);
+	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
+	renderRollback.Commit();
+	return true;
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	IRasterizer* rasterizer,
+	const std::string& rasterizerKind,
+	const Scalar wavelengthMin,
+	const Scalar wavelengthMax,
+	const bool useHWSS,
+	const AutoIntegratorChoice autoIntegrator,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled,
+	const std::vector<unsigned char>& resolvedConfig,
+	const Implementation::FireSequenceRenderTimeSupport* sequenceTimeSupport,
+	const bool publishMetadata )
+{
+	if( !pScene || !rasterizer ) {
+		return false;
+	}
+	ClearFireRasterizerAuthorization(rasterizer);
+	pScene->SetFireTemporalHold(false);
+	Implementation::FrameStore* const preparedFrameStore = rasterizer->GetFrameStore();
+
+	struct ActiveMediumBinding
 	{
-	default:
-	case 4:
-		// Morton Z-order curve (default) - optimal cache locality
+		const IMedium* medium;
+		std::string bindingKind;
+		std::string bindingOwner;
+	};
+	std::vector<ActiveMediumBinding> activeBindings;
+	std::set<const IMedium*> activeMedia;
+	if( const IMedium* global = pScene->GetGlobalMedium() ) {
+		activeMedia.insert(global);
+		activeBindings.push_back(ActiveMediumBinding{
+			global,"global_medium","scene"});
+	}
+	struct InteriorMediumCollector : public IEnumCallback<const char*>
+	{
+		const IObjectManager& objects;
+		std::set<const IMedium*>& media;
+		std::vector<ActiveMediumBinding>& bindings;
+		InteriorMediumCollector(
+			const IObjectManager& objectManager,
+			std::set<const IMedium*>& target,
+			std::vector<ActiveMediumBinding>& targetBindings )
+			: objects(objectManager), media(target), bindings(targetBindings) {}
+		bool operator()( const char* const& name ) override
 		{
-			unsigned int tileSize = 32;
-			if( !raster_sequence.empty() ) {
-				sscanf( raster_sequence.c_str(), "%u", &tileSize );
+			const IObject* object = objects.GetItem(name);
+			if( object ) {
+				const IMedium* interior = object->GetInteriorMedium();
+				if( !interior ) return true;
+				media.insert(interior);
+				bindings.push_back(ActiveMediumBinding{
+					interior,"object_interior_medium",name ? name : ""});
 			}
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, tileSize );
+			return true;
 		}
-		break;
-
-	case 3:
-		// Legacy random (deprecated)
-		if( GlobalRNG().CanonicalRandom() < 0.1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, 4 );
-		} else {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 64, 64, (char)floor(GlobalRNG().CanonicalRandom()*8.999999) );
+	};
+	if( const IObjectManager* objects = pScene->GetObjects() ) {
+		InteriorMediumCollector collector(*objects,activeMedia,activeBindings);
+		objects->EnumerateItemNames(collector);
+	}
+	bool hasActiveSequence = false;
+	for( const IMedium* medium : activeMedia )
+		hasActiveSequence = hasActiveSequence || fireSequenceControllers.count(medium) != 0u;
+	if( hasActiveSequence ) {
+		std::string bindingError;
+		if( ActiveFireSequenceControllers(bindingError).empty() ) {
+			GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence binding identity: %s",
+				bindingError.c_str());
+			return false;
 		}
-		break;
-
-	case 0:
-		// Scanline (deprecated)
-		RISE_API_CreateScanlineRasterizeSequence( &pSeq );
-		break;
-	case 1:
-		// Block (deprecated)
-		unsigned int width, height, type;
-		if( sscanf( raster_sequence.c_str(), "%u %u %u", &width, &height, &type ) == 3 ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, width, height, (char)type );
+	}
+	const auto sameActiveBindings = [this,&activeBindings]() {
+		std::set<const IMedium*> currentMedia;
+		std::vector<ActiveMediumBinding> currentBindings;
+		if( const IMedium* global = pScene->GetGlobalMedium() ) {
+			currentMedia.insert(global);
+			currentBindings.push_back(ActiveMediumBinding{
+				global,"global_medium","scene"});
 		}
-		break;
-	case 2:
-		// Hilbert (deprecated)
-		unsigned int depth;
-		if( sscanf( raster_sequence.c_str(), "%u", &depth ) == 1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, depth );
+		if( const IObjectManager* objects = pScene->GetObjects() ) {
+			InteriorMediumCollector collector(*objects,currentMedia,currentBindings);
+			objects->EnumerateItemNames(collector);
 		}
-		break;
+		const auto less = []( const ActiveMediumBinding& lhs,
+			const ActiveMediumBinding& rhs ) {
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			if( lhs.bindingOwner != rhs.bindingOwner ) return lhs.bindingOwner < rhs.bindingOwner;
+			return std::less<const IMedium*>()(lhs.medium,rhs.medium);
+		};
+		std::vector<ActiveMediumBinding> original = activeBindings;
+		std::sort(original.begin(),original.end(),less);
+		std::sort(currentBindings.begin(),currentBindings.end(),less);
+		if( original.size() != currentBindings.size() ) return false;
+		for( std::size_t i=0; i<original.size(); ++i ) {
+			if( original[i].medium != currentBindings[i].medium ||
+				original[i].bindingKind != currentBindings[i].bindingKind ||
+				original[i].bindingOwner != currentBindings[i].bindingOwner ) return false;
+		}
+		return true;
+	};
+	PreparedFireChanges changes;
+	if( sequenceTimeSupport ) {
+		for( const IMedium* medium : activeMedia ) {
+			const auto controller = fireSequenceControllers.find(medium);
+			if( controller == fireSequenceControllers.end() ) continue;
+			std::string error;
+			if( !changes.Prepare(*controller->second,*sequenceTimeSupport,error) ) {
+				GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence preparation failed: %s",error.c_str());
+				return false;
+			}
+		}
 	}
 
-	return pSeq;
+	std::set<std::string> recordIds;
+	std::set<std::string> reasons;
+	std::string status;
+	bool predictiveAllowed = true;
+	bool domainExceeded = false;
+	bool invalidFidelityMetadata = false;
+	bool missingOpticalRecord = false;
+	bool hasFireMedia = false;
+	std::vector<FrameStoreOutput::ActiveFireMedium> fireMediaMetadata;
+	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
+		medium != activeMedia.end(); ++medium ) {
+		const MultichannelHeterogeneousMedium* fireMedium =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(*medium);
+		if( !fireMedium || fireMedium->FireDerivedStructuresCurrent() ) continue;
+		if( fireSequenceControllers.find(*medium) != fireSequenceControllers.end() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: sequence-backed fire medium is stale outside its prepared frame transaction" );
+			return false;
+		}
+		MultichannelHeterogeneousMedium* managedMedium = 0;
+		for( MediumMap::iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
+			if( named->second == *medium ) {
+				managedMedium = dynamic_cast<MultichannelHeterogeneousMedium*>(named->second);
+				break;
+			}
+		}
+		if( !managedMedium || !managedMedium->RebuildFireDerivedStructuresForRender() ||
+			!managedMedium->FireDerivedStructuresCurrent() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: fire render rejected before workers launch: stale emission CDF or majorant could not be rebuilt" );
+			return false;
+		}
+	}
+	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
+		medium != activeMedia.end(); ++medium ) {
+		if( !(*medium)->IsFireMedium() ) {
+			continue;
+		}
+		hasFireMedia = true;
+		const char* recordId = (*medium)->GetFireOpticsRecordId();
+		if( !recordId || !recordId[0] ) {
+			missingOpticalRecord = true;
+			predictiveAllowed = false;
+			reasons.insert("missing_optical_record");
+		} else {
+			recordIds.insert(recordId);
+		}
+		const char* mediumStatus = (*medium)->GetFireRenderFidelityStatus(
+			m_firePredictiveRequested );
+		if( !mediumStatus || std::strcmp(mediumStatus,"preview") != 0 ) {
+			invalidFidelityMetadata = true;
+		} else {
+			status = mediumStatus;
+		}
+		predictiveAllowed = predictiveAllowed && (*medium)->FirePredictiveAllowed();
+		if( !(*medium)->FireOpticsSupportsWavelengthRange(
+			wavelengthMin,wavelengthMax) ) {
+			domainExceeded = true;
+			reasons.insert("table_domain_exceeded");
+		}
+		const unsigned int count = (*medium)->GetFireRenderReasonCodeCount(
+			m_firePredictiveRequested );
+		for( unsigned int i=0; i<count; ++i ) {
+			const char* reason = (*medium)->GetFireRenderReasonCode(
+				m_firePredictiveRequested, i );
+			if( !reason || !FrameStoreOutput::IsAllowedFireRenderReasonCode(reason) ) {
+				invalidFidelityMetadata = true;
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job:: fire medium emitted unknown render reason code '%s'",
+					reason ? reason : "(null)" );
+				continue;
+			}
+			reasons.insert(reason);
+		}
+	}
+	for( std::vector<ActiveMediumBinding>::const_iterator binding=activeBindings.begin();
+		binding!=activeBindings.end(); ++binding ) {
+		if( !binding->medium->IsFireMedium() ) continue;
+		std::string managerName;
+		for( MediumMap::const_iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
+			if( named->second == binding->medium ) {
+				managerName = named->first.c_str();
+				break;
+			}
+		}
+		const auto sequenceManifest = fireSequenceManifests.find(binding->medium);
+		const auto sequenceController = fireSequenceControllers.find(binding->medium);
+		const std::map<const IMedium*,std::string>::const_iterator digest = fireAuthoredConfigDigests.find(binding->medium);
+		if( managerName.empty() || ((sequenceManifest == fireSequenceManifests.end() ||
+			sequenceController == fireSequenceControllers.end()) &&
+			(digest == fireAuthoredConfigDigests.end() || digest->second.empty())) ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+			continue;
+		}
+		FrameStoreOutput::ActiveFireMedium item;
+		item.managerName = managerName;
+		item.bindingKind = binding->bindingKind;
+		item.bindingOwner = binding->bindingOwner;
+		if( sequenceManifest != fireSequenceManifests.end() &&
+			sequenceController != fireSequenceControllers.end() ) {
+			const std::shared_ptr<const Implementation::FireSequencePreparedFrame> frame =
+				sequenceController->second->PreparedFrame();
+			if( !frame ) return false;
+			item.mediaKind = frame->available ? "sequence_backed" : "sequence_unavailable_v1";
+			if( !frame->available ) {
+				item.coverageDigest = frame->coverageDigest;
+				reasons.insert("frame_unavailable");
+				predictiveAllowed = false;
+			}
+			item.sequenceId = sequenceManifest->second->SequenceId();
+			item.selectedBaseFrameIndex = frame->frameIndex;
+			item.wholeFileDigest = frame->wholeFileSha256;
+			item.sourceKind = sequenceManifest->second->SourceKind();
+			item.physicalMapping = sequenceManifest->second->PhysicalMapping();
+			item.effectiveBlurState = "disabled";
+			item.preparedInputId = sequenceController->second->PreparedInputId();
+			item.preparedStateGeneration = sequenceController->second->Generation();
+			if( sequenceManifest->second->SourceQualification() == "preview_only" ||
+				item.sourceKind == "heuristic_import" ||
+				item.physicalMapping.rfind("heuristic:",0u) == 0u ) reasons.insert("producer_unqualified");
+		} else {
+			item.mediaKind = "static_authored";
+			item.authoredConfigDigest = digest->second;
+		}
+		const char* recordId = binding->medium->GetFireOpticsRecordId();
+		if( recordId && recordId[0] ) item.opticalRecordIds.push_back(recordId);
+		fireMediaMetadata.push_back(item);
+	}
+	std::sort(fireMediaMetadata.begin(),fireMediaMetadata.end(),
+		[]( const FrameStoreOutput::ActiveFireMedium& lhs,
+			const FrameStoreOutput::ActiveFireMedium& rhs ) {
+			if( lhs.managerName != rhs.managerName ) return lhs.managerName < rhs.managerName;
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			return lhs.bindingOwner < rhs.bindingOwner;
+		});
+	bool unsupportedIntegrator = false;
+	bool transportPreview = false;
+	if( hasFireMedia ) {
+		pScene->SetFireTemporalHold(true);
+		if( pScene->GetAnimator() &&
+			pScene->GetAnimator()->AreThereAnyKeyframedObjects() ) {
+			reasons.insert("keyframed_temporal_sampling_unsupported");
+		}
+		const std::string& kind = rasterizerKind;
+		unsupportedIntegrator =
+			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "vcm_spectral_rasterizer" ||
+			kind == "mlt_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( (kind == "auto_rasterizer" || kind == "auto_spectral_rasterizer") &&
+			(autoIntegrator == AutoIntegratorChoice::BDPT ||
+			 autoIntegrator == AutoIntegratorChoice::VCM) ) {
+			unsupportedIntegrator = true;
+		}
+		if( rasterizer->IsAutoDispatcher() ) {
+			const char* resolved = rasterizer->ResolvedIntegratorName();
+			unsupportedIntegrator = unsupportedIntegrator || (resolved &&
+				(std::strcmp(resolved,"bdpt") == 0 || std::strcmp(resolved,"vcm") == 0));
+		}
+		if( unsupportedIntegrator ) {
+			reasons.insert("unsupported_integrator_for_fire_media");
+		}
+		const bool pelTransport =
+			kind == "interactive_pel_rasterizer" ||
+			kind == "pixelpel_rasterizer" || kind == "pathtracing_pel_rasterizer" ||
+			kind == "auto_rasterizer" || kind == "bdpt_pel_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "mlt_rasterizer";
+		if( pelTransport ) {
+			reasons.insert("pel_transport");
+			transportPreview = true;
+		}
+		const bool spectralTransport =
+			kind == "pixelintegratingspectral_rasterizer" ||
+			kind == "pathtracing_spectral_rasterizer" ||
+			kind == "auto_spectral_rasterizer" ||
+			kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_spectral_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( spectralTransport && useHWSS ) {
+			reasons.insert("hwss_transport");
+			transportPreview = true;
+		}
+		if( oidnDenoise ) reasons.insert("oidn_unqualified");
+		if( radianceClampEnabled ) reasons.insert("radiance_clamp_enabled");
+		if( pathRegularizationEnabled ) reasons.insert("path_regularization_enabled");
+		if( smsEnabled ) reasons.insert("sms_unqualified");
+	}
+	if( hasFireMedia ) {
+		struct FireFileRouteCollector : public IEnumCallback<IRasterizerOutput>
+		{
+			bool sawArtifactOutput = false;
+			bool sawPrimary = false;
+			bool derivativeBeforePrimary = false;
+			bool unavailableRoute = false;
+			bool unknownRoute = false;
+			bool operator()( const IRasterizerOutput& output ) override
+			{
+				const IFireRasterizerOutputRoute* route =
+					dynamic_cast<const IFireRasterizerOutputRoute*>(&output);
+				if( !route ) {
+					unknownRoute = true;
+					return true;
+				}
+				switch( route->FireArtifactRoute() ) {
+				case FireArtifactRouteKind::DisplayOnly:
+					return true;
+				case FireArtifactRouteKind::UnavailableArtifact:
+					sawArtifactOutput = true;
+					unavailableRoute = true;
+					return true;
+				case FireArtifactRouteKind::PrimaryArtifact:
+					sawArtifactOutput = true;
+					sawPrimary = true;
+					return true;
+				case FireArtifactRouteKind::DerivativeArtifact:
+					sawArtifactOutput = true;
+					if( !sawPrimary ) derivativeBeforePrimary = true;
+					return true;
+				}
+				if( !sawPrimary ) {
+					derivativeBeforePrimary = true;
+				}
+				return true;
+			}
+		} routes;
+		rasterizer->EnumerateRasterizerOutputs(routes);
+		if( rasterizer->GetFrameStore() != preparedFrameStore ||
+			!sameActiveBindings() ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
+		if( routes.unknownRoute || (routes.sawArtifactOutput &&
+			(routes.unavailableRoute || !routes.sawPrimary ||
+			 routes.derivativeBeforePrimary)) ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
+	}
+
+	const bool missingPreviewRequest = hasFireMedia && !m_firePredictiveRequested &&
+		reasons.find("requested_preview") == reasons.end();
+	const bool predictiveRejected = m_firePredictiveRequested && hasFireMedia &&
+		(status == "preview" || !predictiveAllowed || transportPreview || !reasons.empty());
+	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
+		invalidFidelityMetadata || missingOpticalRecord || missingPreviewRequest ) {
+		std::ostringstream joined;
+		for( std::set<std::string>::const_iterator reason = reasons.begin();
+			reason != reasons.end(); ++reason ) {
+			if( reason != reasons.begin() ) joined << ", ";
+			joined << *reason;
+		}
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job:: fire render rejected before workers launch (lookup support "
+			"[%g,%g] nm): %s", static_cast<double>(wavelengthMin),
+			static_cast<double>(wavelengthMax), joined.str().c_str() );
+		return false;
+	}
+	if( publishMetadata ) {
+		FrameStore* store = rasterizer->GetFrameStore();
+		if( !store ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render output_provenance_unavailable: no canonical frame store");
+			return false;
+		}
+		RISECBOR64::Bytes rendererBuild;
+		std::string rendererBuildId;
+		if( resolvedConfig.empty() ||
+			(hasFireMedia &&
+			 !BuildRendererBuildIdentity(rendererBuild,rendererBuildId)) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render output provenance metadata is unavailable");
+			return false;
+		}
+		store->SetPreparedFireFidelityMetadata(status,
+			std::vector<std::string>(reasons.begin(),reasons.end()),
+			std::vector<std::string>(recordIds.begin(),recordIds.end()),
+			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);
+	}
+	changes.Commit();
+	return true;
 }
 
 //! Rasterizes the entire scene
@@ -5745,23 +15985,89 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 bool Job::Rasterize(
 	)
 {
+	return RasterizeStillAtTime(nullptr);
+}
+
+bool Job::RasterizeAtSceneTime( const Scalar nominalTime )
+{
+	return RasterizeStillAtTime(&nominalTime);
+}
+
+bool Job::RasterizeStillAtTime( const Scalar* selectedTime )
+{
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	const Scalar nominalTime = selectedTime ? *selectedTime : animOptions.time_start;
+	if( !std::isfinite(nominalTime) ) return false;
 	if( !pRasterizer ) {
+		// GUI scene-switch debugging (2026-08-20): this was a SILENT false --
+		// no log line anywhere, so a caller with no active rasterizer (e.g. a
+		// Job that hasn't derived a rasterizer chunk, or one caught between a
+		// ClearAll and the next successful derive) produced an undiagnosable
+		// "render failed" with zero trace.  Log it so a recurrence is
+		// immediately attributable to THIS site rather than a mystery.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::Rasterize:: no active rasterizer (pRasterizer is null) -- nothing to render." );
 		return false;
 	}
+	FrameRenderRollback metadataRollback(pRasterizer->GetFrameStore());
+	ResolvedRasterSequence resolvedSequence;
+	if( !PrepareFireRenderFidelityMetadata(
+		animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+		animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+		&resolvedSequence) ) {
+		return false;
+	}
+	metadataRollback.ArmPixelStateForFire();
+	std::string preparationError;
+	auto activeSequenceControllers=ActiveFireSequenceControllers(preparationError);
+	if( pScene->HasTimeVaryingMedia() && activeSequenceControllers.empty() ) return false;
+	FireSequencePreparationGroup preparation(std::move(activeSequenceControllers),
+		[this](const RenderTimeSupport&) {
+			return PrepareFireRenderFidelityMetadata(animOptions.time_start,
+				animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+				animOptions.invert_fields,nullptr,nullptr,nullptr,true) &&
+				AuthorizeFireRasterizer(pRasterizer,
+					FireRenderPreflightAuthorization::Render);
+		},ActiveTimeVaryingAssets());
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
+	// One acquire read serves both the check and the uses below -- the slot is atomic (written
+	// from the GUI thread vs the coordinator worker), so a check-then-reread would be a TOCTOU.
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
+	} else {
+		// Null slot: DETACH the rasterizer's persistently-retained callback (Rasterizer::
+		// SetProgressCallback stores the raw pointer until the next call) rather than skipping the
+		// call.  Callers routinely delete their callback right after a render (both GUIs do);
+		// pre-fix, a later rasterize with no progress installed would run the whole render against
+		// the PREVIOUS caller's now-freed callback -- a dormant use-after-free.  This else is
+		// mirrored across the whole Rasterize family; this is the canonical comment.
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->RasterizeScene( *pScene, 0, pSeq );
-	safe_release( pSeq );
+	// pSeq must be released on every exit, including a worker exception
+	// propagated up through RasterizeScene (ThreadPool::ParallelFor has
+	// surfaced such exceptions to the caller since commit 2692d1af,
+	// instead of std::terminate'ing) -- otherwise a throw here leaks the
+	// refcounted sequence object.  The scoped release (declared before the
+	// callback-output scope) frees it after RasterizeScene returns or
+	// unwinds, once the callback-output scope has ended.
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		return false;
+	}
+	CallbackOutputRenderScope callbackOutputs( *this );
+	if( HasTimeVaryingAssets() ) pRasterizer->RasterizeScenePrepared(
+		*pScene,nominalTime,preparation,0,pSeq);
+	else pRasterizer->RasterizeScene(*pScene,0,pSeq);
+	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -5769,6 +16075,15 @@ bool Job::Rasterize(
 //! Rasterizes an animation
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RasterizeAnimation(
+	const double time_start, const double time_end, const unsigned int num_frames,
+	const bool do_fields, const bool invert_fields )
+{
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	return RasterizeAnimationOwned(time_start,time_end,num_frames,do_fields,invert_fields);
+}
+
+bool Job::RasterizeAnimationOwned(
 	const double time_start,						///< [in] Scene time to start rasterizing at
 	const double time_end,							///< [in] Scene time to finish rasterizing
 	const unsigned int num_frames,					///< [in] Number of frames to rasterize
@@ -5777,21 +16092,106 @@ bool Job::RasterizeAnimation(
 	)
 {
 	if( !pRasterizer ) {
+		// See Job::Rasterize's matching comment -- same silent-false class, same fix.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::RasterizeAnimation:: no active rasterizer (pRasterizer is null) -- nothing to render." );
 		return false;
 	}
-
-	IRasterizeSequence* pSeq = 0;
-
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
+	if( num_frames == 0u ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeAnimation: zero-frame animations are invalid");
+		return false;
+	}
+	if( HasTimeVaryingAssets() ) {
+		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+		for( unsigned int frame=0; frame<num_frames; ++frame ) {
+			ResolvedRasterSequence resolved;
+			if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
+				num_frames,do_fields,invert_fields,&frame,nullptr,&resolved) ) return false;
+			sequenceRollback.ArmPixelStateForFire();
+			IRasterizeSequence* sequence = RasterizeSequenceFromResolution(resolved);
+			if( !sequence ) return false;
+			ScopedRasterizeSequenceRelease sequenceOwner{ sequence };
+			std::string preparationError;
+			auto activeControllers=ActiveFireSequenceControllers(preparationError);
+			if( activeControllers.empty() && pScene->HasTimeVaryingMedia() ) return false;
+			if( do_fields ) {
+				const double step=num_frames>1u ? (time_end-time_start)/double(num_frames-1u) : 0.0;
+				const double upper=time_start+double(frame)*step;
+				const double lower=upper+0.5*step;
+				for( const auto& binding : fireSequenceControllers ) {
+					if( std::find(activeControllers.begin(),activeControllers.end(),binding.second)==
+						activeControllers.end() ) continue;
+					const auto manifest=fireSequenceManifests.find(binding.first);
+					Implementation::FireSequenceMappedTime upperMapped,lowerMapped;
+					if( manifest==fireSequenceManifests.end() ||
+						!manifest->second->MapSceneTime(upper,upperMapped,preparationError) ||
+						!manifest->second->MapSceneTime(lower,lowerMapped,preparationError) ||
+						upperMapped.baseFrameIndex!=lowerMapped.baseFrameIndex ) {
+						GlobalLog()->PrintEasyError(
+							"interlaced_sequence_frame_mismatch: one artifact cannot bind two base frames");
+						return false;
+					}
+				}
+			}
+			FireSequencePreparationGroup preparation(std::move(activeControllers),
+				[this,time_start,time_end,num_frames,do_fields,invert_fields,frame](
+					const RenderTimeSupport&) {
+					return PrepareFireRenderFidelityMetadata(time_start,time_end,num_frames,
+						do_fields,invert_fields,&frame,nullptr,nullptr,true) &&
+						AuthorizeFireRasterizer(pRasterizer,
+							FireRenderPreflightAuthorization::Render);
+				},ActiveTimeVaryingAssets());
+			if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+				return false;
+			}
+			if( !pScene->HasTimeVaryingMedia() ) {
+				// Simulation M3b: a prepared animation whose only time-varying
+				// inputs are simulated meshes reports progress as the ordinary
+				// path does, and never keeps a previous caller's callback (see
+				// Job::Rasterize's matching comment).
+				IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+				pRasterizer->SetProgressCallback( progress );
+			}
+			CallbackOutputRenderScope callbackOutputs( *this );
+			pRasterizer->RasterizeSceneAnimationPrepared(*pScene,time_start,time_end,
+				num_frames,do_fields,invert_fields,preparation,0,&frame,sequence);
+			if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
 		}
+		sequenceRollback.Commit();
+		return true;
+	}
+	FrameRenderRollback metadataRollback(pRasterizer->GetFrameStore());
+	ResolvedRasterSequence resolvedSequence;
+	if( !PrepareFireRenderFidelityMetadata(time_start,time_end,
+		num_frames,do_fields,invert_fields,nullptr,nullptr,&resolvedSequence) ) {
+		return false;
+	}
+	metadataRollback.ArmPixelStateForFire();
+
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
+
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
 	}
 
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		return false;
+	}
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
+	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -5805,24 +16205,70 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
-	if( !pRasterizer ) {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
+		// See Job::Rasterize's matching comment -- same silent-false class, same fix.
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::RasterizeRegion:: cannot render -- %s.",
+			!pRasterizer ? "no active rasterizer (pRasterizer is null)"
+			: ( !pScene ? "no active scene" : "scene has no film" ) );
 		return false;
 	}
 
-	IRasterizeSequence* pSeq = 0;
-
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
+	const unsigned int width = pScene->GetFilm()->GetWidth();
+	const unsigned int height = pScene->GetFilm()->GetHeight();
+	if( width == 0 || height == 0 || left > right || top > bottom
+		|| left >= width || top >= height ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::RasterizeRegion: invalid or out-of-film region [%u,%u]-[%u,%u] for %ux%u film",
+			left, top, right, bottom, width, height );
+		return false;
+	}
+	const unsigned int clippedRight = r_min( right, width-1 );
+	const unsigned int clippedBottom = r_min( bottom, height-1 );
+	Rect rc( top, left, clippedBottom, clippedRight );
+	ResolvedRasterSequence resolvedSequence;
+	if( !PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,&rc,&resolvedSequence) ) {
+		return false;
+	}
+	if( metadataRollback.PreparedFire() ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeRegion: output_provenance_unavailable: fire region renders "
+			"cannot finalize a standalone primary");
+		return false;
 	}
 
-	Rect	rc( top, left, bottom, right );
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
+
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
+	}
+
+	// See the matching comment in Job::Rasterize: pSeq must be released
+	// on every exit, including a worker exception propagated up through
+	// RasterizeScene since ThreadPool::ParallelFor stopped
+	// std::terminate'ing on those (commit 2692d1af).
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		return false;
+	}
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
-	safe_release( pSeq );
+	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -5839,6 +16285,8 @@ bool Job::SetObjectPosition(
 	const double pos[3]								///< [in] Position of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	if( !name ) {
 		return false;
 	}
@@ -5851,6 +16299,29 @@ bool Job::SetObjectPosition(
 
 	pObj->SetPosition( Point3( pos ) );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -5861,6 +16332,8 @@ bool Job::SetObjectOrientation(
 	const double orient[3]							///< [in] Orientation of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) {
 		return false;
 	}
@@ -5873,6 +16346,29 @@ bool Job::SetObjectOrientation(
 
 	pObj->SetOrientation( Vector3( orient ) );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -5883,6 +16379,8 @@ bool Job::SetObjectScale(
 	const double scale								///< [in] Scaling of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) {
 		return false;
 	}
@@ -5895,6 +16393,29 @@ bool Job::SetObjectScale(
 
 	pObj->SetScale( scale );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -5909,16 +16430,19 @@ bool Job::SetObjectUVToSpherical(
 	const double radius								///< [in] Radius of the sphere
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateSphericalUVGenerator( &pUV, radius );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateSphericalUVGenerator( &pUV, radius ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -5930,16 +16454,19 @@ bool Job::SetObjectUVToBox(
 	const double depth								///< [in] Depth of the box
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateBoxUVGenerator( &pUV, width, height, depth ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the UV generator for an object
@@ -5951,16 +16478,19 @@ bool Job::SetObjectUVToCylindrical(
 	const double size								///< [in] Size of the cylinder
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
 		return false;
 	}
 
-	IUVGenerator* pUV = 0;
-	RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size );
-
-	return pObj->SetUVGenerator( *pUV );
+	IUVGenerator* pUV = nullptr;
+	if( !RISE_API_CreateCylindricalUVGenerator( &pUV, radius, axis, size ) ) return false;
+	const auto release = []( IUVGenerator* generator ) { generator->release(); };
+	const std::unique_ptr<IUVGenerator, decltype(release)> owned( pUV, release );
+	return pObj->SetUVGenerator( *owned );
 }
 
 //! Sets the object's surface intersection threshold
@@ -5970,6 +16500,8 @@ bool Job::SetObjectIntersectionError(
 	const double error								///< [in] Threshold of error
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
@@ -5977,6 +16509,200 @@ bool Job::SetObjectIntersectionError(
 	}
 
 	pObj->SetSurfaceIntersecError( error );
+	return true;
+}
+
+//
+// `> modify` runtime-mutation surface.  Each looks an element up by
+// manager name (mirroring SetObjectIntersectionError) and mutates it in
+// place.  All run before a render while the scene is mutable; the next
+// RayCaster::AttachScene re-Prepares the light set and rebuilds the
+// environment sampler, so emissive<->non-emissive material swaps and
+// radiance-scale changes are picked up with no extra dirty plumbing.
+//
+
+bool Job::SetObjectMaterial(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* materialName						///< [in] Name of the material to bind
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !objName || !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectMaterial:: null object or material name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: object not found `%s`", objName );
+		return false;
+	}
+
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (DropContainerSurfaceBindings_) and so does the
+	// editor, but THESE are the API the non-CST embedding binds through -- and
+	// the shipped console command `modify object <name> material <name2>` routes
+	// straight here.  Without the gate, "a container never carries a material"
+	// -- the premise the agent's non-sampling-emitter audit is written against
+	// -- was true of AddObject and false of this.
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMaterial:: `%s` is a container node (no geometry), so it takes no material; "
+			"bind it to a child that has geometry", objName );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: material not found `%s`", materialName );
+		return false;
+	}
+
+	if(RefuseVolumeFreeRandomWalk_(pObj->GetGeometry(),pMat,objName)) return false;
+	const Implementation::Object* pObjImpl = dynamic_cast<const Implementation::Object*>( pObj );
+	if( pMat->IsUnresolvedMix() && ( pObj->GetInteriorMedium() || ( pObjImpl && pObjImpl->HasMediumInheritingCsgConsumer() ) ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMaterial:: `%s` carries or inherits an interior_medium and cannot be assigned mix_material `%s`",
+			objName, materialName );
+		return false;
+	}
+
+	// Mirrors the interactive editor's material-swap path
+	// (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+	// AssignMaterial releases the prior material and addrefs the new
+	// one.  No acceleration rebuild — a material change cannot move the
+	// object's bounding box.
+	const IMaterial* prevMat = pObj->GetMaterial();
+	pObj->AssignMaterial( *pMat );
+	if( ( prevMat && prevMat->GetEmitter() ) || ( pMat && pMat->GetEmitter() ) )
+		BumpSceneLightGen( pScene );   // P2a: emitter set may have changed
+	return true;
+}
+
+bool Job::SetObjectShader(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* shaderName							///< [in] Name of the shader to bind
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !objName || !shaderName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectShader:: null object or shader name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: object not found `%s`", objName );
+		return false;
+	}
+
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (DropContainerSurfaceBindings_) and so does the
+	// editor, but THESE are the API the non-CST embedding binds through -- and
+	// the shipped console command `modify object <name> shader <name2>` routes
+	// straight here.  Without the gate, "a container never carries a material"
+	// -- the premise the agent's non-sampling-emitter audit is written against
+	// -- was true of AddObject and false of this.
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectShader:: `%s` is a container node (no geometry), so it takes no shader; "
+			"bind it to a child that has geometry", objName );
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shaderName );
+	if( !pShader ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: shader not found `%s`", shaderName );
+		return false;
+	}
+
+	pObj->AssignShader( *pShader );
+	return true;
+}
+
+bool Job::SetMaterialEmissionScale(
+	const char* materialName,						///< [in] Name of the luminaire material
+	const double scale								///< [in] New emission scale
+	)
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetMaterialEmissionScale:: null material name" );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material not found `%s`", materialName );
+		return false;
+	}
+
+	// IMaterial::SetEmissionScale defaults to a no-op returning false, so
+	// non-luminaire materials reject the change here.
+	if( !pMat->SetEmissionScale( Scalar( scale ) ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material `%s` does not support emission-scale modification (not an emissive material, or its emission is not scale-mutable)", materialName );
+		return false;
+	}
+
+	BumpSceneLightGen( pScene );   // P2a: exitance changed -> sampler weights stale
+	return true;
+}
+
+bool Job::SetActiveRasterizerRadianceScale(
+	const double scale								///< [in] New environment radiance scale
+	)
+{
+	if( scale < 0 ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: radiance scale must be >= 0 (negative is nonphysical)" );
+		return false;
+	}
+
+	if( !pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: no active rasterizer" );
+		return false;
+	}
+	RasterizerRegistry::iterator active = rasterizerRegistry.find(activeRasterizerName);
+	if( active == rasterizerRegistry.end() || active->second.instance != pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no authoritative parameter snapshot" );
+		return false;
+	}
+
+	// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT and the
+	// spectral variants) derives from PixelBasedRasterizerHelper, which
+	// owns the RayCaster.  Reach the concrete RayCaster through it.
+	RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+		dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( pRasterizer );
+	if( !pHelper ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	RISE::Implementation::RayCaster* pConcreteCaster =
+		dynamic_cast<RISE::Implementation::RayCaster*>( pHelper->GetRayCaster() );
+	if( !pConcreteCaster ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	// Drive the environment importance sampler (NEE) scale: the next
+	// AttachScene rebuilds the EnvironmentSampler from this override.
+	pConcreteCaster->SetRadianceScale( Scalar( scale ) );
+
+	// Keep the direct-view / ray-miss background consistent with NEE by
+	// pushing the same scale into the scene's radiance map.  A scene with
+	// no global radiance map simply has nothing to update (the override
+	// on the caster is still recorded, harmlessly, for symmetry).
+	if( pScene ) {
+		IRadianceMap* pRm = pScene->GetGlobalRadianceMapMutable();
+		if( pRm ) {
+			pRm->SetScale( Scalar( scale ) );
+		}
+	}
+	active->second.params.radianceMap.scale = Scalar(scale);
+
 	return true;
 }
 
@@ -5990,7 +16716,59 @@ bool Job::RemovePainter(
 	const char* name								///< [in] Name of the painter to remove
 	)
 {
-	return pPntManager->RemoveItem( name );
+	// Every Add*Painter dual-registers the painter: once in pPntManager
+	// (its primary home) and once in pFunc2DManager as a secondary
+	// IFunction2D index (a painter IS-A IFunction2D, so it can be used
+	// anywhere a 2D function is expected -- bump / displacement / ...).
+	// The SAME object is in both managers.  RemovePainter must reverse
+	// BOTH adds, or a removed painter stays resolvable as a 2D function
+	// and a re-add of the same name collides ("Item of same name already
+	// exists") in the function-2D manager.
+	//
+	// BUT: standalone `function_2d` chunks (Job::AddPiecewiseLinearFunction2D)
+	// register their own IFunction2D into the SAME pFunc2DManager namespace,
+	// and the dual-register AddItem return value is ignored at add time --
+	// so a painter and a standalone function_2d can coexist under one name
+	// (painter in pPntManager, standalone func in pFunc2DManager).  A blind
+	// pFunc2DManager->RemoveItem(name) would then delete the wrong entry.
+	// Gate the secondary removal on identity: only drop the func2D entry
+	// when it IS this very painter.
+	//
+	// (Job::AddPiecewiseLinearFunction also registers a painter's *source*
+	// IFunction1D -- a DIFFERENT object -- in pFunc1DManager under the same
+	// name.  That func1D is a primary, independently-referenceable entity
+	// (AddPiecewiseLinearFunction2D consumes it by name), and unlike the
+	// func2D index there is no clean identity gate for it -- the painter
+	// object is not the func1D object -- so it is intentionally NOT removed
+	// here.  KNOWN LIMITATION as a consequence: a remove-then-re-add of a
+	// piecewise-linear-function painter under the same name leaves the old
+	// func1D in pFunc1DManager, and the re-add's func1D registration is then
+	// refused (AddPiecewiseLinearFunction ignores that AddItem result).
+	// Reversing the func1D source needs the same per-sub-type rollback that
+	// the CST incremental painter path still defers; it is out of scope for
+	// this func2D-index fix.)
+	bool alsoDropFunc2D = false;
+	if( name ) {
+		IPainter* pPainter = pPntManager->GetItem( name );   // borrowed; alive via the manager's ref
+		if( pPainter ) {
+			// Form the IFunction2D base pointer while the painter is still
+			// alive: IFunction2D is a virtual base of IPainter, so the
+			// upcast adjustment reads the object -- doing it after the
+			// painter could be freed would touch freed memory.
+			alsoDropFunc2D =
+				( pFunc2DManager->GetItem( name ) == static_cast<IFunction2D*>( pPainter ) );
+		}
+	}
+
+	const bool removed = pPntManager->RemoveItem( name );
+
+	if( removed && alsoDropFunc2D ) {
+		// The painter is still alive here (pFunc2DManager holds its own
+		// ref from the dual-register); RemoveItem releases that ref and
+		// operates on the manager's stored pointer, not pPainter.
+		pFunc2DManager->RemoveItem( name );
+	}
+	return removed;
 }
 
 //! Removes the given material from the scene
@@ -5999,7 +16777,18 @@ bool Job::RemoveMaterial(
 	const char* name								///< [in] Name of the material to remove
 	)
 {
-	return pMatManager->RemoveItem( name );
+	const bool removed = pMatManager->RemoveItem( name );
+	// Drop the composed-material marker even if removal failed:
+	// the manager's RemoveItem rejects unknown names, but if the
+	// caller happened to clear a stale marker for a name that was
+	// never registered (degenerate), we want the set + manager to
+	// stay in sync.  More importantly: a successful removal MUST
+	// erase the marker, or a subsequent direct-material add under
+	// the same name would inherit the read-only flag.
+	if( name ) {
+		composedMaterialNames.erase( String( name ) );
+	}
+	return removed;
 }
 
 //! Removes the given geometry from the scene
@@ -6017,7 +16806,31 @@ bool Job::RemoveObject(
 	const char* name								///< [in] Name of the object to remove
 	)
 {
-	return pObjectManager->RemoveItem( name );
+	// P2a: if the removed object was an emissive mesh luminary, the luminary
+	// set changes -> bump so a reused caster rebuilds.
+	IObjectPriv* pRObj = pObjectManager->GetItem( name );
+	const bool wasEmissive = ( pRObj && pRObj->GetMaterial() && pRObj->GetMaterial()->GetEmitter() );
+	const bool hadInteriorMedium = pRObj && pRObj->GetInteriorMedium();
+	// 87: removing a PARENT re-roots its children, which MOVES them --
+	// ObjectManager::RemoveItem re-composes them on the way out.  Those children
+	// are not the object being removed, so `wasEmissive` cannot see that one of
+	// them emits, and their world bounding boxes changed too.  This is the same
+	// argument, and the same conservative answer, as the incremental apply's
+	// gate in Cst.cpp and the live-edit gate in SceneEditor: an extra sampler
+	// rebuild and TLAS rebuild beat a light sampler emitting from a position
+	// where no geometry is any more.
+	const bool hadChildren = pObjectManager->HasChildren( name );
+	const bool ok = pObjectManager->RemoveItem( name );
+	if( ok && ( wasEmissive || hadInteriorMedium || hadChildren ) ) BumpSceneLightGen( pScene );
+	// Invalidate UNCONDITIONALLY on a successful removal, not just when the
+	// object had children.  The top-level BVH stores raw IObjectPriv pointers
+	// and RemoveItem released the manager's reference, so a surviving TLAS
+	// holds a pointer to a freed object -- reachable live through the console's
+	// `remove object` on a Job that has already rendered.  (Pre-existing: the
+	// pre-87 body did not invalidate at all.  87 edited this line and closed
+	// only the hierarchy half, which read as if removal invalidated.)
+	if( ok ) pObjectManager->InvalidateSpatialStructure();
+	return ok;
 }
 
 //! Removes the given light from the scene
@@ -6026,7 +16839,7 @@ bool Job::RemoveLight(
 	const char* name								///< [in] Name of the light to remove
 	)
 {
-	return pLightManager->RemoveItem( name );
+	return pLightManager->RemoveItem( name );   // H3: RemoveItem self-invalidates (bumps the gen)
 }
 
 //! Removes the given modifier from the scene
@@ -6038,11 +16851,54 @@ bool Job::RemoveModifier(
 	return pModManager->RemoveItem( name );
 }
 
+void Job::InvalidateSpatialStructure()
+{
+	if( pObjectManager ) pObjectManager->InvalidateSpatialStructure();
+}
+
+void Job::BumpLightTopologyGeneration()
+{
+	BumpSceneLightGen( pScene );   // downcast-to-Scene helper, as SceneEditor does
+}
+
+void Job::SetIncrementalRepointMode( bool b )
+{
+	m_bIncrementalRepoint = b;
+}
+
+unsigned int Job::GetLightTopologyGeneration() const
+{
+	if( const Scene* sc = dynamic_cast<const Scene*>( pScene ) )   // downcast like BumpSceneLightGen
+		return sc->GetLightTopologyGeneration();
+	return 0;
+}
+
+void Job::NoteObjectOverride()
+{
+	++m_objectOverrideCount;
+}
+
+unsigned int Job::GetObjectOverrideCount() const
+{
+	return m_objectOverrideCount;
+}
+
 //! Removes all the rasterizer outputs
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RemoveRasterizerOutputs(
 	)
 {
+	// Same null-rasterizer crash class as AddFileRasterizerOutput: this is
+	// reachable from the interactive console before any rasterizer exists.
+	if( !pRasterizer ) {
+		GlobalLog()->PrintEasyWarning(
+			"Job::RemoveRasterizerOutputs:: no rasterizer is set, nothing to remove" );
+		return false;
+	}
+	// Only the active rasterizer's outputs are freed, so only the
+	// dispatchers attached to it leave the registry; those on other
+	// registered rasterizers stay attached and keep their entries.
+	DropCallbackOutputRegistry_( pRasterizer );
 	pRasterizer->FreeRasterizerOutputs();
 	return true;
 }
@@ -6052,6 +16908,38 @@ bool Job::RemoveRasterizerOutputs(
 bool Job::ClearAll(
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( m_activePreparedRequests != 0u || m_destroyingPreparedInputs ) {
+		GlobalLog()->PrintEasyError("mutation_frozen");
+		return false;
+	}
+	for( const auto& controller : fireSequenceControllers ) {
+		if( controller.second && controller.second->HasActiveRenderLease() ) {
+			GlobalLog()->PrintEasyError("mutation_frozen");
+			return false;
+		}
+	}
+	for( MediumMap::iterator medium=mediaMap.begin(); medium!=mediaMap.end(); ++medium ) {
+		MultichannelHeterogeneousMedium* fireMedium =
+			dynamic_cast<MultichannelHeterogeneousMedium*>(medium->second);
+		if( fireMedium ) {
+			fireMedium->InvalidateFireDerivedStructures();
+		}
+	}
+	// A deliberate ClearAll is a FULL scene reset -- it must include the retained canonical CST Document so a
+	// subsequent reopen (the GUIs reuse ONE persistent Job: clearAll() THEN load) starts fresh.  Without this,
+	// LoadAsciiSceneViaCst's load-once guard (a non-null pCstDocument) would falsely refuse the second native-v7
+	// open.  The variant/edit re-derive paths (RederiveCstWithVariant, DeriveEditedCstDocument_) do NOT rely on the
+	// member surviving ClearAll -- each std::move's the Document into a LOCAL before ClearAll and re-retains from
+	// that local after, so this reset is a no-op for them.  mCstLoadFileIdentity SURVIVES ClearAll because
+	// DestroyContainers/InitializeContainers do NOT touch it (the Slice-4 span-index re-apply was dropped in 6a);
+	// it is overwritten on a reopen via RefreshCstLoadFileIdentity.
+	pCstDocument.reset();
+	// Facet 5 slice 1a: a ClearAll leaves NO retained head, so reset the head-version to the {0,0} sentinel.
+	// The edit re-derive paths (DeriveEditedCstDocument_ / RederiveCstWithVariant) std::move the Document into a
+	// LOCAL before ClearAll and re-retain it after WITHOUT re-minting -- so they explicitly do NOT rely on this
+	// reset surviving (the uuid they carry is the load-time uuid; only revision bumps on a content-changing edit).
+	mCstHeadVersion = RISE::Cst::CstHeadVersion{};
 	DestroyContainers();
 	InitializeContainers();
 
@@ -6059,9 +16947,26 @@ bool Job::ClearAll(
 }
 
 
-//! Loading an ascii scene description
-/// \return TRUE if successful, FALSE otherwise
-bool Job::LoadAsciiScene(
+// P5 (Model-B, Slice 6c-3a): the DEFAULT scene-load entry point -- CST-ONLY.  Routes every USER scene through
+// the canonical CST path (so scene_variant switching + all CST edit/save features are always available).  This
+// is the ONE place the load-path decision lives; every front-end (CLI, Mac/Windows/Android GUI, Blender bridge)
+// calls THIS so the policy can't drift between them.  The whole tracked corpus is native-v7; Slice 6c retired
+// the legacy streaming parser from production, so a non-native scene is a HARD FAILURE here (no fallback).
+//
+// Decision (NOT a silent error-masking fallback):
+//   1. Cheaply classify the file: ParseToCst(bytes) -> IsNativeV7Document(doc).
+//   2. NATIVE-v7  -> LoadAsciiSceneViaCst (which re-parses + re-checks + DERIVES).  A derive ERROR there is a
+//      REAL, visible failure (returns false) -- we do NOT mask a genuine problem in a migrated scene.
+//   3. NOT native-v7 (un-migrated FOR/ENDFOR, > run/> load, render-affecting > directive, or no header) ->
+//      HARD-FAIL with an actionable diagnostic pointing at the offline migrator.  The legacy streaming loader
+//      was DELETED in Slice 6c-3c -- there is no legacy path to fall back to.
+//
+// There is NO env escape hatch (the former RISE_FORCE_LEGACY_LOAD is gone) -- there's no legacy path to force.
+//
+// Double-parse note: the native-v7 classify here re-parses, and LoadAsciiSceneViaCst re-parses again on the
+// native branch.  That's a single extra ParseToCst on a one-time load -- acceptable; keeping the classify in
+// Job (where Cst is already included + the Document is retained) is cleaner than duplicating it per front-end.
+bool Job::LoadAsciiSceneAuto(
 	const char* filename							///< [in] Name of the file containing the scene
 	)
 {
@@ -6069,12 +16974,2881 @@ bool Job::LoadAsciiScene(
 		return false;
 	}
 
-	ISceneParser* sceneParser = 0;
-	RISE_API_CreateAsciiSceneParser( &sceneParser, filename );
-	bool bRet = sceneParser->ParseAndLoadScene( *this );
-	safe_release( sceneParser );
+	// Classify the file: only a NATIVE-v7 document is accepted by the CST-only loader.  Read the bytes, parse to
+	// a CST, and ask IsNativeV7Document.  An unreadable/empty file is NOT native-v7 and falls into the hard-fail
+	// branch below with the same actionable diagnostic.
+	bool bNativeV7 = false;
+	{
+		std::ifstream in( filename, std::ios::binary );
+		if( in ) {
+			std::stringstream ss;
+			ss << in.rdbuf();
+			const std::string text = ss.str();
+			if( !text.empty() ) {
+				RISE::Cst::Document classifyDoc = RISE::Cst::ParseToCst( text );
+				bNativeV7 = RISE::Cst::IsNativeV7Document( classifyDoc );
+			}
+		}
+	}
 
-	return bRet;
+	// eLog_Event (not Info) so the resolved load path is visible on the console + in the log.
+	if( bNativeV7 ) {
+		GlobalLog()->PrintEx( eLog_Event, "Job::LoadAsciiSceneAuto:: '%s' is native v7-form -- loading via the canonical CST path (retains the CST Document for edit/save/variant)", filename );
+		return LoadAsciiSceneViaCst( filename );   // a derive error here is a REAL failure -- NO legacy fallback
+	}
+
+	// Hard fail: the legacy streaming loader has been retired (Slice 6c) -- there is NO fallback.  Name the file
+	// and point the author at the offline migrator so the fix is obvious.
+	GlobalLog()->PrintEx( eLog_Error,
+		"Job::LoadAsciiSceneAuto:: '%s' is not native-v7 form (un-migrated construct: FOR/ENDFOR, > run/> load, or a "
+		"render-affecting > directive, or a missing 'RISE ASCII SCENE' header). The legacy loader has been retired -- "
+		"convert it offline with the migrator (tools/migrate_scenes_*.py / the CstMigrator) then reload.", filename );
+	return false;
+}
+
+// P5 (Model-B, Slice 1): load a scene by building the canonical CST and deriving the Scene from it,
+// RETAINING the Document for edit/save.  Since Slice 6c-3c this is the ONLY scene-load path (the legacy
+// streaming loader was deleted); LoadAsciiSceneAuto routes every native-v7 scene here.
+// P5 Slice 4 (reviewer P1 + follow-up): capture/refresh the CST-loaded file's identity (path + mtime + size).
+// Slice 6a/6d: stored ONLY in the Job member (mCstLoadFileIdentity, a FileIdentity from SceneEditor/FileIdentity.h);
+// the SaveEngine CST-save external-mod guard reads it directly via Job::GetCstLoadFileIdentity (IJobPriv).  The
+// legacy SourceSpanIndex byte-splice save (and its own load-time identity) was deleted in Slice 6d, so this member
+// is now the sole identity source.  Called at CST-load AND after a successful CST save (so the just-written file
+// becomes the new baseline -- a second in-place save isn't falsely refused, and a Save-As re-anchors the identity
+// to the new target path).  Best-effort: a stat failure leaves the prior identity (the next save fail-opens).
+void Job::RefreshCstLoadFileIdentity( const char* path )
+{
+	if( !path ) return;
+	// CaptureFileIdentity (FileIdentity.h; defined in SaveEngine.cpp) is the
+	// single capture implementation -- on Windows it uses the real file
+	// handle (volume serial + NTFS file index + 100ns write time) because
+	// CRT stat's st_ino is always 0 there, which made the replacement
+	// detection a silent no-op.
+	const RISE::FileIdentity ident = RISE::CaptureFileIdentity( path );
+	if( !ident.captured ) return;
+	mCstLoadFileIdentity = ident;                                   // survives ClearAll; the CST-save guard reads it via GetCstLoadFileIdentity
+}
+
+// Facet 5 (live co-edit) slice 1a: mint a fresh, process-global, never-zero CST head uuid.  Mirrors the
+// SceneEditController NextEpoch() pattern (a file-static std::atomic<uint64_t>, fetch_add), so every load --
+// across every Job in the process, and including a reload of the SAME file -- gets a distinct uuid.  The `+ 1`
+// keeps the very first minted value at 1 (never the 0 "no-head" sentinel), and the counter is monotone from
+// there.  Atomic so concurrent Job loads on different threads don't collide.  Wrapped in a function-local
+// static so it is initialized on first use (no static-init-order concern).
+static std::uint64_t NextCstHeadUuid()
+{
+	static std::atomic<std::uint64_t> s_next( 0 );
+	return s_next.fetch_add( 1, std::memory_order_relaxed ) + 1;   // 1, 2, 3, ... -- never 0
+}
+
+bool Job::LoadAsciiSceneViaCst( const char* filename )
+{
+	if( !filename ) {
+		return false;
+	}
+
+	// Load-once guard: a load WITHOUT a prior ClearAll would desync the retained Document from the accumulated
+	// Scene (DeriveToJob does not reset the managers), so refuse it.  A GUI REOPEN is supported: the front-ends
+	// call ClearAll() (which now resets pCstDocument -- see Job::ClearAll) THEN load, so the reopen reaches here
+	// with a null Document and proceeds.
+	if( pCstDocument ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: this Job already loaded a scene; re-load is not supported (use a fresh Job)" );
+		return false;
+	}
+
+	// Read the scene file as-given (same as the legacy loader's top-level open; inner media resolves via the
+	// ambient GlobalMediaPathLocator during DeriveToJob).  Input must be NATIVE v7-form -- the v6 corpus is
+	// converted OFFLINE (migrator, plan Slice 2); the runtime does NOT Migrate.
+	std::ifstream in( filename, std::ios::binary );
+	if( !in ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: cannot open scene file '%s'", filename );
+		return false;
+	}
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string text = ss.str();
+	if( text.empty() ) {
+		return false;
+	}
+
+	// Model-B: the canonical CST is the source; the Scene is derive(CST).
+	std::unique_ptr<RISE::Cst::Document> doc( new RISE::Cst::Document( RISE::Cst::ParseToCst( text ) ) );
+
+	// Enforce the NATIVE-v7 contract (Cst::IsNativeV7Document): refuse a scene carrying an UN-migrated top-level
+	// construct DeriveToJob would SILENTLY skip + mis-derive -- a FOR/ENDFOR loop, a > run/> load include, or a
+	// render-AFFECTING > directive (> modify, > set <other>) -- or a missing header.  (Render-neutral > echo /
+	// > set accelerator are accepted.)  Convert offline first (the migrator, plan Slice 2).
+	if( !RISE::Cst::IsNativeV7Document( *doc ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: '%s' is not native v7-form (an un-migrated construct -- FOR/ENDFOR, > run/> load, or a render-affecting > directive -- or a missing 'RISE ASCII SCENE' header); convert it offline first (the migrator)", filename );
+		return false;
+	}
+
+	std::vector<std::string> diags;
+	// Simulation M4: producer caches named by a relative path live beside the scene file.
+	{
+		std::error_code ec;
+		const std::filesystem::path sceneFile = std::filesystem::absolute( filename, ec );
+		if( !ec ) SetSimulationSceneDirectory( sceneFile.parent_path().string().c_str() );
+	}
+	// DL-323 follow-through: THE real scene load -- the only DeriveToJob caller that warns about deprecated chunk types.
+	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
+	if( !diags.empty() ) {
+		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: derive diagnostic: %s", diags[i].c_str() );
+		}
+		return false;   // refuse-all: a malformed / unsupported (v6-construct) scene applies nothing
+	}
+
+	pCstDocument = std::move( doc );    // RETAIN the canonical CST for edit/save (Slices 3-4)
+
+	// Facet 5 (live co-edit) slice 1a: MINT a fresh optimistic-concurrency identity for this newly-retained
+	// head -- {fresh uuid, revision 1}.  NextCstHeadUuid() (file-static atomic, fetch_add) is minted per LOAD,
+	// so a reload of the SAME file gets a DIFFERENT uuid: a stale patch built against the previous load's head
+	// can never match even if the revision numbers coincide (the reload-collision guard).  ClearAll resets this
+	// to {0,0} (no head).  This is the ONLY mint site (LoadAsciiSceneViaCst is the sole head-retain path).
+	mCstHeadVersion = RISE::Cst::CstHeadVersion{ NextCstHeadUuid(), 1 };
+
+	// Reviewer P1 (Slice 4 follow-up): capture the loaded file's identity (path + mtime + size) so the CST save
+	// path can REFUSE an in-place save that would clobber EXTERNAL edits made to the file after load.  The save
+	// REFRESHES this after a successful write (RefreshCstLoadFileIdentity again), so a second save isn't falsely
+	// refused and a Save-As re-anchors to the new path.
+	RefreshCstLoadFileIdentity( filename );
+
+	PushJobFrameStoreToRasterizers();   // L6b parity with LoadAsciiScene
+	return true;
+}
+
+// P5 (Model-B): re-derive the retained CST Document with a FORCED active scene_variant -- the GUI variant switch.
+// ClearAll() releases + re-creates the containers (fresh slate, no dup-name on re-bake) AND now resets the
+// retained Document; this path is unaffected because it std::move's the Document into a LOCAL before ClearAll
+// and re-retains it after -- so the member is already null when ClearAll resets it (a no-op here).
+// Lifetime: ClearAll shuts down the old Scene, but the interactive RayCaster's scene refcount (AttachScene
+// addref's the scene) defers its actual free until the next render pass re-attaches the NEW Scene -- and
+// SceneEditController parks the render thread before calling this, so no in-flight caster dangles.  Adding an
+// off-render-thread reader of the caster's cached scene/samplers would break this -- revisit if you do.
+// CALLERS holding a SceneEditor MUST re-point it after this (SceneEditController::SetSelection does, via
+// RebindEditorToJob) -- ClearAll frees the scene + managers the editor cached, so skipping the re-bind
+// reintroduces the UAF.  Cost: the validate dry-run is a 2nd full derive per switch (under the render-parked
+// lock) -- bounded (~2-38 ms for 1k-16k chunks per doc 62 D2), acceptable for the no-rollback safety.
+bool Job::RederiveCstWithVariant( const char* variantName )
+{
+	if( !pCstDocument ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: no retained CST Document (load via LoadAsciiSceneViaCst first)" );
+		return false;
+	}
+	// Validate-before-destroy: a variant's materials are SKIPPED at load (inactive), so a buggy variant could
+	// fail to derive -- dry-run it into a throwaway Job first and only COMMIT (ClearAll + re-derive) if it
+	// succeeds, so a bad variant leaves the CURRENT live scene intact instead of gutting the Job (no rollback).
+	{
+		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+		std::vector<std::string> vdiags;
+		RISE::Cst::DeriveToJob( *pCstDocument, staging, &vdiags, nullptr, variantName ? variantName : "none" );
+		if( !vdiags.empty() ) {
+			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i ) {
+				GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: variant `%s` would not derive: %s", variantName ? variantName : "(base)", vdiags[i].c_str() );
+			}
+			return false;   // live scene UNTOUCHED
+		}
+	}
+	std::unique_ptr<RISE::Cst::Document> doc = std::move( pCstDocument );   // preserve across the container reset
+	// Facet 5 slice 1a: a variant SWITCH re-derives the SAME retained Document bytes -- the CONTENT does not
+	// change, so the head-version must be PRESERVED WHOLE (uuid AND revision), NOT bumped.  ClearAll zeroed it;
+	// capture the full version across the reset and restore it verbatim after re-retaining the (unchanged) doc.
+	const RISE::Cst::CstHeadVersion keepHeadVersion = mCstHeadVersion;
+	ClearAll();                                                            // DestroyContainers + InitializeContainers (fresh slate)
+	std::vector<std::string> diags;
+	// activeVariantOverride is non-null -> the bake FORCES this variant, bypassing the active_scene_variant chunk.
+	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, variantName ? variantName : "none" );
+	pCstDocument = std::move( doc );                                       // re-retain (intact even if the re-derive erred)
+	mCstHeadVersion = keepHeadVersion;                                     // restore verbatim: a variant switch does not change Document content
+	if( !diags.empty() ) {
+		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::RederiveCstWithVariant:: derive diagnostic: %s", diags[i].c_str() );
+		}
+		return false;
+	}
+	// P5 (Model-B): the re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
+	// viewport screen-fit so the preview stays screen-sized (not full-res) after a variant switch.  BEFORE the
+	// framestore push so the fit dims propagate: ScaleFilmToFit->SetFilm pushes on a real resize, but the push
+	// below covers the no-op-fit case (film already at fit dims) too.  Skipped when unset (headless CLI).
+	if( mHasViewportFit ) {
+		ScaleFilmToFit( mViewportFitSurfaceW, mViewportFitSurfaceH, mViewportFitLongEdge );
+	}
+	PushJobFrameStoreToRasterizers();
+	return true;
+}
+
+// P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive.
+// Resolves the named entity (the slot is INSERTED if the scene text omitted it -- a defaulted slot the panel
+// still surfaces), sets the param, and delegates the re-derive to DeriveEditedCstDocument_, which owns the
+// incremental fast path, the D2 full-re-derive fallback, and the 0/1/2/3 return contract (documented there).
+// `entityKind` (e.g. "material") disambiguates a cross-category name clash; for an UNNAMED camera it also
+// enables a unique-in-kind resolve-by-position fallback (see DocFindByNameAnyRole).
+// A TRANSFORM param on an object chunk additionally targets a same-named `override_object` when one exists
+// (the owner walk in the impl), exactly as the two whole-pose routes do.
+int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
+{
+	// The UNCHECKED fast path (no full-derivability gate) -- the GUI property-panel / gizmo route
+	// (SceneEditor::Apply and friends), where per-frame latency matters and the edit sources are
+	// value-only (they do not RETARGET references, so they cannot manufacture a forward reference).
+	return ApplyCstParamEditImpl_( entityName, entityKind, role, occ, newValue, /*requireFullDerivability*/ false );
+}
+
+// Model-B F5 slice S2 round 2 (P1-A root gate): the AGENT-originated variant.  Identical semantics
+// PLUS a full-derivability pre-commit gate: before the incremental fast path may commit, the edited
+// Document is dry-run through the FULL DeriveToJob (throwaway Job) -- an edit that would leave a head
+// that no longer derives in DOCUMENT ORDER (e.g. retargeting a consumer to an entity declared LATER:
+// the incremental path validates against the LIVE managers, where the entity exists, and would commit
+// a forward reference whose bytes fail to reload) is refused with code 0 and the head untouched.
+int Job::ApplyCstParamEditChecked( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
+{
+	return ApplyCstParamEditImpl_( entityName, entityKind, role, occ, newValue, /*requireFullDerivability*/ true );
+}
+
+int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability )
+{
+	if( !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
+	// ONE pair through the SHARED body -- so the single-param route and the atomic multi-param route cannot
+	// drift on resolution, on the owner walk, or on the duplicate-occurrence refusal.
+	std::vector< std::pair< std::string, std::string > > one;
+	one.push_back( std::make_pair( std::string( role ), std::string( newValue ) ) );
+	return ApplyCstParamEditsImpl_( entityName, entityKind, one, occ, requireFullDerivability );
+}
+
+// Light-colour composite (2026-09-02 round 2): the ATOMIC multi-param entry point -- see the IJob virtual doc.
+// UNGATED (no full-derivability dry-run), like ApplyCstParamEdit: its caller is the GUI/editor route, and its
+// pairs are value-only (they do not retarget references, so they cannot manufacture a forward reference).
+int Job::ApplyCstParamEdits( const char* entityName, const char* entityKind,
+                             const std::vector< std::pair< std::string, std::string > >& edits )
+{
+	return ApplyCstParamEditsImpl_( entityName, entityKind, edits, /*occ*/ 0, /*requireFullDerivability*/ false );
+}
+
+// The SHARED body.  ATOMICITY IS THE POINT: every pair is resolved and validated against the PRISTINE retained
+// Document FIRST (owner walk + duplicate-occurrence refusal), and only when ALL of them pass does anything get
+// written -- into ONE Document copy, derived ONCE.  A refusal at any pair returns 0 with the live scene and the
+// retained head byte-identical, so the caller can report a clean failure instead of a half-applied edit.
+int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind,
+                                  const std::vector< std::pair< std::string, std::string > >& edits,
+                                  int occ, bool requireFullDerivability )
+{
+	if( !pCstDocument || !entityName || edits.empty() ) return 0;
+	RISE::Cst::Document d1;
+	RISE::Cst::NodeId anchorId = 0;
+	std::string roleDiag;
+	if( PlanCstParamEdits_( *pCstDocument, entityName, entityKind, edits, occ, d1, anchorId, roleDiag, /*logRefusals*/ true ) != 1 ) return 0;
+	return DeriveEditedCstDocument_( std::move( d1 ), anchorId, entityName, roleDiag.c_str(), requireFullDerivability );
+}
+
+// Batched agent edits (2026-10-16): the resolve / owner-walk / duplicate-occurrence / cross-strip validation
+// and the write, factored VERBATIM out of ApplyCstParamEditsImpl_ and parameterized on the BASE document so
+// ApplyCstEditBatch validates each param element against the batch's evolving document with the IDENTICAL
+// rules.  Returns 1 = written into `outDoc`, 0 = refused (logged, `outDoc` untouched).
+int Job::PlanCstParamEdits_( const RISE::Cst::Document& base, const char* entityName, const char* entityKind,
+                             const std::vector< std::pair< std::string, std::string > >& edits, int occ,
+                             RISE::Cst::Document& outDoc, RISE::Cst::NodeId& outAnchor, std::string& outRoleDiag,
+                             bool logRefusals, CstBatchUndoOp* outUndo )
+{
+	if( !entityName || edits.empty() ) return 0;
+	for( size_t i = 0; i < edits.size(); ++i )
+		if( edits[i].first.empty() || edits[i].second.empty() ) return 0;   // empty role/value rejected (defense)
+	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
+	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
+	// Round-7 tightening: the camera fallback is GATED (DocCameraUniqueFallbackPermitted) so a TYPO'D camera
+	// name can no longer silently edit the sole unnamed camera -- fallback is attempted only for an empty
+	// name, the active camera's registered name, or a single-camera document.
+	// Document-first ADR phase 3 (kind-addressed singletons): an EMPTY name with a
+	// non-empty kind resolves the SOLE chunk of that kind -- the general rule the
+	// camera special case was an instance of.  This is how the transaction path
+	// addresses the unnamed film / rasterizer singleton chunks (an ambiguous or
+	// absent kind still refuses via DocFindByNameAnyRole's kindCount==1 gate).
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( base, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( base, entityName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) {
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
+		return 0;
+	}
+	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( base, id );
+
+	// PLAN, then write.  One entry per pair: which chunk the write lands on and what it strips first.
+	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; bool transform; };
+	std::vector< PlannedWrite > plan;
+	plan.reserve( edits.size() );
+	RISE::Cst::NodeId anchorId = 0;
+
+	for( size_t i = 0; i < edits.size(); ++i )
+	{
+		const std::string& editRole = edits[i].first;
+
+		// AMBIGUOUS-OCCURRENCE REFUSAL.  Every caller of this function edits occurrence
+		// `occ` counted from the FRONT (0 = first), while the parse this edit will be
+		// re-derived through is last-wins for a non-repeatable param -- ParseStateBag::
+		// SetSingle is an unconditional overwrite, and Cst::ParamValue reads the same way.
+		// The two agree exactly as long as such a param appears ONCE.  When it appears
+		// twice, an occ=0 edit rewrites a line that has no effect on the derived scene
+		// and leaves the effective line alone: the render does not change, the properties
+		// panel (which now reads last-wins, Cst::ParamValueAsParsed) does not change, and
+		// the edit reports success.  That silent no-op is worse than a refusal, so refuse
+		// -- and say which parameter, so the author can delete the dead line.
+		//
+		// Scoped to what is actually ambiguous: only a role the chunk's own descriptor
+		// declares NON-repeatable, and only when it is genuinely duplicated.  A repeatable
+		// param (`part`, `cp`, `value`, `shaderop`) is SUPPOSED to occur many times and its
+		// callers pass a real occurrence index -- untouched.  A role with no descriptor
+		// entry is left alone too; the derive's own validation owns that case.
+		//
+		// In the MULTI-pair form this runs for EVERY pair BEFORE the first write, which is
+		// what makes the composite atomic: a chunk that doubles `color` refuses the whole
+		// batch, rather than converting its `colorspace` and then discovering the colour
+		// cannot be written.
+
+		// OWNER WALK -- the same one ApplyCstObjectMatrixEdit and ApplyCstObjectComponentsEdit perform, and
+		// for the same reason.  A same-named `override_object` is applied AFTER the chunk that created the
+		// object and REPLACES its transform fields, so writing a transform param onto the base chunk when an
+		// override exists writes a value the re-derive then overwrites: the typed edit lands in the Document,
+		// the commit reports success (rc 2 -- the override guard forces a D2), and the object does not move.
+		// A return-code assertion stays green through that, which is what kept it invisible.  Route the write
+		// to the LAST chunk that actually decides the pose.
+		//
+		// Cst::DocTransformOwnerId owns the rule (scoping, and the non-transform / non-object / unnamed /
+		// already-an-override cases) because this function is NOT the only site that has to obey it: the
+		// agent's prior-value capture and its Undo resolve the same edit, and a writer that walks while they
+		// do not just moves the silent failure into the history.  One function, three callers, no drift.
+		bool objectTransformEdit = false;
+		const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( base, id, editRole, &objectTransformEdit );
+		const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( base, ownerId );
+
+		// The duplicate-occurrence refusal below reads the chunk the write will LAND on, not the one the
+		// caller addressed -- a doubled `position` line on the override is exactly the dead-line hazard it
+		// exists to catch, and the base chunk's own lines stop deciding anything once the walk fires.
+		if( ownerChunk ) {
+			const ChunkDescriptor* editDesc = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+			const ParameterDescriptor* editParam = nullptr;
+			if( editDesc )
+				for( const ParameterDescriptor& p : editDesc->parameters )
+					if( p.name == editRole ) { editParam = &p; break; }
+			if( editParam && !editParam->repeatable ) {
+				const int occurrences = RISE::Cst::ParamOccurrenceCount( ownerChunk, editParam->name );
+				if( occurrences > 1 ) {
+					if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
+						"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
+						"the scene derives from the LAST one, but this edit addresses occurrence %d -- it would rewrite a "
+						"dead line and leave the live value unchanged. Edit rejected; delete the duplicate `%s` lines first.",
+						entityName, ekind.c_str(), editRole.c_str(), occurrences, occ, editRole.c_str() );
+					return 0;
+				}
+			}
+		}
+
+		// A multi-pair batch must land on ONE chunk.  The owner walk is per-ROLE, so a batch mixing a
+		// transform param (which can walk to a same-named `override_object`) with a non-transform one would
+		// split across two chunks -- two edit closures, one derive anchor, and an atomicity claim this
+		// function could not keep.  Refuse instead of silently splitting.  (A single-pair edit can never
+		// trip this; the composite's own pairs are two params of the same light chunk.)
+		if( i == 0 ) {
+			anchorId = ownerId;
+		} else if( ownerId != anchorId ) {
+			if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s` resolves to a DIFFERENT owner chunk than the "
+				"first parameter of the batch; an atomic multi-param edit must land on one chunk. Edit rejected.",
+				entityName, ekind.c_str(), editRole.c_str() );
+			return 0;
+		}
+
+		// MASKING STRIP -- the other half of the sibling routes' semantics, evaluated PER-ROLE because this
+		// function writes ONE param where they write a whole pose.  Both the standard_object parser and the
+		// override_object parser rank their transform params matrix > quaternion > per-field, so a param that
+		// OUTRANKS the one being written makes the write a silent no-op on whichever chunk it lands on --
+		// which would just relocate the defect from "silently reverted under the override" to "silently
+		// ignored on it".  Strip exactly what outranks this role, and nothing else:
+		//
+		//   position / scale   <- `matrix` only.  The quaternion branch READS position and scale (it composes
+		//                         T*R*S from them), so the write is honoured with a quaternion present, and
+		//                         stripping one would discard a rotation this edit does not supply.
+		//   orientation        <- `matrix` and `quaternion`.  Both outrank Euler; dropping the quaternion is
+		//                         not data loss here because the typed orientation IS the replacement rotation.
+		//   quaternion         <- `matrix` only.
+		//   matrix             <- position / orientation / quaternion / scale, exactly as ApplyCstObjectMatrixEdit
+		//                         strips them: a 4x4 already encodes all four, so none of them is live after.
+		//
+		// `scale` is never stripped for a per-field write.  ApplyCstObjectComponentsEdit DOES strip it, and
+		// this route deliberately does not follow -- its two reasons for stripping are both properties of
+		// ITS caller, not of the params:
+		//   (1) that route's position/orientation come from DecomposeRigid, which REFUSES any non-unit
+		//       column magnitude, so a real `scale 2 2 2` can never reach it.  A typed edit has no such
+		//       filter: `scale 2 2 2` is an ordinary thing to have on the chunk being edited, and on both
+		//       chunk kinds it is live alongside what is written here (an override_object's per-field branch
+		//       applies position, orientation and scale INDEPENDENTLY; a standard_object composes `scale`
+		//       alongside quaternion / orientation).
+		//   (2) the only scales that DO reach that route are unit sign flips, which DecomposeRigid has
+		//       already folded into the `orientation` it writes -- so keeping one would apply that rotation
+		//       twice.  Nothing here folds anything into anything: this function writes the ONE param it was
+		//       given, so a `scale` it leaves alone is applied exactly once, as it was before the edit.
+		// Stripping it would make a typed translate silently un-scale the object -- the same class of
+		// unrequested mutation, in the opposite direction.
+		//
+		// Residual, stated rather than hidden: stripping a `matrix` to honour one typed component discards the
+		// rotation and scale that matrix encoded.  The alternative is the write reporting success and doing
+		// nothing, which is the defect class this whole path exists to close -- and it is what the two sibling
+		// routes already chose.
+		static const char* const kStripNone[]     = { nullptr };
+		static const char* const kStripMatrix[]   = { "matrix", nullptr };
+		static const char* const kStripMatQuat[]  = { "matrix", "quaternion", nullptr };
+		static const char* const kStripSubsumed[] = { "position", "orientation", "quaternion", "scale", nullptr };
+		const char* const* strip = kStripNone;
+		if( objectTransformEdit ) {
+			if(      editRole == "matrix"      ) strip = kStripSubsumed;
+			else if( editRole == "orientation" ) strip = kStripMatQuat;
+			else                                 strip = kStripMatrix;   // position / scale / quaternion
+		}
+
+		const PlannedWrite pw = { ownerId, strip, objectTransformEdit };
+		plan.push_back( pw );
+	}
+
+	// CROSS-STRIP COLLISION REFUSAL (round-3 P3 fix).  Each pair's strip list above is derived from ITS OWN
+	// role in isolation -- it has no way to know what role a DIFFERENT pair in the same batch is about to
+	// write.  A batch like {{"matrix", M}, {"position", P}} plans `position`'s strip list as `{"matrix"}`
+	// (matrix outranks a per-field write), so the write loop below applies pair 0 (writes `matrix`) and THEN
+	// pair 1 (strips `matrix` -- deleting what pair 0 just wrote -- and writes `position`).  The batch would
+	// silently keep only the LAST-written pair's param and lose the others to their own masking rule, which
+	// defeats the "every pair takes effect" half of the atomicity contract just as surely as a mid-batch
+	// refusal would.  Unreachable today (the only caller pairs `colorspace` + `color`, neither of which
+	// strips anything), but this is a public IJob virtual -- a future caller must not be able to trip it
+	// silently.  Refuse the WHOLE batch rather than let one pair's write erase a sibling's.
+	for( size_t i = 0; i < plan.size(); ++i ) {
+		for( const char* const* s = plan[i].strip; *s; ++s ) {
+			for( size_t j = 0; j < edits.size(); ++j ) {
+				if( j == i || edits[j].first != *s ) continue;
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning,
+					"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s`'s write masks `%s`, which this SAME "
+					"batch also writes -- one pair's write would silently erase another pair's. Edit rejected.",
+					entityName, ekind.c_str(), edits[i].first.c_str(), edits[j].first.c_str() );
+				return 0;
+			}
+		}
+	}
+
+	// EVERY pair validated -- now write them all into ONE copy (the caller derives ONCE).
+	RISE::Cst::Document d1 = base;
+	std::string roleDiag;
+	for( size_t i = 0; i < plan.size(); ++i ) {
+		// Batched agent edits (review round 3): capture the operation-level inverse -- the owner chunk's identity
+		// and every slot this write changes, with its value BEFORE and AFTER.  An object TRANSFORM edit records the
+		// object's WHOLE transform (position / orientation / quaternion / scale / matrix): an editor gesture made
+		// after the batch and then undone re-commits the pose in another spelling (a `matrix` where the batch wrote
+		// a `position`), so restoring only the written role would leave the object where the batch put it.
+		// Otherwise: the role itself plus each masking param the write strips.
+		static const char* const kTransformRoles[] = { "position", "orientation", "quaternion", "scale", "matrix", nullptr };
+		std::vector<std::string> slotRoles;
+		if( outUndo ) {
+			if( plan[i].transform ) {
+				for( const char* const* r = kTransformRoles; *r; ++r ) slotRoles.push_back( *r );
+				outUndo->wholeTransform = true;
+			} else {
+				for( const char* const* st = plan[i].strip; *st; ++st ) slotRoles.push_back( *st );
+				slotRoles.push_back( edits[i].first );
+			}
+			const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			if( owner ) {
+				// Undo fidelity: the owner's exact text BEFORE the first pair writes (every pair lands on this one
+				// chunk -- the one-owner refusal above), so Undo can put every line back exactly as it was.
+				if( i == 0 ) {
+					outUndo->ownerPreText = RISE::Cst::SerializeNode( owner );
+					if( outUndo->ownerPreText.size() > kCstUndoOwnerTextCap ) outUndo->ownerPreText.clear();   // too large
+				}
+				outUndo->ownerKeyword  = owner->role;
+				outUndo->ownerNamePath = RISE::Cst::ChunkNamePath( owner );
+				for( std::size_t k = 0; k < slotRoles.size(); ++k ) {
+					CstBatchUndoOp::Slot slot;
+					slot.role        = slotRoles[k];
+					slot.occ         = ( slotRoles[k] == edits[i].first ) ? occ : 0;
+					slot.priorAbsent = RISE::Cst::ParamOccurrenceCount( owner, slot.role ) <= slot.occ;
+					if( !slot.priorAbsent ) slot.priorValue = RISE::Cst::ParamValueAtOccurrence( owner, slot.role, slot.occ );
+					outUndo->slots.push_back( slot );
+				}
+			}
+		}
+		for( const char* const* s = plan[i].strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, plan[i].ownerId, *s );
+		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
+		if( outUndo ) {   // each recorded slot's value AFTER the write (the redo payload)
+			const RISE::Cst::NodeRef after = RISE::Cst::DocResolveNodeId( d1, plan[i].ownerId );
+			outUndo->ownerPostText = after ? RISE::Cst::SerializeNode( after ) : std::string();   // after the LAST pair
+			if( outUndo->ownerPreText.empty() || outUndo->ownerPostText.size() > kCstUndoOwnerTextCap )
+				outUndo->ownerPostText.clear();   // both or neither (ApplySlots_ needs the pair)
+			for( std::size_t k = 0; after && k < outUndo->slots.size(); ++k ) {
+				CstBatchUndoOp::Slot& slot = outUndo->slots[k];
+				slot.postAbsent = RISE::Cst::ParamOccurrenceCount( after, slot.role ) <= slot.occ;
+				slot.postValue  = slot.postAbsent ? std::string() : RISE::Cst::ParamValueAtOccurrence( after, slot.role, slot.occ );
+			}
+		}
+		if( i ) roleDiag += "+";
+		roleDiag += edits[i].first;
+	}
+	outDoc      = std::move( d1 );
+	outAnchor   = anchorId;
+	outRoleDiag = roleDiag;
+	return 1;
+}
+
+// Undo fidelity (2026-10-17): see the header doc.  EXACTLY PlanCstParamEdits_'s resolution (same uniqueFallback
+// rule, same owner walk); PlanCstParamEdits_ keeps its own inline copy only because it also needs the addressed
+// chunk itself for the container / duplicate-occurrence checks.
+RISE::Cst::NodeId Job::ResolveCstParamEditOwner_( const RISE::Cst::Document& doc, const char* entityName,
+                                                  const char* entityKind, const std::string& role ) const
+{
+	if( !entityName || role.empty() ) return 0;
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, entityName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) return 0;
+	return RISE::Cst::DocTransformOwnerId( doc, id, role );
+}
+
+bool Job::CstParamEditOwnerChunkText( const char* entityName, const char* entityKind, const char* role, std::string& out ) const
+{
+	out.clear();
+	if( !pCstDocument || !role ) return false;
+	const RISE::Cst::NodeId ownerId = ResolveCstParamEditOwner_( *pCstDocument, entityName, entityKind, std::string( role ) );
+	if( ownerId == 0 ) return false;
+	const RISE::Cst::NodeRef owner = RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+	if( !owner || owner->kind != RISE::Cst::NodeKind::Chunk ) return false;
+	out = RISE::Cst::SerializeNode( owner );
+	if( out.size() > kCstUndoOwnerTextCap ) { out.clear(); return false; }   // too large to keep (see the cap's doc)
+	return true;
+}
+
+int Job::ApplyCstParamEditOwnerRestore( const char* entityName, const char* entityKind, const char* role,
+                                        const std::string& expectText, const std::string& newText,
+                                        bool requireFullDerivability )
+{
+	if( !pCstDocument || !role || expectText.empty() || newText.empty() ) return -1;
+	const RISE::Cst::NodeId ownerId = ResolveCstParamEditOwner_( *pCstDocument, entityName, entityKind, std::string( role ) );
+	if( ownerId == 0 ) return -1;
+	bool replaced = false;
+	RISE::Cst::Document d1 = RISE::Cst::DocReplaceChunkIfText( *pCstDocument, ownerId, expectText, newText, &replaced );
+	if( !replaced ) return -1;
+	if( expectText == newText ) return 1;   // nothing to change (a GUI commit can rewrite identical text)
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, requireFullDerivability );
+}
+
+// Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution
+// mirrors ApplyCstParamEditImpl_ exactly (same DocFindByNameAnyRole call, same camera-unique-fallback rule) --
+// only the Document edit differs (DocRemoveParamOcc instead of DocSetOrAddParamValue).  Always full-derivability-
+// gated: the only caller is the agent Undo path (SceneEditor::ApplyRevertMutation's SetAgentCstParam arm, via
+// SceneEditor::RouteCstParamRemove_ -- reached from SceneEditController::Undo()), which -- like every
+// agent-originated Document mutation -- must never commit a head that would fail to re-derive in document order.
+// P1-2 fix (round 1): removes ONLY the `occ`-th occurrence (Cst::DocRemoveParamOcc), not every same-role
+// occurrence (the pre-fix Cst::DocRemoveParam) -- see the IJob virtual doc for why "every occurrence" is wrong
+// here: a repeatable param can accumulate MORE occurrences (via other edits) between the agent's insert and this
+// Undo, and this Undo must revert only its own occurrence.
+int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityKind, const char* role, int occ )
+{
+	if( !pCstDocument || !entityName || !role ) return 0;
+	// Phase 3: same kind-addressed-singleton rule as ApplyCstParamEditImpl_ (the
+	// mirrored resolution this function's doc promises) -- the agent Undo of a
+	// singleton-chunk param insert must resolve the same chunk the edit did.
+	// Round-7: same gated camera fallback as ApplyCstParamEditImpl_ (lockstep).
+	const std::string ekind = entityKind ? entityKind : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *pCstDocument, entityName, GetActiveCameraName() )
+		: ( entityName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, entityName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` (kind `%s`) not found or ambiguous in the CST Document; remove rejected", entityName, ekind.c_str() );
+		return 0;
+	}
+	// Same owner walk as the edit it inverts (the "mirrors ApplyCstParamEditImpl_ exactly" promise this
+	// function's doc makes).  If the insert being undone went to a same-named `override_object`, the
+	// remove has to come off that chunk -- removing from the base would leave the inserted transform
+	// live and report success, which is the same silent failure the walk exists to close.
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, std::string( role ) );
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParamOcc( *pCstDocument, ownerId, role, occ );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, /*requireFullDerivability*/ true );
+}
+
+// P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
+// anchored at `id` (used by ApplyCstParamEdit AND ApplyCstObjectMatrixEdit).  `entityName`/`role` are diagnostics.
+// FAST PATH: incrementally re-derive just the affected closure.  COST: one edit is O(N log N) -- DocEditClosure
+// recomputes the reference graph from scratch (~1.2ms@1k, ~5ms@4k, ~24ms@16k CHUNKS; CstEditCostTest N counts
+// entity GROUPS = 4 chunks each).  Fine for DISCRETE panel edits; the per-frame gizmo path commits ONCE at the
+// drag boundary (not per frame) for exactly this reason.  Atomic: DeriveToJobIncremental rolls the Job back on
+// a diagnostic, so a refusal leaves the live scene byte-identical.
+// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / source-instance / override_object /
+// composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
+// edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
+// throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --
+// ~2x the single-derive cost (see RederiveCstWithVariant, same convention).  Unlike a variant SWITCH, an EDIT
+// PRESERVES the active camera/rasterizer/animation across the re-derive (captured + restored below).
+// Return: 0 = no change (live scene intact); 1 = applied incrementally (managers untouched, no rebind);
+// 2 = applied via a FULL re-derive (ClearAll REPLACED the Scene + managers -- the caller MUST re-point its
+// cached scene/manager pointers; SceneEditor self-rebinds, else the next access is a use-after-free);
+// 3 = same as 2 BUT the re-derive emitted diagnostics (managers still replaced -> caller MUST rebind, but the
+// edit FAILED -- treat as failure).  Should-not-happen: the dry-run already validated the identical derive.
+// `requireFullDerivability` (F5 S2 round 2, P1-A root gate -- default false): when set, the edited Document
+// is dry-run through the FULL DeriveToJob FIRST -- BEFORE the incremental fast path can mutate the live Job --
+// and the edit is refused (code 0, head + live scene untouched) if the whole document no longer derives in
+// document order.  The incremental path alone validates the closure against the LIVE managers, so without the
+// gate a reference retarget to an entity declared LATER in the document commits a FORWARD REFERENCE: live
+// looks fine, but the retained head's bytes fail to reload (save-time data loss) and every subsequent D2-class
+// verb is refused.  Cost: one extra throwaway derive per gated edit (~ms..24ms at 16k chunks) -- acceptable
+// for DISCRETE agent edits; the GUI panel/gizmo path keeps the ungated fast path.
+int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId id, const char* entityName, const char* role, bool requireFullDerivability )
+{
+	RISE::Cst::Document d1 = std::move( d1in );
+	std::vector<RISE::Cst::NodeId> closure = RISE::Cst::DocEditClosure( d1, id );
+	if( closure.empty() ) return 0;   // id resolved but produced no closure (should not happen)
+
+	// P1-A root gate (agent edits only): full-derivability dry-run BEFORE the incremental attempt --
+	// DeriveToJobIncremental mutates the live Job on success, so the gate cannot run after it.  When the
+	// D2 fallback is taken below this validates twice (RederiveCstDocumentFull_ dry-runs again); redundant
+	// but harmless for a discrete agent edit.
+	if( requireFullDerivability ) {
+		char vbuf[256]; vbuf[0] = '\0';
+		const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+		const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+		std::vector<std::string> gdiags;
+		++mCstDryRunCount;
+		RISE::Cst::DeriveToJob( d1, staging, &gdiags, nullptr, activeVariant );
+		if( !gdiags.empty() ) {
+			for( size_t i = 0; i < gdiags.size() && i < 8u; ++i )
+				GlobalLog()->PrintEx( eLog_Warning, "Job::DeriveEditedCstDocument_:: agent gate: `%s`.`%s` would leave a head that no longer derives in document order; edit refused: %s",
+				                      entityName ? entityName : "?", role ? role : "?", gdiags[i].c_str() );
+			return 0;   // head + live scene untouched (d1 is a local copy, simply dropped)
+		}
+	}
+
+	// Fast path: incremental re-derive of just the closure.
+	std::vector<std::string> idiags;
+	const int applied = RISE::Cst::DeriveToJobIncremental( d1, *this, closure, &idiags );
+	if( applied == (int)closure.size() && idiags.empty() ) {
+		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit
+		BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision (uuid unchanged)
+		return 1;
+	}
+
+	// D2 fallback: full re-derive of the edited document via the SHARED tail below (dry-run + activation-
+	// preserving ClearAll re-derive).  The pre-formatted context keeps the log line byte-identical to the
+	// pre-factor "`<entity>`.`<role>` would not derive" wording.
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "`%s`.`%s`", entityName ? entityName : "?", role ? role : "?" );
+	return RederiveCstDocumentFull_( std::move( d1 ), ctx, nullptr );
+}
+
+// Model-B F5 slice S2: the SHARED D2 tail (see Job.h).  Validate-before-destroy (dry-run into a throwaway
+// Job) so a genuinely invalid edit leaves the live scene intact; then the real ClearAll + full re-derive,
+// FORCING the currently-active variant so a variant switch the user made survives the edit, and PRESERVING
+// the active camera/rasterizer/animation + the cached viewport screen-fit across the rebuild.
+// `restoreActiveRasterizer` (F5 S2 round 2, P1-B -- default true): ApplyCstInsertChunk passes FALSE when the
+// inserted chunk IS a rasterizer, so the document-derived activation (last rasterizer chunk in document
+// order = the appended insert) stands and the live active integrator matches what a save+reload would
+// activate.  Restoring the pre-insert rasterizer there would silently diverge live from reload.
+int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer )
+{
+	return RederiveCstDocumentFull_( std::move( editedDoc ), diagContext, outFirstDryRunDiag, restoreActiveRasterizer, /*skipDryRun*/ false );
+}
+
+// Batched agent edits (2026-10-16): `skipDryRun` is ONLY for a caller that has ITSELF just dry-run this
+// exact document clean (ApplyCstEditBatch's failure isolation validates the accepted document as it builds
+// it) -- skipping the validate-before-destroy pass anywhere else would let an invalid edit ClearAll the scene.
+int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* diagContext, std::string* outFirstDryRunDiag, bool restoreActiveRasterizer, bool skipDryRun )
+{
+	RISE::Cst::Document d1 = std::move( editedDoc );
+	char vbuf[256]; vbuf[0] = '\0';
+	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+	if( !skipDryRun )
+	{
+		Job staging;
+		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+		std::vector<std::string> vdiags;
+		++mCstDryRunCount;
+		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
+		if( !vdiags.empty() ) {
+			if( outFirstDryRunDiag ) *outFirstDryRunDiag = vdiags[0];
+			for( size_t i = 0; i < vdiags.size() && i < 8u; ++i )
+				GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: %s would not derive: %s", diagContext ? diagContext : "(edit)", vdiags[i].c_str() );
+			return 0;   // live scene UNTOUCHED (d1 was the caller's edited COPY; the retained head is intact)
+		}
+	}
+	// An EDIT must not reset the user's runtime activations the way a variant SWITCH intentionally does:
+	// a full DeriveToJob re-applies the document's active_camera + default rasterizer/animation, so capture the
+	// live ones across the ClearAll and restore them after (best-effort -- the edit only changed a slot, so the
+	// camera/rasterizer/animation still exist).
+	const std::string keepCamera     = GetActiveCameraName();
+	const std::string keepRasterizer = GetActiveRasterizerName();
+	char keepAnim[256]; keepAnim[0] = '\0'; GetActiveAnimationName( keepAnim, sizeof( keepAnim ) );
+	// Facet 5 slice 1a: ClearAll resets mCstHeadVersion to {0,0}, but a D2 EDIT re-retains the SAME head
+	// (same uuid) with mutated content -- capture the uuid across the reset so we restore it, then bump the
+	// revision (content changed).  (A variant SWITCH goes through RederiveCstWithVariant, not here, and it
+	// intentionally does NOT bump -- the retained Document bytes are unchanged by a switch.)
+	const RISE::Cst::CstHeadVersion keepHeadVersion = mCstHeadVersion;
+	ClearAll();
+	std::vector<std::string> fdiags;
+	RISE::Cst::DeriveToJob( d1, *this, &fdiags, nullptr, activeVariant );
+	if( !mForTestInjectLiveDeriveDiag.empty() ) {   // test seam only -- see ForTest_InjectNextLiveDeriveDiagnostic
+		fdiags.push_back( mForTestInjectLiveDeriveDiag );
+		mForTestInjectLiveDeriveDiag.clear();
+	}
+	mLastCstLiveDeriveDiag.clear();   // EVERY diagnostic, one per line (batch attribution reads them all)
+	for( size_t i = 0; i < fdiags.size(); ++i ) { if( i ) mLastCstLiveDeriveDiag += "\n"; mLastCstLiveDeriveDiag += fdiags[i]; }
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // re-retain (intact even if the re-derive erred)
+	mCstHeadVersion = keepHeadVersion;   // restore the load-time uuid (ClearAll had zeroed it)
+	BumpCstHeadRevision();               // the retained Document content changed (edit committed) -> bump revision
+	for( size_t i = 0; i < fdiags.size() && i < 8u; ++i )
+		GlobalLog()->PrintEx( eLog_Error, "Job::DeriveEditedCstDocument_:: full re-derive diagnostic: %s", fdiags[i].c_str() );
+	// Restore the activations the full re-derive reset to document defaults (best-effort; before the framestore
+	// push so it targets the restored rasterizer).
+	if( !keepCamera.empty()     ) SetActiveCamera( keepCamera.c_str() );
+	// P1-B: skipped for a rasterizer INSERT (see the header comment) -- the re-derive just activated the
+	// document's last rasterizer chunk (the inserted one), which is exactly what a save+reload would do.
+	//
+	// Shared-undo U2 fix: ALSO skip the restore when `keepRasterizer`'s chunk no longer exists in the
+	// EDITED document -- e.g. Undo-of-an-agent-rasterizer-insert (or a plain remove_chunk on the currently
+	// ACTIVE rasterizer) removes exactly that chunk, so the pre-edit "keep" name names a rasterizer the
+	// re-derive did NOT recreate.  SetActiveRasterizer would otherwise LAZILY RECONSTRUCT it from the
+	// standard-types catalogue with default params (Job::InstantiateRasterizerWithDefaults) -- a phantom
+	// instance backed by NO Document chunk, silently diverging live from what a fresh reload of the SAME
+	// (now-edited) Document would activate (the invariant this whole path exists to uphold).  The re-derive
+	// above already registered a rasterizer entry per surviving rasterizer chunk (RegisterAndActivateRasterizer,
+	// keyed by chunk keyword) -- checking the registry (not re-deriving anything new) is the honest "does this
+	// name still exist" test, matching P1-B's own "don't invent new activation machinery" principle.
+	const bool keepRasterizerStillExists = rasterizerRegistry.find( keepRasterizer ) != rasterizerRegistry.end();
+	if( !keepRasterizer.empty() && restoreActiveRasterizer && keepRasterizerStillExists ) SetActiveRasterizer( keepRasterizer.c_str() );
+	if( keepAnim[0]             ) SetActiveAnimation( keepAnim );
+	// P5 (Model-B): the full re-derive rebuilt the LIVE film at the Document's AUTHORED dims -- re-apply the cached
+	// viewport screen-fit so an edit-triggered D2 doesn't jump the preview from screen-fit to full-res.  BEFORE the
+	// framestore push (and after the camera/rasterizer restore, so ScaleFilmToFit->SetFilm's push targets the
+	// restored active rasterizer).  Skipped when unset (headless CLI -> authored full-res).
+	if( mHasViewportFit ) {
+		ScaleFilmToFit( mViewportFitSurfaceW, mViewportFitSurfaceH, mViewportFitLongEdge );
+	}
+	PushJobFrameStoreToRasterizers();
+	// 2 = replaced + clean; 3 = replaced but the re-derive diagnosed (still rebind to avoid UAF, but it FAILED).
+	return fdiags.empty() ? 2 : 3;
+}
+
+// 87 step 3a: an INSTANCING chunk (a `standard_object` carrying `source`) is NOT built through its
+// own chunk type -- Cst::DeriveToJob expands it through the SOURCE's parser, so the params the
+// resulting entry can actually carry are the TARGET role's, not `standard_object`'s.  A `csg_object`
+// source therefore yields a node with `position` / `orientation` and NO `matrix` / `quaternion` /
+// `scale`, even though the chunk the author wrote is a `standard_object` (whose descriptor declares
+// all of them).  Every transform route below has to ask THIS question rather than the chunk's role,
+// or the gate admits a transform the expansion's descriptor check (Cst.cpp, "an instance is built
+// through the SOURCE's own chunk type") then refuses at commit -- the live/CST divergence the gate
+// exists to prevent.
+//
+// Walks the `source` chain to the ROOT chunk.  Termination: `source` links point strictly BACKWARDS
+// in the document (Cst::ExpandSourceInstance's declare-earlier rule), so the chain is acyclic by
+// construction; the 256 guard is a belt against a document that reached here without that check.
+// Returns the chunk's OWN role when there is no `source` -- and also when a link is unresolvable,
+// which is safe because such a document does not derive at all.
+static std::string CstTransformTargetRole_( const RISE::Cst::Document& doc, RISE::Cst::NodeId id )
+{
+	std::string role;
+	RISE::Cst::NodeId cursor = id;
+	for( unsigned int guard = 0; guard < 256u && cursor != 0; ++guard ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, cursor );
+		if( !chunk ) break;
+		role = chunk->role;
+		if( role != "standard_object" ) break;                 // only a standard_object can carry `source`
+		// ParamValueAsParsed reads the occurrence the PARSER reads (last wins) and carries
+		// separating/trailing trivia along -- trim before comparing against a bare word.
+		std::string src = RISE::Cst::ParamValueAsParsed( chunk, "source" );
+		const size_t b = src.find_first_not_of( " \t\r\n" );
+		const size_t e = src.find_last_not_of( " \t\r\n" );
+		src = ( b == std::string::npos ) ? std::string() : src.substr( b, e - b + 1 );
+		if( src.empty() || src == "none" ) break;
+		RISE::Cst::NodeId next = RISE::Cst::DocFindByNameAnyRole( doc, src, nullptr, "standard_object", false );
+		if( next == 0 ) next = RISE::Cst::DocFindByNameAnyRole( doc, src, nullptr, "csg_object", false );
+		if( next == 0 || next == cursor ) break;
+		cursor = next;
+	}
+	return role;
+}
+
+// 87 step 3a: collect EVERY chunk that authors object `objectName`'s transform, in DOCUMENT ORDER --
+// the base chunk first, then each same-named `override_object` layer.  BOTH transform commit routes
+// use this for the OWNER WALK: they write to the LAST entry, the layer that actually decides the pose
+// (committing under a later absolute override would let the re-derive mask the edit).
+//
+// WHAT THE TWO ROUTES DO NOT SHARE IS THE STRIP, AND THE ASYMMETRY IS THE POINT -- see the two call
+// sites.  It comes from ONE mechanism, read in two directions:
+//
+//   MATRIX route -> strips the OWNER ONLY.  A `matrix` (or `quaternion`) on an override_object takes
+//   the whole-matrix branch of its Finalize, i.e. Transformable::SetFinalTransformMatrix ->
+//   ReplaceFinalStack_, which CLEARS the transform stack and the position/orientation/scale/stretch
+//   matrices outright (the non-Transformable fallback does ClearAllTransforms + PushTopTransStack,
+//   same effect).  Every earlier layer is therefore subsumed BY CONSTRUCTION at derive time -- there
+//   is nothing for a wider strip to protect against.
+//
+//   COMPONENTS route -> strips EVERY layer.  A per-field `position`/`orientation` goes through the
+//   override's per-field branch, whose Set* calls are INDEPENDENT and which never clears a `scale` an
+//   earlier layer set.  That earlier `scale` stays live while the `orientation` the commit writes
+//   ALREADY carries its contribution (DecomposeRigid folds a unit sign flip into it, and unit sign
+//   flips are the only scales that can reach a commit), so the flip is applied TWICE and the object
+//   lands somewhere the user never dragged it.  Measured: `SetObjectPosition(5,0,0)` on a csg_object
+//   with `scale -1 -1 1` on the FIRST of two layers -- live 4.75, committed 5.25.
+//
+// DO NOT "UNIFY" THE TWO.  Round 5 of this arc made the matrix route symmetric with the components
+// route for consistency, and it is a pure cost there.  An override_object's descriptor declares only
+// name/position/orientation/quaternion/matrix/scale, so on THAT chunk type an every-layer strip does
+// not leave a name-only chunk in a corner case -- it leaves one for EVERY non-owner layer, ALWAYS,
+// discarding the author's params and stranding any comment they wrote beside them, and making the
+// parser log "no override parameters present (empty block)" on every later derive.  Measured on a
+// base + two overrides with a NO-OP matrix edit: the base `position` and an entire author-written
+// layer were gutted, while the owner-only strip produced the IDENTICAL pose.  The argument for not
+// DELETING an author's chunk (recorded at the components call site) applies just as much to not
+// GUTTING one.
+static void CstCollectObjectTransformLayers_(
+	const RISE::Cst::Document& doc, RISE::Cst::NodeId baseId, const char* objectName,
+	std::vector<RISE::Cst::NodeId>& outLayers )
+{
+	outLayers.clear();
+	if( baseId != 0 ) outLayers.push_back( baseId );
+	const std::string overridePath = std::string( "override_object/" ) + ( objectName ? objectName : "" );
+	const int count = RISE::Cst::DocItemCount( doc );
+	for( int index = 0; index < count; ++index ) {
+		const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( doc, index );
+		if( candidateId == baseId ) continue;
+		const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( doc, candidateId );
+		if( candidate && candidate->role == "override_object"
+		 && RISE::Cst::ChunkNamePath( candidate ) == overridePath )
+			outLayers.push_back( candidateId );
+	}
+}
+
+// P5 Slice 3 expansion (object transform): commit an object's transform to the retained CST as the
+// authoritative `matrix` param (16 col-major doubles).  87: the caller passes the object's LOCAL
+// matrix -- what the chunk itself authors -- NOT its composed world matrix; a parented object's
+// world transform is re-composed from this on every derive. If legacy same-name override_object chunks follow the
+// base, write the LAST override layer: committing only the base would let a later partial absolute override
+// mask the GUI edit on re-derive. Strips the now-dead position/orientation/quaternion/scale params from the
+// chosen owner first. Uniform for panel + gizmo edits -> avoids param/matrix mixing. Same 0/1/2/3 contract.
+int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 )
+{
+	if( !pCstDocument || !objectName || !matrix16 || !matrix16[0] ) return 0;
+	// Resolve by the EXACT keyword `standard_object`, NOT the loose "_object" suffix: an override_object (the
+	// `> modify` / variant override layer) carries the SAME name as its base object and also ends in "_object",
+	// so the suffix would match both and refuse (occ=2).  The base standard_object is the transform owner an
+	// object edit targets.  (Exotic object chunks -- csg_object / center_object -- fall outside this and are not
+	// CST-routed; documented limitation, future ChunkCategory-based resolution.)
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "standard_object", false );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
+		return 0;
+	}
+	// Round-6 (85e1b9bd) made the supplied kind a HARD CONSTRAINT inside DocFindByNameAnyRole itself
+	// (RoleMatchesKindConstraint narrows every match, single or not), so a csg_object can no longer resolve
+	// against the exact "standard_object" keyword ("csg_object" neither equals it, ends in "_standard_object",
+	// nor registry-classifies into it -- the classifier union covers only the painter/material/geometry/light/
+	// medium/camera UI kinds).  This re-verify is retained as DEFENSE-IN-DEPTH: a wrong-kind chunk here has NO
+	// `matrix` param, so the insert below would fail the dry-run derive and silently drop the transform.  The
+	// editor also classifies + routes transforms up front (CstObjectTransformKind), refusing what it can't commit.
+	{
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( !chunk || chunk->role != "standard_object" ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` is not a standard_object (no `matrix` param); transform commit rejected", objectName );
+			return 0;
+		}
+		// 87 step 3a, same defense-in-depth one level down: the chunk IS a standard_object, but if
+		// it carries `source` the entry is built through the SOURCE's chunk type, and a csg_object
+		// target has no `matrix` param -- writing one would fail the dry-run derive below and drop
+		// the transform.  CstObjectTransformKind routes such an object to the COMPONENTS edit.
+		const std::string target = CstTransformTargetRole_( *pCstDocument, id );
+		if( target != "standard_object" ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` instances a `%s` (via `source`), which has no `matrix` param; transform commit rejected", objectName, target.c_str() );
+			return 0;
+		}
+	}
+	// OWNER WALK (shared with the components route), then an OWNER-ONLY STRIP -- deliberately NOT the
+	// every-layer strip the components route performs.  The two are asymmetric for one reason read in
+	// two directions, spelled out at CstCollectObjectTransformLayers_: the `matrix` written below lands
+	// on the LAST layer and takes SetFinalTransformMatrix -> ReplaceFinalStack_, which CLEARS the
+	// transform stack, so every earlier layer is subsumed at derive time by construction.  A wider
+	// strip here protects against nothing and costs real author data: an override_object declares only
+	// name + the five transform params, so stripping all five from a non-owner layer empties it every
+	// time, not in a corner case.  Round 5 of this arc made this route symmetric "for consistency" and
+	// that was the wrong call; do not re-unify them.
+	//
+	// The strip on the OWNER is still required: position/orientation/quaternion/scale sitting beside
+	// the `matrix` on the same chunk are dead (the matrix branch of Finalize ignores them outright)
+	// and leaving them would let a hand-edit of the chunk silently contradict the committed pose.
+	std::vector<RISE::Cst::NodeId> layers;
+	CstCollectObjectTransformLayers_( *pCstDocument, id, objectName, layers );
+	const RISE::Cst::NodeId ownerId = layers.empty() ? id : layers.back();
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "position" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "orientation" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "matrix", 0, matrix16 );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "matrix" );
+}
+
+// P5 Slice 3 expansion (object transform): classify how object `name`'s retained-CST chunk can accept a transform
+// edit -- 0 = NOT routable (not in the CST as an object chunk: unknown / gltf-import sub-object), 1 = MATRIX
+// (standard_object -- has a `matrix` param, commits any transform losslessly), 2 = COMPONENTS (csg_object -- has
+// position/orientation but no matrix/scale, so it commits only translate+rotate via those params).  Resolves by
+// bare name under an EXACT-keyword kind constraint (since round 6 DocFindByNameAnyRole enforces the kind on
+// every match, so a uniquely-named csg_object no longer resolves as "standard_object"; the post-resolve keyword
+// check is retained as defense-in-depth).  The editor uses this to route
+// the commit (matrix vs components) AND to refuse, up front, a transform it cannot represent (a non-routable
+// object, or a SCALE on a components-only csg) -- so the live object never diverges from an un-committable CST.
+int Job::CstObjectTransformKind( const char* name ) const
+{
+	if( !pCstDocument || !name ) return 0;
+	// standard_object FIRST (the suffix also narrows past a same-named override_object).
+	RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "standard_object", false );
+	if( id != 0 ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( chunk && chunk->role == "standard_object" ) {
+			// 87 step 3a: answer for the TARGET role, not the chunk's.  An instancing chunk is a
+			// standard_object whatever it points at, but the entry is built through the SOURCE's
+			// parser -- so `source <a csg_object>` yields a node that can only express
+			// translate+rotate, exactly like an authored csg_object.  Answering 1 here would
+			// declare a gizmo scale/shear COMMITTABLE, let SceneEditor mutate the live object, and
+			// then have ApplyCstObjectMatrixEdit refuse -- a live transform the CST never records
+			// and the next full re-derive silently reverts.
+			return ( CstTransformTargetRole_( *pCstDocument, id ) == "csg_object" ) ? 2 : 1;
+		}
+	}
+	id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "csg_object", false );
+	if( id != 0 ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+		if( chunk && chunk->role == "csg_object" ) return 2;
+	}
+	return 0;
+}
+
+// P5 Slice 3 expansion (csg transform): commit a components-only object's (csg_object) LOCAL translate+rotate as
+// its position + orientation (Euler degrees) chunk params.  The caller (editor) decomposes the final transform
+// and refuses anything a csg can't represent (scale / shear / gimbal) BEFORE the live mutate, so this only ever
+// receives a representable pose.  Strips matrix/quaternion defensively (no-op on a csg).  Same 0/1/2/3 contract.
+// Targets a same-named `override_object` when one exists (the owner walk below), exactly as the matrix route does.
+int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation )
+{
+	if( !pCstDocument || !objectName || !position || !position[0] || !orientation || !orientation[0] ) return 0;
+	RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "csg_object", false );
+	if( id == 0 ) {
+		// 87 step 3a: the components route now also owns the INSTANCE of a csg_object -- a chunk
+		// whose own role is `standard_object` but whose entry is built through the source's
+		// csg_object parser (CstObjectTransformKind answers 2 for it).  `position`/`orientation`
+		// are exactly the two transform params BOTH roles declare, so the commit lands on the
+		// instancing chunk and the expansion merges them onto the synthesized csg_object.
+		const RISE::Cst::NodeId instId = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "standard_object", false );
+		const RISE::Cst::NodeRef instChunk = instId ? RISE::Cst::DocResolveNodeId( *pCstDocument, instId ) : RISE::Cst::NodeRef();
+		if( instChunk && instChunk->role == "standard_object"
+		 && CstTransformTargetRole_( *pCstDocument, instId ) == "csg_object" ) {
+			id = instId;
+		}
+	}
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
+		return 0;
+	}
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	if( !chunk || CstTransformTargetRole_( *pCstDocument, id ) != "csg_object" ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object (nor an instance of one); edit rejected", objectName );
+		return 0;
+	}
+	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit performs, through the same shared helper, and
+	// for the same reason.  A same-named `override_object` is applied AFTER the base chunk and REPLACES
+	// the transform fields it names, so committing onto the base chunk when an override exists writes a
+	// value the re-derive then overwrites: the gizmo drag lands, the commit reports success, and the
+	// object snaps back.  Write to the LAST layer, which is the one that actually decides the pose.
+	//
+	// This route reached the instancing chunk only from 87 step 3a (before it, a csg-sourced
+	// instance classified as kind 1 and went through the MATRIX route, which HAS this walk) -- so
+	// without it, step 3a converted a working drag on an overridden csg-sourced instance into a
+	// silent revert.
+	std::vector<RISE::Cst::NodeId> layers;
+	CstCollectObjectTransformLayers_( *pCstDocument, id, objectName, layers );
+	const RISE::Cst::NodeId ownerId = layers.empty() ? id : layers.back();
+	// `matrix` / `quaternion` / `scale` go from EVERY layer -- base chunk and each same-named
+	// `override_object` alike -- not merely from the one the commit writes to.
+	//
+	// For matrix/quaternion the reason is representational: on an override_object EITHER takes the
+	// whole-matrix branch of its Finalize and the per-field position/orientation this function writes
+	// would be IGNORED outright; on a base chunk neither is expressible by the csg_object the commit
+	// derives through.
+	//
+	// `scale` goes for a DIFFERENT reason, and that reason applies to EVERY layer, which is what two
+	// earlier cuts got wrong in opposite directions.  One kept `scale` on an override entirely,
+	// reasoning that the override's per-field branch applies position, orientation and scale
+	// independently so a scale there is "live on the object being dragged".  The next stripped it, but
+	// only from the write target -- leaving any EARLIER same-named override's `scale` live, with the
+	// identical consequence.  Both are excluded by this function's contract, twice over:
+	//
+	//   (1) The caller (SceneEditor::CommitPendingCstObjectTransforms) derives the `position` and
+	//       `orientation` handed in here from DecomposeRigid, which REFUSES any non-unit column
+	//       magnitude -- and the editor's post-mutate gate has already restored-and-refused the
+	//       gesture before the commit runs.  A real `scale 2 2 2` on any layer therefore cannot
+	//       reach this line at all; the gesture never happens.
+	//   (2) The only scales that DO reach it are unit sign flips -- (1,1,1), or a flip like
+	//       (-1,-1,1), which DecomposeRigid admits because the magnitudes are 1 and det > 0.  A
+	//       sign flip IS a 180-degree rotation, and DecomposeRigid has already FOLDED it into the
+	//       `orientation` string this function is about to write.  Keeping the `scale` that
+	//       produced it -- ANYWHERE in the stack, since the per-field branch never clears a stretch
+	//       it does not itself set -- applies that rotation a SECOND time, so the re-derive lands the
+	//       object somewhere the user never dragged it (measured: live x = 4.75, re-derived x = 5.25,
+	//       with the `scale` on either an only override or the first of two).
+	//
+	// The written position + orientation REPRODUCE the whole local matrix (DecomposeRigid verifies the
+	// rebuild before returning), so nothing is LOST by clearing the rest of the stack.
+	//
+	// This is NOT symmetric with ApplyCstObjectMatrixEdit, which strips the OWNER ONLY, and the
+	// asymmetry is principled rather than an oversight -- CstCollectObjectTransformLayers_ carries the
+	// mechanism.  Short version: a written `matrix` routes through ReplaceFinalStack_, which clears the
+	// stack, so it subsumes every earlier layer without any strip at all; a written position +
+	// orientation routes through the per-field branch, which does NOT clear an earlier layer's `scale`.
+	// Same reason, opposite conclusions.  Widening the matrix route to match this one gutted author
+	// data for no behavioural gain and was reverted.
+	//
+	// TWO CONSEQUENCES OF THE EVERY-LAYER STRIP, both accepted knowingly, both bounded to THIS route.
+	//
+	//   (a) A layer whose ONLY params were transform params is left carrying just its `name`, and the
+	//       override_object parser then logs "no override parameters present (empty block -- likely a
+	//       bug in the writer)" for it on every subsequent derive.  The chunk is NOT deleted: a
+	//       transform commit silently removing a chunk the author wrote, with its comments and trivia,
+	//       is a worse surprise than a log line.  (Softening that parser message is the better fix and
+	//       is not attempted here.)
+	//   (b) A trailing comment on a stripped param line -- `scale -1 -1 1   # mirror the shell` --
+	//       outlives its param and is left indented inside the now-empty block.  It is left in place
+	//       DELIBERATELY, for the same reason as (a) and the stronger form of it: carrying the comment
+	//       away with its param means DELETING author-written prose during a gizmo drag, which is
+	//       strictly worse than orphaning it where the author can still read and re-place it.  Ugly,
+	//       recoverable, and never silent about the author's own words.
+	//
+	// A THIRD CONSEQUENCE THAT LOOKS LIVE AND IS NOT, checked rather than assumed.  The empty-block
+	// branch of the override_object parser returns BEFORE `pJob.NoteObjectOverride()`, and that count
+	// is what makes the CST incremental apply fall back to a full derive (Cst.cpp, the P1.3 guard) --
+	// so an emptied layer stops being counted.  The count cannot reach zero this way: `ownerId` is
+	// `layers.back()`, i.e. the LAST same-named override whenever any exists, and the owner is exactly
+	// the layer that RECEIVES the written params below.  At least one override_object therefore always
+	// survives non-empty for an object whose commit emptied one, and an override on a DIFFERENT object
+	// is never touched at all.  Unreachable, not merely unobserved.
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( std::size_t li = 0; li < layers.size(); ++li ) {
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "matrix" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "quaternion" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "scale" );
+	}
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "position", 0, position );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "orientation", 0, orientation );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "position/orientation" );
+}
+
+// P5 Slice 3 expansion (camera drag): commit a camera's NET pose to the retained CST.  A drag gesture
+// (Orbit/Pan/Zoom/Roll) mutates the live camera's REST params -- location (rest position, pre-orbit), lookat,
+// up, orientation (Euler), target_orientation (theta/phi orbit) -- which the pinhole/thinlens/... chunk all
+// AUTHOR and COMPOSE (no masking).  The caller reads the rest values via CameraIntrospection (NOT the post-orbit
+// composed position), so routing all five with their current values reconstructs the same pose on re-derive --
+// no double-apply.  One re-derive (vs five for per-param routes).  Same 0/1/2/3 contract.  Unnamed-camera
+// resolve-by-position fallback (cameras can be the sole unnamed `pinhole_camera { ... }`).
+// Round-7 note: this fallback stays UNGATED (unlike the agent-facing ApplyCstParamEditImpl_ /
+// ApplyCstRemoveChunk sites, which run camName through DocCameraUniqueFallbackPermitted).  `camName` here --
+// and in ApplyCstRemoveCameraChunk / ApplyCstDeleteCameraChunk below -- is a LIVE-REGISTRY name from the
+// GUI's own camera enumeration (the runtime allocator's "default" et al for unnamed chunks), never a typed
+// agent address, so the typo-retargeting hazard the gate closes cannot arise; gating would instead refuse
+// legitimate pose/delete operations on an unnamed non-active camera in a multi-camera document.
+int Job::ApplyCstCameraPoseEdit(
+	const char* camName, const char* location,
+	const char* lookat, const char* up,
+	const char* orientation, const char* targetOrientation )
+{
+	return ApplyCstCameraPoseEditWithBasis(
+		camName, location, lookat, up, orientation, targetOrientation,
+		nullptr, nullptr );
+}
+
+int Job::ApplyCstCameraPoseEditWithBasis(
+	const char* camName, const char* location,
+	const char* lookat, const char* up,
+	const char* orientation, const char* targetOrientation,
+	const char* realizedBasisW, const char* realizedBasisV )
+{
+	if( !pCstDocument || !camName ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstCameraPoseEdit:: `%s` not found or ambiguous in the CST Document; pose commit rejected", camName );
+		return 0;
+	}
+	const RISE::Cst::NodeRef cameraChunk =
+		RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	if( cameraChunk && cameraChunk->role == "onb_pinhole_camera" ) {
+		if( !location || !location[0]
+		 || !realizedBasisW || !realizedBasisW[0]
+		 || !realizedBasisV || !realizedBasisV[0] )
+			return 0;
+		// Preserve the explicit-ONB representation.  WV is sufficient to
+		// reconstruct the complete orthonormal frame and exactly matches the
+		// realized camera basis after an interactive pose edit.
+		RISE::Cst::Document onb =
+			RISE::Cst::DocSetOrAddParamValue(
+				*pCstDocument, id, "location", 0, location );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "va", 0, realizedBasisW );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "vb", 0, realizedBasisV );
+		onb = RISE::Cst::DocSetOrAddParamValue(
+			onb, id, "components", 0, "WV" );
+		return DeriveEditedCstDocument_(
+			std::move( onb ), id, camName, "pose" );
+	}
+	// All five rest params must read non-empty for ordinary lookAt cameras;
+	// a missing one means an unexpected type, so refuse a partial commit.
+	if( !location || !location[0] || !lookat || !lookat[0] || !up || !up[0]
+	 || !orientation || !orientation[0]
+	 || !targetOrientation || !targetOrientation[0] )
+		return 0;
+	// Canonicalize the two aliased pose groups before writing them.  Camera
+	// descriptors also accept pitch/roll/yaw and theta/phi, and Finalize()
+	// deliberately applies those scalar aliases AFTER orientation /
+	// target_orientation.  Leaving an old alias in the chunk would therefore
+	// override the just-committed drag on re-derive (fresh cloned cameras
+	// author theta/phi, which made their first Orbit snap back to zero).
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "pitch" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "roll" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "yaw" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "theta" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "phi" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "location", 0, location );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "lookat", 0, lookat );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "up", 0, up );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "target_orientation", 0, targetOrientation );
+	return DeriveEditedCstDocument_( std::move( d1 ), id, camName, "pose" );
+}
+
+// Model-B P5 (camera-clone CST insert): INSERT a faithful, re-derivable camera chunk into the retained Document so
+// a FUTURE D2 re-derive / save reproduces a cloned camera.  This is a DOCUMENT-ONLY edit -- the live scene already
+// carries the clone (CameraIntrospection::AddCameraFromSnapshot ran first), so NO re-derive / ClearAll / manager
+// replacement happens here (and so no render-thread parking is needed beyond what CloneActiveCamera already did).
+// `chunkText` is a bare `<keyword> { name <clone> ... }` with NO trailing newline (built by BuildCameraChunkText).
+// Parse it into a throwaway Document, extract its first CHUNK item (skipping any stray/trivia leaves), then append
+// it + a "\n" inter-chunk separator trivia leaf (a chunk item does NOT own its trailing newline -- the separator is
+// a SEPARATE rope item, so the serialized Document stays well-formed and ParseToCst round-trips).  Returns 1 on a
+// successful insert, 0 on any failure (no Document / null/empty text / un-parseable chunk) leaving the Document
+// intact.  No 2/3 (no re-derive) -> the caller needs no rebind.
+int Job::ApplyCstInsertCameraChunk( const char* chunkText )
+{
+	if( !pCstDocument || !chunkText || !chunkText[0] ) return 0;
+
+	RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+	// Find the first top-level CHUNK item (a bare chunk with no `RISE ASCII SCENE` header parses to the chunk at
+	// index 0, but be defensive against a leading stray/trivia leaf).
+	const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+	RISE::Cst::NodeRef chunkItem;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+		if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+	}
+	if( !chunkItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: chunk text did not parse to a camera chunk; insert rejected" );
+		return 0;
+	}
+
+	// Build the "\n" separator trivia leaf the same way (its own one-item Document).
+	RISE::Cst::Document sepDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	if( !sepItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: could not build the inter-chunk separator; insert rejected" );
+		return 0;
+	}
+
+	// LEADING-separator (symmetric-by-construction): ALWAYS prepend a `\n` separator before the chunk, then the
+	// chunk, then the trailing `\n` separator -- the inserted unit is UNCONDITIONALLY exactly three leaves in
+	// order: [leadSep "\n"][chunk][trailSep "\n"], appended at DocItemCount.  ApplyCstRemoveCameraChunk is the
+	// structural inverse (it drops exactly those three leaves at idx, idx, idx-1), so an insert->remove cycle is
+	// SerializeCst-BYTE-IDENTICAL in EVERY case -- there is no heuristic to misfire.  Why unconditional: "braces
+	// on their own lines" is an AUTHORING convention the CST loader does NOT enforce, and editors/git commonly
+	// drop a file's FINAL newline; gluing the chunk after a prior `}` (`}pinhole_camera` on one line) would make
+	// SerializeCst write a file the documented grammar rejects.  The leading `\n` keeps every chunk on its own
+	// line; on a normal trailing-newline doc it yields a (harmless, idiomatic) blank line before the clone and
+	// PRESERVES the file's own trailing newline (the lead sep is a NEW leaf, never the document's final one).
+	RISE::Cst::Document d1 = *pCstDocument;
+	const int at = RISE::Cst::DocItemCount( d1 );
+	RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	if( !leadItem ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertCameraChunk:: could not build the leading separator; insert rejected" );
+		return 0;
+	}
+	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
+	return 1;
+}
+
+// Model-B P5 (camera-clone CST insert -- undo): REMOVE the camera chunk named `camName` from the retained Document
+// (the exact STRUCTURAL inverse of ApplyCstInsertCameraChunk, which always appends [leadSep][chunk][trailSep]).
+//
+// PRECONDITION -- CLONE-UNDO ONLY: this function must be used ONLY to undo a chunk that its forward sibling
+// ApplyCstInsertCameraChunk clone-inserted (its SOLE caller is the AddCamera revert/undo path).  It MUST NOT be
+// repurposed to remove an arbitrary FILE-AUTHORED camera.  The `idx-1` / `idx` separator removals below assume the
+// synthetic [leadSep][chunk][trailSep] triple that ONLY clone-insert produces; for a file-authored camera the item
+// at `idx-1` is the PREVIOUS chunk's trailing newline, and dropping it would CORRUPT the document (glue the prior
+// chunk onto the next).  Removing an arbitrary file-authored camera safely requires a separate trivia-preserving
+// erase that does NOT exist yet -- do not route file-authored removals through here.
+//
+// Resolve by name (uniqueFallback allows the sole-unnamed-camera resolve-by-position, matching ApplyCstCameraPoseEdit),
+// get its index `idx`, then remove EXACTLY those three leaves: (1) the chunk at `idx`; (2) its TRAILING separator,
+// the item now at `idx` after the chunk drop, if it's a pure-newline trivia leaf; (3) its LEADING separator, the
+// item at `idx-1`, if `idx-1 >= 0` and it's a pure-newline trivia leaf.  For a chunk THIS function's forward sibling
+// clone-inserted, insert ALWAYS places [leadSep][chunk] adjacent, so the item at `idx-1` is ALWAYS that insert's own
+// leading separator -- position-independent (works even when the removed clone isn't the last chunk) and it can NEVER
+// reach the document's own earlier trailing newline (that leaf is at least one position further back).  So a
+// clone-insert->remove cycle is SerializeCst-BYTE-IDENTICAL in every case (normal trailing-newline, no-trailing-
+// newline, empty).  (This invariant holds ONLY for the clone-insert triple -- see the CLONE-UNDO-ONLY precondition
+// above; it does NOT hold for file-authored chunks.)  DOCUMENT-ONLY: no re-derive (the live camera is removed by
+// SceneEditor's RemoveCamera path), so the caller needs no rebind.
+// Returns 1 on success, 0 on any failure (no Document / null name / not found / ambiguous) leaving it intact.
+int Job::ApplyCstRemoveCameraChunk( const char* camName )
+{
+	if( !pCstDocument || !camName ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveCameraChunk:: `%s` not found or ambiguous in the CST Document; remove rejected", camName );
+		return 0;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveCameraChunk:: `%s` resolved no top-level index; remove rejected", camName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveItem( *pCstDocument, idx );
+	// (2) TRAILING separator: after removing the chunk, the item now AT `idx` is the chunk's old trailing separator
+	// -- drop it too if it's a pure-newline trivia leaf (defensive: if it's anything else, e.g. the chunk was last
+	// with no separator, leave it alone rather than excise an unrelated item).
+	const int nAfter = RISE::Cst::DocItemCount( d1 );
+	if( idx < nAfter ) {
+		const RISE::Cst::NodeRef sep = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx ) );
+		if( sep && sep->kind == RISE::Cst::NodeKind::Trivia && sep->text.find_first_not_of( "\n\r" ) == std::string::npos )
+			d1 = RISE::Cst::DocRemoveItem( d1, idx );
+	}
+	// (3) LEADING separator: the item at `idx-1` (immediately BEFORE where the chunk was) is the leading separator
+	// the clone-insert always prepended -- drop it if `idx-1 >= 0` and it's a pure-newline trivia leaf.  Targeting
+	// `idx-1` (not the document tail) is what makes this position-independent AND safe FOR A CHUNK THIS FUNCTION'S
+	// forward sibling clone-inserted: insert places [leadSep][chunk] adjacent, so `idx-1` is ALWAYS our own leading
+	// sep, and the document's own final newline (if any) sits at least one leaf further back, so it is NEVER touched.
+	// (For a FILE-AUTHORED camera this would instead be the PREVIOUS chunk's trailing newline -- see the
+	// CLONE-UNDO-ONLY precondition in the method's doc comment; this path is not safe for that case.)
+	if( idx - 1 >= 0 ) {
+		const RISE::Cst::NodeRef lead = RISE::Cst::DocResolveNodeId( d1, RISE::Cst::DocNodeIdAt( d1, idx - 1 ) );
+		if( lead && lead->kind == RISE::Cst::NodeKind::Trivia && lead->text.find_first_not_of( "\n\r" ) == std::string::npos )
+			d1 = RISE::Cst::DocRemoveItem( d1, idx - 1 );
+	}
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
+	return 1;
+}
+
+// Model-B P5 (Phase-4 RemoveCamera): SAFELY delete ANY camera chunk named `camName` from the retained Document.
+//
+// This is the GENERAL, trivia-preserving erase -- the SAFE counterpart to the CLONE-UNDO-ONLY
+// ApplyCstRemoveCameraChunk above.  That method drops the item at `idx-1` UNCONDITIONALLY, which is correct ONLY
+// for the synthetic [leadSep][chunk][trailSep] triple a clone-insert always produces; on a FILE-AUTHORED camera
+// its `idx-1` is the PREVIOUS chunk's real trailing newline, and dropping it GLUES the prior chunk's `}` onto the
+// next chunk's keyword (`}pinhole_camera` on one line) -- a grammar-violating, round-trip-corrupting Document.  A
+// future arbitrary-camera-delete op MUST route through HERE, never through the clone-undo inverse.
+//
+// Resolution mirrors the clone-undo method (DocFindByNameAnyRole with the "camera" kind suffix + uniqueFallback,
+// so the sole unnamed camera resolves by position) -> DocIndexOfNodeId -> Cst::DocEraseChunkTidy, which removes
+// the chunk and collapses at most ONE adjacent separator, evaluating the ACTUAL glue condition (the bytes at the
+// gap end in `\n`, or the chunk was at document start) so the result is always well-formed and minimal.
+// DOCUMENT-ONLY: no re-derive (the live camera is removed by the caller's own path).  Returns 1 on success, 0 on
+// any failure (no Document / null name / not found / ambiguous), leaving the Document intact.
+int Job::ApplyCstDeleteCameraChunk( const char* camName )
+{
+	if( !pCstDocument || !camName ) return 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, camName, nullptr, "camera", true );
+	if( id == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstDeleteCameraChunk:: `%s` not found or ambiguous in the CST Document; delete rejected", camName );
+		return 0;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( *pCstDocument, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstDeleteCameraChunk:: `%s` resolved no top-level index; delete rejected", camName );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed -> bump revision
+	return 1;
+}
+
+namespace {
+	// Model-B F5 slice S2: NUL-safe copy of a std::string into a caller buffer (nullable; always terminated).
+	void S2CopyOut( char* dst, unsigned int dstMax, const std::string& s )
+	{
+		if( !dst || dstMax == 0 ) return;
+		const size_t n = ( s.size() < (size_t)( dstMax - 1 ) ) ? s.size() : (size_t)( dstMax - 1 );
+		if( n ) memcpy( dst, s.data(), n );
+		dst[n] = '\0';
+	}
+
+	// Model-B F5 slice S2: the value of a chunk's first `pname` param (e.g. "name" / "variant"), "" if absent.
+	//
+	// P1-1 sibling fix (round 1): this used to be a hand-rolled kid-walk with the IDENTICAL first-token-only
+	// bug found in the editor's capture-before-edit reader -- a multi-token value (`color 1 1 1`) is several
+	// pvalue Token kids, and the old walk kept only the first ("1" instead of "1 1 1"). Both call sites today
+	// pass "variant" (a single-token tag by convention), so the bug was latent -- but fixed anyway per the
+	// audit-by-bug-pattern doctrine.
+	//
+	// P3-c fix (round 1): that hand-fix left this as a FOURTH independent copy of the same occurrence-0 walk
+	// Cst::ParamValueAtOccurrence already exists to be the single source of truth for (see its doc in Cst.cpp
+	// for the other three: PainterIntrospection's read-only occurrence rows, SceneEditController's
+	// capture-before-agent-edit, and SceneEditor's undo/redo drift guard -- Cst.cpp's own comment undercounted
+	// itself at "three call sites" before this fix folded the fourth in). Delegate instead of re-deriving the
+	// same join semantics a fifth time.
+	std::string S2ChunkParamValue( const RISE::Cst::NodeRef& chunk, const char* pname )
+	{
+		return RISE::Cst::ParamValueAtOccurrence( chunk, pname ? std::string( pname ) : std::string(), 0 );
+	}
+}
+
+// Batched agent edits (2026-10-16): the parse/refusal/positioning half of ApplyCstInsertChunk, factored out
+// VERBATIM (log + diag wording unchanged) and parameterized on the BASE document so ApplyCstEditBatch validates
+// every element against the batch's evolving document with the IDENTICAL rules.  See the Job.h doc.
+int Job::PrepareCstInsert_( const RISE::Cst::Document& base, const char* chunkText,
+                            std::string& keyword, std::string& name, std::string& outDiag,
+                            RISE::Cst::NodeRef& outChunk, bool& outIsRasterizer, int& outAt, int& outEndAt,
+                            bool logRefusals )
+{
+	keyword.clear(); name.clear(); outDiag.clear();
+	outChunk = RISE::Cst::NodeRef();
+	outIsRasterizer = false;
+	outAt = outEndAt = 0;
+	if( !chunkText || !chunkText[0] ) {
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
+		return 0;
+	}
+
+	// Parse the candidate text into its own throwaway Document and require EXACTLY ONE chunk with nothing
+	// but pure-whitespace trivia around it.  Stray tokens (a `RISE ASCII SCENE 7` header, directives, bare
+	// words) and top-level COMMENTS are refused: only the chunk item is spliced, so anything outside it
+	// would be SILENTLY DROPPED -- refuse loudly instead of losing the caller's bytes.
+	RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+	const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+	RISE::Cst::NodeRef chunkItem;
+	int chunkCount = 0;
+	bool strayContent = false;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+		if( !it ) continue;
+		if( it->kind == RISE::Cst::NodeKind::Chunk ) {
+			++chunkCount;
+			if( !chunkItem ) chunkItem = it;
+		}
+		else if( it->kind == RISE::Cst::NodeKind::Trivia ) {
+			if( it->text.find_first_not_of( " \t\r\n" ) != std::string::npos )
+				strayContent = true;   // a top-level comment would be silently dropped -- refuse
+		}
+		else {
+			strayContent = true;       // stray token (header / directive / bare word)
+		}
+	}
+	// Echo the parsed identity EARLY -- ABOVE every refusal below, including the malformed-text and
+	// unclosed-chunk ones (round-2 P3) -- so ANY refusal identifies what was attempted, matching the
+	// IJob contract ("filled as soon as the chunk parses").  The name comes off the CANONICAL
+	// "keyword/name" addressing key (Cst::ChunkNamePath -- the same construction the byName index and
+	// DocFindByName use), NOT a local re-derivation, so the collision key below and the echoed name can
+	// never disagree with the index.  (When the text held MULTIPLE chunks, the FIRST one is echoed.)
+	std::string namePath;
+	if( chunkItem ) {
+		keyword  = chunkItem->role;
+		namePath = RISE::Cst::ChunkNamePath( chunkItem );
+		name     = namePath.empty() ? std::string() : namePath.substr( keyword.size() + 1 );
+	}
+
+	if( chunkCount != 1 || strayContent || !chunkItem ) {
+		char why[128];
+		if( chunkCount == 0 )      std::snprintf( why, sizeof( why ), "no chunk found in the text" );
+		else if( chunkCount > 1 )  std::snprintf( why, sizeof( why ), "%d chunks found (one per call)", chunkCount );
+		else                       std::snprintf( why, sizeof( why ), "stray text outside the chunk (headers/directives/comments are not allowed)" );
+		outDiag = why;
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: %s", why );
+		return -1;
+	}
+
+	// The chunk must be CLOSED (review round 1 P1).  ParseChunk tolerates EOF mid-chunk -- an UNCLOSED
+	// chunk (`keyword {` with no matching `}`, the classic truncated-LLM-output shape) still parses as
+	// exactly one Chunk item and even DERIVES cleanly (the derive reads only Param kids) -- but the
+	// retained head would then SERIALIZE without the `}`, and the next save+reload swallows every
+	// following chunk into the unclosed body: silent live-vs-file divergence + entity loss.  ParseChunk
+	// assigns the role "rbrace" ONLY to a depth-closing `}` token, so require the chunk's last
+	// non-trivia kid to be exactly that.
+	{
+		bool closed = false;
+		for( std::size_t k = chunkItem->kids.size(); k > 0; --k ) {
+			const RISE::Cst::NodeRef& kid = chunkItem->kids[k - 1];
+			if( !kid || kid->kind == RISE::Cst::NodeKind::Trivia ) continue;
+			closed = ( kid->kind == RISE::Cst::NodeKind::Token && kid->role == "rbrace" );
+			break;
+		}
+		if( !closed ) {
+			outDiag = "the chunk is not closed (missing `}`)";
+			if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: chunk text refused: unclosed chunk (missing `}`)" );
+			return -1;
+		}
+	}
+
+	// NOT REFUSED HERE: a chunk that spells a non-repeatable param twice.  It is a real defect --
+	// every layer below accepts it and derives SILENTLY from the last occurrence -- and refusing it at
+	// the door was tried, but the insert gate is deliberately NOT where it gets caught.  Duplicated
+	// params are load-bearing INPUT to the container-vs-leaf gate above this layer, which has to read
+	// them last-wins in BOTH directions (SceneGraphParentTest V/6b: `geometry none` above `geometry gv`
+	// must INSERT, because the object it describes is an ordinary leaf); refusing the shape here makes
+	// the accepting half of that gate unreachable.  The defect is caught where it actually bites
+	// instead: Job::ApplyCstParamEditImpl_ refuses to EDIT such a param (it could only address the dead
+	// occurrence), and CstIntrospection surfaces the row read-only, saying so.
+
+	// Round-3 message precision: `none` is the scene language's RESERVED unbind sentinel --
+	// InitializeContainers pre-registers a "none" null entry in the material + painter managers
+	// (GenericManager::AddItem then refuses the duplicate name) and countless slots treat the literal
+	// string "none" as "unbound" -- so an entity named `none` could never be bound or addressed
+	// distinctly.  Without this early check the dry-run fails with the generic "apply failed (e.g.
+	// unresolved reference)" diagnostic, hiding the real cause.  The diag's "reserved name" prefix is
+	// how the AgentSession / SceneEditController folds distinguish this -2 from a chunk collision --
+	// keep the prefix in lockstep with them.
+	if( name == "none" ) {
+		outDiag = "reserved name: `none` is the built-in unbind sentinel -- pick a different name";
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: `none` is a reserved name (the unbind sentinel); insert rejected" );
+		return -2;
+	}
+
+	// Early duplicate refusal -- a clean message for the obvious collision, BEFORE paying the dry-run
+	// derive.  A chunk carrying a `variant` param is exempt from the (kind,name) check -- a variant
+	// overlay legitimately shares its base chunk's (kind,name) (the derive layer disambiguates by the
+	// active variant) -- but an EXACT (kind,name,variant) duplicate is still refused (round-2 P3: the
+	// old blanket exemption let the identical overlay insert repeatedly, each copy unremovable through
+	// the bare-name-addressed remove_chunk).
+	const std::string variantTag = S2ChunkParamValue( chunkItem, "variant" );
+	if( variantTag.empty() ) {
+		if( !name.empty() ) {
+			// NAMED: the (kind,name) addressing key must be fresh.
+			int occ = 0;
+			RISE::Cst::DocFindByName( base, namePath, nullptr, &occ );
+			if( occ > 0 ) {
+				outDiag = namePath;
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` already exists; insert rejected", keyword.c_str(), name.c_str() );
+				return -2;
+			}
+		}
+		else {
+			// UNNAMED: film / rasterizer / camera-class chunks carry no (kind,name) key, so the named
+			// check above cannot see them -- but a SECOND unnamed chunk of the SAME keyword is a
+			// one-way door: the derive is last-wins (the duplicate silently masks the original), a save
+			// persists BOTH, and remove_chunk is bare-name-addressed so the agent could never remove
+			// the duplicate it just inserted.  Refuse it with a clean message.  A DIFFERENT keyword is
+			// still allowed -- inserting e.g. a bdpt rasterizer alongside a pathtracing one appends it
+			// at the document end AND makes it the ACTIVE rasterizer (round-2 P1-B: the activation
+			// restore in the D2 tail is skipped for a rasterizer insert, so live matches what a
+			// save+reload's last-wins derive would activate).  O(N) top-level scan -- fine for a
+			// discrete verb.
+			//
+			// EXCEPTION -- APPEND-class kinds (descriptor `unnamedRepeatable`): a `timeline` / `keyframe`
+			// chunk derives by APPENDING an independent effect (Job::AddKeyframeToAnimation / AddKeyframe),
+			// NOT last-wins, so scenes legitimately carry MANY unnamed instances (e.g. sdf_morph_torture
+			// carries ~14 unnamed `timeline` chunks).  The singleton rationale above is inapplicable to
+			// them -- a schema-conformant second unnamed timeline must NOT be falsely rejected.  The
+			// one-way-door concern the rationale worried about is instead handled at remove time (the
+			// ambiguity guard in ApplyCstRemoveChunk).
+			const ChunkDescriptor* unnamedDesc = DescriptorForKeyword( String( keyword.c_str() ) );
+			if( !( unnamedDesc && unnamedDesc->unnamedRepeatable ) ) {
+				const int nHead = RISE::Cst::DocItemCount( base );
+				for( int i = 0; i < nHead; ++i ) {
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+					    RISE::Cst::ChunkNamePath( it ).empty() ) {
+						outDiag = "an unnamed `" + keyword + "` chunk already exists (unnamed chunks are singletons per keyword)";
+						if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: an unnamed `%s` chunk already exists; insert rejected", keyword.c_str() );
+						return -2;
+					}
+				}
+			}
+		}
+	}
+	else {
+		// VARIANT overlay: refuse only the EXACT (kind,name,variant) duplicate -- a different-variant
+		// overlay of the same base stays allowed.  O(N) top-level scan, same cost class as the unnamed
+		// singleton check above.
+		const int nHead = RISE::Cst::DocItemCount( base );
+		for( int i = 0; i < nHead; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == keyword &&
+			    RISE::Cst::ChunkNamePath( it ) == namePath &&
+			    S2ChunkParamValue( it, "variant" ) == variantTag ) {
+				outDiag = namePath + " with variant `" + variantTag + "`";
+				if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: a `%s` named `%s` with variant `%s` already exists; insert rejected", keyword.c_str(), name.c_str(), variantTag.c_str() );
+				return -2;
+			}
+		}
+	}
+
+	RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	if( !sepItem || !leadItem ) {
+		// Practically unreachable (ParseToCst("\n") always yields one trivia item), but if it ever
+		// fires the diag must say what happened -- an empty diag would fold into the misleading
+		// "would not derive in context" message.
+		outDiag = "internal: could not build the inter-chunk separator";
+		if( logRefusals ) GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: could not build the inter-chunk separators; insert rejected" );
+		return 0;
+	}
+	// INSERT POSITION (round-2 P1-A ergonomics; the full-derivability dry-run below stays the
+	// correctness guarantee).  Scenes declare before use, so DECLARATION-class chunks are POSITIONED
+	// ahead of their potential consumers instead of blindly appended -- that is what makes the taught
+	// rename recipe (insert renamed chunk -> retarget consumers -> remove the old one) actually derive
+	// in document order.  Two tiers, classified by the descriptor registry's ChunkCategory:
+	//   tier 0 (Painter / Function)  -> before the first tier-1 or tier-2 chunk (materials, geometry,
+	//                                   shaders, ... objects, lights all may consume painters/functions);
+	//   tier 1 (Material / Geometry / Modifier / Medium / Shader / ShaderOp)
+	//                                -> before the first tier-2 chunk (objects/lights);
+	//   everything else (objects, lights, cameras, film, RASTERIZERS -- which must stay LAST-WINS so an
+	//   inserted one becomes active, outputs, photon settings, animations, variants, unknown keywords)
+	//                                -> appended at the document END (the pre-round-2 behaviour).
+	// Declarations may legitimately be INTERLEAVED with consumers in an authored file, so a positioned
+	// insert can still fail the dry-run (e.g. a new blend painter referencing a painter declared after
+	// the insertion point); in that case FALL BACK to append-at-end and dry-run once more -- a NEW chunk
+	// has no consumers yet, so append-at-end derives whenever its own references resolve at all.
+	const ChunkDescriptor* insDesc = DescriptorForKeyword( String( keyword.c_str() ) );
+	auto categoryTier = []( const ChunkDescriptor* d ) -> int {
+		if( !d ) return -1;
+		switch( d->category ) {
+			case ChunkCategory::Painter:
+			case ChunkCategory::Function: return 0;
+			case ChunkCategory::Material:
+			case ChunkCategory::Geometry:
+			case ChunkCategory::HairGuides:   // declared before the hair_geometry that reads it
+			case ChunkCategory::Simulation:   // declared before the simulated_mesh_geometry / fire_medium bound to it
+			case ChunkCategory::Modifier:
+			case ChunkCategory::Medium:
+			case ChunkCategory::Shader:
+			case ChunkCategory::ShaderOp: return 1;
+			case ChunkCategory::Object:
+			case ChunkCategory::Light:    return 2;
+			default:                      return -1;   // append-at-end class
+		}
+	};
+	const int insertTier = categoryTier( insDesc );
+	const int endAt = RISE::Cst::DocItemCount( base );
+	int at = endAt;
+	if( insertTier == 0 || insertTier == 1 ) {
+		for( int i = 0; i < endAt; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( base, RISE::Cst::DocNodeIdAt( base, i ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+			const int t = categoryTier( DescriptorForKeyword( String( it->role.c_str() ) ) );
+			if( t > insertTier ) { at = i; break; }
+		}
+	}
+
+	// P1-B: a rasterizer insert must NOT have the pre-insert active rasterizer restored over it after
+	// the full re-derive -- the derive's last-wins activation (the appended insert) is what a
+	// save+reload would activate, and live must match reload.  `light_rr_threshold` shares
+	// ChunkCategory::Rasterizer but is a tuning directive, not a rasterizer -- hence the keyword
+	// suffix check on top of the category.
+	const bool isRasterizerInsert =
+		insDesc && insDesc->category == ChunkCategory::Rasterizer &&
+		keyword.size() > 11 && keyword.compare( keyword.size() - 11, 11, "_rasterizer" ) == 0;
+
+	outChunk        = chunkItem;
+	outIsRasterizer = isRasterizerInsert;
+	outAt           = at;
+	outEndAt        = endAt;
+	return 1;
+}
+
+// Batched agent edits (2026-10-16): the [leadSep "\n"][chunk][trailSep "\n"] splice ApplyCstInsertChunk has
+// always made (see the anti-glue rationale at ApplyCstInsertCameraChunk), shared with ApplyCstEditBatch.
+RISE::Cst::Document Job::SpliceCstInsert_( const RISE::Cst::Document& doc, const RISE::Cst::NodeRef& chunk, int at )
+{
+	RISE::Cst::Document sepDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  sepItem = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+	RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+	RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+	RISE::Cst::Document d1 = doc;
+	d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunk );
+	d1 = RISE::Cst::DocInsertItem( d1, at + 2, sepItem );
+	return d1;
+}
+
+// Model-B F5 slice S2 (agent chunk CRUD -- insert): INSERT one complete chunk into the retained Document and
+// REALIZE it in the live scene via the shared D2 tail (RederiveCstDocumentFull_: dry-run first, so a failed
+// derive leaves the retained Document AND the live scene byte-identical -- the edited Document is a local
+// COPY that is simply dropped).  Contract on the IJob virtual; -1 = malformed chunk text, -2 = duplicate
+// (kind,name) / exact (kind,name,variant), 0 = would-not-derive (outDiag = first dry-run diagnostic),
+// 2/3 = replaced (caller rebinds).
+// The Document splice reuses ApplyCstInsertCameraChunk's symmetric anti-glue idiom UNCONDITIONALLY:
+// [leadSep "\n"][chunk][trailSep "\n"], POSITIONED by declaration tier (round-2 P1-A: declaration-class
+// chunks land before their potential consumers; everything else appends at DocItemCount -- see the
+// insert-position block below) -- the trivia-preserving DocEraseChunkTidy used by ApplyCstRemoveChunk
+// collapses at most the chunk's OWN trailing separator on a later remove, so an insert->remove cycle costs
+// one residual blank line and never corrupts a neighbour's trivia.
+int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+                              char* outName, unsigned int nameMax,
+                              char* outDiag, unsigned int diagMax,
+                              int* outInsertedAt )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outName,    nameMax,    std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	// outInsertedAt is left UNTOUCHED here (caller's pre-init, e.g. -1, stands) until a landed splice
+	// (codes 2/3 below) sets it to the EXACT `at` this call used -- never a guessed/re-resolved value.
+	if( !pCstDocument || !chunkText || !chunkText[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstInsertChunk:: no retained CST Document or empty chunk text; insert rejected" );
+		return 0;
+	}
+
+	std::string keyword, name, prepDiag;
+	RISE::Cst::NodeRef chunkItem;
+	bool isRasterizerInsert = false;
+	int at = 0, endAt = 0;
+	const int prep = PrepareCstInsert_( *pCstDocument, chunkText, keyword, name, prepDiag,
+	                                    chunkItem, isRasterizerInsert, at, endAt, /*logRefusals*/ true );
+	// Echo the parsed identity on EVERY path (the IJob contract: "filled as soon as the chunk parses").
+	S2CopyOut( outKeyword, keywordMax, keyword );
+	S2CopyOut( outName,    nameMax,    name );
+	if( prep != 1 ) {
+		S2CopyOut( outDiag, diagMax, prepDiag );
+		return prep;
+	}
+
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "insert_chunk `%s` `%s`", keyword.c_str(), name.empty() ? "(unnamed)" : name.c_str() );
+
+	{
+		RISE::Cst::Document d1 = SpliceCstInsert_( *pCstDocument, chunkItem, at );
+		std::string firstDiag;
+		const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
+		if( code != 0 || at == endAt ) {
+			if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+			// P1-A: a LANDED positioned splice (2/3) committed its triple at `at` -- report it verbatim,
+			// no post-hoc name/kind resolution (which can under-match a variant overlay sharing its
+			// base's (kind,name) and silently misreport a wrong index).
+			if( ( code == 2 || code == 3 ) && outInsertedAt ) *outInsertedAt = at;
+			return code;
+		}
+	}
+
+	// Positioned dry-run failed -- retry once appended at the END (the diag reported on a double
+	// failure is the end-position one, matching the pre-round-2 semantics).
+	RISE::Cst::Document d2 = SpliceCstInsert_( *pCstDocument, chunkItem, endAt );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d2 ), ctx, &firstDiag, /*restoreActiveRasterizer*/ !isRasterizerInsert );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	else {
+		// Round-3 P3: the POSITIONED attempt above logged eLog_Error "would not derive" lines before
+		// this append retry landed (code 2 clean, or code 3 with its OWN fresh diagnostics) -- without
+		// a clarifying line the log reads as if the insert failed outright.
+		GlobalLog()->PrintEx( eLog_Event,
+			"Job::ApplyCstInsertChunk:: the positioned insert fell back to append-at-end, which landed; the `would not derive` diagnostics above came from the positioned attempt and are superseded" );
+	}
+	// P1-A: the append-at-end retry's OWN committed splice position is `endAt` (captured BEFORE either
+	// attempt inserted anything) -- report that, not `at` (the positioned attempt that failed).
+	if( ( code == 2 || code == 3 ) && outInsertedAt ) *outInsertedAt = endAt;
+	return code;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Batched agent edits (2026-10-16): ApplyCstEditBatch + helpers.
+//
+// WHY.  Every chunk-landing agent verb (insert_chunks, propose_patches, and the sub-model verbs build_element /
+// light_scene / environment_scene / populate_scene, which all land through those two) used to loop over the
+// SINGLE primitives, and each single primitive pays a FULL dry-run derive into a throwaway Job PLUS a full
+// ClearAll + re-derive of the live Job -- per element.  On a mid-size scene that is seconds per element and it
+// grows with the scene, so a 20-80 chunk build_element took a minute or two of nothing but re-derives.  This
+// realizes a whole batch with ONE dry-run + ONE live derive on the common all-good path, exactly the cost
+// ApplyCstRemoveChunks already pays for a batch remove.
+//
+// PER-ELEMENT VALIDATION is the single primitives' own (PrepareCstInsert_ / PlanCstParamEdits_ -- the SAME
+// functions the single verbs call), run in batch order against the document the earlier ACCEPTED elements
+// left, so a later element may reference an earlier one and a duplicate of an earlier element is refused as a
+// second single call would refuse it.
+//
+// THE DERIVABILITY RULE (one rule, every path).  An element lands iff it is valid and the batch's accepted
+// document still derives with it in -- judged on the END STATE, not on every prefix: a material listed BEFORE
+// the painter it reads lands, because the positioned insert puts the painter ahead of it in the document.
+// That is what the all-good path does by construction (one dry-run of the whole batch), and the isolation
+// path below is made to give the SAME verdict whatever else is in the batch: bisection judges each half in
+// order, so a material whose painter sits in the OTHER half is refused there -- and then gets ONE in-order
+// retry against the final accepted document (review P2-B), which admits it.  Without that pass the verdict
+// for [M, P] / [M, P, bad] / [M, P, bad, Y] flipped with the split points.  Strict prefix semantics was the
+// alternative and was rejected: the all-good path would have to dry-run every prefix to honour it, which is
+// exactly the per-element cost this exists to remove.  The landed document derives cleanly in document order
+// either way, so nothing unrealizable is ever committed; a batch is as permissive as one hand-authored file.
+//
+// BOUNDED WORK UNDER THE LOCK (review P2-C).  The caller (SceneEditController) holds its mutex across this,
+// so a pathological batch must not hold the GUI for O(N) dry-runs: when the whole batch fails, (1) the
+// PRISTINE head is dry-run first -- if IT does not derive, every element is refused with that diagnostic,
+// which is what N single calls would have answered; (2) isolation + retry spend at most `maxIsolationDryRuns`
+// dry-runs, and past that this returns kCstEditBatchNeedsSequential with NOTHING committed, telling the caller
+// to fall back to per-element single commits, which release the lock between elements.
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool Job::DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFirstDiag )
+{
+	char vbuf[256]; vbuf[0] = '\0';
+	const bool hasVar = GetActiveSceneVariant( vbuf, sizeof( vbuf ) );
+	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
+	Job staging;
+	staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+	std::vector<std::string> vdiags;
+	++mCstDryRunCount;
+	RISE::Cst::DeriveToJob( doc, staging, &vdiags, nullptr, activeVariant );
+	if( vdiags.empty() ) return true;
+	if( outFirstDiag ) *outFirstDiag = vdiags[0];
+	return false;
+}
+
+bool Job::CopyCstDocument( RISE::Cst::Document& out ) const
+{
+	if( !pCstDocument ) return false;
+	out = *pCstDocument;
+	return true;
+}
+
+// The CONTAINER rule the agent param route enforces (SceneEditController::AgentTargetIsContainerObject_ calls
+// this on the head; a batch calls it on its evolving document -- review P2-A): does (entityName, entityKind)
+// resolve to a `standard_object` that names no resolvable `geometry`?  `geometry none` counts as none: the
+// standard_object parser, the derive's IsContainerGeometryRef_ and Cst's reference graph all treat it as a
+// container, so this gate must too.
+bool Job::CstTargetIsContainerObject( const RISE::Cst::Document& doc, const char* entityName, const char* entityKind ) const
+{
+	const std::string ekind( entityKind ? entityKind : "" );
+	const char* bareName = entityName ? entityName : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, bareName, GetActiveCameraName() )
+		: ( bareName[0] == '\0' && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, bareName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+	if( !chunk || chunk->role != "standard_object" ) return false;
+	bool present = false;
+	std::string geom = RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present );
+	if( !present ) return true;
+	const size_t b = geom.find_first_not_of( " \t\r\n" );
+	const size_t e = geom.find_last_not_of( " \t\r\n" );
+	geom = ( b == std::string::npos ) ? std::string() : geom.substr( b, e - b + 1 );
+	return geom.empty() || geom == "none";
+}
+
+int Job::ApplyCstBatchElement_( RISE::Cst::Document& doc, const CstBatchEdit& e, CstBatchOutcome& outcome,
+                                bool appendAtEnd, bool logRefusals )
+{
+	outcome.diag.clear();
+	outcome.insertedAt       = -1;
+	outcome.isRasterizer     = false;
+	outcome.refusedContainer = false;
+	outcome.wouldNotDerive   = false;
+	outcome.landOrder        = -1;
+	if( e.isInsert )
+	{
+		RISE::Cst::NodeRef chunk;
+		int at = 0, endAt = 0;
+		bool isRast = false;
+		const int prep = PrepareCstInsert_( doc, e.chunkText.c_str(), outcome.keyword, outcome.name, outcome.diag,
+		                                    chunk, isRast, at, endAt, logRefusals );
+		if( prep != 1 ) return prep;
+		const int where = appendAtEnd ? endAt : at;
+		// Review round 3: the operation-level inverse -- the chunk's exact bytes and identity, and the identity of
+		// the nearest chunk BEFORE the splice point (the redo anchor).
+		outcome.undo = CstBatchUndoOp();
+		outcome.undo.isInsert  = true;
+		outcome.undo.chunkText = RISE::Cst::SerializeNode( chunk );
+		outcome.undo.keyword   = chunk->role;
+		outcome.undo.namePath  = RISE::Cst::ChunkNamePath( chunk );
+		outcome.undo.chunkIndex = where + 1;   // [lead][chunk][sep] spliced at `where`
+		// Review round 5 (P1-2): the splice at the document END is recorded as such (Redo appends at the end),
+		// and the anchor by its ORDINAL among same-identity chunks (unnamed twins share one identity).
+		outcome.undo.appendedAtEnd = ( where >= RISE::Cst::DocItemCount( doc ) );
+		int anchorAt = -1;
+		for( int k = where - 1; k >= 0; --k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+			outcome.undo.hasAnchor      = true;
+			outcome.undo.anchorKeyword  = it->role;
+			outcome.undo.anchorNamePath = RISE::Cst::ChunkNamePath( it );
+			anchorAt = k;
+			break;
+		}
+		for( int k = 0; k < anchorAt; ++k ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, k ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == outcome.undo.anchorKeyword &&
+			    RISE::Cst::ChunkNamePath( it ) == outcome.undo.anchorNamePath )
+				++outcome.undo.anchorOrdinal;
+		}
+		doc = SpliceCstInsert_( doc, chunk, where );
+		outcome.insertedAt   = where;
+		outcome.isRasterizer = isRast;
+		return 1;
+	}
+	// A param edit.  The single agent route's own pre-flight (ApplyCstParamEditImpl_ refuses an empty role
+	// or value) is applied here too, so a batch element can never write what a single call would refuse.
+	if( e.role.empty() || e.value.empty() ) {
+		outcome.diag = "param and value must both be non-empty";
+		return 0;
+	}
+	// The container gate, against THIS document -- i.e. after the batch's earlier elements (review P2-A).
+	if( e.refuseSurfaceBindingOnContainer &&
+	    CstTargetIsContainerObject( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str() ) ) {
+		outcome.refusedContainer = true;
+		outcome.diag = "the target is a container node (it names no `geometry`)";
+		return 0;
+	}
+	std::vector< std::pair< std::string, std::string > > one;
+	one.push_back( std::make_pair( e.role, e.value ) );
+	RISE::Cst::Document written;
+	RISE::Cst::NodeId anchor = 0;
+	std::string roleDiag;
+	outcome.undo = CstBatchUndoOp();
+	outcome.undo.entityName     = e.entityName;
+	outcome.undo.entityKind     = e.entityKind;
+	outcome.undo.editRole       = e.role;
+	outcome.undo.postEntityName = e.entityName;
+	if( e.role == "name" ) {   // a rename moves the identity: Undo resolves by the NEW name
+		const size_t b = e.value.find_first_not_of( " \t\r\n" );
+		const size_t z = e.value.find_last_not_of( " \t\r\n" );
+		outcome.undo.postEntityName = ( b == std::string::npos ) ? std::string() : e.value.substr( b, z - b + 1 );
+	}
+	outcome.undo.occAddressed   = e.occAddressed;
+	if( PlanCstParamEdits_( doc, e.entityName.c_str(), e.entityKind.empty() ? nullptr : e.entityKind.c_str(),
+	                        one, e.occ, written, anchor, roleDiag, logRefusals, &outcome.undo ) != 1 ) {
+		outcome.diag = "entity/param not found or the edit was refused";
+		return 0;
+	}
+	doc = std::move( written );
+	return 1;
+}
+
+int Job::ApplyCstBatchElement( RISE::Cst::Document& doc, const CstBatchEdit& edit, CstBatchOutcome& outcome )
+{
+	const int rc = ApplyCstBatchElement_( doc, edit, outcome, /*appendAtEnd*/ false, /*logRefusals*/ false );
+	outcome.code = ( rc == 1 ) ? 2 : rc;
+	return rc;
+}
+
+struct Job::CstBatchIsolation_
+{
+	const std::vector<CstBatchEdit>*  edits = nullptr;
+	std::vector<CstBatchOutcome>*     outcomes = nullptr;
+	RISE::Cst::Document               accepted;        //!< every accepted element written in; dry-run clean
+	std::vector<char>                 landed;          //!< element is in `accepted`
+	std::vector<char>                 deriveRefused;   //!< refused because it would not derive (retry-eligible)
+	int                               dryRunsLeft = 0;
+	bool                              exhausted = false;
+	int                               nextLandOrder = 0;   //!< order in which elements entered `accepted`
+	std::chrono::steady_clock::time_point deadline;        //!< wall-clock bound on the whole isolation (round 3)
+	//! Spend one dry-run from the budget, or report exhaustion (budget OR wall-clock deadline).
+	bool Spend()
+	{
+		if( dryRunsLeft <= 0 || std::chrono::steady_clock::now() > deadline ) { exhausted = true; return false; }
+		--dryRunsLeft;
+		return true;
+	}
+};
+
+// ONE element against the accepted document: validate + positioned write, dry-run; with `allowAppend`, an insert
+// that does not derive positioned gets the single insert verb's append-at-end retry (a NEW chunk has no
+// consumers, so the end derives whenever its own references resolve).  Bisection leaves the append retry to the
+// final in-order retry pass, so an offender costs one dry-run there, not two.  Returns false only when the
+// dry-run budget ran out.
+bool Job::TryLandCstBatchElement_( CstBatchIsolation_& st, int i, bool allowAppend )
+{
+	const CstBatchEdit& e  = ( *st.edits )[i];
+	CstBatchOutcome&    oc = ( *st.outcomes )[i];
+	RISE::Cst::Document trial = st.accepted;
+	const int rc = ApplyCstBatchElement_( trial, e, oc, /*appendAtEnd*/ false, /*logRefusals*/ false );
+	if( rc != 1 ) {                       // refused at VALIDATION in this context -- final
+		oc.code = rc;
+		st.deriveRefused[i] = 0;
+		return true;
+	}
+	if( !st.Spend() ) return false;
+	std::string diag;
+	if( DryRunCstDocument_( trial, &diag ) ) {
+		st.accepted = std::move( trial );
+		oc.code = 2;
+		oc.landOrder = st.nextLandOrder++;
+		st.landed[i] = 1;
+		st.deriveRefused[i] = 0;
+		return true;
+	}
+	if( e.isInsert && allowAppend ) {
+		RISE::Cst::Document appended = st.accepted;
+		CstBatchOutcome alt = oc;
+		if( ApplyCstBatchElement_( appended, e, alt, /*appendAtEnd*/ true, /*logRefusals*/ false ) == 1 &&
+		    alt.insertedAt != oc.insertedAt ) {
+			if( !st.Spend() ) return false;
+			std::string endDiag;
+			if( DryRunCstDocument_( appended, &endDiag ) ) {
+				st.accepted = std::move( appended );
+				oc = alt;
+				oc.code = 2;
+				oc.landOrder = st.nextLandOrder++;
+				st.landed[i] = 1;
+				st.deriveRefused[i] = 0;
+				return true;
+			}
+			diag = endDiag;   // a double failure reports the END-position diagnostic (the single-verb rule)
+		}
+	}
+	oc.code = 0;
+	oc.insertedAt = -1;
+	oc.diag = diag;
+	oc.wouldNotDerive = true;
+	st.deriveRefused[i] = 1;
+	return true;
+}
+
+// The failure-isolation recursion.  Write a run of elements (batch order) onto a copy of the accepted document
+// and dry-run it once: clean -> the whole run is accepted.  Not clean -> split in halves and recurse, FIRST half
+// first, so the second half is judged against whatever of the first survived.  Single elements go through
+// TryLandCstBatchElement_.  `knownFailing` skips a dry-run the caller has just watched fail.  Elements refused
+// at VALIDATION never enter the document; their refusal is final when the run they sit in is accepted (every
+// element before them in it was accepted too).  Returns false only when the dry-run budget ran out.
+bool Job::IsolateCstBatch_( CstBatchIsolation_& st, const std::vector<int>& idxs, bool knownFailing )
+{
+	if( idxs.empty() ) return true;
+	if( idxs.size() == 1 ) return TryLandCstBatchElement_( st, idxs[0], /*allowAppend*/ false );
+
+	if( !knownFailing )
+	{
+		RISE::Cst::Document trial = st.accepted;
+		std::vector<char> wrote( idxs.size(), 0 );
+		bool anyWrote = false;
+		for( std::size_t k = 0; k < idxs.size(); ++k ) {
+			const int i = idxs[k];
+			CstBatchOutcome& oc = ( *st.outcomes )[i];
+			const int rc = ApplyCstBatchElement_( trial, ( *st.edits )[i], oc, /*appendAtEnd*/ false, /*logRefusals*/ false );
+			oc.code = ( rc == 1 ) ? 2 : rc;
+			wrote[k] = ( rc == 1 ) ? 1 : 0;
+			if( rc == 1 ) anyWrote = true;
+			else st.deriveRefused[i] = 0;
+		}
+		if( !anyWrote ) return true;      // every element refused at validation -- final
+		if( !st.Spend() ) return false;
+		if( DryRunCstDocument_( trial, nullptr ) ) {
+			st.accepted = std::move( trial );
+			for( std::size_t k = 0; k < idxs.size(); ++k )
+				if( wrote[k] ) {
+					st.landed[idxs[k]] = 1;
+					st.deriveRefused[idxs[k]] = 0;
+					( *st.outcomes )[idxs[k]].landOrder = st.nextLandOrder++;
+				}
+			return true;
+		}
+	}
+
+	const std::size_t half = idxs.size() / 2;
+	const std::vector<int> first( idxs.begin(), idxs.begin() + static_cast<std::ptrdiff_t>( half ) );
+	const std::vector<int> second( idxs.begin() + static_cast<std::ptrdiff_t>( half ), idxs.end() );
+	if( !IsolateCstBatch_( st, first, /*knownFailing*/ false ) ) return false;
+	return IsolateCstBatch_( st, second, /*knownFailing*/ false );
+}
+
+int Job::ApplyCstEditBatch( const std::vector<CstBatchEdit>& edits, std::vector<CstBatchOutcome>& outcomes,
+                            int maxIsolationDryRuns )
+{
+	outcomes.assign( edits.size(), CstBatchOutcome() );
+	if( !pCstDocument || edits.empty() ) {
+		for( std::size_t i = 0; i < outcomes.size(); ++i ) {
+			outcomes[i].code = 0;
+			outcomes[i].diag = "no retained CST Document";
+		}
+		return 0;
+	}
+	const std::size_t n = edits.size();
+	std::vector<char> landed( n, 0 );
+
+	// THE COMMON PATH: write every element, in order, into one copy of the head and realize it through the
+	// SAME dry-run-guarded full re-derive every chunk-CRUD verb ends in -- one dry-run + one live derive.
+	// This is the one pass that LOGS validation refusals (each element is judged once here).
+	RISE::Cst::Document whole = *pCstDocument;
+	bool anyWrote = false;
+	bool anyRasterizer = false;
+	for( std::size_t i = 0; i < n; ++i ) {
+		const int rc = ApplyCstBatchElement_( whole, edits[i], outcomes[i], /*appendAtEnd*/ false, /*logRefusals*/ true );
+		outcomes[i].code = ( rc == 1 ) ? 2 : rc;
+		if( rc == 1 ) {
+			anyWrote = true;
+			landed[i] = 1;
+			outcomes[i].landOrder = static_cast<int>( i );
+			if( outcomes[i].isRasterizer ) anyRasterizer = true;
+		}
+	}
+	if( !anyWrote ) return 0;   // every element refused at validation: head + live scene untouched
+
+	char ctx[96];
+	std::snprintf( ctx, sizeof( ctx ), "edit batch (%u elements)", static_cast<unsigned int>( n ) );
+	std::string firstDiag;
+	const std::chrono::steady_clock::time_point wholeT0 = std::chrono::steady_clock::now();
+	int code = RederiveCstDocumentFull_( std::move( whole ), ctx, &firstDiag,
+	                                     /*restoreActiveRasterizer*/ !anyRasterizer, /*skipDryRun*/ false );
+	// When it fails this was ONLY the (cold, whole-batch) dry-run -- the realistic unit cost of an isolation step.
+	const double wholeDryRunSeconds =
+		std::chrono::duration<double>( std::chrono::steady_clock::now() - wholeT0 ).count();
+	if( code == 0 )
+	{
+		// (1) DEGENERATE HEAD: if the document as it stands does not derive, no element can -- which is exactly
+		// what N single calls would have answered, each with this diagnostic.  Refuse all, no isolation.
+		std::string headDiag;
+		const std::chrono::steady_clock::time_point headT0 = std::chrono::steady_clock::now();
+		const bool headDerives = DryRunCstDocument_( *pCstDocument, &headDiag );
+		const double headDryRunSeconds =
+			std::chrono::duration<double>( std::chrono::steady_clock::now() - headT0 ).count();
+		// Review round 3: calibrate on the SLOWER of the two measured dry-runs (the head dry-run is warm and does
+		// not include the batch's own chunks).
+		const double dryRunSeconds = ( wholeDryRunSeconds > headDryRunSeconds ) ? wholeDryRunSeconds : headDryRunSeconds;
+		if( !headDerives ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstEditBatch:: the CURRENT document itself does not derive (%s) -- every element of the "
+				"batch is refused (a single insert/edit would be refused for the same reason)", headDiag.c_str() );
+			for( std::size_t i = 0; i < n; ++i ) {
+				if( outcomes[i].code != 2 ) continue;
+				outcomes[i].code = 0;
+				outcomes[i].insertedAt = -1;
+				outcomes[i].diag = headDiag;
+			}
+			return 0;
+		}
+
+		// (2) ISOLATE, then the in-order retry pass, inside a dry-run budget.
+		GlobalLog()->PrintEx( eLog_Event,
+			"Job::ApplyCstEditBatch:: the batch as a whole would not derive (%s) -- isolating the offending element(s); "
+			"the `would not derive` diagnostics above are superseded by the per-element verdicts below",
+			firstDiag.c_str() );
+		const double kIsolationSeconds = 3.0;
+		int budget = maxIsolationDryRuns;
+		if( budget < 0 ) {
+			int lg = 0;
+			while( ( static_cast<std::size_t>( 1 ) << lg ) < n ) ++lg;
+			// One offender costs ~2*log2(N) bisection dry-runs plus up to 3 in its own leaf and retry; budget
+			// for two.  The controller's lock is held for all of it, so the budget is ALSO bounded by TIME,
+			// using the slower measured dry-run as the unit cost (review rounds 2-3): at most ~3 s of isolation
+			// dry-runs and never more than 12, never fewer than 2.  Past it the caller commits element by
+			// element, releasing the lock between elements.
+			budget = 2 * ( 2 * lg + 3 ) + 4;
+			int byTime = ( dryRunSeconds > 0.0 ) ? static_cast<int>( kIsolationSeconds / dryRunSeconds ) : budget;
+			if( byTime < 2 ) byTime = 2;
+			if( budget > byTime ) budget = byTime;
+			if( budget > 12 && dryRunSeconds > 0.05 ) budget = 12;
+			if( mForTestBatchBudget >= 0 ) budget = mForTestBatchBudget;
+		}
+		CstBatchIsolation_ st;
+		st.edits         = &edits;
+		st.outcomes      = &outcomes;
+		st.accepted      = *pCstDocument;
+		st.landed.assign( n, 0 );
+		st.deriveRefused.assign( n, 0 );
+		st.dryRunsLeft   = budget;
+		// A wall-clock DEADLINE on top of the count: the caller holds its mutex across all of this.
+		st.deadline      = std::chrono::steady_clock::now() +
+		                   std::chrono::milliseconds( static_cast<long long>( kIsolationSeconds * 1000.0 ) );
+		std::vector<int> all( n );
+		for( std::size_t i = 0; i < n; ++i ) all[i] = static_cast<int>( i );
+		bool ok = IsolateCstBatch_( st, all, /*knownFailing*/ true );
+		// P2-B: ONE in-order retry of every derive-refused element against the final accepted document, so the
+		// verdict follows the end-state rule above whatever the bisection's split points were.  A param edit is
+		// NOT retried when a LATER element of the batch that landed wrote the same (entity, role): landing it now
+		// would overwrite the later value with the earlier one (review round 2).
+		for( std::size_t i = 0; ok && i < n; ++i ) {
+			if( !st.deriveRefused[i] ) continue;
+			if( CstBatchLaterLandedWriteSameSlot( edits, st.landed, i ) ) continue;
+			ok = TryLandCstBatchElement_( st, static_cast<int>( i ), /*allowAppend*/ true );
+		}
+		if( !ok || st.exhausted ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"Job::ApplyCstEditBatch:: isolation exceeded its %d dry-run budget -- NOTHING committed; the caller "
+				"falls back to per-element commits", budget );
+			for( std::size_t i = 0; i < n; ++i ) { outcomes[i].code = 0; outcomes[i].insertedAt = -1; }
+			return kCstEditBatchNeedsSequential;
+		}
+
+		landed = st.landed;
+		bool anyLanded = false;
+		anyRasterizer = false;
+		for( std::size_t i = 0; i < n; ++i ) {
+			if( !landed[i] ) continue;
+			anyLanded = true;
+			if( outcomes[i].isRasterizer ) anyRasterizer = true;
+		}
+		// The final verdicts, logged ONCE (isolation re-validated silently).
+		for( std::size_t i = 0; i < n; ++i )
+			if( !landed[i] && st.deriveRefused[i] )
+				GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstEditBatch:: element %u would not derive in context; refused: %s",
+				                      static_cast<unsigned int>( i ), outcomes[i].diag.c_str() );
+		if( !anyLanded ) return 0;
+		// `accepted` is EXACTLY the document the last successful isolation dry-run validated (a refused run never
+		// modifies it), so the validate-before-destroy pass is already done.
+		code = RederiveCstDocumentFull_( std::move( st.accepted ), ctx, nullptr,
+		                                 /*restoreActiveRasterizer*/ !anyRasterizer, /*skipDryRun*/ true );
+	}
+
+	for( std::size_t i = 0; i < n; ++i ) {
+		if( landed[i] ) {
+			outcomes[i].code = code;                                    // 2 or 3 -- the batch shares one realization
+			if( code == 3 ) outcomes[i].diag = mLastCstLiveDeriveDiag; // the diagnostic, for attribution + reporting
+		}
+		else if( outcomes[i].code == 2 ) outcomes[i].code = 0;       // defensive: written-but-not-landed
+	}
+	return code;
+}
+
+
+
+// R1a (2026-08-09, batched remove_chunks): the SHARED target -> top-level-index resolver behind BOTH
+// Job::ApplyCstRemoveChunk and Job::ApplyCstRemoveChunks.  Extracted VERBATIM from ApplyCstRemoveChunk's own
+// pre-erase resolution block -- every guard and its rationale comment below is the original text, with the
+// Document, the active-camera name and the log prefix passed in rather than read off `this`.  The two verbs
+// now share ONE resolver precisely so the batch form can never drift from the singular one.
+//
+// Reads the Document ONLY (never mutates), which is what lets ApplyCstRemoveChunks resolve EVERY target
+// against the unmutated head before it erases anything -- the all-or-nothing precondition.
+//
+// Returns 0 on success (`outIdx` = the resolved top-level index, `outKeyword` = the chunk's keyword); -1 (not
+// found / no top-level index / resolved to a DIFFERENT kind than requested) or -2 (ambiguous) on refusal,
+// with `outDiag` carrying the reason where one exists -- the SAME code alphabet ApplyCstRemoveChunk returns.
+static int CstResolveRemoveTarget_( const RISE::Cst::Document& doc, const char* target, const char* kind,
+                                    const std::string& activeCameraName, const char* logCtx,
+                                    int& outIdx, std::string& outKeyword, std::string& outDiag )
+{
+	outIdx = -1;
+	outKeyword.clear();
+	outDiag.clear();
+
+	// APPEND-class unnamed kinds (descriptor `unnamedRepeatable`, e.g. timeline / keyframe): these carry no
+	// `name` param, so they are addressed by kind alone (target == keyword).  Two cases:
+	//   * exactly ONE unnamed instance -> resolvable by POSITION via the unique-in-kind fallback below
+	//     (same mechanism the sole unnamed camera uses), so a bare `remove_chunk timeline kind=timeline`
+	//     removes it cleanly;
+	//   * TWO OR MORE unnamed instances -> the bare/kind-only address is genuinely AMBIGUOUS -- removing
+	//     "the unnamed one" would delete an ARBITRARY instance (the one-way door the insert-side singleton
+	//     rationale worried about).  Refuse honestly here rather than silently erasing one.  A repeatable
+	//     kind has no name, so this can never intercept a NAMED-chunk removal.
+	//
+	// COINCIDENCE GUARD (P2 fix): the ambiguity check above only makes sense on the KEYWORD-interpretation
+	// path -- i.e. when `target` itself is being read as a bare kind address, which only happens when the
+	// caller did NOT pass an explicit `kind`.  Without this guard, a chunk of ANY OTHER kind that happens to
+	// be NAMED the same as a repeatable keyword (e.g. an omni_light literally named "timeline") could never
+	// be removed by bare name while 2+ unnamed timelines coexist: the code below would resolve `target` as
+	// the keyword "timeline" and refuse as ambiguous, even though DocFindByNameAnyRole would have uniquely
+	// resolved the NAME "timeline" to the light.  So when `kind` is omitted, try the plain name resolution
+	// FIRST (no kind hint, no positional fallback -- the same call the fall-through path below would make);
+	// if it finds ANY named match (unique -> proceed to remove it; ambiguous -> the existing occ>1 message
+	// below already reports that honestly), `target` is a NAME address and the keyword-ambiguity guard must
+	// not fire at all.  Only when the plain name lookup finds NOTHING does `target` fall through to being a
+	// bare KEYWORD address for a repeatable-unnamed kind -- exactly the case this guard exists to police.
+	// When `kind` IS explicitly provided, this pre-check is skipped and the guard applies exactly as before.
+	bool targetNamesAChunk = false;
+	if( !( kind && kind[0] ) ) {
+		int occName = 0;
+		RISE::Cst::DocFindByNameAnyRole( doc, target, &occName, "", false );
+		targetNamesAChunk = occName > 0;   // any named-chunk hit (unique or ambiguous) means NAME, not keyword
+	}
+	const ChunkDescriptor* remDesc =
+		DescriptorForKeyword( String( ( kind && kind[0] ) ? kind : target ) );
+	const bool unnamedRepeatable = remDesc && remDesc->unnamedRepeatable && !targetNamesAChunk;
+	if( unnamedRepeatable ) {
+		int unnamedCount = 0;
+		const int nHead = RISE::Cst::DocItemCount( doc );
+		for( int i = 0; i < nHead; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk && it->role == remDesc->keyword &&
+			    RISE::Cst::ChunkNamePath( it ).empty() )
+				++unnamedCount;
+		}
+		if( unnamedCount >= 2 ) {
+			char d[224];
+			std::snprintf( d, sizeof( d ),
+				"ambiguous: %d unnamed `%s` chunks exist -- removal by kind alone would delete an arbitrary one; edit the scene text directly or address a named chunk",
+				unnamedCount, remDesc->keyword.c_str() );
+			outKeyword = remDesc->keyword;
+			outDiag    = d;
+			GlobalLog()->PrintEx( eLog_Warning, "%s:: %s", logCtx, d );
+			return -2;
+		}
+	}
+
+	// Resolution mirrors ApplyCstParamEdit: cameras are the one editor-addressable kind that can be UNNAMED,
+	// so they get the unique-in-kind resolve-by-position fallback; always-named kinds keep strict refuse.
+	// The sole-instance case of an `unnamedRepeatable` kind (handled above) gets the SAME positional fallback.
+	// Round-7: the camera fallback is GATED (DocCameraUniqueFallbackPermitted, same rule as
+	// ApplyCstParamEditImpl_) -- for a DESTRUCTIVE verb especially, a typo'd camera name must
+	// refuse rather than fall back to removing the sole unnamed camera.
+	const bool uniqueFallback =
+		( kind && std::string( kind ) == "camera"
+			? RISE::Cst::DocCameraUniqueFallbackPermitted( doc, target, activeCameraName )
+			: false )
+		|| unnamedRepeatable;
+	int occ = 0;
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( doc, target, &occ, kind ? kind : "", uniqueFallback );
+	if( id == 0 ) {
+		if( occ > 1 ) {
+			// Round-2 P3: carry the match count so the caller's ambiguity message can say how many
+			// chunks matched (the folds phrase "pass kind" vs "pass a more specific kind" on whether
+			// the caller already narrowed).
+			char d[160];
+			std::snprintf( d, sizeof( d ), "%d chunks named `%s` match", occ, target );
+			outDiag = d;
+		}
+		GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` %s in the CST Document; remove rejected",
+		                      logCtx, target, ( occ > 1 ) ? "is ambiguous" : "not found" );
+		return ( occ > 1 ) ? -2 : -1;
+	}
+	const int idx = RISE::Cst::DocIndexOfNodeId( doc, id, nullptr );
+	if( idx < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` resolved no top-level index; remove rejected", logCtx, target );
+		return -1;
+	}
+	{
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, id );
+		if( chunk ) outKeyword = chunk->role;
+		// KIND VERIFICATION (review round 1 P2, the ApplyCstObjectMatrixEdit defensive pattern).
+		// HISTORICAL NOTE: pre round-6, DocFindByNameAnyRole's single-match path returned a uniquely-
+		// named chunk regardless of the kind suffix, so this check was load-bearing.  Since round 6
+		// (85e1b9bd) the supplied kind is a HARD CONSTRAINT inside the resolver itself (narrowed by
+		// RoleMatchesKindConstraint: suffix fast path + registry-classifier authority), so a resolved
+		// chunk here already satisfies the kind.  Kept as DEFENSE-IN-DEPTH for a destructive verb --
+		// and it now calls the SAME shared predicate, so it can never diverge from the resolver
+		// (the old suffix-only re-check here wrongly refused registry-classified kinds, e.g. removing
+		// an `expression_function2d` addressed as kind=painter).
+		if( chunk && kind && kind[0] ) {
+			const std::string k( kind );
+			const std::string& role = chunk->role;
+			const bool roleMatches = RISE::Cst::RoleMatchesKindConstraint( role, k );
+			if( !roleMatches ) {
+				outDiag = "'" + std::string( target ) + "' resolved to a `" + role + "`, not a `" + k + "`";
+				GlobalLog()->PrintEx( eLog_Warning, "%s:: `%s` resolved to a `%s`, not the requested kind `%s`; remove rejected", logCtx, target, role.c_str(), kind );
+				return -1;
+			}
+		}
+	}
+	outIdx = idx;
+	return 0;
+}
+// Model-B F5 slice S2 (agent chunk CRUD -- remove): REMOVE the chunk resolved by bare name (+ optional kind
+// suffix narrowing, SAME rules as ApplyCstParamEdit incl. the sole-unnamed-camera positional fallback) via
+// the TRIVIA-PRESERVING Cst::DocEraseChunkTidy -- NEVER the clone-undo-only ApplyCstRemoveCameraChunk idiom,
+// whose unconditional idx-1 drop corrupts a FILE-AUTHORED chunk's neighbouring trivia -- then drop the
+// entity from the live scene via the shared dry-run-guarded D2 tail.  A still-referenced target fails the
+// dry-run (unresolved reference) and leaves Document + live scene byte-identical.
+int Job::ApplyCstRemoveChunk( const char* target, const char* kind,
+                              char* outKeyword, unsigned int keywordMax,
+                              char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outKeyword, keywordMax, std::string() );
+	S2CopyOut( outDiag,    diagMax,    std::string() );
+	if( !pCstDocument || !target || !target[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunk:: no retained CST Document or empty target; remove rejected" );
+		return 0;
+	}
+	// R1a (2026-08-09): the resolution block that used to live inline here now lives in the SHARED
+	// CstResolveRemoveTarget_ above (extracted verbatim, no behaviour change) so the batch verb
+	// ApplyCstRemoveChunks resolves IDENTICALLY -- see that helper for the coincidence guard, the
+	// unnamed-repeatable ambiguity guard, the gated camera positional fallback, and the destructive-verb
+	// kind verification, each with its original rationale comment.
+	int idx = -1;
+	std::string resKeyword, resDiag;
+	const int resCode = CstResolveRemoveTarget_( *pCstDocument, target, kind, GetActiveCameraName(),
+	                                             "Job::ApplyCstRemoveChunk", idx, resKeyword, resDiag );
+	if( !resKeyword.empty() ) S2CopyOut( outKeyword, keywordMax, resKeyword );
+	if( !resDiag.empty() )    S2CopyOut( outDiag,    diagMax,    resDiag );
+	if( resCode != 0 ) return resCode;
+
+	RISE::Cst::Document d1 = RISE::Cst::DocEraseChunkTidy( *pCstDocument, idx );
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "remove_chunk `%s`", target );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// R1a (2026-08-09, batched remove_chunks): the ATOMIC batch form of ApplyCstRemoveChunk -- full contract on
+// the IJob virtual.  Two phases, and the split IS the atomicity guarantee: phase 1 resolves EVERY target
+// against the still-unmutated Document through the SAME CstResolveRemoveTarget_ the singular verb uses, and
+// bails on the first failure with nothing touched; phase 2 erases every resolved index (DESCENDING, so the
+// lower indices phase 1 recorded stay valid across the erases -- Cst::DocEraseChunkTidy only ever drops the
+// item AT `index` and, at most, the one that follows it, never a preceding one) on a WORKING COPY and hands
+// the whole result to ONE dry-run-guarded RederiveCstDocumentFull_.  A single re-derive is also what makes
+// INTRA-BATCH references free: every target has already left the Document by the time derivation runs, so a
+// producer referenced only by a consumer that is itself in the batch derives away cleanly no matter what
+// order the caller listed them in.
+int Job::ApplyCstRemoveChunks( const char* const* targets, const char* const* kinds, int count,
+                               char* outKeywords, unsigned int keywordsMax,
+                               char* outDiag, unsigned int diagMax,
+                               int* outFailIndex )
+{
+	S2CopyOut( outKeywords, keywordsMax, std::string() );
+	S2CopyOut( outDiag,     diagMax,     std::string() );
+	if( outFailIndex ) *outFailIndex = -1;
+	if( !pCstDocument || !targets || count <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: no retained CST Document or empty target list; remove rejected" );
+		return 0;
+	}
+
+	// --- Phase 1: resolve EVERY target first; mutate nothing. ---
+	std::vector<std::string> keywords( static_cast<std::size_t>( count ) );
+	std::vector<int>         indices;          // unique resolved top-level indices, first-occurrence order
+	indices.reserve( static_cast<std::size_t>( count ) );
+	int         failIdx  = -1;
+	int         failCode = 0;
+	std::string failDiag;
+	for( int i = 0; i < count; ++i )
+	{
+		const char* t = targets[i];
+		const char* k = kinds ? kinds[i] : nullptr;
+		if( !t || !t[0] ) {
+			// An empty target is a malformed REQUEST, not a resolution failure -- code 0 (the same code
+			// ApplyCstRemoveChunk returns for its own empty-target guard), with the offending index named.
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: target %d is empty; remove rejected", i );
+			if( outFailIndex ) *outFailIndex = i;
+			return 0;
+		}
+		int         idx = -1;
+		std::string kw, dg;
+		const int rc = CstResolveRemoveTarget_( *pCstDocument, t, k, GetActiveCameraName(),
+		                                        "Job::ApplyCstRemoveChunks", idx, kw, dg );
+		keywords[static_cast<std::size_t>( i )] = kw;
+		if( rc != 0 ) { failIdx = i; failCode = rc; failDiag = dg; break; }
+		// DUPLICATE COLLAPSE: two input elements naming the SAME chunk must erase it ONCE -- a second
+		// DocEraseChunkTidy at a now-stale index would erase an unrelated neighbour.  Collapsing is a
+		// CORRECTNESS requirement here; the honest "you listed it twice" reporting is the caller's job
+		// (AgentSession::RemoveChunks dedupes by name up front and says so).
+		bool alreadySeen = false;
+		for( std::size_t s = 0; s < indices.size(); ++s ) { if( indices[s] == idx ) { alreadySeen = true; break; } }
+		if( !alreadySeen ) indices.push_back( idx );
+	}
+
+	// Echo whatever keywords DID resolve (input order, '\n'-separated) even on a refusal -- the caller uses
+	// them to label its per-target results, and a partial set is more useful than none.
+	{
+		std::string joined;
+		for( std::size_t i = 0; i < keywords.size(); ++i ) {
+			if( i ) joined += '\n';
+			joined += keywords[i];
+		}
+		S2CopyOut( outKeywords, keywordsMax, joined );
+	}
+
+	if( failCode != 0 ) {
+		S2CopyOut( outDiag, diagMax, failDiag );
+		if( outFailIndex ) *outFailIndex = failIdx;
+		return failCode;
+	}
+	if( indices.empty() ) {
+		// Unreachable in practice (count > 0 and every element resolved), but a silent no-op re-derive
+		// would bump the head for nothing -- refuse honestly instead.
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveChunks:: no resolved targets to erase; remove rejected" );
+		return 0;
+	}
+
+	// --- Phase 2: one Document mutation, one re-derive, one head-version bump. ---
+	std::sort( indices.begin(), indices.end(), std::greater<int>() );
+	RISE::Cst::Document work = RISE::Cst::DocEraseChunkTidy( *pCstDocument, indices[0] );
+	for( std::size_t i = 1; i < indices.size(); ++i )
+		work = RISE::Cst::DocEraseChunkTidy( work, indices[i] );
+
+	// FIX 6 (P3, 2026-08-09 R1 fix round): this is a LOG-ONLY diagnostic string (RederiveCstDocumentFull_'s
+	// diagContext, printed via GlobalLog()->PrintEx on a Phase-2 "would not derive" / "diagnosed" outcome --
+	// never returned to the caller, who already gets a precise, index-attributed cause via outFailIndex/
+	// outDiag for the -1/-2 Phase-1 resolve failures above).  Previously always named ONLY `targets[0]` even
+	// though a Phase-2 re-derive failure is a whole-DOCUMENT property that can be triggered by ANY of the
+	// batch's (deduped) erased targets -- singling out "first" misleadingly implied targets[0] was somehow
+	// the offender.  Name every unique target actually erased in this batch instead (capped to fit the
+	// buffer), so the log reflects the true scope of the mutation that failed to re-derive.
+	std::string targetList;
+	for( int i = 0; i < count; ++i ) {
+		if( !targets[i] || !targets[i][0] ) continue;
+		bool dup = false;
+		for( int j = 0; j < i; ++j ) { if( targets[j] && strcmp( targets[j], targets[i] ) == 0 ) { dup = true; break; } }
+		if( dup ) continue;
+		if( !targetList.empty() ) targetList += ", ";
+		targetList += '`';
+		targetList += targets[i];
+		targetList += '`';
+		if( targetList.size() > 220 ) { targetList += ", ..."; break; }
+	}
+	char ctx[300];
+	std::snprintf( ctx, sizeof( ctx ), "remove_chunks (%d target%s: %s)",
+	               count, count == 1 ? "" : "s", targetList.c_str() );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( work ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// R1a (2026-08-09, batched remove_chunks -- UNDO): whole-Document restore.  Full contract (including WHY the
+// batch's Undo restores text wholesale instead of replaying N ApplyCstRestoreChunkAt splices) on the IJob
+// virtual.  Deliberately thin: parse, sanity-check, and hand the parsed Document to the SAME
+// dry-run-guarded re-derive tail every other chunk-CRUD verb ends in, so a restore that would not derive
+// leaves the Document + live scene byte-identical exactly like every other refusal here.
+int Job::ApplyCstReplaceDocumentText( const char* fullText, bool restoreActiveRasterizer,
+                                      char* outDiag, unsigned int diagMax,
+                                      const char* diagContext )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || !fullText || !fullText[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocumentText:: no retained CST Document or empty text; restore rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = RISE::Cst::ParseToCst( std::string( fullText ) );
+	if( RISE::Cst::DocItemCount( d1 ) <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocumentText:: text parsed to no top-level item; restore rejected" );
+		return 0;
+	}
+	std::string firstDiag;
+	// R2 (2026-08-10): `diagContext` names the operation in the re-derive's log lines.  Null keeps R1a's
+	// original wording byte-for-byte, so the existing remove_chunks-undo caller's logs are unchanged.
+	const int code = RederiveCstDocumentFull_( std::move( d1 ),
+	                                           ( diagContext && diagContext[0] ) ? diagContext
+	                                                                             : "restore document (agent remove_chunks undo)",
+	                                           &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Batched agent edits (2026-10-16, review round 4): ApplyCstReplaceDocumentText for an already-built Document --
+// installed AS IS (no serialize + re-parse), so its top-level item structure is preserved.  An agent batch
+// Undo/Redo builds its target by editing the CURRENT Document; a re-parse would merge adjacent trivia items and
+// shift the top-level indices OLDER history records (AgentInsertChunk's exact-index inverse) rely on.
+int Job::ApplyCstReplaceDocument( const RISE::Cst::Document& doc, bool restoreActiveRasterizer,
+                                  char* outDiag, unsigned int diagMax, const char* diagContext )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || RISE::Cst::DocItemCount( doc ) <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstReplaceDocument:: no retained CST Document or empty document; rejected" );
+		return 0;
+	}
+	RISE::Cst::Document d1 = doc;
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ),
+	                                           ( diagContext && diagContext[0] ) ? diagContext : "replace document",
+	                                           &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Shared-undo U2: EXACT-POSITION inverse of ApplyCstRemoveChunk -- see the IJob virtual doc for the full
+// contract.  `bytesInOrder` is the caller's captured concatenation of every top-level item a PRIOR
+// DocEraseChunkTidy actually dropped (the chunk + at most its own tidied trailing separator), in document
+// order; parse it back into its constituent top-level items and splice them at `atIndex` in order -- the
+// documented exact inverse of DocRemoveItem (Cst.h): DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips
+// byte-for-byte, so re-inserting the SAME items at the SAME index restores the pre-erase Document exactly
+// (subject to the dry-run below proving the restored Document still derives -- e.g. nothing removed in the
+// interim now collides with the restored chunk's name).
+// Round-1 P1-B glue-safety helper: true iff the top-level item at `index` in `doc` serializes to bytes
+// whose LAST byte is a newline.  Mirrors Cst.cpp's own (internal-linkage) `ItemEndsInNewline` predicate --
+// that one is `static` and not exposed via Cst.h, so this is a local, deliberately identical reimplementation
+// via the PUBLIC RISE::Cst::SerializeNode surface (same O(one item's bytes) cost).  An out-of-range/absent
+// item is NOT newline-terminated.
+static bool JobItemEndsInNewline_( const RISE::Cst::Document& doc, int index )
+{
+	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return false;
+	const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, index ) );
+	if( !it ) return false;
+	const std::string s = RISE::Cst::SerializeNode( it );
+	return !s.empty() && s.back() == '\n';
+}
+
+// Round-2 P1 glue-safety helper (RIGHT-side twin of JobItemEndsInNewline_ above): true iff the top-level
+// item at `index` in `doc` serializes to bytes whose FIRST byte is ANY whitespace character (space, tab,
+// CR, or LF -- the same class DocEraseChunkTidy's IsPureWhitespaceTrivia treats as collapsible glue-safe
+// content, not just '\n').  An out-of-range/absent item counts as "starts with whitespace" (vacuously
+// glue-safe: there is nothing there to glue onto -- mirrors `at == nHead` being a no-splice-neighbour case).
+static bool JobItemStartsWithWhitespace_( const RISE::Cst::Document& doc, int index )
+{
+	if( index < 0 || index >= RISE::Cst::DocItemCount( doc ) ) return true;
+	const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, index ) );
+	if( !it ) return true;
+	const std::string s = RISE::Cst::SerializeNode( it );
+	return s.empty() || s.find_first_of( " \t\r\n", 0 ) == 0;
+}
+
+int Job::ApplyCstRestoreChunkAt( const char* bytesInOrder, int atIndex, bool restoreActiveRasterizer,
+                                  char* outDiag, unsigned int diagMax )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || !bytesInOrder || !bytesInOrder[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRestoreChunkAt:: no retained CST Document or empty bytes; restore rejected" );
+		return 0;
+	}
+
+	// Parse the captured bytes back into their own throwaway Document and collect EVERY top-level item
+	// (chunk AND trivia) in order -- unlike ApplyCstInsertChunk (which requires exactly one Chunk plus
+	// pure-whitespace trivia), a restore's payload legitimately carries a Chunk followed by a Trivia
+	// separator (the tidied-away item DocEraseChunkTidy dropped alongside it), so every item is spliced back.
+	RISE::Cst::Document bytesDoc = RISE::Cst::ParseToCst( std::string( bytesInOrder ) );
+	const int nItems = RISE::Cst::DocItemCount( bytesDoc );
+	std::vector<RISE::Cst::NodeRef> items;
+	items.reserve( (size_t)nItems );
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( bytesDoc, RISE::Cst::DocNodeIdAt( bytesDoc, i ) );
+		if( it ) items.push_back( it );
+	}
+	if( items.empty() ) {
+		S2CopyOut( outDiag, diagMax, "captured bytes did not parse to any top-level item" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRestoreChunkAt:: captured bytes did not parse to any top-level item; restore rejected" );
+		return 0;
+	}
+
+	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+	const int at = ( atIndex < 0 ) ? 0 : ( atIndex > nHead ? nHead : atIndex );
+
+	// Round-1 P1-B (glue-safety, LEFT side): an out-of-band Document mutation between the original erase and
+	// this restore can shift indices, landing `at` somewhere whose LEFT NEIGHBOUR does not end in a newline --
+	// splicing the restored bytes verbatim there would glue the restored chunk's keyword directly onto the
+	// neighbour's `}` (`}lambertian_material`).  Mirror Cst.cpp's DocEraseChunkTidy glue-safety reasoning:
+	// synthesize a pure-"\n" Trivia lead item ahead of the restore whenever `at > 0` and the item now at
+	// `at - 1` is not newline-terminated.  In the ordinary no-shift case the left neighbour already ends in
+	// `\n` (that is what the ORIGINAL erase's own glue-safety proved true), so nothing is synthesized and the
+	// restore stays byte-IDENTICAL to the pre-erase Document.
+	RISE::Cst::Document d1 = *pCstDocument;
+	int spliceAt = at;
+	if( at > 0 && !JobItemEndsInNewline_( d1, at - 1 ) ) {
+		RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+		if( leadItem ) {
+			d1 = RISE::Cst::DocInsertItem( d1, spliceAt, leadItem );
+			++spliceAt;
+		}
+	}
+
+	// Round-2 P1 (glue-safety, RIGHT side -- symmetric twin of the LEFT-side check above): the caller's
+	// capture is NOT always trailing-separator-terminated.  `SceneEditController::ApplyAgentChunkCrud_` trims
+	// the conservative two-item over-capture down to JUST the chunk's own bytes whenever the erase's
+	// `droppedCount == 1` (the chunk was the LAST top-level item, so no trailing separator ever existed; OR
+	// `DocEraseChunkTidy` found the separator glue-UNSAFE to collapse and left it in the Document, still
+	// sitting at the removal point).  A Chunk node's serialized bytes always end in `}` (the trailing newline,
+	// when one exists, is a SEPARATE sibling Trivia item) -- so a chunk-only capture's last item does not end
+	// in `\n`.  If an out-of-band Document mutation then shifts indices so a non-whitespace-leading item (a
+	// hand-authored chunk's `keyword` token) now sits immediately at the (post-left-synthesis) splice point,
+	// splicing verbatim glues `}` directly onto it (`}lambertian_luminaire_material`) -- silently, since the
+	// tokenizer is brace-forgiving.  Mirror the left-side rule: if the restored run's LAST item is not
+	// newline-terminated AND there IS an item now sitting at the splice point AND that item's FIRST byte is
+	// NOT whitespace, append a synthesized pure-"\n" Trivia item after the restored run before committing.
+	//
+	// Why "not whitespace" (not "not '\n' specifically") is the correct right-side test, and why it preserves
+	// byte-identity in EVERY no-shift case: `DocEraseChunkTidy` only ever leaves the original separator in
+	// place (rather than collapsing it) when that separator is NOT glue-safe to drop -- either it isn't pure
+	// whitespace at all (impossible for a real inter-chunk separator; `IsPureWhitespaceTrivia` requires
+	// `" \t\r\n"` only) or the glue-safety walk found it unsafe.  In EVERY no-shift droppedCount==1 shape the
+	// item now sitting at the splice point is EITHER (a) nothing (`at == nHead`, chunk was last -- vacuously
+	// whitespace per the helper's out-of-range convention, no synthesis) or (b) the ORIGINAL, UNTOUCHED
+	// separator that was already sitting immediately after the chunk pre-remove -- and that separator, being
+	// pure whitespace by construction (` \t\r\n` only), ALWAYS starts with a whitespace byte (even if that
+	// byte is a space/tab rather than `\n`) -- so the "first byte is whitespace" test is false-negative-free
+	// for restoring byte-identity: no synthesis fires, and splicing the chunk-only capture directly ahead of
+	// that untouched separator reproduces the EXACT pre-remove adjacency (`}` immediately followed by the
+	// separator's own first character, whatever it was).  Synthesizing a lead '\n' there would be WRONG (it
+	// would insert a byte that was never in the pre-remove document).  The rule only fires when the item at
+	// the splice point begins with a genuine non-whitespace byte -- which only happens under an out-of-band
+	// shift that moved unrelated content there, i.e. exactly the corruption case this fix targets.
+	const std::string lastItemBytes = items.empty() ? std::string() : RISE::Cst::SerializeNode( items.back() );
+	const bool lastItemEndsInNewline = !lastItemBytes.empty() && lastItemBytes.back() == '\n';
+	if( !lastItemEndsInNewline && spliceAt < RISE::Cst::DocItemCount( d1 )
+	    && !JobItemStartsWithWhitespace_( d1, spliceAt ) ) {
+		RISE::Cst::Document trailDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef  trailItem = RISE::Cst::DocResolveNodeId( trailDoc, RISE::Cst::DocNodeIdAt( trailDoc, 0 ) );
+		if( trailItem ) items.push_back( trailItem );
+	}
+
+	for( size_t k = 0; k < items.size(); ++k )
+		d1 = RISE::Cst::DocInsertItem( d1, spliceAt + (int)k, items[k] );
+
+	char ctx[128];
+	std::snprintf( ctx, sizeof( ctx ), "restore_chunk_at %d", at );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag, restoreActiveRasterizer );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Shared-undo U2: EXACT-POSITION inverse of ApplyCstInsertChunk -- see the IJob virtual doc for the full
+// contract.  ApplyCstInsertChunk ALWAYS splices exactly [leadSep][chunk][trailSep] (3 items) at a single
+// contiguous index; this removes exactly `count` items at `atIndex` via repeated Cst::DocRemoveItem AT THE
+// SAME INDEX (removing at a fixed index `count` times drops the contiguous run [atIndex, atIndex+count) in
+// order -- the exact inverse of the insert's repeated DocInsertItem at increasing indices), then realizes via
+// the shared dry-run-guarded full re-derive tail.  Unlike Job::ApplyCstRemoveChunk (Cst::DocEraseChunkTidy's
+// heuristic single-adjacent-separator collapse, correct for an arbitrary FILE-AUTHORED chunk but -- BY
+// DESIGN -- leaving a residual blank line when applied to a chunk with TWO fresh separators around it), this
+// is exact: DocRemoveItem(DocInsertItem(doc,i,x),i) round-trips byte-for-byte (Cst.h), so removing the SAME
+// 3 items at the SAME index restores the pre-insert Document byte-identically.
+int Job::ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
+                                const char* expectedChunkBytes )
+{
+	S2CopyOut( outDiag, diagMax, std::string() );
+	if( !pCstDocument || count <= 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveItemsAt:: no retained CST Document or non-positive count; remove rejected" );
+		return 0;
+	}
+	const int nHead = RISE::Cst::DocItemCount( *pCstDocument );
+	if( atIndex < 0 || atIndex + count > nHead ) {
+		S2CopyOut( outDiag, diagMax, "atIndex/count out of range for the current Document" );
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstRemoveItemsAt:: atIndex=%d count=%d out of range (document has %d items); remove rejected", atIndex, count, nHead );
+		return 0;
+	}
+
+	// Round-1 P2: this primitive is a PURE positional splice with NO identity check of its own -- an
+	// out-of-band Document mutation between the original insert and this Undo call can shift indices so
+	// `atIndex` is IN-RANGE but STALE (some OTHER 3 items now occupy [atIndex, atIndex+count)).  Those wrong
+	// items can derive cleanly (any well-formed, unreferenced triple does), so without this check the dry-run
+	// below would happily commit deleting the WRONG content.  When the caller supplies its own captured exact
+	// bytes of the chunk it expects to still be sitting at the middle of the [lead][chunk][trail] triple
+	// (`atIndex + 1` -- the layout ApplyCstInsertChunk always produces), refuse with an honest code-0
+	// diagnostic on a mismatch, BEFORE touching the Document.  Only meaningful for the documented triple shape
+	// (count == 3); a null `expectedChunkBytes` (or a non-triple `count`, defensively) preserves the pre-fix
+	// positional-only behaviour for any other caller.
+	//
+	// `expectedChunkBytes` is the caller's ORIGINAL agent-supplied chunk text (e.g. SceneEdit::propertyValue
+	// for an AgentInsertChunk record) -- NOT necessarily byte-identical to `SerializeNode` of the spliced
+	// chunk item verbatim, because ApplyCstInsertChunk's own contract only requires "nothing but
+	// pure-whitespace trivia around" the chunk (incidental leading/trailing whitespace in the caller's text is
+	// legal and gets parsed away).  Normalize BOTH sides the same way ApplyCstInsertChunk itself does --
+	// parse `expectedChunkBytes` and extract its own Chunk item -- then compare Chunk-to-Chunk via SerializeNode
+	// (which reproduces exact bytes for whatever was parsed, CST being lossless), so incidental whitespace
+	// differences outside the chunk proper never cause a false-positive mismatch refusal.
+	if( expectedChunkBytes && expectedChunkBytes[0] && count == 3 ) {
+		RISE::Cst::Document expDoc = RISE::Cst::ParseToCst( std::string( expectedChunkBytes ) );
+		RISE::Cst::NodeRef  expChunk;
+		{
+			const int n = RISE::Cst::DocItemCount( expDoc );
+			for( int i = 0; i < n && !expChunk; ++i ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( expDoc, RISE::Cst::DocNodeIdAt( expDoc, i ) );
+				if( it && it->kind == RISE::Cst::NodeKind::Chunk ) expChunk = it;
+			}
+		}
+		const std::string expectedBytes = expChunk ? RISE::Cst::SerializeNode( expChunk ) : std::string( expectedChunkBytes );
+
+		const RISE::Cst::NodeRef chunkAtPos =
+			RISE::Cst::DocResolveNodeId( *pCstDocument, RISE::Cst::DocNodeIdAt( *pCstDocument, atIndex + 1 ) );
+		const std::string actualBytes = chunkAtPos ? RISE::Cst::SerializeNode( chunkAtPos ) : std::string();
+		if( actualBytes != expectedBytes ) {
+			S2CopyOut( outDiag, diagMax, "document changed since the edit was recorded; undo skipped" );
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstRemoveItemsAt:: the chunk at atIndex+1=%d no longer matches the captured bytes "
+				"(document changed since the edit was recorded); remove rejected", atIndex + 1 );
+			return 0;
+		}
+	}
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( int k = 0; k < count; ++k )
+		d1 = RISE::Cst::DocRemoveItem( d1, atIndex );   // removing AT atIndex repeatedly drops the contiguous run in order
+
+	char ctx[128];
+	std::snprintf( ctx, sizeof( ctx ), "remove_items_at %d count %d", atIndex, count );
+	std::string firstDiag;
+	const int code = RederiveCstDocumentFull_( std::move( d1 ), ctx, &firstDiag );
+	if( code == 0 ) S2CopyOut( outDiag, diagMax, firstDiag );
+	return code;
+}
+
+// Model-B P5 Slice 3 expansion (FILM edit/preset): record a Film dim edit in the retained CST.  The live
+// Job::SetFilm has ALREADY fully mutated the scene (replaced IFilm, resynced cameras, reallocated FrameStore);
+// this only PATCHES the singleton unnamed `film` chunk so a SAVE (SerializeCst serializes the retained Document)
+// and a future D2 re-derive (DeriveToJob from the retained Document) preserve the dims instead of reverting to
+// the authored values.  Modeled on ApplyCstInsertCameraChunk (Document-only -- NO re-derive, NO rebind), NOT on
+// ApplyCstParamEdit (which re-derives).  Both call sites are already inside the UI-thread parked critical section,
+// and the Document is touched only by the UI thread, so no extra parking is needed.
+//
+// width/height/pixelAR are each OPTIONAL: nullptr means "leave that param untouched" -> a single-property panel
+// edit writes ONLY the changed param (minimal diff); a resolution PRESET passes width+height with pixelAR=nullptr.
+// pixelAR is commonly OMITTED from the authored `film` chunk (defaults to 1.0), so setting it may INSERT the param
+// -- DocSetOrAddParamValue handles insert (and emits a leading newline to avoid brace-glue).  NodeIds are preserved
+// across edits, so the resolved filmId stays valid across the chained sets; commit ONCE at the end (atomic).
+//
+// ABSENT `film` chunk: a CST scene may legitimately have NONE (renders on the built-in default; CST does not
+// synthesize one).  Rather than a lossy no-op (which would lose the resolution edit on save / next D2 -- the SAME
+// data-loss class as the present-chunk bug, just the sibling case), this INSERTS a fresh `film` chunk built from the
+// LIVE post-SetFilm dims and appends it to the Document (mirroring ApplyCstInsertCameraChunk's symmetric anti-glue
+// idiom).  The width/height/pixelAR string args are ignored in that branch (they carry only the single edited param;
+// an insert must reproduce the FULL live film state).  No undo path (Film edits aren't undoable).
+//
+// Returns 1 on success (param-set on a present chunk OR insert of an absent one), 0 on a clean no-op (no retained
+// Document -> legacy scene, the live SetFilm already happened) or a soft failure (no live IFilm to seed the insert /
+// chunk-build failed), leaving the Document intact.
+int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pixelAR )
+{
+	if( !pCstDocument ) return 0;   // legacy / no-Document scene -> clean no-op (live SetFilm already applied)
+
+	// The `film` chunk is an UNNAMED unique-in-kind singleton: resolve it by KIND with the empty-bareName +
+	// uniqueFallback path (DocFindByNameAnyRole's uniqueFallback branch finds the sole chunk whose role == "film").
+	const RISE::Cst::NodeId filmId = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, "", nullptr, "film", true );
+	if( filmId == 0 ) {
+		// ABSENT `film` chunk (completes the P1 close -- sibling of the present-chunk data-loss case): a CST scene may
+		// legitimately omit `film` and render on the built-in default (CST does NOT synthesize one).  A no-op here would
+		// lose a resolution edit on save / next D2 exactly like the present-chunk bug.  So INSERT a fresh `film` chunk
+		// built from the LIVE post-SetFilm values (authoritative, post-clamp) and append it to the Document, mirroring
+		// ApplyCstInsertCameraChunk's symmetric anti-glue idiom: [leadSep "\n"][chunk][trailSep "\n"] at DocItemCount.
+		// No undo path is needed (Film edits aren't undoable -- there's no remove inverse to write, unlike the camera
+		// clone).  Document-only: NO re-derive (the live SetFilm already mutated the scene).  Returns 1 on insert.
+		const IFilm* pLiveFilm = pScene ? pScene->GetFilm() : nullptr;
+		if( !pLiveFilm ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: no `film` chunk in the CST Document and no live IFilm to seed an insert; Film dims not recorded (live edit stands, but a save / D2 will revert them)" );
+			return 0;
+		}
+		const unsigned int liveW = pLiveFilm->GetWidth();
+		const unsigned int liveH = pLiveFilm->GetHeight();
+		const double       liveP = static_cast<double>( pLiveFilm->GetPixelAR() );
+
+		// Build `film\n{\nwidth <liveW>\nheight <liveH>\n[pixelAR <liveP>]\n}` -- pixelAR ONLY when it differs
+		// from the 1.0 default (don't spuriously write the default).  pixelAR uses %.17g (the FIX-1 widened,
+		// round-trip-exact format matching FormatMatrix16 / FormatVec3 / the Cst derive path); width/height
+		// are exact %u.  The opening `{` gets its OWN line (task_7f42984d): a `film {` glued onto the keyword's
+		// line parses into a tree (ParseToCst stays lossless) but is now a hard PASS-1 refusal at the NEXT
+		// derive (ChunkBraceViolations / ResolveChunkParams) -- this insert used to emit exactly that glued
+		// form, so a Job that ever took this path (SetFilm + ApplyCstFilmEdit with no prior `film` chunk) would
+		// derive fine in-memory but fail to reload after a save (CstSliceThreeExpansionTest's FILM8 caught it).
+		char chunkText[256];
+		if( liveP != 1.0 ) {
+			std::snprintf( chunkText, sizeof(chunkText), "film\n{\n\twidth %u\n\theight %u\n\tpixelAR %.17g\n}", liveW, liveH, liveP );
+		} else {
+			std::snprintf( chunkText, sizeof(chunkText), "film\n{\n\twidth %u\n\theight %u\n}", liveW, liveH );
+		}
+
+		// Parse to a throwaway Document and extract its first CHUNK item (defensive against a leading trivia leaf) --
+		// same extraction ApplyCstInsertCameraChunk uses.
+		RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( std::string( chunkText ) );
+		const int nItems = RISE::Cst::DocItemCount( chunkDoc );
+		RISE::Cst::NodeRef chunkItem;
+		for( int i = 0; i < nItems; ++i ) {
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+			if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+		}
+		if( !chunkItem ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: built film chunk text did not parse to a film chunk; insert rejected (live edit stands)" );
+			return 0;
+		}
+
+		// Symmetric anti-glue insert (reuse ApplyCstInsertCameraChunk's exact idiom): UNCONDITIONALLY append
+		// [leadSep "\n"][chunk][trailSep "\n"] at DocItemCount.  The leading "\n" keeps the chunk on its own line so a
+		// no-trailing-newline document never serializes `}film` glue; the trailing "\n" keeps the file well-formed.
+		RISE::Cst::Document leadDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+		RISE::Cst::Document trailDoc = RISE::Cst::ParseToCst( std::string( "\n" ) );
+		RISE::Cst::NodeRef trailItem = RISE::Cst::DocResolveNodeId( trailDoc, RISE::Cst::DocNodeIdAt( trailDoc, 0 ) );
+		if( !leadItem || !trailItem ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstFilmEdit:: could not build the inter-chunk separators; film insert rejected (live edit stands)" );
+			return 0;
+		}
+		RISE::Cst::Document d1 = *pCstDocument;
+		const int at = RISE::Cst::DocItemCount( d1 );
+		d1 = RISE::Cst::DocInsertItem( d1, at,     leadItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 1, chunkItem );
+		d1 = RISE::Cst::DocInsertItem( d1, at + 2, trailItem );
+		pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+		BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed (film chunk inserted) -> bump revision
+		return 1;
+	}
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	if( width )   d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "width",   0, width );
+	if( height )  d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "height",  0, height );
+	if( pixelAR ) d1 = RISE::Cst::DocSetOrAddParamValue( d1, filmId, "pixelAR", 0, pixelAR );
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit ONCE (Document-only; no re-derive)
+	BumpCstHeadRevision();   // Facet 5 slice 1a: the retained Document content changed (film dims patched) -> bump revision
+	return 1;
+}
+
+// Environment / IBL binding: mirror a `radiance_*` edit into the CST Document so it
+// SURVIVES A SAVE (twin of ApplyCstFilmEdit for the singleton, active rasterizer
+// chunk).  The active rasterizer is an UNNAMED unique-in-kind chunk whose CST role
+// == its keyword (e.g. "pathtracing_pel_rasterizer"), so resolve it by KIND via the
+// empty-bareName + uniqueFallback path (the SAME resolution ApplyCstFilmEdit uses for
+// the `film` singleton).  Behaviour by `paramName`:
+//   - radiance_map with a NON-EMPTY value -> set/add the binding painter name;
+//   - radiance_map with an EMPTY/null value -> ERASE all four radiance_* params
+//     (unbind the environment entirely, leaving no orphan scale/orient/background);
+//   - radiance_scale / radiance_orient / radiance_background -> set/add that param.
+// Document-only: NO re-derive (the caller already applied the live edit).  Returns 1
+// on a Document mutation, 0 on a clean no-op (legacy scene with no retained Document,
+// or no unique rasterizer chunk of the active kind -> the live edit still stands, but
+// a save / D2 re-derive would revert it; a warning is logged in the absent-chunk case).
+int Job::ApplyCstEnvironmentEdit( const char* paramName, const char* value )
+{
+	if( !pCstDocument || !paramName ) return 0;   // legacy / no-Document scene -> clean no-op (live edit already applied)
+
+	const std::string rasterKind = GetActiveRasterizerName();
+	if( rasterKind.empty() ) return 0;
+
+	const RISE::Cst::NodeId rasterId =
+		RISE::Cst::DocFindByNameAnyRole( *pCstDocument, "", nullptr, rasterKind, true );
+	if( rasterId == 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::ApplyCstEnvironmentEdit:: no unique `%s` chunk in the CST Document; environment `%s` not recorded (live edit stands, but a save / D2 will revert it)",
+			rasterKind.c_str(), paramName );
+		return 0;
+	}
+
+	const std::string pn( paramName );
+	const bool eraseBinding = ( pn == "radiance_map" && ( !value || value[0] == '\0' ) );
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	if( eraseBinding ) {
+		// Unbind: strip radiance_map AND the now-orphaned scale/orient/background so a
+		// re-derive sees a clean, environment-free rasterizer chunk.  DocRemoveParam
+		// no-ops on an absent param, so erasing all four is safe regardless of which
+		// were authored.
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_map" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_scale" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_orient" );
+		d1 = RISE::Cst::DocRemoveParam( d1, rasterId, "radiance_background" );
+	} else {
+		d1 = RISE::Cst::DocSetOrAddParamValue( d1, rasterId, pn, 0, value ? value : "" );
+	}
+	pCstDocument.reset( new RISE::Cst::Document( std::move( d1 ) ) );   // commit (Document-only; no re-derive)
+	BumpCstHeadRevision();
+	return 1;
+}
+
+// L6b — push the canonical FrameStore to every registered rasterizer.
+// Called after scene load completes and after SetActiveCamera in case
+// the new camera has different dimensions.  Each rasterizer addrefs
+// the FrameStore via Rasterizer::SetFrameStore (releases its previous
+// reference if any) so the ref count is balanced.  Safe to call when
+// no FrameStore can be allocated yet (no active camera) — passes
+// nullptr through, which clears any stale FrameStore on each rasterizer.
+void Job::PushJobFrameStoreToRasterizers()
+{
+	RISE::Implementation::FrameStore* fs = ResolveJobFrameStoreForActiveCamera();
+	for( RasterizerRegistry::iterator it = rasterizerRegistry.begin();
+	     it != rasterizerRegistry.end(); ++it )
+	{
+		if( !it->second.instance ) continue;
+
+		// Cast to the concrete `Rasterizer` impl to access SetFrameStore
+		// + the AcceptsFrameStorePush capability hook.  This is safe —
+		// every in-tree rasterizer derives from
+		// `Implementation::Rasterizer`, and the registry only holds
+		// instances we constructed via RISE_API factories.
+		RISE::Implementation::Rasterizer* r =
+			dynamic_cast<RISE::Implementation::Rasterizer*>( it->second.instance );
+		if( !r ) continue;
+
+		// L6e-1.1 — capability gate via virtual on `Rasterizer`
+		// (replaces a brittle string-match on registry name).  Every
+		// current in-tree rasterizer accepts the push; the hook remains
+		// for future internal-only image paths that cannot keep the
+		// canonical FrameStore synchronized.
+		if( !r->AcceptsFrameStorePush() ) continue;
+
+		r->SetFrameStore( fs );
+	}
 }
 
 //! Runs an ascii script
@@ -6101,15 +19875,31 @@ bool Job::AreThereAnyKeyframedObjects()
 	return pScene->GetAnimator()->AreThereAnyKeyframedObjects();
 }
 
-//! Adds a keyframe for the specified element
+//! Adds a keyframe for the specified element (legacy; routes to the
+//! implicit default animation).
 bool Job::AddKeyframe(
-	const char* element_type,						///< [in] Type of element to keyframe (ie. camera, painter, geometry, object...)
-	const char* element,							///< [in] Name of the element to keyframe
-	const char* param,								///< [in] Name of the parameter to keyframe
-	const char* value,								///< [in] Value at this keyframe
-	const double time,								///< [in] Time of the keyframe
-	const char* interp,								///< [in] Type of interpolation to use between this keyframe and the next
-	const char* interp_params						///< [in] Parameters to pass to the interpolator (this can be NULL)
+	const char* element_type,
+	const char* element,
+	const char* param,
+	const char* value,
+	const double time,
+	const char* interp,
+	const char* interp_params
+	)
+{
+	return AddKeyframeToAnimation( element_type, element, param, value, time, interp, interp_params, 0 );
+}
+
+//! Adds a keyframe owned by a named animation (NULL/empty animation => default)
+bool Job::AddKeyframeToAnimation(
+	const char* element_type,
+	const char* element,
+	const char* param,
+	const char* value,
+	const double time,
+	const char* interp,
+	const char* interp_params,
+	const char* animation
 	)
 {
 	if( !element_type || !element || !param || !value ) {
@@ -6122,7 +19912,43 @@ bool Job::AddKeyframe(
 	if( type == "object" ) {
 		pkf = pObjectManager->GetItem( element );
 	} else if( type == "camera" ) {
-		pkf = pScene->GetCameraMutable();
+		// Camera keyframes target a SPECIFIC camera by name when `element`
+		// is provided; an empty / absent / "none" element falls back to the
+		// ACTIVE camera (back-compat -- the overwhelmingly common single-,
+		// often unnamed-, camera scene).  A non-empty element that names no
+		// existing camera is a LOUD derive failure (return false) -- never a
+		// silent active-camera fallback -- so the dry-run derive gate rejects
+		// the edit instead of animating the wrong camera.  Cameras are
+		// registered in the camera manager by name (unnamed chunks get an
+		// auto-allocated "default"), and ICamera IS-A IKeyframable, so a
+		// named GetItem() yields the same keyframable the active path does.
+		const bool haveName = *element && ( strcmp( element, "none" ) != 0 );
+		if( haveName ) {
+			ICameraManager* pCameras = pScene->GetCamerasMutable();
+			ICamera* pNamedCam = pCameras ? pCameras->GetItem( element ) : 0;
+			if( !pNamedCam ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddKeyframeToAnimation:: camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+					element );
+				// Surface the SPECIFIC reason through the Finalize-diagnostic sink (see
+				// GenericManager.h) so a CST derive (insert_chunk/validate) reports "camera
+				// `<name>` not found ..." to the agent instead of DeriveToJob's generic
+				// "<keyword>: apply failed (e.g. unresolved reference); see log" fallback.
+				// No "Job::AddKeyframeToAnimation: " prefix here -- DeriveToJob's PASS-2 apply
+				// loop already prepends `<keyword>: ` to whatever this sink carries.
+				{
+					char msg[256];
+					std::snprintf( msg, sizeof( msg ),
+						"camera `%s` not found -- cannot animate a non-existent camera (reference the camera's `name`, or omit `element` to animate the active camera)",
+						element );
+					RISE::SetFinalizeDiagIfEmpty( msg );
+				}
+				return false;
+			}
+			pkf = pNamedCam;
+		} else {
+			pkf = pScene->GetCameraMutable();
+		}
 	} else if( type == "geometry" ) {
 		pkf = pGeomManager->GetItem( element );
 	} else if( type == "painter" ) {
@@ -6137,8 +19963,9 @@ bool Job::AddKeyframe(
 
 	String szinterp = String(interp);
 	String szinterpparams = String(interp_params);
+	String szanimation = String(animation);
 
-	return pScene->GetAnimator()->InsertKeyframe( pkf, String(param), String(value), time, interp?&szinterp:0, interp_params?&szinterpparams:0 );
+	return pScene->GetAnimator()->InsertKeyframeForAnimation( pkf, String(param), String(value), time, interp?&szinterp:0, interp_params?&szinterpparams:0, szanimation );
 }
 
 //! Sets animation rasterization options
@@ -6152,12 +19979,163 @@ bool Job::SetAnimationOptions(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	animOptions.time_start = time_start;
 	animOptions.time_end = time_end;
 	animOptions.num_frames = num_frames;
 	animOptions.do_fields = do_fields;
 	animOptions.invert_fields = invert_fields;
 
+	// Also seed the implicit default animation so it carries the real time
+	// range (named-animation paths read per-animation playback options).
+	if( pScene && pScene->GetAnimator() ) {
+		pScene->GetAnimator()->DeclareAnimation( String("(default)"), time_start, time_end, num_frames, do_fields, invert_fields, false );
+	}
+
+	return true;
+}
+
+bool Job::GetAnimationOptions(
+	double& time_start,
+	double& time_end,
+	unsigned int& num_frames,
+	bool& do_fields,
+	bool& invert_fields
+	) const
+{
+	// Prefer the ACTIVE named animation's options (so the GUI timeline range
+	// and renderanimation-using-options follow the selected animation); fall
+	// back to the legacy global preset when nothing is declared.
+	if( pScene && pScene->GetAnimator() &&
+		pScene->GetAnimator()->GetActiveAnimationOptions( time_start, time_end, num_frames, do_fields, invert_fields ) ) {
+		return true;
+	}
+
+	time_start    = animOptions.time_start;
+	time_end      = animOptions.time_end;
+	num_frames    = animOptions.num_frames;
+	do_fields     = animOptions.do_fields;
+	invert_fields = animOptions.invert_fields;
+	return true;
+}
+
+//! Declares (or updates) a named animation; routes to the animator.
+bool Job::DeclareAnimation(
+	const char* name,
+	const double time_start,
+	const double time_end,
+	const unsigned int num_frames,
+	const bool do_fields,
+	const bool invert_fields,
+	const bool make_active
+	)
+{
+	return pScene->GetAnimator()->DeclareAnimation( String(name), time_start, time_end, num_frames, do_fields, invert_fields, make_active );
+}
+
+bool Job::SetActiveAnimation( const char* name )
+{
+	return pScene->GetAnimator()->SetActiveAnimationByName( String(name) );
+}
+
+bool Job::SetActiveAnimationByIndex( const unsigned int index )
+{
+	return pScene->GetAnimator()->SetActiveAnimationByIndex( index );
+}
+
+unsigned int Job::GetAnimationCount() const
+{
+	return pScene->GetAnimator()->GetAnimationCount();
+}
+
+bool Job::GetAnimationName( const unsigned int index, char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	if( index >= pScene->GetAnimator()->GetAnimationCount() ) {
+		buf[0] = 0;
+		return false;
+	}
+	const String n = pScene->GetAnimator()->GetAnimationName( index );
+	const char* src = n.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return true;
+}
+
+unsigned int Job::GetActiveAnimationIndex() const
+{
+	return pScene->GetAnimator()->GetActiveAnimationIndex();
+}
+
+bool Job::GetActiveAnimationName( char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	const String n = pScene->GetAnimator()->GetActiveAnimationName();
+	const char* src = n.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return ( src[0] != 0 );
+}
+
+bool Job::DeclareSceneVariant( const char* name, const char* active_camera )
+{
+	if( !name || !name[0] ) {
+		GlobalLog()->PrintEasyError( "Job::DeclareSceneVariant:: a scene_variant requires a non-empty name" );
+		return false;
+	}
+	if( String(name) == String("none") || String(name) == String("(base)") ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::DeclareSceneVariant:: `%s` is a reserved scene_variant name (the no-variant sentinel / the GUI base-entry label)", name );
+		return false;
+	}
+	sceneVariantCameras[ String(name) ] = ( active_camera && active_camera[0] ) ? String(active_camera) : String();
+	return true;
+}
+
+bool Job::SetActiveSceneVariant( const char* name )
+{
+	activeSceneVariant = ( name && name[0] && String(name) != String("none") ) ? String(name) : String();
+	return true;
+}
+
+bool Job::GetActiveSceneVariant( char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	const char* src = activeSceneVariant.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return ( src[0] != 0 );
+}
+
+// P5: the idx-th declared scene_variant name (sorted-map order) -- feeds the GUI accordion's variant list.
+bool Job::GetSceneVariantName( unsigned int idx, char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 || idx >= sceneVariantCameras.size() ) {
+		return false;
+	}
+	std::map<String,String>::const_iterator it = sceneVariantCameras.begin();
+	for( unsigned int k = 0; k < idx; ++k ) ++it;   // std::map is key-sorted -> stable idx-th name
+	const char* src = it->first.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = '\0';
 	return true;
 }
 
@@ -6167,23 +20145,53 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
-	if( !pRasterizer ) {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( !fireSequenceControllers.empty() || !ActiveTimeVaryingAssets().empty() )
+		return RasterizeAnimationOwned(aTs,aTe,aNf,aDf,aInvf);
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		nullptr,nullptr,&resolvedSequence) ) {
 		return false;
 	}
-
-	IRasterizeSequence* pSeq = 0;
-
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
-
-		pSeq = RasterizeSequenceFromOptions( );
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
+	metadataRollback.ArmPixelStateForFire();
+	std::vector<Implementation::FireSequencePreparationController::RenderLease> sequenceLeases;
+	for( const auto& binding : fireSequenceControllers ) {
+		std::string error;
+		auto lease = binding.second->AcquireRenderLease(error);
+		if( !lease.IsValid() ) return false;
+		sequenceLeases.push_back(std::move(lease));
 	}
 
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
+
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
+	}
+
+	// (aTs..aInvf were read from GetAnimationOptions above, before fire preflight.)
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		return false;
+	}
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
-		animOptions.time_start, animOptions.time_end, animOptions.num_frames, animOptions.do_fields, animOptions.invert_fields, 0, 0, pSeq );
+		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
+	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+	for( const auto& lease : sequenceLeases ) if( !lease.StateStayedFrozen() ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -6194,27 +20202,812 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
-	if( !pRasterizer ) {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( HasTimeVaryingAssets() ) {
+		if( frame >= aNf ) return false;
+		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+		ResolvedRasterSequence resolved;
+		if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+			&frame,nullptr,&resolved) ) return false;
+		sequenceRollback.ArmPixelStateForFire();
+		IRasterizeSequence* sequence=RasterizeSequenceFromResolution(resolved);
+		if( !sequence ) return false;
+		ScopedRasterizeSequenceRelease sequenceOwner{ sequence };
+		std::string preparationError;
+		auto controllers=ActiveFireSequenceControllers(preparationError);
+		if( controllers.empty() && pScene->HasTimeVaryingMedia() ) return false;
+		if( aDf ) {
+			const double step=aNf>1u ? (aTe-aTs)/double(aNf-1u) : 0.0;
+			const double upper=aTs+double(frame)*step;
+			const double lower=upper+0.5*step;
+			for( const auto& binding : fireSequenceControllers ) {
+				if( std::find(controllers.begin(),controllers.end(),binding.second)==controllers.end() )
+					continue;
+				const auto manifest=fireSequenceManifests.find(binding.first);
+				Implementation::FireSequenceMappedTime upperMapped,lowerMapped;
+				if( manifest==fireSequenceManifests.end() ||
+					!manifest->second->MapSceneTime(upper,upperMapped,preparationError) ||
+					!manifest->second->MapSceneTime(lower,lowerMapped,preparationError) ||
+					upperMapped.baseFrameIndex!=lowerMapped.baseFrameIndex ) {
+					GlobalLog()->PrintEasyError(
+						"interlaced_sequence_frame_mismatch: one artifact cannot bind two base frames");
+					return false;
+				}
+			}
+		}
+		FireSequencePreparationGroup preparation(std::move(controllers),
+			[this,aTs,aTe,aNf,aDf,aInvf,frame](const RenderTimeSupport&) {
+				return PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+					&frame,nullptr,nullptr,true) && AuthorizeFireRasterizer(
+						pRasterizer,FireRenderPreflightAuthorization::Render);
+			},ActiveTimeVaryingAssets());
+		if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+			return false;
+		}
+		if( !pScene->HasTimeVaryingMedia() ) {
+			// Simulation M3b: a prepared animation whose only time-varying
+			// inputs are simulated meshes reports progress as the ordinary
+			// path does, and never keeps a previous caller's callback (see
+			// Job::Rasterize's matching comment).
+			IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+			pRasterizer->SetProgressCallback( progress );
+		}
+		CallbackOutputRenderScope callbackOutputs( *this );
+		pRasterizer->RasterizeSceneAnimationPrepared(*pScene,aTs,aTe,aNf,
+			aDf,aInvf,preparation,0,&frame,sequence);
+		if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+		sequenceRollback.Commit();
+		return true;
+	}
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		&frame,nullptr,&resolvedSequence) ) {
 		return false;
 	}
-
-	IRasterizeSequence* pSeq = 0;
-
-	if( pGlobalProgress ) {
-		pRasterizer->SetProgressCallback( pGlobalProgress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
+	metadataRollback.ArmPixelStateForFire();
+	std::vector<Implementation::FireSequencePreparationController::RenderLease> sequenceLeases;
+	for( const auto& binding : fireSequenceControllers ) {
+		std::string error;
+		auto lease = binding.second->AcquireRenderLease(error);
+		if( !lease.IsValid() ) return false;
+		sequenceLeases.push_back(std::move(lease));
 	}
 
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
+
+	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
+	if( progress ) {
+		pRasterizer->SetProgressCallback( progress );
+	} else {
+		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
+		// matching else for the dormant use-after-free this closes (mirrored across the family).
+		pRasterizer->SetProgressCallback( 0 );
+	}
+
+	// (aTs..aInvf were read from GetAnimationOptions above, before fire preflight.)
+	ScopedRasterizeSequenceRelease seqOwner{ pSeq };	// was never released (pre-existing leak)
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		return false;
+	}
+	CallbackOutputRenderScope callbackOutputs( *this );
 	pRasterizer->RasterizeSceneAnimation( *pScene,
-		animOptions.time_start, animOptions.time_end, animOptions.num_frames, animOptions.do_fields, animOptions.invert_fields, 0, &frame, pSeq );
+		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
+	if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+	for( const auto& lease : sequenceLeases ) if( !lease.StateStayedFrozen() ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
 
 void Job::SetProgress( IProgressCallback* pProgress ) {
-	pGlobalProgress = pProgress;
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return; }
+	// Release store: pairs with the acquire loads in GetProgress + the Rasterize family so a thread
+	// that observes the pointer also observes the callback object behind it fully constructed.
+	pGlobalProgress.store( pProgress, std::memory_order_release );
+}
+
+bool Job::ClearProgressIfCurrent( IProgressCallback* expected ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	// A null `expected` is a contract error, not a request (a bare CAS would "succeed" null->null
+	// and return true, contradicting the interface doc's "TRUE iff the slot was cleared") --
+	// refuse it up front so the return value stays meaningful.
+	if( !expected ) {
+		return false;
+	}
+	// Compare-and-swap so "clear what *I* installed" can never stomp a callback another owner (an
+	// agent render installing from the coordinator worker thread) put in the slot in the meantime.
+	// See the IJob.h tail doc for the concrete GUI-vs-agent interleave this closes.
+	return pGlobalProgress.compare_exchange_strong(
+		expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire );
+}
+
+IProgressCallback* Job::ExchangeProgress( IProgressCallback* next ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return pGlobalProgress.load(std::memory_order_acquire);
+	// One indivisible capture-and-install -- see the IJob.h tail doc for why the coordinator
+	// paths must not split this into GetProgress() + SetProgress().
+	return pGlobalProgress.exchange( next, std::memory_order_acq_rel );
+}
+
+bool Job::SetProgressIfCurrent( IProgressCallback* expected, IProgressCallback* next ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	// Install-side CAS twin of ClearProgressIfCurrent -- see the IJob.h tail doc.  A null
+	// `expected` is MEANINGFUL here ("install only if the slot is empty"), unlike
+	// ClearProgressIfCurrent's null-refusal (there a null expected would make the return value a
+	// lie; here the compare against null is exactly the caller's intent).
+	return pGlobalProgress.compare_exchange_strong(
+		expected, next, std::memory_order_acq_rel, std::memory_order_acquire );
+}
+
+// ============================================================
+//  Rasterizer registry — see Job.h / IJob.h for the contract.
+//
+//  The interactive editor's accordion lists each registered
+//  rasterizer in a "Rasterizer" section; clicking one calls
+//  SetActiveRasterizer to swap the active pointer without
+//  re-instantiating.  The parser registers exactly one entry
+//  per Set*Rasterizer call (the type-key matches the .RISEscene
+//  chunk name).  Phase-2 will add eager pre-instantiation of
+//  the standard 8-type set with sensible defaults so the user
+//  can swap freely without having to declare each variant in
+//  the scene file.
+// ============================================================
+
+bool Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
+	const RasterizerParams& params )
+{
+	if( !pRaster ) return false;
+	RasterizerParams resolvedParams = params;
+	resolvedParams.lightSampleRRThreshold = lightSampleRRThreshold;
+
+	// Replace any prior entry under this key.  Existing entries hold
+	// addrefs we put there ourselves, so safe_release matches.  The
+	// active pointer (`pRasterizer`) is just a borrow into the map; if
+	// it pointed at the now-released entry we'll fix it up below.
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( name );
+	if( it != rasterizerRegistry.end() ) {
+		if( it->second.instance == pRaster ) {
+			// Self-register: same instance under the same key.  Skip
+			// the release/store dance — releasing the only addref the
+			// map held would delete the instance, leaving us with a
+			// dangling pointer when we re-store and re-activate.  Just
+			// re-affirm activation and refresh the snapshot.
+			it->second.params = resolvedParams;
+			pRasterizer = pRaster;
+			activeRasterizerName = name;
+			return true;
+		}
+		if( pRasterizer == it->second.instance ) {
+			pRasterizer = 0;   // breaks the dangling-borrow
+		}
+		// Outputs are not replayed onto the replacement; drop the
+		// callback dispatchers attached to the instance being released.
+		DropCallbackOutputRegistry_( it->second.instance );
+		safe_release( it->second.instance );
+		it->second.instance = pRaster;
+		it->second.params   = resolvedParams;
+	} else {
+		RasterizerEntry entry;
+		entry.instance = pRaster;
+		entry.params   = resolvedParams;
+		rasterizerRegistry[ name ] = entry;
+	}
+
+	// Make the new instance active.  pRaster's reference count is
+	// owned by the registry now — pRasterizer is a non-owning borrow.
+	pRasterizer = pRaster;
+	activeRasterizerName = name;
+	return true;
+}
+
+const Job::RasterizerParams* Job::GetRasterizerParams( const std::string& name ) const
+{
+	RasterizerRegistry::const_iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return 0;
+	return &it->second.params;
+}
+
+bool Job::SetActiveRasterizer( const char* name )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
+	if( !name || !*name ) return false;
+	const std::string key( name );
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( key );
+	if( it != rasterizerRegistry.end() ) {
+		// Already instantiated — just rebind.
+		pRasterizer = it->second.instance; // borrow; addref stays with registry
+		activeRasterizerName = key;
+		return true;
+	}
+	preparedLock.unlock();
+	// Not in the registry yet.  Try to lazy-build it from the standard
+	// types catalogue with sensible defaults.  On success, the
+	// Set*Rasterizer path (called from inside the helper) registers AND
+	// activates the new instance.
+	return InstantiateRasterizerWithDefaults( key );
+}
+
+const std::vector<std::string>& Job::StandardRasterizerTypes()
+{
+	// Display order: Auto (the recommended auto-routing dispatcher) leads,
+	// then PT before BDPT before VCM before MLT, with Pel
+	// before Spectral within each family.  Matches the conventional
+	// "simple → complex" reading the user expects in the accordion.
+	static const std::vector<std::string> kTypes = {
+		"auto_rasterizer",
+		"auto_spectral_rasterizer",
+		"pathtracing_pel_rasterizer",
+		"pathtracing_spectral_rasterizer",
+		"bdpt_pel_rasterizer",
+		"bdpt_spectral_rasterizer",
+		"vcm_pel_rasterizer",
+		"vcm_spectral_rasterizer",
+		"mlt_rasterizer",
+		"mlt_spectral_rasterizer",
+	};
+	return kTypes;
+}
+
+namespace {
+
+// Build the union of (StandardRasterizerTypes ∪ registered keys) in
+// stable order: standard types first (in display order), then any
+// registered legacy types (e.g. `pixelpel_rasterizer`,
+// `pixelintegratingspectral_rasterizer`) sorted lex.  Used by both
+// GetRasterizerTypeCount and GetRasterizerTypeName so the index ↔
+// name mapping is consistent.
+std::vector<std::string> ComputeRasterizerUnion( const Job::RasterizerRegistry& registry )
+{
+	const std::vector<std::string>& std_list = Job::StandardRasterizerTypes();
+	std::vector<std::string> out;
+	out.reserve( std_list.size() + registry.size() );
+	out = std_list;
+	// Append registry entries that aren't already in the standard list.
+	// std::map iterates in key-order, so the appended tail is sorted.
+	std::set<std::string> std_set( std_list.begin(), std_list.end() );
+	for( Job::RasterizerRegistry::const_iterator it = registry.begin();
+	     it != registry.end(); ++it )
+	{
+		if( std_set.find( it->first ) == std_set.end() ) {
+			out.push_back( it->first );
+		}
+	}
+	return out;
+}
+
+}  // namespace
+
+unsigned int Job::GetRasterizerTypeCount() const
+{
+	return static_cast<unsigned int>(
+		ComputeRasterizerUnion( rasterizerRegistry ).size() );
+}
+
+std::string Job::GetRasterizerTypeName( unsigned int idx ) const
+{
+	const std::vector<std::string> all = ComputeRasterizerUnion( rasterizerRegistry );
+	if( idx >= all.size() ) return std::string();
+	return all[idx];
+}
+
+namespace {
+
+// Pick a default shader name for lazy-building a rasterizer.  Prefer
+// the shader the currently-active rasterizer was built with — but
+// IRasterizer doesn't expose its shader name, so we fall back to the
+// first shader registered with the manager.  Returns empty string if
+// no shader exists; the caller treats that as "can't lazy-build".
+std::string PickDefaultShaderName( const IShaderManager* mgr )
+{
+	if( !mgr ) return std::string();
+	struct FirstName : public IEnumCallback<const char*> {
+		std::string out;
+		bool operator()( const char* const& name ) override {
+			out = name ? std::string( name ) : std::string();
+			return false;   // stop after first
+		}
+	};
+	FirstName cb;
+	mgr->EnumerateItemNames( cb );
+	return cb.out;
+}
+
+}  // namespace
+
+namespace {
+
+// Per-type rebuild dispatcher.  Reads the supplied snapshot and calls
+// the matching Set*Rasterizer, which captures the snapshot back into
+// the registry under the same key (replacing the prior instance).
+//
+// Returns the result of the underlying Set*Rasterizer, or false for
+// an unknown type-name.  Each branch passes only the params that
+// `Set*Rasterizer` accepts; other snapshot fields are ignored.
+bool RebuildRasterizer( Job& job, const std::string& name, const Job::RasterizerParams& p )
+{
+	if( name == "pathtracing_pel_rasterizer" ) {
+		return job.SetPathTracingPelRasterizer(
+			p.numPixelSamples, p.shader.c_str(), p.radianceMap, p.pixelFilter,
+			p.showLuminaires, p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "pathtracing_spectral_rasterizer" ) {
+		return job.SetPathTracingSpectralRasterizer(
+			p.numPixelSamples, p.shader.c_str(), p.radianceMap, p.pixelFilter,
+			p.showLuminaires, p.spectral, p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "bdpt_pel_rasterizer" ) {
+		return job.SetBDPTPelRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "bdpt_spectral_rasterizer" ) {
+		return job.SetBDPTSpectralRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "vcm_pel_rasterizer" ) {
+		return job.SetVCMPelRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.mergeRadius, p.enableVC, p.enableVM,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "vcm_spectral_rasterizer" ) {
+		return job.SetVCMSpectralRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral, p.mergeRadius, p.enableVC, p.enableVM,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "mlt_rasterizer" ) {
+		return job.SetMLTRasterizer(
+			p.maxEyeDepth, p.maxLightDepth,
+			p.nBootstrap, p.nChains, p.nMutationsPerPixel, p.largeStepProb,
+			p.shader.c_str(), p.showLuminaires,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pixelFilter, p.stability );
+	}
+	if( name == "mlt_spectral_rasterizer" ) {
+		return job.SetMLTSpectralRasterizer(
+			p.maxEyeDepth, p.maxLightDepth,
+			p.nBootstrap, p.nChains, p.nMutationsPerPixel, p.largeStepProb,
+			p.shader.c_str(), p.showLuminaires, p.spectral,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pixelFilter, p.stability );
+	}
+	if( name == "auto_rasterizer" ) {
+		return job.SetAutoRasterizer(
+			p.autoIntegrator, p.numPixelSamples,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive,
+			p.autoProbeEnabled );
+	}
+	if( name == "auto_spectral_rasterizer" ) {
+		return job.SetAutoSpectralRasterizer(
+			p.autoIntegrator, p.numPixelSamples,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.adaptive, p.stability, p.progressive,
+			p.autoProbeEnabled );
+	}
+	return false;
+}
+
+// Format a parameter from the snapshot as a parser-formatted string.
+// Mirrors what `RasterizerIntrospection` displays so a round-trip
+// through SetRasterizerParameter is idempotent.
+std::string FormatRasterizerParam( const Job::RasterizerParams& p, const std::string& paramName )
+{
+	char buf[64];
+	if( paramName == "samples" || paramName == "numSamples" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.numPixelSamples );
+		return buf;
+	}
+	if( paramName == "max_eye_depth" || paramName == "maxEyeDepth" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.maxEyeDepth );
+		return buf;
+	}
+	if( paramName == "max_light_depth" || paramName == "maxLightDepth" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.maxLightDepth );
+		return buf;
+	}
+	if( paramName == "show_luminaires" || paramName == "showLuminaires" ) {
+		return p.showLuminaires ? "true" : "false";
+	}
+	// review-p3 P2-c: GET-ONLY -- deliberately no matching case in
+	// ApplyRasterizerParam / SetRasterizerParameter.  This is the resolved
+	// shader NAME the chunk parser looked up at construction time (every
+	// Set*Rasterizer call site stamps `snap.shader` from its own `shader`
+	// parameter before RegisterAndActivateRasterizer -- see Job.cpp), i.e.
+	// the scene's ACTUAL configured default shader, not a hardcoded
+	// "global" guess.  Lets CreateBeautyVariantPipeline callers
+	// (AgentSession.cpp / SceneEditController.cpp) recover the production
+	// rasterizer's real default shader instead of falling back to the
+	// variant pipeline's own generic internal default.  Read-only because
+	// swapping a rasterizer's shader out from under it would need a full
+	// re-instantiation, unlike every other field here which just needs the
+	// registry snapshot mutated.
+	if( paramName == "shader" || paramName == "defaultshader" ) {
+		return p.shader;
+	}
+	if( paramName == "merge_radius" || paramName == "mergeRadius" ) {
+		std::snprintf( buf, sizeof(buf), "%g", p.mergeRadius );
+		return buf;
+	}
+	if( paramName == "enable_vc" )      return p.enableVC ? "true" : "false";
+	if( paramName == "enable_vm" )      return p.enableVM ? "true" : "false";
+	if( paramName == "oidn_denoise" )   return p.oidnDenoise ? "true" : "false";
+	if( paramName == "bootstrap_samples" || paramName == "bootstrap" || paramName == "nBootstrap" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nBootstrap );
+		return buf;
+	}
+	if( paramName == "chains" || paramName == "nChains" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nChains );
+		return buf;
+	}
+	if( paramName == "mutations_per_pixel" || paramName == "mutations" || paramName == "nMutationsPerPixel" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nMutationsPerPixel );
+		return buf;
+	}
+	if( paramName == "large_step_prob" || paramName == "largeStepProb" ) {
+		std::snprintf( buf, sizeof(buf), "%g", p.largeStepProb );
+		return buf;
+	}
+	if( paramName == "integrator" ) {
+		switch( p.autoIntegrator ) {
+			case AutoIntegratorChoice::PT:   return "pt";
+			case AutoIntegratorChoice::BDPT: return "bdpt";
+			case AutoIntegratorChoice::VCM:  return "vcm";
+			default:                         return "auto";
+		}
+	}
+	// Environment / IBL binding params.  `radiance_orient` round-trips in
+	// DEGREES (the scene-file convention) though the config stores RADIANS
+	// (`* DEG_TO_RAD` at parse) -- convert back with RAD_TO_DEG here so the
+	// GUI and a re-serialize both show the authored degrees.
+	if( paramName == "radiance_map" ) {
+		// "none" is the parser's disabled sentinel -> surface it empty so
+		// the GUI reads "no environment bound" rather than a literal "none".
+		return ( p.radianceMap.name == String( "none" ) ) ? std::string() : std::string( p.radianceMap.name.c_str() );
+	}
+	if( paramName == "radiance_scale" ) {
+		std::snprintf( buf, sizeof(buf), "%g", static_cast<double>( p.radianceMap.scale ) );
+		return buf;
+	}
+	if( paramName == "radiance_background" ) {
+		return p.radianceMap.isBackground ? "true" : "false";
+	}
+	if( paramName == "radiance_orient" ) {
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( p.radianceMap.orientation[0] ) * RAD_TO_DEG,
+			static_cast<double>( p.radianceMap.orientation[1] ) * RAD_TO_DEG,
+			static_cast<double>( p.radianceMap.orientation[2] ) * RAD_TO_DEG );
+		return buf;
+	}
+	return std::string();
+}
+
+// String → typed-value parsers.  Anonymous-namespace helpers in the
+// codebase's older C++ idiom (no lambdas, no `auto`-typed locals).
+bool ParseRasterizerUInt( const std::string& s, unsigned int& out )
+{
+	unsigned int v = 0;
+	if( std::sscanf( s.c_str(), "%u", &v ) != 1 ) return false;
+	out = v;
+	return true;
+}
+
+bool ParseRasterizerDouble( const std::string& s, double& out )
+{
+	double v = 0;
+	if( std::sscanf( s.c_str(), "%lf", &v ) != 1 ) return false;
+	out = v;
+	return true;
+}
+
+bool ParseRasterizerBool( const std::string& s, bool& out )
+{
+	if( s == "true" || s == "1" || s == "TRUE" || s == "True" )
+	{
+		out = true;
+		return true;
+	}
+	if( s == "false" || s == "0" || s == "FALSE" || s == "False" )
+	{
+		out = false;
+		return true;
+	}
+	return false;
+}
+
+// Mutate one field of a snapshot from a string value.  Returns false
+// for unknown param names or parse failures.
+bool ApplyRasterizerParam( Job::RasterizerParams& p, const std::string& paramName, const std::string& valueStr )
+{
+	if( paramName == "samples" || paramName == "numSamples" )
+		return ParseRasterizerUInt( valueStr, p.numPixelSamples );
+	if( paramName == "max_eye_depth" || paramName == "maxEyeDepth" )
+		return ParseRasterizerUInt( valueStr, p.maxEyeDepth );
+	if( paramName == "max_light_depth" || paramName == "maxLightDepth" )
+		return ParseRasterizerUInt( valueStr, p.maxLightDepth );
+	if( paramName == "show_luminaires" || paramName == "showLuminaires" )
+		return ParseRasterizerBool( valueStr, p.showLuminaires );
+	if( paramName == "merge_radius" || paramName == "mergeRadius" )
+		return ParseRasterizerDouble( valueStr, p.mergeRadius );
+	if( paramName == "enable_vc" )    return ParseRasterizerBool( valueStr, p.enableVC );
+	if( paramName == "enable_vm" )    return ParseRasterizerBool( valueStr, p.enableVM );
+	if( paramName == "oidn_denoise" ) return ParseRasterizerBool( valueStr, p.oidnDenoise );
+	if( paramName == "bootstrap_samples" || paramName == "bootstrap" || paramName == "nBootstrap" )
+		return ParseRasterizerUInt( valueStr, p.nBootstrap );
+	if( paramName == "chains" || paramName == "nChains" )
+		return ParseRasterizerUInt( valueStr, p.nChains );
+	if( paramName == "mutations_per_pixel" || paramName == "mutations" || paramName == "nMutationsPerPixel" )
+		return ParseRasterizerUInt( valueStr, p.nMutationsPerPixel );
+	if( paramName == "large_step_prob" || paramName == "largeStepProb" )
+		return ParseRasterizerDouble( valueStr, p.largeStepProb );
+	if( paramName == "integrator" ) {
+		// auto_rasterizer / auto_spectral_rasterizer integrator pin (Tier 0).
+		// Same vocabulary as the chunk parser; unknown -> fail (leave unchanged).
+		std::string iv( valueStr );
+		for( char& ch : iv ) if( ch >= 'A' && ch <= 'Z' ) ch = (char)( ch + 32 );
+		if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) { p.autoIntegrator = AutoIntegratorChoice::PT;   return true; }
+		if( iv == "bdpt" ) { p.autoIntegrator = AutoIntegratorChoice::BDPT; return true; }
+		if( iv == "vcm" )  { p.autoIntegrator = AutoIntegratorChoice::VCM;  return true; }
+		if( iv == "auto" ) { p.autoIntegrator = AutoIntegratorChoice::Auto; return true; }
+		return false;
+	}
+	// Environment / IBL binding params (symmetric with FormatRasterizerParam).
+	if( paramName == "radiance_map" ) {
+		// Empty string clears the binding to the parser's "none" sentinel;
+		// any other value names the painter to install as the radiance map.
+		p.radianceMap.name = valueStr.empty() ? "none" : valueStr.c_str();
+		return true;
+	}
+	if( paramName == "radiance_scale" )
+		return ParseRasterizerDouble( valueStr, p.radianceMap.scale );
+	if( paramName == "radiance_background" )
+		return ParseRasterizerBool( valueStr, p.radianceMap.isBackground );
+	if( paramName == "radiance_orient" ) {
+		// Scene-file / GUI convention is DEGREES; the config stores RADIANS.
+		// DL-32 round 4 (docs/DEBT_LEDGER.md): `sscanf(..., "%lf %lf %lf") != 3`
+		// counts SUCCESSFUL conversions, not total tokens -- a 4th number was
+		// silently ignored.  An istringstream extraction that also rejects a
+		// leftover token enforces the exact arity instead.
+		std::istringstream iss( valueStr );
+		double x = 0, y = 0, z = 0;
+		if( !( iss >> x >> y >> z ) ) return false;
+		double extra;
+		if( iss >> extra ) return false;	// trailing token -- reject rather than silently drop
+		p.radianceMap.orientation[0] = Scalar( x ) * DEG_TO_RAD;
+		p.radianceMap.orientation[1] = Scalar( y ) * DEG_TO_RAD;
+		p.radianceMap.orientation[2] = Scalar( z ) * DEG_TO_RAD;
+		return true;
+	}
+	return false;
+}
+
+}  // namespace
+
+bool Job::SetRasterizerParameter( const char* rasterizerName, const char* paramName,
+	const char* valueStr )
+{
+	if( !rasterizerName || !paramName || !valueStr ) return false;
+	const std::string name( rasterizerName );
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return false;
+
+	// Mutate a copy of the snapshot, then rebuild.  The rebuild path
+	// re-records into the registry via RegisterAndActivateRasterizer,
+	// replacing the old instance.  Active rasterizer follows.
+	RasterizerParams modified = it->second.params;
+	if( !ApplyRasterizerParam( modified, paramName, valueStr ) ) {
+		return false;
+	}
+	return RebuildRasterizer( *this, name, modified );
+}
+
+std::string Job::GetRasterizerParameter( const char* rasterizerName, const char* paramName ) const
+{
+	if( !rasterizerName || !paramName ) return std::string();
+	const std::string name( rasterizerName );
+	RasterizerRegistry::const_iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return std::string();
+	return FormatRasterizerParam( it->second.params, paramName );
+}
+
+bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
+{
+	// Pick a shader.  Without one, every Set*Rasterizer below would
+	// fail at the shader-lookup step anyway, so bail early with a clear
+	// log message.
+	const std::string shader = PickDefaultShaderName( pShaderManager );
+	if( shader.empty() ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::SetActiveRasterizer: cannot lazy-build '%s' — no shader registered.  Declare a `standard_shader` chunk in your scene before requesting this rasterizer.",
+			name.c_str() );
+		return false;
+	}
+
+	// Default-constructed configs = struct in-class initializers.
+	// These are the "no-customisation" values every rasterizer gets
+	// when there's no chunk in the scene file.  Per-type scalars
+	// (samples, max_eye_depth, etc.) come from the matching
+	// *Defaults struct in RasterizerDefaults.h.
+	RadianceMapConfig     radianceMapConfig;
+	PixelFilterConfig     pixelFilterConfig;
+	SMSConfig             smsConfig;
+	SpectralConfig        spectralConfig;
+	PathGuidingConfig     guidingConfig;
+	AdaptiveSamplingConfig adaptiveConfig;
+	StabilityConfig       stabilityConfig;
+	ProgressiveConfig     progressiveConfig;
+
+	if( name == "auto_rasterizer" ) {
+		// Interactive "Auto" selection -> the full smart dispatcher with the
+		// Tier-2 probe ENABLED (it self-gates on auto_probe_activation_spp, so
+		// previews/low-spp stay on the Tier-1 static best-guess; only final
+		// renders pay the probe).  This differs from the scene-file chunk
+		// default (probe opt-in) on purpose: picking Auto in a UI means "route
+		// me to the best integrator", which needs the probe.
+		AutoRasterizerDefaults d;
+		return SetAutoRasterizer(
+			d.integrator, d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig,
+			/*probeEnabled*/ true );
+	}
+	if( name == "auto_spectral_rasterizer" ) {
+		AutoRasterizerDefaults d;
+		return SetAutoSpectralRasterizer(
+			d.integrator, d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			spectralConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			adaptiveConfig, stabilityConfig, progressiveConfig,
+			/*probeEnabled*/ true );
+	}
+	if( name == "pixelpel_rasterizer" ) {
+		PixelPelDefaults d;
+		const char* lumSampler = ( d.luminarySampler == "none" ) ? 0 : d.luminarySampler.c_str();
+		return SetPixelBasedPelRasterizer(
+			d.numPixelSamples, d.numLumSamples, d.maxRecursion,
+			shader.c_str(), radianceMapConfig,
+			lumSampler, d.luminarySamplerParam,
+			pixelFilterConfig, d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "pixelintegratingspectral_rasterizer" ) {
+		PixelIntegratingSpectralDefaults d;
+		const char* lumSampler = ( d.luminarySampler == "none" ) ? 0 : d.luminarySampler.c_str();
+		// Lazy build skips RGB-SPD curves — the user can opt in via a
+		// scene chunk if they need a custom RGB-to-SPD conversion.
+		return SetPixelBasedSpectralIntegratingRasterizer(
+			d.numPixelSamples, d.numLumSamples, spectralConfig, d.maxRecursion,
+			shader.c_str(), radianceMapConfig,
+			lumSampler, d.luminarySamplerParam,
+			pixelFilterConfig, d.showLuminaires,
+			d.integrateRGB, /*numSPDvalues*/ 0u, /*freq*/ 0, /*r*/ 0, /*g*/ 0, /*b*/ 0,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			stabilityConfig );
+	}
+	if( name == "pathtracing_pel_rasterizer" ) {
+		PathTracingPelDefaults d;
+		return SetPathTracingPelRasterizer(
+			d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			smsConfig, d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "pathtracing_spectral_rasterizer" ) {
+		PathTracingSpectralDefaults d;
+		return SetPathTracingSpectralRasterizer(
+			d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			spectralConfig, smsConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "bdpt_pel_rasterizer" ) {
+		BDPTPelDefaults d;
+		return SetBDPTPelRasterizer(
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "bdpt_spectral_rasterizer" ) {
+		BDPTSpectralDefaults d;
+		return SetBDPTSpectralRasterizer(
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			spectralConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "vcm_pel_rasterizer" ) {
+		VCMPelDefaults d;
+		return SetVCMPelRasterizer(
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			d.mergeRadius, d.enableVC, d.enableVM,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "vcm_spectral_rasterizer" ) {
+		VCMSpectralDefaults d;
+		return SetVCMSpectralRasterizer(
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			spectralConfig,
+			d.mergeRadius, d.enableVC, d.enableVM,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "mlt_rasterizer" ) {
+		MLTDefaults d;
+		return SetMLTRasterizer(
+			d.maxEyeDepth, d.maxLightDepth,
+			d.nBootstrap, d.nChains, d.nMutationsPerPixel, d.largeStepProb,
+			shader.c_str(), d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			pixelFilterConfig, stabilityConfig );
+	}
+	if( name == "mlt_spectral_rasterizer" ) {
+		MLTSpectralDefaults d;
+		return SetMLTSpectralRasterizer(
+			d.maxEyeDepth, d.maxLightDepth,
+			d.nBootstrap, d.nChains, d.nMutationsPerPixel, d.largeStepProb,
+			shader.c_str(), d.showLuminaires, spectralConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			pixelFilterConfig, stabilityConfig );
+	}
+
+	// Unknown name (not in the standard set).
+	return false;
+}
+
+bool Job::SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff)
+{
+    if (!material || !mode || !alpha || !RISE::IsFiniteDouble(cutoff)) return false;
+    IMaterial* mat = pMatManager->GetItem(material);
+    if (!mat) return false;
+    AlphaMode m;
+    if (!strcmp(mode, "opaque")) m = eAlphaOpaque;
+    else if (!strcmp(mode, "mask")) m = eAlphaMask;
+    else if (!strcmp(mode, "blend")) m = eAlphaBlend;
+    else return false;
+    IScalarPainter* p = ResolveOrDiagnoseScalar(pScalarPntManager, pPntManager,
+        "material_alpha", material, "alpha", alpha, true);
+    if (!p) return false;
+    mat->SetAlpha(p, m, cutoff);
+    p->release();
+    BumpSceneLightGen(pScene);
+    return true;
 }

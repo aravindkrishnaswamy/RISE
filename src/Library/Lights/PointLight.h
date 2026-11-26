@@ -18,7 +18,9 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
+#include "../Animation/TimeIndexedView.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
 
@@ -34,33 +36,84 @@ namespace RISE
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
+			//! DL-465: time-indexed slot for a motion-blur pass (see
+			//! Animation/TimeIndexedView.h); -1 outside one.
+			TimeIndexed::TimeSlot	m_timeSlot;
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2):
+			//! JH sigmoid times the D65 reference illuminant, Y-normalised
+			//! so an authored-white light of unit energy resolves to film
+			//! Y = 1 exactly as the RGB pipe does.  Cached because the NM
+			//! NEE path evaluates it per sample per wavelength.
+			//!
+			//! STALENESS: `cColor` is settable through exactly ONE path --
+			//! `SetIntermediateValue( COLOR_ID )`, which both the animation
+			//! keyframe system and the SceneEditor / agent light-edit tools
+			//! funnel through (SceneEditor.cpp builds the keyframe via
+			//! `ILight::KeyframeFromParameters` and applies it with
+			//! `SetIntermediateValue`).  There is no `SetColor` mutator and
+			//! `cColor` is protected, so hooking that one site is
+			//! sufficient; `SnapshotLeafClone` rebuilds a fresh light from
+			//! `emissionColor()` rather than mutating one.
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum();
+
 			virtual ~PointLight( );
 
 		public:
-			inline bool CanGeneratePhotons() const
+
+			//! DL-465: set / clear the time-indexed slot (calling thread only,
+			//! before the workers start and after they join).
+			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
+			inline int GetTimeSlot() const { return m_timeSlot.value; }
+
+			//! DL-465: a per-thread clone, exact copy of this light's state
+			//! (never itself slotted).
+			PointLight* CloneForTimeView() const { PointLight* c = new PointLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
 			}
 
-			inline bool IsPositionalLight() const { return true; }
+			inline void SetCanGeneratePhotons( bool b ) override {
+				Transformable::PreparedExternalMutationScope mutation;
+				if( mutation.IsValid() ) bShootPhotons = b;
+			}
 
-			inline RISEPel radiantExitance() const
-			{
+			inline bool IsPositionalLight() const override { return true; }
+
+			inline RISEPel radiantExitance() const override
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, radiantExitance() );
 				return (cColor * radiantEnergy * FOUR_PI);
 			}
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
-			{
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadiance( vLightOut ) );
 				return (cColor * radiantEnergy);
 			}
 
-			inline Point3 position() const
-			{
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  Reads
+			//! the cached illuminant spectrum instead of the ILight
+			//! default's per-call LUT uplift; the two agree numerically.
+			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, emittedRadianceNM( Vector3( 0, 0, 0 ), nm ) );
+				return cSpectrum.Eval( nm ) * radiantEnergy;
+			}
+
+			inline Point3 position() const override
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, position() );
 				return ptPosition;
 			}
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
-			{
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( PointLight, emissionColor() ); return cColor; }
+			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( PointLight, emissionEnergy() ); return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Point; }
+
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
+			{ RISE_TIME_INDEXED_FORWARD( PointLight, generateRandomPhoton( ptrand ) );
 				// Uniform sampling on the full sphere
 				const Scalar cosTheta = 1.0 - 2.0 * ptrand.x;
 				const Scalar sinTheta = sqrt( r_max( 0.0, 1.0 - cosTheta * cosTheta ) );
@@ -69,7 +122,7 @@ namespace RISE
 					Vector3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta ) );
 			}
 
-			inline Scalar pdfDirection( const Vector3& ) const
+			inline Scalar pdfDirection( const Vector3& ) const override
 			{
 				return Scalar(1.0) / FOUR_PI;
 			}
@@ -80,12 +133,62 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
-			void	FinalizeTransformations();
+			//! `bFullSphereReceiver` (residual wave 2 item D) is a no-op
+			//! here: this virtual is never the path a full-sphere
+			//! material's point-light NEE goes through -- LightSampler's
+			//! proportional-selection site evaluates delta-position
+			//! lights (point/spot) INLINE and is already capability-
+			//! gated there (see EvaluateDirectLighting's FULL-SPHERE NEE
+			//! site 1 of 3).  Only Step 1's zero-exitance sweep
+			//! (ambient/directional, radiantExitance() == 0) and BDPT's
+			//! mirroring s==1 row call this virtual at all, and neither
+			//! ever holds a point/spot light -- both always have nonzero
+			//! exitance.  Accepted for interface conformance only.
+			//!
+			//! `bVolumeReceiver` (residual-ledger item 10 of
+			//! docs/PT_ENV_MIS_DOUBLECOUNT.md, 2026-08-27) is a different
+			//! story and IS implemented for real below, even though the
+			//! same unreachability argument applies to it verbatim.  The
+			//! reason is the sibling-site bug pattern
+			//! docs/skills/audit-by-bug-pattern.md exists to prevent: a
+			//! defaulted flag whose contract one implementor silently
+			//! violates is a trap for the next caller who wires it up.
+			//! When true, the receiver cosine `fDot` and its `<= 0`
+			//! hemisphere gate are both dropped (a phase-function vertex
+			//! has no normal to project onto); `invDistSq` is KEPT, since
+			//! the inverse-square falloff is a property of the EMITTER's
+			//! geometry, not of the receiver's orientation, and applies
+			//! to a volume element exactly as it does to a surface patch.
+			//! This is the same shape as LightSampler's own inline
+			//! delta-light row, which forces `cosSurface = 1.0` under
+			//! `isVolumeScatter` and keeps its `invDistSq`.
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
+
+			//! Per-wavelength direct lighting.  Overrides the ILight default
+			//! (which projects the RGB ComputeDirectLighting to luminance and
+			//! discards the wavelength): queries brdf.valueNM at @a nm and, when
+			//! transparent_shadows is enabled, attenuates by the WAVELENGTH-
+			//! SPECIFIC Fresnel transmittance (CastShadowRayAuto bNM=true) rather
+			//! than a representative RGB IOR.  Matches DirectionalLight /
+			//! AmbientLight; keeps every light's spectral NEE consistent.
+			//! `bFullSphereReceiver`: no-op, see the RGB override above.
+			//! `bVolumeReceiver`: implemented, see the RGB override above.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
+
+			// Overrides the PARENT-COMPOSED overload only -- see SpotLight.h.
+			void	FinalizeTransformations( const Matrix4& parentWorld ) override;
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+            void ComputeDirectLightingSampled(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, RISEPel& amount,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const override;
+            Scalar ComputeDirectLightingSampledNM(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, Scalar nm,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const override;
+
 		};
 	}
 }

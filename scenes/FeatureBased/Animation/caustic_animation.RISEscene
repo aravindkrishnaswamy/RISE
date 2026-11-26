@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -16,18 +16,14 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
-	shaderop		DefaultCausticPelPhotonMap
-	shaderop		DefaultReflection
-	shaderop		DefaultRefraction
+	shaderop		DefaultPathTracing
 }
 
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode full --integrator vcm, legacy-deprecation Phase 2).
+vcm_pel_rasterizer
 {
-	max_recursion		5
-	samples				1
-	lum_samples			1
+	samples				64
 }
 
 file_rasterizeroutput
@@ -39,35 +35,182 @@ file_rasterizeroutput
 	multiple			TRUE
 }
 
-DEFINE FRAMES 120
 
 animation_options
 {
 	time_start			0.0
 	time_end			1.0
-	num_frames			@FRAMES
+	num_frames			120.000000000000
 }
 
 ##################################################
 # Cameras
 ##################################################
 
+film
+{
+	width			600
+	height			600
+}
+
 pinhole_camera
 {
 	location			0 0 0.5
 	lookat				0 0 0
 	up					0 1 0
-	width				600
-	height				600
 	fov					30.0
-	exposure			$((1.0/@FRAMES)*0.8)
+	exposure			0.00666666666666667
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ##################################################
 # Materials
@@ -162,18 +305,4 @@ timeline
 	value		180 180 0
 }
 
-caustic_pel_photonmap
-{
-	num					10000
-	max_recursion		5
-	min_importance		0.001
-	branch				TRUE
-	reflect				FALSE
-	refract				TRUE
-	shootFromNonMeshLights		TRUE
-}
 
-caustic_pel_gather
-{
-	max_photons			150
-}

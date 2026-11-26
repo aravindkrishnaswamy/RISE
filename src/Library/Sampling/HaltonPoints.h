@@ -15,180 +15,65 @@
 #define HALTONPOINTS_H
 
 #include "../Utilities/Primes.h"
+#include "../Utilities/Math3D/Math3D.h"
+#include <array>
 #include <vector>
-
-#ifdef NO_HALTON
-#include "../Utilities/RandomNumbers.h"
-#endif
 
 namespace RISE
 {
-	/*
-	//
-	// A Halton point sequence
-	//
-	class Halton
-	{
-	public:
-		Scalar value, inv_base;
-
-		// Initializes the Halton point sequence at any number for any base
-		void Number( long i, const int base )
-		{
-			Scalar f = inv_base = 1.0/base;
-			value = 0.0;
-			while ( i > 0 ) {
-				value += f * Scalar(i % base);
-				i /= base;
-				f *= inv_base;
-			}
-		}
-
-		// Computes the next point in the sequence
-		void Next( )
-		{
-	#ifdef NO_HALTON
-			value = GlobalRNG().CanonicalRandom();
-	#else 
-			const Scalar r = 1.0 - value - 0.0000000001;
-			if (inv_base < r) {
-				value += inv_base;
-			} else {
-				Scalar h = inv_base, hh;
-				do {
-					hh = h;
-					h *= inv_base;
-				} while ( h >= r );
-				value += hh + h - 1.0;
-			}
-	#endif
-		}
-
-		// Returns current point in the sequence
-		operator double() { return value; }
-	};
-
-
-	//
-	// A multi dimensional Halton point sequence
-	//
+	// Generalized Halton permutations based on the SunFlow QMC sampler.
+	static constexpr unsigned int QMC_NUM_PRIMES = 256;
 	class MultiHalton
 	{
-	private:
-		std::vector<Halton> haltons;
-
-	public:
-		MultiHalton(
-			const unsigned int dimensions
-			)
+		struct Permutations
 		{
 			std::vector<unsigned int> primes;
-			Primes::GeneratePrimes( dimensions, primes );
+			std::array<std::vector<unsigned int>, QMC_NUM_PRIMES> rows;
 
-			haltons.reserve( dimensions );
-			for( unsigned int i=0; i<dimensions; i++ ) {
-				Halton h;
-				h.Number( i+3, primes[i] );
-				haltons.push_back( h );
+			Permutations()
+			{
+				Primes::GeneratePrimes( QMC_NUM_PRIMES, primes );
+				std::vector<std::vector<unsigned int>> table( primes.back() + 1 );
+				table[2] = { 0, 1 };
+				for( unsigned int base = 3; base <= primes.back(); ++base ) {
+					auto& row = table[base];
+					row.resize( base );
+					if( base % 2 == 0 ) {
+						const auto& previous = table[base/2];
+						for( unsigned int j = 0; j < base/2; ++j ) {
+							row[j] = 2 * previous[j];
+							row[base/2+j] = 2 * previous[j] + 1;
+						}
+					} else {
+						const auto& previous = table[base-1];
+						const unsigned int middle = base/2;
+						row[middle] = middle;
+						for( unsigned int j = 0; j < middle; ++j ) {
+							row[j] = previous[j] + (previous[j] >= middle);
+							row[middle+j+1] = previous[middle+j] + (previous[middle+j] >= middle);
+						}
+					}
+				}
+
+				for( unsigned int d = 0; d < QMC_NUM_PRIMES; ++d ) {
+					rows[d].swap( table[primes[d]] );
+				}
 			}
-		}
+		};
 
-		double next( int dimension )
+		static const Permutations& SharedPermutations()
 		{
-			haltons[dimension].Next();
-			return haltons[dimension];
+			static const Permutations permutations;
+			return permutations;
 		}
-	};
-	*/
 
-	//
-	// A new QMC class based off the QMC class in the SunFlow renderer
-	//
-	static const int QMC_NUM_PRIMES = 256;
-	class MultiHalton
-	{
 	protected:
-		// For next_halton()
-		unsigned int current_num[QMC_NUM_PRIMES];
+		std::array<unsigned int, QMC_NUM_PRIMES> current_num{};
 
 	public:
-		std::vector<unsigned int> primes;
-		unsigned int* SIGMA[QMC_NUM_PRIMES];
-
-		// Search for and return the next prime number after p
-		int NextPrime( int p ) 
+		void Reset()
 		{
-			p = p + (p & 1) + 1;
-
-			while( true ) {
-				int div = 3;
-				bool bPrime = true;
-
-				while( bPrime && ((div * div) <= p) ) {
-					bPrime = ((p % div) != 0);
-					div += 2;
-				}
-
-				if( bPrime ) {
-					return p;
-				}
-				p += 2;
-			}
-		}
-
-		MultiHalton()
-		{
-			// Build the tables
-			// build table of primes
-			Primes::GeneratePrimes( QMC_NUM_PRIMES, primes );
-			
-			unsigned int** table = new unsigned int*[primes[primes.size()-1] + 1];
-
-			table[2] = new unsigned int[2];
-			table[2][0] = 0;
-			table[2][1] = 1;
-
-			for( unsigned int i = 3; i <= primes[primes.size()-1]; i++ )
-			{
-				table[i] = new unsigned int[i];
-
-				if ((i & 1) == 0) {
-					unsigned int prev_length = i >> 1;
-					unsigned int* prev = table[prev_length];
-
-					for (unsigned int j = 0; j < prev_length; j++) {
-						table[i][j] = 2 * prev[j];
-					}
-
-					for (unsigned int j = 0; j < prev_length; j++) {
-						table[i][prev_length + j] = 2 * prev[j] + 1;
-					}
-				} else {
-					unsigned int prev_length = i-1;
-					unsigned int* prev = table[prev_length];
-					unsigned int med = (i - 1) >> 1;
-
-					for (unsigned int j = 0; j < med; j++) {
-						table[i][j] = prev[j] + ((prev[j] >= med) ? 1 : 0);
-					}
-
-					table[i][med] = med;
-					for (unsigned int j = 0; j < med; j++) {
-						table[i][med + j + 1] = prev[j + med] + ((prev[j + med] >= med) ? 1 : 0);
-					}
-				}
-			}
-
-			// Copy into the SIGMA array
-			for( int i = 0; i < QMC_NUM_PRIMES; i++ ) {
-				int p = primes[i];
-				SIGMA[i] = new unsigned int[p];
-				memcpy(SIGMA[i],table[p], p*sizeof(unsigned int));
-				delete [] table[p];
-			}
-			delete [] table;
-
-			memset( current_num, 0, sizeof(unsigned int)*QMC_NUM_PRIMES );
+			current_num.fill( 0 );
 		}
 
 		double halton( unsigned int d, unsigned int i ) const
@@ -219,8 +104,9 @@ namespace RISE
 					break;
 			}
 
-			unsigned int base = primes[d];
-			unsigned int* perm = SIGMA[d];
+			const auto& permutations = SharedPermutations();
+			const unsigned int base = permutations.primes[d];
+			const auto& perm = permutations.rows[d];
 			double v = 0;
 			double inv = 1.0 / base;
 			double p;
@@ -245,8 +131,6 @@ namespace RISE
 		}
 	};
 
-	// statically consruct so that there is every only one and it is immutable
-	static const MultiHalton multihalton;
 }
 
 #endif

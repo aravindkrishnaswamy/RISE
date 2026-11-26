@@ -1,0 +1,4158 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ExpressionEval.h - A small, self-contained math-expression engine
+//  for procedural fields authored IN the scene file.
+//
+//  It compiles an expression string ONCE (recursive-descent parse to a
+//  flat postfix instruction list) and evaluates it fast per query with
+//  a stack machine -- no per-eval allocation, no AST pointer chasing,
+//  no runtime type tag: every instruction's scalar-vs-vec3 shape is
+//  fixed at compile time, so Eval never branches on "what type is this
+//  value" -- it just moves the right number of Scalars around a flat
+//  Scalar stack.  A compiled program's Eval methods are const and touch
+//  no mutable state, so one compiled program is safe to call from many
+//  render threads concurrently (each call gets its own stack-local
+//  env/stack arrays).
+//
+//  Variables:  u, v            -- the query coordinates (always present)
+//              P, Po, N        -- vec3 context: world position, object
+//                                 position, shading normal (0 unless the
+//                                 caller supplies an ExprEvalContext)
+//              curv, curvR     -- scalar surface curvature at the hit.
+//                                 `curvR` is the raw signed MEAN curvature
+//                                 in 1/world-length; `curv` is the same
+//                                 value normalized by the hit geometry's
+//                                 world bounding-box diagonal, so it reads
+//                                 O(1) at object scale on any scene scale.
+//                                 POSITIVE = convex, negative = concave,
+//                                 0 = flat -- and 0 is also the honest
+//                                 "this geometry reports no curvature"
+//                                 answer (planar primitives),
+//                                 the same convention fw uses.  Computed
+//                                 from the GEOMETRIC normal field, so a
+//                                 bump / normal map does not move them and
+//                                 `curv` and `N` legitimately disagree on a
+//                                 bump-mapped surface.
+//              fw              -- scalar filter width, a WORLD-space
+//                                 length in the same units as `P`; 0.0 =
+//                                 point sample, no filter info -- the
+//                                 honest answer on any surface that
+//                                 doesn't populate a footprint (secondary
+//                                 bounces; the RIM BAND of a fisheye
+//                                 render, where the neighbouring pixel
+//                                 falls outside the 180-degree disc and
+//                                 the camera withholds the differential
+//                                 rather than fabricating one.  Every
+//                                 camera RISE ships emits differentials
+//                                 since 2026-09-10 -- doc 88 S9).  fbm/turbulence/ridged rescale it
+//                                 into their OWN domain automatically
+//                                 (see those builtins below), so a body
+//                                 that scales the position argument does
+//                                 NOT have to compensate by hand.
+//              fwo             -- scalar filter width, the SAME footprint
+//                                 measured in the frame `Po` is written
+//                                 in (an OBJECT-space length); 0.0 = no
+//                                 object-space filter info, the same
+//                                 honest-absence convention `fw` uses.
+//                                 It is what lets an OBJECT-space domain
+//                                 (`fbm(Po*62, ...)`) fade: the
+//                                 object->world scale is a per-instance
+//                                 runtime fact, so the compiler cannot
+//                                 convert `fw` into it -- the hit carries
+//                                 both widths instead (2026-09-06).
+//              time            -- scalar; 0.0 unless supplied
+//              + any named `params` (constants) and `defs` (named
+//                sub-expressions / let-bindings) registered before
+//                compiling.  A def may reference u, v, the context
+//                vars, earlier params, and earlier defs -- so a complex
+//                field (e.g. guilloche) is built up as readable named
+//                steps instead of one giant string.  A def's type
+//                (scalar or vec3) is inferred from its own body.
+//  Types:      scalar and vec3.  `vec3(x,y,z)` constructs one from
+//              three scalars; `.x`/`.y`/`.z` (postfix, e.g. `P.x`)
+//              extracts a component back to scalar.  Componentwise
+//              + - * (with scalar broadcast) apply to vec3; `dot`,
+//              `cross`, `length`, `normalize` are provided as
+//              functions.  Every OTHER builtin (trig, noise, ramp's
+//              position/`t` argument, comparisons, `^`, `%`) is
+//              scalar-only -- passing a vec3 is a COMPILE error.
+//              `mix` is the one polymorphic builtin: (scalar,scalar,
+//              scalar) or (vec3,vec3,scalar).
+//  Operators:  + - * / %  ^(right-assoc)  unary -  and the comparisons
+//              < > <= >= == !=  (yield 1.0 / 0.0; scalar operands only).
+//  Functions:  sin cos tan asin acos atan exp log sqrt abs floor ceil
+//              frac sign  (unary, scalar);  atan2 mod min max pow
+//              hypot step (binary, scalar);  clamp smoothstep select
+//              (ternary, scalar);  mix (polymorphic, see above).
+//              vec3: dot(v,v)->s, cross(v,v)->v, length(v)->s,
+//              normalize(v)->v.
+//              Noise (all in ProceduralNoiseCore.h -- shared with
+//              Perlin3DPainter/Worley3DPainter, no separate lattice
+//              math lives here): perlin(v)->s in [-1,1]; fbm/turbulence/
+//              ridged(v,octaves,gain,lacunarity)->s (octaves clamped to
+//              [1,10], validated at compile time when written as a
+//              literal) -- these three implicitly read the context `fw`
+//              (doc 88 S9) and fade an octave's contribution toward 0 as
+//              the footprint * lacunarity^octave approaches/exceeds the
+//              Nyquist cutoff, killing shimmer from footprint-
+//              unresolvable detail; fw==0 (the default, and the only
+//              value pre-S9) reproduces the un-faded sum exactly.
+//              DOMAIN SCALE IS AUTOMATIC: the compiler differentiates
+//              the position argument with respect to BOTH `P` and `Po`
+//              and folds the largest singular value of each Jacobian
+//              into a per-call-site multiplier -- one on `fw`, one on
+//              `fwo` -- whose SUM is the domain footprint the noise
+//              filters at.  So `fbm(P*40, ...)` fades at 40*fw,
+//              `fbm(Po*62, ...)` at 62*fwo, and `fbm(P, ...)` at
+//              exactly fw (multipliers 1.0 / 0.0, bit-identical to a
+//              hand-passed fw).  The analysis covers everything AFFINE
+//              in P and/or Po -- P, Po, their components, vec3(),
+//              literals, `param`/`def` names, unary -, + - * / by a
+//              compile-time constant.  An argument built from anything
+//              else (u/v/N, a noise warp, ^ or %, a call) contributes
+//              no derivative: a SUM keeps the affine part's scale (so
+//              `fbm(P*8 + warp*fbm(...), ...)` still fades at 8*fw) and
+//              an argument with no affine part at all falls back to
+//              multipliers (1.0, 0.0), the pre-2026-09-06 behaviour.
+//              An argument PROVABLY independent of both (a literal
+//              vec3) gets (0, 0) -- it cannot alias, so it never fades.
+//              worley_f1/f2/f2f1/id(v,jitter)->s; cellhash(s)
+//              GEOMETRY SIGNALS (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+//              Phase 2; docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for
+//              occlusion's planar reference and for convexity):
+//              occlusion(radius)->s in [0,1], 1 = unoccluded;
+//              thickness(radius)->s in [0,1], 1 = thick;
+//              convexity(radius)->s in [0,1], 0 = flat or concave.
+//              `radius` is a FRACTION of the hit geometry's characteristic
+//              size (its bounding-box diagonal), so occlusion(0.05) reads
+//              as "5 % of the object" on any scene scale.
+//              occlusion and convexity PARTITION ONE QUESTION -- how open
+//              is the surface at scale `radius`, against what a FLAT
+//              surface would read -- with occlusion reporting how much
+//              LESS open and convexity how much MORE.  Neither is ever a
+//              residual of the other: flat AND every convex edge read
+//              occlusion EXACTLY 1, flat and every cavity read convexity
+//              EXACTLY 0.  Every convexity value has a fixed geometric
+//              meaning at every scale (0.5 IS a 90-degree arris, 0.75 IS
+//              a three-face corner), which is what `curv`, an unbounded
+//              per-object differential quantity, cannot be.  They are
+//              measured differently and it shows in two places: occlusion
+//              traces rays, so it sees NARROW APERTURES (a crack, a slot)
+//              and costs ~3x more; convexity samples the query ball, so
+//              it also registers smooth bulges.
+//              All three are LAZY -- they cost nothing unless the body
+//              calls them -- and they answer only on geometry that
+//              publishes an ISurfaceSignalProvider (the SDF family live,
+//              indexed meshes from a lazy per-vertex bake).  Anywhere
+//              else, and for any radius <= 0, they return their documented
+//              NEUTRAL values (occlusion 1 = unoccluded, thickness 1 =
+//              thick, convexity 0 = flat -- each the do-nothing end of its
+//              own range), the same honest-absence convention fw and curv
+//              use.  A LITERAL radius <= 0 is a COMPILE error.
+//              ->s.  ramp(t, pos0,val0, pos1,val1, ...)->(scalar or
+//              vec3, matching the stop values) -- variadic, >=2 stops,
+//              clamped ends, positions checked ascending at compile
+//              time when literal.
+//              OSL / CYCLES BUILTINS (`osl_` prefix): ports of the
+//              shading-language functions Cycles implements, so a
+//              translated Blender node graph renders the same pattern.
+//              They have their own signature table, ids and dispatch
+//              (ExpressionOslBuiltins.h, Compiled::kOsl / kOslV3) and
+//              are listed there: gradient noise, fractal noise, the
+//              Noise Texture node, White Noise, the Voronoi Texture
+//              node, RGB/HSV/HSL colour conversions, Mix Color, Safe
+//              Math / Vector Math / Clamp / Map Range, componentwise
+//              vec3 ops and Vector Rotate, live object/world/camera
+//              space transforms, and per-object Object Info attributes
+//              (`osl_object_color/alpha/index/random`).  Unlike fbm() the noise/Voronoi ones
+//              never fade octaves by footprint, and mode/flag arguments
+//              must be integer literals.  Groups 1-6 are pure functions
+//              and compile with context vars off too; Group 7 space
+//              transforms and Object Info require context vars enabled.
+//
+//  Designed for displacement bakes (compiled once, ~10^5 evals at parse
+//  time) and small procedural textures.  Not a hot per-sample path
+//  replacement for a hand-written C++ field, by design -- it trades a
+//  little speed for authoring patterns without recompiling the engine.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef EXPRESSION_EVAL_
+#define EXPRESSION_EVAL_
+
+#include <string>
+#include <vector>
+#include <map>
+#include <memory>
+#include <cmath>
+#include <cstdlib>
+#include "../Utilities/Math3D/Math3D.h"	// Scalar, Vector3
+#include "../Utilities/FiniteMath.h"
+#include "../Utilities/ProceduralNoiseCore.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
+#include "../Interfaces/SurfaceSignalProximity.h"	// proximity()'s and interior()'s bodies -- CallFunc CALLS both, so the definitions must be here
+#include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
+#include "../Interfaces/IPainter.h"		// DL-25: sample(name)'s dispatch target (also pulls in RayIntersectionGeometric.h)
+#include "../Interfaces/IScalarPainter.h"	// DL-25: sample_scalar(name)'s dispatch target -- IScalarPainter, never GetColorNM (no JH uplift)
+#include "../Interfaces/ICamera.h"		// Group 7: live camera frame for osl_to_camera_* / osl_camera_to_world_* memo key
+#include "../Utilities/Transformable.h"	// Group 7: global/thread transform-pose epochs for SpaceTransformHitKey
+#include "ExpressionOslBuiltins.h"	// the `osl_` builtins: their own table, ids and dispatch (Compiled::kOsl / kOslV3)
+
+namespace RISE
+{
+	namespace Implementation
+	{
+		//! Extra per-eval inputs beyond (u,v) -- world/object position,
+		//! shading normal, filter width, time.  Everything defaults to
+		//! zero, matching what the plain Eval(u,v) overload implicitly
+		//! supplies (so an expression that only reads u,v behaves
+		//! identically whichever overload evaluates it).
+		struct ExprEvalContext
+		{
+			Scalar	u, v;
+			Vector3	P;
+			Vector3	Po;
+			Vector3	N;
+			Scalar	fw;
+			//! The SAME pixel footprint as `fw`, measured in the frame
+			//! `Po` is written in -- an OBJECT-space length (2026-09-06).
+			//! It exists because the compile-time domain-scale analysis
+			//! can differentiate a noise position argument w.r.t. `Po`
+			//! just as well as w.r.t. `P`, but cannot convert between
+			//! the two: the object->world scale is a per-INSTANCE
+			//! runtime fact.  So the hit carries both widths and the VM
+			//! combines them (see Builder::NoiseFwScales).
+			//!
+			//! 0.0 is the honest "no object-space filter info", exactly
+			//! like fw's 0.0 -- and it is what a caller that never sets
+			//! this field gets, which keeps every pre-existing caller's
+			//! behaviour unchanged.
+			Scalar	fwo;
+			Scalar	time;
+			//! Signed MEAN curvature at the hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! 5.1-5.2).  POSITIVE = convex, negative = concave, 0 = flat -- and 0 is
+			//! also the honest "this geometry reports no curvature" answer, exactly
+			//! like fw's 0.  `curvR` is raw, in 1/world-length; `curv` is the same
+			//! value multiplied by the hit geometry's world bounding-box diagonal, so
+			//! clamp(curv,0,1) is an edge-wear mask and clamp(-curv,0,1) a crevice
+			//! mask at ANY scene scale.  Both come from the GEOMETRIC normal field
+			//! and are therefore invariant under bump / normal maps.
+			Scalar	curv;
+			Scalar	curvR;
+
+			//! The `occlusion()` / `thickness()` / `convexity()` dispatch channel for THIS
+			//! hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1) -- the
+			//! geometry's signal provider plus the object-space point and
+			//! normal to query it at.
+			//!
+			//! Unlike every field above it, this is NOT bound into an env
+			//! slot: these are ARG-TAKING BUILTINS, evaluated lazily when
+			//! the body calls them, not context variables computed up
+			//! front.  It is threaded to the evaluator as a separate
+			//! `const SurfaceSignalInfo*` alongside `env` (see Eval /
+			//! RunAny / CallFunc), which is what keeps the compiled
+			//! program itself stateless and `const`: nothing per-hit is
+			//! ever stored on the program, so one program stays safe to
+			//! evaluate from every render thread at once.
+			//!
+			//! Default-constructed (no provider) reads as the honest
+			//! "this surface publishes no signals" and the builtins return
+			//! their neutral values -- so an expression is evaluable
+			//! exactly as before wherever no geometry answers.
+			SurfaceSignalInfo	signals;
+
+			//! DL-25 (review P1-1): the HIT RECORD this context was built
+			//! from, for `sample()` / `sample_scalar()` to evaluate their
+			//! bound painter at.  Non-owning, borrowed for the duration of
+			//! one Eval call; 0 means "this context has no record behind
+			//! it" and the sampled painter then sees the synthetic partial
+			//! record `BuildSyntheticRi` assembles from the context slots.
+			//!
+			//! ITS CONTRACT, which every producer must keep: it must be the
+			//! record whose `ptCoord`, `ptIntersection`, `ptObjIntersec`,
+			//! `vNormal` and `signals` ARE this context's `u,v`, `P`, `Po`,
+			//! `N` and `signals` -- i.e. the record
+			//! ExpressionPainter::BuildContext / ExpressionScalarPainter::
+			//! BuildContext copied those fields out of.  Those two are the
+			//! only producers today.  A caller that shifts the context away
+			//! from its record (nothing does -- ReliefModifier steps a COPY
+			//! of the record and rebuilds the context from it) must leave
+			//! this null rather than hand over a record that disagrees.
+			//!
+			//! WHY A BORROWED POINTER AND NOT A COPY: the record is large
+			//! (~500 bytes with its ONB and derivatives) and `sample()` can
+			//! appear in a `def` evaluated on every shading query; copying
+			//! it per evaluation would cost more than the painter call it
+			//! feeds.
+			//!
+			//! WHAT THE MEMO DOES ABOUT IT: the L2 key carries a
+			//! PainterSampleHitKey -- the fields a sampled painter can
+			//! read that the eleven context values do not determine (the
+			//! footprint Jacobian, the ray direction, the vertex colour,
+			//! the second UV set, and whether there is a record at all).
+			//! Bypassing the memo for sampling programs instead was
+			//! measured and rejected: 3.35x more user CPU on a scene whose
+			//! sampling program is consumed by three material slots (see
+			//! Builder::ComputeMemoWorthiness), against no measurable cost
+			//! to non-sampling scenes from the wider key (`plank_closeup`
+			//! is 22.874 +/- 0.143 s against the pre-review library's
+			//! 23.228 +/- 0.108 s -- the growth is below that scene's own
+			//! noise).
+			const RayIntersectionGeometric*	pHit;
+
+			ExprEvalContext() :
+				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0), pHit(0)
+			{}
+			ExprEvalContext( const Scalar u_, const Scalar v_ ) :
+				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0), pHit(0)
+			{}
+		};
+
+		//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md).
+		//! Shared, ref-counted ownership of the painters a compiled
+		//! program's `sample(name)` / `sample_scalar(name)` call sites are
+		//! BOUND to -- resolved once, at ATTACH time (Job::AddExpressionPainter
+		//! / ScalarPainterAsciiChunkParser's `expression` form), against the
+		//! owning IJob's painter managers.  `ExpressionProgram` is a
+		//! plain-old-data-ish VALUE TYPE copied routinely (Builder::Finalize's
+		//! out-param, storage in ExpressionPainter/ExpressionScalarPainter,
+		//! every `ExpressionProgram prog = ...` in the chunk parsers) --
+		//! std::shared_ptr's control block is what lets every one of those
+		//! copies share ONE addref()/release() pair per bound painter rather
+		//! than re-running it per copy: the LAST copy's destruction runs
+		//! this holder's destructor, which releases each bound pointer
+		//! EXACTLY ONCE regardless of how many ExpressionProgram copies
+		//! existed meanwhile.  Never constructed with an unresolved (null)
+		//! entry -- BindPainterRefs is the only place that builds one, and
+		//! it fails (returns false, binds nothing) rather than storing a
+		//! null.
+		class BoundPainterRefs
+		{
+		public:
+			std::vector<IPainter*>       color;
+			std::vector<IScalarPainter*> scalar;
+			~BoundPainterRefs()
+			{
+				for( std::size_t i = 0; i < color.size(); ++i )  if( color[i] )  color[i]->release();
+				for( std::size_t i = 0; i < scalar.size(); ++i ) if( scalar[i] ) scalar[i]->release();
+			}
+		};
+
+		//! Compiled program over a shared variable environment.  Build it
+		//! through ExpressionProgram::Builder: register params + defs, then
+		//! Finalize an expression.  Eval sets the context vars and runs
+		//! every def in order followed by the final expression.
+		class ExpressionProgram
+		{
+		public:
+			//! scalar vs vec3, fixed at compile time for every slot/def/
+			//! final expression -- Eval never inspects this; it only
+			//! drives how many env/stack slots something occupies.
+			enum VType { kScalar = 0, kVec3 = 1 };
+
+			//! One compiled expression: a postfix instruction list referencing
+			//! environment slots (variables) by index.
+			struct Compiled
+			{
+				enum Op {
+					kConst, kVar, kAdd, kSub, kMul, kDiv, kMod, kPow, kNeg,
+					kLt, kGt, kLe, kGe, kEq, kNe, kFunc,
+					// vec3 arithmetic -- operands are pre-broadcast to vec3
+					// (kSplat3) by the compiler when one side is scalar, so
+					// these always see two matching 3-wide operands.
+					kSplat3, kAddV, kSubV, kMulV, kDivV, kNegV,
+					kSwizzle,			//!< vec3 -> scalar component select (idx = 0/1/2)
+					kFuncV3,			//!< function call returning vec3 (cross/normalize/vec3-mix)
+					kRamp,				//!< variadic ramp(t, pos,val, ...) -- see ParseRampCall
+					// The `osl_` builtins (ExpressionOslBuiltins.h).  Their
+					// own opcodes, appended, so their dispatch reaches an
+					// out-of-line OslBuiltins::Call and no existing case of
+					// RunAny / CallFunc / CallFuncVec3 moves.  `fn` is an
+					// OslBuiltins id (its own id space) and `arity` the
+					// scalars popped, exactly as for kFunc / kFuncV3.
+					kOsl,				//!< osl_ builtin returning scalar
+					kOslV3,				//!< osl_ builtin returning vec3
+					kMeshAttr3,			//!< mesh_attr3("name") -> vec3 linear RGB from hit geometry
+					kMeshAttrAlpha,		//!< mesh_attr_alpha("name") -> scalar alpha from hit geometry
+					kSampleAlpha,		//!< sample_alpha(painter) -> scalar IPainter::GetAlpha at hit
+					kSampleUv,			//!< sample_uv(painter, u, v) -> vec3 IPainter::GetColor at overridden UV
+					kSampleUvAlpha		//!< sample_uv_alpha(painter, u, v) -> scalar IPainter::GetAlpha at overridden UV
+				};
+				//! `arity` = scalars popped, meaningful (and required) for
+				//! kFunc/kFuncV3/kRamp/kOsl/kOslV3 only -- every other op's stack effect
+				//! is implied by the opcode itself, so this replaces the
+				//! historical "recover arity from the function id band"
+				//! scheme (banding could not express dot()'s 6-scalar arity
+				//! or ramp()'s variadic arity).  For kRamp, `idx` holds the
+				//! stop count and `fn` holds the per-stop value width (1 or
+				//! 3) instead of a function id.
+				//!
+				//! `val` is the literal for kConst.  On a kFunc it carries
+				//! that call site's `fw` MULTIPLIER instead (1.0 for every
+				//! builtin but fbm/turbulence/ridged, and for those too
+				//! whenever the domain scale is not provable) -- see
+				//! Builder::NoiseFwScales.  It rides on the INSTRUCTION
+				//! rather than on the program because it is a property of
+				//! one call site: two fbm() calls in the same body can sit
+				//! in differently-scaled domains.
+				//!
+				//! `valo` is its OBJECT-space twin (2026-09-06): the same
+				//! call site's multiplier on `fwo`.  Two numbers rather
+				//! than one because a position argument can depend on `P`
+				//! and on `Po` at once, and the two footprints are
+				//! independent per-hit facts -- no compile-time constant
+				//! converts between them.  RunAny sums the two products.
+				//! 0.0 on every non-noise builtin and on every noise call
+				//! whose Po-dependence is absent or unprovable, which is
+				//! what keeps a P-only body bit-identical (`x + 0*fwo`).
+				struct Instr { Op op; Scalar val; Scalar valo; int idx; int fn; int arity; };
+				std::vector<Instr> code;
+				int writeSlot;	//!< env slot this expression writes (a def), or -1 (the final expr)
+				VType type;		//!< result type of this compiled expression
+
+				// A default-constructed Compiled (e.g. ExpressionProgram::m_final before
+				// Finalize ever runs, as in ExpressionProgram::Invalid()) used to leave
+				// writeSlot/type as indeterminate memory -- a caller that reads
+				// ResultType()/EvalVec3() on an invalid/unfinalized program was reading
+				// uninitialized state (P2-C, review round 1).  kScalar/-1 match what an
+				// empty, never-compiled program should report.
+				Compiled() : writeSlot(-1), type(kScalar) {}
+			};
+
+			//! One `occlusion(...)` / `thickness(...)` / `convexity(...)` CALL SITE in this
+			//! program, recorded at compile time (design doc §7.1's
+			//! constant-radius contract, whose consumer is Phase 3's baked
+			//! mesh path).
+			//!
+			//! `radiusIsLiteral` is TRUE only when the radius argument was a
+			//! bare numeric literal (optionally signed) -- see
+			//! Builder::PeekLiteralScalarArg for exactly how narrow that
+			//! claim is.  FALSE never means "not constant"; it means "this
+			//! compiler did not prove it constant", which the baked path must
+			//! treat as dynamic (and therefore, per §7.1's mismatch contract,
+			//! answer with the signal's neutral fallback rather than
+			//! substituting the baked radius).
+			struct SignalRadiusCall
+			{
+				int    fn;				//!< kFnOcclusion, kFnThickness, kFnConvexity, kFnProximity or kFnInterior
+				bool   radiusIsLiteral;
+				Scalar radiusLiteral;	//!< meaningful only when radiusIsLiteral
+			};
+
+			//! Slot / stack / parse-depth caps -- a compiled program is
+			//! rejected at build time if it would exceed them, so Eval can use
+			//! fixed stack-allocated buffers (no per-call heap, no overflow).
+			static const int kMaxSlots      = 512;	//!< named vars (context + params + defs), each scalar=1/vec3=3 slots
+			static const int kStackCap      = 512;	//!< value-stack depth
+			static const int kMaxParseDepth = 200;	//!< recursive-descent nesting
+			static const int kMaxOctaves    = NoiseCore::kMaxOctaves;
+			static const int kMaxRampStops  = 64;
+
+			//! Function ids of the NOISE FAMILY.  Named, and named HERE
+			//! rather than left implicit in the FnSig table's row order,
+			//! because FIVE other sites depend on their exact values, not
+			//! just their order: the FnSig table itself (its `perlin` .. `cellhash` rows,
+			//! constructed from these names), the memo's compile-time
+			//! worthiness gate (Builder::ComputeMemoWorthiness, which
+			//! tests "is this instruction a noise call" as a RANGE over
+			//! [kFnNoiseFirst, kFnNoiseLast]), ParseCall's `isNoiseFn`
+			//! (gates the domain-scale Jacobian and NoiseFwScales),
+			//! CallFunc's `case 42:` .. `case 50:` labels (in its switch,
+			//! part of the VM's byte-identical-since-ca3bb2f4 surface and
+			//! therefore bare literals ON PURPOSE, never these names), and
+			//! ExpressionMemoTest (g), which exercises the gate at a live
+			//! noise body.  Before 2026-09-07 the ComputeMemoWorthiness
+			//! site carried the bare literals `42` and `49`, so inserting a
+			//! builtin anywhere in the band -- or appending a noise builtin
+			//! past its top -- would have silently changed or silently
+			//! missed the gate with nothing to catch it.
+			//!
+			//! The band is CONTIGUOUS and the static_asserts below say so
+			//! two ways: relative (the shape of the run) and ABSOLUTE (the
+			//! actual numbers CallFunc's un-renamed case labels use, so a
+			//! whole-band renumber is caught too, not just a shape change).
+			//! `cellhash` sits immediately past its top end and is
+			//! deliberately OUTSIDE it (a single integer hash is not
+			//! expensive enough to earn a memo entry on its own).  A NEW
+			//! noise builtin takes the next free id past `kFnCellHash`'s
+			//! neighbours and extends the band ONLY by also updating
+			//! CallFunc's cases and the asserts below -- there is no
+			//! renumbering trick that avoids touching CallFunc, because its
+			//! case labels are literals by design (see above) and the
+			//! asserts exist precisely to make forgetting that a build
+			//! error instead of a silent gate mismatch.
+			static const int kFnPerlin      = 42;
+			static const int kFnFbm         = 43;
+			static const int kFnTurbulence  = 44;
+			static const int kFnRidged      = 45;
+			static const int kFnWorleyF1    = 46;
+			static const int kFnWorleyF2    = 47;
+			static const int kFnWorleyF2F1  = 48;
+			static const int kFnWorleyId    = 49;
+			//! The band's INCLUSIVE ends, which is the form the gate tests.
+			static const int kFnNoiseFirst  = kFnPerlin;
+			static const int kFnNoiseLast   = kFnWorleyId;
+			//! NOT noise-family for the memo gate -- see above.
+			static const int kFnCellHash    = 50;
+
+			static_assert( kFnFbm        == kFnPerlin + 1
+			            && kFnTurbulence == kFnPerlin + 2
+			            && kFnRidged     == kFnPerlin + 3
+			            && kFnWorleyF1   == kFnPerlin + 4
+			            && kFnWorleyF2   == kFnPerlin + 5
+			            && kFnWorleyF2F1 == kFnPerlin + 6
+			            && kFnWorleyId   == kFnPerlin + 7,
+				"the eight noise builtins must stay ONE contiguous id run -- "
+				"Builder::ComputeMemoWorthiness tests them as a range [kFnNoiseFirst, kFnNoiseLast]" );
+			static_assert( kFnNoiseLast - kFnNoiseFirst == 7,
+				"the noise band is exactly the eight builtins above -- widen it deliberately, "
+				"and only together with ComputeMemoWorthiness's own reasoning" );
+			static_assert( kFnCellHash == kFnNoiseLast + 1,
+				"cellhash must stay immediately past the noise band: it is the first id the "
+				"memo gate deliberately EXCLUDES, and the only thing expressing that exclusion "
+				"is kFnNoiseLast's value" );
+			//! ABSOLUTE pins, one per constant.  CallFunc's `case 42:` ..
+			//! `case 50:` labels (in its switch) are bare literals ON
+			//! PURPOSE -- that function's body is byte-identical-pinned
+			//! against an earlier commit, so it cannot spell these names.
+			//! These asserts are what turn a renumber of ANY single
+			//! constant above into a build error instead of a silent
+			//! mismatch between this table and CallFunc's literals.
+			static_assert( kFnPerlin     == 42, "CallFunc's `case 42:` is perlin" );
+			static_assert( kFnFbm        == 43, "CallFunc's `case 43:` is fbm" );
+			static_assert( kFnTurbulence == 44, "CallFunc's `case 44:` is turbulence" );
+			static_assert( kFnRidged     == 45, "CallFunc's `case 45:` is ridged" );
+			static_assert( kFnWorleyF1   == 46, "CallFunc's `case 46:` is worley_f1" );
+			static_assert( kFnWorleyF2   == 47, "CallFunc's `case 47:` is worley_f2" );
+			static_assert( kFnWorleyF2F1 == 48, "CallFunc's `case 48:` is worley_f2f1" );
+			static_assert( kFnWorleyId   == 49, "CallFunc's `case 49:` is worley_id" );
+			static_assert( kFnCellHash   == 50, "CallFunc's `case 50:` is cellhash" );
+
+			//! Function ids of the two GEOMETRY-DERIVED SIGNAL builtins
+			//! (design doc Phase 2).  Named constants rather than bare
+			//! numbers because three places must agree on them -- the FnSig
+			//! table, CallFunc's cases, and ParseCall's per-argument
+			//! literal-radius validation -- and a silent mismatch between
+			//! them would mis-route a call to a different builtin.  They
+			//! continue the scalar-returning id band (cellhash = 50).
+			static const int kFnOcclusion   = 51;
+			static const int kFnThickness   = 52;
+			//! `convexity(radius)` -- the OTHER half of occlusion's
+			//! measurement (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md):
+			//! occlusion is the deficit below the planar half of the query
+			//! ball, this is the excess above it.  0 = flat or concave,
+			//! 0.5 = a 90-degree arris, 0.75 = a three-face corner, 1 = a
+			//! knife edge.
+			static const int kFnConvexity   = 55;
+			//! INTERNAL twins of the two ids above, emitted in their place
+			//! when the compiler could NOT prove the radius argument a bare
+			//! numeric literal.  They are not builtin NAMES -- nothing in
+			//! the FnSig table maps to them and no scene text can spell
+			//! them; they exist only so the emitted instruction carries the
+			//! compile-time proof down to CallFunc, which forwards it to
+			//! SurfaceSignalInfo::Occlusion / ::Thickness.
+			//!
+			//! Why a second id rather than a flag on the instruction: the
+			//! proof IS part of which operation this call site performs (a
+			//! baked provider answers one and refuses the other), the
+			//! dispatch is already a switch on the id, and this way no
+			//! signature in the evaluator changes -- so no future builtin
+			//! can accidentally inherit a stale "constant" bit from a
+			//! neighbouring field.  See ISurfaceSignalProvider's
+			//! `bRadiusIsConstant` note for why the proof must travel at
+			//! all.
+			static const int kFnOcclusionDynR = 53;
+			static const int kFnThicknessDynR = 54;
+			static const int kFnConvexityDynR = 56;
+			//! `proximity(radius)` -- the FIRST of the two CROSS-OBJECT
+			//! signals (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md; `interior`,
+			//! its signed sibling, is below).  `clamp(1 - d/r,
+			//! 0, 1)` for `d` the shortest distance to any OTHER
+			//! world-visible, non-emissive object's surface: 1 = touching,
+			//! 0 = nothing within `r`.  Its three neighbours above are
+			//! SELF-signals, which is why this one's radius means something
+			//! different -- a WORLD LENGTH, not a fraction of the hit
+			//! object's own size, because a fraction of the receiver cannot
+			//! describe a neighbour.
+			//!
+			//! NO `DynR` TWIN, and that is a decision rather than an
+			//! omission.  The twins exist so a call site's compile-time
+			//! constant-radius PROOF can reach the baked mesh providers,
+			//! which can only answer the one radius they were baked at.
+			//! There is no bake behind this signal -- every query is a live
+			//! scan -- so a computed radius costs exactly what a literal
+			//! one does and there is nothing to forward.  ParseCall's DynR
+			//! remap must therefore GUARD against this id: its final
+			//! ternary arm is an unguarded fall-through to
+			//! kFnConvexityDynR, and without the guard every
+			//! computed-radius `proximity(...)` would have compiled to a
+			//! CONVEXITY call.
+			//!
+			//! 59 remains free in this band (58 is `interior`, below);
+			//! 60-62 belong to CallFuncVec3.
+			static const int kFnProximity   = 57;
+			static_assert( kFnProximity == 57, "CallFunc's `case kFnProximity:` continues the "
+				"scalar-returning band past kFnConvexityDynR (56); 58 is interior, 59 free, "
+				"60+ are CallFuncVec3's" );
+			//! `interior(radius)` -- the SIGNED sibling of `proximity`
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+			//! `clamp(depth / r, 0, 1)` for `depth` the largest inside-depth
+			//! lower bound over every OTHER world-visible, non-emissive
+			//! object that CONTAINS the hit point: 0 = inside no neighbour,
+			//! 1 = at least `r` deep.  Together the two cover the signed
+			//! distance without a sign convention an author has to
+			//! remember.
+			//!
+			//! A WORLD LENGTH again, and MANDATORY, and with NO `DynR` twin
+			//! -- for exactly `proximity`'s reasons: there is no bake behind
+			//! either, so a computed radius costs what a literal one does
+			//! and there is no constant-radius proof to forward.  ParseCall's
+			//! DynR remap guard therefore covers this id too; without it a
+			//! computed-radius `interior(...)` would compile as CONVEXITY,
+			//! the same silently-wrong render `proximity` nearly shipped.
+			//!
+			//! DL-25 TOOK 59, so this is no longer the last named case in
+			//! the scalar-returning band and there is no free id left in it
+			//! at all: `kFnSamplePainterScalar` is 59 and CallFuncVec3's
+			//! band starts at 60.  A SIXTH scalar-returning builtin needs
+			//! the two bands widened together, not an id picked here.
+			static const int kFnInterior    = 58;
+			static_assert( kFnInterior == 58, "the scalar-returning band is FULL: kFnInterior is 58 "
+				"and DL-25's kFnSamplePainterScalar took 59, the last id before CallFuncVec3's 60+ band" );
+			//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+			//! `sample_scalar(painter_name)` -- the IScalarPainter half of the
+			//! painter-sampling pair (its vec3-returning IPainter twin,
+			//! `sample()`, is kFnSamplePainter in the CallFuncVec3 band below).
+			//! Takes the LAST free id in this scalar-returning band: 59.
+			//! The band is now FULL -- kFnInterior's own comment and
+			//! static_assert above say so, and were corrected in DL-25's
+			//! review rather than left describing the pre-DL-25 state.
+			//! ZERO RUNTIME ARGUMENTS (arity 0, in ParseSampleCall's
+			//! EmitFuncCall call): the "argument" is a bare painter NAME
+			//! parsed at COMPILE time, not a runtime value, so there is
+			//! nothing on the value stack for CallFunc to pop -- `in.idx`
+			//! carries the index into the program's bound-refs table
+			//! (ExpressionProgram::m_scalarPainterRefNames /
+			//! BoundPainterRefs::scalar, resolved once at ATTACH time by
+			//! BindPainterRefs, never at Compile time) instead of an arity.
+			//! Evaluates the bound painter at the CALLER'S OWN hit record
+			//! (`ExprEvalContext::pHit`), falling back to a synthetic
+			//! partial record assembled from `env`'s fixed context slots
+			//! when the context carries none -- see CallFunc's case, and
+			//! ExpressionMemo::PainterSampleHitKey for the L2 key fields
+			//! that forwarding costs.
+			static const int kFnSamplePainterScalar = 59;
+			//! DL-25: `sample(painter_name)` -- the vec3-returning IPainter
+			//! half of the pair.  Lives in CallFuncVec3's band (60+, past
+			//! `cross`=60/`normalize`=61/the bespoke `mix` vec3 id 62 --
+			//! declared here, at the ExpressionProgram level, rather than
+			//! alongside `kFnMixVec3` inside Builder, because CallFuncVec3
+			//! (an ExpressionProgram static, not a Builder member) needs a
+			//! named case for it too.  Same zero-runtime-argument /
+			//! `in.idx`-is-a-ref-table-index shape as kFnSamplePainterScalar;
+			//! see that constant's comment.
+			static const int kFnSamplePainter = 63;
+			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
+			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
+			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
+			//!   curv=kContextSlotCurv(13), curvR=kContextSlotCurvR(14),
+			//!   fwo=kContextSlotFwo(15).
+			//! fwo is APPENDED rather than slotted next to fw on purpose:
+			//! the indices are baked into recorded golden programs and into
+			//! the UsesContextVar mask, so renumbering an existing var would
+			//! silently invalidate both.
+			//! P2-a (S9 review round 1): this block is the SOLE place the slot
+			//! indices and the reserved-slot count are spelled out.  EVERY site
+			//! below references these constants instead of carrying its own copy
+			//! of the literals -- and every one of them must be touched when a
+			//! context var is added:
+			//!   1. LookupContextVar            (name -> slot/type)
+			//!   2. Builder's ctor              (m_names reserve, kContextSlotCount)
+			//!   3. Builder::Finalize           (the out.m_*Slot pins + the
+			//!                                   "N are reserved for ..." error text)
+			//!   4. ExpressionProgram's member list + default member init
+			//!   5. BindEnv                     (the ONE definition) and ALL FOUR
+			//!      of its call sites: Eval(u,v), Eval(ctx), EvalVec3(ctx), and
+			//!      EvalDefStage(ctx,...) -- the last is the easy one to miss
+			//!   6. ExprEvalContext             (field + both ctors)
+			//!   7. RunAny/CallFunc's static (no `this`) fw read, if the new var
+			//!      is one a builtin reads implicitly
+			//!   8. MakeMemoKey                  -- the L2 memo's key is the
+			//!      WHOLE context, so a var added here and not there would
+			//!      make two genuinely different contexts share one memo
+			//!      entry: a silent wrong render, not a slow one
+			//! Adding one WITHOUT touching all of them is exactly the silent
+			//! desynchronization this comment exists to prevent.
+			//!
+			//! kContextSlotP is the first of P's three slots (P.x/P.y/P.z at
+			//! +0/+1/+2).  It got a name once a second site came to depend
+			//! on the literal 2: besides Builder::Finalize's `out.m_PSlot`
+			//! pin, the compile-time domain-scale analysis
+			//! (Builder::SlotLinear) differentiates a noise call's position
+			//! argument with respect to exactly these three slots -- and,
+			//! since 2026-09-06, with respect to Po's three as well.
+			static const int kContextSlotP     = 2;
+			//! kContextSlotPo is the first of Po's three slots, and the
+			//! SECOND differentiation variable of the compile-time
+			//! domain-scale analysis (Builder::SlotLinear) since
+			//! 2026-09-06 -- it got a name for exactly the reason
+			//! kContextSlotP did, one line above.
+			static const int kContextSlotPo    = 5;
+			static const int kContextSlotFw    = 11;
+			static const int kContextSlotTime  = 12;
+			//! curv / curvR -- the geometry-derived shading signal
+			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md Phase 1).  Gated behind
+			//! EnableContextVars(true) exactly like P/N/fw, so
+			//! expression_function2d's frozen UV-only surface never sees them.
+			static const int kContextSlotCurv  = 13;
+			static const int kContextSlotCurvR = 14;
+			//! fwo -- the OBJECT-space twin of fw (2026-09-06).  Gated
+			//! behind EnableContextVars(true) exactly like P/Po/N/fw.
+			static const int kContextSlotFwo   = 15;
+			//! Total reserved context-var slots (u,v,P,Po,N,fw,time,curv,curvR,fwo).
+			static const int kContextSlotCount = kContextSlotFwo + 1;
+			//! Bit position of a context var within the `UsesContextVar` mask --
+			//! its first env slot.  kContextSlotCount stays well under 32, which
+			//! is what lets the mask be a plain unsigned int.
+			static const int kContextVarMaskBits = 32;
+
+			//! Finiteness test hardened for the production -ffast-math build.
+			//! IsFiniteDouble materialises the value through volatile before its
+			//! IEEE-754 exponent test, so this hot-path guard remains real even
+			//! when inlined into the evaluator.
+			static bool IsFinite( const Scalar x )
+			{
+				return RISE::IsFiniteDouble( static_cast<double>( x ) );
+			}
+
+			//! Reset the environment + bind u, v (context vars stay zero,
+			//! matching a default-constructed ExprEvalContext), then run
+			//! the program.  Byte-compatible with every pre-vec3 caller.
+			Scalar Eval( const Scalar u, const Scalar v ) const
+			{
+				Scalar env[ kMaxSlots ];
+				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0, m_boundRefs.get(), -1, 0 );
+				Scalar out[3];
+				// No hit record here, so no signal provider: occlusion() /
+				// thickness() / convexity() fall back to their neutral values, exactly as
+				// the zero context vars above do.  (`sample()`/`sample_scalar()` cannot
+				// compile into a context-vars-disabled program in the first place, but a
+				// context-vars-enabled one reached through THIS overload still gets its
+				// real bound refs -- see BoundPainterRefs's doc comment.)
+				RunAny( m_final, env, out, 0, m_boundRefs.get(), 0, &m_meshAttrNames );
+				return out[0];
+			}
+
+			//! Full-context evaluation (u, v, P, Po, N, fw, fwo, time).  Returns
+			//! the first component when the final expression is vec3-typed.
+			Scalar Eval( const ExprEvalContext& ctx ) const
+			{
+				Scalar env[ kMaxSlots ];
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
+				Scalar out[3];
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit, &m_meshAttrNames );
+				return out[0];
+			}
+
+			//! Same as Eval(ctx), but returns the full vec3 result.  Valid
+			//! for any program; a scalar-typed final expression broadcasts
+			//! its single value to (s,s,s), matching the language's scalar
+			//! -> vec3 broadcast rule everywhere else.
+			Vector3 EvalVec3( const ExprEvalContext& ctx ) const
+			{
+				Scalar env[ kMaxSlots ];
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), -1, ctx.pHit );
+				Scalar out[3];
+				RunAny( m_final, env, out, &ctx.signals, m_boundRefs.get(), ctx.pHit, &m_meshAttrNames );
+				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
+				return Vector3( out[0], out[0], out[0] );
+			}
+
+			//! Process-unique compile-time identity (0 == never compiled).
+			//! See ExpressionMemo::NewProgramId for why this is not `this`.
+			unsigned long long ProgramId() const { return m_id; }
+
+			//! Is this program worth an L2 memo entry?  Decided ONCE, at
+			//! compile time, because the memo's own key comparison is 37
+			//! exact compares for a non-sampling, non-space-transform body
+			//! (ExpressionMemo::ProgramKey::kFieldsNonSampling; 85 is the
+			//! worst case, `kFields`) and a body like `u*v` is cheaper to
+			//! re-run than to look up.
+			//!
+			//! The predicate is "does this body contain anything whose cost
+			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
+			//! SDF field evaluations), a noise call (a lattice hash per
+			//! octave), or simply a lot of instructions.
+			bool MemoWorthy() const { return m_memoWorthy; }
+
+			//! Compose this program's L2 memo key from a context.  EVERY
+			//! ExprEvalContext field must appear here (see
+			//! ExpressionMemo::ProgramKey's own comment) -- the
+			//! kContextSlot* checklist above names this function.
+			//!
+			//! WHY THE MEMO LIVES IN THE PAINTERS AND NOT IN Eval/EvalVec3.
+			//! It was written there first, and it moved: this is a
+			//! `-ffast-math` build, and wrapping those two bodies in a
+			//! lookup changed which of them the optimiser inlined into
+			//! ExpressionPainter, which changed the FMA contraction inside
+			//! RunAny, which moved the last ulp of a domain-warped fbm --
+			//! red-proved by TextureExpressionVMTest's "a warped argument
+			//! keeps its affine part's scale" check, which compares against
+			//! a reference computed in its own translation unit with `==`.
+			//! That check IS one of the exact-`==` sites -- but note that
+			//! the exact-compared subset of that suite is NARROW (about
+			//! fifteen `==` sites, all in the noise-with-`fw` block, plus
+			//! one exact-compare CheckClose(...,0,...) pin (search the file for
+			//! `viaOld, viaNew, 0`); its
+			//! 254 CheckClose sites are otherwise all a TOLERANCE, 1e-15
+			//! included -- see ExpressionMemo.h's "MEASURED, by counting
+			//! the file" paragraph for the full breakdown).  What is
+			//! guarded and what is not is set out once, in
+			//! ExpressionMemo.h's "HOW MUCH OF THAT CONTRACT IS ACTUALLY
+			//! TESTED"; read it before relying
+			//! on the suite to catch an ulp.  The VM's arithmetic is a
+			//! contract regardless of how much of it a test can see, and a
+			//! cache is not allowed to move it.  So the program exposes
+			//! its identity and its key, and ExpressionPainter /
+			//! ExpressionScalarPainter -- the only hot consumers, and the
+			//! layer where "the same painter is asked twice at one hit"
+			//! actually happens -- do the lookup around a CALL to an
+			//! untouched EvalVec3.
+			//!
+			//! `pipe` IS PART OF THE KEY and must be the caller's own --
+			//! ExpressionMemo::ePipeColour from ExpressionPainter,
+			//! ePipeScalar from ExpressionScalarPainter.  It is a
+			//! parameter rather than something derived here because it is
+			//! a property of the CALL SITE, not of the program: the same
+			//! compiled program can be held by one painter of each kind
+			//! (see ExpressionMemo::EvalPipe for how, and for why sharing
+			//! an entry between them would be wrong).
+			void MakeMemoKey( const ExprEvalContext& ctx, const ExpressionMemo::EvalPipe pipe,
+				ExpressionMemo::ProgramKey& k ) const
+			{
+				k.progId = m_id;
+				k.pipe = (int)pipe;
+				k.u = (double)ctx.u;   k.v = (double)ctx.v;
+				k.Px = (double)ctx.P.x;   k.Py = (double)ctx.P.y;   k.Pz = (double)ctx.P.z;
+				k.Pox = (double)ctx.Po.x; k.Poy = (double)ctx.Po.y; k.Poz = (double)ctx.Po.z;
+				k.Nx = (double)ctx.N.x;   k.Ny = (double)ctx.N.y;   k.Nz = (double)ctx.N.z;
+				k.fw = (double)ctx.fw;    k.fwo = (double)ctx.fwo;  k.time = (double)ctx.time;
+				k.curv = (double)ctx.curv; k.curvR = (double)ctx.curvR;
+				k.signals = ctx.signals.MemoHitKey();
+				// DL-25 review P1-1: the painter-sample channel -- the hit
+				// fields a program reached through `sample()` /
+				// `sample_scalar()` can read and that nothing above
+				// determines.  Filled UNCONDITIONALLY (zeros when the
+				// context carries no record), because a POD compared
+				// field-by-field cannot express a conditional field, and a
+				// sentinel would hide the split rather than state it.  See
+				// ExpressionMemo::PainterSampleHitKey for the enumeration
+				// of the set and for the census that keeps it honest.
+				k.usesPainterSample = UsesPainterSample() || UsesViewRay();
+				k.sampleHit = MakeSampleHitKey( k.usesPainterSample ? ctx.pHit : 0 );
+				// Also populate spaceHit when sampling a child painter: `sample()`
+				// forwards `ctx.pHit` verbatim, so a child ExpressionPainter may
+				// call Group 7 space transforms even if this outer body does not.
+				k.usesSpaceTransform = UsesSpaceTransform() || k.usesPainterSample;
+				k.spaceHit = MakeSpaceTransformHitKey( k.usesSpaceTransform ? ctx.pHit : 0 );
+			}
+
+			//! Space-transform half of the L2 memo key (Group 7).
+			static ExpressionMemo::SpaceTransformHitKey MakeSpaceTransformHitKey( const RayIntersectionGeometric* pHit )
+			{
+				ExpressionMemo::SpaceTransformHitKey k;
+				k.globalPoseEpoch = pHit ? Transformable::GlobalTransformPoseEpoch() : 0ull;
+				k.threadPoseEpoch = pHit ? Transformable::ThreadTransformPoseEpoch() : 0ull;
+				if( !pHit ) {
+					k.pWorldToObject = 0;
+					k.pObjectToWorld = 0;
+					k.hasCamera = false;
+					k.geomOpposesArrival = 0;
+					k.geomBackfacing = false;
+					k.isCameraRay = false;
+					k.camOx = k.camOy = k.camOz = 0.0;
+					k.camRx = k.camRy = k.camRz = 0.0;
+					k.camUx = k.camUy = k.camUz = 0.0;
+					k.camFx = k.camFy = k.camFz = 0.0;
+					k.gnx = k.gny = k.gnz = 0.0;
+					k.n0x = k.n0y = k.n0z = 0.0;
+					k.objR = k.objG = k.objB = k.objA = 0.0f;
+					k.objIdx = k.objRand = k.particleRand = 0.0f;
+					return k;
+				}
+				k.pWorldToObject = (const void*)pHit->pmxWorldToObject;
+				k.pObjectToWorld = (const void*)pHit->pmxObjectToWorld;
+				const bool opposesArrival = pHit->GeomNormalOpposesArrival();
+				k.geomOpposesArrival = opposesArrival ? -1 : 1;
+				k.geomBackfacing = pHit->HasTrueGeomSide()
+					&& ( pHit->bGeomNormalOrientedToRay ? opposesArrival : !opposesArrival );
+				k.isCameraRay = pHit->bIsCameraRay;
+				k.gnx = (double)pHit->vGeomNormal.x;
+				k.gny = (double)pHit->vGeomNormal.y;
+				k.gnz = (double)pHit->vGeomNormal.z;
+				const Vector3 n0 = pHit->bHasNormalMapFrame ? pHit->normalMapOnb.w()
+					: ( pHit->bHasCoatDecodeOnb ? pHit->coatDecodeOnb.w() : pHit->vNormal );
+				k.n0x = (double)n0.x;
+				k.n0y = (double)n0.y;
+				k.n0z = (double)n0.z;
+				Point3 origin;
+				Vector3 right, up, forward;
+				if( OslBuiltins::QueryCameraFrame( pHit->pCamera, origin, right, up, forward ) ) {
+					k.hasCamera = true;
+					k.camOx = (double)origin.x;  k.camOy = (double)origin.y;  k.camOz = (double)origin.z;
+					k.camRx = (double)right.x;   k.camRy = (double)right.y;   k.camRz = (double)right.z;
+					k.camUx = (double)up.x;      k.camUy = (double)up.y;      k.camUz = (double)up.z;
+					k.camFx = (double)forward.x; k.camFy = (double)forward.y; k.camFz = (double)forward.z;
+				} else {
+					k.hasCamera = false;
+					k.camOx = k.camOy = k.camOz = 0.0;
+					k.camRx = k.camRy = k.camRz = 0.0;
+					k.camUx = k.camUy = k.camUz = 0.0;
+					k.camFx = k.camFy = k.camFz = 0.0;
+				}
+				if( pHit->pObjectInfo ) {
+					k.objR = pHit->pObjectInfo->color[0];
+					k.objG = pHit->pObjectInfo->color[1];
+					k.objB = pHit->pObjectInfo->color[2];
+					k.objA = pHit->pObjectInfo->alpha;
+					k.objIdx = pHit->pObjectInfo->objectIndex;
+					k.objRand = pHit->pObjectInfo->random;
+					k.particleRand = pHit->pObjectInfo->particleRandom;
+				} else {
+					k.objR = k.objG = k.objB = k.objA = 0.0f;
+					k.objIdx = k.objRand = k.particleRand = 0.0f;
+				}
+				return k;
+			}
+
+			//! The painter-sample half of the key above, split out so the
+			//! enumeration lives in one function rather than inline in
+			//! MakeMemoKey's body.
+			static ExpressionMemo::PainterSampleHitKey MakeSampleHitKey( const RayIntersectionGeometric* pHit )
+			{
+				ExpressionMemo::PainterSampleHitKey k;
+				if( !pHit ) {
+					k.hasHit = false;
+					k.dudx = k.dudy = k.dvdx = k.dvdy = 0.0;
+					k.footprintValid = false;
+					k.rdx = k.rdy = k.rdz = 0.0;
+					k.u1 = k.v1 = 0.0;
+					k.hasTexCoord1 = false;
+					k.vcr = k.vcg = k.vcb = 0.0;
+					k.hasVertexColor = false;
+					return k;
+				}
+				k.hasHit = true;
+				k.dudx = (double)pHit->txFootprint.dudx;
+				k.dudy = (double)pHit->txFootprint.dudy;
+				k.dvdx = (double)pHit->txFootprint.dvdx;
+				k.dvdy = (double)pHit->txFootprint.dvdy;
+				k.footprintValid = pHit->txFootprint.valid;
+				const Vector3& d = pHit->ray.Dir();
+				k.rdx = (double)d.x; k.rdy = (double)d.y; k.rdz = (double)d.z;
+				k.u1 = (double)pHit->ptCoord1.x;
+				k.v1 = (double)pHit->ptCoord1.y;
+				k.hasTexCoord1 = pHit->bHasTexCoord1;
+				k.vcr = (double)pHit->vColor[0];
+				k.vcg = (double)pHit->vColor[1];
+				k.vcb = (double)pHit->vColor[2];
+				k.hasVertexColor = pHit->bHasVertexColor;
+				return k;
+			}
+
+			VType ResultType() const { return m_final.type; }
+
+			//! Does this compiled program READ the context variable whose first
+			//! env slot is `firstSlot` (use a kContextSlot* constant)?  Resolved
+			//! entirely at COMPILE time by the Builder -- every identifier is
+			//! bound to a slot when the body is parsed -- so this is a static
+			//! property of the program, not a per-eval check, and covers `def`
+			//! stage bodies as well as the final expression.
+			//!
+			//! It is CONSERVATIVE in exactly one direction: a var read only
+			//! inside a `def` the final expression never uses still reports
+			//! true.  That is the safe direction for a cost gate (the failure
+			//! mode is "computed and unread", never "read and absent").
+			//!
+			//! Its consumer is the curvature cost gate (SurfaceCurvature.h's
+			//! SurfaceCurvatureDemand, design doc 5.4): ~18 extra SDF field
+			//! evaluations per hit must cost zero when no expression in the
+			//! scene mentions `curv`.
+			bool UsesContextVar( int firstSlot ) const
+			{
+				if( firstSlot < 0 || firstSlot >= kContextVarMaskBits ) return false;
+				return ( m_ctxUsedMask & ( 1u << firstSlot ) ) != 0;
+			}
+
+			//! Convenience for the gate's actual question: does the body read
+			//! EITHER curvature variable?
+			bool UsesSurfaceCurvature() const
+			{
+				return UsesContextVar( kContextSlotCurv ) || UsesContextVar( kContextSlotCurvR );
+			}
+
+			//! Does this program call `occlusion()`, `thickness()`,
+			//! `convexity()`, `proximity()`, `interior()`, named mesh
+			//! attribute builtins (`mesh_attr3()` / `mesh_attr_alpha()`), or
+			//! scene-signal OSL builtins (`osl_ao()`) anywhere -- final
+			//! expression or any `def` stage?  Drives `SurfaceSignalDemand`
+			//! (`LightSampler::EmitterProbeWanted()`) and marks
+			//! `ExpressionScalarPainter` position-dependent.
+			bool UsesSurfaceSignals() const { return !m_signalCalls.empty() || !m_meshAttrNames.empty() || m_usesSceneSignals; }
+
+			//! Does this program call `mesh_attr3(...)` or `mesh_attr_alpha(...)`?
+			bool UsesMeshAttributes() const { return !m_meshAttrNames.empty(); }
+
+			//! Distinct named geometry attributes referenced by this program,
+			//! in first-reference order.
+			const std::vector<std::string>& MeshAttributeNames() const { return m_meshAttrNames; }
+
+			//! Does this program call EITHER CROSS-OBJECT signal --
+			//! `proximity()` or `interior()`?  Resolved at COMPILE time from
+			//! the same `m_signalCalls` list.
+			//!
+			//! SEPARATE from UsesSurfaceSignals, and wired to a REAL cost
+			//! gate rather than a diagnostic: those two are the signals with
+			//! a scene-level prerequisite (the object manager's world-AABB
+			//! snapshot, which BOTH read), so a scene that calls neither
+			//! must not pay for one -- and an `interior`-only scene must
+			//! still register, which is exactly why this is not named
+			//! `UsesProximity` any more.  See ProximityDemand's own doc
+			//! comment in ISurfaceSignalProvider.h.
+			//!
+			//! Linear over the call list, which is a handful of entries and
+			//! is walked once per painter construction -- never per hit.
+			bool UsesCrossObject() const
+			{
+				for( std::size_t i = 0; i < m_signalCalls.size(); ++i ) {
+					if( m_signalCalls[i].fn == kFnProximity ) return true;
+					if( m_signalCalls[i].fn == kFnInterior )  return true;
+				}
+				return false;
+			}
+
+			//! Every `occlusion()` / `thickness()` / `convexity()` /
+			//! `proximity()` / `interior()` call site, in parse order
+			//! (def stages first, in registration order, then the final
+			//! expression).  Phase 3's baked mesh path reads this to decide
+			//! WHICH radius to bake and whether it may answer at all.
+			const std::vector<SignalRadiusCall>& SurfaceSignalCalls() const { return m_signalCalls; }
+
+			//! DL-25: every distinct painter NAME a `sample(...)` /
+			//! `sample_scalar(...)` call site referenced, in FIRST-REFERENCE
+			//! order (deduplicated -- two calls to `sample(rock)` in one body
+			//! share one entry).  Populated at COMPILE time by Builder;
+			//! UNRESOLVED until BindPainterRefs succeeds -- a program with a
+			//! non-empty list here and `!IsPainterRefsBound()` is mid-attach,
+			//! never mid-render (see BuildExpressionProgramFromChunkFields,
+			//! ExpressionPainter.h, which never lets one escape unbound).
+			const std::vector<std::string>& ColorPainterRefNames() const { return m_colorPainterRefNames; }
+			const std::vector<std::string>& ScalarPainterRefNames() const { return m_scalarPainterRefNames; }
+
+			//! Does this program call `sample()` and/or `sample_scalar()`
+			//! anywhere?  Resolved at compile time, same shape as
+			//! UsesSurfaceSignals -- the attach-time caller (Job::AddExpressionPainter
+			//! / ScalarPainterAsciiChunkParser) uses this to decide whether it
+			//! needs a painter-manager resolver at all before calling
+			//! BindPainterRefs.
+			bool UsesPainterSample() const { return !m_colorPainterRefNames.empty() || !m_scalarPainterRefNames.empty(); }
+
+			//! Does this program call any Group 7 live space-transform builtin
+			//! (`osl_to_object_*`, `osl_to_world_*`, `osl_to_camera_*`,
+			//! `osl_camera_to_world_*`)?  Resolved at compile time.
+			bool UsesSpaceTransform() const { return m_usesSpaceTransform; }
+			bool UsesViewRay() const { return m_usesViewRay; }
+
+			//! Part 0 (docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md): non-zero bitmask
+			//! of `PathDependence::Flags` when this expression or any painter it
+			//! samples depends on non-physical path/view state.
+			unsigned int GetPathDependence() const
+			{
+				unsigned int mask = m_pathDependence;
+				if( m_boundRefs ) {
+					for( size_t i = 0; i < m_boundRefs->color.size(); ++i ) {
+						if( m_boundRefs->color[i] ) {
+							mask |= m_boundRefs->color[i]->GetPathDependence();
+						}
+					}
+					for( size_t i = 0; i < m_boundRefs->scalar.size(); ++i ) {
+						if( m_boundRefs->scalar[i] ) {
+							mask |= m_boundRefs->scalar[i]->GetPathDependence();
+						}
+					}
+				}
+				return mask;
+			}
+
+			//! DL-292: true iff this expression reads world position `P`, calls a
+			//! world-position-producing space transform (`osl_to_world_point`), or
+			//! samples any child painter that reads world position.
+			bool ReadsWorldPosition() const
+			{
+				if( UsesContextVar( kContextSlotP ) || m_readsWorldPosition ) {
+					return true;
+				}
+				if( m_boundRefs ) {
+					for( size_t i = 0; i < m_boundRefs->color.size(); ++i ) {
+						if( m_boundRefs->color[i] && m_boundRefs->color[i]->ReadsWorldPosition() ) {
+							return true;
+						}
+					}
+					for( size_t i = 0; i < m_boundRefs->scalar.size(); ++i ) {
+						if( m_boundRefs->scalar[i] && m_boundRefs->scalar[i]->ReadsWorldPosition() ) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+
+			//! Has BindPainterRefs already run (successfully) on this
+			//! program?  A program with no `sample`/`sample_scalar` calls at
+			//! all reports true trivially -- it needs no binding, so it is
+			//! never "mid-attach".
+			bool IsPainterRefsBound() const { return !UsesPainterSample() || ( m_boundRefs != nullptr ); }
+
+			//! Resolve every `sample`/`sample_scalar` reference this program
+			//! compiled against real, already-registered painters -- called
+			//! EXACTLY ONCE, at ATTACH time (Job::AddExpressionPainter /
+			//! ScalarPainterAsciiChunkParser's `expression` form), AFTER
+			//! Builder::Finalize succeeds and BEFORE the owning
+			//! ExpressionPainter/ExpressionScalarPainter is constructed --
+			//! never at render time, and never from Compile()/Finalize()
+			//! themselves, because only the caller's IJob has a painter
+			//! manager to resolve a NAME against (see
+			//! BuildExpressionProgramFromChunkFields's own doc comment for
+			//! why the resolution step lives one layer up from here, not
+			//! inside this header).
+			//!
+			//! `colorPtrs`/`scalarPtrs` must be exactly
+			//! ColorPainterRefNames().size() / ScalarPainterRefNames().size()
+			//! entries long, index-aligned with those two lists, and every
+			//! entry non-null (the caller's job -- this function has no name
+			//! to blame a null on any more, so it refuses the whole bind
+			//! rather than guess).  ADDREFS every pointer it accepts (kept
+			//! alive for exactly as long as this program, or any copy of it,
+			//! survives -- see BoundPainterRefs's own doc comment for the
+			//! shared-ownership mechanics); the caller keeps its own
+			//! reference exactly as every other named-chunk resolver in this
+			//! codebase does (e.g. PainterChannelScalarPainter's ctor).
+			//!
+			//! Returns false (and binds NOTHING -- not even a partial set) on
+			//! a size mismatch or a null entry; the caller is expected to
+			//! have already produced a specific per-name diagnostic before
+			//! ever reaching here (a null in `colorPtrs`/`scalarPtrs` means a
+			//! name failed to resolve, which the caller -- not this function
+			//! -- knows the name of).
+			//!
+			//! DL-164 / DL-194 (docs/DEBT_LEDGER.md) STALE-POINTER WARNING: the addref this
+			//! function takes is a snapshot of "the painter object live at attach
+			//! time" -- there is no re-resolution hook, and nothing here notices if
+			//! the pointer it holds is later replaced (a same-name chunk re-Finalized
+			//! in place). That is safe TODAY only because Cst.cpp's
+			//! DeriveToJobIncremental refuses every ChunkCategory::Painter chunk
+			//! outright via an explicit targeted guard (DL-194), so the ONLY way any chunk's
+			//! painter bindings are ever rebuilt is a FULL DeriveToJob, which always
+			//! reconstructs this ExpressionProgram (and re-runs BindPainterRefs)
+			//! from scratch. If a future change ever admits Painter-category chunks
+			//! to that incremental path, it MUST provide a `RebindPainterRefs` hook:
+			//! (a) atomically replacing `m_boundRefs` with a newly constructed
+			//! `BoundPainterRefs` snapshot (releasing old addrefs and acquiring new ones),
+			//! (b) driven by a colour/scalar-painter reverse-dependency walk across all
+			//! referencing programs (using Cst.cpp's kColorPainterSubCat/kScalarPainterSubCat),
+			//! or alternatively refusing incremental apply specifically for any painter
+			//! chunk that is the target of any live sample()/sample_scalar() binding. See
+			//! tests/CstIncrementalSafetyTest.cpp's DL-164/DL-194 cases, which pin the
+			//! current refusal and will need updating (not merely re-passing) if this
+			//! ever changes.
+			bool BindPainterRefs( const std::vector<IPainter*>& colorPtrs, const std::vector<IScalarPainter*>& scalarPtrs )
+			{
+				if( colorPtrs.size() != m_colorPainterRefNames.size() ) return false;
+				if( scalarPtrs.size() != m_scalarPainterRefNames.size() ) return false;
+				for( std::size_t i = 0; i < colorPtrs.size(); ++i )  if( !colorPtrs[i] )  return false;
+				for( std::size_t i = 0; i < scalarPtrs.size(); ++i ) if( !scalarPtrs[i] ) return false;
+				std::shared_ptr<BoundPainterRefs> refs = std::make_shared<BoundPainterRefs>();
+				refs->color.reserve( colorPtrs.size() );
+				for( std::size_t i = 0; i < colorPtrs.size(); ++i ) { colorPtrs[i]->addref(); refs->color.push_back( colorPtrs[i] ); }
+				refs->scalar.reserve( scalarPtrs.size() );
+				for( std::size_t i = 0; i < scalarPtrs.size(); ++i ) { scalarPtrs[i]->addref(); refs->scalar.push_back( scalarPtrs[i] ); }
+				m_boundRefs = refs;
+				return true;
+			}
+
+			//! Number of compiled `def` stages (registration order == the
+			//! chunk's `def` line order, since AddDef pushes onto m_defs in
+			//! call order and Builder::Finalize copies it verbatim).  0 for
+			//! a program with no defs.  doc 88 S10: lets a caller bound a
+			//! def-stage preview index without guessing.
+			int DefCount() const { return (int)m_defs.size(); }
+
+			//! doc 88 S10 (Tier-2 def-stage thumbnail preview): evaluate the
+			//! program only THROUGH def index `defIdx` (0-based, registration
+			//! order) and report that def's own result -- the same
+			//! intermediate value a later def or the final expression would
+			//! see at that slot, without running anything after it.  Returns
+			//! false (outVal/outType untouched) when `defIdx` is out of
+			//! [0, DefCount()) -- e.g. a program with no defs, or a stale
+			//! index after the author edits the chain; the caller must not
+			//! infer "zero" from a false return.
+			//!
+			//! A scalar-typed def's result broadcasts to (s,s,s) in outVal,
+			//! matching EvalVec3's broadcast convention -- so a caller that
+			//! always reads outVal.x gets the right number regardless of
+			//! outType, and one that wants the true triple can check
+			//! outType first.
+			//!
+			//! Const, no heap allocation, no mutable state touched -- same
+			//! stack-machine contract as Eval/EvalVec3, so this is safe to
+			//! call from many concurrent preview-render threads sharing one
+			//! compiled program.
+			bool EvalDefStage( const ExprEvalContext& ctx, int defIdx, Vector3& outVal, VType& outType ) const
+			{
+				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
+				Scalar env[ kMaxSlots ];
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, m_boundRefs.get(), defIdx, ctx.pHit );
+				const Compiled& d = m_defs[ (size_t)defIdx ];
+				if( d.type == kVec3 ) {
+					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
+				} else {
+					const Scalar s = env[ d.writeSlot ];
+					outVal = Vector3( s, s, s );
+				}
+				outType = d.type;
+				return true;
+			}
+
+			bool IsValid() const { return m_valid; }
+			const std::string& Error() const { return m_error; }
+			//! Byte offset of the error within the expression string that
+			//! produced it, or -1 when the error isn't localized to one
+			//! position.
+			ptrdiff_t ErrorOffset() const { return m_errorOffset; }
+
+			//////////////////////////////////////////////////////////
+			// Builder
+			//////////////////////////////////////////////////////////
+			class Builder
+			{
+			public:
+				Builder() : m_errorOffset(-1), m_hasBuilderError(false), m_contextVarsEnabled(false),
+					m_usesSpaceTransform(false), m_usesSceneSignals(false), m_usesViewRay(false), m_readsWorldPosition(false), m_pathDependence(0u), m_ctxUsed(0)
+				{
+					// Reserve the fixed context-variable slots (u=0, v=1,
+					// P=2..4, Po=5..7, N=8..10, fw=11, time=12, curv=13,
+					// curvR=14, fwo=15 -- see the kContextSlot* block) WITHOUT
+					// registering their names in m_index.  A param/def is
+					// free to reuse any of these names -- ParseAtom checks
+					// m_index (user params/defs) first and falls back to
+					// LookupContextVar only when the name isn't user-bound,
+					// so a same-named param SHADOWS the context meaning for
+					// that expression rather than colliding with it.  This
+					// is load-bearing back-compat: real scenes already
+					// declare `param N <value>` as an ordinary scalar
+					// constant (enamel_watch.RISEscene et al.) that must
+					// keep meaning exactly that, not the new shading normal.
+					m_names.assign( kContextSlotCount, std::string() );
+				}
+
+				//! A named numeric constant (scalar only -- matches the
+				//! scene-file `param <name> <number>` grammar).  Returns false
+				//! (and sets error/offset) when `name` collides with an earlier
+				//! param/def of a DIFFERENT type -- see RejectIfDuplicate.  A
+				//! same-type redefinition (e.g. two `param a` lines) is NOT
+				//! rejected: it is "last wins" (the later value simply replaces
+				//! the earlier one in the same slot), matching Cst.cpp's `let`
+				//! chunk semantics (CollectLetBindings feeds every binding --
+				//! duplicates included -- through AddParam in document order,
+				//! and CstLetTest locks in "duplicate let name is last-wins").
+				bool AddParam( const std::string& name, const Scalar value )
+				{
+					if( RejectIfDuplicate( name, kScalar ) ) return false;
+					const int s = Slot( name, kScalar );
+					m_init[s] = value;
+					// A param IS a compile-time constant, which is what
+					// lets `param k 40` + `fbm(P*k, ...)` resolve its
+					// domain scale exactly like the literal `P*40` does.
+					// Unless a def owns the slot -- see m_slotIsDef.
+					if( m_slotIsDef.find( s ) == m_slotIsDef.end() ) {
+						const LinScalar lin = LinScalar::Const( value );
+						RecordSlotLinear( s, 1, &lin );
+					}
+					return true;
+				}
+
+				//! A named sub-expression (let-binding), evaluated in
+				//! registration order; visible to later defs + the final expr.
+				//! Its type (scalar or vec3) is inferred from `expr`.
+				//! Returns false (and sets error/offset) on a parse failure OR
+				//! when `name` collides with an earlier param/def of a
+				//! DIFFERENT type -- see RejectIfDuplicate (a same-type
+				//! redefinition is allowed; see AddParam's doc comment).
+				bool AddDef( const std::string& name, const std::string& expr )
+				{
+					Compiled c; VType t;
+					if( !Compile( expr, c, t ) ) {
+						return false;
+					}
+					if( RejectIfDuplicate( name, t ) ) return false;
+					const int s = Slot( name, t );
+					c.writeSlot = s;
+					c.type = t;
+					// Carry the def's own domain scale forward, so the very
+					// common `def q P*40` / `expr fbm(q, ...)` split resolves
+					// exactly as the inlined `fbm(P*40, ...)` would.  A body
+					// the analysis cannot follow records as unknown, which
+					// leaves every noise call reading it on the
+					// multiplier-1.0 fallback.
+					{
+						const int w = ( t == kVec3 ) ? 3 : 1;
+						LinScalar lin[3];
+						const bool ok = AnalyzeLinear( c.code, 0, c.code.size(), w, lin );
+						RecordSlotLinear( s, w, ok ? lin : 0 );
+						for( int k = 0; k < w; ++k ) m_slotIsDef[ s + k ] = true;
+					}
+					m_defs.push_back( c );
+					return true;
+				}
+
+				//! Compile the final expression and produce the program.
+				bool Finalize( const std::string& expr, ExpressionProgram& out )
+				{
+					if( m_hasBuilderError ) {
+						// A prior AddParam/AddDef already failed (e.g. a duplicate
+						// name, P1-A) -- that failure is STICKY: Finalize must not
+						// silently succeed just because the final expr itself compiles.
+						out.m_valid = false; out.m_error = m_error; out.m_errorOffset = m_errorOffset;
+						return false;
+					}
+					Compiled c; VType t;
+					if( !Compile( expr, c, t ) ) {
+						out.m_valid = false;
+						out.m_error = m_error;
+						out.m_errorOffset = m_errorOffset;
+						return false;
+					}
+					if( (int)m_names.size() > kMaxSlots ) {
+						SetError( "too many variables (context + param + def); user-declared names may use "
+							"at most " + std::to_string( kMaxSlots - kContextSlotCount ) + " of the " + std::to_string( kMaxSlots ) +
+							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,fwo,time,curv,curvR)", -1 );
+						out.m_valid = false; out.m_error = m_error; out.m_errorOffset = m_errorOffset;
+						return false;
+					}
+					c.writeSlot = -1;
+					c.type = t;
+					out.m_uSlot = 0; out.m_vSlot = 1;
+					out.m_PSlot = kContextSlotP; out.m_PoSlot = kContextSlotPo; out.m_NSlot = 8;
+					out.m_fwSlot = kContextSlotFw; out.m_fwoSlot = kContextSlotFwo;
+					out.m_timeSlot = kContextSlotTime;
+					out.m_curvSlot = kContextSlotCurv; out.m_curvRSlot = kContextSlotCurvR;
+					// Compile-time consumption record (design doc 5.4): which context
+					// vars did any def body or the final expression actually resolve?
+					// Accumulated by ParseAtom across every Compile() this Builder
+					// ran, so it covers `def` stages as well as the final expr.
+					out.m_ctxUsedMask = m_ctxUsed;
+					// Same accumulate-across-every-Compile discipline as m_ctxUsed:
+					// covers `def` stage bodies as well as the final expression.
+					out.m_signalCalls = m_sigCalls;
+					// DL-25: same accumulate-across-every-Compile discipline as
+					// m_sigCalls -- covers def-stage `sample()`/`sample_scalar()`
+					// calls as well as the final expression.  Left UNRESOLVED
+					// here on purpose: only the attach-time caller (which has an
+					// IJob's painter manager) can turn a name into a pointer --
+					// see BindPainterRefs's own doc comment.
+					out.m_colorPainterRefNames = m_colorPainterRefNames;
+					out.m_scalarPainterRefNames = m_scalarPainterRefNames;
+					out.m_meshAttrNames = m_meshAttrNames;
+					out.m_initEnv.assign( m_names.size(), Scalar(0) );
+					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
+						out.m_initEnv[ it->first ] = it->second;
+					}
+					out.m_defs = m_defs;
+					out.m_final = c;
+					// PROCESS-UNIQUE IDENTITY, handed out exactly here: one
+					// id per successful compile.  Assigned AFTER every
+					// failure return above, so an invalid program keeps id 0
+					// and is never memoised.
+					out.m_id = ExpressionMemo::NewProgramId();
+					out.m_usesSpaceTransform = m_usesSpaceTransform;
+					out.m_usesSceneSignals = m_usesSceneSignals;
+					out.m_usesViewRay = m_usesViewRay;
+					out.m_readsWorldPosition = m_readsWorldPosition;
+					out.m_pathDependence = m_pathDependence;
+					out.m_memoWorthy = ComputeMemoWorthiness( out );
+					out.m_valid = true;
+					return true;
+				}
+
+				//! "Is this body expensive enough that a memo lookup is
+				//! cheaper than re-running it?"  Decided once, at compile
+				//! time -- see ExpressionProgram::MemoWorthy.
+				//!
+				//! THREE WAYS TO QUALIFY, any one of which suffices:
+				//!   * it calls a geometry signal (hundreds of SDF field
+				//!     evaluations per call -- the case this whole memo
+				//!     exists for);
+				//!   * it calls a NOISE builtin (perlin / fbm / turbulence /
+				//!     ridged / worley), each of which is a lattice hash per
+				//!     octave and dwarfs a key compare on its own;
+				//!   * it is simply LONG -- more instructions than the key
+				//!     comparison has fields to ACTUALLY compare for a body
+				//!     like this one.  That count is
+				//!     ExpressionMemo::ProgramKey::kFieldsNonSampling (37:
+				//!     18 own fields, plus `usesPainterSample`, plus
+				//!     `usesSpaceTransform`, plus the signal channel's 17),
+				//!     taken from the comparison itself rather than restated
+				//!     here so the two cannot drift.  At or above it the
+				//!     lookup cannot be the more expensive half even for a
+				//!     body of pure arithmetic.
+				//!
+				//!     ⚠ NOT `kFields` (85).  That is the key's WORST-CASE
+				//!     width, and it includes the 16 painter-sample compares
+				//!     and 32 space-transform/object-info/ao compares `ProgramKey::Equals`
+				//!     SHORT-CIRCUITS for any body that uses neither.  Thresholding on 52 silently de-memoised
+				//!     every pure-arithmetic body of 36..51 instructions
+				//!     when DL-25 widened the key; caught by that slice's
+				//!     round-3 review (P2-2) and pinned by
+				//!     ExpressionMemoTest (g)'s 40-instruction row.
+				//!     THE THRESHOLD MOVING IS A PERF CHANGE, NOT A
+				//!     CORRECTNESS ONE -- a body just under it with no
+				//!     signal and no noise call stops qualifying, and
+				//!     re-running it produces the same bits the memo would
+				//!     have returned.
+				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
+				{
+					// A FOURTH WAY TO QUALIFY (DL-25 review P1-1), listed
+					// first because it is the cheapest to decide.  A
+					// `sample()` / `sample_scalar()` call is a virtual
+					// `GetColor` / `GetValuesAt` on an arbitrary other
+					// painter -- a mip-filtered texture fetch, a whole
+					// nested expression program -- which dwarfs a key
+					// compare on its own, exactly like a noise call.  It is
+					// also the one builtin the INSTRUCTION COUNT below
+					// cannot see: `sample(tex)` compiles to a single
+					// kFnSamplePainter instruction, so a body that is one
+					// texture fetch and a `pow` -- the flagship wetness
+					// recipe -- would otherwise read as ~6 instructions and
+					// miss the threshold.  Measured on a 320x240 / 64-spp
+					// sphere whose `expr_wet` samples a checker inside an
+					// fbm body and is consumed by rd + alphax + alphay
+					// (n=5, user CPU): memoed 6.452 +/- 0.080 s, un-memoed
+					// 21.630 +/- 0.094 s -- 3.35x.
+					//
+					// The soundness of memoising such a program at all is
+					// ExpressionMemo::PainterSampleHitKey's job -- the L2
+					// key carries the hit fields a sampled painter can read
+					// -- not this predicate's.
+					if( p.UsesPainterSample() ) return true;
+
+					if( !p.m_signalCalls.empty() ) return true;
+
+					std::size_t instrs = p.m_final.code.size();
+					for( std::size_t d = 0; d < p.m_defs.size(); ++d ) instrs += p.m_defs[d].code.size();
+
+					// Noise-call scan, over the final expression and every def.
+					for( std::size_t pass = 0; pass <= p.m_defs.size(); ++pass ) {
+						const Compiled& body = ( pass == 0 ) ? p.m_final : p.m_defs[ pass - 1 ];
+						for( std::size_t i = 0; i < body.code.size(); ++i ) {
+							const Compiled::Instr& in = body.code[i];
+							// An `osl_` call qualifies when its signature says
+							// it is expensive (the gradient and fractal noise
+							// and Voronoi builtins do; white noise, colour
+							// conversions, Mix Color, safe math, componentwise
+							// vec3/rotations and space transforms do not).
+							if( in.op == Compiled::kOsl || in.op == Compiled::kOslV3 ) {
+								const OslBuiltins::Sig* os = OslBuiltins::FindById( in.fn );
+								if( os && os->memoWorthy ) return true;
+								continue;
+							}
+							if( in.op != Compiled::kFunc ) continue;
+							// The noise band: perlin, fbm, turbulence,
+							// ridged and the four worley forms.  Named
+							// constants, not the literals 42/49 this line
+							// used to carry -- their declaration asserts the
+							// band is exactly those eight and that cellhash
+							// (a single integer hash, deliberately NOT
+							// qualifying on its own) sits just past it.
+							if( in.fn >= ExpressionProgram::kFnNoiseFirst
+							 && in.fn <= ExpressionProgram::kFnNoiseLast ) return true;
+						}
+					}
+
+					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFieldsNonSampling;
+				}
+
+				const std::string& Error() const { return m_error; }
+				ptrdiff_t ErrorOffset() const { return m_errorOffset; }
+
+				//! Context vars (P, Po, N, fw, fwo, time, curv, curvR) are OFF by default -- ParseAtom
+				//! treats those eight names as ordinary unknown identifiers unless this
+				//! is turned on (u and v are never gated; they are the query
+				//! coordinates every surface has always had).  This keeps the
+				//! document-level `expr(...)` / `let` sublanguage (Cst.cpp's
+				//! EvalExprBody, AgentSession.cpp's LocalEvalExprBody -- both predate
+				//! the S1 vec3/context-var VM extension) byte-for-byte pre-vec3-VM:
+				//! `time`, `P`, etc. stay hard "unknown variable" compile errors there
+				//! UNLESS the author let-binds a same-named param, which shadows via
+				//! m_index regardless of this flag (see the Builder() ctor comment).
+				//! The texture-authoring surface (expression_painter,
+				//! Job.cpp / scalar_painter{expression}, ChunkParserRegistry.cpp)
+				//! turns this ON -- that surface is what P/Po/N/fw/fwo/time were
+				//! added FOR (doc 88).  expression_function2d (also
+				//! ChunkParserRegistry.cpp) is the OLDER, UV-only surface and
+				//! must stay OFF -- see ExpressionPainter.h's
+				//! BuildExpressionProgramFromChunkFields doc comment for the
+				//! frozen-contract rationale.
+				//! The flag gates context VARIABLES and the surface-query
+				//! builtins (occlusion ... interior, sample/sample_scalar).
+				//! The other builtins compile on every surface, the UV-only
+				//! one included: the maths, perlin/worley/cellhash and the
+				//! `osl_` family read only their arguments, and fbm/
+				//! turbulence/ridged also read `fw`, which is 0 where context
+				//! vars are off.
+				void EnableContextVars( bool enable = true ) { m_contextVarsEnabled = enable; }
+
+				//! One `sample(name)` / `sample_scalar(name)` call site found by a
+				//! text scan of an expression BODY (DL-164, docs/DEBT_LEDGER.md) --
+				//! `painterName` is the bare identifier argument, `identOff`/
+				//! `identLen` the exact byte range of THAT IDENTIFIER (not the
+				//! whole call) within the scanned string, so a caller can excise or
+				//! replace just the name (a rename) without re-deriving the call's
+				//! surrounding syntax.
+				struct SampleRef { bool isScalar; std::string fnName; std::string painterName; size_t identOff; size_t identLen; };
+
+				//! Scan `expr` for every `sample(<ident>)` / `sample_scalar(<ident>)`
+				//! call using the SAME tokenizer `ParseSampleCall` consumes at
+				//! compile time -- not a hand-rolled regex that can drift from the
+				//! real grammar.  This is a TOKEN-SEQUENCE scan, not a full parse: it
+				//! reports every `Ident(sample|sample_scalar) LP Ident RP` token
+				//! quadruple wherever it occurs in the token stream, regardless of
+				//! surrounding context.  That is exact, not a heuristic, because this
+				//! grammar has no other construct that could produce that exact
+				//! four-token sequence -- an identifier immediately followed by `(`
+				//! is ALWAYS a function call here (ParseAtom/ParseCall), so a
+				//! `sample`/`sample_scalar` token followed by `(<ident>)` is a sample
+				//! call whether or not the rest of the expression around it parses.
+				//! Returns false only when `expr` fails to tokenize at all (e.g. a
+				//! malformed numeric literal) -- `out` is left as populated so far
+				//! (empty on a scan of `expr`'s well-formed prefix is the common
+				//! case); a caller like BuildReferenceGraph, which must not treat a
+				//! tokenizer hiccup as "this document has no sample() edges", should
+				//! still use whatever `out` it got rather than discard it, but the
+				//! false return lets a stricter caller distinguish "no calls found"
+				//! from "couldn't scan".
+				static bool ExtractSampleRefs( const std::string& expr, std::vector<SampleRef>& out )
+				{
+					Builder b;
+					std::vector<Tok> toks;
+					const bool ok = b.Tokenize( expr, toks );
+					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
+						if( toks[i].t != Tok::Ident ) continue;
+						const std::string& fn = toks[i].s;
+						const bool oneArg = ( fn == "sample" || fn == "sample_scalar" || fn == "sample_alpha" );
+						const bool uvArg  = ( fn == "sample_uv" || fn == "sample_uv_alpha" );
+						if( !oneArg && !uvArg ) continue;
+						if( toks[i+1].t != Tok::LP ) continue;
+						if( toks[i+2].t != Tok::Ident ) continue;
+						if( oneArg && toks[i+3].t != Tok::RP ) continue;
+						if( uvArg && toks[i+3].t != Tok::Comma ) continue;
+						SampleRef r;
+						r.isScalar = ( fn == "sample_scalar" );
+						r.fnName = fn;
+						r.painterName = toks[i+2].s;
+						r.identOff = toks[i+2].off;
+						r.identLen = toks[i+2].s.size();
+						out.push_back( r );
+					}
+					return ok;
+				}
+
+				//! Rewrite every `sample(oldName)` (isScalar==false) or
+				//! `sample_scalar(oldName)` (isScalar==true) call in `expr` to name
+				//! `newName` instead, leaving every other token (including a
+				//! same-named call of the OTHER pipe, and any call naming a
+				//! different painter) byte-exact -- the DocRename counterpart to
+				//! ExtractSampleRefs, built on the identical token scan so the two
+				//! can never disagree about where a call's identifier sits.
+				//! Processes the WHOLE string in one pass and is idempotent (a
+				//! second call with the same oldName finds nothing left to rewrite),
+				//! which matters because DocRename may invoke this once per
+				//! traced edge when a body contains more than one call to the
+				//! renamed painter -- see Cst.cpp's DocRename.  On a tokenize
+				//! failure, returns `expr` unchanged (a malformed body has no
+				//! well-defined call sites to rewrite; DocRename never reaches one
+				//! in practice since a scene only loads a body that compiled).
+				static std::string RewriteSampleCallRefs( const std::string& expr, bool isScalar,
+					const std::string& oldName, const std::string& newName )
+				{
+					Builder b;
+					std::vector<Tok> toks;
+					if( !b.Tokenize( expr, toks ) ) return expr;
+					std::string out;
+					out.reserve( expr.size() );
+					size_t last = 0;
+					for( size_t i = 0; i + 3 < toks.size(); ++i ) {
+						if( toks[i].t != Tok::Ident ) continue;
+						const std::string& fn = toks[i].s;
+						const bool thisIsScalar = ( fn == "sample_scalar" );
+						const bool thisIsOneColor = ( fn == "sample" || fn == "sample_alpha" );
+						const bool thisIsUvColor = ( fn == "sample_uv" || fn == "sample_uv_alpha" );
+						if( !thisIsScalar && !thisIsOneColor && !thisIsUvColor ) continue;
+						if( thisIsScalar != isScalar ) continue;
+						if( toks[i+1].t != Tok::LP ) continue;
+						if( toks[i+2].t != Tok::Ident ) continue;
+						if( ( thisIsScalar || thisIsOneColor ) && toks[i+3].t != Tok::RP ) continue;
+						if( thisIsUvColor && toks[i+3].t != Tok::Comma ) continue;
+						if( toks[i+2].s != oldName ) continue;
+						out.append( expr, last, toks[i+2].off - last );
+						out.append( newName );
+						last = toks[i+2].off + toks[i+2].s.size();
+					}
+					out.append( expr, last, expr.size() - last );
+					return out;
+				}
+
+			private:
+				std::vector<std::string> m_names;	// slot index -> name (vec3 reserves 3 consecutive)
+				std::map<std::string,int> m_index;	// name -> first slot
+				std::map<int,VType> m_slotType;	// first slot -> type
+				std::map<int,Scalar> m_init;		// param initial values (scalar slots only)
+				std::vector<Compiled> m_defs;
+				std::string m_error;
+				ptrdiff_t m_errorOffset;
+				bool m_hasBuilderError;	// sticky: once true, Finalize always fails (P1-A dup-name guard)
+				bool m_contextVarsEnabled;	// see EnableContextVars() doc comment
+				bool m_usesSpaceTransform;	// true iff any compiled body called a Group 7 space-transform / hit-context builtin
+				bool m_usesSceneSignals;	// true iff any compiled body called a scene-signal OSL builtin (e.g. osl_ao)
+				bool m_usesViewRay;			// true iff any compiled body called a view-ray OSL builtin (osl_layer_weight / osl_fresnel)
+				bool m_readsWorldPosition;	// DL-292: true iff any compiled body called a world-position-producing builtin (osl_to_world_point)
+				unsigned int m_pathDependence;	// Part 0 bitmask of PathDependence::Flags from OSL builtins
+				//! Bit i set == some body compiled by THIS builder resolved the
+				//! context var whose FIRST env slot is i.  Written only by
+				//! ParseAtom's context branch; copied into the program by Finalize
+				//! as m_ctxUsedMask.  (Named differently from the program-side
+				//! field on purpose: Builder is a NESTED class, so a same-named
+				//! member would shadow-collide with the enclosing
+				//! ExpressionProgram's own -- which is a hard compile error, not a
+				//! silent shadow, but a confusing one.)
+				unsigned int m_ctxUsed;
+				//! Every occlusion()/thickness()/convexity() call site compiled by THIS
+				//! builder, in parse order; copied into the program by Finalize
+				//! as m_signalCalls.  (Named differently from the program-side
+				//! field for exactly the reason m_ctxUsed is -- Builder is a
+				//! nested class, and a same-named member would collide with the
+				//! enclosing ExpressionProgram's own.)
+				std::vector<ExpressionProgram::SignalRadiusCall> m_sigCalls;
+				//! DL-25: every distinct painter name `sample()`/`sample_scalar()`
+				//! referenced, in first-reference order, deduplicated via the
+				//! paired index map (two calls to `sample(rock)` share one
+				//! slot -- RegisterPainterRef's whole job).  Copied into the
+				//! program by Finalize as m_colorPainterRefNames /
+				//! m_scalarPainterRefNames.
+				std::vector<std::string> m_colorPainterRefNames;
+				std::map<std::string,int> m_colorPainterRefIndex;
+				std::vector<std::string> m_scalarPainterRefNames;
+				std::map<std::string,int> m_scalarPainterRefIndex;
+				std::vector<std::string> m_meshAttrNames;
+				std::map<std::string,int> m_meshAttrIndex;
+
+				//! Dedupe-and-register one `sample(name)` / `sample_scalar(name)`
+				//! reference into the given (names, index) pair, returning its
+				//! (possibly pre-existing) index.  Shared by both builtins --
+				//! see ParseSampleCall.
+				static int RegisterPainterRef( std::vector<std::string>& names, std::map<std::string,int>& index, const std::string& nm )
+				{
+					std::map<std::string,int>::const_iterator it = index.find( nm );
+					if( it != index.end() ) return it->second;
+					const int idx = (int)names.size();
+					names.push_back( nm );
+					index[ nm ] = idx;
+					return idx;
+				}
+
+				void SetError( const std::string& msg, ptrdiff_t offset ) { m_error = msg; m_errorOffset = offset; }
+
+				// P1-A: refuse a duplicate param/def name whose TYPE doesn't
+				// match the earlier registration, instead of silently reusing
+				// the earlier slot (Slot() below used to do exactly that,
+				// type-blind, regardless of type) -- a same-named `param` +
+				// `def` of DIFFERENT types clobbered the earlier binding's env
+				// cells, read the wrong type, and could write past the vec3
+				// def's 3 slots into whatever the LAST allocated slot happened
+				// to be (an ASan-confirmed stack overflow at BindEnv).  That
+				// cross-type case has no sensible semantics (unlike a real
+				// language's block-scoped shadowing, every param/def in one
+				// program shares a single flat namespace) and is a hard compile
+				// error.  A SAME-type redefinition (e.g. two `param a` lines,
+				// or two `def a` lines) is memory-safe -- Slot() returns the
+				// already-correctly-sized existing slot either way -- and is
+				// deliberately ALLOWED here as "last wins": Cst.cpp's `let`
+				// chunk semantics (CollectLetBindings feeds every binding,
+				// duplicates included, through AddParam in document order) and
+				// CstLetTest ("duplicate let name is last-wins") depend on it.
+				// The error is STICKY (see m_hasBuilderError) because
+				// AddParam/AddDef are void-ish fire-and-forget calls at most
+				// call sites -- Finalize is where every caller already checks a
+				// return value.
+				bool RejectIfDuplicate( const std::string& name, VType vt )
+				{
+					std::map<std::string,int>::const_iterator it = m_index.find( name );
+					if( it == m_index.end() ) return false;
+					if( m_slotType[ it->second ] == vt ) return false;	// same-type: allowed, "last wins"
+					if( !m_hasBuilderError ) {
+						SetError( "duplicate name `" + name + "` redeclared with a different type (was " +
+							( m_slotType[it->second]==kVec3 ? "vec3" : "scalar" ) + ", now " + ( vt==kVec3 ? "vec3" : "scalar" ) + ")", -1 );
+						m_hasBuilderError = true;
+					}
+					return true;
+				}
+
+				// Fixed context-variable name -> (slot, type).  Checked only
+				// when `name` isn't a user param/def (see the Builder()
+				// constructor comment on why user names shadow these).  ALL
+				// TEN names resolve here regardless of m_contextVarsEnabled
+				// -- the caller (ParseAtom) is what gates
+				// P/Po/N/fw/fwo/time/curv/curvR on that flag; u/v are never
+				// gated.  See EnableContextVars().
+				static bool LookupContextVar( const std::string& name, int& slot, VType& vt )
+				{
+					if( name == "u" )    { slot = 0;  vt = kScalar; return true; }
+					if( name == "v" )    { slot = 1;  vt = kScalar; return true; }
+					if( name == "P" )    { slot = kContextSlotP;  vt = kVec3;   return true; }
+					if( name == "Po" )   { slot = kContextSlotPo; vt = kVec3;   return true; }
+					if( name == "N" )    { slot = 8;  vt = kVec3;   return true; }
+					if( name == "fw" )    { slot = kContextSlotFw;    vt = kScalar; return true; }
+					if( name == "fwo" )   { slot = kContextSlotFwo;   vt = kScalar; return true; }
+					if( name == "time" )  { slot = kContextSlotTime;  vt = kScalar; return true; }
+					if( name == "curv" )  { slot = kContextSlotCurv;  vt = kScalar; return true; }
+					if( name == "curvR" ) { slot = kContextSlotCurvR; vt = kScalar; return true; }
+					return false;
+				}
+
+				int Slot( const std::string& name, VType vt )
+				{
+					std::map<std::string,int>::const_iterator it = m_index.find( name );
+					if( it != m_index.end() ) {
+						// Defensive only: every current caller (AddParam/AddDef) already
+						// rejects a duplicate name via RejectIfDuplicate before reaching
+						// here, so this branch reusing a slot is unreachable today.  Kept
+						// as a belt for a future caller that bypasses that guard --
+						// silently returning a slot whose recorded type doesn't match
+						// `vt` is exactly the P1-A bug (env clobber + stack overflow), so
+						// surface it as a builder-level error instead.
+						const int s = it->second;
+						if( m_slotType[ s ] != vt && !m_hasBuilderError ) {
+							SetError( "internal error: slot `" + name + "` reused with a different type", -1 );
+							m_hasBuilderError = true;
+						}
+						return s;
+					}
+					const int s = (int)m_names.size();
+					m_names.push_back( name );
+					if( vt == kVec3 ) { m_names.push_back( name + ".y" ); m_names.push_back( name + ".z" ); }
+					m_index[ name ] = s;
+					m_slotType[ s ] = vt;
+					return s;
+				}
+
+				// --- function table (name -> id/syntactic-arg-types/return) ---
+				// Legacy scalar ids (1..33) are UNCHANGED from the pre-vec3
+				// engine -- CallFunc's cases for them are byte-identical, only
+				// the arity is now carried explicitly on the instruction
+				// instead of recovered from the id band.
+				struct FnSig { const char* n; int id; int nArgs; VType argT[4]; VType ret; };
+				static const FnSig* FindSig( const std::string& name )
+				{
+					static const VType S = kScalar, V = kVec3;
+					static const FnSig table[] = {
+						{"sin",1,1,{S,S,S,S},S}, {"cos",2,1,{S,S,S,S},S}, {"tan",3,1,{S,S,S,S},S},
+						{"asin",4,1,{S,S,S,S},S}, {"acos",5,1,{S,S,S,S},S}, {"atan",6,1,{S,S,S,S},S},
+						{"exp",7,1,{S,S,S,S},S}, {"log",8,1,{S,S,S,S},S}, {"sqrt",9,1,{S,S,S,S},S},
+						{"abs",10,1,{S,S,S,S},S}, {"floor",11,1,{S,S,S,S},S}, {"ceil",12,1,{S,S,S,S},S},
+						{"frac",13,1,{S,S,S,S},S}, {"sign",14,1,{S,S,S,S},S},
+						{"atan2",20,2,{S,S,S,S},S}, {"mod",21,2,{S,S,S,S},S}, {"min",22,2,{S,S,S,S},S},
+						{"max",23,2,{S,S,S,S},S}, {"pow",24,2,{S,S,S,S},S}, {"hypot",25,2,{S,S,S,S},S},
+						{"step",26,2,{S,S,S,S},S},
+						{"clamp",30,3,{S,S,S,S},S}, {"smoothstep",31,3,{S,S,S,S},S}, {"select",33,3,{S,S,S,S},S},
+						// vec3-domain, scalar-returning
+						{"dot",40,2,{V,V,S,S},S}, {"length",41,1,{V,S,S,S},S},
+						// The noise family, by NAME rather than by literal id:
+						// ExpressionProgram's kFn* constants are the one
+						// definition, because Builder::ComputeMemoWorthiness
+						// tests these same ids as a range (see their comment).
+						{"perlin",ExpressionProgram::kFnPerlin,1,{V,S,S,S},S},
+						{"fbm",ExpressionProgram::kFnFbm,4,{V,S,S,S},S},
+						{"turbulence",ExpressionProgram::kFnTurbulence,4,{V,S,S,S},S},
+						{"ridged",ExpressionProgram::kFnRidged,4,{V,S,S,S},S},
+						{"worley_f1",ExpressionProgram::kFnWorleyF1,2,{V,S,S,S},S},
+						{"worley_f2",ExpressionProgram::kFnWorleyF2,2,{V,S,S,S},S},
+						{"worley_f2f1",ExpressionProgram::kFnWorleyF2F1,2,{V,S,S,S},S},
+						{"worley_id",ExpressionProgram::kFnWorleyId,2,{V,S,S,S},S},
+						{"cellhash",ExpressionProgram::kFnCellHash,1,{S,S,S,S},S},
+						// geometry-derived shading signals -- one scalar
+						// argument, the query radius as a FRACTION of the hit
+						// geometry's characteristic size (design doc Phase 2).
+						// Gated on EnableContextVars in ParseCall for the same
+						// reason P/N/curv are gated in ParseAtom: they are
+						// surface queries, and expression_function2d's frozen
+						// UV-only contract must not grow them.
+						{"occlusion",ExpressionProgram::kFnOcclusion,1,{S,S,S,S},S},
+						{"thickness",ExpressionProgram::kFnThickness,1,{S,S,S,S},S},
+						{"convexity",ExpressionProgram::kFnConvexity,1,{S,S,S,S},S},
+						// The CROSS-OBJECT signal.  Same shape as the three
+						// above -- one scalar argument, one scalar result,
+						// gated on EnableContextVars for the same reason --
+						// but its argument is a WORLD LENGTH, not a
+						// fraction of the hit object's size.  See
+						// ExpressionProgram::kFnProximity.
+						{"proximity",ExpressionProgram::kFnProximity,1,{S,S,S,S},S},
+						{"interior",ExpressionProgram::kFnInterior,1,{S,S,S,S},S},
+						// vec3-returning
+						{"cross",60,2,{V,V,S,S},V}, {"normalize",61,1,{V,S,S,S},V},
+					};
+					for( size_t i = 0; i < sizeof(table)/sizeof(table[0]); ++i ) {
+						if( name == table[i].n ) return &table[i];
+					}
+					return 0;
+				}
+				// fn ids reserved for functions parsed with bespoke logic
+				// rather than the FnSig table (kept out of the table so a
+				// name collision there is a compile error, not a silent
+				// shadow): vec3()/ramp()/mix() -- see ParseAtom/ParseCall.
+				static const int kFnMixScalar = 32;
+				static const int kFnMixVec3   = 62;
+
+				//////////////////////////////////////////////////
+				// Recursive-descent parser -> postfix emit
+				//////////////////////////////////////////////////
+				struct Tok { enum T { Num, Ident, Str, Op, LP, RP, Comma, Dot, End } t; Scalar num; std::string s; size_t off; };
+
+				bool Tokenize( const std::string& e, std::vector<Tok>& out )
+				{
+					size_t i = 0, n = e.size();
+					while( i < n ) {
+						const char c = e[i];
+						if( c == ' ' || c == '\t' || c == '\n' || c == '\r' ) { ++i; continue; }
+						if( c == '"' ) {
+							const size_t startOff = i++;
+							std::string s;
+							bool closed = false;
+							auto hexVal = []( char ch ) -> int {
+								if( ch >= '0' && ch <= '9' ) return ch - '0';
+								if( ch >= 'a' && ch <= 'f' ) return 10 + ( ch - 'a' );
+								if( ch >= 'A' && ch <= 'F' ) return 10 + ( ch - 'A' );
+								return -1;
+							};
+							while( i < n ) {
+								const char ch = e[i++];
+								if( ch == '"' ) { closed = true; break; }
+								if( ch == '\\' ) {
+									if( i >= n ) { SetError( "unterminated escape in string literal", (ptrdiff_t)startOff ); return false; }
+									const char esc = e[i++];
+									if( esc == '"' || esc == '\\' ) { s.push_back( esc ); }
+									else if( esc == 't' ) { s.push_back( '\t' ); }
+									else if( esc == 'x' ) {
+										if( i + 1 >= n ) { SetError( "incomplete \\xHH escape in string literal", (ptrdiff_t)(i - 2) ); return false; }
+										const int hi = hexVal( e[i] );
+										const int lo = hexVal( e[i + 1] );
+										if( hi < 0 || lo < 0 ) { SetError( "invalid hex digits in \\xHH escape", (ptrdiff_t)(i - 2) ); return false; }
+										const unsigned char byte = static_cast<unsigned char>( ( hi << 4 ) | lo );
+										if( byte == 0 ) { SetError( "\\x00 NUL byte is not allowed in string literal", (ptrdiff_t)(i - 2) ); return false; }
+										s.push_back( static_cast<char>( byte ) );
+										i += 2;
+									}
+									else { SetError( "unknown escape sequence in string literal (supported: \\\", \\\\, \\t, \\xHH)", (ptrdiff_t)(i - 2) ); return false; }
+								} else {
+									s.push_back( ch );
+								}
+							}
+							if( !closed ) { SetError( "unterminated string literal", (ptrdiff_t)startOff ); return false; }
+							Tok t; t.t = Tok::Str; t.s = std::move( s ); t.off = startOff;
+							out.push_back( t );
+							continue;
+						}
+						if( c == '.' && i+1 < n && ( ( e[i+1]>='a'&&e[i+1]<='z' ) || ( e[i+1]>='A'&&e[i+1]<='Z' ) ) ) {
+							Tok t; t.t = Tok::Dot; t.off = i; out.push_back( t ); ++i; continue;
+						}
+						if( ( c >= '0' && c <= '9' ) || c == '.' ) {
+							const char* start = e.c_str() + i;
+							char* end = 0;
+							const double val = strtod( start, &end );
+							if( end == start ) { SetError( "bad number", (ptrdiff_t)i ); return false; }
+							Tok t; t.t = Tok::Num; t.num = Scalar(val); t.off = i;
+							out.push_back( t );
+							i += ( end - start );
+							continue;
+						}
+						if( ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) || c == '_' ) {
+							size_t j = i;
+							while( j < n && ( ( e[j]>='a'&&e[j]<='z' ) || ( e[j]>='A'&&e[j]<='Z' ) || ( e[j]>='0'&&e[j]<='9' ) || e[j]=='_' ) ) ++j;
+							Tok t; t.t = Tok::Ident; t.s = e.substr( i, j - i ); t.off = i;
+							out.push_back( t );
+							i = j;
+							continue;
+						}
+						if( c == '(' ) { Tok t; t.t = Tok::LP; t.off = i; out.push_back(t); ++i; continue; }
+						if( c == ')' ) { Tok t; t.t = Tok::RP; t.off = i; out.push_back(t); ++i; continue; }
+						if( c == ',' ) { Tok t; t.t = Tok::Comma; t.off = i; out.push_back(t); ++i; continue; }
+						// operators, incl. two-char comparisons
+						Tok t; t.t = Tok::Op; t.off = i;
+						if( ( c=='<'||c=='>'||c=='='||c=='!' ) && i+1<n && e[i+1]=='=' ) { t.s = e.substr(i,2); i+=2; }
+						else { t.s = std::string(1,c); ++i; }
+						out.push_back( t );
+					}
+					Tok t; t.t = Tok::End; t.off = n;
+					out.push_back( t );
+					return true;
+				}
+
+				// parser state
+				const std::vector<Tok>* m_toks;
+				size_t m_pos;
+				Compiled* m_emit;
+				int m_parseDepth;
+
+				const Tok& Cur() const { return (*m_toks)[ m_pos ]; }
+				void Advance() { ++m_pos; }
+				size_t CurOff() const { return Cur().off; }
+
+				bool Expect( Tok::T t, const char* msg, size_t offOnFail )
+				{
+					if( Cur().t != t ) { SetError( msg, (ptrdiff_t)( Cur().t == Tok::End ? offOnFail : CurOff() ) ); return false; }
+					Advance();
+					return true;
+				}
+
+				bool Compile( const std::string& expr, Compiled& out, VType& outType )
+				{
+					std::vector<Tok> toks;
+					if( !Tokenize( expr, toks ) ) return false;
+					m_toks = &toks; m_pos = 0; m_emit = &out; m_parseDepth = 0;
+					out.code.clear();
+					if( !ParseCmp( outType ) ) return false;
+					if( Cur().t != Tok::End ) { SetError( "trailing tokens in `" + expr + "`", (ptrdiff_t)CurOff() ); return false; }
+					// compile-time value-stack bound: simulate the postfix stack
+					// effect so a deferred-operand expression can never overflow
+					// the fixed Eval stack.  Net stack delta is implied by the
+					// opcode, except kFunc/kFuncV3/kRamp/kOsl/kOslV3 whose arity
+					// varies -- those read it straight off the instruction.
+					int sp = 0, mx = 0;
+					for( size_t i = 0; i < out.code.size(); ++i ) {
+						const Compiled::Instr& in = out.code[i];
+						switch( in.op ) {
+						case Compiled::kConst: case Compiled::kVar: sp += 1; break;
+						case Compiled::kNeg: case Compiled::kNegV: break;
+						case Compiled::kSplat3: sp += 2; break;
+						case Compiled::kSwizzle: sp -= 2; break;
+						case Compiled::kAddV: case Compiled::kSubV: case Compiled::kMulV: case Compiled::kDivV: sp -= 3; break;
+						case Compiled::kFunc: sp += ( 1 - in.arity ); break;
+						case Compiled::kFuncV3: sp += ( 3 - in.arity ); break;
+						case Compiled::kRamp: sp += ( in.fn - in.arity ); break;
+						case Compiled::kOsl: sp += ( 1 - in.arity ); break;
+						case Compiled::kOslV3: sp += ( 3 - in.arity ); break;
+						case Compiled::kMeshAttr3: sp += 3; break;
+						case Compiled::kMeshAttrAlpha: sp += 1; break;
+						case Compiled::kSampleAlpha: sp += 1; break;
+						case Compiled::kSampleUv: sp += 1; break;
+						case Compiled::kSampleUvAlpha: sp -= 1; break;
+						default: sp -= 1; break;	// binary scalar ops
+						}
+						// A negative sp here means SOME opcode's declared stack effect
+						// (the switch above) doesn't match what the emitter actually
+						// produced -- i.e. a compiler-internal bug (a future opcode
+						// added to Compiled::Op without a matching case here, or a
+						// mismatched arity), not a bad user expression.  Catch it as a
+						// compile error instead of letting RunAny index the runtime
+						// stack array with a computed-negative offset later.
+						if( sp < 0 ) { SetError( "internal error: expression compiler stack underflow (this is a compiler bug, not a bad expression)", -1 ); return false; }
+						if( sp > mx ) mx = sp;
+					}
+					if( mx > ExpressionProgram::kStackCap ) { SetError( "expression too large (value-stack depth exceeds 512)", -1 ); return false; }
+					return true;
+				}
+
+				// depth-bounded entry to the recursive descent (rejects
+				// pathologically nested input before it overflows the C++ stack).
+				bool ParseCmp( VType& type )
+				{
+					if( ++m_parseDepth > ExpressionProgram::kMaxParseDepth ) { SetError( "expression nesting too deep", (ptrdiff_t)CurOff() ); --m_parseDepth; return false; }
+					const bool ok = ParseCmpImpl( type );
+					--m_parseDepth;
+					return ok;
+				}
+
+				void EmitConst( Scalar v ) { Compiled::Instr in; in.op=Compiled::kConst; in.val=v; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitVarSlot( int idx ) { Compiled::Instr in; in.op=Compiled::kVar; in.val=0; in.valo=0; in.idx=idx; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitOp( Compiled::Op o ) { Compiled::Instr in; in.op=o; in.val=0; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitSwizzle( int comp ) { Compiled::Instr in; in.op=Compiled::kSwizzle; in.val=0; in.valo=0; in.idx=comp; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitSplat3() { EmitOp( Compiled::kSplat3 ); }
+				//! `fwScale` lands on the instruction's `val` and multiplies
+				//! the context `fw` at dispatch (RunAny's kFunc case).  1.0
+				//! -- the default, and what every non-noise builtin keeps
+				//! forever -- is an exact IEEE identity, so leaving it alone
+				//! reproduces the pre-domain-scale engine bit for bit.
+				//!
+				//! ONLY THE SCALAR FORM CONSUMES IT.  `isVec3` emits
+				//! kFuncV3, whose RunAny case dispatches through
+				//! CallFuncVec3 -- which takes no `fw` at all and never
+				//! reads `in.val`.  Passing a scale here for a vec3-
+				//! returning builtin would therefore be silently dropped,
+				//! un-fading it.  Harmless today (every fw-consuming
+				//! builtin -- fbm/turbulence/ridged -- is scalar-returning,
+				//! so the only caller that passes anything but 1.0 emits
+				//! kFunc), but a future vec3 noise builtin must plumb `fw`
+				//! into CallFuncVec3 and read `in.val` in the kFuncV3 case
+				//! BEFORE it can pass a scale through here.
+				void EmitFuncCall( int fn, int arity, bool isVec3, Scalar fwScale = Scalar(1), Scalar fwoScale = Scalar(0) )
+				{
+					Compiled::Instr in; in.op = isVec3 ? Compiled::kFuncV3 : Compiled::kFunc;
+					in.val=fwScale; in.valo=fwoScale; in.idx=-1; in.fn=fn; in.arity=arity;
+					m_emit->code.push_back(in);
+				}
+
+				// Emits the vec3 var reference at slot `s` (3 consecutive kVar).
+				void EmitVec3Var( int s ) { EmitVarSlot(s); EmitVarSlot(s+1); EmitVarSlot(s+2); }
+
+				//////////////////////////////////////////////////
+				// COMPILE-TIME DOMAIN SCALE (forward-mode Jacobian)
+				//
+				// `fw` is a WORLD-space length, but fbm/turbulence/ridged
+				// fade octaves in the domain of THEIR OWN position
+				// argument -- and virtually every real body scales that
+				// argument (`fbm(P*40, ...)`).  Handing the noise a
+				// world-space fw therefore mis-set the Nyquist threshold
+				// by exactly the domain scale, which for the scales scenes
+				// actually use (7 .. 820) meant the fade never engaged.
+				//
+				// The fix is a forward-mode derivative pass over the
+				// position argument's ALREADY-EMITTED postfix code, run
+				// once at COMPILE time: interpret the instructions over
+				// linear forms instead of numbers, recover the 3x3
+				// Jacobian d(argument)/dP, and fold its largest singular
+				// value -- the worst-case factor by which the argument
+				// stretches a world-space footprint -- into a per-call-
+				// site multiplier on `fw`.
+				//
+				// TWO differentiation variables, not one (2026-09-06).
+				// `Po` (object position) is just as common a domain as
+				// `P` -- `fbm(Po*62, ...)` is the shipped hair/relic
+				// idiom -- and used to fall back to multiplier 1.0
+				// because the object->world scale is a per-INSTANCE
+				// runtime fact no compiler can see.  It still cannot be
+				// seen, so it is not guessed: the analysis carries a
+				// SIX-component gradient (d/dP in [0..2], d/dPo in
+				// [3..5]), reduces each half to its own spectral norm,
+				// and the HIT supplies the matching per-frame footprint
+				// (`fw` world, `fwo` object).  The runtime combination is
+				//
+				//     domain fw = sP * fw + sPo * fwo
+				//
+				// -- the triangle inequality on d(arg) = J_P dP + J_Po
+				// dPo, since ||J_P dP + J_Po dPo|| <= ||J_P|| ||dP|| +
+				// ||J_Po|| ||dPo||.  It is CONSERVATIVE: when a body
+				// reads both frames the two terms describe the SAME
+				// physical displacement, so the sum can over-count by up
+				// to 2x if they would have cancelled.  That direction is
+				// the safe one (over-filter, never alias) and matches the
+				// rest of this analysis's bias.
+				//
+				// Why over the emitted CODE rather than the token stream:
+				// the code is the single representation that already has
+				// operator precedence, scalar->vec3 broadcast and `def`
+				// slot references resolved, so the analysis cannot drift
+				// from what the VM will actually evaluate.  A second
+				// parse of the source text could.
+				//////////////////////////////////////////////////
+
+				//! Number of differentiation variables the analysis
+				//! carries: the three components of world P followed by
+				//! the three of object Po.  Every rule below loops over
+				//! all six identically -- they are linear operations, so
+				//! nothing about them distinguishes the two halves; only
+				//! SlotLinear (which seeds them) and the spectral-norm
+				//! reduction (which reads one half at a time) know the
+				//! split.
+				static const int kLinVars = 6;
+				//! First gradient component of the Po half.  Named
+				//! because three sites index by it.
+				static const int kLinPoBase = 3;
+
+				//! One scalar value's linear form with respect to the world
+				//! position P AND the object position Po.  `gradKnown` says
+				//! d(value)/d(P,Po) is `g` (g[0..2] = d/dP, g[3..5] = d/dPo);
+				//! `gradExact` says nothing was dropped getting there (see
+				//! LinAddSub); `constKnown` says the value itself is the
+				//! compile-time constant `c`.  INVARIANT: constKnown implies
+				//! gradKnown with g == 0, which is what lets LinMul treat a
+				//! constant factor as a scale rather than a variable.
+				struct LinScalar
+				{
+					bool   gradKnown;
+					bool   gradExact;
+					bool   constKnown;
+					Scalar c;
+					Scalar g[kLinVars];
+					LinScalar() : gradKnown(false), gradExact(false), constKnown(false), c(0)
+					{ for( int k = 0; k < kLinVars; ++k ) g[k] = Scalar(0); }
+					static LinScalar Const( Scalar v )
+					{
+						LinScalar r; r.gradKnown = true; r.gradExact = true; r.constKnown = true; r.c = v;
+						return r;
+					}
+				};
+
+				//! d(-a)/dP == -da/dP; a constant negates to a constant.
+				static LinScalar LinNeg( const LinScalar& a )
+				{
+					LinScalar r = a;
+					r.c = -a.c;
+					for( int k = 0; k < kLinVars; ++k ) r.g[k] = -a.g[k];
+					return r;
+				}
+
+				//! a + b (or a - b).  The one APPROXIMATING rule in the
+				//! whole analysis, and it applies to ADDITION ONLY: when
+				//! exactly one side of a SUM has a known gradient, the
+				//! result keeps that side's gradient and drops the other,
+				//! flagging the answer inexact.  That is what makes the
+				//! domain-warp idiom
+				//! `fbm(P*8 + amp*vec3(fbm(...),...), ...)` fade at 8*fw
+				//! instead of falling back to 1*fw: the warp's own slope is
+				//! unknowable at compile time, and the idiom's whole point
+				//! is that the affine part is the term that sets the
+				//! frequency.
+				//!
+				//! WHAT THE APPROXIMATION IS AND IS NOT (fix round, review
+				//! of the domain-scale change).  Dropping a term is NOT
+				//! provably an UNDER-estimate -- an earlier draft of this
+				//! comment claimed it "errs toward the pre-existing
+				//! (un-faded) behaviour", which is false: the dropped
+				//! term's slope has an unknown SIGN, so it can cancel the
+				//! kept one.  Under SUBTRACTION that is not a corner case
+				//! but the natural reading of the construct, and it is
+				//! unbounded: `fbm(P*40 - q + vec3(0.5,0.5,0.5), ...)`
+				//! with `q` an opaque (kFunc-built) copy of `P*40` is a
+				//! CONSTANT position -- true stretch 0 -- yet the old rule
+				//! reported 40, over-blurring a field that cannot alias at
+				//! all.  So a subtraction with an unknown operand now
+				//! reports NO gradient, which lands the call site on the
+				//! multiplier-1.0 fallback: the pre-change behaviour, the
+				//! one answer that is never worse than doing nothing.
+				//!
+				//! The residual, stated exactly rather than papered over:
+				//! for `plus`, a dropped term whose true slope opposes the
+				//! kept one still yields an OVER-estimate (the same
+				//! cancellation, spelled `a + (-b)` or `a + (-1)*b`, where
+				//! the negation is buried inside the unknown and cannot be
+				//! seen here).  That is accepted, not overlooked -- it is
+				//! the price of resolving the shipped domain-warp idiom at
+				//! all, the warp amplitudes real bodies use are small
+				//! against the affine scale, and the failure mode is a
+				//! preview/render that is over-filtered, never one that
+				//! aliases.
+				static LinScalar LinAddSub( const LinScalar& a, const LinScalar& b, bool plus )
+				{
+					LinScalar r;
+					if( a.constKnown && b.constKnown ) {
+						r.constKnown = true;
+						r.c = plus ? ( a.c + b.c ) : ( a.c - b.c );
+					}
+					if( a.gradKnown && b.gradKnown ) {
+						r.gradKnown = true;
+						r.gradExact = a.gradExact && b.gradExact;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = plus ? ( a.g[k] + b.g[k] ) : ( a.g[k] - b.g[k] );
+					} else if( plus && a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = false;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.g[k];
+					} else if( plus && b.gradKnown ) {
+						r.gradKnown = true; r.gradExact = false;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = b.g[k];
+					}
+					// else: a subtraction missing either operand's gradient
+					// -- deliberately left unknown (see above).
+					return r;
+				}
+
+				//! a * b.  Affine only when one factor is a compile-time
+				//! constant -- d(f*g) = f*dg + g*df needs RUNTIME values
+				//! otherwise, so a product of two P-varying terms reports
+				//! no gradient at all rather than a guess.
+				static LinScalar LinMul( const LinScalar& a, const LinScalar& b )
+				{
+					LinScalar r;
+					if( a.constKnown && b.constKnown ) return LinScalar::Const( a.c * b.c );
+					if( a.constKnown && b.gradKnown ) {
+						r.gradKnown = true; r.gradExact = b.gradExact;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.c * b.g[k];
+						return r;
+					}
+					if( b.constKnown && a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = a.gradExact;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = b.c * a.g[k];
+						return r;
+					}
+					return r;
+				}
+
+				//! a / b, affine only for a constant divisor.  The
+				//! zero-divisor branch mirrors RunAny's kDiv exactly (it
+				//! yields 0, it does not trap), so the analysis and the VM
+				//! agree about what that expression IS.
+				static LinScalar LinDiv( const LinScalar& a, const LinScalar& b )
+				{
+					LinScalar r;
+					if( !b.constKnown ) return r;
+					if( b.c == Scalar(0) ) return LinScalar::Const( Scalar(0) );
+					if( a.constKnown ) return LinScalar::Const( a.c / b.c );
+					if( a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = a.gradExact;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.g[k] / b.c;
+					}
+					return r;
+				}
+
+				//! The linear form of whatever lives in env slot `slot`.
+				//! P's three slots and Po's three slots are the TWO
+				//! differentiation variables (seeded into g[0..2] and
+				//! g[3..5] respectively); params and defs answer from
+				//! m_slotLin (recorded in registration order, so a name
+				//! always reports the binding in force at this point in
+				//! the program); every other context var (u, v, N, fw,
+				//! fwo, time, curv, curvR) is honestly unknown -- their
+				//! relationship to either position is a per-hit fact, not
+				//! a compile-time one.
+				LinScalar SlotLinear( int slot ) const
+				{
+					if( slot >= ExpressionProgram::kContextSlotP && slot < ExpressionProgram::kContextSlotP + 3 ) {
+						LinScalar r;
+						r.gradKnown = true; r.gradExact = true;
+						r.g[ slot - ExpressionProgram::kContextSlotP ] = Scalar(1);
+						return r;
+					}
+					if( slot >= ExpressionProgram::kContextSlotPo && slot < ExpressionProgram::kContextSlotPo + 3 ) {
+						LinScalar r;
+						r.gradKnown = true; r.gradExact = true;
+						r.g[ kLinPoBase + slot - ExpressionProgram::kContextSlotPo ] = Scalar(1);
+						return r;
+					}
+					std::map<int,LinScalar>::const_iterator it = m_slotLin.find( slot );
+					if( it != m_slotLin.end() ) return it->second;
+					return LinScalar();
+				}
+
+				//! Abstract-interpret `code[begin,end)` over linear forms,
+				//! mirroring RunAny's stack effects instruction for
+				//! instruction.  Returns false when the range does not
+				//! leave exactly `expectWidth` values (which would mean the
+				//! analysis and the VM disagree about the stack -- never
+				//! observed, but the caller then falls back to multiplier
+				//! 1.0 rather than trusting a desynchronized answer).
+				bool AnalyzeLinear( const std::vector<Compiled::Instr>& code, size_t begin, size_t end,
+					int expectWidth, LinScalar* out ) const
+				{
+					std::vector<LinScalar> st;
+					for( size_t i = begin; i < end; ++i ) {
+						const Compiled::Instr& in = code[i];
+						switch( in.op )
+						{
+						case Compiled::kConst: st.push_back( LinScalar::Const( in.val ) ); break;
+						case Compiled::kVar:   st.push_back( SlotLinear( in.idx ) ); break;
+						case Compiled::kNeg:
+							if( st.empty() ) return false;
+							st.back() = LinNeg( st.back() );
+							break;
+						case Compiled::kAdd: case Compiled::kSub:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinAddSub( st.back(), rhs, in.op == Compiled::kAdd );
+						} break;
+						case Compiled::kMul:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinMul( st.back(), rhs );
+						} break;
+						case Compiled::kDiv:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinDiv( st.back(), rhs );
+						} break;
+						// %, ^ and the comparisons are not affine in P for
+						// any input worth tracking, so their result reports
+						// neither a value nor a gradient.  A position
+						// argument built through one of them lands on the
+						// multiplier-1.0 fallback, exactly as it did before
+						// this analysis existed.
+						case Compiled::kMod: case Compiled::kPow:
+						case Compiled::kLt: case Compiled::kGt: case Compiled::kLe:
+						case Compiled::kGe: case Compiled::kEq: case Compiled::kNe:
+						{
+							if( st.size() < 2 ) return false;
+							st.pop_back();
+							st.back() = LinScalar();
+						} break;
+						case Compiled::kSplat3:
+						{
+							if( st.empty() ) return false;
+							const LinScalar v = st.back();
+							st.push_back( v ); st.push_back( v );
+						} break;
+						case Compiled::kAddV: case Compiled::kSubV:
+						case Compiled::kMulV: case Compiled::kDivV:
+						{
+							if( st.size() < 6 ) return false;
+							const size_t l = st.size() - 6;
+							for( int k = 0; k < 3; ++k ) {
+								const LinScalar& a = st[l+k];
+								const LinScalar& b = st[l+3+k];
+								LinScalar v;
+								if( in.op == Compiled::kAddV )      v = LinAddSub( a, b, true );
+								else if( in.op == Compiled::kSubV ) v = LinAddSub( a, b, false );
+								else if( in.op == Compiled::kMulV ) v = LinMul( a, b );
+								else                                v = LinDiv( a, b );
+								st[l+k] = v;
+							}
+							st.resize( l + 3 );
+						} break;
+						case Compiled::kNegV:
+						{
+							if( st.size() < 3 ) return false;
+							const size_t l = st.size() - 3;
+							for( int k = 0; k < 3; ++k ) st[l+k] = LinNeg( st[l+k] );
+						} break;
+						case Compiled::kSwizzle:
+						{
+							if( st.size() < 3 ) return false;
+							if( in.idx < 0 || in.idx > 2 ) return false;	// EmitSwizzle only ever emits 0/1/2
+							const LinScalar v = st[ st.size() - 3 + (size_t)in.idx ];
+							st.resize( st.size() - 3 );
+							st.push_back( v );
+						} break;
+						case Compiled::kFunc:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							st.push_back( LinScalar() );
+						} break;
+						case Compiled::kFuncV3:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							for( int k = 0; k < 3; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kRamp:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							for( int k = 0; k < in.fn; ++k ) st.push_back( LinScalar() );
+						} break;
+						// An `osl_` call is not affine in anything worth
+						// tracking: like kFunc / kFuncV3, its result carries
+						// neither a value nor a gradient.
+						case Compiled::kOsl:
+						case Compiled::kOslV3:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							const int w = ( in.op == Compiled::kOslV3 ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kMeshAttr3:
+						case Compiled::kMeshAttrAlpha:
+						case Compiled::kSampleAlpha:
+						{
+							const int w = ( in.op == Compiled::kMeshAttr3 ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kSampleUv:
+						case Compiled::kSampleUvAlpha:
+						{
+							if( st.size() < 2 ) return false;
+							st.resize( st.size() - 2 );
+							const int w = ( in.op == Compiled::kSampleUv ) ? 3 : 1;
+							for( int k = 0; k < w; ++k ) st.push_back( LinScalar() );
+						} break;
+						default:
+							return false;
+						}
+						if( st.size() > (size_t)ExpressionProgram::kStackCap ) return false;
+					}
+					if( st.size() != (size_t)expectWidth ) return false;
+					for( int k = 0; k < expectWidth; ++k ) out[k] = st[(size_t)k];
+					return true;
+				}
+
+				//! Largest singular value of the 3x3 whose ROW i is the
+				//! `gBase`-based half of rows[i].g -- the worst-case
+				//! stretch the argument applies to a footprint in THAT
+				//! frame, and therefore the right single number to scale
+				//! that frame's isotropic width by.  `gBase` is 0 for the
+				//! world-P half and kLinPoBase for the object-Po half;
+				//! the two halves are reduced independently because the
+				//! two footprints they scale are independent per-hit
+				//! quantities (see the block comment above LinScalar).
+				static Scalar JacobianSpectralNorm( const LinScalar rows[3], const int gBase )
+				{
+					Scalar J[3][3];
+					for( int i = 0; i < 3; ++i ) {
+						for( int k = 0; k < 3; ++k ) J[i][k] = rows[i].g[gBase+k];
+					}
+					// DIAGONAL fast path, and it is not merely an
+					// optimisation: a diagonal matrix's singular values ARE
+					// |d_i|, computed with no arithmetic at all, so the
+					// identity yields EXACTLY 1.0 and `fw * 1.0 == fw`
+					// keeps an unscaled `fbm(P, ...)` bit-identical to the
+					// pre-change engine.  An iterative eigen-solve would
+					// return 1.0 only to within rounding.  Every ordinary
+					// domain scale lands here: P, P*k, P/s, -P*k,
+					// vec3(P.x*a, P.y*b, P.z*c).
+					if( J[0][1] == Scalar(0) && J[0][2] == Scalar(0) &&
+					    J[1][0] == Scalar(0) && J[1][2] == Scalar(0) &&
+					    J[2][0] == Scalar(0) && J[2][1] == Scalar(0) ) {
+						Scalar m = std::fabs( J[0][0] );
+						const Scalar m1 = std::fabs( J[1][1] );
+						const Scalar m2 = std::fabs( J[2][2] );
+						if( m1 > m ) m = m1;
+						if( m2 > m ) m = m2;
+						return m;
+					}
+					// General case (a rotated / sheared domain): the
+					// largest eigenvalue of the symmetric PSD matrix J^T J,
+					// by cyclic Jacobi rotations.  Deterministic and
+					// start-vector free, unlike power iteration -- and this
+					// runs ONCE per call site at compile time, so the sweep
+					// count is free.
+					//
+					// This branch is ACCURATE, not exact: the sweep
+					// converges to ~1 ulp, so `fw * s` here is a rounded
+					// product even when the true singular value is a
+					// round number (a 45-degree rotation times 40 comes
+					// back as 40 to within ~1e-13, not bit-exactly 40).
+					// That is why the diagonal case above is a separate
+					// closed form rather than "the Jacobi path also
+					// handles it": bit-identity for the un-scaled and
+					// axis-scaled bodies -- which is every shipped body --
+					// is a promise only the closed form can keep.  A test
+					// pinning THIS branch must therefore compare with a
+					// tolerance (TextureExpressionVMTest test 69).
+					// Reaching it at all takes a domain argument with
+					// LITERAL off-diagonal coefficients: `cos`/`sin` are
+					// kFunc calls, which AnalyzeLinear reports as unknown,
+					// so a rotation written with them falls back to 1.0
+					// instead.
+					Scalar A[3][3];
+					for( int i = 0; i < 3; ++i ) {
+						for( int k = 0; k < 3; ++k ) {
+							A[i][k] = J[0][i]*J[0][k] + J[1][i]*J[1][k] + J[2][i]*J[2][k];
+						}
+					}
+					for( int sweep = 0; sweep < 32; ++sweep ) {
+						const Scalar off = A[0][1]*A[0][1] + A[0][2]*A[0][2] + A[1][2]*A[1][2];
+						const Scalar diag = A[0][0]*A[0][0] + A[1][1]*A[1][1] + A[2][2]*A[2][2];
+						if( !( off > Scalar(1e-30) * ( diag + Scalar(1) ) ) ) break;
+						for( int p = 0; p < 2; ++p ) {
+							for( int q = p+1; q < 3; ++q ) {
+								if( A[p][q] == Scalar(0) ) continue;
+								const Scalar theta = ( A[q][q] - A[p][p] ) / ( Scalar(2) * A[p][q] );
+								const Scalar sgn = ( theta >= Scalar(0) ) ? Scalar(1) : Scalar(-1);
+								const Scalar t = sgn / ( std::fabs( theta ) + std::sqrt( theta*theta + Scalar(1) ) );
+								const Scalar cs = Scalar(1) / std::sqrt( t*t + Scalar(1) );
+								const Scalar sn = t * cs;
+								const Scalar apq = A[p][q];
+								A[p][p] = A[p][p] - t*apq;
+								A[q][q] = A[q][q] + t*apq;
+								A[p][q] = A[q][p] = Scalar(0);
+								const int r = 3 - p - q;	// the index neither rotation axis touches
+								const Scalar arp = A[r][p], arq = A[r][q];
+								A[r][p] = A[p][r] = cs*arp - sn*arq;
+								A[r][q] = A[q][r] = sn*arp + cs*arq;
+							}
+						}
+					}
+					Scalar lam = A[0][0];
+					if( A[1][1] > lam ) lam = A[1][1];
+					if( A[2][2] > lam ) lam = A[2][2];
+					if( !( lam > Scalar(0) ) ) return Scalar(0);
+					return std::sqrt( lam );
+				}
+
+				//! The `fw` and `fwo` multipliers for a noise call whose
+				//! vec3 position argument occupies `[begin, end)` of the
+				//! code emitted so far.  (1.0, 0.0) -- i.e. the unscaled
+				//! world footprint and no object-space term -- whenever
+				//! the domain scale is not provable, which is precisely
+				//! the pre-2026-09-06 behaviour, so an un-analysable body
+				//! is never made worse, only left alone.
+				void NoiseFwScales( size_t begin, size_t end, Scalar& outP, Scalar& outPo ) const
+				{
+					// The one fallback answer, spelled once.
+					outP = Scalar(1); outPo = Scalar(0);
+
+					LinScalar rows[3];
+					if( !AnalyzeLinear( m_emit->code, begin, end, 3, rows ) ) return;
+					for( int i = 0; i < 3; ++i ) {
+						if( !rows[i].gradKnown ) return;
+						for( int k = 0; k < kLinVars; ++k ) {
+							if( !ExpressionProgram::IsFinite( rows[i].g[k] ) ) return;
+						}
+					}
+					const Scalar sP  = JacobianSpectralNorm( rows, 0 );
+					const Scalar sPo = JacobianSpectralNorm( rows, kLinPoBase );
+					if( !ExpressionProgram::IsFinite( sP )  || sP  < Scalar(0) ) return;
+					if( !ExpressionProgram::IsFinite( sPo ) || sPo < Scalar(0) ) return;
+					if( sP == Scalar(0) && sPo == Scalar(0) ) {
+						// A position argument that provably does not move
+						// with EITHER position -- `fbm(vec3(0.3,0.7,1.4),
+						// ...)` -- is CONSTANT across the footprint and so
+						// has nothing to alias: the honest fade is none at
+						// all.  But only when the Jacobian is exact; an
+						// approximate zero means the one term that actually
+						// varies was the dropped one, and there the safe
+						// answer is the pre-change (1.0, 0.0).
+						const bool exact = rows[0].gradExact && rows[1].gradExact && rows[2].gradExact;
+						if( exact ) { outP = Scalar(0); outPo = Scalar(0); }
+						return;
+					}
+					// A one-sided body reports the OTHER side as an exact
+					// 0, which is what keeps a P-only body bit-identical
+					// (RunAny's `sP*fw + 0*fwo`) and a Po-only body free of
+					// any world-frame term.
+					outP = sP; outPo = sPo;
+				}
+
+				//! Record what env slot `slot` (width `w`) will hold, for
+				//! later SlotLinear lookups.  Called in registration order
+				//! from AddParam / AddDef so a redefinition simply
+				//! overwrites -- matching BindEnv, which seeds params then
+				//! runs every def in order, last writer winning.
+				void RecordSlotLinear( int slot, int w, const LinScalar* lin )
+				{
+					for( int k = 0; k < w; ++k ) m_slotLin[ slot + k ] = lin ? lin[k] : LinScalar();
+				}
+
+				//! Env slot -> the linear form of what that slot holds.
+				//! Declared HERE, beside the analysis that owns it, rather
+				//! than up with the parser's members: LinScalar has to be a
+				//! complete type at the point of a member DECLARATION (only
+				//! member function BODIES get the complete-class context
+				//! that would let it float).
+				std::map<int,LinScalar> m_slotLin;
+				//! Slots some `def` writes.  BindEnv seeds every param and
+				//! THEN runs every def, so a def unconditionally wins a slot
+				//! it shares with a same-named param -- no matter which was
+				//! registered last.  AddParam consults this so a late
+				//! `param` cannot overwrite the live def's linear form with
+				//! a constant the VM will never actually see.
+				std::map<int,bool> m_slotIsDef;
+
+				// Broadcasts the operand whose code occupies [0, insertPos) -- i.e.
+				// the operand parsed BEFORE this call, typically the LEFT-hand side
+				// of a binary op (`insertPos` is the code index where the RIGHT-hand
+				// operand's instructions begin, == right after the left operand's
+				// code ends) -- from scalar to vec3, by inserting a kSplat3
+				// instruction right after that left operand's code.  (P1-D: this
+				// comment previously said the opposite -- "the operand parsed most
+				// recently" -- which would be the RIGHT operand; the insert always
+				// targets the LEFT one.)  Used when combining a scalar with a vec3
+				// in +,-,*,/ where the LEFT side is the scalar (see EmitArith).
+				void BroadcastAt( size_t insertPos )
+				{
+					Compiled::Instr in; in.op=Compiled::kSplat3; in.val=0; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0;
+					m_emit->code.insert( m_emit->code.begin() + insertPos, in );
+				}
+
+				// Combines two already-emitted operands (types lt, rt) with a
+				// scalar-scalar op or a vec3-vec3 op, broadcasting whichever
+				// side is scalar when the other is vec3.  rhsStart is the
+				// code index where the right operand's instructions begin
+				// (== code index right after the left operand finished).
+				bool EmitArith( VType& lt, VType rt, size_t rhsStart, Compiled::Op scalarOp, Compiled::Op vecOp )
+				{
+					if( lt == kScalar && rt == kScalar ) { EmitOp( scalarOp ); return true; }
+					if( lt == kVec3   && rt == kVec3   ) { EmitOp( vecOp );    return true; }
+					if( lt == kScalar && rt == kVec3 ) {
+						BroadcastAt( rhsStart );	// left operand: scalar -> vec3
+						EmitOp( vecOp );
+						lt = kVec3;
+						return true;
+					}
+					// lt == kVec3 && rt == kScalar
+					EmitSplat3();				// right operand (top of stack): scalar -> vec3
+					EmitOp( vecOp );
+					return true;
+				}
+
+				// cmp := add ( (<|>|<=|>=|==|!=) add )?
+				bool ParseCmpImpl( VType& type )
+				{
+					if( !ParseAdd( type ) ) return false;
+					if( Cur().t == Tok::Op ) {
+						const std::string& o = Cur().s;
+						Compiled::Op op;
+						if( o=="<" ) op=Compiled::kLt; else if( o==">" ) op=Compiled::kGt;
+						else if( o=="<=" ) op=Compiled::kLe; else if( o==">=" ) op=Compiled::kGe;
+						else if( o=="==" ) op=Compiled::kEq; else if( o=="!=" ) op=Compiled::kNe;
+						else return true;
+						const size_t errOff = CurOff();
+						Advance();
+						VType rtype;
+						if( !ParseAdd( rtype ) ) return false;
+						if( type != kScalar || rtype != kScalar ) { SetError( "comparison operators require scalar operands", (ptrdiff_t)errOff ); return false; }
+						EmitOp( op );
+						type = kScalar;
+					}
+					return true;
+				}
+				// add := mul ( (+|-) mul )*
+				bool ParseAdd( VType& type )
+				{
+					if( !ParseMul( type ) ) return false;
+					while( Cur().t == Tok::Op && ( Cur().s=="+" || Cur().s=="-" ) ) {
+						const bool plus = ( Cur().s=="+" );
+						Advance();
+						VType rtype;
+						const size_t rhsStart = m_emit->code.size();
+						if( !ParseMul( rtype ) ) return false;
+						if( !EmitArith( type, rtype, rhsStart, plus?Compiled::kAdd:Compiled::kSub, plus?Compiled::kAddV:Compiled::kSubV ) ) return false;
+					}
+					return true;
+				}
+				// mul := unary ( (*|/|%) unary )*
+				bool ParseMul( VType& type )
+				{
+					if( !ParseUnary( type ) ) return false;
+					while( Cur().t == Tok::Op && ( Cur().s=="*" || Cur().s=="/" || Cur().s=="%" ) ) {
+						const std::string o = Cur().s;
+						const size_t errOff = CurOff();
+						Advance();
+						VType rtype;
+						const size_t rhsStart = m_emit->code.size();
+						if( !ParseUnary( rtype ) ) return false;
+						if( o == "%" ) {
+							if( type != kScalar || rtype != kScalar ) { SetError( "`%` requires scalar operands", (ptrdiff_t)errOff ); return false; }
+							EmitOp( Compiled::kMod );
+							continue;
+						}
+						if( !EmitArith( type, rtype, rhsStart, o=="*"?Compiled::kMul:Compiled::kDiv, o=="*"?Compiled::kMulV:Compiled::kDivV ) ) return false;
+					}
+					return true;
+				}
+				// unary := (-|+)? pow
+				// P2-B: recurses directly into itself for a chain of leading
+				// +/- signs (e.g. `---1`) WITHOUT going through ParseCmp, so it
+				// used to bypass ParseCmp's m_parseDepth guard entirely -- a
+				// long run of unary signs (e.g. 500k '-' tokens) blew the C++
+				// call stack (ASan-confirmed) before ever reaching the
+				// nesting-depth check.  Now bounded exactly like ParseCmp.
+				bool ParseUnary( VType& type )
+				{
+					if( ++m_parseDepth > ExpressionProgram::kMaxParseDepth ) { SetError( "expression nesting too deep", (ptrdiff_t)CurOff() ); --m_parseDepth; return false; }
+					bool ok;
+					if( Cur().t == Tok::Op && ( Cur().s=="-" || Cur().s=="+" ) ) {
+						const bool neg = ( Cur().s=="-" );
+						Advance();
+						ok = ParseUnary( type );
+						if( ok && neg ) EmitOp( type==kVec3 ? Compiled::kNegV : Compiled::kNeg );
+					} else {
+						ok = ParsePow( type );
+					}
+					--m_parseDepth;
+					return ok;
+				}
+				// pow := postfix (^ unary)?    right-assoc, scalar-only
+				bool ParsePow( VType& type )
+				{
+					if( !ParsePostfix( type ) ) return false;
+					if( Cur().t == Tok::Op && Cur().s=="^" ) {
+						const size_t errOff = CurOff();
+						Advance();
+						VType rtype;
+						if( !ParseUnary( rtype ) ) return false;
+						if( type != kScalar || rtype != kScalar ) { SetError( "`^` requires scalar operands", (ptrdiff_t)errOff ); return false; }
+						EmitOp( Compiled::kPow );
+					}
+					return true;
+				}
+				// postfix := atom ( '.' (x|y|z) )*      -- vec3 swizzle
+				bool ParsePostfix( VType& type )
+				{
+					if( !ParseAtom( type ) ) return false;
+					while( Cur().t == Tok::Dot ) {
+						const size_t errOff = CurOff();
+						Advance();	// consume '.'
+						if( Cur().t != Tok::Ident || Cur().s.size() != 1 ||
+							( Cur().s[0] != 'x' && Cur().s[0] != 'y' && Cur().s[0] != 'z' ) ) {
+							SetError( "expected .x, .y, or .z", (ptrdiff_t)errOff );
+							return false;
+						}
+						if( type != kVec3 ) {
+							SetError( "`." + Cur().s + "` on a scalar (only vec3 has components)", (ptrdiff_t)errOff );
+							return false;
+						}
+						const int comp = ( Cur().s[0]=='x' ) ? 0 : ( Cur().s[0]=='y' ? 1 : 2 );
+						Advance();
+						EmitSwizzle( comp );
+						type = kScalar;
+					}
+					return true;
+				}
+				// atom := NUM | IDENT | IDENT '(' args ')' | '(' cmp ')'
+				bool ParseAtom( VType& type )
+				{
+					const Tok& t = Cur();
+					if( t.t == Tok::Num ) { EmitConst( t.num ); type = kScalar; Advance(); return true; }
+					if( t.t == Tok::LP ) {
+						Advance();
+						if( !ParseCmp( type ) ) return false;
+						if( Cur().t != Tok::RP ) { SetError( "missing )", (ptrdiff_t)CurOff() ); return false; }
+						Advance();
+						return true;
+					}
+					if( t.t == Tok::Ident ) {
+						const std::string name = t.s;
+						const size_t nameOff = t.off;
+						Advance();
+						if( Cur().t == Tok::LP ) {
+							// CALL position dispatches on the identifier being
+							// immediately followed by '(' BEFORE any m_index/context
+							// lookup runs -- so a bound param/def name can never
+							// shadow a builtin function of the same name in call
+							// position (e.g. a `param sin 1` still leaves `sin(x)`
+							// meaning the builtin; only bare `sin` -- no call --
+							// would resolve to the param).  Contract-only note
+							// (P2-C); no behaviour change.
+							return ParseCall( name, nameOff, type );
+						}
+						// variable / param / def reference (checked first so a
+						// user-declared name shadows a context var of the
+						// same name -- see LookupContextVar).  This binds against
+						// m_index AS OF right now (compile-of-this-def time): a
+						// param/def registered LATER cannot retroactively rebind an
+						// identifier already resolved in an earlier def's body.
+						// Not scene-reachable today -- ChunkParserRegistry.cpp's
+						// expression_function2d parser always emits every `param`
+						// before any `def` -- but is true of the language in
+						// general, so documented here rather than assumed (P2-C).
+						std::map<std::string,int>::const_iterator it = m_index.find( name );
+						if( it != m_index.end() ) {
+							const int s = it->second;
+							type = m_slotType[s];
+							if( type == kVec3 ) EmitVec3Var( s ); else EmitVarSlot( s );
+							return true;
+						}
+						// context reference: u, v always available; P, Po, N, fw,
+						// fwo, time only when this Builder opted in via
+						// EnableContextVars (P2-A) -- see its doc comment.
+						{
+							int ctxSlot; VType ctxType;
+							if( LookupContextVar( name, ctxSlot, ctxType ) ) {
+								const bool alwaysAvailable = ( name == "u" || name == "v" );
+								if( alwaysAvailable || m_contextVarsEnabled ) {
+									// Record the reference for the compile-time consumption
+									// query (design doc 5.4), so a geometry can skip an
+									// expensive per-hit signal nothing in the scene reads.
+									// Set ONLY on the branch that actually emits the slot
+									// read -- a name that falls through to "unknown
+									// variable", or one shadowed by a user param (resolved
+									// earlier via m_index), must not count.
+									if( ctxSlot < kContextVarMaskBits ) {
+										m_ctxUsed |= ( 1u << ctxSlot );
+									}
+									type = ctxType;
+									if( type == kVec3 ) EmitVec3Var( ctxSlot ); else EmitVarSlot( ctxSlot );
+									return true;
+								}
+								// P/Po/N/fw/fwo/time/curv/curvR on a surface that didn't opt
+								// in: fall
+								// through and treat exactly like any other unknown
+								// identifier below.
+							}
+						}
+						// allow a couple of math constants
+						if( name == "pi" )  { EmitConst( Scalar(3.14159265358979323846) ); type = kScalar; return true; }
+						if( name == "tau" ) { EmitConst( Scalar(6.28318530717958647692) ); type = kScalar; return true; }
+						if( name == "e" )   { EmitConst( Scalar(2.71828182845904523536) ); type = kScalar; return true; }
+						SetError( "unknown variable `" + name + "`", (ptrdiff_t)nameOff );
+						return false;
+					}
+					SetError( "unexpected token", (ptrdiff_t)CurOff() );
+					return false;
+				}
+
+				// Parses the '(' args ')' of a call already positioned right
+				// after the identifier `name` (nameOff is the identifier's
+				// offset, used for arity/unknown-function errors).
+				bool ParseCall( const std::string& name, size_t nameOff, VType& outType )
+				{
+					Advance();	// '('
+					if( name == "vec3" ) return ParseVec3Ctor( nameOff, outType );
+					if( name == "ramp" ) return ParseRampCall( nameOff, outType );
+					if( name == "mix" )  return ParseMixCall( nameOff, outType );
+					if( name == "sample" || name == "sample_scalar" || name == "sample_alpha"
+						|| name == "sample_uv" || name == "sample_uv_alpha" ) {
+						return ParseSampleCall( name, nameOff, outType );
+					}
+					if( name == "mesh_attr3" || name == "mesh_attr_alpha" ) return ParseMeshAttrCall( name, nameOff, outType );
+
+					const FnSig* sig = FindSig( name );
+					if( !sig ) {
+						if( const OslBuiltins::Sig* os = OslBuiltins::Find( name ) ) return ParseOslCall( *os, nameOff, outType );
+						SetError( "unknown function `" + name + "`", (ptrdiff_t)nameOff );
+						return false;
+					}
+
+					// GEOMETRY-DERIVED SIGNAL BUILTINS (design doc Phase 2).
+					// Gated on the same EnableContextVars flag that gates
+					// P/Po/N/fw/time/curv in ParseAtom, and for the same
+					// reason: these are SURFACE queries, and
+					// expression_function2d is a frozen UV-only contract
+					// (design doc §14 item 7) that must not grow them.  A
+					// dedicated diagnostic rather than "unknown function",
+					// because the name IS real -- it is the surface that
+					// doesn't have one.
+					//! FOUR CONSUMERS depend on this predicate, and every
+					//! one of them had to be re-read when `proximity`
+					//! joined it (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
+					//! §5.1) and again when `interior` did (§5.6): the
+					//! expression_function2d refusal just below (which
+					//! extends to `interior` unchanged), the literal-radius
+					//! diagnostic (whose text says the OPPOSITE thing for
+					//! the two CROSS-OBJECT signals -- a world length, not
+					//! a fraction -- and which is a THREE-way choice since
+					//! `interior`, because the two world-length signals
+					//! measure different things), the `m_sigCalls`
+					//! registration that drives ComputeMemoWorthiness and
+					//! SurfaceSignalDemand, and the `DynR` remap, whose
+					//! final ternary arm was an UNGUARDED fall-through and
+					//! would otherwise have compiled every
+					//! computed-radius `proximity(...)` -- and now
+					//! `interior(...)` -- as a CONVEXITY call.  Widening
+					//! this test alone is not enough; each of the four says
+					//! what it does with the new id.
+					const bool isSignalFn = ( sig->id == ExpressionProgram::kFnOcclusion ||
+					                          sig->id == ExpressionProgram::kFnThickness ||
+					                          sig->id == ExpressionProgram::kFnConvexity ||
+					                          sig->id == ExpressionProgram::kFnProximity ||
+					                          sig->id == ExpressionProgram::kFnInterior );
+					if( isSignalFn && !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+
+					// CONSTANT-RADIUS GROUNDWORK for Phase 3 (design doc
+					// §7.1): a baked mesh field can only answer ONE radius, so
+					// the baked path needs to know at COMPILE time whether the
+					// radius argument is a constant.  Phase 2 records the
+					// cheap half -- "is it a bare numeric literal, and what
+					// is its value" -- per call site; resolving a
+					// `param`/`def` NAME back to a compile-time constant is
+					// explicitly Phase-3 work and is NOT attempted here.
+					bool literalRadiusArg = false;
+					Scalar literalRadiusVal = Scalar(0);
+
+					// DOMAIN SCALE (see the forward-mode Jacobian block
+					// above).  fbm/turbulence/ridged fade octaves in the
+					// domain of argument 0, so remember exactly which
+					// instructions that argument emits and differentiate
+					// them once the call is fully parsed.
+					const bool isNoiseFn = ( sig->id == ExpressionProgram::kFnFbm ||
+					                         sig->id == ExpressionProgram::kFnTurbulence ||
+					                         sig->id == ExpressionProgram::kFnRidged );
+					size_t posArgStart = 0, posArgEnd = 0;
+
+					int scalarArity = 0;
+					int got = 0;
+					if( Cur().t != Tok::RP ) {
+						for( ;; ) {
+							const size_t argOff = CurOff();
+							// P1-B: only treat the octaves argument as a checkable
+							// literal when it is EXACTLY one Num token -- i.e. the
+							// token right after it is `,` or `)`.  The old check
+							// (`Cur().t==Tok::Num` alone) peeked just the FIRST
+							// token of the argument, so a COMPOUND expression that
+							// happens to start with a small in-range number --
+							// e.g. `fbm(p, 2*1e20, 0.5, 2.0)` -- passed this
+							// compile-time [1,10] check on the leading `2` while the
+							// actual runtime value (2e20) then hit an unguarded
+							// (int) cast in CallFunc (UBSan-confirmed).  A non-
+							// literal octave argument still compiles fine here; it
+							// is clamped at RUNTIME instead, by OctavesFromScalar
+							// (see CallFunc cases 43/44/45).
+							const bool literalOctaveArg = ( ( sig->id==43 || sig->id==44 || sig->id==45 ) && got==1 && Cur().t==Tok::Num &&
+								m_pos+1 < m_toks->size() && ( (*m_toks)[m_pos+1].t == Tok::Comma || (*m_toks)[m_pos+1].t == Tok::RP ) );
+							const Scalar literalOctaveVal = literalOctaveArg ? Cur().num : Scalar(0);
+							// Same "is this argument EXACTLY one numeric
+							// literal" discipline as the octave check above,
+							// widened by one token so a leading sign counts
+							// (`occlusion(-0.1)` must be REJECTED at compile
+							// time, and `-0.1` tokenizes as Op then Num).
+							if( isSignalFn && got == 0 ) {
+								literalRadiusArg = PeekLiteralScalarArg( literalRadiusVal );
+							}
+							// Recorded around ParseCmp rather than from a
+							// saved index afterwards, because EmitArith's
+							// left-operand broadcast INSERTS a kSplat3
+							// inside the argument's own range as it parses.
+							const size_t emitStart = m_emit->code.size();
+							VType at;
+							if( !ParseCmp( at ) ) return false;
+							if( isNoiseFn && got == 0 ) {
+								posArgStart = emitStart;
+								posArgEnd   = m_emit->code.size();
+							}
+							if( got < sig->nArgs ) {
+								if( at != sig->argT[got] ) {
+									SetError( std::string(name) + "() argument " + std::to_string(got+1) + " must be " + ( sig->argT[got]==kVec3 ? "vec3" : "scalar" ), (ptrdiff_t)argOff );
+									return false;
+								}
+								scalarArity += ( at == kVec3 ) ? 3 : 1;
+								if( literalOctaveArg && ( literalOctaveVal < Scalar(1) || literalOctaveVal > Scalar(ExpressionProgram::kMaxOctaves) ) ) {
+									SetError( std::string(name) + "() octaves must be between 1 and " + std::to_string(ExpressionProgram::kMaxOctaves), (ptrdiff_t)argOff );
+									return false;
+								}
+								// A literal radius that isn't strictly positive
+								// has no meaning for either signal and is
+								// almost always a units mistake (a world
+								// length typed where a FRACTION belongs, then
+								// negated).  Catch it here rather than let it
+								// silently degrade to the neutral fallback at
+								// render time -- a flat mask that "works" is
+								// the expensive failure.  A COMPUTED radius is
+								// still checked at runtime, by
+								// SurfaceSignalInfo::RadiusUsable.
+								if( literalRadiusArg && got == 0 && !( literalRadiusVal > Scalar(0) ) ) {
+									// THE UNIT DEPENDS ON WHICH SIGNAL, and
+									// this diagnostic exists to teach it.
+									// The three self-signals take a
+									// fraction of the hit object's own
+									// size; the two CROSS-OBJECT ones take
+									// a WORLD LENGTH, because a fraction of
+									// the RECEIVER cannot describe how far
+									// away a NEIGHBOUR is or how deep
+									// inside one this point lies.  Telling
+									// such an author "it is a fraction"
+									// would send them to fix the one thing
+									// that was right.  THREE-WAY since
+									// `interior` joined: the two world-length
+									// signals say DIFFERENT things about
+									// what the length measures, and a
+									// binary ternary would have handed an
+									// `interior` author proximity's
+									// sentence about surfaces stopping to
+									// register as contact.
+									SetError( std::string(name) + "() radius must be > 0 -- "
+										+ ( sig->id == ExpressionProgram::kFnProximity
+											? std::string( "it is a WORLD LENGTH (proximity(0.002) = 2 mm), the distance "
+												"at which a neighbouring object's surface stops registering as contact -- "
+												"NOT a fraction of anything" )
+										: sig->id == ExpressionProgram::kFnInterior
+											? std::string( "it is a WORLD LENGTH (interior(0.002) = 2 mm), the depth of "
+												"burial inside a neighbouring object at which the signal saturates -- "
+												"NOT a fraction of anything" )
+											: std::string( "it is a FRACTION of the object's own size (0.05 = 5% of its "
+												"bounding-box diagonal), not a world length" ) ),
+										(ptrdiff_t)argOff );
+									return false;
+								}
+							}
+							++got;
+							if( Cur().t == Tok::Comma ) { Advance(); continue; }
+							break;
+						}
+					}
+					if( got != sig->nArgs ) { SetError( name + "() expects " + std::to_string(sig->nArgs) + " argument(s)", (ptrdiff_t)nameOff ); return false; }
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					// A signal builtin whose radius we could NOT prove literal
+					// is emitted as its `...DynR` twin, so the instruction
+					// itself carries the (absence of a) proof down to
+					// CallFunc -- see ExpressionProgram::kFnOcclusionDynR.
+					// Everything else emits its own id unchanged.
+					//
+					// THE FINAL ARM IS GUARDED, and it has to be.
+					// Before `proximity` there were exactly three signal
+					// ids and the last ternary arm could fall through to
+					// kFnConvexityDynR as "the remaining one".  Adding a
+					// fourth id to `isSignalFn` without touching this line
+					// would have compiled EVERY computed-radius
+					// `proximity(...)` -- `proximity(0.1*2)`,
+					// `proximity(r)` for a param `r` -- as a CONVEXITY
+					// call: a silently wrong render with nothing in the
+					// scene text to suggest it.  `interior` is the FIFTH id
+					// and rides the same guard for the same reason.
+					// Neither cross-object signal has a twin (there is no
+					// bake for a constant-radius proof to feed), so each
+					// emits its own id.
+					int emitId = sig->id;
+					if( isSignalFn && !literalRadiusArg ) {
+						emitId = ( sig->id == ExpressionProgram::kFnOcclusion ) ? ExpressionProgram::kFnOcclusionDynR
+						       : ( sig->id == ExpressionProgram::kFnThickness ) ? ExpressionProgram::kFnThicknessDynR
+						       : ( sig->id == ExpressionProgram::kFnConvexity ) ? ExpressionProgram::kFnConvexityDynR
+						                                                       : sig->id;
+					}
+					// Only a noise builtin reads `fw`/`fwo`; every other
+					// call site keeps the exact (1.0, 0.0) multipliers
+					// EmitFuncCall defaults to.  A noise call whose domain
+					// scale is not provable gets (1.0, 0.0) from
+					// NoiseFwScales for the same reason.
+					Scalar fwScale = Scalar(1), fwoScale = Scalar(0);
+					if( isNoiseFn ) NoiseFwScales( posArgStart, posArgEnd, fwScale, fwoScale );
+					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3, fwScale, fwoScale );
+					if( isSignalFn ) {
+						// Recorded ONLY here, on the branch that actually
+						// emitted the call -- a body that mentions the name
+						// without calling it, or one that failed to parse,
+						// must not register.  Accumulates across every
+						// Compile() this Builder runs, so the list covers
+						// `def` stage bodies as well as the final expression,
+						// in parse order.
+						ExpressionProgram::SignalRadiusCall rec;
+						rec.fn = sig->id;
+						rec.radiusIsLiteral = literalRadiusArg;
+						rec.radiusLiteral = literalRadiusArg ? literalRadiusVal : Scalar(0);
+						m_sigCalls.push_back( rec );
+					}
+					outType = sig->ret;
+					return true;
+				}
+
+				//! An `osl_` builtin call (ExpressionOslBuiltins.h).  Its own
+				//! parser because its signatures differ from FnSig's in two
+				//! ways: up to OslBuiltins::kMaxArgs arguments, and INTEGER
+				//! LITERAL arguments (a node's dimension count, fractal type,
+				//! normalize flag, Voronoi feature or metric, Mix blend mode
+				//! or clamp flags), each proved
+				//! here to be one integer literal in its declared range so
+				//! the dispatch can read it as an int.  A literal argument is
+				//! still pushed on the value stack like any scalar.  No `osl_`
+				//! builtin reads `fw`, so the call is emitted with the
+				//! identity domain scale.
+				bool ParseOslCall( const OslBuiltins::Sig& sig, size_t nameOff, VType& outType )
+				{
+					const std::string name( sig.name );
+					if( sig.needsHitContext && !m_contextVarsEnabled ) {
+						SetError( name + "() requires surface context variables", (ptrdiff_t)nameOff );
+						return false;
+					}
+					int got = 0;
+					if( Cur().t != Tok::RP ) {
+						for( ;; ) {
+							const size_t argOff = CurOff();
+							if( got >= sig.nArgs ) {
+								SetError( name + "() expects " + std::to_string( sig.nArgs ) + " argument(s)", (ptrdiff_t)nameOff );
+								return false;
+							}
+							const OslBuiltins::ArgKind kind = sig.kind[got];
+							if( kind == OslBuiltins::kIntLiteralArg ) {
+								Scalar lit = Scalar(0);
+								const bool isLit = PeekLiteralScalarArg( lit );
+								const int lo = sig.litMin[got], hi = sig.litMax[got];
+								// A number followed by something other than `,`
+								// or `)` is a syntax error, not a bad literal:
+								// say so rather than blame a valid value.
+								size_t strayOff = argOff;
+								if( !isLit && PeekSignedNumberThenStray( strayOff ) ) {
+									SetError( "missing `,` or `)` after argument " + std::to_string( got + 1 ) + " of " + name + "()",
+										(ptrdiff_t)strayOff );
+									return false;
+								}
+								if( !isLit || lit != std::floor( lit ) || lit < Scalar( lo ) || lit > Scalar( hi ) ) {
+									SetError( name + "() argument " + std::to_string( got + 1 ) + " must be an integer literal from "
+										+ std::to_string( lo ) + " to " + std::to_string( hi ), (ptrdiff_t)argOff );
+									return false;
+								}
+								// L3: reject scalar-only Vector Math ops (7=Dot, 8=Distance, 9=Length) in vector-returning osl_vmath().
+								if( name == "osl_vmath" && got == 0 && ( lit == Scalar( 7 ) || lit == Scalar( 8 ) || lit == Scalar( 9 ) ) ) {
+									SetError( "osl_vmath() op " + std::to_string( static_cast<int>( lit ) ) +
+										" is a scalar operation; use osl_vmath_scalar() instead", (ptrdiff_t)argOff );
+									return false;
+								}
+							}
+							VType at;
+							if( !ParseCmp( at ) ) return false;
+							const VType want = ( kind == OslBuiltins::kVec3Arg ) ? kVec3 : kScalar;
+							if( at != want ) {
+								SetError( name + "() argument " + std::to_string( got + 1 ) + " must be " + ( want == kVec3 ? "vec3" : "scalar" ), (ptrdiff_t)argOff );
+								return false;
+							}
+							++got;
+							if( Cur().t == Tok::Comma ) {
+								const size_t commaOff = CurOff();
+								Advance();
+								if( Cur().t == Tok::RP ) {
+									SetError( "unexpected `,` before `)` in " + name + "()", (ptrdiff_t)commaOff );
+									return false;
+								}
+								continue;
+							}
+							if( Cur().t != Tok::RP ) {
+								SetError( "missing `,` or `)` after argument " + std::to_string( got ) + " of " + name + "()", (ptrdiff_t)CurOff() );
+								return false;
+							}
+							break;
+						}
+					}
+					if( got != sig.nArgs ) { SetError( name + "() expects " + std::to_string( sig.nArgs ) + " argument(s)", (ptrdiff_t)nameOff ); return false; }
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					if( sig.needsHitContext ) {
+						m_usesSpaceTransform = true;
+					}
+					if( sig.needsSceneSignals ) {
+						m_usesSceneSignals = true;
+					}
+					if( sig.needsViewRay ) {
+						m_usesViewRay = true;
+					}
+					if( sig.readsWorldPosition ) {
+						m_readsWorldPosition = true;
+					}
+					if( sig.pathDependence != 0u ) {
+						m_pathDependence |= sig.pathDependence;
+					}
+					Compiled::Instr in;
+					in.op = sig.retVec3 ? Compiled::kOslV3 : Compiled::kOsl;
+					in.val = Scalar(1); in.valo = Scalar(0); in.idx = -1;
+					in.fn = sig.id; in.arity = OslBuiltins::ScalarArity( sig );
+					m_emit->code.push_back( in );
+					outType = sig.retVec3 ? kVec3 : kScalar;
+					return true;
+				}
+
+				//! Does the argument at the CURRENT token start with an optional
+				//! sign and a number followed by something that cannot continue
+				//! an expression -- not `,`, `)`, an operator or `.` -- i.e. a
+				//! numeric literal with stray text after it (`3 4`, `3 u`, or
+				//! `3` at the end of the input)?  `3+1` and `3 .x` are left to
+				//! the "must be an integer literal" message, since they are
+				//! expressions.  (`3.x` without the space reads as `3.`
+				//! followed by `x`, so it gets this message.)  Used only to word ParseOslCall's diagnostic;
+				//! consumes nothing.  On true, `strayOff` is the offset of the
+				//! stray token (or the end of the input), where the diagnostic
+				//! points -- the same place the generic path's points.
+				bool PeekSignedNumberThenStray( size_t& strayOff ) const
+				{
+					size_t i = m_pos;
+					if( i < m_toks->size() && (*m_toks)[i].t == Tok::Op && ( (*m_toks)[i].s == "-" || (*m_toks)[i].s == "+" ) ) ++i;
+					if( i >= m_toks->size() || (*m_toks)[i].t != Tok::Num ) return false;
+					++i;
+					if( i >= m_toks->size() ) return true;
+					const Tok::T after = (*m_toks)[i].t;
+					strayOff = (*m_toks)[i].off;
+					return after != Tok::Comma && after != Tok::RP && after != Tok::Op && after != Tok::Dot;
+				}
+
+				//! Is the argument starting at the CURRENT token exactly one
+				//! numeric literal (with an optional leading sign) -- i.e. is
+				//! the token after it `,` or `)`?  Does NOT consume anything;
+				//! the caller still parses the argument normally.
+				//!
+				//! Deliberately narrow, and narrower than "is this argument
+				//! constant": `2*0.05` and `param r 0.05` are both genuinely
+				//! constant and both report false here.  That is the honest
+				//! boundary of what a token peek can prove, and Phase 3 --
+				//! which needs the full `param`/`def` constant resolution for
+				//! the baked-mesh precondition (design doc §7.1) -- is where
+				//! the rest belongs.  Reporting false is always SAFE: it means
+				//! "treat the radius as dynamic", which is correct behaviour,
+				//! just not the fastest.
+				bool PeekLiteralScalarArg( Scalar& outVal ) const
+				{
+					size_t i = m_pos;
+					if( i >= m_toks->size() ) return false;
+					Scalar sign = Scalar(1);
+					const Tok& t0 = (*m_toks)[i];
+					if( t0.t == Tok::Op && ( t0.s == "-" || t0.s == "+" ) ) {
+						if( t0.s == "-" ) sign = Scalar(-1);
+						++i;
+					}
+					if( i >= m_toks->size() || (*m_toks)[i].t != Tok::Num ) return false;
+					const Scalar val = (*m_toks)[i].num;
+					++i;
+					if( i >= m_toks->size() ) return false;
+					const Tok::T after = (*m_toks)[i].t;
+					if( after != Tok::Comma && after != Tok::RP ) return false;
+					outVal = sign * val;
+					return true;
+				}
+
+				bool ParseVec3Ctor( size_t nameOff, VType& outType )
+				{
+					for( int i = 0; i < 3; ++i ) {
+						const size_t argOff = CurOff();
+						VType at;
+						if( !ParseCmp( at ) ) return false;
+						if( at != kScalar ) { SetError( "vec3() arguments must be scalar", (ptrdiff_t)argOff ); return false; }
+						if( i < 2 ) { if( !Expect( Tok::Comma, "vec3() expects 3 scalar arguments", nameOff ) ) return false; }
+					}
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in vec3()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					outType = kVec3;	// no opcode: the 3 scalars are already in place on the stack
+					return true;
+				}
+
+				//! DL-25 (docs/WETNESS_COAT_DESIGN.md sec 4(g), docs/DEBT_LEDGER.md):
+				//! `sample(painter_name)` -> vec3 (an IPainter's GetColor) and
+				//! `sample_scalar(painter_name)` -> scalar (an IScalarPainter's
+				//! GetValuesAt, no JH uplift -- ISCALARPAINTER_REFACTOR.md's
+				//! pipe split, honoured here exactly as everywhere else: a
+				//! COLOUR/reflectance reference goes through `sample`, a
+				//! PHYSICAL-SCALAR reference through `sample_scalar`).
+				//!
+				//! BESPOKE PARSING, like vec3()/ramp()/mix() above: the single
+				//! argument is a BARE PAINTER NAME resolved at ATTACH time
+				//! against the owning IJob's painter manager (see
+				//! ExpressionProgram::BindPainterRefs), not a runtime
+				//! expression -- so this reads exactly ONE identifier token,
+				//! never routing it through ParseCmp (which would try to
+				//! resolve it as a param/def/context variable and fail with
+				//! "unknown variable").  A quoted string, a number, or a
+				//! parenthesized sub-expression in this position is a
+				//! dedicated diagnostic, not "unknown function" or "unknown
+				//! variable" -- the name IS real syntax here, just not
+				//! evaluated as one.
+				//!
+				//! Gated on `m_contextVarsEnabled`, same predicate and same
+				//! diagnostic text as the geometry-signal builtins just above
+				//! (occlusion/thickness/convexity/proximity/interior): both
+				//! are surface queries against the live scene, and
+				//! expression_function2d's frozen UV-only contract must not
+				//! grow either family.
+				//!
+				//! Emits a ZERO-ARITY call (EmitFuncCall's `arity` argument is
+				//! 0 -- there is nothing on the value stack for this call,
+				//! unlike every other builtin in this file) whose `idx` is
+				//! set AFTER EmitFuncCall pushes the instruction (EmitFuncCall
+				//! itself always writes idx=-1; every other builtin ignores
+				//! it, so mutating it here immediately afterward is safe and
+				//! does not need a new EmitFuncCall overload).  `idx` is the
+				//! REGISTRATION index into m_colorPainterRefNames /
+				//! m_scalarPainterRefNames -- resolved to an actual pointer
+				//! only later, by BindPainterRefs -- NOT a stack arity.
+				bool ParseSampleCall( const std::string& name, size_t nameOff, VType& outType )
+				{
+					const bool isScalar = ( name == "sample_scalar" );
+					const bool isAlpha  = ( name == "sample_alpha" );
+					const bool isUv     = ( name == "sample_uv" );
+					const bool isUvAlpha = ( name == "sample_uv_alpha" );
+					if( !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+					if( Cur().t != Tok::Ident ) {
+						SetError( name + "() expects a bare painter name, e.g. `" + name + "(rock_albedo)` -- "
+							"not a quoted string, a number, or a sub-expression: the name is resolved against "
+							"the scene's painter chunks by name, not evaluated as a variable", (ptrdiff_t)CurOff() );
+						return false;
+					}
+					const std::string painterName = Cur().s;
+					Advance();
+					if( isUv || isUvAlpha ) {
+						const std::string expectUvMsg = name + "() expects (painter_name, u, v)";
+						if( !Expect( Tok::Comma, expectUvMsg.c_str(), nameOff ) ) return false;
+						const size_t uOff = CurOff();
+						VType tu;
+						if( !ParseCmp( tu ) ) return false;
+						if( tu != kScalar ) { SetError( name + "() argument 2 (u) must be scalar", (ptrdiff_t)uOff ); return false; }
+						if( !Expect( Tok::Comma, expectUvMsg.c_str(), nameOff ) ) return false;
+						const size_t vOff = CurOff();
+						VType tv;
+						if( !ParseCmp( tv ) ) return false;
+						if( tv != kScalar ) { SetError( name + "() argument 3 (v) must be scalar", (ptrdiff_t)vOff ); return false; }
+						if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "() -- expected (painter_name, u, v)", (ptrdiff_t)CurOff() ); return false; }
+						Advance();
+						const int refIdx = RegisterPainterRef( m_colorPainterRefNames, m_colorPainterRefIndex, painterName );
+						Compiled::Instr in;
+						in.op = isUv ? Compiled::kSampleUv : Compiled::kSampleUvAlpha;
+						in.val = 0; in.valo = 0;
+						in.idx = refIdx; in.fn = 0; in.arity = 2;
+						m_emit->code.push_back( in );
+						outType = isUv ? kVec3 : kScalar;
+						return true;
+					}
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "() -- exactly one argument expected", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					const int refIdx = isScalar
+						? RegisterPainterRef( m_scalarPainterRefNames, m_scalarPainterRefIndex, painterName )
+						: RegisterPainterRef( m_colorPainterRefNames, m_colorPainterRefIndex, painterName );
+					if( isAlpha ) {
+						Compiled::Instr in;
+						in.op = Compiled::kSampleAlpha;
+						in.val = 0; in.valo = 0;
+						in.idx = refIdx; in.fn = 0; in.arity = 0;
+						m_emit->code.push_back( in );
+						outType = kScalar;
+						return true;
+					}
+					EmitFuncCall( isScalar ? ExpressionProgram::kFnSamplePainterScalar : ExpressionProgram::kFnSamplePainter,
+						/*arity=*/0, /*isVec3=*/!isScalar );
+					m_emit->code.back().idx = refIdx;
+					outType = isScalar ? kScalar : kVec3;
+					return true;
+				}
+
+				//! Named geometry-attribute query: `mesh_attr3("name") -> vec3`
+				//! and `mesh_attr_alpha("name") -> scalar`.  Reads per-corner
+				//! linear RGBA from the hit geometry's ISurfaceSignalProvider.
+				bool ParseMeshAttrCall( const std::string& name, size_t nameOff, VType& outType )
+				{
+					const bool isAlpha = ( name == "mesh_attr_alpha" );
+					if( !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+					if( Cur().t != Tok::Str || Cur().s.empty() ) {
+						SetError( name + "() expects a non-empty quoted attribute name, e.g. `" + name + "(\"distance\")`",
+							(ptrdiff_t)CurOff() );
+						return false;
+					}
+					const std::string attrName = Cur().s;
+					Advance();
+					if( Cur().t != Tok::RP ) {
+						SetError( "missing ) in " + name + "() -- exactly one quoted attribute name expected",
+							(ptrdiff_t)CurOff() );
+						return false;
+					}
+					Advance();
+					const int attrIdx = RegisterPainterRef( m_meshAttrNames, m_meshAttrIndex, attrName );
+					Compiled::Instr in;
+					in.op = isAlpha ? Compiled::kMeshAttrAlpha : Compiled::kMeshAttr3;
+					in.val = 0; in.valo = 0;
+					in.idx = attrIdx; in.fn = 0; in.arity = 0;
+					m_emit->code.push_back( in );
+					outType = isAlpha ? kScalar : kVec3;
+					return true;
+				}
+
+				bool ParseMixCall( size_t nameOff, VType& outType )
+				{
+					VType t0, t1, t2;
+					if( !ParseCmp( t0 ) ) return false;
+					if( !Expect( Tok::Comma, "mix() expects 3 arguments", nameOff ) ) return false;
+					if( !ParseCmp( t1 ) ) return false;
+					if( !Expect( Tok::Comma, "mix() expects 3 arguments", nameOff ) ) return false;
+					if( !ParseCmp( t2 ) ) return false;
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in mix()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+					if( t0==kScalar && t1==kScalar && t2==kScalar ) {
+						EmitFuncCall( kFnMixScalar, 3, false );
+						outType = kScalar;
+						return true;
+					}
+					if( t0==kVec3 && t1==kVec3 && t2==kScalar ) {
+						EmitFuncCall( kFnMixVec3, 7, true );
+						outType = kVec3;
+						return true;
+					}
+					SetError( "mix() expects (scalar,scalar,scalar) or (vec3,vec3,scalar)", (ptrdiff_t)nameOff );
+					return false;
+				}
+
+				// ramp(t, pos0,val0, pos1,val1, ...)  -- >=2 stops, value
+				// type (scalar or vec3) taken from the stops and must match
+				// across all of them; positions checked strictly ascending
+				// at compile time wherever both neighbours are literals.
+				bool ParseRampCall( size_t nameOff, VType& outType )
+				{
+					VType tt;
+					if( !ParseCmp( tt ) ) return false;
+					if( tt != kScalar ) { SetError( "ramp() first argument (t) must be scalar", (ptrdiff_t)nameOff ); return false; }
+					if( !Expect( Tok::Comma, "ramp() expects t, pos0,val0, pos1,val1, ...", nameOff ) ) return false;
+
+					int numStops = 0;
+					VType valueType = kScalar;
+					bool haveValueType = false;
+					bool prevPosLiteral = false;
+					Scalar prevPosVal = 0;
+					int totalArity = 1;	// t
+
+					for( ;; ) {
+						if( numStops >= ExpressionProgram::kMaxRampStops ) { SetError( "ramp() has too many stops (limit 64)", (ptrdiff_t)nameOff ); return false; }
+						const size_t posOff = CurOff();
+						const bool isLitPos = ( Cur().t == Tok::Num );
+						const Scalar litPosVal = isLitPos ? Cur().num : Scalar(0);
+						VType pt;
+						if( !ParseCmp( pt ) ) return false;
+						if( pt != kScalar ) { SetError( "ramp() stop position must be scalar", (ptrdiff_t)posOff ); return false; }
+						if( isLitPos ) {
+							if( prevPosLiteral && !( litPosVal > prevPosVal ) ) {
+								SetError( "ramp() stop positions must be strictly ascending", (ptrdiff_t)posOff );
+								return false;
+							}
+							prevPosLiteral = true; prevPosVal = litPosVal;
+						} else {
+							prevPosLiteral = false;
+						}
+						totalArity += 1;
+
+						if( !Expect( Tok::Comma, "ramp() stop is missing its value", posOff ) ) return false;
+
+						const size_t valOff = CurOff();
+						VType vt;
+						if( !ParseCmp( vt ) ) return false;
+						if( !haveValueType ) { valueType = vt; haveValueType = true; }
+						else if( vt != valueType ) { SetError( "ramp() stop values must all be the same type (scalar or vec3)", (ptrdiff_t)valOff ); return false; }
+						totalArity += ( vt == kVec3 ) ? 3 : 1;
+						++numStops;
+
+						if( Cur().t == Tok::Comma ) { Advance(); continue; }
+						break;
+					}
+					if( numStops < 2 ) { SetError( "ramp() needs at least 2 stops", (ptrdiff_t)nameOff ); return false; }
+					if( Cur().t != Tok::RP ) { SetError( "missing ) in ramp()", (ptrdiff_t)CurOff() ); return false; }
+					Advance();
+
+					Compiled::Instr in;
+					in.op = Compiled::kRamp; in.val = 0;
+					in.valo = 0;
+					in.idx = numStops; in.fn = ( valueType==kVec3 ) ? 3 : 1; in.arity = totalArity;
+					m_emit->code.push_back( in );
+					outType = valueType;
+					return true;
+				}
+			};
+
+		private:
+			int m_uSlot, m_vSlot, m_PSlot, m_PoSlot, m_NSlot, m_fwSlot, m_timeSlot;
+			int m_curvSlot, m_curvRSlot, m_fwoSlot;
+			//! Compile-time record of which context vars this program reads --
+			//! bit i set == the var whose first env slot is i.  See
+			//! UsesContextVar().
+			unsigned int m_ctxUsedMask;
+			//! Compile-time record of every occlusion()/thickness()/convexity() call site
+			//! (design doc 7.1's constant-radius contract).  See
+			//! SurfaceSignalCalls().
+			std::vector<SignalRadiusCall> m_signalCalls;
+			//! DL-25: compile-time NAME lists for `sample()`/`sample_scalar()`
+			//! call sites (see ColorPainterRefNames/ScalarPainterRefNames);
+			//! `m_boundRefs` is the ATTACH-time resolution of those names to
+			//! real, addref'd painter pointers -- null until BindPainterRefs
+			//! succeeds, shared (not deep-copied) across every ExpressionProgram
+			//! copy taken after binding.  See BoundPainterRefs's own doc
+			//! comment for why a shared_ptr, not a raw pointer, owns them.
+			std::vector<std::string> m_colorPainterRefNames;
+			std::vector<std::string> m_scalarPainterRefNames;
+			std::vector<std::string> m_meshAttrNames;
+			std::shared_ptr<BoundPainterRefs> m_boundRefs;
+			std::vector<Scalar> m_initEnv;
+			std::vector<Compiled> m_defs;
+			Compiled m_final;
+			bool m_valid;
+			std::string m_error;
+			ptrdiff_t m_errorOffset;
+			//! Process-unique compile-time identity, 0 until a Builder
+			//! finalizes this program.  A COPY keeps it -- see
+			//! ExpressionMemo::NewProgramId.
+			unsigned long long m_id;
+			//! Compile-time L2-memo worthiness.  See MemoWorthy().
+			bool m_memoWorthy;
+			//! True iff any compiled body called a Group 7 space-transform / hit-context builtin.
+			bool m_usesSpaceTransform;
+			//! True iff any compiled body called a scene-signal OSL builtin (e.g. osl_ao).
+			bool m_usesSceneSignals;
+			//! True iff any compiled body called a view-ray OSL builtin (e.g. osl_layer_weight / osl_fresnel).
+			bool m_usesViewRay;
+			//! DL-292: true iff any compiled body called a world-position-producing OSL builtin (osl_to_world_point).
+			bool m_readsWorldPosition;
+			//! Part 0 bitmask of PathDependence::Flags from OSL builtins in this program.
+			unsigned int m_pathDependence;
+
+			ExpressionProgram() :
+				m_uSlot(0), m_vSlot(1), m_PSlot(kContextSlotP), m_PoSlot(kContextSlotPo), m_NSlot(8),
+				m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
+				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_fwoSlot(kContextSlotFwo),
+				m_ctxUsedMask(0),
+				m_valid(false), m_errorOffset(-1), m_id(0), m_memoWorthy(false), m_usesSpaceTransform(false), m_usesSceneSignals(false), m_usesViewRay(false), m_readsWorldPosition(false), m_pathDependence(0u)
+			{}
+			friend class Builder;
+
+
+			//! `stopAfterDef` -1 (default, via the two callers below) runs
+			//! every def; a non-negative value runs only defs [0, stopAfterDef]
+			//! inclusive -- the EvalDefStage entry point's partial-eval path.
+			//! An out-of-range non-negative value (>= m_defs.size()) is
+			//! treated as "run all", matching Eval's normal full-program
+			//! behaviour (EvalDefStage itself never passes such a value; this
+			//! is a defensive fallback, not a documented caller contract).
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar fwo, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, const BoundPainterRefs* pPainterRefs = nullptr, int stopAfterDef = -1, const RayIntersectionGeometric* pHit = nullptr ) const
+			{
+				const size_t n = m_initEnv.size();
+				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
+				env[ m_uSlot ] = u; env[ m_vSlot ] = v;
+				env[ m_PSlot+0 ] = P.x;  env[ m_PSlot+1 ] = P.y;  env[ m_PSlot+2 ] = P.z;
+				env[ m_PoSlot+0 ] = Po.x; env[ m_PoSlot+1 ] = Po.y; env[ m_PoSlot+2 ] = Po.z;
+				env[ m_NSlot+0 ] = N.x;  env[ m_NSlot+1 ] = N.y;  env[ m_NSlot+2 ] = N.z;
+				env[ m_fwSlot ] = fw;
+				env[ m_fwoSlot ] = fwo;
+				env[ m_timeSlot ] = time;
+				env[ m_curvSlot ] = curv;
+				env[ m_curvRSlot ] = curvR;
+				const size_t defLimit = ( stopAfterDef >= 0 && (size_t)stopAfterDef < m_defs.size() )
+					? (size_t)stopAfterDef + 1 : m_defs.size();
+				for( size_t i = 0; i < defLimit; ++i ) {
+					Scalar out[3];
+					RunAny( m_defs[i], env, out, pSignals, pPainterRefs, pHit, &m_meshAttrNames );
+					const int w = ( m_defs[i].type == kVec3 ) ? 3 : 1;
+					for( int c = 0; c < w; ++c ) env[ m_defs[i].writeSlot + c ] = out[c];
+				}
+			}
+
+		public:
+			//! Default-constructed program is invalid until a Builder fills it.
+			static ExpressionProgram Invalid() { return ExpressionProgram(); }
+
+			// P1-B: saturate a runtime (non-compile-time-literal) octaves
+			// argument into a safe int BEFORE casting, in Scalar (double)
+			// space -- `(int)a[3]` directly on an arbitrary Scalar (e.g. 2e20
+			// from `fbm(p, 2*1e20, ...)`, or NaN) is UB (UBSan-confirmed).
+			// Shared by every fbm/turbulence/ridged call site (CallFunc cases
+			// 43/44/45) so the guard can't regress independently at just one
+			// of the three.  NoiseCore::Fbm3D/Turbulence3D/Ridged3D each also
+			// clamp internally (ClampOctaves, int-space) -- this is the layer
+			// that makes the CAST itself safe, which has to happen first.
+			static int OctavesFromScalar( Scalar v )
+			{
+				if( !IsFinite( v ) ) return 1;
+				if( v < Scalar(1) ) return 1;
+				if( v > Scalar(kMaxOctaves) ) return kMaxOctaves;
+				return (int)v;
+			}
+
+			//! DL-25 shared machinery for `sample()`/`sample_scalar()` --
+			//! builds the SYNTHETIC hit both dispatch cases evaluate the
+			//! bound painter at, and a bounded re-entrancy guard.
+			//!
+			//! `BuildSyntheticRi` is the FALLBACK ONLY, for a context with
+			//! no hit record behind it (`ExprEvalContext::pHit == 0`): the
+			//! `Eval(u,v)` overload, a hand-built context, the def-stage
+			//! thumbnail previews.  When a record IS available the two
+			//! dispatch cases pass THE CALLER'S OWN, so a sampled painter
+			//! sees the real footprint, ray, vertex colour and second UV
+			//! set -- see ExprEvalContext::pHit for the contract and
+			//! ComputeMemoWorthiness for what that costs the memo.
+			//!
+			//! It constructs a `RayIntersectionGeometric` from EXACTLY the
+			//! fields in `env`'s fixed context slots -- u,v as `ptCoord`, P
+			//! as `ptIntersection`, Po as `ptObjIntersec`, N as `vNormal`
+			//! -- and leaves every other field default-constructed.
+			//!
+			//! ⚠ A PARTIAL RECORD IS STILL A WRONG ANSWER TO SOME
+			//! QUESTIONS, which is exactly why it is no longer the primary
+			//! path.  A painter reached through here reads an INVALID
+			//! footprint (TexturePainter degrades to an unfiltered
+			//! base-level point sample), a default `Ray`
+			//! (IridescentPainter's |dot(view,N)| collapses to its bias),
+			//! no vertex colour, no TEXCOORD_1 and no signal provider.  On
+			//! this path that is the same honest absence every other
+			//! record-free call in this codebase already tolerates -- the
+			//! idiom Painter::Evaluate's own "dummy ri" (Painter.cpp) uses
+			//! -- because there genuinely is no record to do better from.
+			//! It is NOT an acceptable answer at a real shading hit, and
+			//! the DL-25 review found it shipping there.
+			static RayIntersectionGeometric BuildSyntheticRi( const Scalar* env )
+			{
+				RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+				ri.bHit = true;
+				ri.ptCoord = Point2( env[0], env[1] );
+				ri.ptIntersection = Point3( env[ kContextSlotP+0 ], env[ kContextSlotP+1 ], env[ kContextSlotP+2 ] );
+				ri.ptObjIntersec  = Point3( env[ kContextSlotPo+0 ], env[ kContextSlotPo+1 ], env[ kContextSlotPo+2 ] );
+				ri.vNormal = Vector3( env[8+0], env[8+1], env[8+2] );	// N's fixed slot (8) -- see the reserved-slot-layout comment above
+				return ri;
+			}
+
+			//! A `sample`/`sample_scalar` reference CYCLE cannot form through
+			//! the scene-language parser: every named chunk resolves against
+			//! chunks ALREADY FINALIZED when it is parsed (forward
+			//! references fail with "not found"), the same forward-only rule
+			//! `function1d`/`function2d`/`base`/`multiply`/`add`/`painter`
+			//! already rely on -- so a real A-samples-B-samples-A cycle is
+			//! structurally impossible from a `.RISEscene` file, and the
+			//! self-reference case (a chunk sampling its own not-yet-
+			//! registered name) is caught with a SPECIFIC diagnostic at
+			//! ATTACH time (see the caller of BindPainterRefs).
+			//!
+			//! IT IS ALSO UNREACHABLE FROM THE CONSTRUCTION API, on closer
+			//! analysis, not just belt-and-braces against it: BindPainterRefs
+			//! takes ALREADY-CONSTRUCTED `IPainter*`/`IScalarPainter*`
+			//! pointers, an `ExpressionPainter`/`ExpressionScalarPainter`
+			//! copies its `ExpressionProgram` (refs included) at
+			//! CONSTRUCTION time and exposes no public rebind hook
+			//! afterward, and there is no way to obtain a not-yet-constructed
+			//! painter's future address to bind into a sibling's program
+			//! before either exists -- so painter A cannot be bound to
+			//! painter B while B is simultaneously bound to A through any
+			//! sequence of calls this codebase's public surface allows
+			//! today.  This guard is kept anyway, as a NAMED INVARIANT rather
+			//! than a reachable safety net: if a future change adds a rebind
+			//! hook (or a lazy/deferred binding scheme) and reintroduces the
+			//! possibility, the failure mode is a bounded, silent neutral
+			//! (matching every other "can't answer" fallback in this file --
+			//! occlusion's neutral, proximity's neutral) rather than a stack
+			//! overflow, with no changes needed here to get that.  Keyed on
+			//! the PAINTER POINTER, not the program: two distinct expressions
+			//! sampling the SAME painter concurrently on two threads see two
+			//! independent thread_local guards, so this is not a source of
+			//! false contention either.
+			static const int kMaxSampleDepth = 32;
+			struct SampleGuardState { const void* stack[ kMaxSampleDepth ]; int depth; };
+			static SampleGuardState& ThreadLocalSampleGuard()
+			{
+				static thread_local SampleGuardState s = { {}, 0 };
+				return s;
+			}
+			static bool SampleGuardEnter( const void* key )
+			{
+				SampleGuardState& g = ThreadLocalSampleGuard();
+				for( int i = 0; i < g.depth; ++i ) if( g.stack[i] == key ) return false;
+				if( g.depth >= kMaxSampleDepth ) return false;
+				g.stack[ g.depth++ ] = key;
+				return true;
+			}
+			static void SampleGuardExit()
+			{
+				SampleGuardState& g = ThreadLocalSampleGuard();
+				if( g.depth > 0 ) --g.depth;
+			}
+
+			//! RAII wrapper over the pair above (DL-25 review P3): the
+			//! sampled painter's `GetColor` / `GetValuesAt` is arbitrary
+			//! third-party code, and the two dispatch cases each have an
+			//! early return between enter and exit.  A scope guard makes
+			//! the balance structural instead of a reviewing obligation --
+			//! including on the exception path, which a manual
+			//! `SampleGuardExit()` after the call would leak, permanently
+			//! poisoning that thread's guard stack for the rest of the
+			//! render.
+			class SampleGuard
+			{
+			public:
+				explicit SampleGuard( const void* key ) : m_entered( SampleGuardEnter( key ) ) {}
+				~SampleGuard() { if( m_entered ) SampleGuardExit(); }
+				bool Entered() const { return m_entered; }
+			private:
+				SampleGuard( const SampleGuard& );
+				SampleGuard& operator=( const SampleGuard& );
+				const bool m_entered;
+			};
+
+			//! `pSignals` is the per-eval geometry-signal channel (0 when the
+			//! caller has no hit record).  It is a PARAMETER, never program
+			//! state: the compiled program stays stateless and `const`, so one
+			//! program is still safe to evaluate concurrently on many threads.
+			//! Every pre-Phase-2 builtin ignores it.
+			//!
+			//! DL-25's two new trailing parameters follow the SAME "parameter,
+			//! never program state" rule.  `env` is the SAME fixed-slot array
+			//! RunAny already holds -- passed through here (READ-ONLY: this
+			//! function never writes it) so `sample_scalar()` can build its
+			//! synthetic hit from u,v,P,Po,N at their well-known slots
+			//! (kContextSlotP etc, ExpressionEval.h's own reserved-slot-layout
+			//! comment) WITHOUT a new runtime argument on the call site --
+			//! sample_scalar() is emitted with arity 0 (ParseSampleCall), so
+			//! there is nothing in `a` to read.  `pPainterRefs` is the
+			//! program's ATTACH-time-bound painter table (ExpressionProgram::
+			//! m_boundRefs, threaded down from Eval/EvalVec3/BindEnv/RunAny) --
+			//! null for a program with no `sample`/`sample_scalar` calls, or
+			//! (defensively) for one evaluated before binding, in which case
+			//! the case below returns the same honest black/0 a null
+			//! `pSignals` gives the signal builtins.
+			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw, const SurfaceSignalInfo* pSignals,
+				const Scalar* env = nullptr, const BoundPainterRefs* pPainterRefs = nullptr, int idxArg = -1,
+				const RayIntersectionGeometric* pHit = nullptr )
+			{
+				switch( fn )
+				{
+				// --- legacy scalar functions: byte-identical to the pre-vec3 engine ---
+				case 1:  return std::sin(a[0]);
+				case 2:  return std::cos(a[0]);
+				case 3:  return std::tan(a[0]);
+				case 4:  return std::asin(a[0]);
+				case 5:  return std::acos(a[0]);
+				case 6:  return std::atan(a[0]);
+				case 7:  return std::exp(a[0]);
+				case 8:  return std::log(a[0]);
+				case 9:  return std::sqrt(a[0]);
+				case 10: return std::fabs(a[0]);
+				case 11: return std::floor(a[0]);
+				case 12: return std::ceil(a[0]);
+				case 13: return a[0] - std::floor(a[0]);				// frac
+				case 14: return ( a[0] > 0 ) ? Scalar(1) : ( a[0] < 0 ? Scalar(-1) : Scalar(0) );
+				case 20: return std::atan2(a[0],a[1]);
+				case 21: { const Scalar m = a[1]; return ( m != 0 ) ? ( a[0] - std::floor( a[0]/m ) * m ) : Scalar(0); }	// floor-mod
+				case 22: return std::min(a[0],a[1]);
+				case 23: return std::max(a[0],a[1]);
+				case 24: return std::pow(a[0],a[1]);
+				case 25: return std::sqrt(a[0]*a[0]+a[1]*a[1]);		// hypot (ffast-math-safe form)
+				case 26: return ( a[1] < a[0] ) ? Scalar(0) : Scalar(1);	// step(edge, x)
+				case 30: return std::min( std::max( a[0], a[1] ), a[2] );	// clamp(x,lo,hi)
+				case 31: { const Scalar t = std::min( std::max( ( a[2]-a[0] )/( a[1]-a[0] ), Scalar(0) ), Scalar(1) ); return t*t*(Scalar(3)-Scalar(2)*t); }	// smoothstep(e0,e1,x)
+				case 32: return a[0] + ( a[1]-a[0] ) * a[2];			// mix(a,b,t)
+				case 33: return ( a[0] != 0 ) ? a[1] : a[2];			// select(cond,a,b)
+				// --- vec3-domain, scalar-returning ---
+				case 40: return a[0]*a[3] + a[1]*a[4] + a[2]*a[5];		// dot(a,b)
+				case 41: return std::sqrt( a[0]*a[0]+a[1]*a[1]+a[2]*a[2] );	// length(v)
+				case 42: return NoiseCore::PerlinOctave3D( a[0], a[1], a[2] );
+				// fw (doc 88 S9): the reserved context slot, always at
+				// env[kContextSlotFw] regardless of program (Builder::Finalize
+				// pins m_fwSlot to kContextSlotFw) -- threaded in from RunAny
+				// below so fbm/turbulence/ridged can fade high octaves
+				// the sample footprint can't resolve.
+				//
+				// It arrives ALREADY IN THIS CALL SITE'S DOMAIN: RunAny
+				// combines the two context footprints (world `fw`, object
+				// `fwo`) with the instruction's two compile-time domain
+				// scales, so `fbm(P*40, ...)` sees 40*fw here and
+				// `fbm(Po*62, ...)` sees 62*fwo -- which is what
+				// NoiseCore::Fbm3D's contract ("fw in the same units as
+				// x,y,z") requires.  Nothing to compensate for below --
+				// and CallFunc is deliberately kept ignorant of how that
+				// number was arrived at.
+				case 43: return NoiseCore::Fbm3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
+				case 44: return NoiseCore::Turbulence3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
+				case 45: return NoiseCore::Ridged3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
+				case 46: case 47: case 48:
+				{
+					Scalar f1, f2; int cx,cy,cz;
+					NoiseCore::WorleySample3D( a[0],a[1],a[2], a[3], NoiseCore::eMetricEuclidean, f1, f2, cx, cy, cz );
+					if( fn == 46 ) return NoiseCore::WorleyNormalize( f1, NoiseCore::eMetricEuclidean, NoiseCore::eModeF1 );
+					if( fn == 47 ) return NoiseCore::WorleyNormalize( f2, NoiseCore::eMetricEuclidean, NoiseCore::eModeF2 );
+					return NoiseCore::WorleyNormalize( f2-f1, NoiseCore::eMetricEuclidean, NoiseCore::eModeF2MinusF1 );
+				}
+				case 49:
+				{
+					Scalar f1, f2; int cx,cy,cz;
+					NoiseCore::WorleySample3D( a[0],a[1],a[2], a[3], NoiseCore::eMetricEuclidean, f1, f2, cx, cy, cz );
+					return NoiseCore::WorleyIdOf( cx, cy, cz );
+				}
+				case 50: return NoiseCore::CellHash( a[0] );
+				// --- geometry-derived shading signals (design doc Phase 2) ---
+				// All take ONE argument: a query radius expressed as a
+				// FRACTION of the hit geometry's characteristic size (its
+				// bounding-box diagonal), so `occlusion(0.05)` means "5 % of
+				// the object" and reads identically at any scene scale and on
+				// any instance of the same geometry.
+				//
+				// The whole answer -- provider-absent fallback, unusable
+				// radius, provider refusal, non-finite guard and the [0,1]
+				// clamp -- lives in SurfaceSignalInfo so the VM, and any
+				// future non-VM consumer, cannot disagree about the
+				// conventions.  A null `pSignals` (Eval(u,v), or a hit on
+				// geometry that publishes no provider) yields the neutral
+				// value, exactly like `fw`'s honest 0.
+				//
+				// The `...DynR` twins are the SAME builtin evaluated at a
+				// call site whose radius the compiler could not prove
+				// constant; the only difference is the proof they forward,
+				// which the baked (mesh) providers require and the live
+				// (SDF) ones ignore.
+				case kFnOcclusion:
+					return pSignals ? pSignals->Occlusion( a[0], true ) : SurfaceSignalInfo::NeutralOcclusion();
+				case kFnOcclusionDynR:
+					return pSignals ? pSignals->Occlusion( a[0], false ) : SurfaceSignalInfo::NeutralOcclusion();
+				case kFnThickness:
+					return pSignals ? pSignals->Thickness( a[0], true ) : SurfaceSignalInfo::NeutralThickness();
+				case kFnThicknessDynR:
+					return pSignals ? pSignals->Thickness( a[0], false ) : SurfaceSignalInfo::NeutralThickness();
+				case kFnConvexity:
+					return pSignals ? pSignals->Convexity( a[0], true ) : SurfaceSignalInfo::NeutralConvexity();
+				case kFnConvexityDynR:
+					return pSignals ? pSignals->Convexity( a[0], false ) : SurfaceSignalInfo::NeutralConvexity();
+				// --- the CROSS-OBJECT PAIR
+				// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md 5.6) ---
+				// TWO cases, NEITHER with a DynR twin: both radii are WORLD
+				// LENGTHS and there is no bake for a constant-radius proof
+				// to feed, so a computed radius costs what a literal one
+				// does.  THESE ARE THE ONLY TWO DELIBERATE MOVES of
+				// CallFunc's byte-identity pin -- one per signal, each
+				// disclosed in its own arc; this body is the pinned one
+				// (ExpressionMemo.h's header names the set).  Eval,
+				// EvalVec3, RunAny and CallFuncVec3 are unchanged.
+				case kFnProximity:
+					return pSignals ? pSignals->Proximity( a[0] ) : SurfaceSignalInfo::NeutralProximity();
+				// ONE more case, and the pin MOVES ONCE MORE -- disclosed
+				// exactly as `proximity`'s did.  `interior` is the SIGNED
+				// sibling: same world-length radius, same absence of a DynR
+				// twin, same live-scan cost model.
+				case kFnInterior:
+					return pSignals ? pSignals->Interior( a[0] ) : SurfaceSignalInfo::NeutralInterior();
+				// --- DL-25: sample_scalar(name) -- IScalarPainter, no JH uplift ---
+				// `a` is empty (arity 0 -- see ParseSampleCall); the bound painter
+				// pointer lives at `pPainterRefs->scalar[idx]` and the hit is the
+				// caller's own (`pHit`), or a synthetic partial record built from
+				// `env` when the context carries none -- see BuildSyntheticRi's
+				// own doc comment for exactly which fields that fallback has, and
+				// ExpressionMemo::PainterSampleHitKey for the L2 key fields the
+				// forwarding costs.  An unbound program (pPainterRefs ==
+				// null -- reachable only before BindPainterRefs runs, i.e. never
+				// from a live render, but a defensive path costs nothing) or an
+				// out-of-range index reads the honest neutral, 0 -- the same
+				// convention every other "can't answer" builtin here uses.
+				case kFnSamplePainterScalar:
+				{
+					if( !pPainterRefs || !env ) return Scalar(0);
+					if( idxArg < 0 || (std::size_t)idxArg >= pPainterRefs->scalar.size() ) return Scalar(0);
+					IScalarPainter* p = pPainterRefs->scalar[ (std::size_t)idxArg ];
+					if( !p ) return Scalar(0);
+					const SampleGuard guard( p );	// cycle / depth guard -- see its own comment
+					if( !guard.Entered() ) return Scalar(0);
+					// THE RECORD.  The caller's own, when the context
+					// carried one (ExprEvalContext::pHit -- see its
+					// contract); otherwise the synthetic partial record
+					// BuildSyntheticRi assembles from the context slots.
+					// Written as two explicit branches rather than one
+					// helper returning a reference because the synthetic
+					// record is ~500 bytes: a helper would have to
+					// construct it unconditionally, in the caller, to have
+					// somewhere to return a reference TO.
+					//
+					// WHICH CHANNEL.  `GetValuesAt` returns the painter's
+					// three RGB-wavelength lanes (ScalarPainterRGB::
+					// kChannelNM = {611, 549, 465} nm since DL-82); a
+					// SCALAR has no colour, so the single representative
+					// value is the one every other single-sample scalar
+					// consumer in this codebase takes --
+					// ScalarPainterRGB::kSingleSampleChannel, the 549 nm
+					// green lane -- NOT lane 0 (611 nm red), which is what
+					// this line read before the DL-25 review.  On a
+					// constant scalar painter the three agree and the
+					// choice is invisible; on a wavelength-varying one (a
+					// Sellmeier/piecewise-linear/polynomial curve bound to
+					// `ior` or `ext`) it is the difference between the
+					// documented representative value and a red-shifted
+					// one.
+					Scalar v = Scalar(0);
+					if( pHit ) {
+						v = p->GetValuesAt( *pHit ).v[ ScalarPainterRGB::kSingleSampleChannel ];
+					} else {
+						const RayIntersectionGeometric ri = BuildSyntheticRi( env );
+						v = p->GetValuesAt( ri ).v[ ScalarPainterRGB::kSingleSampleChannel ];
+					}
+					return IsFinite( v ) ? v : Scalar(0);
+				}
+				default: return Scalar(0);
+				}
+			}
+
+			//! Vec3-returning half of the dispatch.  Carries `pSignals` for
+			//! symmetry with CallFunc so a future vec3-valued geometry signal
+			//! (bent normals are the obvious Phase-4 candidate) needs no
+			//! signature churn; no builtin in this switch reads `pSignals`
+			//! today.  DL-25's `env`/`pPainterRefs`/`idxArg` are the SAME
+			//! trailing parameters CallFunc gained, for `sample()`'s sake --
+			//! see that function's doc comment for what each carries and why.
+			//! This is the SECOND deliberate move of a body ExpressionMemo.h's
+			//! header names as "unchanged" -- see this file's own note where
+			//! that document is updated for `sample()` alongside `case
+			//! kFnSamplePainter` below.
+			static void CallFuncVec3( int fn, const Scalar* a, Scalar* out, const SurfaceSignalInfo* pSignals,
+				const Scalar* env = nullptr, const BoundPainterRefs* pPainterRefs = nullptr, int idxArg = -1,
+				const RayIntersectionGeometric* pHit = nullptr )
+			{
+				(void)pSignals;
+				switch( fn )
+				{
+				case 60:	// cross(a,b)
+					out[0] = a[1]*a[5] - a[2]*a[4];
+					out[1] = a[2]*a[3] - a[0]*a[5];
+					out[2] = a[0]*a[4] - a[1]*a[3];
+					break;
+				case 61:	// normalize(v)
+				{
+					const Scalar len2 = a[0]*a[0]+a[1]*a[1]+a[2]*a[2];
+					const Scalar invLen = ( len2 > Scalar(1e-24) ) ? ( Scalar(1) / std::sqrt(len2) ) : Scalar(0);
+					out[0] = a[0]*invLen; out[1] = a[1]*invLen; out[2] = a[2]*invLen;
+					break;
+				}
+				case 62:	// mix(vec3 a, vec3 b, scalar t)
+					out[0] = a[0] + (a[3]-a[0]) * a[6];
+					out[1] = a[1] + (a[4]-a[1]) * a[6];
+					out[2] = a[2] + (a[5]-a[2]) * a[6];
+					break;
+				// --- DL-25: sample(name) -- IPainter::GetColor, colour pipe ---
+				// Same shape as sample_scalar's CallFunc case; see its comment.
+				case kFnSamplePainter:
+				{
+					out[0] = out[1] = out[2] = Scalar(0);
+					if( !pPainterRefs || !env ) break;
+					if( idxArg < 0 || (std::size_t)idxArg >= pPainterRefs->color.size() ) break;
+					IPainter* p = pPainterRefs->color[ (std::size_t)idxArg ];
+					if( !p ) break;
+					const SampleGuard guard( p );	// cycle / depth guard
+					if( !guard.Entered() ) break;
+					// The caller's own hit record where there is one; see
+					// the sample_scalar case's comment for both halves.
+					RISEPel c( 0, 0, 0 );
+					if( pHit ) {
+						c = p->GetColor( *pHit );
+					} else {
+						const RayIntersectionGeometric ri = BuildSyntheticRi( env );
+						c = p->GetColor( ri );
+					}
+					out[0] = IsFinite( c[0] ) ? c[0] : Scalar(0);
+					out[1] = IsFinite( c[1] ) ? c[1] : Scalar(0);
+					out[2] = IsFinite( c[2] ) ? c[2] : Scalar(0);
+					break;
+				}
+				default:
+					out[0] = out[1] = out[2] = Scalar(0);
+					break;
+				}
+			}
+
+		private:
+			// Runs a compiled program on `env`, writing its result (1 or 3
+			// scalars, per c.type) into `out[0..]`.
+			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out, const SurfaceSignalInfo* pSignals,
+				const BoundPainterRefs* pPainterRefs = nullptr, const RayIntersectionGeometric* pHit = nullptr,
+				const std::vector<std::string>* pMeshAttrNames = nullptr )
+			{
+				Scalar stack[ kStackCap ];
+				int sp = 0;
+				for( size_t i = 0; i < c.code.size(); ++i ) {
+					const Compiled::Instr& in = c.code[i];
+					switch( in.op )
+					{
+					case Compiled::kConst: stack[sp++] = in.val; break;
+					case Compiled::kVar:   stack[sp++] = env[ in.idx ]; break;
+					case Compiled::kNeg:   stack[sp-1] = -stack[sp-1]; break;
+					case Compiled::kAdd:   stack[sp-2] = stack[sp-2] + stack[sp-1]; --sp; break;
+					case Compiled::kSub:   stack[sp-2] = stack[sp-2] - stack[sp-1]; --sp; break;
+					case Compiled::kMul:   stack[sp-2] = stack[sp-2] * stack[sp-1]; --sp; break;
+					case Compiled::kDiv:   stack[sp-2] = ( stack[sp-1] != 0 ) ? ( stack[sp-2] / stack[sp-1] ) : Scalar(0); --sp; break;
+					case Compiled::kMod:   { const Scalar m = stack[sp-1]; stack[sp-2] = ( m != 0 ) ? ( stack[sp-2] - std::floor( stack[sp-2]/m ) * m ) : Scalar(0); --sp; } break;
+					case Compiled::kPow:   stack[sp-2] = std::pow( stack[sp-2], stack[sp-1] ); --sp; break;
+					case Compiled::kLt:    stack[sp-2] = ( stack[sp-2] <  stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kGt:    stack[sp-2] = ( stack[sp-2] >  stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kLe:    stack[sp-2] = ( stack[sp-2] <= stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kGe:    stack[sp-2] = ( stack[sp-2] >= stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kEq:    stack[sp-2] = ( stack[sp-2] == stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kNe:    stack[sp-2] = ( stack[sp-2] != stack[sp-1] ) ? Scalar(1):Scalar(0); --sp; break;
+					case Compiled::kFunc:
+					{
+						const int ar = in.arity;
+						sp -= ar;
+						// `in.val` / `in.valo` are this call site's
+						// compile-time domain scales
+						// (Builder::NoiseFwScales): together they turn the
+						// two per-hit footprints -- world `fw` and object
+						// `fwo` -- into ONE footprint in the noise's OWN
+						// domain.  (1.0, 0.0) -- what every non-noise
+						// builtin and every unprovable noise call carries
+						// -- reduces to `fw * 1 + fwo * 0`, and `x*1` and
+						// `y*0 + z == z` are exact IEEE identities for the
+						// finite, non-negative widths a hit can supply, so
+						// nothing that did not scale its domain (or that
+						// scaled it only in P) changes by a single bit.
+						stack[sp] = CallFunc( in.fn, &stack[sp],
+							env[ kContextSlotFw ] * in.val + env[ kContextSlotFwo ] * in.valo, pSignals,
+							env, pPainterRefs, in.idx, pHit );
+						++sp;
+					} break;
+					case Compiled::kFuncV3:
+					{
+						const int ar = in.arity;
+						sp -= ar;
+						Scalar out3[3];
+						// NOTE: `in.val` / `in.valo` (the kFunc case's
+						// domain-scale multipliers) are deliberately NOT
+						// read here -- CallFuncVec3 takes no `fw`, because
+						// no vec3-returning builtin consumes one.  Adding
+						// such a builtin means threading `fw` through
+						// CallFuncVec3 AND reading
+						// `env[kContextSlotFw]*in.val +
+						// env[kContextSlotFwo]*in.valo` here; until then
+						// EmitFuncCall's contract (see its comment) is
+						// that a vec3 call site carries the identity
+						// (1.0, 0.0).
+						CallFuncVec3( in.fn, &stack[sp], out3, pSignals, env, pPainterRefs, in.idx, pHit );
+						stack[sp] = out3[0]; stack[sp+1] = out3[1]; stack[sp+2] = out3[2];
+						sp += 3;
+					} break;
+					case Compiled::kSplat3:
+					{
+						const Scalar v = stack[sp-1];
+						stack[sp] = v; stack[sp+1] = v;
+						sp += 2;
+					} break;
+					case Compiled::kAddV: for(int k=0;k<3;++k) stack[sp-6+k] = stack[sp-6+k] + stack[sp-3+k]; sp -= 3; break;
+					case Compiled::kSubV: for(int k=0;k<3;++k) stack[sp-6+k] = stack[sp-6+k] - stack[sp-3+k]; sp -= 3; break;
+					case Compiled::kMulV: for(int k=0;k<3;++k) stack[sp-6+k] = stack[sp-6+k] * stack[sp-3+k]; sp -= 3; break;
+					case Compiled::kDivV: for(int k=0;k<3;++k) { const Scalar d = stack[sp-3+k]; stack[sp-6+k] = ( d != 0 ) ? ( stack[sp-6+k] / d ) : Scalar(0); } sp -= 3; break;
+					case Compiled::kNegV: stack[sp-3] = -stack[sp-3]; stack[sp-2] = -stack[sp-2]; stack[sp-1] = -stack[sp-1]; break;
+					case Compiled::kSwizzle:
+					{
+						const Scalar v = stack[sp-3+in.idx];
+						sp -= 3;
+						stack[sp++] = v;
+					} break;
+					case Compiled::kRamp:
+					{
+						const int numStops = in.idx;
+						const int W = in.fn;
+						const int ar = in.arity;
+						sp -= ar;
+						const Scalar* a = &stack[sp];
+						const Scalar t = a[0];
+						const int stride = 1 + W;
+						const int outBase = sp;
+						const Scalar firstPos = a[1];
+						const Scalar lastPos = a[ 1 + (numStops-1)*stride ];
+						if( t <= firstPos ) {
+							for( int c = 0; c < W; ++c ) stack[outBase+c] = a[1+1+c];
+						} else if( t >= lastPos ) {
+							const int base = 1 + (numStops-1)*stride;
+							for( int c = 0; c < W; ++c ) stack[outBase+c] = a[base+1+c];
+						} else {
+							int seg = 0;
+							for( int s = 0; s < numStops-1; ++s ) {
+								const Scalar p0 = a[1+s*stride];
+								const Scalar p1 = a[1+(s+1)*stride];
+								if( t >= p0 && t <= p1 ) { seg = s; break; }
+							}
+							const Scalar p0 = a[1+seg*stride];
+							const Scalar p1 = a[1+(seg+1)*stride];
+							const Scalar denom = p1 - p0;
+							Scalar frac = ( denom != 0 ) ? ( t - p0 ) / denom : Scalar(0);
+							// Defensive clamp (P2-C): the compile-time ascending-position
+							// check only fires when BOTH neighbouring stop positions are
+							// literal constants (ParseRampCall) -- a non-literal position
+							// (a param/def/expression) isn't checked, so a runtime-computed
+							// stop list that isn't actually monotonic could otherwise send
+							// `frac` outside [0,1] and extrapolate past the segment's own
+							// v0/v1 instead of interpolating between them.
+							if( frac < Scalar(0) ) frac = Scalar(0);
+							if( frac > Scalar(1) ) frac = Scalar(1);
+							for( int c = 0; c < W; ++c ) {
+								const Scalar v0 = a[1+seg*stride+1+c];
+								const Scalar v1 = a[1+(seg+1)*stride+1+c];
+								stack[outBase+c] = v0 + ( v1 - v0 ) * frac;
+							}
+						}
+						sp = outBase + W;
+					} break;
+					// The `osl_` builtins (ExpressionOslBuiltins.h): an
+					// out-of-line dispatch of their own.  These two cases
+					// are the deliberate, disclosed move of RunAny's
+					// pinned text for that family (ExpressionMemo.h); no
+					// case above changed.
+					case Compiled::kOsl:
+					{
+						sp -= in.arity;
+						Scalar r[3];
+						const Vector3 fallbackN( env[8], env[9], env[10] );
+						OslBuiltins::Call( in.fn, &stack[sp], r, pHit, pSignals, &fallbackN );
+						stack[sp++] = r[0];
+					} break;
+					case Compiled::kOslV3:
+					{
+						sp -= in.arity;
+						Scalar r[3];
+						const Vector3 fallbackN( env[8], env[9], env[10] );
+						OslBuiltins::Call( in.fn, &stack[sp], r, pHit, pSignals, &fallbackN );
+						stack[sp] = r[0]; stack[sp+1] = r[1]; stack[sp+2] = r[2];
+						sp += 3;
+					} break;
+					case Compiled::kMeshAttr3:
+					case Compiled::kMeshAttrAlpha:
+					{
+						Scalar rgba[4] = { Scalar(0), Scalar(0), Scalar(0), Scalar(0) };
+						if( pSignals && pMeshAttrNames && in.idx >= 0 && (size_t)in.idx < pMeshAttrNames->size() ) {
+							const Point3* pQueryObjPos = 0;
+							Point3 queryObj;
+							if( pHit && ( pHit->vReliefObjStep.x != Scalar(0) ||
+								pHit->vReliefObjStep.y != Scalar(0) ||
+								pHit->vReliefObjStep.z != Scalar(0) ) )
+							{
+								queryObj = Point3Ops::mkPoint3( pSignals->ptObject, pHit->vReliefObjStep );
+								pQueryObjPos = &queryObj;
+							}
+							pSignals->NamedAttribute( (*pMeshAttrNames)[(size_t)in.idx].c_str(), rgba, pQueryObjPos );
+						}
+						if( in.op == Compiled::kMeshAttr3 ) {
+							stack[sp] = rgba[0]; stack[sp+1] = rgba[1]; stack[sp+2] = rgba[2];
+							sp += 3;
+						} else {
+							stack[sp++] = rgba[3];
+						}
+					} break;
+					case Compiled::kSampleAlpha:
+					{
+						Scalar alpha = Scalar(1);
+						if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+							IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+							if( p ) {
+								const SampleGuard guard( p );
+								if( guard.Entered() ) {
+									const Scalar a = pHit ? p->GetAlpha( *pHit ) : p->GetAlpha( BuildSyntheticRi( env ) );
+									alpha = IsFinite( a ) ? a : Scalar(0);
+								}
+							}
+						}
+						stack[sp++] = alpha;
+					} break;
+					case Compiled::kSampleUv:
+					case Compiled::kSampleUvAlpha:
+					{
+						const Scalar sv = stack[sp - 1];
+						const Scalar su = stack[sp - 2];
+						sp -= 2;
+						const Scalar uSafe = IsFinite( su ) ? su : Scalar(0);
+						const Scalar vSafe = IsFinite( sv ) ? sv : Scalar(0);
+						if( in.op == Compiled::kSampleUv ) {
+							Scalar r0 = Scalar(0), r1 = Scalar(0), r2 = Scalar(0);
+							if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+								IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+								if( p ) {
+									const SampleGuard guard( p );
+									if( guard.Entered() ) {
+										RayIntersectionGeometric riUv = pHit ? *pHit : BuildSyntheticRi( env );
+										riUv.ptCoord = Point2( uSafe, vSafe );
+										riUv.txFootprint.valid = false;
+										const RISEPel col = p->GetColor( riUv );
+										r0 = IsFinite( col[0] ) ? col[0] : Scalar(0);
+										r1 = IsFinite( col[1] ) ? col[1] : Scalar(0);
+										r2 = IsFinite( col[2] ) ? col[2] : Scalar(0);
+									}
+								}
+							}
+							stack[sp] = r0; stack[sp+1] = r1; stack[sp+2] = r2;
+							sp += 3;
+						} else {
+							Scalar alpha = Scalar(1);
+							if( pPainterRefs && in.idx >= 0 && (std::size_t)in.idx < pPainterRefs->color.size() ) {
+								IPainter* p = pPainterRefs->color[ (std::size_t)in.idx ];
+								if( p ) {
+									const SampleGuard guard( p );
+									if( guard.Entered() ) {
+										RayIntersectionGeometric riUv = pHit ? *pHit : BuildSyntheticRi( env );
+										riUv.ptCoord = Point2( uSafe, vSafe );
+										riUv.txFootprint.valid = false;
+										const Scalar a = p->GetAlpha( riUv );
+										alpha = IsFinite( a ) ? a : Scalar(0);
+									}
+								}
+							}
+							stack[sp++] = alpha;
+						}
+					} break;
+					}
+				}
+				const int w = ( c.type == kVec3 ) ? 3 : 1;
+				for( int k = 0; k < w; ++k ) out[k] = ( sp >= w ) ? stack[sp-w+k] : Scalar(0);
+			}
+		};
+	}
+}
+
+#endif

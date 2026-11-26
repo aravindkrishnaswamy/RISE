@@ -1,0 +1,1117 @@
+---
+name: bdpt-vcm-mis-balance
+description: |
+  Disciplined procedure for diagnosing BDPT and VCM correctness bugs that
+  manifest as bias, fireflies, or "splotches" against a path-traced
+  reference.  Use when: a BDPT or VCM render disagrees with PT (mean
+  off, max blown out, pixels with structured noise that doesn't
+  decrease with sample count); user reports "fireflies even at high
+  spp"; or you've just changed MIS code (`MISWeight`, `EvaluateNEE`,
+  `EvaluateMerges`, `Convert*Subpath`, the auto-radius pre-pass).
+  Walks through the PT-vs-X property, isolation tests for individual
+  strategies, the recurring "delta-light vs delta-surface" trap, and
+  the running-quantity instrumentation pattern that pinpoints which
+  strategy / vertex / pdf is producing the wrong value.  Starts with
+  pre-flight checks for the known NON-MIS causes of the same
+  symptom: output-layer splat loss in the plain file when
+  `oidn_denoise` is on (compare against `_denoised`),
+  light-surface sampler density bugs (deficit tracks the emitter
+  shape), and a reference path tracer that is itself broken --
+  including the case where the harness's chosen PT is a legacy
+  `pixel*_rasterizer` whose shader-op chain does not cover the
+  transport under test.
+---
+
+# BDPT / VCM MIS Balance Diagnosis
+
+## When To Use
+
+- BDPT or VCM render disagrees with PT on a scene where they should
+  converge (no caustics, no specular SDS chains, no transmissive
+  shadow specifics).
+- Image has visible "splotches", fireflies, or texture-like patterns
+  that don't smooth out at high spp.
+- Mean / median / p99 / max comparison against PT trips a tolerance
+  in `BDPTStrategyBalanceTest` or `VCMStrategyBalanceTest`.
+- You changed code in:
+  - [BDPTIntegrator::MISWeight](../../src/Library/Shaders/BDPTIntegrator.cpp) — power-heuristic walk
+  - [BDPTIntegrator::ConnectAndEvaluate](../../src/Library/Shaders/BDPTIntegrator.cpp) — per-strategy contribution + pdfRev updates
+  - [VCMIntegrator::EvaluateNEE / EvaluateMerges / SplatLightSubpathToCamera](../../src/Library/Shaders/VCMIntegrator.cpp) — VC + VM strategies
+  - [VCMRecurrence.cpp / .h](../../src/Library/Shaders/VCMRecurrence.cpp) — `InitLight`, `InitCamera`, `ApplyGeometricUpdate`, `ApplyBsdfSamplingUpdate`, `Convert*Subpath`
+  - [VCMRasterizerBase::PreRenderSetup](../../src/Library/Rendering/VCMRasterizerBase.cpp) — `foundSpecular`, auto-radius
+- A new light type (delta-direction, environment, mesh emitter) was
+  added or modified and the MIS code wasn't simultaneously taught
+  about it.
+
+## When NOT To Use
+
+- Caustic scenes (glass / mirror dominating the path budget).  PT and
+  BDPT/VCM converge to the same answer in the limit but at very
+  different rates: PT under-samples specular paths, BDPT/VCM finds
+  them with high variance.  PT-vs-BDPT mean disagreement on caustic
+  scenes is a sampling efficiency disparity, not an MIS bug.  The
+  right tool there is SMS or path guiding, not MIS surgery.
+- Variance that scales with `1/sqrt(N)`.  Render at 2× and 16× spp:
+  if the disagreement shrinks, it's noise.  If it stays put, it's
+  bias (the bug this skill fixes).
+
+## Procedure
+
+### 0. Rule out the nine known non-MIS causes first
+
+Nine failure modes produce exactly the "bidirectional render
+disagrees with PT" symptom (or, in cause 3's case, "PT itself
+disagrees with its own material's proven-linear response"; or, in
+cause 4's case, "BDPT/VCM looks like it's over-counting when PT is
+actually the one under-counting"; or, in cause 7's case, "a closed
+solid reads differently than the same faces built as separate
+planes"; or, in cause 8's case, "VCM reads a fixed n^2 over PT on
+anything submerged") while the MIS arithmetic is perfectly healthy.  All are
+minutes to check; do them before any integrator instrumentation:
+
+0. **PT may be the broken one — check IOR-stack seeding when the
+   camera (or an emitter) sits inside a dielectric.**  (Found
+   2026-08-13 on `vcm_sdf_luminaire_jellyfish`: VCM read 2.2× PT's
+   mean and was blamed, but PT was losing ~8× of the env energy.)
+   A transport walk that STARTS inside a dielectric must seed its
+   IORStack from the start point (`IORStackSeeding::SeedFromPoint`)
+   or DielectricSPF misclassifies the first boundary crossing
+   (`bFromInside==false`) and silently DROPS the delta-transmission
+   lobe.  BDPT/VCM eye+light subpaths have always seeded;
+   PathTracingIntegrator, the legacy PixelBased rasterizers, and the
+   photon tracers only gained seeding 2026-08-13.  Fast diagnosis:
+   build a camera-inside-a-delta-shell + uniform-env micro-scene
+   (closed form: every pixel == env colour exactly — see
+   EnvLightBalanceTest's "submerged camera" topology); or flip
+   `RISE_DISABLE_IOR_STACK_SEEDING=1` and see whether the healthy
+   integrator collapses to match the broken one.  Related trap the
+   same investigation hit: `dielectric_material` `scattering 0.0` is
+   MAXIMALLY DIFFUSE transmission (Phong exponent 0), not "no
+   scattering" — a delta pass-through needs `scattering 1000000`.
+
+1. **Output-layer splat loss — compare the plain file against
+   `_denoised`, or re-render with `oidn_denoise FALSE`.**  With
+   `oidn_denoise` on (the DEFAULT), the plain (non-`_denoised`) file
+   is written by the bound-mode `FileEncoderObserver` reading the
+   canonical FrameStore at `MarkPreDenoiseComplete`.  Energy that
+   reaches the image only via the splat film (the t=1 light-tracing
+   strategy) must be resolved into the canonical around that Mark —
+   `VCMRasterizerBase::FlushPreDenoisedToOutputs` and
+   `BDPTRasterizerBase`'s pre-denoise block do this (Resolve → flush
+   → Unresolve) since 2026-06-10.  Pre-fix, the plain file silently
+   dropped ALL t=1 energy: under VCM's balance heuristic t=1 carries
+   most direct lighting on simple scenes, so a torus-arealight floor
+   measured 0.36× of PT while the image was otherwise CLEAN — no
+   splotches, emitter rendered correctly (s=0 emission is weight-1
+   and never splatted).  BDPT masked the same hole because power-2
+   crushes its t=1 share on PT-convergent scenes.  If plain and
+   `_denoised` disagree beyond noise, the bug is in the output
+   layer, not transport.
+
+2. **Light-surface sampler density — if the deficit tracks the
+   emitter SHAPE, chi-square the geometry's `UniformRandomPoint`.**
+   MIS weights assume the claimed `pdfPosition = 1/GetArea()` is the
+   ACTUAL sampling density.  If the sampler deviates (TorusGeometry's
+   rejection-retry collapsed ~27% of draws onto a single tube circle
+   pre-2026-06-10), every light-sampled strategy carries the same
+   spatial bias — and integrators MIX those biased estimators with
+   different MIS shares (PT ≈65% light-sampled vs VCM ≈90%+ under
+   balance), so they disagree pointwise while each remains
+   internally consistent.  Signature: discrepancy appears with one
+   emitter shape (curved / self-occluding) but vanishes with a flat
+   `clippedplane` quad in the same placement; image-wide means
+   roughly match because the redistribution cancels globally — which
+   makes `*StrategyBalanceTest` mean/median/p99 comparisons
+   structurally blind to it.  A density-histogram regression
+   (`tests/GeometryUVRoundtripTest.cpp`, TestTorus) shows the
+   pattern to copy for other primitives.
+
+3. **A strategy's REALIZED samples are biased, not its WEIGHT
+   formula — check for shadow-ray self-intersection before trusting
+   a pointwise pdf trace.**  (Found 2026-09-03 on a `weave_material`
+   full-sphere-transmissive curtain lit by a mesh area light: PT's
+   response to `transmit` looked super-linear, exponent ≈ 1.7, while
+   BDPT — sharing the identical material code — stayed exactly
+   linear.)  The `(p_light, p_bsdf)` / `(bsdfPdf, p_nee)` pairs
+   `PowerHeuristic` combines can be verified numerically IDENTICAL for
+   the same direction (same alias-table pdf, same `Pdf()` call) —
+   partition-of-unity holds exactly, as it algebraically must — and
+   the bug can still be real, because a strategy's REALIZED value can
+   be biased for a reason that has nothing to do with its weight.
+   Here, `ClippedPlaneGeometry`'s NEE shadow rays were spuriously
+   self-shadowed by their OWN originating surface ~94% of the time
+   (`RayBilinearPatchIntersection`'s self-hit epsilon, a fixed
+   absolute `NEARZERO`, was too tight for the FP noise actually
+   produced at the scene's coordinate scale) — a purely geometric
+   effect, independent of `transmit`, so the affected strategy
+   (NEE) stayed internally linear but deflated by a constant factor.
+   The super-linear SHAPE came from MIS correctly shifting weight
+   share toward the OTHER (healthy) strategy as the competing pdf
+   grew — a real, correctly-computed weight shift wearing a geometry
+   bug as a costume.  Fast diagnosis: force each strategy to fire
+   ALONE and UNWEIGHTED (the other's contribution suppressed) and
+   compare their means directly — two unbiased estimators of the
+   same integral must agree; if they don't, the pdf pairing is
+   probably fine and one strategy's own sampling is broken.  Full
+   mechanism and the geometry fix:
+   [precision-fix-the-formulation.md](precision-fix-the-formulation.md)'s
+   "Bilinear-patch shadow-ray self-shadowing" example and
+   [CLOTH_FABRIC_DESIGN.md §15 debt 21](../CLOTH_FABRIC_DESIGN.md).
+
+4. **The SAME geometry-layer bug that biases PT can also make a
+   PERFECTLY CORRECT BDPT/VCM look like the thing that's over-counting
+   — check whether PT's own reference value moved before trusting a
+   "BDPT/VCM reads Nx over PT" measurement.**  (Found 2026-09-04 on the
+   SAME `weave_material` full-sphere-transmissive curtain as cause 3,
+   this time lit by a DELTA `omni_light`: a prior session had measured
+   "BDPT reads 100-350x over PT" and filed it as a BDPT/VCM
+   vertex-connection geometric-term singularity —
+   `BDPTUtilities::GeometricTerm`'s `cosA·cosB/dist²`, plausible in
+   principle for a flat, zero-thickness, two-sided surface.  The
+   measurement does not reproduce once cause 3's fix lands.)  Cause 3's
+   own fast-diagnosis technique — "force each strategy to fire ALONE
+   and UNWEIGHTED, compare their means" — does NOT catch this variant:
+   a delta light has no competing BSDF-sampling strategy for NEE to be
+   compared against (`w = 1` unconditionally), so there is no SHAPE
+   distortion to notice, only a flat multiplicative deflation of PT's
+   mean that looks exactly like "PT is small and correct, BDPT/VCM are
+   huge and wrong" if you don't separately ask whether PT's number
+   itself is trustworthy.  Here, PT's own NEE shadow ray toward the
+   point light suffered the identical `RayBilinearPatchIntersection`
+   self-hit bug cause 3 describes — spuriously self-occluded ~94% of
+   the time, deflating PT's reference value by ~370x — while BDPT's and
+   VCM's OWN connection-visibility shadow rays were shielded from the
+   same bug by their own, much larger epsilon bump
+   (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON = 1e-6`, applied via
+   `Ray::Advance()` before casting — six orders of magnitude above the
+   ~1e-12 FP-noise floor the underlying bug produces), so BDPT's
+   absolute output barely moved across the fix (~0.0253 before and
+   after).  The "100-350x" figure was a STABLE BDPT/VCM number compared
+   against a PT reference that was itself broken.  **Diagnostic
+   takeaway**: before accepting a "BDPT/VCM over-counts by Nx"
+   conclusion, check whether BDPT/VCM's OWN connection/shadow-ray code
+   has an epsilon bump the PT code path you're comparing against
+   lacks — if it does, re-derive PT's reference value with that bug
+   fixed before trusting the ratio, exactly like step 0's "PT may be
+   the broken one" cause 0 says for the IOR-stack case, generalized to
+   any code path where BDPT/VCM happen to carry their own protective
+   margin and PT does not.  Full mechanism and numbers:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 20](../CLOTH_FABRIC_DESIGN.md).
+
+5. **Subpath vertex connectibility misclassified on mixed delta+continuum
+   materials — check whether a stochastic delta lobe marked a surface
+   non-connectible.** (Found 2026-09-04 on `weave_material` with
+   `transmission thin` and `gap > 0` backlit by a delta light: BDPT/PT
+   was exactly 0.900 for linen with `gap = 0.1` and 0.800 with
+   `gap = 0.2`.) When a material has both a delta lobe (e.g. weave gap
+   pass-through) and a continuum lobe (e.g. diffuse yarn transmission)
+   under a single-ray sampling budget, drawing the delta lobe leaves the
+   `scattered` ray container containing only delta rays. If the integrator
+   determines vertex connectibility via `if (!scattered[i].isDelta) hasNonDelta = true;`,
+   drawing the delta lobe spuriously marks the surface vertex
+   `isConnectible = false`, dropping Next Event Estimation (NEE, $s=1$) on a
+   `gap` fraction of camera rays. On the remaining $1 - \text{gap}$ fraction
+   of camera rays where NEE does fire, `brdf.value()` additionally evaluates
+   the continuum lobe scaled by $1 - \text{gap}$, yielding an unweighted
+   realized share of $(1 - \text{gap})^2$ instead of $(1 - \text{gap})$.
+   **Diagnostic takeaway**: `isDelta` is a property of a sampled
+   continuation *ray/lobe*, but `isConnectible` is a property of the
+   *surface* (whether continuous scattering capability exists, i.e.
+   `ri.pMaterial->GetBSDF() != nullptr`). Check whether unweighted $s=1$
+   NEE matches PT total; if it is short by exactly a factor of $1 - \text{gap}$,
+   the vertex was misclassified as non-connectible when the delta lobe was drawn.
+   Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt 23](../CLOTH_FABRIC_DESIGN.md).
+
+   **Audit the same predicate ONE HOP DOWNSTREAM.** The identical
+   per-draw-standing-in-for-per-surface mistake was sitting in the MEDIUM
+   vertex branch of the same two functions: a medium vertex inside an object
+   was marked non-connectible when `prev.type == SURFACE && prev.isDelta`.
+   "Enclosed by a specular boundary" is a property of the boundary
+   *material*, so a mixed boundary (weave gap, polished coat, Fresnel
+   composite) made the same medium vertex connectible or not depending on the
+   draw. It now tests `!prev.isConnectible`. Whenever you fix an
+   `isDelta`-should-have-been-`isConnectible` site, grep the file for the
+   OTHER vertex types that inherit connectibility from a neighbour.
+
+   **And do not stop at the first integrator that goes green.** Fixing this
+   put BDPT on 1.0000 and left VCM on 1.030 — which was a *separate* bug in
+   VCM's delta-light MIS partition that the deficit had been masking (step 2's
+   VCM bias mode 7). Two bugs of opposite sign on the same scene is not
+   unusual; when one integrator lands and its sibling does not, the sibling
+   has its own bug, not a residual of yours.
+
+6. **The reference is a LEGACY rasterizer whose SHADER CHAIN does not
+   cover the transport under test.**  (2026-09-04; mechanism found and
+   the reference switched 2026-09-05, docs/CLOTH_FABRIC_DESIGN.md §15
+   debt 26.)  `tests/BDPTStrategyBalanceTest.cpp` used to compare against
+   `pixelpel_rasterizer`, not `pathtracing_pel_rasterizer`.  On a
+   `weave_material` with `transmission thin, gap 0.1` in front of an area
+   emitter the legacy path reads **0.0416** where the progressive PT
+   reads **0.1024** at the same spp (raising `max_recursion` 2 → 8
+   changes nothing) — so BDPT and VCM, which both read ≈0.1024, look like
+   they over-count by 2.46x.
+
+   **The mechanism is the scene's shader chain, not the rasterizer.**
+   A legacy `pixel*_rasterizer` executes the scene's `standard_shader`
+   op chain literally.  `Job::AddStandardShader`
+   ([Job.cpp](../../src/Library/Job.cpp)) auto-prepends
+   `DefaultEmission` and ONLY that op, so `shaderop DefaultDirectLighting`
+   really runs `[EmissionShaderOp, DirectLightingShaderOp]`.  Neither
+   casts a continuation ray, and neither declares `RequireSPF()` — so
+   `StandardShader`'s `bComputeSPF` is false and `StandardShader::Shade`
+   never calls `ISPF::Scatter` at all.  The delta gap lobe is therefore
+   not merely unfollowed, it is **never sampled**; that is also why
+   `max_recursion` is inert (no recursive op ever exercises the budget).
+   Adding one op, `DefaultRefraction`, brings the legacy number to
+   0.10148 — **0.991** of the modern PT — and the recovered term is a
+   TOP-HAT of height exactly `gap × L_emitter` (0.22 % agreement in the
+   interior, 1024 spp) over the emitter's silhouette, zero elsewhere.
+
+   **This is by design, not a defect, and the control that proves it** is
+   a plain `dielectric_material` pane substituted for the weave in the
+   same scene: the direct-lighting-only chain renders it **0.000000**
+   (black pane, emitter behind it invisible) and `[+ DefaultRefraction]`
+   reads 0.61119 against the modern PT's 0.61116.  If it were a bug,
+   every dielectric in RISE would render black under such a chain.  The
+   shipped legacy corpus already honours the contract —
+   `scenes/FeatureBased/Caustics/pool_caustics.RISEscene` pairs
+   `DefaultDirectLighting` with `DefaultRefraction`.
+
+   **What to do.**  Never adopt a legacy `pixel*_rasterizer` as a
+   TRANSPORT reference: even with `DefaultRefraction` added, the chain
+   above is still 0.980 of the modern PT at gap 0 — where no delta lobe
+   exists at all — purely from the indirect bounces it does not follow.
+   Use `pathtracing_pel_rasterizer`.  If you must keep a legacy
+   reference, enumerate the transport modes the scene needs and check the
+   chain lists an op for each (`DefaultRefraction` for transmission /
+   dielectrics, `DefaultReflection` for mirrors, `DefaultPathTracing` for
+   indirect), and render through both path tracers before believing
+   either.  This is cause 0/4's family again, one layer out: the broken
+   reference is the harness's configuration rather than a bug inside any
+   integrator.
+
+   A second trap rides along in the same harness: `oidn_denoise` defaults
+   ON, and a capture output that overrides only `OutputImage` receives
+   POST-denoise pixels through the default `OutputDenoisedImage`.  OIDN's
+   `auto` quality is timing-based, so identical invocations flipped
+   between BALANCED and HIGH and made a topology's PT mean bimodal.  Set
+   `oidn_denoise FALSE` on EVERY rasterizer string in a measurement
+   harness — see also cause 1.
+
+   **Sibling sweep (debt-26 follow-up, 2026-09-05).** Every `tests/*.cpp`
+   defining a `CapturingRasterizerOutput` (or any other `IRasterizerOutput`
+   sink overriding only `OutputImage`) was audited for this trap.  Six
+   suites beyond `BDPTStrategyBalanceTest` were confirmed denoised by
+   execution (an `OIDN auto:` line in their log) and lacked
+   `oidn_denoise FALSE` on at least one rasterizer string:
+   `tests/VCMStrategyBalanceTest.cpp`, `tests/IORStackSeedingRegressionTest.cpp`,
+   `tests/RayCasterVolumeAbsorptionTest.cpp`,
+   `tests/VolumeAbsorptionAttenuationTest.cpp`, `tests/DeferredRealizeTest.cpp`,
+   and one rasterizer string (of eight) in
+   `tests/CSGNullGeometryLuminaireCrashTest.cpp`.  All six gained
+   `oidn_denoise FALSE` on every rasterizer string; rebuilt and run 3x each,
+   every suite stayed green with NO band loosened — the underlying MC noise
+   at each suite's existing sample count was already small enough that OIDN
+   was adding measurement risk (the BALANCED/HIGH bimodality above) without
+   ever being load-bearing for a pass.  `tests/PhotonMapDeferralTest.cpp`
+   was also confirmed denoised (its `pixelpel_rasterizer` and
+   `pixelintegratingspectral_rasterizer` chunks gained `oidn_denoise FALSE`),
+   but one of its three rasterizers — `bdpt_pel_rasterizer` — is lazily
+   built by name with no explicit chunk in the test's scene text, so there
+   is nowhere to attach the parameter; its checks are structural (photon-shoot
+   counts, `maxLum > 0`), not a numeric radiance comparison, so this residual
+   OIDN exposure is harmless and left as-is.  `VolumeAbsorptionAttenuationTest.cpp`
+   additionally had a stale comment claiming its capture buffer was
+   "denoise-free" before this fix — corrected in place.  Full table:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 26](../CLOTH_FABRIC_DESIGN.md).
+
+7. **A closed ANALYTIC solid's self-root straddles NEARZERO for PT's
+   unadvanced NEE shadow ray — check the primitive before the
+   integrators.**  (Found 2026-09-05 on `box_geometry` carrying a
+   `weave_material` with `transmission thin`: a closed box read
+   BDPT/VCM ≈ 0.17× PT with the light outside the box (0.28× in the
+   fix's own 256-spp measurement, the table in this file's Concrete
+   examples) and ≈ 2.25× PT
+   with the light inside, while the SAME SIX FACES built as
+   free-standing `clippedplane_geometry` quads read 1.00 either way.)
+   A ray whose origin is a hit point `Object::IntersectRay` published
+   from THIS primitive sits ~1e-12 (`SURFACE_INTERSEC_ERROR`,
+   object-local) off the face it just hit.  For a two-root closed
+   primitive like a box, the slab test reports that ~1e-12
+   re-crossing of the origin's own face as the PRIMARY root,
+   `t ≈ 1e-12 · |cos θ_in| / |cos θ_out|` — a tiny, DIRECTION-DEPENDENT
+   value that straddles `NEARZERO`.  A downstream `dRange < NEARZERO →
+   reject the whole primitive` rule then produces two failure modes on
+   the SAME box depending on which side of `NEARZERO` a given shadow
+   ray's self-root lands: below it, the entire box (including the
+   genuine far face) is discarded, so a light behind the box shines
+   through the front face as if the back face did not exist; above it,
+   the box occludes its OWN origin face, self-shadowing every NEE
+   toward a light inside it.  Path tracing casts NEE shadow rays
+   unadvanced from the published hit point and sees both failure
+   modes; BDPT/VCM `Advance()` every shadow and continuation ray by
+   1e-6 (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON`) first and see neither
+   — which is why they agreed with each other, with PT on the
+   six-plane assembly, and not with PT on the box.
+
+   **Diagnostic takeaway.**
+   (a) The discriminator is rebuilding the SAME faces as separate
+   double-sided planes (`clippedplane_geometry doublesided TRUE`): if
+   that assembly agrees with BDPT/VCM and the closed primitive does
+   not, the bug is the primitive's self-intersection handling, not an
+   integrator MIS defect.
+   (b) The general rule: BDPT/VCM advance their shadow rays and PT
+   does not, so ANY primitive whose intersection routine can return a
+   self-root splits them — check that primitive's
+   `IntersectRay_IntersectionOnly` near-root handling first, not the
+   MIS weights.
+   (c) "Closed solid with a transmissive material" is exactly the
+   regime where the far face matters: an opaque closed solid never
+   exposes the far-face-discarded failure mode, because nothing behind
+   it is ever visible anyway.
+   (d) Before/after, 24×24, 256 spp, `oidn_denoise FALSE`, gap-0 weave:
+
+   | scene | PT | BDPT/PT | VCM/PT |
+   |---|---|---|---|
+   | box, light outside, before | 0.04920 | 0.284 | 0.283 |
+   | box, light outside, after | 0.01435 | 0.967 | 0.967 |
+   | box, light inside, before | 0.33986 | 2.245 | 2.248 |
+   | box, light inside, after | 0.77381 | 0.987 | 0.988 |
+
+   Fix: `BoxGeometry::DropSelfHitRoot` drops the self-face root in
+   favour of the other root — a plane-distance test, not a range
+   threshold (see
+   [precision-fix-the-formulation.md](precision-fix-the-formulation.md)'s
+   "Box self-root" example) — rather than widening the `NEARZERO`
+   gate.  Full mechanism and numbers:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md).
+   Fourth instance of this section's "PT may be the broken one" family
+   (after cause 0's IOR seeding, cause 4's bilinear self-hit, and
+   cause 6's legacy rasterizer).
+
+   **Sibling primitives — audit state, CLOSED 2026-09-05.**  A re-audit
+   through the real `Object` / `LightSampler` path (not the
+   direct-construction probe the earlier state relied on) confirms the
+   same self-root class reproduces beyond the box, and generalises to a
+   bug CLASS rather than a per-primitive list: an absolute `dRange >
+   NEARZERO` (or `>= NEARZERO`) root-acceptance gate is unsound at any
+   coordinate scale, because a self-hit root scales with the geometry's
+   own coordinates while `NEARZERO` (1e-12) does not. Two independent
+   triggers surface it: (a) a shadow ray that CROSSES the surface — any
+   full-sphere-transmissive material (`weave_material { transmission
+   thin }` and its kin) lit from behind, at ANY coordinate scale, on
+   ANY primitive whose intersection routine can return a root at the
+   origin's own published point; (b) coordinates ≳ 1e3 on a
+   QUADRIC-family primitive (sphere, ellipsoid, cylinder), where the
+   eye hit's own range carries enough absolute round-off to publish a
+   point on the wrong side of the surface outright, even for an opaque
+   Lambertian material lit from the camera side. The fix is the same
+   scale-relative floor at each PRODUCER (`RaySphereIntersection`,
+   `RayQuadricIntersection`, `RayPlaneIntersection`,
+   `RayTriangleIntersection`, both cylinder paths) that
+   `RayBilinearPatchIntersection`'s debt-21 fix and `box_geometry`'s
+   plane-distance band already use — see the discriminators below and
+   the full sweep in
+   [CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md)'s
+   "Sibling audit" sub-block. (Historically, the torus initially kept the
+   generic `NEARZERO` floor when `IGeometry::SelfHitRootFloor` was
+   introduced, which missed its 133× wider `|C[4]| <= 1e-10 · quartScale`
+   quartic-deflation band; **subsequently fixed** as a positive worked
+   example in `TorusGeometry::SelfHitRootFloor`,
+   `src/Library/Geometry/TorusGeometry.h`, commit `7923bf2f`, which
+   returns the directional width `2 · 1e-10 · quartScale / max(|∇F · dir|,
+   0.05 · |∇F|)` — while phantom central-hole/tangency quartic roots were
+   separately closed in `DL-226` / `DL-273..DL-275`.)
+   **Discriminators, reusable on the next suspect primitive:** treat
+   BDPT (or VCM) as the reference, since both `Advance()` their shadow
+   and continuation rays and so never see the self-root; independently,
+   advancing PT's own NEE shadow ray by a small epsilon in a scratch
+   build should collapse the disagreement if this bug class is at
+   fault; and a `clippedplane_geometry` / `box_geometry` control at the
+   same scene scale tells you whether the primitive under suspicion or
+   the scene itself is the variable.
+
+8. **A surface or an emitter INSIDE a dielectric with the camera
+   OUTSIDE it — render an in-medium luminaire and compare against
+   `T * L / n^2` before touching any weight.** (Found 2026-09-12, debt
+   30: RISE applied no eta^2 basic-radiance factor anywhere, and VCM
+   read 1.554x PT on a submerged Lambertian floor.) Radiance is not
+   invariant across a refractive interface -- `L / n^2` is -- so a
+   RADIANCE-mode walk owes `(eta_before / eta_after)^2` at every medium
+   change. **Corrected (review round 2, 2026-09-12): for THIS
+   topology -- an emitter (or a directly-lit surface) sealed inside the
+   medium, camera outside -- PT and BDPT do NOT cancel.** The eye path
+   crosses the interface exactly ONCE (camera, in air, straight to the
+   in-medium emitter) with no return crossing to cancel against, so
+   EVERY integrator under-reads by the same missing factor: pre-fix,
+   `RefractiveRadianceScalingTest` row A's red-proof shows PT, BDPT, VCM
+   AND the legacy `pixelpel_rasterizer` all reading `T * L` (0.312 at
+   ior 1.33) instead of the correct `T * L / n^2` (0.176) -- a uniform
+   n^2-too-bright failure across every rasterizer, not an inter-
+   integrator disagreement. That is exactly why this row is
+   REFERENCE-FREE (a closed form, not a PT-vs-VCM comparison): with
+   every integrator wrong by the same amount, there is no "good"
+   integrator here to compare against.
+   **Don't confuse this with the DIFFERENT, cancelling topology** where
+   the light AND the camera are both OUTSIDE the medium and only an
+   intervening surface (not the emitter) is submerged (RISE's own
+   `VCMStrategyBalanceTest` topology H / `BDPTStrategyBalanceTest`
+   topology J): there, the eye path crosses the interface TWICE --
+   inward to reach the submerged surface (x 1/n^2), then back outward
+   toward the emitter (x n^2) -- and the two cancel for PT and BDPT,
+   which is what makes THAT case masquerade as an MIS bug (VCM's merge
+   and BDPT's light-tracing splat only cross once, on the flux side, so
+   they read n^2 too bright while PT/BDPT read correctly by accident).
+   That two-crossing cancellation is a genuinely different mechanism
+   from this cause's one-crossing, no-cancellation, in-medium-emitter
+   case -- see `REFRACTIVE_RADIANCE_SCALING.md` §2 and §4 for the
+   cancelling topology's own numbers, and don't reuse this row's "PT/BDPT
+   cancel" language for it.
+   **The one-minute check, and it is reference-free:** put a
+   `lambertian_luminaire_material` quad (`exitance` 1, `scale` 1, so
+   `L = 1/pi`) inside a `dielectric_material` box (`scattering 1000000`)
+   and point a pinhole camera at it from outside at near-normal
+   incidence. Every integrator must read `T(0) * L / n^2`, e.g.
+   0.176 at ior 1.33 and 0.136 at ior 1.5. Reading `T * L` instead
+   (0.312 / 0.306) means the factor is missing; reading `n^2 * T * L`
+   means it was applied in the wrong direction. Run it at TWO iors --
+   a wrong-direction or hard-coded factor passes one and fails the
+   other. Mechanism, site table and the scene classes whose look
+   changes: [REFRACTIVE_RADIANCE_SCALING.md](../REFRACTIVE_RADIANCE_SCALING.md).
+
+A useful invariant for separating these from real MIS bugs: when you
+instrument per-strategy totals (step 3), compare the per-strategy
+SUM across integrators, not the mix — balance vs power-2
+legitimately split the same energy very differently (VCM may carry
+~63% of floor-direct in t=1 splats where BDPT carries ~0%).
+Matching sums + a dim image ⇒ the loss happens AFTER the integrator
+(output layer).  Consistent weight formulas + emitter-shape-dependent
+disagreement ⇒ suspect sampled densities, not weights.
+
+### 1. Establish the property: BDPT/VCM mean = PT mean
+
+The single load-bearing property of an MIS-weighted bidirectional
+integrator is that **its expected value equals the path tracer's
+expected value** for any scene where both can be unbiased.  PT is the
+trusted reference.  BDPT and VCM MIS sums to 1 over all strategies,
+so the per-pixel expectation must equal what PT gets via NEE +
+emission paths alone.
+
+**Action:** add the scene to or extend
+[`BDPTStrategyBalanceTest.cpp`](../../tests/BDPTStrategyBalanceTest.cpp)
+or [`VCMStrategyBalanceTest.cpp`](../../tests/VCMStrategyBalanceTest.cpp)
+with a topology block.  These tests render the same scene with PT
+and the integrator-under-test, capture the radiance buffer in memory
+(via `CapturingRasterizerOutput`), and compare four statistics:
+
+| Metric | What it catches |
+|---|---|
+| **mean** | Systematic bias (the canonical MIS-doesn't-sum-to-1 bug). |
+| **median** | Robust mean — if it agrees but mean doesn't, the bias is concentrated in a few outliers. |
+| **p99** | "1% of pixels are wildly off" failures the mean hides. |
+| **max** | Single-pixel firefly explosions. |
+
+The standard tolerances (`8% mean / 25% p99 / 100% max`) trip on
+every concrete bug we've found while ignoring multi-thread non-
+determinism.  Don't loosen them; tightening them is fine.
+
+### 2. Confirm bias vs variance — render at 2× and 16× spp
+
+If the disagreement shrinks proportionally to `1/sqrt(N)` it's
+variance and a denoiser / more samples / better sampling is the
+answer.  If it stays put (or grows) you have **bias** and one of the
+strategies is being computed or weighted incorrectly.
+
+**Run this step per SCENE, not per scene FAMILY.**  A 2026-09-04 round
+filed a −0.9 % reading as bias because "the noise floor on this scene is
+5e-5".  It was — on the DELTA-lit curtain, whose image is
+near-deterministic NEE against a point light.  The reading came from the
+AREA-lit variant of the same geometry, where the emitter is seen through
+a 10 % gap and the floor is ~1 %, two orders of magnitude larger.
+Re-measured properly it went 1.00133 ± 0.0104 at 256 spp to
+0.99957 ± 0.0023 at 2048 spp — shrinking, i.e. variance.  Changing the
+LIGHT changes the noise floor even when nothing else moves.
+
+For BDPT, the canonical bias modes are:
+
+1. A strategy excluded from the MIS denominator that should be
+   included (e.g. NEE through a delta light skipped by
+   `BDPTIntegrator::MISWeight`'s `lightVerts[i-1].isDelta` skip rule).
+   Symptom: `misWeight=1` for a strategy that should be `< 1`,
+   contributions add without partition.
+2. A strategy contribution computed against the wrong reference
+   measure (area vs solid angle), off by a `cos / dist²` factor.
+3. `pdfRev` at the connection vertex not being updated correctly
+   for the strategy at hand (read but never written, or vice versa).
+
+For VCM, additional modes:
+
+4. Auto-radius `foundSpecular` triggering on delta-position lights
+   instead of delta-surface scatters → VM enabled when it should
+   not be → photon-density splotches.
+5. `directPdfW = 1` placeholder for delta lights treated as a real
+   solid-angle pdf in `wLight` / `wCamera` — adds a non-zero MIS-
+   denominator term that biases NEE down (~27% on omni + Lambertian
+   under the balance heuristic).
+6. `mMisVmWeightFactor` term in `wCamera` for delta-light NEE not
+   gated by `ls.isDelta`, similar bias even when VM has been
+   correctly disabled by the auto-radius pre-pass.
+7. `wCamera` for delta-light NEE gated OFF entirely by `ls.isDelta` —
+   the OVER-correction of 5 and 6, and the harder one to see, because
+   it makes NEE take weight exactly 1 (which looks like the textbook
+   answer for a delta light) while the t=1 light-tracing splat quietly
+   contributes the rest of the partition on top. See "VCM — delta-light
+   NEE took weight 1 while light tracing splatted the same path" below.
+
+### 3. Isolate the culprit strategy
+
+You can't fix what you can't see.  For BDPT, instrument the
+contribution accumulation in
+[`BDPTPelRasterizer.cpp`](../../src/Library/Rendering/BDPTPelRasterizer.cpp)
+right after `weighted = cr.contribution * cr.misWeight`:
+
+```cpp
+{
+    static FILE* dbg_f = std::fopen( "/tmp/bdpt_dbg.log", "w" );
+    const Scalar dbg_max = ColorMath::MaxValue( weighted );
+    if( dbg_f && dbg_max > Scalar(0.05) ) {
+        std::fprintf( dbg_f,
+            "s=%u t=%u splat=%d contrib=(%.4g,%.4g,%.4g) misW=%.5g weighted=(%.4g,%.4g,%.4g)\n",
+            cr.s, cr.t, cr.needsSplat ? 1 : 0,
+            cr.contribution.r, cr.contribution.g, cr.contribution.b,
+            cr.misWeight,
+            weighted.r, weighted.g, weighted.b );
+        std::fflush( dbg_f );
+    }
+}
+```
+
+A threshold of `0.05` on a 32×32 32-spp scene ignores normal direct
+lighting and surfaces strategy outliers.  Tune as needed.  Buckets
+to look for in the log:
+
+- **`misW = 1.0` for a non-trivial path** — the strategy thinks it's
+  the only one that can sample the path.  Verify against pencil-
+  and-paper: enumerate strategies, check connection vertices.  If
+  another valid strategy exists, your skip rule is wrong.
+- **`misW < 0.01` on the only valid strategy** — the MIS denominator
+  is double-counting, or `directPdfW = 1` is being treated as real.
+  Check the wLight / wCamera formulas for the strategy.
+- **`contrib` huge with `misW` tiny but `weighted` still huge** —
+  contribution-formula bug (wrong measure / off by cos/dist² /
+  throughput accumulation drift).
+
+For VCM, the path log lives in `EvaluateNEE` /
+`SplatLightSubpathToCamera` / `EvaluateMerges` — same instrumentation
+pattern, log per-strategy `weight`, `contribution`, `wLight`,
+`wCamera`, and the eye/light running quantities at the relevant
+vertex.
+
+`fopen` once with `static` storage works because the build is
+multi-threaded but file ops are serialised by the kernel; the only
+hazard is interleaved writes within a single line, harmless for our
+purposes.  **Strip the instrumentation before committing.**
+
+### 4. Decode the path topology from the log
+
+For each high-contribution sample, walk the `eyeVerts` array entries
+the integrator stored:
+
+```cpp
+for( unsigned int k = 0; k < t; k++ ) {
+    fprintf( dbg, " [%u %s d=%d c=%d pdfF=%.4g pdfR=%.4g]",
+        k,
+        VertexTypeName( eyeVerts[k].type ),
+        eyeVerts[k].isDelta ? 1 : 0,
+        eyeVerts[k].isConnectible ? 1 : 0,
+        eyeVerts[k].pdfFwd, eyeVerts[k].pdfRev );
+}
+```
+
+Read off the connection edge of the actual strategy (`s, t`) and
+every alternative.  An edge whose endpoints are both delta vertices
+has zero connection density — that strategy should be skipped from
+MIS.  An edge with one delta endpoint that is an NEE-friendly LIGHT
+has well-defined density via direct light sampling — that strategy
+**must** be in MIS, even if generic delta-skip rules say otherwise.
+
+### 5. Apply the fix at the right layer
+
+Once you know which strategy is wrong, the fix lives in one of three
+places (in order of preference):
+
+- **Per-strategy contribution code** if the math is wrong — fix the
+  formula, don't paper over it in MIS.
+- **MIS skip rule / weight formula** if the strategy is excluded
+  from the denominator when it shouldn't be (or vice versa).  This
+  is where the BDPT delta-light fix and the VCM delta-light NEE fix
+  both live.
+- **Running-quantity recurrence** (`InitLight`, `ApplyGeometricUpdate`,
+  `ApplyBsdfSamplingUpdate`) if the bug shows up across multiple
+  strategies.  Fix it at the source of `dVCM` / `dVC` / `dVM`.
+
+For VCM, the auto-radius pre-pass `foundSpecular` gating in
+`VCMRasterizerBase::PreRenderSetup` is a fourth fixpoint: it decides
+whether VM is even needed for the scene.  Wrong gating produces
+"VM-induced splotches in scenes that don't need VM" — a class of bug
+that doesn't show up as MIS-arithmetic-wrong but as VM-shouldn't-fire.
+
+### 6. Add a regression topology to the strategy-balance test
+
+Every fix in this skill is a one-line rule that's easy to miss
+again.  Add the scene that revealed the bug as a new topology in the
+relevant `*StrategyBalanceTest` so the next time someone touches
+`MISWeight` or the recurrence, the fix's invariant is checked
+automatically.  Don't rely on the user re-running the failing scene
+manually.
+
+## Anti-patterns
+
+- **"Increase samples until the splotches go away"** — masks bias
+  with brute force.  Distinguish bias from variance per step 2; if
+  it's bias, more samples never converge, they just take longer.
+- **"Loosen the test tolerance"** when a `*StrategyBalanceTest`
+  fires.  The tolerances were calibrated against multi-thread non-
+  determinism on real bug magnitudes; if the test trips, there's a
+  real bias.  Loosening it just hides the next regression too.
+- **"Special-case this one scene in the integrator"** — don't add
+  per-light-type / per-material conditionals to MIS without first
+  reasoning about whether the underlying invariant holds.  The
+  delta-light fixes look like special-cases but are actually
+  applying the MIS framework correctly: a delta vertex with a
+  dedicated sampling strategy (NEE for delta lights) belongs in the
+  denominator with weight reflecting its dedicated density.
+- **"Use the power heuristic since the bug is balance-heuristic-
+  specific"** — neither heuristic is wrong; balance is what
+  SmallVCM uses and what RISE's VCM is calibrated against.  Mixing
+  heuristics across BDPT (power) and VCM (balance) is fine because
+  the two integrators don't share an MIS denominator.  Switching
+  VCM to power without re-deriving the running-quantity recurrence
+  changes the math.
+
+## Concrete examples (from this repo)
+
+### BDPT — delta-light NEE skipped from MIS denominator
+
+`BDPTIntegrator::MISWeight` (`src/Library/Shaders/BDPTIntegrator.cpp`) walked the light-side
+ratios and applied a PBRT-convention skip rule:
+
+```cpp
+if( i > 0 && lightVerts[i-1].isDelta ) {
+    continue;
+}
+```
+
+For omni / spot / directional lights at `lightVerts[0]`, this skipped
+the `i == 1` strategy — which is NEE.  NEE handles delta lights via
+direct position sampling, so it's a valid strategy and **must** be
+in the MIS denominator.  Excluding it left s≥2 light-tracing splats
+at `misWeight = 1.0` instead of being downweighted to ~0, producing
+22% mean bias and visible per-pixel firefly splats on omni-lit scenes.
+
+The fix: exempt `i == 1 && lightVerts[0].type == BDPTVertex::LIGHT`
+from the skip.  See the long comment block at the call site for the
+full reasoning.  Catches if regressed by `BDPTStrategyBalanceTest`
+"delta-position omni light" topology.
+
+### VCM — delta-light NEE wLight/wCamera not zeroed
+
+`VCMIntegrator::EvaluateNEE` set `directPdfW = 1` as a placeholder
+for delta lights (SmallVCM convention) and then plugged it into:
+
+```cpp
+const Scalar wLight = bsdfDirPdfW / ( lightPickProb * directPdfW );
+const Scalar camFactor = ( emissionPdfW * cosAtEye ) / ( directPdfW * cosAtLight );
+wCamera = camFactor * ( mMisVmWeightFactor + dVCM + dVC * bsdfRevPdfW );
+```
+
+For delta lights, BSDF sampling at the receiver can't land on the
+delta direction by chance — the alternative strategy has zero
+density.  Treating `directPdfW = 1` as a real pdf left `wLight =
+bsdfDirPdfW = 1/π ≈ 0.32`, biasing NEE down to `1 / (1 + 0.32) ≈
+0.76` of its true weight under the balance heuristic.  ~24% darker
+direct lighting on omni + Lambertian.  (That arithmetic models only
+the `wLight` half; the pre-fix `wCamera` was live too, computed as
+`emissionPdfW·cosAtEye / (1·1)` -- the correct camFactor inflated by
+dist² -- so on a 3-unit scene the original bug was nearer 40 %; the
+24 % was a near-unit-distance measurement.  Reconstructing 0.76 on
+another scene will not work without that term.)
+
+The fix: skip both alternatives when `ls.isDelta`:
+
+```cpp
+const Scalar wLight = ls.isDelta ? Scalar(0) : bsdfDirPdfW / ( lightPickProb * directPdfW );
+Scalar wCamera = 0;
+if( !ls.isDelta && directPdfW > 0 && cosAtLight > 0 ) {
+    // ... compute wCamera
+}
+```
+
+NEE is the only valid strategy at a delta light; it gets weight 1.
+Catches if regressed by `VCMStrategyBalanceTest` "delta-position
+omni light" topology.
+
+**PARTIALLY SUPERSEDED 2026-09-04 — the `wCamera` half of this fix was an
+over-correction.**  Zeroing `wLight` stands.  Zeroing `wCamera` does not:
+"NEE is the only valid strategy at a delta light" is false, because
+light TRACING starts at the light rather than landing on it and has an
+ordinary emission-direction density there.  The `wCamera = 0` line left
+NEE at weight 1 while the t=1 splat contributed the rest of the partition
+on top, a +0.8…+3.0 % over-count depending on geometry.  See "VCM —
+delta-light NEE took weight 1 while light tracing splatted the same path"
+below for the corrected form.
+
+### VCM — auto-radius `foundSpecular` gating delta lights
+
+`VCMRasterizerBase::PreRenderSetup` walked the light-subpath sample
+to decide whether VM was needed for the scene:
+
+```cpp
+if( curr.isDelta || prevV.isDelta ) {
+    foundSpecular = true;
+}
+```
+
+This conflated **delta-position lights** (omni / spot / directional —
+which are NEE-friendly and don't need VM) with **delta-surface
+scatters** (specular reflection / refraction — which DO need VM to
+sample caustics).  On a Lambertian-quad-lit-by-omni scene,
+`lightVerts[0].isDelta = true` triggered `foundSpecular = true`,
+auto-radius computed an etaVCM of ~500, VM activated, and the
+photon-density-estimation strategy got significant MIS weight — at
+4 spp the rendered image showed visible photon-density splotches
+even though VC alone would have produced a clean direct lighting.
+
+The fix: only set `foundSpecular = true` when the delta vertex is a
+SURFACE:
+
+```cpp
+const bool currIsSpecularSurface  = curr.isDelta  && curr.type  == BDPTVertex::SURFACE;
+const bool prevIsSpecularSurface  = prevV.isDelta && prevV.type == BDPTVertex::SURFACE;
+if( currIsSpecularSurface || prevIsSpecularSurface ) {
+    foundSpecular = true;
+}
+```
+
+Catches if regressed by `VCMStrategyBalanceTest` "delta-position
+omni light" topology — the pre-fix splotches blow out the p99 and
+max comparisons.
+
+### Output layer — OIDN-on plain file dropped the t=1 splat film
+
+(2026-06-10, the step-0 example.)  A torus-arealight floor rendered
+at 0.366× of PT under VCM while BDPT tracked PT at 0.998 — uniform
+dimming, clean image, correct emitter.  Per-strategy totals showed
+VCM's NEE + s=0 + t=1 SUM matched BDPT's within 1%, the t=1 splat
+film held the missing ~63% with the correct resolve divisor, and the
+spatial grid of the splat film matched PT's bright pool — the energy
+was complete and correctly placed but never reached the written
+file.  Root cause: post-L8, CLI file outputs are canonical-FrameStore
+observers; at `MarkPreDenoiseComplete` the canonical was deliberately
+splat-free for OIDN, and the old scratch-composite only fed the
+legacy IRasterizerOutput chain.  Fix: Resolve → flush → Unresolve in
+`VCMRasterizerBase::FlushPreDenoisedToOutputs` and BDPT's pre-denoise
+block (observer dispatch is synchronous, so the temporary resolve
+cannot race the file write).  No integrator code changed.
+
+### Sampler density — TorusGeometry point-mass biased all light-sampled strategies
+
+(2026-06-10, the step-0 example's second layer.)  With the splat
+film correctly composited, VCM still sat at 0.90× of PT with a
+shape: +9% directly under the torus, −10% in the surrounding ring —
+while a flat quad emitter in the same open scene gave 1.0002.  The
+analytic torus's `UniformRandomPoint` rejection-retry multiplied its
+[0,1) float candidates by 2⁻³² (an integer-hash constant), so every
+rejected first draw collapsed to the single tube angle v = 2π·0.618
+— a point-mass holding r/(R+r) ≈ 27% of all samples on one circle.
+All light-sampled estimators divide by the claimed uniform 1/area
+pdf, so all carried the same circle-shaped bias; PT and VCM disagree
+only because they MIX those estimators with different MIS shares.
+Fix: exact CDF inversion (bisection-safeguarded Newton on
+R·v + r·sin v) in `TorusGeometry::UniformRandomPoint`; regression:
+the tube-angle density histogram in
+`tests/GeometryUVRoundtripTest.cpp`.  Note this is invisible to
+`VCMStrategyBalanceTest`-style image-mean checks (the redistribution
+cancels globally) — the sharp regression lives at the sampler layer.
+
+### BDPT/VCM — stochastic delta lobe on mixed delta+continuum material marking vertex non-connectible
+
+`BDPTIntegrator.cpp` (in `GenerateEyeSubpathImpl` and `GenerateLightSubpathImpl`)
+determined subpath vertex connectibility by scanning the scattered continuation
+rays:
+```cpp
+bool hasNonDelta = false;
+for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+    if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+}
+vertices.back().isConnectible = hasNonDelta;
+```
+
+For pure delta materials (perfect mirror, glass) this correctly marks the vertex
+non-connectible. For pure continuum materials (Lambertian, Ward, GGX) this
+correctly marks the vertex connectible.
+
+However, for **mixed delta + continuum** materials (such as `WeaveMaterial` with
+`transmission thin` and `gap > 0`), `WeaveSPF::ScatterImpl` has a single-ray
+budget and stochastically samples either the delta gap lobe (with probability
+`gap`) or the continuum yarn lobe (with probability `1 - gap`).
+
+Whenever the delta gap ray was selected, `scattered` contained only `isDelta = true`,
+causing `hasNonDelta` to evaluate to `false` and marking the surface vertex
+`isConnectible = false`. This completely suppressed Next Event Estimation (NEE,
+$s=1$) at that vertex on a `gap` fraction of camera rays. On the remaining
+$1 - \text{gap}$ rays where NEE was allowed, `brdf.value()` scaled by
+`p.available = 1 - gap`. This produced a realized NEE contribution of
+$(1 - \text{gap})^2$ instead of the correct $(1 - \text{gap})$ — an exact deficit
+factor of $1 - \text{gap}$ (0.900 at `gap = 0.1`, 0.800 at `gap = 0.2`).
+
+The fix: surface vertices with a valid continuous BSDF (`ri.pMaterial->GetBSDF() != nullptr`)
+are always connectible, regardless of which stochastic continuation ray was drawn:
+```cpp
+if( ri.pMaterial->GetBSDF() ) {
+    hasNonDelta = true;
+}
+vertices.back().isConnectible = hasNonDelta;
+```
+
+Catches if regressed by `FabricRenderTest::TestBacklitSheerCurtain` and
+`BDPTStrategyBalanceTest` Topology E (`TestBacklitThinCurtain`).
+
+### VCM — delta-light NEE took weight 1 while light tracing splatted the same path
+
+(2026-09-04, found while cleaning up after the entry above.)  With the
+connectibility fix in, BDPT landed on PT exactly and VCM sat **+3.0 %**
+over it — and the same +3.0 % turned up on a bare Lambertian quad under
+an omni light, with no fabric, no gap and no delta surface anywhere.  It
+is a delta-**light** bug, not a delta-**surface** one.
+
+`VCMIntegrator::EvaluateNEEImpl` zeroed BOTH MIS alternatives when the
+sampled light was delta:
+
+```cpp
+const Scalar wLight = ls.isDelta ? Scalar(0)
+                                 : bsdfDirPdfW / ( lightPickProb * directPdfW );
+Scalar wCamera = 0;
+if( !ls.isDelta && directPdfW > 0 && cosAtLight > 0 ) { /* ...camFactor... */ }
+```
+
+`wLight` is right to zero: BSDF sampling at the receiver cannot land on
+a Dirac *position* by chance.  `wCamera` is not, and the reason is worth
+internalising because the two look symmetric and are not:
+
+| alternative | how it reaches the light vertex | density at a delta-POSITION light |
+|---|---|---|
+| `wLight` — BSDF sampling from the eye vertex | must **land on** the light by chance | **zero** — correctly skipped |
+| `wCamera` — light tracing / interior connections / merges | **starts at** the light and samples an emission **direction** | ordinary solid angle (`PointLight` 1/4π, `SpotLight` the cone density) — must be counted |
+
+So NEE took weight 1 while `SplatLightSubpathToCameraImpl` independently
+contributed its own `1/(1+wLight)` share of the identical path.  The
+over-count is exactly the splat's (plus the merge's) share of the
+partition, which is **geometry-dependent** — +2.99 % on a 2.8-unit quad
+3 units from the light, +0.82 % on `VCMStrategyBalanceTest`'s topology A,
+0 % on any area light — so it can never be bounded by a constant or hidden
+under a widened tolerance.
+
+Instrumented mean MIS weight per strategy (the step-3 pattern, one
+accumulator per strategy, printed at exit):
+
+| strategy | before | after |
+|---|---|---|
+| s=1 NEE | 1.00000 | 0.96312 |
+| VM (merge) | 0.00815 | 0.00816 |
+| t=1 light-tracing splat | 0.02963 | 0.02963 |
+| **Σ** | **1.03778** | **1.00092** |
+
+The fix is a **measure** fix, not a gate change (step 5's middle layer):
+compute `camFactor` as the emission-direction AREA density,
+
+```cpp
+if( emissionDirPdfSA > 0 && distSq > 0 ) {
+    const Scalar camFactor = ( emissionDirPdfSA * cosAtEye ) / distSq;
+    wCamera = camFactor * ( norm.mMisVmWeightFactor
+                          + eyeMis[i].dVCM
+                          + eyeMis[i].dVC * bsdfRevPdfW );
+}
+```
+
+which is the SAME NUMBER as the SmallVCM spelling
+`(emissionPdfW_geom · cosAtEye) / (directPdfW · cosAtLight)` whenever
+`directPdfW` is the honest conversion `pdfPosition · dist² / cosAtLight`
+(both cancel), so non-delta and env lights are algebraically untouched —
+but it never divides by `directPdfW` or `cosAtLight`, which are
+**placeholders** (1 and 1) at a delta light.  That is why the gate could
+not simply be deleted: un-gating the old spelling would have produced a
+wrong finite number instead of a wrong zero.
+
+Why it closes exactly: with `dVCM_eye = N / p_cam→A(x)`, the product
+`camFactor · dVCM_eye` is the reciprocal of the splat's own
+`wLight = (p_cam→A / N)·(vmFactor + dVCM_light)`, and the merge's
+`wLight`/`wCamera` complete the same ratio set — NEE + splat + merge sum
+to 1 by construction, not by tuning.  Lights with no emission-direction
+sampling at all (`DirectionalLight`, `AmbientLight`: `pdfDirection()`
+returns 0, and VCM emits no photons from them) fall out at
+`camFactor = 0`, i.e. NEE keeps weight 1, which is correct -- and vacuous today: VCM does not sample directional or ambient lights at all (a directional-lit quad renders 0 under VCM where PT and BDPT agree), so the branch states the weight the path will take once that sampling exists.
+
+Catches if regressed by `FabricRenderTest::TestBacklitSheerCurtain`
+(`kThinCurtainVcmPtTol` is 1 %, and the bug is 3 %).  Full writeup:
+[CLOTH_FABRIC_DESIGN.md §15 debt 24](../CLOTH_FABRIC_DESIGN.md).
+
+### The auto-radius pre-pass was accused of this and was innocent
+
+Worth recording because the accusation is a natural one and cost a round.
+`VCMRasterizerBase::PreRenderSetup`'s `foundSpecular` predicate is
+`curr.isDelta && curr.type == SURFACE`, a PER-DRAW flag — so a weave's
+delta gap lobe does flip a scene to "caustic-bearing" and turn VM on, and
+the +3.0 % above did grow to +3.7 % when it did.  But:
+
+- VM accounted for only 0.7 pp of the 3.7 pp;
+- VM-off still read +2.96 %;
+- gap 0 (VM disabled by the pre-pass) read +2.96 % as well.
+
+The bias was the delta-light NEE partition in all three cases.  With that
+fixed, VCM is unbiased with VM **on** (0.99990 at gap 0.1), so the
+predicate is a **cost** decision, not a correctness one.  Narrowing it to
+"the material is PURELY delta" (`GetBSDF() == 0`) was considered and
+rejected: `polished_material`, `subsurfacescattering_material` and
+dielectric-over-diffuse `composite_material` all have a non-null BSDF and
+all make real caustics, so that predicate would silently disable VM for
+them.  The right property is "the material has ANY delta lobe", which is
+what the existing loop already estimates — it is a Monte-Carlo test over
+width × height × `lightSubpathsPerPixel` subpaths, exact for any lobe
+probability a scene realistically uses.  **Generalisable lesson:** a
+per-draw flag read inside a loop that runs N times per scene is not the
+same defect as a per-draw flag read once per path; check which one you
+have before rewriting an interface to fix it.
+
+### The reference can be the legacy rasterizer (debt 26)
+
+Third instance of step 0's "PT may be the broken one" in this file, and
+the cheapest to fall into because it is the *test harness* that is wrong.
+`BDPTStrategyBalanceTest` used `pixelpel_rasterizer` as its PT reference.
+On a gapped weave in front of an area emitter it reads **0.0416** where
+`pathtracing_pel_rasterizer` reads **0.1024** at the same spp —
+`max_recursion 8` does not help — while BDPT (0.10259) and VCM (0.10242)
+track the modern PT to 1.8e-3.  A topology added there would have banked a
+2.46x reference error as expected behaviour.
+
+**The mechanism (found 2026-09-05) is the SHADER CHAIN, not the
+rasterizer**, which is what makes this one generalise: a legacy
+`pixel*_rasterizer` runs the scene's `standard_shader` op chain
+literally, and a `DefaultDirectLighting`-only chain (plus the
+`DefaultEmission` that `Job::AddStandardShader` auto-prepends) contains
+no op that declares `RequireSPF()`, so `StandardShader::Shade` never
+calls `ISPF::Scatter` and no continuation ray is sampled at all.  Adding
+one op, `DefaultRefraction`, takes the legacy number to 0.10148 = 0.991
+of the modern PT, and the recovered term is a top-hat of height exactly
+`gap × L_emitter` over the emitter's silhouette (0.22 % agreement in the
+interior).  The same chain renders a plain `dielectric_material` pane
+**0.000000** and 0.61119-with-`DefaultRefraction` (modern PT 0.61116), so
+this is the legacy shader-op contract rather than a defect.
+
+**Resolution:** the reference is now `pathtracing_pel_rasterizer`, the
+area-lit gapped-weave scene is topology F in that file (BDPT/PT 0.9948),
+and both rasterizer strings there gained `oidn_denoise FALSE` (the
+capture output was receiving post-denoise pixels, and OIDN's timing-based
+`auto` quality made a topology's PT mean bimodal run-to-run).  Full
+writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
+26](../CLOTH_FABRIC_DESIGN.md).  Before adding a topology to a
+`*StrategyBalanceTest`, render it through BOTH path tracers and check
+they agree.  A fourth instance follows immediately below (`box_geometry`'s
+self-root, debt 25).
+
+### PT — box_geometry self-root: the closed thin-weave box (debt 25)
+
+Fourth instance of step 0's "PT may be the broken one" in this file.
+(2026-09-05.)  A closed box (`box_geometry`) carrying a `weave_material`
+with `transmission thin` read BDPT/VCM ≈ **0.17×** PT (the review handoff's
+512-spp figure; the fix's own 256-spp table below reads 0.284) with the light
+outside the box and ≈ **2.25×** PT with the light inside — while the
+SAME SIX FACES rebuilt as free-standing `clippedplane_geometry` quads
+(`doublesided TRUE`) read 1.00 either way.  The discriminating render was
+exactly the one a review handoff had proposed: rebuild the closed solid
+as separate double-sided planes and see whether BDPT/PT recovers to 1.
+
+`Object::IntersectRay` publishes a hit point backed off ~1e-12
+(`SURFACE_INTERSEC_ERROR`, object-local) along the incoming ray, so a
+continuation or NEE shadow ray leaving that point re-crosses the SAME
+face at `t ≈ 1e-12 · |cos θ_in| / |cos θ_out|` — a tiny,
+direction-dependent root straddling `NEARZERO`.
+`IntersectRay_IntersectionOnly`'s "reject the primitive when
+`dRange < NEARZERO`" then produced both failure modes on the same closed
+box: below `NEARZERO` the whole box (including the genuine far face)
+vanished, so a light behind the box shone through the front face
+unoccluded; above it, the box occluded its own origin face, self-
+shadowing every NEE toward a light inside it.  PT's NEE shadow ray is
+cast unadvanced from the published hit point (`LightSampler::EvaluateDirectLighting` /
+`ShadowOccludedRGB` in `LightSampler.cpp`)
+and saw both; BDPT/VCM `Advance()` theirs by 1e-6 (`BDPT_RAY_EPSILON` /
+`VCM_RAY_EPSILON`) first and saw neither.
+
+| scene | PT | BDPT/PT | VCM/PT |
+|---|---|---|---|
+| box, light outside, before | 0.04920 | 0.284 | 0.283 |
+| box, light outside, after | 0.01435 | 0.967 | 0.967 |
+| six planes, light outside | 0.01417 | 0.988 | 0.985 |
+| box, light inside, before | 0.33986 | 2.245 | 2.248 |
+| box, light inside, after | 0.77381 | 0.987 | 0.988 |
+| six planes, light inside | 0.77374 | 0.987 | 0.989 |
+
+Fix: `BoxGeometry::DropSelfHitRoot` (`src/Library/Geometry/BoxGeometry.cpp`,
+commit `40e78b69`) drops a root on a face the origin lies on
+(`|origin.axis − bound| ≤ 4·NEARZERO + 64·DBL_EPSILON · |origin.axis|`,
+per axis — no transverse or half-extent term, see the precision skill's
+"Box self-root" example for why) in favour of the other root, mirroring
+`RaySphereIntersection`'s existing self-hit skip but as a plane-distance
+test rather than a range threshold.  Exposed a residual: a two-layer
+gapped weave still reads PT under BDPT/VCM by 1.28–1.55× because PT's
+NEE cannot reach a path that goes through the far layer's delta gap and
+the near layer's continuum lobe — filed as debt 27, not closed by this
+fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md) (debt 27 two items later, after debt 26).
+
+**Sibling audit, closed 2026-09-05 (a8bef210):** the same producer-level floor
+(`RaySphereIntersection`, `RayQuadricIntersection`, `RayPlaneIntersection`,
+`RayTriangleIntersection`, both cylinder paths) closes the identical bug
+class on sphere, ellipsoid, cylinder, disk, infinite plane and triangle
+mesh — see step 0 cause 7's "Sibling primitives" paragraph above and
+CLOTH_FABRIC_DESIGN.md §15 debt 25's "Sibling audit" sub-block for the
+full before/after sweep; the torus self-hit floor was subsequently fixed via
+`TorusGeometry::SelfHitRootFloor` (`src/Library/Geometry/TorusGeometry.h`,
+commit `7923bf2f`, accounting for `RayTorusIntersection`'s `1e-10 * quartScale`
+quartic-deflation band).
+
+## Mental model for delta lights and MIS
+
+The recurring trap is that `isDelta = true` on a vertex doesn't tell
+you whether that vertex is **sampleable** by a non-default strategy.
+There are two distinct delta classes:
+
+| Delta class | Example | Sampleable by NEE? | Sampleable by light tracing? | Sampleable by VM? |
+|---|---|---|---|---|
+| **Delta position** | omni, spot, directional light source | **Yes** (deterministic direct-position sampling) | Yes (light path emits from this vertex) | Yes (photons emitted from here) |
+| **Delta surface** | mirror reflection, glass refraction | **No** (NEE shadow ray can't end on a delta direction by chance) | Yes (BSDF sample reproduces the delta) | No (can't density-estimate a delta interaction) |
+
+The MIS denominator includes a strategy iff that strategy can sample
+the path with non-zero density.  Generic skip rules ("if any vertex
+on the path is delta, skip") conflate the two classes and exclude
+strategies that should be counted (delta-position lights have NEE
+as a valid strategy).  Specific skip rules ("if the connection
+vertex is delta, skip") get this right but need awareness of which
+side of the delta is the connection.
+
+## Stop rule
+
+You're done when:
+
+1. The `*StrategyBalanceTest` topology that revealed the bug now
+   passes within the standard tolerances.
+2. The full test suite (`./run_all_tests.sh`) is green.
+3. A regression topology has been added to the relevant
+   `*StrategyBalanceTest` so the fix's invariant is checked on
+   every future run.
+4. Existing torture scenes that exercise the same code path (e.g.
+   `scenes/Tests/VCM/diacaustic_vcm.RISEscene` for VCM caustic
+   regressions) still render correctly.
+
+The bug is not "fixed" if any of those four don't hold — pretending
+to be done invites the next agent to re-derive the same lesson.

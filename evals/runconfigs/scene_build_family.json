@@ -1,0 +1,11 @@
+{
+  "//": "The 'furnished scene build' family: build_watch_scene, build_stilllife_scene (iterate-against pair) and build_study_scene (HELD-OUT -- validate skill/guidance work against its live runs, never iterate against it). Complex whole-room build task for LOCAL-model iteration: keyless qwen3.6:27b. Own runDir so it never mixes with any other board. Frontier providers can be added later once the local iteration loop is productive.",
+  "scenarios": [
+    "evals/scenarios/build_watch_scene.json",
+    "evals/scenarios/build_stilllife_scene.json",
+    "evals/scenarios/build_study_scene.json"
+  ],
+  "providers": [ { "provider": "local", "model": "qwen3.6:27b" } ],
+  "repeats": 3,
+  "runDir": "evals/runs/scene_build_family"
+}

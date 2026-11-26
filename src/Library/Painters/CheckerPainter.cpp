@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CheckerPainter.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -40,8 +41,12 @@ inline const IPainter& CheckerPainter::ComputeWhich( const RayIntersectionGeomet
 	const int	xquot = int( ceil( ri.ptCoord.x / dSize ) );
 	const int	yquot = int( ceil( ri.ptCoord.y / dSize ) );
 
-	const bool	bXIsEven = (xquot % 2 == (xquot<0 ? 1 : 0) ? true : false );
-	const bool	bYIsEven = (yquot % 2 == (yquot<0 ? 1 : 0) ? true : false );
+	// & 1, not % 2: parity must hold for negative quotients too, where
+	// C++ % yields 0 or -1 (never the +1 the old comparison expected, so
+	// every negative cell classified "odd" and the checker collapsed to a
+	// solid in the negative quadrant)
+	const bool	bXIsEven = ((xquot & 1) == 0);
+	const bool	bYIsEven = ((yquot & 1) == 0);
 
 	// If they are both the same, return one color, otherwise, return the other
 	if( (bXIsEven && bYIsEven) ||
@@ -67,6 +72,12 @@ Scalar CheckerPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	return ComputeWhich(ri).GetColorNM(ri, nm);
 }
 
+Scalar CheckerPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri, nm);
+}
+
 static const unsigned int SIZE_ID = 100;
 
 IKeyframeParameter* CheckerPainter::KeyframeFromParameters( const String& name, const String& value )
@@ -87,6 +98,7 @@ IKeyframeParameter* CheckerPainter::KeyframeFromParameters( const String& name, 
 
 void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SIZE_ID:
@@ -99,4 +111,11 @@ void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CheckerPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
+}
+
+RISEPel CheckerPainter::GetRadianceColor( const RayIntersectionGeometric& ri ) const
+{
+	// DL-396: the RGB twin of GetRadianceNM -- forward to the selected child.
+	return ComputeWhich(ri).GetRadianceColor(ri);
 }

@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "description": "Paired cue-isolation cases for beauty-only versus the RISE perception atlas. Mirrored labels and positions cancel simple answer and side biases.",
+  "cases": [
+    {
+      "id": "depth_red_near_left",
+      "family": "depth_order",
+      "question": "Which sphere has the closer front surface to the camera?",
+      "choices": ["RED", "BLUE"],
+      "answer": "RED",
+      "params": {"nearColor": "red", "nearSide": "left", "nearZ": 1.0, "farZ": -1.0}
+    },
+    {
+      "id": "depth_blue_near_left",
+      "family": "depth_order",
+      "question": "Which sphere has the closer front surface to the camera?",
+      "choices": ["RED", "BLUE"],
+      "answer": "BLUE",
+      "params": {"nearColor": "blue", "nearSide": "left", "nearZ": 1.0, "farZ": -1.0}
+    },
+    {
+      "id": "depth_red_near_right",
+      "family": "depth_order",
+      "question": "Which sphere has the closer front surface to the camera?",
+      "choices": ["RED", "BLUE"],
+      "answer": "RED",
+      "params": {"nearColor": "red", "nearSide": "right", "nearZ": 1.35, "farZ": -1.15}
+    },
+    {
+      "id": "depth_blue_near_right",
+      "family": "depth_order",
+      "question": "Which sphere has the closer front surface to the camera?",
+      "choices": ["RED", "BLUE"],
+      "answer": "BLUE",
+      "params": {"nearColor": "blue", "nearSide": "right", "nearZ": 1.35, "farZ": -1.15}
+    },
+    {
+      "id": "normal_positive_35",
+      "family": "surface_normal",
+      "question": "Does the visible card face's world-space normal point toward positive X or negative X?",
+      "choices": ["POSITIVE_X", "NEGATIVE_X"],
+      "answer": "POSITIVE_X",
+      "params": {"angleDegrees": 35.0}
+    },
+    {
+      "id": "normal_negative_35",
+      "family": "surface_normal",
+      "question": "Does the visible card face's world-space normal point toward positive X or negative X?",
+      "choices": ["POSITIVE_X", "NEGATIVE_X"],
+      "answer": "NEGATIVE_X",
+      "params": {"angleDegrees": -35.0}
+    },
+    {
+      "id": "normal_positive_55",
+      "family": "surface_normal",
+      "question": "Does the visible card face's world-space normal point toward positive X or negative X?",
+      "choices": ["POSITIVE_X", "NEGATIVE_X"],
+      "answer": "POSITIVE_X",
+      "params": {"angleDegrees": 55.0}
+    },
+    {
+      "id": "normal_negative_55",
+      "family": "surface_normal",
+      "question": "Does the visible card face's world-space normal point toward positive X or negative X?",
+      "choices": ["POSITIVE_X", "NEGATIVE_X"],
+      "answer": "NEGATIVE_X",
+      "params": {"angleDegrees": -55.0}
+    },
+    {
+      "id": "albedo_high_left_toward",
+      "family": "material_lighting",
+      "question": "Which card has the higher intrinsic diffuse albedo, independent of its illumination?",
+      "choices": ["LEFT", "RIGHT"],
+      "answer": "LEFT",
+      "params": {"highSide": "left", "tiltSign": 1, "lowAlbedo": 0.45, "highAlbedo": 0.85}
+    },
+    {
+      "id": "albedo_high_right_toward",
+      "family": "material_lighting",
+      "question": "Which card has the higher intrinsic diffuse albedo, independent of its illumination?",
+      "choices": ["LEFT", "RIGHT"],
+      "answer": "RIGHT",
+      "params": {"highSide": "right", "tiltSign": 1, "lowAlbedo": 0.45, "highAlbedo": 0.85}
+    },
+    {
+      "id": "albedo_high_left_away",
+      "family": "material_lighting",
+      "question": "Which card has the higher intrinsic diffuse albedo, independent of its illumination?",
+      "choices": ["LEFT", "RIGHT"],
+      "answer": "LEFT",
+      "params": {"highSide": "left", "tiltSign": -1, "lowAlbedo": 0.52, "highAlbedo": 0.88}
+    },
+    {
+      "id": "albedo_high_right_away",
+      "family": "material_lighting",
+      "question": "Which card has the higher intrinsic diffuse albedo, independent of its illumination?",
+      "choices": ["LEFT", "RIGHT"],
+      "answer": "RIGHT",
+      "params": {"highSide": "right", "tiltSign": -1, "lowAlbedo": 0.52, "highAlbedo": 0.88}
+    }
+  ]
+}

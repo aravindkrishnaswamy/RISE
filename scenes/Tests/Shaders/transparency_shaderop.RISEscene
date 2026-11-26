@@ -1,8 +1,8 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           transparency_shaderop.RISEScene                                                         #
+#   File:           transparency_shaderop.RISEscene                                                         #
 #   Description:    Demonstrates using the transparency shaderop                                            #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      February 28, 2005                                                                       #
@@ -13,34 +13,191 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
 
-transparency_shaderop
+uniformcolor_painter
 {
-	name			trans
-	transparency	color_50pgrey
-	one_sided		true
+	name		color_black
+	color		0.0 0.0 0.0
 }
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_red
+	color		1.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_green
+	color		0.0 1.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_blue
+	color		0.0 0.0 1.0
+}
+
+
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_50pgrey
+	color		0.50 0.50 0.50
+}
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 advanced_shader
 {
 	name			trans
-	shaderop		DefaultDirectLighting		0 100	+
-	shaderop		trans						0 100	=
+	shaderop		DefaultPathTracing		0 100	+
 }
 
-pixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
 	samples				10
-	lum_samples			1
 	pixel_sampler		halton
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -55,13 +212,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			800
+	height			300
+}
+
 pinhole_camera
 {
 	location			0 0 3
 	lookat				0 0 0
 	up					0 1 0
-	width				800
-	height				300
 	fov					20.0
 	theta				30
 }
@@ -86,18 +247,24 @@ lambertian_material
 {
 	name				red
 	reflectance			color_red
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material
 {
 	name				green
 	reflectance			color_green
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material
 {
 	name				blue
 	reflectance			color_blue
+	alpha_coverage		0.5
+	alpha_mode			blend
 }
 
 lambertian_material
@@ -173,3 +340,5 @@ omni_light
 	color				1 1 1
 	power				3.14
 }
+
+

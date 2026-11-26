@@ -17,8 +17,10 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "PhongEmitter.h"
+#include "../Interfaces/IContinuationClosure.h"
 
 namespace RISE
 {
@@ -28,8 +30,11 @@ namespace RISE
 		{
 		protected:
 			const IMaterial&			pMaterial;
-			IEmitter*					pEmitter;
-			
+			//! Concrete pointer so the editor's `SetRadEx` / `SetN`
+			//! reach `PhongEmitter`'s setters (the base IEmitter
+			//! interface doesn't expose them).
+			PhongEmitter*				pEmitter;
+
 			virtual ~PhongLuminaireMaterial()
 			{
 				pMaterial.release();
@@ -37,7 +42,7 @@ namespace RISE
 			}
 
 		public:
-			PhongLuminaireMaterial( const IPainter& radEx, const Scalar scale, const IPainter& N, const IMaterial& pMaterial_ ) : 
+			PhongLuminaireMaterial( const IPainter& radEx, const Scalar scale, const IScalarPainter& N, const IMaterial& pMaterial_ ) :
 			pMaterial( pMaterial_ )
 			{
 				pMaterial.addref();
@@ -46,17 +51,103 @@ namespace RISE
 				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
 			}
 
+			const IMaterial& GetBaseMaterial() const { return pMaterial; }
+
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {			return pMaterial.GetBSDF(); };
+			inline IBSDF* GetBSDF() const override {			return pMaterial.GetBSDF(); };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pMaterial.GetSPF(); };
+			inline ISPF* GetSPF() const override {			return pMaterial.GetSPF(); };
+
+			//! DL-05: GetSPF() forwards the wrapped material's SPF verbatim,
+			//! so a delta pass-through it emits (a thin weave's gap) is
+			//! emitted here too -- forward the capability with it
+			//! (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const override { return pMaterial.HasDeltaPassThrough(); }
+			//! DL-471: GetBSDF()/GetSPF() forward the base material verbatim.
+			inline unsigned int ConnectionScatterTypes() const override { return pMaterial.ConnectionScatterTypes(); }
+			inline bool HasConnectionTypeSplit() const override { return pMaterial.HasConnectionTypeSplit(); }
+			//! Forward scattering/interior/medium/PDF traits of the wrapped base material
+			//! so refractive, volumetric, SSS, graded-index, and full-sphere luminaires
+			//! participate identically in IORStackSeeding, SMS, NEE, and MIS.
+			inline bool CouldLightPassThrough() const override { return pMaterial.CouldLightPassThrough(); }
+			inline bool TracksInteriorContainment() const override { return pMaterial.TracksInteriorContainment(); }
+			inline bool IsVolumetric() const override { return pMaterial.IsVolumetric(); }
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return pMaterial.GetDiffusionProfile(); }
+			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const override { return pMaterial.GetRandomWalkSSSParams(); }
+			inline bool GetRandomWalkSSSParamsNM( const Scalar nm, RandomWalkSSSParams& params_out ) const override { return pMaterial.GetRandomWalkSSSParamsNM( nm, params_out ); }
+			inline SpecularInfo GetSpecularInfo( const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.GetSpecularInfo( ri, ior_stack ); }
+			inline SpecularInfo GetSpecularInfoNM( const RayIntersectionGeometric& ri, const IORStack& ior_stack, const Scalar nm ) const override { return pMaterial.GetSpecularInfoNM( ri, ior_stack, nm ); }
+			inline const IScalarPainter* GetGradedIORField() const override { return pMaterial.GetGradedIORField(); }
+			inline Scalar Pdf( const Vector3& wo, const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.Pdf( wo, ri, ior_stack ); }
+			inline Scalar PdfNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack& ior_stack ) const override { return pMaterial.PdfNM( wo, ri, nm, ior_stack ); }
+			inline bool ScattersFullSphere() const override { return pMaterial.ScattersFullSphere(); }
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() |
+					pMaterial.GetPathDependence() |
+					( pEmitter ? ( pEmitter->GetRadEx().GetPathDependence() | pEmitter->GetN().GetPathDependence() ) : 0u );
+			}
+
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return pEmitter; };
+			inline IEmitter* GetEmitter() const override {	return pEmitter; };
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const ContinuationPathState& pathState ) const override
+			{
+				return pMaterial.MakeContinuationClosurePel(ri,ior_stack,pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return pMaterial.MakeContinuationClosureNM(ri,ior_stack,nm,pathState);
+			}
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to the PhongEmitter — the wrapped base material
+			//! is intentionally NOT editable through this surface (users
+			//! edit it via its own row in the panel).
+			inline const IPainter&       GetRadEx() const { return pEmitter->GetRadEx(); }
+			inline const IScalarPainter& GetN()     const { return pEmitter->GetN(); }
+			inline void SetRadEx( const IPainter& v )     { pEmitter->SetRadEx( v ); }
+			inline void SetN( const IScalarPainter& v )   { pEmitter->SetN( v ); }
+
+			//! Rescales the emission (backs `> modify material <name>
+			//! scale`).  PhongEmitter holds its scale as a const member
+			//! with no setter, so we REBUILD it at the new scale, reusing
+			//! the existing radiance-exitance painter AND the Phong-N
+			//! exponent painter.  Hold references on both across the swap
+			//! so they survive the old emitter's release.  Mirrors
+			//! LambertianLuminaireMaterial::SetEmissionScale; runs before
+			//! a render — no threading concern.
+			/// \return TRUE always (this material is a luminaire)
+			bool SetEmissionScale( const Scalar scale ) override
+			{
+				const IPainter&       radEx = pEmitter->GetRadEx();
+				const IScalarPainter& phongN = pEmitter->GetN();
+				radEx.addref();
+				phongN.addref();
+
+				safe_release( pEmitter );
+
+				pEmitter = new PhongEmitter( radEx, scale, phongN );
+				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
+
+				// PhongEmitter's ctor addrefs both painters; drop the
+				// temporary references that bridged the rebuild.
+				radEx.release();
+				phongN.release();
+
+				return true;
+			}
 		};
 	}
 }
 
 #endif
-

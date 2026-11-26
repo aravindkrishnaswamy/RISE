@@ -20,22 +20,68 @@
 #ifdef WIN32
 
 #define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
-#define _WIN32_WINNT 0x0400		// require NT4 or greater for TryEnterCriticalSection
 #include <windows.h>
+#include <cstdint>
 
 using namespace RISE;
 
+void Threading::riseSetThreadRenderPriority( RISETHREADID threadid )
+{
+	// On Windows thread priority defaults to NORMAL which is what
+	// we want for render workers.  We rely on CPU affinity to keep
+	// workers on P-cores (see riseSetThreadAffinity).
+	HANDLE hThread = threadid ? (HANDLE)threadid : GetCurrentThread();
+	SetThreadPriority( hThread, THREAD_PRIORITY_NORMAL );
+}
+
+void Threading::riseSetThreadAffinity( const std::vector<unsigned int>& cpuIds )
+{
+	// Pin calling thread to the given CPU set.
+	if( cpuIds.empty() ) return;
+	DWORD_PTR mask = 0;
+	for( unsigned int id : cpuIds ) {
+		if( id < sizeof( DWORD_PTR ) * 8 ) {
+			mask |= ( static_cast<DWORD_PTR>( 1 ) << id );
+		}
+	}
+	if( mask != 0 ) {
+		SetThreadAffinityMask( GetCurrentThread(), mask );
+	}
+}
+
+void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
+{
+	// See ThreadsPTHREADs.cpp for the severity warning.  Kept
+	// BELOW_NORMAL rather than LOWEST — on Windows LOWEST yields
+	// aggressively enough to reduce per-thread throughput 2–3× under
+	// load.  Used in legacy background-render mode
+	// (force_all_threads_low_priority) for every render worker AND
+	// the calling thread of SP fallbacks.
+	//
+	// threadid == 0 means "calling thread", matching the convention
+	// in riseSetThreadRenderPriority.  Without this remap the call
+	// passes NULL to SetThreadPriority, which silently fails.
+	HANDLE hThread = threadid ? (HANDLE)threadid : GetCurrentThread();
+	SetThreadPriority( hThread, THREAD_PRIORITY_BELOW_NORMAL );
+}
+
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
-	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, (DWORD)thread_attributes, 0 );
+	// DL-315: a requested size is a RESERVATION (committed on touch), so
+	// an 8 MB render-worker stack does not commit 8 MB up front.
+	const DWORD createFlags = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)) |
+		( initial_stack_size ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0 );
+	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, createFlags, 0 );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)hThread;
 	}
 
-	// Makes MP rendering not choke the poor system...  I know this is a hack
-	if( GlobalOptions().ReadBool( "force_all_threads_low_priority", true ) ) {
-		SetThreadPriority( hThread, THREAD_PRIORITY_BELOW_NORMAL );
+	// Legacy "render in the background" override.  Default flipped to
+	// false — most render threads need full priority to saturate the
+	// machine.  GlobalThreadPool picks per-worker priority explicitly.
+	if( GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+		riseSetThreadLowPriority( (RISETHREADID)hThread );
 	}
 
 	if( hThread ) {
@@ -43,6 +89,47 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 	}
 
 	return 0;
+}
+
+unsigned int Threading::riseCreateLowPriorityThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
+{
+	// DL-315: a requested size is a RESERVATION (committed on touch), so
+	// an 8 MB render-worker stack does not commit 8 MB up front.
+	const DWORD createFlags = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)) |
+		( initial_stack_size ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0 );
+	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, createFlags, 0 );
+
+	if( threadid ) {
+		*threadid = (RISETHREADID)hThread;
+	}
+
+	if( hThread ) {
+		riseSetThreadLowPriority( (RISETHREADID)hThread );
+		return 1;
+	}
+
+	return 0;
+}
+
+size_t Threading::riseRemainingStackBytes( )
+{
+	// DL-315.  The stack's reservation base (its low bound), looked up
+	// once per thread with VirtualQuery on a local.
+	static thread_local ULONG_PTR tlStackLow = 0;
+	static thread_local bool tlLookedUp = false;
+	volatile char probe = 0;
+	if( !tlLookedUp ) {
+		tlLookedUp = true;
+		MEMORY_BASIC_INFORMATION mbi;
+		if( VirtualQuery( const_cast<char*>( &probe ), &mbi, sizeof( mbi ) ) != 0 ) {
+			tlStackLow = reinterpret_cast<ULONG_PTR>( mbi.AllocationBase );
+		}
+	}
+	if( !tlStackLow ) {
+		return SIZE_MAX;
+	}
+	const ULONG_PTR sp = reinterpret_cast<ULONG_PTR>( &probe );
+	return sp > tlStackLow ? static_cast<size_t>( sp - tlStackLow ) : 0;
 }
 
 unsigned int Threading::riseWaitUntilThreadFinishes( RISETHREADID threadid, void* )

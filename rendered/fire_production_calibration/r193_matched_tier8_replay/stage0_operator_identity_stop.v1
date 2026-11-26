@@ -1,0 +1,50 @@
+schema rise.fire.production.matched_tier8_replay.stage0_operator_identity_stop.v1
+revision r193
+authored_utc 2026-09-01
+reviewed_parent_commit b0a4dad10d3a876d93878029bc8debac35461b74
+classification owner_locked_operator_identity_stop
+golden_checkpoint_mutated false
+gpu_replay_started false
+verdict_emitted false
+
+requested_leg legacy_live_production_operator
+requested_leg completed_section_3_7_projected_heun_port
+available_live_leg ordinary_independent_dual_momentum_resident_step
+available_live_leg r182_compatible_momentum_diagnostic
+available_live_leg r183_tokenless_single_stage_fct_diagnostic
+completed_projected_heun_live_Metal_entry_point absent
+
+finding The completed R0/R1/R2 owner is a CPU authority with no production or FireSequenceTest call site.
+finding AttemptFireProductionCompatibleMomentumDiagnosticMetal only scopes CompatibleMomentumDiagnosticActive around AttemptFireProductionResidentStepMetal.
+finding The r182 compatible consumer and r183 tokenless single-stage diagnostic are historically rejected substitutes and cannot authorize the three-way port verdict.
+finding The existing onset CLI defaults to the r182 compatible diagnostic and therefore is not the requested completed-port leg.
+finding The r181 tier-8 stability premise extrapolated a healthy 1.8264868_s prefix beyond its measured horizon.
+finding The historical 63.339610872283018_kg_per_m2_s2 value is a velocity-owning-face sample at oracle time 2.1135824235796083_s, not an equal-time criterion.
+finding The nearest-retained-time oracle fixed-column maximum is 159.00892323854879_kg_per_m2_s2 at 2.1079791976176079_s versus production time 2.1077302111661993_s; their authored-decimal separation is 0.0002489864514086_s.
+
+source src/Library/Utilities/FireProductionForce.cpp sha256 b3fb2817ecad2962e17d2b862ce72e17c4edbf437ade11bb39ed1d11f16cfe7d
+source src/Library/Utilities/FireProductionForce.h sha256 9fbcd7bb4343d4ee229706f4f04088fffadcd42003e018fecaf2f86b01c9ef71
+source src/Library/Utilities/FireProductionAdvectionMac.mm sha256 91790c0148e473af45684d349764c41017291eee514853f249fe42ca1f6aa2e8
+source src/Library/Utilities/FireProductionTransport.h sha256 5482a859463dae1b0c3d0c4d14c40d715112df2884998ab4faab9a56347cd50b
+source tests/FireSequenceTest.cpp sha256 2ec2fdbb7d70dc7ef0b55a6c9ba2bf8283a4b37669807e5b43b0bdb7940a254f
+historical_evidence rendered/fire_production_calibration/r182_compatible_momentum_flux/compatible_momentum_flux_evidence.v2 sha256 0698c8ff36d59d18246b89eb39aba352d3e18bf27499772e2f8d400de1abf053
+historical_evidence rendered/fire_production_calibration/r181_onset_campaign/onset_momentum_budget_evidence.v1 sha256 e09c37d72ad453e5d8cb7dded6442941852deed967880871733d3c254b263a19
+historical_evidence rendered/fire_production_calibration/r181_onset_campaign/oracle_tier10/matched_2p1s.raw.csv.column.csv sha256 13cace37e4c9ae7e991386de0b969898b98a9b6aba5e7bd5a33dd5c0fde6c506
+historical_evidence rendered/fire_production_calibration/r183_projected_heun_bootstrap/projected_heun_bootstrap_evidence.v1 sha256 425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d
+
+review r193_operator_review P1_missing_completed_port_leg
+review r193_numeric_audit P1_missing_completed_port_leg
+review r193_provenance_review P1_missing_completed_port_leg
+review_result replay_refused_before_measurement
+
+unblock_requirement Implement one identity-bearing live Metal entry point for the complete authenticated R0/R1/R2 schedule.
+unblock_requirement Bind the exact completed-owner result to accepted-state publication and checkpoint provenance.
+unblock_requirement Add from-zero pair identity with exact tier_8 target_3.0_s seed case initial_state executable and preregistration digests.
+unblock_requirement Refuse resume and nonempty output directories for the matched pair.
+unblock_requirement Publish axis-general crossing-local budgets and a separately named exact-equal-time fixed-face-or-fixed-column oracle-composed advection observable with its spatial selection and match rule sealed before execution.
+unblock_requirement Bind the complete Binary32 source packet field and adjacent-cell packet values.
+
+forbidden substitute_r182_compatible_consumer_as_completed_port
+forbidden substitute_r183_single_stage_diagnostic_as_completed_port
+forbidden crossing_local_rate_as_oracle_matched_rate
+forbidden tolerance_or_timestep_policy_change

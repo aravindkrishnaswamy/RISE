@@ -1,0 +1,19 @@
+{
+  "reviewed_commit": "6ba0b0ea",
+  "scope": "preview/native-spectrum wiring and synthetic provenance controls",
+  "reviewers": [
+    {
+      "name": "r246_consumer_contract_review",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_consumer_provenance_review",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "accepted": true,
+  "launch_permitted": false,
+  "rendered_evidence_established": false
+}

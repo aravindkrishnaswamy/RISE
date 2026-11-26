@@ -16,6 +16,8 @@
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/IORStack.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
@@ -33,9 +35,11 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 		const unsigned int specsamp,
 		const StabilityConfig& stabilityCfg,
 		bool useZSobol_,
-		bool useHWSS_
+		bool useHWSS_,
+		RISE::Implementation::FrameStore* frameStore
 		) :
-  PixelBasedRasterizerHelper( pCaster_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
 	  lambda_begin( lambda_begin_ ),
 	  lambda_end( lambda_end_ ),
 	  lambda_diff( lambda_end_-lambda_begin_ ),
@@ -43,10 +47,37 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	  wavelength_steps( (lambda_diff)/Scalar(num_wavelengths) ),
 	  nSpectralSamples( specsamp ),
 	  bUseHWSS( useHWSS_ ),
+	  mYNormalization( 1.0 ),
 	  stabilityConfig( stabilityCfg )
 {
 	useZSobol = useZSobol_;
-	vecSpectralSamples.reserve( nSpectralSamples );
+	// Cache the MC luminance normalization scale = (b - a) / k_y where
+	// k_y = ∫Ȳ(λ)dλ over [lambda_begin, lambda_end].  The MC estimator
+	// (1/N)·Σ X̄(λᵢ)·V(λᵢ) for uniformly sampled λᵢ ∈ [a, b]
+	// approximates the AVERAGE of the integrand; multiplying by (b-a)
+	// converts to the integral, then dividing by k_y makes a spectral
+	// radiance of constant unit amplitude resolve to LUMINANCE Y = 1.
+	// Without this scale, spectral renders are uniformly ~3.7× dimmer than
+	// equivalent RGB renders (for the standard [380, 780] range
+	// k_y ≈ 106.86, so (b-a) / k_y ≈ 3.74).
+	//
+	// Y = 1 is all this normalisation buys, and it is deliberately
+	// achromatic: it says nothing about the chromaticity the pixel lands
+	// on.  A FLAT unit spectrum has equal-energy (E) chromaticity, so it
+	// resolves to Rec.709 (1.20485, 0.94827, 0.90894) -- Y = 1, but
+	// reddish, NOT neutral.  Landing on neutral (1, 1, 1) requires the
+	// SOURCE to be D65-shaped, which since Stage C slice 2 it is:
+	// every emitter, light, radiance map and radiance-uplifting shader op
+	// emits RGBIlluminantSpectrum = sigmoid x D65norm, and D65norm is
+	// itself Y-normalised so unit scale still lands on Y = 1 here.  No
+	// illuminant weighting belongs in THIS integral -- it would double-
+	// apply D65.  See docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
+	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
+	// Every positive observer area defines a normalization, even for a
+	// narrow representable interval. Zero/nonfinite intervals return zero.
+	if( k_y > 0 ) {
+		mYNormalization = lambda_diff / k_y;
+	}
 }
 
 PixelBasedSpectralIntegratingRasterizer::~PixelBasedSpectralIntegratingRasterizer( )
@@ -73,28 +104,41 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 	bool bHit = false;
 	c = ColorXYZ(0,0,0,0);
 
+    // Containment geometry is shared, but each wavelength needs its own indices.
+    const IScene* pAttachedScene = pCaster->GetAttachedScene();
+
 	if( nSpectralSamples == 1 )
 	{
 		// Special case if only one spectral sample
-		const Scalar nm = num_wavelengths < 10000 ? 
-				(lambda_begin + int(rc.random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps) : 
+		const Scalar nm = num_wavelengths < 10000 ?
+				(lambda_begin + int(rc.random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps) :
 				(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
+        IORStack iorStack(1.0);
+        if(pAttachedScene) IORStackSeeding::SeedFromPoint(iorStack, ray.origin, *pAttachedScene, nm);
 		Scalar nmvalue = 0;
-		bHit = pCaster->CastRayNM( rc, rast, ray, nmvalue, IRayCaster::RAY_STATE(), nm, 0, 0 );
+		bHit = pCaster->CastRayNM( rc, rast, ray, nmvalue, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
 		if( bHit && nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
 			if( ColorUtils::XYZFromNM( thisNM, nm ) ) {
-				thisNM = thisNM * nmvalue;
+				// Single-sample MC normalization: same (b-a)/k_y scale
+				// as the multi-sample branch (N=1 case omits the 1/N).
+				thisNM = thisNM * ( nmvalue * mYNormalization );
 				c = ColorXYZ( thisNM, 1.0 );
 			}
 		} else if( bHit ) {
 			c.a = 1.0;
 		}
 	}
-	else 
+	else
 	{
-		vecSpectralSamples.clear();
+		// Per-thread local buffer — must NOT be a class member, since
+		// worker threads all call this const method concurrently on
+		// the same rasterizer instance.  Using a shared mutable
+		// member produced a classic std::vector race, manifesting as
+		// scrambled tile output whenever spectral_samples > 1.
+		std::vector<SPECTRAL_SAMPLE> vecSpectralSamples;
+		vecSpectralSamples.reserve( nSpectralSamples );
 
 		// Take n samples
 		for( unsigned int i=0; i<nSpectralSamples; i++ )
@@ -107,7 +151,9 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			SPECTRAL_SAMPLE	samp;
 			samp.nm = nm;
 
-			bool bThisHit = pCaster->CastRayNM( rc, rast, ray, samp.value, IRayCaster::RAY_STATE(), nm, 0, 0 );
+            IORStack iorStack(1.0);
+            if(pAttachedScene) IORStackSeeding::SeedFromPoint(iorStack, ray.origin, *pAttachedScene, nm);
+			bool bThisHit = pCaster->CastRayNM( rc, rast, ray, samp.value, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
 			if( bThisHit ) {
 				bHit = true;
@@ -135,7 +181,13 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			}
 		}
 
-		sum = sum * (1.0/Scalar(nSpectralSamples));
+		// MC normalization: (1/N) for sample-mean × (b-a)/k_y to scale
+		// the average into a properly-normalized integral so a perfect-
+		// white reflector under flat illuminant gives Y = 1.  Without
+		// the (b-a)/k_y factor the result is ~3.7× dim (matches the
+		// observed RGB-vs-spectral brightness gap).  Uniform scale =>
+		// chromaticity preserved.
+		sum = sum * ( mYNormalization / Scalar(nSpectralSamples) );
 
 		if( bHit ) {
 			c = ColorXYZ( sum, 1.0 );
@@ -167,11 +219,45 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 	for( unsigned int s = 0; s < nSpectralSamples; s++ )
 	{
 		const Scalar u = rc.random.CanonicalRandom();
-		SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+		SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end, num_wavelengths );
 
 		Scalar cHWSS[SampledWavelengths::N] = {0};
 		IRayCaster::RAY_STATE rs;
-		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, 0 );
+		IORStack cameraIorStack( 1.0 );
+		// Seed from the camera-ray origin: if the camera sits inside a
+		// dielectric (submerged camera, camera inside a medium volume),
+		// the first boundary crossing must see bFromInside==true or the
+		// DielectricSPF wrong-side test drops the transmission lobe
+		// entirely.  Free-space cameras: the probe finds no enclosing
+		// objects, no-op.
+		{
+			const IScene* pAttachedScene = pCaster->GetAttachedScene();
+			if( pAttachedScene ) {
+				IORStackSeeding::SeedFromPoint( cameraIorStack, ray.origin, *pAttachedScene, swl.HeroLambda() );
+			}
+		}
+        // A bundle starting inside a dispersive chain has different incident
+        // media per lane. Use independent NM casts before any hero refraction.
+        bool dispersiveContainment = false;
+        const IScene* attachedScene = pCaster->GetAttachedScene();
+        if(attachedScene && cameraIorStack.topObject()) {
+            for(unsigned w=0; w<SampledWavelengths::N; ++w) {
+                IORStack laneStack(cameraIorStack.EnvironmentIOR());
+                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                if(!laneStack.SameInterfaces(cameraIorStack)) dispersiveContainment = true;
+            }
+        }
+        bool bThisHit = false;
+        if(dispersiveContainment) {
+            for(unsigned w=0; w<SampledWavelengths::N; ++w) {
+                IORStack laneStack(cameraIorStack.EnvironmentIOR());
+                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                bThisHit = pCaster->CastRayNM(rc, rast, ray, cHWSS[w], rs,
+                    swl.lambda[w], 0, 0, laneStack) || bThisHit;
+            }
+        } else {
+            bThisHit = pCaster->CastRayHWSS(rc, rast, ray, cHWSS, rs, swl, 0, 0, cameraIorStack);
+        }
 
 		if( bThisHit ) {
 			bHit = true;
@@ -192,7 +278,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 	}
 
 	if( totalActive > 0 ) {
-		totalSum = totalSum * (1.0 / Scalar(totalActive));
+		// MC normalization: (1/N) × (b-a)/k_y.  See non-HWSS branch.
+		totalSum = totalSum * ( mYNormalization / Scalar(totalActive) );
 	}
 
 	if( bHit ) {
@@ -214,6 +301,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	RasterizerState rast = {x,y};
 
 	// Derive a per-pixel seed for Owen scrambling.
@@ -223,20 +311,25 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
+	if( sampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
 		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
 			if( px.converged ) {
 				if( px.alphaSum > 0 ) {
-					cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+					// px.colorSum is XYZPel (PBRT-v4 RGBFilm-style
+					// accumulator).  Implicit RISEPel(XYZPel) constructor
+					// invokes ColorUtils::XYZtoRec709RGB (post Stage B —
+					// D65→D65, matrix-only) once at this resolve point.
+					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
+					cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 				}
 				return;
 			}
 		}
 
-		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int batchSize = sampling->GetNumSamples();
 		const unsigned int maxSamples = batchSize;
 		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
@@ -258,7 +351,10 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			}
 		}
 
-		RISEPel colAccrued( 0, 0, 0 );
+		// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+		// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+		// Removes per-sample chromaticity gamut clip bias for out-of-
+		// gamut spectral-locus contributions.
 		ColorXYZ colAccruedXYZ( 0, 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
@@ -271,7 +367,8 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			colAccrued = px.colorSum;
+			colAccruedXYZ.base = px.colorSum;
+			colAccruedXYZ.a = px.alphaSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
 			wMean = px.wMean;
@@ -292,7 +389,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		while( sampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D	samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator		m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && sampleIndex<passEndIndex; m++, sampleIndex++ )
@@ -303,18 +400,16 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 					weights += 1.0;
 				} else {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 					weights += weight;
 				}
 
-				if( temporal_samples ) {
-					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				if( temporal_samples && !pScene.FireTemporalHold() ) {
+					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 
 				// Install a Sobol sampler for this pixel sample so that
@@ -328,21 +423,39 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
+					// Inline OIDN AOV: park a per-sample sink on rc so the shader
+					// chain's PathTracingShaderOp can record albedo/normal at the
+					// first non-delta scatter (accurate prefilter); see rc.pAOV.
+					PixelAOV aov;
+					rc.pAOV = pAOVBuffers ? &aov : 0;
 					TakeSingleSample( rc, rast, ray, c );
-					const RISEPel cpel( c.base );
+					rc.pAOV = 0;
+					if( pAOVBuffers ) {
+						if( aov.valid ) {
+							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						}
+						if( aov.primaryDepthCaptured ) {
+							pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+							pAOVBuffers->MarkGuidesExamined();
+						}
+					}
+					// XYZ-only path: accumulate XYZ in both FilteredFilm
+					// and the local colAccruedXYZ.  No per-sample XYZ->
+					// ROMM conversion (deferred to per-pixel resolve).
 					if( filmMode ) {
 						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c.base, *pPixelFilter );
 						colAccruedXYZ = colAccruedXYZ + c;
-						colAccrued = colAccrued + cpel;
 						alphas += c.a;
 					} else {
 						colAccruedXYZ = colAccruedXYZ + c*weight;
-						colAccrued = colAccrued + cpel*weight;
 						alphas += c.a * weight;
 					}
 
 					if( pProgFilm ) {
-						const Scalar lum = ColorMath::MaxValue( cpel );
+						// XYZ.Y is the CIE photometric luminance — more
+						// principled than the previous max-of-RGB heuristic.
+						const Scalar lum = c.base.Y;
 						wN++;
 						const Scalar delta = lum - wMean;
 						wMean += delta / Scalar(wN);
@@ -379,7 +492,8 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			px.colorSum = colAccrued;
+			// Persist per-pixel state in XYZ — no clipping until Resolve.
+			px.colorSum = colAccruedXYZ.base;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
 			px.wMean = wMean;
@@ -389,10 +503,18 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
-		if( pProgFilm && alphas > 0 ) {
-			cret = RISEColor( colAccrued * (1.0/alphas), alphas/weights );
-		} else if( !pProgFilm && colAccruedXYZ.a > 0 ) {
-			cret = RISEColor( colAccruedXYZ.base * (1.0/colAccruedXYZ.a), colAccruedXYZ.a/weights );
+		// Normalize accumulated AOVs by total weight (non-progressive only;
+		// the progressive path normalizes in PixelBasedRasterizerHelper).
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+		}
+
+		if( alphas > 0 ) {
+			// Single XYZ → RISEPel conversion at resolve via implicit
+			// RISEPel(XYZPel) constructor (ColorUtils::XYZtoRec709RGB
+			// post Stage B — D65→D65, matrix-only).
+			const XYZPel avgXYZ = colAccruedXYZ.base * (1.0/alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas/weights );
 		}
 	}
 	else
@@ -411,9 +533,23 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			: static_cast<ISampler*>(&stdSampler);
 
 		Ray ray;
-		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
+		if( pScene.GetCamera()->GenerateRay( rc, ray, RasterConvention::PixelCentreToScreen( x, y, height ) ) ) {
 			ColorXYZ	c;
+			PixelAOV aov;
+			rc.pAOV = pAOVBuffers ? &aov : 0;
 			TakeSingleSample( rc, rast, ray, c );
+			rc.pAOV = 0;
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+				pAOVBuffers->Normalize( x, y, 1.0 );
+			}
 			cret = RISEColor( c.base, c.a );
 		}
 

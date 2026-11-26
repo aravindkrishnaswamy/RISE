@@ -107,6 +107,14 @@ namespace RISE
 
 			/// \return True if the importance map has been built and is valid.
 			bool IsValid() const { return totalLuminance > 0; }
+
+			/// \return The integrated luminance over the env map texels
+			/// (solid-angle-weighted).  Used by LightSampler to compute
+			/// env's relative selection weight against other lights in
+			/// mixed scenes — the continuous-PMF fix that lets env
+			/// participate in alias-table selection.  Zero when env is
+			/// black or Build() hasn't run.
+			Scalar TotalLuminance() const { return totalLuminance; }
 		};
 	}
 }

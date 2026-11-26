@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "InfinitePlaneGeometry.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Interfaces/ILog.h"
@@ -28,10 +29,6 @@ InfinitePlaneGeometry::InfinitePlaneGeometry( const Scalar xTile_, const Scalar 
 }
 
 InfinitePlaneGeometry::~InfinitePlaneGeometry( )
-{
-}
-
-void InfinitePlaneGeometry::GenerateMesh( )
 {
 }
 
@@ -58,15 +55,19 @@ void InfinitePlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bo
 	{
 		if( bFrontSideWasHit ) {
 			ri.vNormal = Vector3( 0, 0, 1 );
+			ri.vGeomNormal = ri.vNormal;	// flat plane: shading == geometric
 
 			if( bComputeExitInfo ) {
 				ri.vNormal2 = Vector3( 0, 0, -1 );
+				ri.vGeomNormal2 = ri.vNormal2;
 			}
 		} else {
 			ri.vNormal = Vector3( 0, 0, -1 );
+			ri.vGeomNormal = ri.vNormal;	// flat plane: shading == geometric
 
 			if( bComputeExitInfo ) {
 				ri.vNormal2 = Vector3( 0, 0, 1 );
+				ri.vGeomNormal2 = ri.vNormal2;
 			}
 		}
 
@@ -181,16 +182,19 @@ IKeyframeParameter* InfinitePlaneGeometry::KeyframeFromParameters( const String&
 
 void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case XTILE_ID:
 		{
 			xTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	case YTILE_ID:
 		{
 			yTile = *(Scalar*)val.getValue();
+			BumpShapeRevision();
 		}
 		break;
 	}
@@ -198,6 +202,7 @@ void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val 
 
 void InfinitePlaneGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( xTile >  0 ) {
 		OVXTile = 1.0 / xTile;
 	} else {
@@ -209,5 +214,28 @@ void InfinitePlaneGeometry::RegenerateData( )
 	} else {
 		GlobalLog()->PrintSourceError( "InfinitePlaneGeometry:: yTile <= 0", __FILE__, __LINE__ );
 	}
+	BumpShapeRevision();
 }
 
+
+//! IGeometry::DistanceToSurface -- EXACT.
+//!
+//! This geometry IS the plane z = 0 (IntersectRay hits it against
+//! `Vector3(0,0,1)`, and UniformRandomPoint returns `(x, y, 0)`), and it is
+//! INFINITE in x and y, so no rim case exists and the distance from any
+//! point is simply the magnitude of its z coordinate.
+//!
+//! Deliberately does NOT early-out on `maxDistObject`: the whole
+//! computation is one fabs, so a comparison to skip it would cost as much
+//! as doing it.  Answering past the radius is harmless -- the caller keeps
+//! the minimum and its own bound decides.
+bool InfinitePlaneGeometry::DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const
+{
+	(void)maxDistObject;
+	const Scalar d = std::fabs( ptObject.z );
+	if( !RISE::IsFiniteDouble( (double)d ) ) {
+		return false;
+	}
+	outDist = d;
+	return true;
+}

@@ -22,9 +22,11 @@
 #include "../Lights/LightSampler.h"
 #include "BlockRasterizeSequence.h"
 #include "MortonRasterizeSequence.h"
+#include "AdaptiveTileSizer.h"
 #include "ProgressiveFilm.h"
 #include "../RasterImages/RasterImage.h"
 #include "../RISE_API.h"
+#include "../Utilities/FiniteMath.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -36,8 +38,8 @@ namespace
 	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
 	{
 		return
-			std::isfinite( bbox.ll.x ) && std::isfinite( bbox.ll.y ) && std::isfinite( bbox.ll.z ) &&
-			std::isfinite( bbox.ur.x ) && std::isfinite( bbox.ur.y ) && std::isfinite( bbox.ur.z ) &&
+			RISE::IsFiniteDouble( bbox.ll.x ) && RISE::IsFiniteDouble( bbox.ll.y ) && RISE::IsFiniteDouble( bbox.ll.z ) &&
+			RISE::IsFiniteDouble( bbox.ur.x ) && RISE::IsFiniteDouble( bbox.ur.y ) && RISE::IsFiniteDouble( bbox.ur.z ) &&
 			bbox.ll.x <= bbox.ur.x &&
 			bbox.ll.y <= bbox.ur.y &&
 			bbox.ll.z <= bbox.ur.z;
@@ -102,9 +104,11 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	const PathGuidingConfig& guidingCfg,
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityCfg,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
 #ifdef RISE_ENABLE_OPENPGL
   pGuidingField( 0 ),
   guidingAlphaScale( 1.0 ),
@@ -143,6 +147,7 @@ void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 	if( pGuidingField ) {
 		rc.pGuidingField = pGuidingField;
 		rc.guidingAlpha = guidingConfig.alpha * guidingAlphaScale;
+		rc.guidingLearnedAlpha = guidingConfig.learnedAlpha;
 		rc.maxGuidingDepth = guidingConfig.maxGuidingDepth;
 		rc.guidingSamplingType = guidingConfig.samplingType;
 		rc.guidingRISCandidates = guidingConfig.risCandidates;
@@ -167,8 +172,14 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
 
-		const unsigned int width = pScene.GetCamera()->GetWidth();
-		const unsigned int height = pScene.GetCamera()->GetHeight();
+		const ICamera* pCam = pScene.GetCamera();
+		if( !pCam ) {
+			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup:: Scene contains no camera!", __FILE__, __LINE__ );
+			return;
+		}
+		const IFilm* pFilm = pScene.GetFilm();
+		const unsigned int width = pFilm->GetWidth();
+		const unsigned int height = pFilm->GetHeight();
 		const unsigned int bootstrapTrainingSPP = 1;
 		unsigned int currentTrainingSPP = bootstrapTrainingSPP;
 		Scalar previousPositiveSampleDensity = 0;
@@ -182,16 +193,21 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			// Use a temporary low-spp sampling object for training
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			// Create a temporary image for training (results are discarded)
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			if( pProgressFunc ) {
 				char title[128];
@@ -200,7 +216,10 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -211,7 +230,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			// Restore state
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 			safe_release( pTrainImage );
 
@@ -388,8 +407,14 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 	if( stabilityConfig.optimalMIS )
 	{
-		const unsigned int width = pScene.GetCamera()->GetWidth();
-		const unsigned int height = pScene.GetCamera()->GetHeight();
+		const ICamera* pCam = pScene.GetCamera();
+		if( !pCam ) {
+			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup (optimalMIS):: Scene contains no camera!", __FILE__, __LINE__ );
+			return;
+		}
+		const IFilm* pFilm = pScene.GetFilm();
+		const unsigned int width = pFilm->GetWidth();
+		const unsigned int height = pFilm->GetHeight();
 
 		OptimalMISAccumulator::Config accConfig;
 		accConfig.tileSize = stabilityConfig.optimalMISTileSize;
@@ -424,15 +449,20 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			// Use 1 SPP for training — enough to populate tiles
 			ISampling2D* pTrainSampling = 0;
+			RasterizerScopeExit trainingSamplingOwner( [&]() {
+				safe_release( pTrainSampling );
+			} );
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
 				pTrainSampling->SetNumSamples( 1 );
 			}
 
-			ISampling2D* pSavedSampling = pSampling;
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pTrainSampling;
+			ScopedActiveSampling samplingOverride( *this, pTrainSampling );
 
 			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+			RasterizerScopeExit pTrainImageOwner( [&]() {
+				safe_release( pTrainImage );
+			} );
 
 			if( pProgressFunc ) {
 				char title[128];
@@ -442,7 +472,10 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
+				RasterizerScopeExit pTrainBlocksOwner( [&]() {
+					safe_release( pTrainBlocks );
+				} );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,
@@ -452,7 +485,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 				safe_release( pTrainBlocks );
 			}
 
-			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pSavedSampling;
+			samplingOverride.Restore();
 			safe_release( pTrainSampling );
 			safe_release( pTrainImage );
 		}
@@ -496,16 +529,31 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	const Scalar temporal_exposure
 	) const
 {
+	ISampling2D* const sampling = ActiveSampling();
 	RasterizerState rast = {x,y};
 
-	// Progressive rendering: check if this pixel has already converged
+	// Progressive rendering: check if this pixel has already converged.
+	// In show_adaptive_map mode the heatmap (sampleIndex / maxSamples) is
+	// the authoritative output even for converged pixels — otherwise the
+	// progressive-film Resolve step would overwrite cret here, and a
+	// converged pixel would never reach the per-pixel heatmap write
+	// further down.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap
+	// docs.
+	const bool bAdaptiveActive = adaptiveConfig.maxSamples > 0
+		&& sampling && rc.UsesPixelSampling()
+		&& rc.AllowsAdaptiveSampling();
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			// Return cached result
-			if( px.alphaSum > 0 ) {
+			if( bAdaptiveActive && adaptiveConfig.showMap ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
+				// Return cached result
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			} else {
+				cret = RISEColor( RISEPel( 0, 0, 0 ), 0.0 );
 			}
 			return;
 		}
@@ -520,10 +568,10 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
+	if( sampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
 		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
-		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int batchSize = sampling->GetNumSamples();
 		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 		// For ZSobol, compute log2SPP from the full progressive SPP budget
@@ -561,7 +609,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			colAccrued = px.colorSum;
+			colAccrued = px.LoadPelPassInit();
 			weights = px.weightSum;
 			alphas = px.alphaSum;
 			wMean = px.wMean;
@@ -582,7 +630,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		while( globalSampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D samples;
-			pSampling->GenerateSamplePoints( rc.random, samples );
+			sampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<passEndIndex; m++, globalSampleIndex++ )
@@ -595,18 +643,16 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 					weights += 1.0;
 				} else {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 					weights += weight;
 				}
 
-				if( temporal_samples ) {
-					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				if( temporal_samples && !pScene.FireTemporalHold() ) {
+					AnimateSceneToSampleTime( pScene, temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 
 				// Install a Sobol sampler for this pixel sample so that
@@ -622,13 +668,36 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
-					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+					PixelAOV aov;
+					rc.pAOV = pAOVBuffers ? &aov : 0;
+					// Seed from the camera-ray origin: if the camera sits
+					// inside a dielectric (submerged camera, camera inside
+					// a medium volume), the first boundary crossing must
+					// see bFromInside==true or the DielectricSPF
+					// wrong-side test drops the transmission lobe
+					// entirely.  Free-space cameras: the probe finds no
+					// enclosing objects, no-op.
+					IORStack iorStack( 1.0 );
+					IORStackSeeding::SeedFromPoint( iorStack, ray.origin, pScene );
+					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack );
+					rc.pAOV = 0;
+					if( pAOVBuffers ) {
+						if( aov.valid ) {
+							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						}
+						if( aov.primaryDepthCaptured ) {
+							pAOVBuffers->AccumulateDepth( x, y, aov.depth, weight );
+							pAOVBuffers->MarkGuidesExamined();
+						}
+					}
 
 					if( filmMode ) {
 						// Always splat to the film, even on miss (c stays zero).
 						// Miss-samples must contribute zero radiance with proper
 						// filter weight so that edge pixels blend correctly.
-						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c, *pPixelFilter );
+						const Scalar sampleAlpha = ( GetTransparentBackground() && !bHit ) ? Scalar( 0.0 ) : Scalar( 1.0 );
+						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c, *pPixelFilter, sampleAlpha );
 						if( bHit ) {
 							colAccrued = colAccrued + c;
 							alphas += 1.0;
@@ -638,9 +707,11 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						alphas += weight;
 					}
 
-					// Welford update on luminance (always in progressive mode,
-					// or when adaptive is enabled in single-pass mode)
-					if( adaptive || pProgFilm ) {
+					// Welford update on luminance.  Gated on `adaptive`
+					// only — progressive multi-pass mode must NOT
+					// trigger convergence-based termination (see
+					// BDPTPelRasterizer for selection-bias rationale).
+					if( adaptive ) {
 						const Scalar lum = bHit ? ColorMath::MaxValue(c) : 0;
 						wN++;
 						const Scalar delta = lum - wMean;
@@ -648,7 +719,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						const Scalar delta2 = lum - wMean;
 						wM2 += delta * delta2;
 					}
-				} else if( adaptive || pProgFilm ) {
+				} else if( adaptive ) {
 					wN++;
 					const Scalar delta = -wMean;
 					wMean += delta / Scalar(wN);
@@ -660,10 +731,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			}
 
 			// Check convergence after enough cumulative samples for reliable
-			// statistics.  In progressive mode, wN accumulates across all
-			// passes, so convergence detection kicks in once enough total
-			// samples have been gathered (typically pass 4+ at 8 SPP/pass).
-			if( (adaptive || pProgFilm) && wN >= 32 )
+			// statistics.  Gated on `adaptive` only — see Welford comment.
+			if( adaptive && wN >= 32 )
 			{
 				const Scalar variance = wM2 / Scalar(wN - 1);
 				const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -686,7 +755,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		// Write back persistent state for progressive rendering
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			px.colorSum = colAccrued;
+			colAccrued = px.StorePelPassDelta( colAccrued );
 			px.weightSum = weights;
 			px.alphaSum = alphas;
 			px.wMean = wMean;
@@ -694,6 +763,10 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			px.wN = wN;
 			px.sampleIndex = globalSampleIndex;
 			px.converged = converged;
+		}
+
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 		}
 
 		if( adaptive && adaptiveConfig.showMap ) {
@@ -723,9 +796,31 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 		RISEPel	c;
 		Ray ray;
-		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
-			if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
+		if( pScene.GetCamera()->GenerateRay( rc, ray, RasterConvention::PixelCentreToScreen( x, y, height ) ) ) {
+			PixelAOV aov;
+			rc.pAOV = pAOVBuffers ? &aov : 0;
+			// Seed from the camera-ray origin: if the camera sits inside a
+			// dielectric (submerged camera, camera inside a medium
+			// volume), the first boundary crossing must see
+			// bFromInside==true or the DielectricSPF wrong-side test
+			// drops the transmission lobe entirely.  Free-space cameras:
+			// the probe finds no enclosing objects, no-op.
+			IORStack iorStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( iorStack, ray.origin, pScene );
+			if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack ) ) {
 				cret = RISEColor( c, 1.0 );
+			}
+			rc.pAOV = 0;
+			if( pAOVBuffers ) {
+				if( aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				}
+				if( aov.primaryDepthCaptured ) {
+					pAOVBuffers->AccumulateDepth( x, y, aov.depth, 1.0 );
+					pAOVBuffers->MarkGuidesExamined();
+				}
+				pAOVBuffers->Normalize( x, y, 1.0 );
 			}
 		}
 

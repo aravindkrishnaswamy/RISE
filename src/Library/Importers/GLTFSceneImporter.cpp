@@ -1,0 +1,3219 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  GLTFSceneImporter.cpp - Implementation.  See header for the
+//  design.  glTF 2.0 import; see docs/GLTF_IMPORT.md.
+//
+//  Importer responsibilities (Phases 1-4):
+//   - Resolves the requested glTF scene (or the file's default scene).
+//   - Walks the node tree depth-first, accumulating column-major world
+//     matrices and passing them verbatim to Job::AddObjectMatrix (no
+//     Euler decomposition; gimbal-lock and shear-decomp failure modes
+//     are gone since Phase 3).
+//   - For each node with a mesh: emits one gltfmesh_geometry per
+//     primitive (re-using the Phase 1 loader), bound to a PBR material
+//     + optional normal-map modifier through standard_object.
+//   - For each glTF material (de-duplicated by index): emits a
+//     pbr_metallic_roughness_material by feeding baseColor /
+//     metallicRoughness / emissive textures (or factor-driven
+//     uniformcolor painters when the slot is texture-less) into
+//     Job::AddPBRMetallicRoughnessMaterial.  KHR_materials_emissive_
+//     strength scales the emissive painter; KHR_materials_unlit swaps
+//     the PBR shape for a LambertianLuminaireMaterial (zero BSDF +
+//     emitter so the surface looks self-luminous regardless of lights);
+//     KHR_materials_transmission + KHR_materials_volume + KHR_materials_
+//     ior produce DielectricMaterial + HomogeneousMedium for refractive
+//     glass with Beer-Lambert absorption.
+//   - For each glTF texture: emits one painter.  Embedded `.glb` images
+//     and inline `data:` URIs go directly from the cgltf bufferView
+//     bytes into a painter via Job::AddInMemoryPNGTexturePainter /
+//     AddInMemoryJPEGTexturePainter -- no disk round-trip.  External
+//     image URIs in the .gltf JSON form continue to use the existing
+//     file-path painter APIs.
+//   - For each KHR_lights_punctual node: emits an omni_light /
+//     spot_light / directional_light with the world-space placement
+//     derived from the node's accumulated transform.
+//   - For the first camera-bearing node: emits a pinhole_camera with
+//     the world-space placement; subsequent camera nodes warn.
+//
+//  Out-of-scope (warn-and-skip; see docs/GLTF_IMPORT.md):
+//   - Skinning / animation / morph targets -- one-time warning per
+//     file; geometry renders at bind pose.
+//   - Alpha modes are supported through scalar material coverage (DL-214).
+//     Linear texture A times base-color factor A supplies coverage; MASK
+//     applies cutoff and BLEND samples a Bernoulli event before shading.
+//   - KHR_draco_mesh_compression / EXT_meshopt_compression -- rejected
+//     by the Phase 1 mesh loader; the importer surfaces that error.
+//   - KHR_materials_clearcoat / KHR_materials_sheen as a layer atop
+//     the PBR base -- the BRDFs exist (SheenBRDF, dielectric for
+//     clearcoat) but RISE's CompositeMaterial random-walk SPF doesn't
+//     compose well over a 3-lobe PBR base; deferred to Phase 5.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: April 30, 2026
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include "GLTFSceneImporter.h"
+#include "../Interfaces/ILog.h"
+#include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../Managers/GenericManager.h"  // g_cstFinalizeDiagSink -- specific-reason channel for a Finalize failure
+#include "../RISE_API.h"
+#include "../Polygon.h"
+#include "../Shaders/AdvancedShaderWiring.h"
+#include "../Utilities/Color/Color.h"
+#include "../Utilities/MediaPathLocator.h"
+
+#include "../../../extlib/cgltf/cgltf.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <set>
+#include <sstream>
+#include <string>
+#include <sys/stat.h>
+#include <vector>
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace
+{
+	// ---------- path utilities ----------
+
+	// Returns the directory portion of a path (without trailing separator),
+	// or "." if the path has no directory component.  Used only for
+	// resolving external image URIs in glTF JSON form against the asset
+	// directory; embedded `.glb` images go straight from buffer view to
+	// in-memory painter without any disk path lookups.
+	std::string DirOf( const std::string& path )
+	{
+		const size_t slash = path.find_last_of( "/\\" );
+		if( slash == std::string::npos ) {
+			return std::string( "." );
+		}
+		return path.substr( 0, slash );
+	}
+
+	// ---------- transform helpers (TRS or matrix to Euler XYZ degrees) ----------
+
+	// 4x4 column-major matrix multiply (cgltf convention).
+	void Mat4Mul( const cgltf_float A[16], const cgltf_float B[16], cgltf_float outM[16] )
+	{
+		for( int c = 0; c < 4; ++c ) {
+			for( int r = 0; r < 4; ++r ) {
+				cgltf_float v = 0;
+				for( int k = 0; k < 4; ++k ) {
+					v += A[ k*4 + r ] * B[ c*4 + k ];
+				}
+				outM[ c*4 + r ] = v;
+			}
+		}
+	}
+
+	void Mat4Identity( cgltf_float M[16] )
+	{
+		for( int i = 0; i < 16; ++i ) M[i] = 0;
+		M[0] = M[5] = M[10] = M[15] = 1;
+	}
+
+	// Build a column-major 4x4 from glTF TRS components.  Quaternion is
+	// (x, y, z, w) per glTF spec.
+	void Mat4FromTRS(
+		const cgltf_float t[3], const cgltf_float q[4], const cgltf_float s[3],
+		cgltf_float outM[16] )
+	{
+		const cgltf_float x = q[0], y = q[1], z = q[2], w = q[3];
+		const cgltf_float xx = x*x, yy = y*y, zz = z*z;
+		const cgltf_float xy = x*y, xz = x*z, yz = y*z;
+		const cgltf_float wx = w*x, wy = w*y, wz = w*z;
+
+		// Row-major rotation; we'll fold scale + transpose into column-major below.
+		const cgltf_float r00 = 1 - 2*(yy + zz);
+		const cgltf_float r01 = 2*(xy - wz);
+		const cgltf_float r02 = 2*(xz + wy);
+		const cgltf_float r10 = 2*(xy + wz);
+		const cgltf_float r11 = 1 - 2*(xx + zz);
+		const cgltf_float r12 = 2*(yz - wx);
+		const cgltf_float r20 = 2*(xz - wy);
+		const cgltf_float r21 = 2*(yz + wx);
+		const cgltf_float r22 = 1 - 2*(xx + yy);
+
+		// Column-major: column c, row r at outM[c*4 + r]
+		outM[0]  = r00 * s[0];	outM[4]  = r01 * s[1];	outM[8]  = r02 * s[2];	outM[12] = t[0];
+		outM[1]  = r10 * s[0];	outM[5]  = r11 * s[1];	outM[9]  = r12 * s[2];	outM[13] = t[1];
+		outM[2]  = r20 * s[0];	outM[6]  = r21 * s[1];	outM[10] = r22 * s[2];	outM[14] = t[2];
+		outM[3]  = 0;			outM[7]  = 0;			outM[11] = 0;			outM[15] = 1;
+	}
+
+	// Read a node's local transform (from explicit matrix if has_matrix,
+	// else from TRS) into a column-major matrix.
+	void NodeLocalMatrix( const cgltf_node* node, cgltf_float outM[16] )
+	{
+		if( node->has_matrix ) {
+			std::memcpy( outM, node->matrix, 16 * sizeof( cgltf_float ) );
+		} else {
+			cgltf_float t[3] = { 0, 0, 0 };
+			cgltf_float q[4] = { 0, 0, 0, 1 };
+			cgltf_float s[3] = { 1, 1, 1 };
+			if( node->has_translation ) std::memcpy( t, node->translation, sizeof(t) );
+			if( node->has_rotation )    std::memcpy( q, node->rotation,    sizeof(q) );
+			if( node->has_scale )       std::memcpy( s, node->scale,       sizeof(s) );
+			Mat4FromTRS( t, q, s, outM );
+		}
+	}
+
+	// Phase 3 retired DecomposeAffine — the importer now passes the
+	// node-world 4x4 verbatim to Job::AddObjectMatrix instead of going
+	// through Euler XYZ.  Keeping the column-major matrix all the way
+	// to the object eliminates gimbal-lock and shear-decomposition
+	// failure modes.
+
+	// ---------- embedded texture access ----------
+
+	// Resolves a glTF image to either an existing on-disk file path or
+	// an in-memory byte buffer.  The Phase 3 retirement of the
+	// `.gltf_cache/` sidecar means embedded images go straight from the
+	// `.glb` bufferView into a painter via Job::AddInMemoryPNGTexturePainter
+	// / AddInMemoryJPEGTexturePainter -- no disk round-trip.
+	//
+	// Outputs: caller picks between two paths based on which is set:
+	//   1. External URI to an existing sidecar file → outFilePath set,
+	//      outBytes/outLen unset.  Use the file-path painter API.
+	//   2. Embedded bufferView (any .glb image, plus .gltf `data:` URIs
+	//      cgltf already decoded) → outBytes/outLen set, outFilePath
+	//      empty.  Use the in-memory painter API.
+	// outExt is the file extension (.png / .jpg / .jpeg) so the caller
+	// knows which decoder to invoke; empty on failure.
+	void ResolveImageBytes(
+		const cgltf_data*    data,
+		const std::string&   glbPath,
+		size_t               imageIdx,
+		std::string&         outExt,
+		std::string&         outFilePath,
+		const unsigned char*& outBytes,
+		size_t&              outLen )
+	{
+		outExt.clear();
+		outFilePath.clear();
+		outBytes = NULL;
+		outLen = 0;
+
+		const cgltf_image& img = data->images[ imageIdx ];
+
+		// Determine extension from mime type or URI suffix.
+		if( img.mime_type ) {
+			if(      std::strcmp( img.mime_type, "image/png"  ) == 0 ) outExt = ".png";
+			else if( std::strcmp( img.mime_type, "image/jpeg" ) == 0 ) outExt = ".jpg";
+		}
+		if( outExt.empty() && img.uri ) {
+			const char* dotp = std::strrchr( img.uri, '.' );
+			if( dotp ) outExt = std::string( dotp );
+		}
+
+		// Path 1: external URI to an existing sidecar file (cheap case for
+		// .gltf JSON form).  Skip "data:" URIs — those are inline base64
+		// that cgltf has already decoded into a bufferView.
+		if( img.uri && std::strncmp( img.uri, "data:", 5 ) != 0 ) {
+			const std::string sideloaded = DirOf( glbPath ) + "/" + img.uri;
+			struct stat s;
+			if( stat( sideloaded.c_str(), &s ) == 0 ) {
+				outFilePath = sideloaded;
+				return;
+			}
+			// URI doesn't resolve; fall through to the bufferView path.
+		}
+
+		// Path 2: embedded image bytes (any .glb image, or a .gltf with a
+		// data: URI that cgltf already decoded into a bufferView).
+		if( !img.buffer_view ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"GLTFSceneImporter:: image %u has no buffer_view and no resolvable URI; "
+				"texture will be missing", (unsigned)imageIdx );
+			return;
+		}
+		const cgltf_buffer_view* bv = img.buffer_view;
+		const cgltf_buffer*      buf = bv->buffer;
+		if( !buf || !buf->data ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"GLTFSceneImporter:: image %u bufferView has no backing data; "
+				"call cgltf_load_buffers first or check if the asset references a "
+				"separate .bin that's missing on disk", (unsigned)imageIdx );
+			return;
+		}
+		outBytes = static_cast<const unsigned char*>( buf->data ) + bv->offset;
+		outLen   = static_cast<size_t>( bv->size );
+	}
+
+	// ---------- name composition ----------
+
+	std::string MaterialName ( const std::string& prefix, size_t idx ) {
+		std::ostringstream oss; oss << prefix << ".mat." << idx; return oss.str();
+	}
+	std::string ModifierName ( const std::string& prefix, size_t idx ) {
+		std::ostringstream oss; oss << prefix << ".nm." << idx; return oss.str();
+	}
+	std::string GeomName     ( const std::string& prefix, size_t mesh, size_t prim ) {
+		std::ostringstream oss; oss << prefix << ".geom.m" << mesh << ".p" << prim; return oss.str();
+	}
+	std::string ObjectName   ( const std::string& prefix, size_t nodeIdx, size_t prim ) {
+		std::ostringstream oss; oss << prefix << ".obj.n" << nodeIdx << ".p" << prim; return oss.str();
+	}
+	// LightName is keyed on the GLTF NODE index (not the light-DEFINITION
+	// index in `data->lights`), because KHR_lights_punctual is shared by
+	// reference: a single light definition can be instanced across many
+	// nodes (e.g. pkg_d_10k_candles points 10 000 candle nodes at one
+	// shared point-light definition).  Keying by the definition index
+	// would collide on the manager AddItem step, silently dropping every
+	// light past the first instance.  Keying on the unique nodeIdx
+	// preserves all per-instance placements.
+	std::string LightName    ( const std::string& prefix, size_t nodeIdx ) {
+		std::ostringstream oss; oss << prefix << ".light.n" << nodeIdx; return oss.str();
+	}
+	// Camera name builder.  Multi-camera support (2026-05-01): every glTF
+	// node carrying a camera gets registered with a stable name derived
+	// from the node's place in the glTF hierarchy.  Preference order:
+	//   1. `<prefix>.cam.<sanitizedNodeName>` when node->name is non-null,
+	//      non-empty, and contains only printable ASCII (no spaces / punct
+	//      that could break downstream chunk lookups).  Spaces in the
+	//      asset's node name are converted to '_'; the manager rejects
+	//      duplicates so collision -> fallback below.
+	//   2. `<prefix>.cam.n<nodeIdx>` — index-stable, always-unique.
+	// Sponza's nodes are named "PhysCamera001".."PhysCamera006" so users
+	// see scene-meaningful names like `sponza.cam.PhysCamera001`; for
+	// poorly-authored or unnamed cameras the index path keeps loads
+	// working without surprises.
+	std::string CameraNameFromNode( const std::string& prefix, const cgltf_node* node, size_t nodeIdx )
+	{
+		auto isSafeChar = []( char c ) -> bool {
+			return ( c >= '0' && c <= '9' )
+			    || ( c >= 'A' && c <= 'Z' )
+			    || ( c >= 'a' && c <= 'z' )
+			    || c == '_' || c == '-';
+		};
+		// '.' is intentionally NOT in the isSafeChar set: dots are the
+		// segment separator we use ourselves (`<prefix>.cam.<name>`), and
+		// a node name like `".hidden"` or `"foo.bar"` would either
+		// produce consecutive dots in the result (`<prefix>.cam..hidden`)
+		// or visually merge with our segment structure.  Drop user dots
+		// to keep `<prefix>.cam.<segment>` unambiguous.
+		std::string sanitized;
+		if( node && node->name && node->name[0] ) {
+			sanitized.reserve( std::strlen( node->name ) );
+			for( const char* p = node->name; *p; ++p ) {
+				if( *p == ' ' || *p == '\t' ) sanitized.push_back( '_' );
+				else if( isSafeChar( *p ) )   sanitized.push_back( *p );
+				// any other char (incl. '.') is dropped silently; if
+				// that empties the name, fall through to the index path
+			}
+			// Defensive: if sanitization produced only underscores from a
+			// whitespace-only or punctuation-only original name, treat as
+			// empty so we use the index path instead of registering a
+			// just-underscores camera name.
+			bool allUnderscore = true;
+			for( char c : sanitized ) {
+				if( c != '_' ) { allUnderscore = false; break; }
+			}
+			if( allUnderscore ) {
+				sanitized.clear();
+			}
+		}
+		std::ostringstream oss;
+		if( !sanitized.empty() ) {
+			oss << prefix << ".cam." << sanitized;
+		} else {
+			oss << prefix << ".cam.n" << nodeIdx;
+		}
+		return oss.str();
+	}
+	std::string CameraNameFromIndex( const std::string& prefix, size_t nodeIdx )
+	{
+		std::ostringstream oss; oss << prefix << ".cam.n" << nodeIdx; return oss.str();
+	}
+
+	std::string MediumName   ( const std::string& prefix, size_t matIdx ) {
+		std::ostringstream oss; oss << prefix << ".medium." << matIdx; return oss.str();
+	}
+	std::string PainterName  ( const std::string& prefix, const char* role, size_t matIdx ) {
+		std::ostringstream oss; oss << prefix << ".pnt." << role << "." << matIdx; return oss.str();
+	}
+	// Painter name MUST include the role because a single image can be
+	// referenced by multiple materials in different semantic roles
+	// (e.g., asset A as baseColor and asset B as normal map for the same
+	// underlying PNG, which need different colour spaces).  Without the
+	// role suffix `pPntManager->AddItem` rejects the second registration
+	// and the second material silently inherits the first material's
+	// colour-space encoding.
+	std::string ImagePainterName( const std::string& prefix, const char* role, size_t imgIdx ) {
+		std::ostringstream oss; oss << prefix << ".img." << role << "." << imgIdx; return oss.str();
+	}
+
+	// ---------- texture-painter creation ----------
+
+	// Decide the right `color_space` argument for an image painter
+	// based on its semantic role: baseColor / emissive want sRGB
+	// (gamma-decoded for display); normal / metallicRoughness /
+	// occlusion want a verbatim store with no colour conversion --
+	// post Stage B colour-space migration (RISEPel == Rec709RGBPel)
+	// the verbatim-store tag is "Rec709RGB_Linear" (the historical
+	// "ROMMRGB_Linear" idiom is now a real Rec.709→ROMM matrix and
+	// would warp encoded normal vectors / packed scalar channels).
+	const char* TextureColorSpace( const char* role )
+	{
+		if( std::strcmp( role, "basecolor" ) == 0 ) return "sRGB";
+		if( std::strcmp( role, "emissive"  ) == 0 ) return "sRGB";
+		// KHR_materials_specular spec: specularColorTexture is sRGB encoded
+		// (it's a tint applied to F0, not numeric data).  specularTexture is
+		// a coverage / strength value in [0, 1] — linear.
+		if( std::strcmp( role, "specular_color" ) == 0 ) return "sRGB";
+		// KHR_materials_sheen spec: sheenColorTexture's RGB is sRGB encoded
+		// (a tint, like baseColor/specular_color above); sheenRoughnessTexture
+		// (role "sheen_roughness") is numeric data in its ALPHA channel and
+		// stays on the linear default below.
+		if( std::strcmp( role, "sheen_color" ) == 0 ) return "sRGB";
+		// normal / mr / occlusion / specular / sheen_roughness / anisotropy --
+		// verbatim store, no matrix conversion.
+		return "Rec709RGB_Linear";
+	}
+
+	// Resolve the address-wrap mode for a glTF texture into RISE's char
+	// encoding (0 = clamp, 1 = repeat, 2 = mirrored repeat).  Reads
+	// `texture->sampler->wrap_s/wrap_t` when present; falls back to
+	// glTF 2.0's default (REPEAT) when the texture references no
+	// sampler.  Per spec: "If undefined, a sampler with wrapS = wrapT =
+	// 10497 (REPEAT) is used."  Without this, RISE's accessors
+	// previously defaulted to clamp-to-edge — for tiled textures
+	// (NewSponza floor, brick / wood / plaster atlases) that produces
+	// the trademark "first row repeating" stretch where any UV > 1
+	// samples the same edge texel.
+	void ResolveTextureWrap(
+		const cgltf_texture* tex,
+		char&                outWrapS,
+		char&                outWrapT )
+	{
+		auto cgltfWrapToChar = []( cgltf_wrap_mode w ) -> char {
+			switch( w ) {
+				case cgltf_wrap_mode_clamp_to_edge:    return 0;	// eRasterWrap_ClampToEdge
+				case cgltf_wrap_mode_repeat:           return 1;	// eRasterWrap_Repeat
+				case cgltf_wrap_mode_mirrored_repeat:  return 2;	// eRasterWrap_MirroredRepeat
+				default:                               return 1;	// glTF default
+			}
+		};
+		if( tex && tex->sampler ) {
+			outWrapS = cgltfWrapToChar( tex->sampler->wrap_s );
+			outWrapT = cgltfWrapToChar( tex->sampler->wrap_t );
+		} else {
+			// glTF 2.0 default sampler: REPEAT on both axes.
+			outWrapS = 1;
+			outWrapT = 1;
+		}
+	}
+
+	// glTF ORM-packed convention: when the material's `occlusionTexture`
+	// and `metallicRoughnessTexture` slots reference the SAME image
+	// (cgltf_texture *), the asset is using the modern packing:
+	//   R = occlusion
+	//   G = roughness
+	//   B = metallic
+	// Decoding the image twice (once under role "occlusion", once under
+	// role "metallic_roughness") is wasteful — both bindings produce
+	// the same byte buffer, the same color-space ("ROMMRGB_Linear" for
+	// both linear roles), and the same wrap from the shared sampler.
+	// This helper detects the case so PreDecodeTextures and
+	// CreateMaterial can route the AO channel-extraction at the MR
+	// painter, eliding the duplicate decode.
+	//
+	// glTF spec authority: KHR_materials_specular doesn't define ORM,
+	// but the convention is universal (Blender, Substance Painter,
+	// Khronos Sample-Assets all emit it).  Detection is by texture
+	// pointer equality; a material that points at two SEPARATE images
+	// with identical bytes is NOT detected (correct — two pointers
+	// imply two encoded files, possibly different mips / encoding).
+	bool IsORMPacked( const cgltf_material& mat )
+	{
+		if( !mat.has_pbr_metallic_roughness ) return false;
+		const cgltf_texture* aoTex = mat.occlusion_texture.texture;
+		const cgltf_texture* mrTex = mat.pbr_metallic_roughness.metallic_roughness_texture.texture;
+		return aoTex != NULL && aoTex == mrTex;
+	}
+
+	// Resolve the effective role name an occlusion-binding texture
+	// painter should be registered / looked up under.  When ORM-packed
+	// (see IsORMPacked), occlusion piggybacks on the MR painter so the
+	// underlying decode happens once.  All other paths return the
+	// requested role unchanged.
+	const char* EffectiveRole( const cgltf_material& mat, const char* requestedRole )
+	{
+		if( std::strcmp( requestedRole, "occlusion" ) == 0 && IsORMPacked( mat ) ) {
+			return "metallic_roughness";
+		}
+		return requestedRole;
+	}
+
+	// glTF KHR_texture_transform + L12.D TEXCOORD_1 binding: wrap a
+	// registered texture painter with a per-binding UV affine transform
+	// (when the texture_view declares one) AND a TEXCOORD_1 selector
+	// (when the binding's texcoord field is 1).  Both wrappers are
+	// optional and stack independently — we apply the UV-set selector
+	// OUTSIDE the UV transform so the transform is computed in the
+	// selected UV space, matching how glTF specifies KHR_texture_transform
+	// (the transform applies to whichever texCoord the binding uses).
+	//
+	// Order: base painter (image) -> UV transform (if non-identity)
+	//        -> TEXCOORD_1 selector (if binding picks UV1).
+	//
+	// Wrapper names are keyed by (matIdx, role) so two materials sharing
+	// the same image but using different transforms / texcoord sets get
+	// distinct wrappers, and because glTF allows at most one binding
+	// per role per material, the name is unique within the painter
+	// manager.
+	std::string WrapWithUVTransform(
+		IJob&                       job,
+		const std::string&          prefix,
+		size_t                      matIdx,
+		const char*                 role,
+		const std::string&          baseName,
+		const cgltf_texture_view&   view )
+	{
+		if( baseName.empty() ) {
+			return baseName;
+		}
+
+		std::string current = baseName;
+
+		// KHR_texture_transform: wrap when the binding declares a
+		// non-identity affine.  Identity transforms collapse to a
+		// passthrough — skip the wrapper to save a per-sample branch.
+		if( view.has_transform ) {
+			const cgltf_texture_transform& t = view.transform;
+			const bool identity =
+				std::fabs( (double)t.offset[0] )         < 1e-9 &&
+				std::fabs( (double)t.offset[1] )         < 1e-9 &&
+				std::fabs( (double)t.rotation )          < 1e-9 &&
+				std::fabs( (double)t.scale[0] - 1.0 )    < 1e-9 &&
+				std::fabs( (double)t.scale[1] - 1.0 )    < 1e-9;
+			if( !identity ) {
+				std::ostringstream oss;
+				oss << prefix << ".uvxform." << role << "." << matIdx;
+				const std::string wrapName = oss.str();
+				const bool ok = job.AddUVTransformPainter(
+					wrapName.c_str(), current.c_str(),
+					(double)t.offset[0], (double)t.offset[1],
+					(double)t.rotation,
+					(double)t.scale[0], (double)t.scale[1] );
+				if( ok ) {
+					current = wrapName;
+				} else {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: failed to wrap painter `%s` with UV transform; "
+						"sampling will use the un-transformed UVs", current.c_str() );
+				}
+			}
+		}
+
+		// L12.D — TEXCOORD_1 selector.  Resolve which UV set this binding
+		// picks: textureInfo.texCoord is the default, but
+		// KHR_texture_transform.texCoord (if set) overrides it.  Only
+		// 0 and 1 are common in practice; we honour 1 explicitly and
+		// log other values (which we don't support).  Geometry side
+		// mirrors ptCoord into ptCoord1 when the asset has no UV1, so
+		// the wrapper is safe even on TEXCOORD_1-less meshes (samples
+		// degrade to UV0).
+		const int boundTexcoord = view.has_transform && view.transform.has_texcoord
+			? (int)view.transform.texcoord
+			: (int)view.texcoord;
+		if( boundTexcoord == 1 ) {
+			std::ostringstream oss;
+			oss << prefix << ".uv1." << role << "." << matIdx;
+			const std::string wrapName = oss.str();
+			const bool ok = job.AddTexCoord1Painter( wrapName.c_str(), current.c_str() );
+			if( ok ) {
+				current = wrapName;
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: failed to wrap painter `%s` with TEXCOORD_1 selector; "
+					"sampling will use TEXCOORD_0 instead", current.c_str() );
+			}
+		} else if( boundTexcoord != 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material[%zu] role `%s` declares texCoord=%d; "
+				"only TEXCOORD_0 and TEXCOORD_1 are supported, sampling will use "
+				"TEXCOORD_0 instead", matIdx, role, boundTexcoord );
+		}
+
+		return current;
+	}
+
+	// Create the texture painter (png_painter or jpg_painter) for the
+	// given role / texture index.  Returns the registered painter name
+	// on success; empty string on failure (caller can swap in a
+	// uniformcolor fallback).
+	//
+	// `preRegistered` (added 2026-05-01 alongside parallel-decode batch):
+	// a set of painter names PreDecodeTextures already registered.  When
+	// non-null and contains the computed painterName, the function
+	// fast-paths back the name without doing a redundant per-call decode
+	// + AddItem.  When null or miss, falls through to the original
+	// per-call path (preserves single-primitive `gltfmesh_geometry` chunk
+	// behaviour and acts as a safety net if the pre-decode pass missed).
+	std::string CreateTexturePainter(
+		IJob&               job,
+		const std::string&  prefix,
+		const cgltf_data*   data,
+		const std::string&  glbPath,
+		const cgltf_texture* tex,
+		const char*         role,
+		const std::set<std::string>* preRegistered = NULL,
+		bool                lowmemTextures = false )	// matches the slow-path AddXXXTexturePainter `lowmem` arg; only consulted when preRegistered is null/miss.
+	{
+		if( !tex ) {
+			return std::string();
+		}
+
+		// L12.E — KHR_texture_basisu detection.  cgltf populates
+		// `tex->has_basisu` and `tex->basisu_image` when the asset
+		// declares the extension.  Per the glTF spec, the texture's
+		// primary `source` (PNG/JPEG) MAY be omitted when a Basis-
+		// encoded `KHR_texture_basisu.source` is supplied — clients
+		// without KTX2 / Basis support are expected to fall back to
+		// `source` only if it is present.  RISE doesn't ship a Basis
+		// Universal decoder yet (extlib submodule + transcoder is a
+		// separate landing); detect here so we either fall back
+		// gracefully to the PNG/JPEG `source` (with a warning) or
+		// return empty (rendered as the material's uniform fallback)
+		// when the asset is KTX2-only.
+		if( tex->has_basisu ) {
+			if( tex->image ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: texture role `%s` declares KHR_texture_basisu "
+					"(KTX2 / Basis Universal); RISE does not yet decode KTX2.  Falling "
+					"back to the texture's primary PNG/JPEG `source`.", role );
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: texture role `%s` is KTX2-ONLY (no PNG/JPEG "
+					"fallback) and RISE does not yet decode KTX2.  This binding will "
+					"render as the material's uniform-colour fallback.", role );
+				return std::string();
+			}
+		}
+
+		if( !tex->image ) {
+			return std::string();
+		}
+		const size_t imgIdx = (size_t)( tex->image - data->images );
+
+		// Fast path: PreDecodeTextures already decoded + registered this
+		// painter.  Skip the redundant per-call decode.
+		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
+		if( preRegistered && preRegistered->find( painterName ) != preRegistered->end() ) {
+			return painterName;
+		}
+
+		std::string ext, filePath;
+		const unsigned char* bytes = NULL;
+		size_t len = 0;
+		ResolveImageBytes( data, glbPath, imgIdx, ext, filePath, bytes, len );
+
+		if( filePath.empty() && bytes == NULL ) {
+			return std::string();	// ResolveImageBytes already logged the cause
+		}
+
+		const char* colorSpace = TextureColorSpace( role );
+
+		const double scale[3] = { 1.0, 1.0, 1.0 };
+		const double shift[3] = { 0.0, 0.0, 0.0 };
+
+		// `color_space` arg to the painter APIs is a char selector:
+		// 0=Rec709 linear, 1=sRGB, 2=ROMM linear, 3=ProPhoto.
+		char cs = 1;	// sRGB default
+		if(      std::strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) cs = 0;
+		else if( std::strcmp( colorSpace, "sRGB"             ) == 0 ) cs = 1;
+		else if( std::strcmp( colorSpace, "ROMMRGB_Linear"   ) == 0 ) cs = 2;
+		else if( std::strcmp( colorSpace, "ProPhotoRGB"      ) == 0 ) cs = 3;
+
+		// `kLowMem` mirrors the chunk-controlled lowmemTextures option that
+		// PreDecodeTextures threads through.  When true, the painter defers
+		// color-space convert to per-sample (saves load time + texture RAM
+		// at the cost of ~25% per-sample render).  Default-false at the
+		// chunk level; Sponza-class scenes flip it on for iteration speed.
+		const bool kLowMem = lowmemTextures;
+
+		// Address-wrap modes.  glTF default is REPEAT (per spec); this
+		// matches the path PreDecodeTextures uses, so a slow-path miss
+		// produces an accessor with the same wrap behaviour as the
+		// fast-path hit.
+		char wrapS = 1, wrapT = 1;
+		ResolveTextureWrap( tex, wrapS, wrapT );
+
+		bool ok = false;
+		// Landing 2: opt OUT of mipmap for normal-role textures
+		// (vector quantities — box-filter prefiltering corrupts them).
+		// The Job layer composes mipmap with kLowMem to route lowmem
+		// non-normal textures through footprint supersampling instead
+		// of building a memory-blowing pyramid.
+		const bool mipmap = ( std::strcmp( role, "normal" ) != 0 );
+
+		// Landing 3: spectral-uplift role.  glTF emissive textures
+		// often pair with KHR_materials_emissive_strength scalar > 1,
+		// pushing per-texel radiance above the [0, 1] reflectance
+		// gamut.  Using Albedo uplift on those clamps to 1.0 inside
+		// the LUT path (RGBToSpectrumTable.cpp:218); Illuminant, like
+		// Unbounded, normalizes the sigmoid by max(R,G,B) and keeps
+		// the scale, so HDR emissive survives either way.
+		//
+		// Stage C slice 2: emissive is Illuminant, not Unbounded.  It is
+		// a RADIANCE SOURCE, so it carries the reference illuminant's
+		// shape -- an authored-white emissive texel radiates D65 and
+		// resolves through the film back to white instead of to the
+		// flat-spectrum (1.20, 0.95, 0.91).  All other roles (baseColor,
+		// MR, normal, AO, sheen_color, transmission_color, etc.) are
+		// bounded reflectances and stay on the Albedo path.
+		const SpectrumKind sk = ( std::strcmp( role, "emissive" ) == 0 )
+			? eSpectrumKind_Illuminant
+			: eSpectrumKind_Albedo;
+		if( !filePath.empty() ) {
+			// On-disk sidecar (the .gltf JSON form with external image files).
+			if( ext == ".png" ) {
+				ok = job.AddPNGTexturePainter(
+					painterName.c_str(), filePath.c_str(),
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT, mipmap, sk );
+			} else if( ext == ".jpg" || ext == ".jpeg" ) {
+				ok = job.AddJPEGTexturePainter(
+					painterName.c_str(), filePath.c_str(),
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT, mipmap, sk );
+			}
+		} else {
+			// Embedded bytes (any .glb image; .gltf `data:` URIs cgltf already
+			// decoded into a bufferView).  No disk round-trip.
+			if( ext == ".png" ) {
+				ok = job.AddInMemoryPNGTexturePainter(
+					painterName.c_str(), bytes, len,
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT, mipmap, sk );
+			} else if( ext == ".jpg" || ext == ".jpeg" ) {
+				ok = job.AddInMemoryJPEGTexturePainter(
+					painterName.c_str(), bytes, len,
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT, mipmap, sk );
+			}
+		}
+
+		if( !ok ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"GLTFSceneImporter:: failed to register painter `%s` (ext=`%s`); "
+				"only PNG and JPEG are wired up", painterName.c_str(), ext.c_str() );
+			return std::string();
+		}
+		return painterName;
+	}
+
+	// ---------- material creation ----------
+
+	// Builds a pbr_metallic_roughness_material from a glTF material.
+	// Auto-creates per-role painters; falls back to uniformcolor when a
+	// texture slot is empty (uses the glTF *Factor field).  Returns true
+	// on success; on failure logs an error and the caller binds the
+	// "none" material to the object (which renders as the default).
+	bool CreateMaterial(
+		IJob&               job,
+		const std::string&  prefix,
+		const cgltf_data*   data,
+		const std::string&  glbPath,
+		size_t              matIdx,
+		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
+		bool                lowmemTextures,		// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
+		bool                respectBakedOcclusion,	// Landing 13: honour `occlusionTexture` if present
+		double              emissiveIntensityScale,	// User-facing brightness knob applied AFTER KHR_materials_emissive_strength; default 1.0 from opts (= no change).  Values <= 0 kill all emissive.
+		const double        emissiveTint[3] )		// User-facing chromatic tint multiplied componentwise into emissiveFactor; default (1,1,1).  Use e.g. (1, 0.5, 0.1) to warm-tint a yellow flame asset.
+
+	{
+		const cgltf_material& mat = data->materials[ matIdx ];
+
+		// glTF baseColor = baseColorTexture x baseColorFactor (componentwise),
+		// per Khronos spec §3.9.2.  Earlier revisions picked one or the other,
+		// silently dropping the factor whenever a texture was present -- which
+		// breaks any asset that tints a grayscale texture with a coloured
+		// factor or gates alpha with factor.a.  This now always multiplies.
+		//
+		// The multiply uses BlendPainter's formula `a*c + b*(1-c)` with
+		// b = zero, c = factorRGB, giving `texture * factorRGB`.
+		//
+		// The alpha component of the factor is captured separately into
+		// `factorAlpha` and folded into the alphaMode = MASK cutoff below
+		// (the painter system doesn't expose a painter's A channel, so per-
+		// pixel `texture.a * factor.a` can't be assembled here directly).
+		std::string baseColorPainter;
+		std::string baseColorTexturePainter;	// raw baseColorTexture (or its UV-transform wrapper),
+		                                        // before factor multiply.  BuildAlphaPainter reads
+		                                        // CHAN_A from THIS, not from the composed product
+		                                        // (CHAN_A on a BlendPainter returns the default 1.0
+		                                        // — the composition chain doesn't propagate texture
+		                                        // alpha).  The UV-transform wrapper forwards
+		                                        // GetAlpha() through to the inner texture painter,
+		                                        // so capturing the wrapper is safe and gives the
+		                                        // alpha test the same UV transform as the colour
+		                                        // sample (KHR_texture_transform on baseColorTexture
+		                                        // applies to alpha cutout too).
+		bool baseColorIsTexture = false;	// false => uniform painter (alpha mask becomes pass/fail)
+		double factorAlpha = 1.0;
+		if( mat.has_pbr_metallic_roughness ) {
+			const cgltf_pbr_metallic_roughness& pmr = mat.pbr_metallic_roughness;
+			factorAlpha = (double)pmr.base_color_factor[3];
+
+			std::string textureName;
+			if( pmr.base_color_texture.texture ) {
+				textureName = CreateTexturePainter(
+					job, prefix, data, glbPath, pmr.base_color_texture.texture, "basecolor",
+					preRegisteredTextures, lowmemTextures );
+				textureName = WrapWithUVTransform( job, prefix, matIdx, "basecolor",
+					textureName, pmr.base_color_texture );
+			}
+			baseColorTexturePainter = textureName;	// captured for BuildAlphaPainter
+
+			const std::string nFactorRGB = PainterName( prefix, "basecolor_factor", matIdx );
+			const double rgbFactor[3] = {
+				(double)pmr.base_color_factor[0],
+				(double)pmr.base_color_factor[1],
+				(double)pmr.base_color_factor[2] };
+			job.AddUniformColorPainter( nFactorRGB.c_str(), rgbFactor, "Rec709RGB_Linear" );
+
+			if( !textureName.empty() ) {
+				// Multiply: blend(texture, zero, factorRGB) = texture * factorRGB
+				const std::string nZero   = PainterName( prefix, "basecolor_zero", matIdx );
+				const double zero[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nZero.c_str(), zero, "Rec709RGB_Linear" );
+
+				const std::string nProduct = PainterName( prefix, "basecolor", matIdx );
+				job.AddBlendPainter( nProduct.c_str(),
+					textureName.c_str(),
+					nZero.c_str(),
+					nFactorRGB.c_str() );
+				baseColorPainter   = nProduct;
+				baseColorIsTexture = true;
+			} else {
+				// No texture -- the factor IS the baseColor.
+				baseColorPainter = nFactorRGB;
+			}
+		} else {
+			// No PBR -- fallback to a mid-gray.
+			const std::string n = PainterName( prefix, "basecolor", matIdx );
+			const double pel[3] = { 0.5, 0.5, 0.5 };
+			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+			baseColorPainter = n;
+		}
+
+		// Landing 13 — KHR_materials baked occlusion.  Multiply the
+		// baseColor (diffuse path) by lerp(1, ao_R, occlusionStrength)
+		// when the material declares an occlusionTexture and the
+		// importer was asked to respect it.  Phase-1 implementation
+		// applies AO uniformly across all bounces (direct + indirect),
+		// which double-counts the path tracer's own occlusion to a
+		// small degree but recovers the high-frequency AO an artist
+		// baked at frequencies the geometry can't reach (column
+		// flutes, brick mortar, fabric folds).  Skipping AO entirely
+		// (respectBakedOcclusion = FALSE) is the strict-PB path.
+		//
+		// Painter graph (built only when AO is present and respected):
+		//   ao_full     = sample(occlusion_texture)              // RGB
+		//   ao_r        = ChannelPainter(ao_full, R, scale=1, bias=0)  // gray RGB(R, R, R)
+		//   strength    = uniformcolor(occlusionStrength)        // gray
+		//   ao_modulator = blend(ao_r, white, strength)          // = lerp(white, ao_r, strength)
+		//   final_base  = blend(baseColorPainter, zero, ao_modulator)  // = base × modulator
+		//
+		// final_base replaces baseColorPainter for downstream PBR-MR.
+		if( respectBakedOcclusion && mat.occlusion_texture.texture ) {
+			// Landing 12.B: ORM-packed asset reuse — when the material's
+			// occlusion and MR slots reference the same image, sample
+			// the shared MR-role painter instead of decoding a second
+			// time.  WrapWithUVTransform still uses role "occlusion"
+			// for the wrapper name so a binding-specific transform on
+			// occlusion (rare but spec-permitted) doesn't collide with
+			// MR's wrapper.
+			const char* aoSourceRole = EffectiveRole( mat, "occlusion" );
+			std::string aoTexName = CreateTexturePainter(
+				job, prefix, data, glbPath, mat.occlusion_texture.texture, aoSourceRole,
+				preRegisteredTextures, lowmemTextures );
+			aoTexName = WrapWithUVTransform( job, prefix, matIdx, "occlusion",
+				aoTexName, mat.occlusion_texture );
+			if( !aoTexName.empty() ) {
+				// AO R-channel painter.
+				const std::string nAoR = PainterName( prefix, "ao_r", matIdx );
+				job.AddChannelPainter( nAoR.c_str(), aoTexName.c_str(),
+					/*channel*/ 0,	// CHAN_R
+					/*scale*/ 1.0,
+					/*bias*/  0.0 );
+
+				// Strength painter (occlusion_texture.scale per glTF spec;
+				// default 1.0).
+				const std::string nStrength = PainterName( prefix, "ao_strength", matIdx );
+				const double s = (double)mat.occlusion_texture.scale;
+				const double sPel[3] = { s, s, s };
+				job.AddUniformColorPainter( nStrength.c_str(), sPel, "Rec709RGB_Linear" );
+
+				// Constants.
+				const std::string nWhiteAO = PainterName( prefix, "ao_white", matIdx );
+				const std::string nZeroAO  = PainterName( prefix, "ao_zero", matIdx );
+				const double white[3] = { 1.0, 1.0, 1.0 };
+				const double zeroP[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nWhiteAO.c_str(), white,  "Rec709RGB_Linear" );
+				job.AddUniformColorPainter( nZeroAO.c_str(),  zeroP,  "Rec709RGB_Linear" );
+
+				// modulator = blend(ao_r, white, strength) = ao_r * strength + white * (1 - strength).
+				// At strength=0: modulator = white (no AO effect).
+				// At strength=1: modulator = ao_r (full AO).
+				const std::string nModulator = PainterName( prefix, "ao_modulator", matIdx );
+				job.AddBlendPainter( nModulator.c_str(),
+					nAoR.c_str(),
+					nWhiteAO.c_str(),
+					nStrength.c_str() );
+
+				// final_base = blend(base, zero, modulator) = base * modulator.
+				const std::string nFinalBase = PainterName( prefix, "basecolor_ao", matIdx );
+				job.AddBlendPainter( nFinalBase.c_str(),
+					baseColorPainter.c_str(),
+					nZeroAO.c_str(),
+					nModulator.c_str() );
+
+				baseColorPainter = nFinalBase;
+			}
+		}
+
+		// Metallic / roughness -- channel-extract from the MR texture if
+		// present, else use the glTF factor as a uniformcolor.
+		std::string metallicPainter;
+		std::string roughnessPainter;
+		if( mat.has_pbr_metallic_roughness ) {
+			const cgltf_pbr_metallic_roughness& pmr = mat.pbr_metallic_roughness;
+			if( pmr.metallic_roughness_texture.texture ) {
+				std::string mrTex = CreateTexturePainter(
+					job, prefix, data, glbPath, pmr.metallic_roughness_texture.texture,
+					"metallic_roughness",
+					preRegisteredTextures, lowmemTextures );
+				mrTex = WrapWithUVTransform( job, prefix, matIdx, "metallic_roughness",
+					mrTex, pmr.metallic_roughness_texture );
+				if( !mrTex.empty() ) {
+					// glTF MR convention: G = roughness, B = metallic.
+					const std::string mName = PainterName( prefix, "metallic", matIdx );
+					const std::string rName = PainterName( prefix, "roughness", matIdx );
+					job.AddChannelPainter( mName.c_str(), mrTex.c_str(), 2 /*B*/, pmr.metallic_factor,  0.0 );
+					job.AddChannelPainter( rName.c_str(), mrTex.c_str(), 1 /*G*/, pmr.roughness_factor, 0.0 );
+					metallicPainter  = mName;
+					roughnessPainter = rName;
+				}
+			}
+			if( metallicPainter.empty() ) {
+				const std::string n = PainterName( prefix, "metallic", matIdx );
+				const double v = pmr.metallic_factor;
+				const double pel[3] = { v, v, v };
+				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+				metallicPainter = n;
+			}
+			if( roughnessPainter.empty() ) {
+				const std::string n = PainterName( prefix, "roughness", matIdx );
+				const double v = pmr.roughness_factor;
+				const double pel[3] = { v, v, v };
+				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+				roughnessPainter = n;
+			}
+		} else {
+			// No PBR section -- defaults that look like a plastic.
+			const std::string nM = PainterName( prefix, "metallic",  matIdx );
+			const std::string nR = PainterName( prefix, "roughness", matIdx );
+			const double zero[3] = { 0.0, 0.0, 0.0 };
+			const double mid[3]  = { 0.5, 0.5, 0.5 };
+			job.AddUniformColorPainter( nM.c_str(), zero, "Rec709RGB_Linear" );
+			job.AddUniformColorPainter( nR.c_str(), mid,  "Rec709RGB_Linear" );
+			metallicPainter  = nM;
+			roughnessPainter = nR;
+		}
+
+		// Emissive -- glTF spec §3.9.4: emissive = emissiveTexture x
+		// emissiveFactor x emissiveStrength.  Earlier revisions treated
+		// the slot as either-or (texture iff present, else factor) which
+		// silently dropped non-white emissiveFactor on textured assets.
+		// The strength term is folded in below as `emissiveScale`; the
+		// factor x texture multiply is wired here.
+		std::string emissivePainter = "none";
+		std::string emissiveTextureName;
+		if( mat.emissive_texture.texture ) {
+			emissiveTextureName = CreateTexturePainter(
+				job, prefix, data, glbPath, mat.emissive_texture.texture, "emissive",
+				preRegisteredTextures, lowmemTextures );
+			emissiveTextureName = WrapWithUVTransform( job, prefix, matIdx, "emissive",
+				emissiveTextureName, mat.emissive_texture );
+		}
+		// `emissiveTint` (default (1,1,1) from opts) is the user-facing
+		// per-channel multiplier on top of the asset's authored
+		// emissiveFactor — used to recolour emissives uniformly across an
+		// import without editing the asset (e.g. tinting a yellow `(1,1,0)`
+		// flame to warm orange via `(1, 0.5, 0.1)`).  Folded in here once
+		// at material build time; no per-sample cost.  Note the tint can
+		// only attenuate channels the authored factor already has signal
+		// in (an authored 0.0 channel stays 0.0 — multiplying by a non-zero
+		// tint can't add a colour the asset never authored).
+		const cgltf_float ef[3] = {
+			mat.emissive_factor[0] * (cgltf_float)emissiveTint[0],
+			mat.emissive_factor[1] * (cgltf_float)emissiveTint[1],
+			mat.emissive_factor[2] * (cgltf_float)emissiveTint[2] };
+		const bool factorIsZero = (ef[0] <= 0 && ef[1] <= 0 && ef[2] <= 0);
+		const bool factorIsWhite = (ef[0] >= 1.0 && ef[1] >= 1.0 && ef[2] >= 1.0);
+
+		if( !emissiveTextureName.empty() ) {
+			if( factorIsZero ) {
+				// emissive = texture * 0 = no emission.  Spec-correct.
+				emissivePainter = "none";
+			} else if( factorIsWhite ) {
+				// emissive = texture * 1 = texture.  Skip the multiply.
+				emissivePainter = emissiveTextureName;
+			} else {
+				// emissive = texture * factorRGB via BlendPainter(t, 0, f).
+				const std::string nFactor = PainterName( prefix, "emissive_factor", matIdx );
+				const double pel[3] = { ef[0], ef[1], ef[2] };
+				job.AddUniformColorPainter( nFactor.c_str(), pel, "Rec709RGB_Linear" );
+
+				const std::string nZero = PainterName( prefix, "emissive_zero", matIdx );
+				const double zero[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nZero.c_str(), zero, "Rec709RGB_Linear" );
+
+				const std::string nProduct = PainterName( prefix, "emissive", matIdx );
+				job.AddBlendPainter( nProduct.c_str(),
+					emissiveTextureName.c_str(),
+					nZero.c_str(),
+					nFactor.c_str() );
+				emissivePainter = nProduct;
+			}
+		} else if( !factorIsZero ) {
+			// No texture; the factor itself is the emissive painter.
+			const std::string n = PainterName( prefix, "emissive", matIdx );
+			const double pel[3] = { ef[0], ef[1], ef[2] };
+			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+			emissivePainter = n;
+		}
+
+		// KHR_materials_emissive_strength: scalar multiplier on emissive
+		// radiance, used by glTF authoring tools to push emission past the
+		// [0,1] sRGB-encoded texture range.  Default 1.0 when extension is
+		// absent, so the unconditional read is safe.
+		//
+		// `opts.emissiveIntensityScale` (default 1.0) is applied on top of
+		// the asset's authored value as a uniform user-facing brightness
+		// knob (`emissive_intensity_scale` chunk param) — unchanged at the
+		// default, multiplies all materials' emissive uniformly when set
+		// > 1, kills all emissive when set <= 0.  Folded in here once at
+		// import time so the per-sample render cost is unchanged.
+		const double emissiveBaseScale = mat.has_emissive_strength
+			? (double)mat.emissive_strength.emissive_strength
+			: 1.0;
+		const double emissiveScale = ( emissiveIntensityScale > 0.0 )
+			? emissiveBaseScale * emissiveIntensityScale
+			: 0.0;
+
+		const std::string matName = MaterialName( prefix, matIdx );
+
+		// KHR_materials_clearcoat and KHR_materials_sheen are detected,
+		// but Phase 4 does not yet attempt to layer them on top of the
+		// PBR / dielectric / unlit base.  Reason: CompositeMaterial's
+		// random walk is currently designed around dielectric-on-Lambertian
+		// (the working scenes/Tests/Legacy/composite_material.RISEscene
+		// pattern) and does not handle a GGX or sheen top over a complex
+		// 3-lobe PBR base — the resulting walk drops most diffuse
+		// contributions, producing nearly-black surfaces.  Phase 5 will
+		// add a proper additive layered material that works with PBR.  For
+		// Phase 4 we register the base material under `matName` directly
+		// and warn once per material so users can author the layer
+		// manually if needed (the chunk-level sheen_material and
+		// fresnel_mode = schlick_f0 GGX top are both fully working
+		// stand-alone).
+		const bool hasClearcoat = mat.has_clearcoat;
+		const bool hasSheen     = mat.has_sheen;
+		const std::string baseMatName = matName;
+
+		// P3-8 fix (2026-09-01 review round): `clearcoat_factor == 0` (the
+		// glTF default when the extension is present but the factor is
+		// unspecified) means the layer contributes NOTHING -- `coat_weight
+		// 0` is `coated_material`'s own "no coat" case (its descriptor's
+		// own comment).  Treat that as "no clearcoat" at registration-name-
+		// and-wrap-cost time too: importing the base straight under
+		// `matName` (skipping the `coated_material` wrapper and its
+		// `__cc_base` indirection entirely) is strictly cheaper and
+		// produces the identical rendered result.
+		const bool clearcoatContributes = hasClearcoat && (double)mat.clearcoat.clearcoat_factor > 0.0;
+
+		// Mirrors clearcoatContributes above: glTF's own default
+		// `sheenColorFactor` is [0,0,0] (extension present, author didn't
+		// set a colour) -- a fully black sheen tint contributes nothing
+		// through `fabric_material`'s additive Charlie lobe regardless of
+		// `sheenRoughnessFactor`, so treat it as "no sheen" the same way a
+		// zero clearcoat factor is treated as "no clearcoat": skip the
+		// `fabric_material` wrapper and its naming/registration cost.  A
+		// sheenColorTexture is also treated as "contributes" even when the
+		// scalar factor happens to be zero-initialized alongside it --
+		// unlike clearcoat there is no separate coverage scalar here, the
+		// colour IS the coverage, so a texture always means "author wants
+		// per-pixel sheen".
+		const bool sheenContributes = hasSheen && (
+			mat.sheen.sheen_color_texture.texture != nullptr ||
+			(double)mat.sheen.sheen_color_factor[0] > 0.0 ||
+			(double)mat.sheen.sheen_color_factor[1] > 0.0 ||
+			(double)mat.sheen.sheen_color_factor[2] > 0.0 );
+
+		// KHR_materials_unlit: skip the BSDF entirely and treat baseColor
+		// as Lambertian radiant exitance.  RISE has no "BSDF-less" material
+		// class; the closest fit is LambertianLuminaireMaterial wrapping a
+		// zero-reflectance Lambertian (so the BSDF returns 0 and the
+		// emitter contributes baseColor / π · scale on hit).  Using
+		// scale = π gives `pixel ≈ baseColor` for a viewer-facing surface,
+		// which matches glTF unlit semantics: rendered colour equals
+		// baseColor regardless of incident light.
+		//
+		// KHR_materials_transmission (+ optional KHR_materials_volume +
+		// KHR_materials_ior): build a dielectric_material instead of the
+		// PBR path, with the IOR coming from the ior extension (default
+		// 1.5).  The volume extension's attenuation_color +
+		// attenuation_distance produce a HomogeneousMedium with Beer-
+		// Lambert absorption, attached to the imported objects via
+		// SetObjectInteriorMedium during the scene walk.
+		bool ok = false;
+		if( mat.unlit ) {
+			const std::string nZero = PainterName( prefix, "unlit_zero", matIdx );
+			const double zero[3] = { 0.0, 0.0, 0.0 };
+			job.AddUniformColorPainter( nZero.c_str(), zero, "Rec709RGB_Linear" );
+
+			const std::string nNullLamb = PainterName( prefix, "unlit_null_lamb", matIdx );
+			job.AddLambertianMaterial( nNullLamb.c_str(), nZero.c_str() );
+
+			ok = job.AddLambertianLuminaireMaterial(
+				baseMatName.c_str(),
+				baseColorPainter.c_str(),
+				nNullLamb.c_str(),
+				/*scale*/ 3.141592653589793 );
+		} else if( mat.has_transmission ) {
+			// Tau (transmittance painter): white = full pass-through.
+			// glTF's transmission_factor scales attenuation; bake it into
+			// a uniform here.  baseColor is NOT folded into tau because
+			// for thick-walled glass the absorption colour comes from the
+			// volume extension (handled below); for thin-walled the
+			// asset's tint is approximated as the dielectric scattering
+			// inside the volume's σ_a (set to a small value when
+			// attenuation_color is non-white).
+			//
+			// Phase 4 implements the SCALAR subset of KHR_materials_
+			// transmission only.  `transmission.transmission_texture` is
+			// NOT sampled — assets that vary transmissivity spatially
+			// (e.g. a glass panel with masked frosted regions) will
+			// import as uniformly transmissive.  Deferred to Phase 5
+			// because plumbing a per-pixel τ painter into
+			// DielectricMaterial requires either a new τ-painter slot
+			// in the material or a per-object material-mix wrapper;
+			// neither is wired today.  Warn so authors aren't surprised.
+			if( mat.transmission.transmission_texture.texture ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: material `%s` declares a transmissionTexture; "
+					"Phase 4 honours only the scalar transmission_factor (%.3f). "
+					"The texture is ignored.  See docs/GLTF_IMPORT.md §15 (Phase 5).",
+					matName.c_str(), (double)mat.transmission.transmission_factor );
+			}
+			const double trans = (double)mat.transmission.transmission_factor;
+			const double iorValue = mat.has_ior
+				? (double)mat.ior.ior
+				: 1.5;
+
+			// `tau/ior/scattering` are physical scalars carried by
+			// `IScalarPainter` (see docs/ISCALARPAINTER_REFACTOR.md).
+			// `Job::AddDielectricMaterial` resolves inline numeric
+			// literals into `UniformScalarPainter`, so we can skip
+			// the painter-manager round-trip entirely.
+			char tauStr[32], iorStr[32], scatStr[8];
+			snprintf( tauStr, sizeof( tauStr ), "%g", trans );
+			snprintf( iorStr, sizeof( iorStr ), "%g", iorValue );
+			snprintf( scatStr, sizeof( scatStr ), "%g", 0.0 );
+
+			ok = job.AddDielectricMaterial(
+				baseMatName.c_str(),
+				tauStr,
+				iorStr,
+				scatStr,
+				/*hg*/ false );
+
+			// KHR_materials_volume: thick-walled volumetric absorption.
+			// σ_a = -ln(attenuation_color) / attenuation_distance per channel.
+			// Clamp attenuation_color to (0, 1] to avoid log domain issues
+			// (a value of 0 in any channel would imply infinite absorption,
+			// which would render the object completely opaque in that band).
+			//
+			// glTF spec semantics on `thickness_factor`:
+			//   thickness_factor == 0 ⇒ THIN-WALLED material (the asset
+			//     is a 2D sheet; no volume traversal happens).  RISE
+			//     doesn't have a true thin-walled mode — attaching a
+			//     HomogeneousMedium would still apply absorption along
+			//     the (essentially zero-length) ray inside the sheet,
+			//     producing no visible tint.  We skip the medium
+			//     attachment in that case and warn — assets that need
+			//     thin-walled tinting should bake the colour into the
+			//     transmission BSDF τ painter directly.
+			//   thickness_factor > 0  ⇒ thick-walled (solid object;
+			//     RISE path-traces through the volume and the actual
+			//     ray length × σ_a does the absorption integral).
+			//   `thickness_texture` (per-pixel scale of thickness on
+			//     the G channel) only matters in the thin-walled path
+			//     since it modulates the Beer-Lambert thickness term;
+			//     RISE's thick-walled path uses geometric path length
+			//     directly.  Warn so authors know it's ignored.
+			if( mat.has_volume && mat.volume.attenuation_distance > 0 ) {
+				const cgltf_volume& vol = mat.volume;
+
+				if( vol.thickness_factor <= 0 ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares KHR_materials_volume "
+						"with thickness_factor = %.3f (thin-walled).  RISE applies "
+						"Beer-Lambert via path-traced ray length only; thin-walled "
+						"absorption is not currently modelled, so the colour tint "
+						"will be invisible.  Set thickness_factor > 0 to use thick-"
+						"walled absorption, or bake the tint into baseColor / τ.",
+						matName.c_str(), (double)vol.thickness_factor );
+				} else {
+					if( vol.thickness_texture.texture ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"GLTFSceneImporter:: material `%s` declares thicknessTexture; "
+							"RISE's thick-walled path uses geometric path length × σ_a "
+							"and ignores the per-pixel thickness modulation (only the "
+							"thickness_factor scalar gates thin/thick-walled mode).",
+							matName.c_str() );
+					}
+
+					const double dist = (double)vol.attenuation_distance;
+					auto SafeLog = []( double x ) -> double {
+						return std::log( std::max( 1e-6, std::min( 1.0, x ) ) );
+					};
+					const double sigma_a[3] = {
+						-SafeLog( (double)vol.attenuation_color[0] ) / dist,
+						-SafeLog( (double)vol.attenuation_color[1] ) / dist,
+						-SafeLog( (double)vol.attenuation_color[2] ) / dist
+					};
+					const double sigma_s[3] = { 0.0, 0.0, 0.0 };
+
+					const std::string medName = MediumName( prefix, matIdx );
+					job.AddHomogeneousMedium(
+						medName.c_str(),
+						sigma_a, sigma_s,
+						/*phase*/ "isotropic",
+						/*phase_g*/ 0.0 );
+					// The medium gets bound to per-primitive objects in the
+					// Walker (via SetObjectInteriorMedium) since materials are
+					// scene-wide but interior media attach to objects.
+				}
+			}
+		} else {
+			// Landing 7 — KHR_materials_specular.
+			//   F0_dielectric = 0.04 × specular_color × specular_factor
+			// Phase 1 (L7) shipped scalar factor + scalar color only.
+			// Phase 2 (L12.C) adds per-pixel via the textures:
+			//   specular_factor      ← specular_factor × specular_texture.A
+			//   specular_color       ← specular_color_factor × specular_color_texture.RGB
+			// Both wire as painter graphs (a ChannelPainter on .A for the
+			// scalar; a BlendPainter on (.RGB, ZERO, factorRGB) for the
+			// color), and AddPBRMetallicRoughnessMaterial threads the
+			// painter name straight through resolveOrSynth — no API change.
+			std::string specularFactorStr = "1.0";
+			std::string specularColorPainter = "none";
+			if( mat.has_specular ) {
+				const double sf = (double)mat.specular.specular_factor;
+				const cgltf_float* sc = mat.specular.specular_color_factor;
+				char buf[64];
+
+				// Per-pixel specular factor: blend the texture's A channel
+				// with the scalar factor.  ChannelPainter(scale=sf, bias=0)
+				// returns (sf × A, sf × A, sf × A) which the downstream
+				// BlendPainter consumes as a scalar mask.
+				if( mat.specular.specular_texture.texture ) {
+					std::string sfTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.specular.specular_texture.texture,
+						"specular", preRegisteredTextures, lowmemTextures );
+					sfTexName = WrapWithUVTransform( job, prefix, matIdx, "specular",
+						sfTexName, mat.specular.specular_texture );
+					if( !sfTexName.empty() ) {
+						const std::string nSpecF = PainterName( prefix, "spec_factor", matIdx );
+						job.AddChannelPainter( nSpecF.c_str(), sfTexName.c_str(),
+							/*chan A*/ 3, /*scale*/ sf, /*bias*/ 0.0 );
+						specularFactorStr = nSpecF;
+					} else {
+						std::snprintf( buf, sizeof(buf), "%.6f", sf );
+						specularFactorStr = buf;
+					}
+				} else {
+					std::snprintf( buf, sizeof(buf), "%.6f", sf );
+					specularFactorStr = buf;
+				}
+
+				// Per-pixel specular color: multiply texture × factor RGB.
+				// glTF spec: specular_color_texture is sRGB encoded (per
+				// TextureColorSpace), so the texture decodes to linear and
+				// the factor is already linear — straight RGB multiply.
+				if( mat.specular.specular_color_texture.texture ) {
+					std::string scTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.specular.specular_color_texture.texture,
+						"specular_color", preRegisteredTextures, lowmemTextures );
+					scTexName = WrapWithUVTransform( job, prefix, matIdx, "specular_color",
+						scTexName, mat.specular.specular_color_texture );
+					if( !scTexName.empty() ) {
+						const std::string nFactor = PainterName( prefix, "spec_color_factor", matIdx );
+						const double fpel[3] = { (double)sc[0], (double)sc[1], (double)sc[2] };
+						job.AddUniformColorPainter( nFactor.c_str(), fpel, "Rec709RGB_Linear" );
+
+						const std::string nZeroSC = PainterName( prefix, "spec_color_zero", matIdx );
+						const double zPel[3] = { 0.0, 0.0, 0.0 };
+						job.AddUniformColorPainter( nZeroSC.c_str(), zPel, "Rec709RGB_Linear" );
+
+						const std::string nProduct = PainterName( prefix, "spec_color", matIdx );
+						job.AddBlendPainter( nProduct.c_str(),
+							scTexName.c_str(), nZeroSC.c_str(), nFactor.c_str() );
+						specularColorPainter = nProduct;
+					}
+				} else if( !( sc[0] == 1.0f && sc[1] == 1.0f && sc[2] == 1.0f ) ) {
+					const std::string nSpecCol = PainterName( prefix, "specular_color", matIdx );
+					const double pel[3] = { (double)sc[0], (double)sc[1], (double)sc[2] };
+					job.AddUniformColorPainter( nSpecCol.c_str(), pel, "Rec709RGB_Linear" );
+					specularColorPainter = nSpecCol;
+				}
+			}
+
+			// Landing 8 — KHR_materials_anisotropy.
+			//   α_t = mix(α, 1.0, anisotropy²)    (lobe stretch along tangent)
+			//   tangent-frame rotation = anisotropy_rotation
+			// Phase 1 (L8) shipped scalar strength + scalar rotation.
+			// Phase 2 (L12.C) added per-pixel STRENGTH via the
+			// anisotropy_texture's B channel:
+			//   anisotropy_factor ← anisotropy_strength × anisotropy_texture.B
+			// DL-17 (2026-09-17): per-pixel ROTATION, per the
+			// KHR_materials_anisotropy spec -- the texture's R/G channels
+			// encode direction = normalize(2*RG - 1) in tangent space;
+			// rotation = atan2(dir.y, dir.x) + the scalar anisotropyRotation
+			// term.  Built from two AddPainterChannelScalarPainter reads
+			// (R and G, each remapped [0,1] -> [-1,1] via scale 2 bias -1)
+			// combined through the new Atan2ScalarPainter combinator
+			// (Job::AddAtan2ScalarPainter, DL-16/DL-17); the scalar
+			// anisotropy_rotation term is folded in as that call's
+			// `offset`.  The result is a genuine IScalarPainter name,
+			// which `Job::AddPBRMetallicRoughnessMaterial`'s
+			// `anisotropy_rotation` parameter now accepts directly (its
+			// resolution was widened to dual-pipe alongside DL-16's
+			// ggx_material.tangent_rotation_scalar -- see
+			// ResolveRotationPainterDual in Job.cpp).  No normalization by
+			// |RG| is applied before atan2 -- atan2's ratio is scale-
+			// invariant, so an unnormalized (2R-1, 2G-1) yields the exact
+			// same angle as the spec's explicitly normalized direction.
+			std::string anisoFactorStr = "0.0";
+			std::string anisoRotationStr = "0.0";
+			if( mat.has_anisotropy ) {
+				const double as = (double)mat.anisotropy.anisotropy_strength;
+				const double scalarRot = (double)mat.anisotropy.anisotropy_rotation;
+				char buf[64];
+
+				if( mat.anisotropy.anisotropy_texture.texture ) {
+					std::string aTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.anisotropy.anisotropy_texture.texture,
+						"anisotropy", preRegisteredTextures, lowmemTextures );
+					aTexName = WrapWithUVTransform( job, prefix, matIdx, "anisotropy",
+						aTexName, mat.anisotropy.anisotropy_texture );
+					if( !aTexName.empty() ) {
+						// Per-pixel strength: B channel × scalar strength.
+						const std::string nAnisoF = PainterName( prefix, "aniso_factor", matIdx );
+						job.AddChannelPainter( nAnisoF.c_str(), aTexName.c_str(),
+							/*chan B*/ 2, /*scale*/ as, /*bias*/ 0.0 );
+						anisoFactorStr = nAnisoF;
+
+						// Per-pixel rotation: dir.x <- 2R-1, dir.y <- 2G-1,
+						// rotation <- atan2(dir.y, dir.x) + scalarRot.
+						const std::string nAnisoDirX = PainterName( prefix, "aniso_dir_x", matIdx );
+						job.AddPainterChannelScalarPainter( nAnisoDirX.c_str(), aTexName.c_str(),
+							/*chan R*/ 0, /*scale*/ 2.0, /*bias*/ -1.0 );
+						const std::string nAnisoDirY = PainterName( prefix, "aniso_dir_y", matIdx );
+						job.AddPainterChannelScalarPainter( nAnisoDirY.c_str(), aTexName.c_str(),
+							/*chan G*/ 1, /*scale*/ 2.0, /*bias*/ -1.0 );
+						const std::string nAnisoRot = PainterName( prefix, "aniso_rotation", matIdx );
+						job.AddAtan2ScalarPainter( nAnisoRot.c_str(),
+							nAnisoDirY.c_str(), nAnisoDirX.c_str(), scalarRot );
+						anisoRotationStr = nAnisoRot;
+					} else {
+						std::snprintf( buf, sizeof(buf), "%.6f", as );
+						anisoFactorStr = buf;
+					}
+				} else {
+					std::snprintf( buf, sizeof(buf), "%.6f", as );
+					anisoFactorStr = buf;
+				}
+
+				if( anisoRotationStr == "0.0" ) {
+					std::snprintf( buf, sizeof(buf), "%.6f", scalarRot );
+					anisoRotationStr = buf;
+				}
+			}
+
+			// Item 9 (docs/WETNESS_COAT_DESIGN.md sec 13 Phase 2, 2026-09-01):
+			// KHR_materials_clearcoat re-targeted onto `coated_material`.
+			// When clearcoat CONTRIBUTES (P3-8: factor > 0) the PBR base
+			// registers under an INTERMEDIATE name instead of `matName`
+			// directly, so the `coated_material` wrap below can register the
+			// FINAL, downstream-visible name (`matName`) as base + coat.
+			// Every other branch (unlit / transmission / no-clearcoat PBR /
+			// clearcoat-but-factor-zero) keeps registering straight under
+			// `baseMatName` (== matName), byte-identical to before.
+			//
+			// P3-7 (collision on `__cc_base`): NOT bump-on-collision minted
+			// the way `add_wetness`'s own chunk-name minting is -- deliberately,
+			// because `matName` is already guaranteed collision-free by
+			// `Job::ImportGLTFScene`'s own name_prefix-uniqueness enforcement
+			// (a repeated `name_prefix` across `gltf_import` chunks is
+			// refused before any material is registered), so two DIFFERENT
+			// materials can never derive the same `__cc_base` name within one
+			// import.  The only way this name could collide is a hand-
+			// authored chunk in the SAME document that happens to be named
+			// exactly `<prefix>.mat.<idx>__cc_base` -- astronomically
+			// unlikely, and NOT silently accepted if it happens:
+			// `GenericManager::AddItem` refuses (not overwrites) a duplicate
+			// name, so `Job::AddPBRMetallicRoughnessMaterial` below returns
+			// false, `ok` goes false, and the existing "failed to register
+			// material" diagnostic a few lines down fires -- a documented
+			// check via the manager's own collision refusal, not a silent one.
+			//
+			// Sheen (docs/CLOTH_FABRIC_DESIGN.md §7(B)) reuses this same
+			// intermediate-name mechanism: glTF layers base -> sheen ->
+			// clearcoat.  When sheen contributes, THIS name (the raw PBR
+			// base) is always an intermediate -- the fabric (sheen) layer
+			// wraps it, and when clearcoat ALSO contributes, a
+			// `coated_material` wrap then composes on top of THAT fabric
+			// result in turn (DL-23, docs/DEBT_LEDGER.md, lifted
+			// `coated_material`'s substrate-allowlist refusal of a
+			// `FabricMaterial` -- see the "Sheen layer, via
+			// fabric_material" block's own `BuildClearcoatWrap` call) --
+			// so sheen still takes priority over clearcoat when picking
+			// THIS particular intermediate name, even though clearcoat no
+			// longer loses the layer.
+			const std::string pbrRegisterName =
+				sheenContributes     ? ( matName + "__sheen_base" ) :
+				clearcoatContributes ? ( matName + "__cc_base" )    :
+				                       baseMatName;
+
+			// P1 fix (post-DL-18-review sibling, 2026-09-17; docs/GLTF_-
+			// IMPORT.md §15 "Emission combined with sheen or clearcoat").
+			// `pbrRegisterName` is about to become the SUBSTRATE
+			// `AddFabricMaterial` / `AddCoatedMaterial` wraps whenever
+			// sheen or clearcoat contributes -- both refuse a substrate
+			// with a non-null `GetEmitter()`
+			// (`FabricMaterial::IsSupportedSubstrate` /
+			// `CoatedMaterial::IsSupportedSubstrate`).  Baking
+			// `emissivePainter` in here UNCONDITIONALLY therefore failed
+			// `AddFabricMaterial` / `AddCoatedMaterial` outright ("the
+			// substrate is a luminaire") for any material combining a
+			// non-black emissiveFactor/emissiveTexture with
+			// `KHR_materials_sheen` or `KHR_materials_clearcoat` -- and
+			// `Job::ImportGLTFScene`'s caller fails the WHOLE import on
+			// one material's registration failure.  Build the PBR base
+			// WITHOUT emission whenever it is about to be wrapped (sheen
+			// or clearcoat contributes); the two wrap blocks below
+			// re-attach the emission at the OUTER layer via
+			// `AddLambertianLuminaireMaterial` once a legal (non-
+			// emissive) wrap result exists under `matName` -- the exact
+			// same generic wrapper the `mat.unlit` branch above already
+			// uses, and physically equivalent to baking emission
+			// straight into the GGX base (`LambertianLuminaireMaterial`
+			// forwards `GetBSDF`/`GetSPF` from any `IMaterial` and builds
+			// its own `LambertianEmitter`, the identical class
+			// `GGXMaterial`'s own emissive constructor uses).
+			const bool pbrBaseIsWrapped = sheenContributes || clearcoatContributes;
+			const bool hasEmission = emissivePainter != "none";
+			const char* pbrEmissivePainter = pbrBaseIsWrapped ? "none" : emissivePainter.c_str();
+
+			ok = job.AddPBRMetallicRoughnessMaterial(
+				pbrRegisterName.c_str(),
+				baseColorPainter.c_str(),
+				metallicPainter.c_str(),
+				roughnessPainter.c_str(),
+				/*ior*/ 1.5,
+				pbrEmissivePainter,
+				emissiveScale,
+				specularFactorStr.c_str(),
+				specularColorPainter.c_str(),
+				anisoFactorStr.c_str(),
+				anisoRotationStr.c_str() );
+
+			// ----- Clearcoat layer, via coated_material -----
+			// glTF clearcoat is a thin dielectric coating over the base PBR
+			// -- exactly `coated_material`'s brief (docs/WETNESS_COAT_DESIGN.md
+			// sec 7.2), and `pbr_metallic_roughness_material` is on its
+			// substrate allowlist (CoatedMaterial::IsSupportedSubstrate).
+			// Mapping: clearcoat_factor -> coat_weight (both [0,1] coverage
+			// fractions); clearcoat IOR is FIXED at 1.5 per the glTF spec
+			// (KHR_materials_clearcoat carries no ior field of its own --
+			// unlike KHR_materials_transmission/ior above, there is nothing
+			// to read).  clearcoat_roughness_factor -> coat_roughness is
+			// SQUARED, not copied verbatim: glTF's roughness factor is a
+			// PERCEPTUAL roughness (the same convention the base
+			// `roughnessFactor` uses, squared internally by
+			// `Job::AddPBRMetallicRoughnessMaterial`'s own `nRoughSq` blend
+			// a few lines above), while `coated_material`'s `coat_roughness`
+			// is directly a GGX ALPHA with no such conversion of its own
+			// (sec 7.2's descriptor: "GGX alpha of the coat lobe") --
+			// passing the perceptual value straight through would silently
+			// render a coat about `sqrt` too rough.  `coat_thickness` /
+			// `coat_absorption` / `coat_tint` stay at their clear-film
+			// defaults: KHR_materials_clearcoat has no absorption or tint
+			// concept, only coverage and roughness.  The three optional
+			// clearcoat textures (base/roughness/normal) are NOT sampled --
+			// uniform factors only, the same scope limit Phase 4 already
+			// accepts for KHR_materials_transmission's texture above.
+			//
+			// Shared by BOTH the clearcoat-only branch below and the
+			// clearcoat-over-sheen branch inside the sheen block further
+			// down (DL-23, docs/DEBT_LEDGER.md, lifted `coated_material`'s
+			// substrate-allowlist refusal of a `FabricMaterial` --
+			// `coated_material` can now wrap the sheen's `fabric_material`
+			// result, matching glTF's own base -> sheen -> clearcoat layer
+			// order) -- one mapping, reused rather than duplicated, so
+			// the two call sites cannot drift on the factor/roughness
+			// conversion.
+			auto BuildClearcoatWrap = [&]( const std::string& coatOutputName,
+			                                const std::string& substrateName ) -> bool {
+				const cgltf_clearcoat& cc = mat.clearcoat;
+				const double ccWeight = (double)cc.clearcoat_factor;
+				const double ccRoughSq = (double)cc.clearcoat_roughness_factor *
+				                          (double)cc.clearcoat_roughness_factor;
+				char weightStr[32], roughStr[32];
+				std::snprintf( weightStr, sizeof( weightStr ), "%.6f", ccWeight );
+				std::snprintf( roughStr,  sizeof( roughStr ),  "%.6f", ccRoughSq );
+
+				const bool okLocal = job.AddCoatedMaterial(
+					coatOutputName.c_str(),
+					substrateName.c_str(),
+					weightStr,       // coat_weight <- clearcoat_factor
+					"1.5",           // coat_ior, fixed per glTF spec
+					roughStr,        // coat_roughness <- clearcoat_roughness_factor^2
+					"0.0",           // coat_thickness -- no glTF equivalent, clear film
+					"0.0",           // coat_absorption -- no glTF equivalent, clear film
+					"none" );        // coat_tint -- no glTF equivalent, untinted
+
+				if( okLocal && ( cc.clearcoat_texture.texture || cc.clearcoat_roughness_texture.texture ||
+				    cc.clearcoat_normal_texture.texture ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares a clearcoat/clearcoatRoughness/"
+						"clearcoatNormal texture; the clearcoat layer honours only the SCALAR "
+						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
+						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
+						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
+				}
+				return okLocal;
+			};
+
+			if( ok && clearcoatContributes && !sheenContributes ) {
+				// See the `pbrEmissivePainter` comment above: when
+				// emission also contributes, the coated wrap registers
+				// under an intermediate name and a
+				// `LambertianLuminaireMaterial` layer below re-attaches
+				// the emission under `matName`; otherwise it registers
+				// directly under `matName` as before.
+				const std::string coatRegisterName = hasEmission ? ( matName + "__cc_emit_base" ) : matName;
+
+				ok = BuildClearcoatWrap( coatRegisterName, pbrRegisterName );
+
+				// Re-attach the emission the PBR base deliberately did
+				// NOT bake in, now that the coated wrap is a legal
+				// (non-emissive) IMaterial to layer it over.
+				if( ok && hasEmission ) {
+					ok = job.AddLambertianLuminaireMaterial(
+						matName.c_str(),
+						emissivePainter.c_str(),
+						coatRegisterName.c_str(),
+						emissiveScale );
+					if( !ok ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: material `%s` failed to attach its emissive "
+							"layer over the clearcoat wrap", matName.c_str() );
+					}
+				}
+			}
+
+			// ----- Sheen layer, via fabric_material -----
+			// docs/CLOTH_FABRIC_DESIGN.md §7(B): `fabric_material` is
+			// `KHR_materials_sheen`'s second paying customer.  The layer is
+			// exactly a Charlie sheen lobe over an allowlisted base, and
+			// `pbr_metallic_roughness_material` resolves transitively to a
+			// `ggx_material` at scene-build time
+			// (`Job::AddPBRMetallicRoughnessMaterial`), which IS on
+			// `FabricMaterial::IsSupportedSubstrate`'s allowlist -- so
+			// `pbrRegisterName` (the PBR base registered a few lines above)
+			// is always a legal `base` here.
+			//
+			// Mapping: sheenColorFactor (+ sheenColorTexture, RGB, sRGB-
+			// decoded by the same texture-painter path every other sRGB
+			// colour texture in this importer uses) -> sheen_color;
+			// sheenRoughnessFactor (+ sheenRoughnessTexture's ALPHA channel,
+			// per the KHR_materials_sheen spec) -> sheen_roughness.  `fabric
+			// custom` (no preset seeding -- glTF carries no fabric-preset
+			// concept) and `weave_rotation 0` (glTF carries no weave-
+			// direction concept either).  `FabricBRDF` clamps
+			// sheen_roughness to its own [0.04, 1] Charlie-alpha floor at
+			// render time -- we do NOT pre-clamp the imported factor here,
+			// but DO log once when it lands below the floor so an asset's
+			// authored value and the rendered look don't quietly diverge.
+			if( ok && sheenContributes ) {
+				const cgltf_sheen& sh = mat.sheen;
+
+				std::string sheenColorPainter;
+				if( sh.sheen_color_texture.texture ) {
+					std::string scTex = CreateTexturePainter(
+						job, prefix, data, glbPath, sh.sheen_color_texture.texture,
+						"sheen_color", preRegisteredTextures, lowmemTextures );
+					scTex = WrapWithUVTransform( job, prefix, matIdx, "sheen_color",
+						scTex, sh.sheen_color_texture );
+					if( !scTex.empty() ) {
+						const bool factorIsWhite =
+							sh.sheen_color_factor[0] == 1.0f &&
+							sh.sheen_color_factor[1] == 1.0f &&
+							sh.sheen_color_factor[2] == 1.0f;
+						if( factorIsWhite ) {
+							sheenColorPainter = scTex;
+						} else {
+							const std::string nFactor = PainterName( prefix, "sheen_color_factor", matIdx );
+							const double fpel[3] = {
+								(double)sh.sheen_color_factor[0],
+								(double)sh.sheen_color_factor[1],
+								(double)sh.sheen_color_factor[2] };
+							job.AddUniformColorPainter( nFactor.c_str(), fpel, "Rec709RGB_Linear" );
+
+							const std::string nZero = PainterName( prefix, "sheen_color_zero", matIdx );
+							const double zPel[3] = { 0.0, 0.0, 0.0 };
+							job.AddUniformColorPainter( nZero.c_str(), zPel, "Rec709RGB_Linear" );
+
+							const std::string nProduct = PainterName( prefix, "sheen_color", matIdx );
+							job.AddBlendPainter( nProduct.c_str(),
+								scTex.c_str(), nZero.c_str(), nFactor.c_str() );
+							sheenColorPainter = nProduct;
+						}
+					}
+				}
+				if( sheenColorPainter.empty() ) {
+					const std::string n = PainterName( prefix, "sheen_color", matIdx );
+					const double pel[3] = {
+						(double)sh.sheen_color_factor[0],
+						(double)sh.sheen_color_factor[1],
+						(double)sh.sheen_color_factor[2] };
+					job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+					sheenColorPainter = n;
+				}
+
+				// sheen_roughness: sheenRoughnessFactor scales the
+				// sheenRoughnessTexture's ALPHA channel per the spec
+				// (`sheenRoughness = sheenRoughnessFactor * texture.a`);
+				// with no texture the factor alone is an inline scalar
+				// literal, matching AddDielectricMaterial's pattern above.
+				const double shRoughFactor = (double)sh.sheen_roughness_factor;
+				std::string sheenRoughnessScalar;
+				if( sh.sheen_roughness_texture.texture ) {
+					std::string srTex = CreateTexturePainter(
+						job, prefix, data, glbPath, sh.sheen_roughness_texture.texture,
+						"sheen_roughness", preRegisteredTextures, lowmemTextures );
+					srTex = WrapWithUVTransform( job, prefix, matIdx, "sheen_roughness",
+						srTex, sh.sheen_roughness_texture );
+					if( !srTex.empty() ) {
+						const std::string nShRough = PainterName( prefix, "sheen_rough", matIdx );
+						job.AddPainterChannelScalarPainter( nShRough.c_str(), srTex.c_str(),
+							/*chan A*/ 3, /*scale*/ shRoughFactor, /*bias*/ 0.0 );
+						sheenRoughnessScalar = nShRough;
+					}
+				}
+				if( sheenRoughnessScalar.empty() ) {
+					char buf[32];
+					std::snprintf( buf, sizeof( buf ), "%.6f", shRoughFactor );
+					sheenRoughnessScalar = buf;
+				}
+
+				if( shRoughFactor > 0.0 && shRoughFactor < 0.04 ) {
+					GlobalLog()->PrintEx( eLog_Info,
+						"GLTFSceneImporter:: material `%s` declares sheenRoughnessFactor %.4f, below "
+						"fabric_material's [0.04, 1] Charlie-alpha floor; the material clamps it at "
+						"render time, so the imported look will be slightly less rough than the raw "
+						"factor.",
+						matName.c_str(), shRoughFactor );
+				}
+
+				// The fabric (sheen) wrap's register name.  glTF layers
+				// base -> sheen -> clearcoat: when clearcoat ALSO
+				// contributes, the fabric result feeds a `coated_material`
+				// wrap below as ITS substrate (DL-23, docs/DEBT_LEDGER.md,
+				// lifted `coated_material`'s refusal of a `FabricMaterial`
+				// substrate -- see `CoatedMaterial::IsSupportedSubstrate`),
+				// so the fabric layer is NEVER `matName` in that case,
+				// regardless of whether emission also contributes.
+				// Otherwise this is unchanged from before: an intermediate
+				// name when emission contributes (a `LambertianLuminaire-
+				// Material` layer below re-attaches it under `matName`),
+				// or `matName` directly.
+				const std::string fabricRegisterName =
+					clearcoatContributes ? ( matName + "__sheen_cc_base" ) :
+					hasEmission          ? ( matName + "__sheen_emit_base" ) :
+					                       matName;
+
+				ok = job.AddFabricMaterial(
+					fabricRegisterName.c_str(),
+					"custom",					// fabric -- no preset seeding, glTF has no fabric-type concept
+					pbrRegisterName.c_str(),
+					sheenColorPainter.c_str(),
+					sheenRoughnessScalar.c_str(),
+					"0.0" );				// weave_rotation -- glTF has no weave-direction concept
+
+				// ----- Clearcoat OVER sheen, via coated_material -----
+				// DL-23 (docs/DEBT_LEDGER.md, closed 2026-09-14) made
+				// `CoatedMaterial::IsSupportedSubstrate` accept a
+				// `FabricMaterial` substrate, so the clearcoat layer now
+				// composes on top of the fabric (sheen) result instead of
+				// being warned-and-skipped (docs/IMPROVEMENTS.md
+				// "Clearcoat over `fabric_material`" -- CLOSED by this
+				// fix).  `wrapRegisterName` names whichever layer (the
+				// coat, or the fabric alone when clearcoat doesn't
+				// contribute) is outermost before the emission re-attach
+				// below.
+				std::string wrapRegisterName = fabricRegisterName;
+				if( ok && clearcoatContributes ) {
+					const std::string coatOverSheenName = hasEmission ? ( matName + "__cc_emit_base" ) : matName;
+					ok = BuildClearcoatWrap( coatOverSheenName, fabricRegisterName );
+					wrapRegisterName = coatOverSheenName;
+				}
+
+				// Re-attach the emission the PBR base deliberately did
+				// NOT bake in, now that the outermost wrap (coat-over-
+				// sheen, or fabric/sheen alone) is a legal (non-emissive)
+				// IMaterial to layer it over.
+				if( ok && hasEmission ) {
+					ok = job.AddLambertianLuminaireMaterial(
+						matName.c_str(),
+						emissivePainter.c_str(),
+						wrapRegisterName.c_str(),
+						emissiveScale );
+					if( !ok ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: material `%s` failed to attach its emissive "
+							"layer over the sheen/coat wrap", matName.c_str() );
+					}
+				}
+			}
+		}
+		if( !ok ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"GLTFSceneImporter:: failed to register material `%s`", matName.c_str() );
+			return false;
+		}
+
+		// P2-2 fix (2026-09-01 review round): the clearcoat wrap above only
+		// fires inside the PBR `else` branch -- a material that ALSO
+		// declares `unlit` or `KHR_materials_transmission` registers as a
+		// `LambertianLuminaireMaterial` or a `DielectricMaterial` instead,
+		// neither of which is on `coated_material`'s substrate allowlist
+		// (correctly -- coating a luminaire or an already-dielectric
+		// transmissive surface is not a modelled configuration), so
+		// clearcoat is silently dropped for that combination.  This used to
+		// be caught by an UNCONDITIONAL warn-and-skip that fired regardless
+		// of branch; restore the warning specifically for the branches that
+		// can no longer wrap it, so the drop is said rather than silent.
+		// Gated on `clearcoatContributes` (P3-8), not the raw extension
+		// presence -- a `clearcoat_factor == 0` genuinely has nothing to
+		// drop, so warning about it would be noise.
+		if( clearcoatContributes && ( mat.unlit || mat.has_transmission ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat (factor=%.2f) "
+				"together with `%s`; the clearcoat layer is skipped -- `coated_material`'s substrate "
+				"allowlist does not accept a %s (coating a %s is not a modelled configuration).  See "
+				"docs/GLTF_IMPORT.md §15.",
+				matName.c_str(), (double)mat.clearcoat.clearcoat_factor,
+				mat.unlit ? "KHR_materials_unlit" : "KHR_materials_transmission",
+				mat.unlit ? "luminaire" : "already-dielectric transmissive surface",
+				mat.unlit ? "luminaire" : "dielectric" );
+		}
+
+		// KHR_materials_sheen -- imported via `fabric_material` in the PBR
+		// (`else`) branch above.  Two residual cases stay unsupported and
+		// are said rather than dropped silently:
+		//   (a) sheenColorFactor == [0,0,0] and no sheenColorTexture: the
+		//       glTF default, genuinely nothing to import (mirrors
+		//       clearcoatContributes' factor-== 0 "nothing to drop, no
+		//       warning" rule) -- not diagnosed here.
+		//   (b) sheen combined with `unlit` or `KHR_materials_transmission`:
+		//       those branches register a LambertianLuminaireMaterial /
+		//       DielectricMaterial instead of a PBR base, neither of which
+		//       is on `FabricMaterial::IsSupportedSubstrate`'s allowlist --
+		//       diagnosed below.
+		if( sheenContributes && ( mat.unlit || mat.has_transmission ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen together with "
+				"`%s`; the sheen layer imports only onto a PBR metallic-roughness base -- "
+				"`fabric_material`'s substrate allowlist does not accept a %s -- this layer is "
+				"skipped.  Use the standalone `fabric_material` chunk for hand-authored fabric.  "
+				"See docs/GLTF_IMPORT.md §15.",
+				matName.c_str(),
+				mat.unlit ? "KHR_materials_unlit" : "KHR_materials_transmission",
+				mat.unlit ? "luminaire" : "already-dielectric transmissive surface" );
+		}
+
+#if 0	// Superseded by the real `fabric_material` wrap in the PBR branch
+		// above (docs/CLOTH_FABRIC_DESIGN.md §7(B)) -- kept only as a
+		// pre-fabric_material reference for the CompositeMaterial-based
+		// approach this project considered and rejected (a bare
+		// `sheen_material` stacked via `composite_material` forwards only
+		// ONE sub-material's BSDF to NEE/BDPT/VCM, and nothing subtracted
+		// the sheen's energy from the base -- exactly the two defects
+		// `fabric_material`'s header comment documents `fabric_material`
+		// as closing).  `baseMatName` below is what the sheen composite
+		// would have wrapped.
+		std::string currentBottom = baseMatName;
+
+		// ----- Sheen layer -----
+		if( hasSheen ) {
+			const cgltf_sheen& sh = mat.sheen;
+
+			// sheen_color: glTF's sheenColorFactor[3], optionally textured.
+			std::string sheenColorPainter;
+			if( sh.sheen_color_texture.texture ) {
+				sheenColorPainter = CreateTexturePainter(
+					job, prefix, data, glbPath, sh.sheen_color_texture.texture, "sheen_color" );
+				sheenColorPainter = WrapWithUVTransform( job, prefix, matIdx, "sheen_color",
+					sheenColorPainter, sh.sheen_color_texture );
+			}
+			if( sheenColorPainter.empty() ) {
+				const std::string n = PainterName( prefix, "sheen_color", matIdx );
+				const double pel[3] = {
+					(double)sh.sheen_color_factor[0],
+					(double)sh.sheen_color_factor[1],
+					(double)sh.sheen_color_factor[2] };
+				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+				sheenColorPainter = n;
+			}
+
+			// sheen_roughness: scalar painter from sheenRoughnessFactor.
+			const std::string nShRough = PainterName( prefix, "sheen_rough", matIdx );
+			const double shRough = (double)sh.sheen_roughness_factor;
+			const double shPel[3] = { shRough, shRough, shRough };
+			job.AddUniformColorPainter( nShRough.c_str(), shPel, "Rec709RGB_Linear" );
+
+			const std::string nSheenTop = baseMatName + "__sheen_top";
+			job.AddSheenMaterial( nSheenTop.c_str(),
+				sheenColorPainter.c_str(),
+				nShRough.c_str() );
+
+			const std::string sheenComposite = matName;
+			// CompositeMaterial recursion limits + thickness mirror the
+			// committed clearcoat reference scene (composite_material.RISEscene)
+			// which is the only existing usage pattern and was tuned to
+			// produce a coherent layered look.
+			job.AddCompositeMaterial(
+				sheenComposite.c_str(),
+				nSheenTop.c_str(),
+				currentBottom.c_str(),
+				/*max_recur*/                  5,
+				/*max_reflection_recursion*/   3,
+				/*max_refraction_recursion*/   3,
+				/*max_diffuse_recursion*/      3,
+				/*max_translucent_recursion*/  3,
+				/*thickness*/                  0.5,
+				// `extinction` is a physical-SCALAR slot (IScalarPainter), so
+				// an inline literal, not the zero COLOUR painter this used to
+				// register.  0.0 = a clear gap.
+				"0.0" );
+			currentBottom = sheenComposite;
+		}
+#endif	// Sheen composite layering guard
+
+		// Optional normal-map modifier.
+		if( mat.normal_texture.texture ) {
+			std::string nmTex = CreateTexturePainter(
+				job, prefix, data, glbPath, mat.normal_texture.texture, "normal",
+				preRegisteredTextures, lowmemTextures );
+			nmTex = WrapWithUVTransform( job, prefix, matIdx, "normal",
+				nmTex, mat.normal_texture );
+			if( !nmTex.empty() ) {
+				const std::string modName = ModifierName( prefix, matIdx );
+				job.AddNormalMapModifier( modName.c_str(), nmTex.c_str(), mat.normal_texture.scale );
+			}
+		}
+
+		// Coverage belongs to the material, including on the legacy path.
+        if (mat.alpha_mode != cgltf_alpha_mode_opaque) {
+            char alphaLiteral[32];
+            std::snprintf(alphaLiteral, sizeof(alphaLiteral), "%.17g", double(factorAlpha));
+            std::string alpha = alphaLiteral;
+            if (baseColorIsTexture && !baseColorTexturePainter.empty()) {
+                alpha = PainterName(prefix, "alpha", matIdx);
+                if (!job.AddPainterChannelScalarPainter(alpha.c_str(), baseColorTexturePainter.c_str(),
+                    3, factorAlpha, 0.0)) return false;
+            }
+            if (!job.SetMaterialAlpha(matName.c_str(), alpha.c_str(),
+                mat.alpha_mode == cgltf_alpha_mode_mask ? "mask" : "blend", mat.alpha_cutoff)) return false;
+        }
+
+		return true;
+	}
+
+	// ---------- light + camera placement ----------
+
+	bool CreateLightForNode(
+		IJob&				job,
+		const std::string&  prefix,
+		size_t              nodeIdx,					// caller's per-node index in data->nodes — used to
+														// build a UNIQUE manager name for the light, so
+														// instanced KHR_lights_punctual references (one
+														// shared definition referenced by many nodes,
+														// e.g. pkg_d_10k_candles) don't collide on AddItem
+		const cgltf_light*  light,
+		const cgltf_float   worldMatrix[16],
+		double              uniformOverride,			// legacy: applies to all types when > 0; see GLTFImportOptions::lightsIntensityOverride
+		double              directionalOverride,		// per-type lux override for directional lights
+		double              pointOverride,				// per-type candela override for point lights
+		double              spotOverride )				// per-type candela override for spot lights
+	{
+		// World-space position is column 3 of the world matrix.
+		const double px = worldMatrix[12];
+		const double py = worldMatrix[13];
+		const double pz = worldMatrix[14];
+
+		// glTF light shines down its local -Z axis.  Multiply (0,0,-1,0) by
+		// the world matrix's upper-3x3 to get the world-space SHINE direction
+		// (the direction the rays go after leaving the source).  Note this is
+		// NOT the same as RISE's `direction` parameter on directional_light,
+		// which points the OTHER way (from surface to light source) — see
+		// the directional case below.
+		const double dx = -worldMatrix[8];
+		const double dy = -worldMatrix[9];
+		const double dz = -worldMatrix[10];
+		// Normalise (small drift on non-uniform-scale nodes).
+		const double dlen = std::sqrt( dx*dx + dy*dy + dz*dz );
+		const double dnx = (dlen > 1e-8) ? dx / dlen : 0;
+		const double dny = (dlen > 1e-8) ? dy / dlen : 0;
+		const double dnz = (dlen > 1e-8) ? dz / dlen : -1;
+
+		const std::string name = LightName( prefix, nodeIdx );
+		// glTF light color is documented as linear sRGB (linear Rec.709),
+		// which is exactly what RISE's `Add*Light` methods now take when
+		// handed "Rec709RGB_Linear" -- so the spec value passes straight
+		// through.  Until 2026-09-02 those methods gamma-DECODED the
+		// triple as sRGB unconditionally (losing ~58% of the intensity),
+		// and this function pre-applied the sRGB OETF to cancel it.  That
+		// workaround is retired with the trap that motivated it; see
+		// IJob.h's "COLOUR CONVENTION (2026-09-02)" note and
+		// docs/GLTF_IMPORT.md P1-4.
+		const double color[3] = {
+			(double)light->color[0],
+			(double)light->color[1],
+			(double)light->color[2] };
+		const char* const kLinear = "Rec709RGB_Linear";
+		// glTF intensity units: cd for point/spot, lm/m² (lux) for directional.
+		// RISE's "power" is a multiplier on color; pass intensity directly.
+		//
+		// Override stack (Landing 4 — per-type, unit-respecting):
+		//
+		//   - Per-type override (directionalOverride / pointOverride /
+		//     spotOverride) wins when set > 0.  Each is in the unit
+		//     glTF declares for that type (lux for directional, candela
+		//     for point/spot), so the value is physically meaningful.
+		//   - Legacy uniformOverride (lightsIntensityOverride) is the
+		//     fallback when no per-type override is specified.  It
+		//     replaces zero authored intensities for ALL types
+		//     uniformly — physically incoherent across types because
+		//     it conflates lux and candela, but kept one release for
+		//     back-compat (NewSponza-style scenes).
+		//   - Lights the author set non-zero are NEVER overridden;
+		//     overrides only wake up dormant intensity=0 fixtures.
+		const double authoredIntensity = (double)light->intensity;
+		double typedOverride = 0.0;
+		switch( light->type ) {
+			case cgltf_light_type_directional: typedOverride = directionalOverride; break;
+			case cgltf_light_type_point:       typedOverride = pointOverride;       break;
+			case cgltf_light_type_spot:        typedOverride = spotOverride;        break;
+			default: break;
+		}
+		const double effectiveOverride = ( typedOverride > 0.0 ) ? typedOverride : uniformOverride;
+		const double power = ( effectiveOverride > 0.0 && authoredIntensity == 0.0 )
+		                        ? effectiveOverride
+		                        : authoredIntensity;
+
+		switch( light->type ) {
+			case cgltf_light_type_directional:
+			{
+				// RISE's DirectionalLight (DirectionalLight.cpp:48) treats
+				// `direction` as the vector pointing FROM the surface TO the
+				// light source -- a surface is lit when N · direction > 0.
+				// The shine direction we computed above goes the opposite
+				// way, so flip the sign before passing it through.
+				const double dirArr[3] = { -dnx, -dny, -dnz };
+				return job.AddDirectionalLight( name.c_str(), power, color, kLinear, dirArr );
+			}
+			case cgltf_light_type_point:
+			{
+				const double posArr[3] = { px, py, pz };
+				return job.AddPointOmniLight( name.c_str(), power, color, kLinear, posArr,
+					/*shootPhotons*/ false );
+			}
+			case cgltf_light_type_spot:
+			{
+				const double posArr[3] = { px, py, pz };
+				// glTF spot direction is the local -Z axis transformed to
+				// world; the spot's "focus point" is any point along that
+				// direction beyond the source.  Use distance 1 -- the
+				// inner/outer cone angles are what actually define the cone
+				// shape; the focus point only sets the central axis.
+				const double focArr[3] = { px + dnx, py + dny, pz + dnz };
+				const double inner = (double)light->spot_inner_cone_angle;
+				const double outer = (double)light->spot_outer_cone_angle;
+				return job.AddPointSpotLight( name.c_str(), power, color, kLinear,
+					focArr, inner, outer, posArr,
+					/*shootPhotons*/ false );
+			}
+			default:
+				return false;
+		}
+	}
+
+	// ---------- per-primitive geometry-extraction helpers ----------
+	// Moved from the retired TriangleMeshLoaderGLTF.cpp (2026-05-01).
+	// These now serve both ImportScene's per-primitive Walker hop AND
+	// the single-primitive ImportPrimitive entry point — the work
+	// previously done independently in the loader.
+
+	// Find the first attribute matching a given (type, set-index) pair.
+	// Returns NULL when not present.  glTF lets you have e.g. TEXCOORD_0
+	// and TEXCOORD_1 as two attributes with the same `type` field but
+	// different `index` values.
+	const cgltf_attribute* FindAttribute(
+		const cgltf_primitive* prim,
+		cgltf_attribute_type   type,
+		int                    setIndex )
+	{
+		for( cgltf_size i = 0; i < prim->attributes_count; ++i ) {
+			const cgltf_attribute& a = prim->attributes[i];
+			if( a.type == type && a.index == setIndex ) {
+				return &a;
+			}
+		}
+		return NULL;
+	}
+
+	// Unpack an entire accessor as an array of floats.  Returns true on
+	// success.  For an accessor with `count` elements of type T (where T
+	// is VEC2/VEC3/VEC4/SCALAR with N components), produces count*N
+	// floats.  Handles UNORM / SNORM / unnormalized variants uniformly.
+	bool UnpackAccessor(
+		const cgltf_accessor* accessor,
+		std::vector<float>&   out )
+	{
+		if( !accessor || !accessor->buffer_view || !accessor->buffer_view->buffer ) {
+			return false;
+		}
+		const cgltf_size numComponents = cgltf_num_components( accessor->type );
+		const cgltf_size numFloats     = accessor->count * numComponents;
+		out.resize( numFloats );
+		const cgltf_size unpacked = cgltf_accessor_unpack_floats(
+			accessor, out.data(), numFloats );
+		return unpacked == numFloats;
+	}
+
+	// Triangulate the (possibly strip or fan) source-index sequence
+	// into an output array of (i0, i1, i2) triples.  Source indices may
+	// come either from the primitive's `indices` accessor or, when that
+	// is absent, from the implicit 0..numVerts-1 sequence.  Caller has
+	// already verified `prim->type` is one of the three supported
+	// triangle topologies.
+	void TriangulateIndices(
+		const std::vector<unsigned int>& src,
+		cgltf_primitive_type             topo,
+		std::vector<unsigned int>&       out )
+	{
+		out.clear();
+		if( src.size() < 3 ) {
+			return;
+		}
+		switch( topo ) {
+			case cgltf_primitive_type_triangles: {
+				// Drop trailing 1 or 2 stray indices that don't form a
+				// complete triangle (defensive against malformed files;
+				// cgltf_validate normally catches this).
+				const cgltf_size numTris = src.size() / 3;
+				out.reserve( numTris * 3 );
+				for( cgltf_size t = 0; t < numTris; ++t ) {
+					out.push_back( src[ t*3 + 0 ] );
+					out.push_back( src[ t*3 + 1 ] );
+					out.push_back( src[ t*3 + 2 ] );
+				}
+				break;
+			}
+			case cgltf_primitive_type_triangle_strip: {
+				// Per glTF 2.0 §3.7.2.1: triangle k uses indices
+				// (k, k+1, k+2) for even k, (k+1, k, k+2) for odd k.
+				// The parity swap keeps facing direction consistent.
+				const cgltf_size numTris = src.size() - 2;
+				out.reserve( numTris * 3 );
+				for( cgltf_size k = 0; k < numTris; ++k ) {
+					if( (k & 1) == 0 ) {
+						out.push_back( src[ k + 0 ] );
+						out.push_back( src[ k + 1 ] );
+						out.push_back( src[ k + 2 ] );
+					} else {
+						out.push_back( src[ k + 1 ] );
+						out.push_back( src[ k + 0 ] );
+						out.push_back( src[ k + 2 ] );
+					}
+				}
+				break;
+			}
+			case cgltf_primitive_type_triangle_fan: {
+				// Per glTF 2.0 §3.7.2.1: triangle k uses indices
+				// (0, k+1, k+2).  Vertex 0 is the shared fan center.
+				const cgltf_size numTris = src.size() - 2;
+				out.reserve( numTris * 3 );
+				for( cgltf_size k = 0; k < numTris; ++k ) {
+					out.push_back( src[ 0 ] );
+					out.push_back( src[ k + 1 ] );
+					out.push_back( src[ k + 2 ] );
+				}
+				break;
+			}
+			default:
+				// Unreachable — caller filtered topology.
+				break;
+		}
+	}
+} // namespace
+
+GLTFSceneImporter::GLTFSceneImporter( const char* glbPath ) :
+  szFilename( GlobalMediaPathLocator().Find( glbPath ).c_str() ),
+  cgltfData( NULL )
+{
+	// Phase-3 lifecycle change (2026-05-01): the cgltf parse moved from
+	// per-call (Import / per-primitive Loader) into the constructor.  The
+	// motivation is the NewSponza pathology — its bulk import previously
+	// re-parsed the .gltf and re-`fread`-ed the 1.5 GB .bin once per
+	// primitive (~200 redundant whole-file reads).  Now: one parse, one
+	// .bin read, lifetime-scoped to this object.  ImportScene and
+	// ImportPrimitive both consume the cached parse.
+	//
+	// On failure of any step (parse, load_buffers, validate) we log the
+	// cause, free any partial state, and leave cgltfData == NULL.  The
+	// public IsValid() then returns false; ImportScene / ImportPrimitive
+	// short-circuit and return false too.  Callers MUST check IsValid()
+	// before using the importer (see header doc).
+	cgltf_options copts = {};
+	cgltf_data*   data  = NULL;
+
+	cgltf_result r = cgltf_parse_file( &copts, szFilename.c_str(), &data );
+	if( r != cgltf_result_success ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter:: cgltf_parse_file failed for `%s` (cgltf_result=%d)",
+			szFilename.c_str(), (int)r );
+		return;
+	}
+	r = cgltf_load_buffers( &copts, data, szFilename.c_str() );
+	if( r != cgltf_result_success ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter:: cgltf_load_buffers failed for `%s` (cgltf_result=%d)",
+			szFilename.c_str(), (int)r );
+		cgltf_free( data );
+		return;
+	}
+	r = cgltf_validate( data );
+	if( r != cgltf_result_success ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter:: cgltf_validate failed for `%s` (cgltf_result=%d)",
+			szFilename.c_str(), (int)r );
+		cgltf_free( data );
+		return;
+	}
+
+	cgltfData = data;
+}
+
+GLTFSceneImporter::~GLTFSceneImporter()
+{
+	if( cgltfData ) {
+		cgltf_free( static_cast<cgltf_data*>( cgltfData ) );
+		cgltfData = NULL;
+	}
+}
+
+bool GLTFSceneImporter::IsValid() const
+{
+	return cgltfData != NULL;
+}
+
+bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
+{
+	if( !cgltfData ) {
+		// Constructor-failure path; log already emitted by the ctor.
+		return false;
+	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
+
+	// Skin / animation / morph-target features are out of scope for the
+	// importer; warn (loudly, once) so users with animated assets see why
+	// their character renders at bind pose with no motion.
+	if( data->skins_count > 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"GLTFSceneImporter:: %u skin(s) ignored in `%s`; geometry rendered at bind pose "
+			"(skinning support is Phase 4+)",
+			(unsigned)data->skins_count, szFilename.c_str() );
+	}
+	if( data->animations_count > 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"GLTFSceneImporter:: %u animation(s) ignored in `%s` (animation support is Phase 4+)",
+			(unsigned)data->animations_count, szFilename.c_str() );
+	}
+	for( size_t mi = 0; mi < data->meshes_count; ++mi ) {
+		const cgltf_mesh& m = data->meshes[ mi ];
+		for( size_t pi = 0; pi < m.primitives_count; ++pi ) {
+			if( m.primitives[ pi ].targets_count > 0 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: morph targets on mesh %u primitive %u in `%s` "
+					"are ignored (morph-target support is Phase 4+)",
+					(unsigned)mi, (unsigned)pi, szFilename.c_str() );
+				goto morphWarned;	// once-per-file is enough
+			}
+		}
+	}
+	morphWarned:;
+
+	const std::string& prefix = opts.namePrefix;
+
+	// Decode every texture the materials reference in one parallel batch
+	// BEFORE the per-material loop.  Without this pass, each material's
+	// CreateTexturePainter would call libpng synchronously in the calling
+	// thread — for NewSponza-class assets that's 137 sequential single-
+	// threaded decodes (tens of seconds).  PreDecodeTextures collects
+	// every (image, role) tuple, dedupes, hands the whole list to
+	// Job::AddTexturePaintersBatch which fans the libpng work across the
+	// global ThreadPool.  After this returns, mRegisteredTextures is
+	// populated and CreateTexturePainter (in the per-material loop below)
+	// fast-paths to a name lookup.
+	if( opts.importMaterials ) {
+		PreDecodeTextures( job, opts );
+	}
+
+	// Materials -- create up front (de-duplicates across primitives).
+	//
+	// Belt-and-suspenders entity-collision guard (see the Walker's `anyRegistrationFailure`
+	// doc below): CreateMaterial already returns false + logs the specific material name on
+	// its own registration failure (AddPBRMetallicRoughnessMaterial / AddLambertianLuminaireMaterial
+	// / AddDielectricMaterial), but ImportScene used to discard that return -- a colliding
+	// material silently vanished instead of failing the import.  The name_prefix pre-check in
+	// Job::ImportGLTFScene is the primary defence (catches the common repeated-default-prefix
+	// case before ANY entity is touched); this catches the narrower case of a hand-authored
+	// entity that happens to collide with a generated material name.
+	bool anyRegistrationFailure = false;
+	if( opts.importMaterials ) {
+		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
+			if( !CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion, opts.emissiveIntensityScale, opts.emissiveTint ) ) {
+				anyRegistrationFailure = true;
+			}
+		}
+	}
+
+	// Pick the scene to walk.  `kSceneIndexDefault` (the option's default
+	// value) means "use the file's default scene", which is the cgltf
+	// `data->scene` pointer (parsed from the glTF JSON's top-level `"scene"`
+	// field) if the file declares one; falls back to scenes[0] otherwise.
+	// Any other sceneIndex value is treated as an explicit array index and
+	// validated against `scenes_count`.
+	const cgltf_scene* scene = NULL;
+	if( opts.sceneIndex == GLTFImportOptions::kSceneIndexDefault ) {
+		if( data->scene ) {
+			scene = data->scene;
+		} else if( data->scenes_count > 0 ) {
+			scene = &data->scenes[0];
+		}
+	} else if( opts.sceneIndex < data->scenes_count ) {
+		scene = &data->scenes[ opts.sceneIndex ];
+	} else {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"GLTFSceneImporter:: scene_index %u out of range "
+			"(file has %u scene(s)); falling back to default",
+			opts.sceneIndex, (unsigned)data->scenes_count );
+		if( data->scene ) {
+			scene = data->scene;
+		} else if( data->scenes_count > 0 ) {
+			scene = &data->scenes[0];
+		}
+	}
+	if( !scene ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter:: file has no scene to import" );
+		// cgltfData is freed by the destructor — no per-method free here.
+		return false;
+	}
+
+	// Recursive node walk (column-major matrix accumulation).
+	std::string firstCameraName;	// captured during the walk (first camera-bearing node in DFS order); used post-walk to designate the active camera
+
+	struct Walker
+	{
+		IJob&                    job;
+		const std::string&       prefix;
+		const cgltf_data*        data;
+		const std::string&       glbPath;
+		const GLTFImportOptions& opts;
+		std::string&             firstCameraName;	// in/out: first successful camera registration captures its name here so ImportScene can SetActiveCamera to it post-walk (so authoring intent — first camera = primary — beats RISE's last-added-wins auto-promote)
+		GLTFSceneImporter&       importer;	// for ImportPrimitive — bypasses the public IJob entry point so the cgltf parse is not redone per primitive
+		std::set<std::string>&   registeredGeoms;	// memoizes which (meshIdx,primIdx) geometries we've already built so multi-node instancing of a shared mesh registers ONCE and AddObjectMatrix runs N times
+		bool&                    anyRegistrationFailure;	// out: set TRUE on a genuine entity-NAME COLLISION (geometry or object registration) so ImportScene fails the whole import loudly instead of silently masking it (see ImportScene's material-loop doc for the belt-and-suspenders rationale). NOT set for a merely malformed/unsupported primitive (BuildGeometryFromPrimitive's existing tolerant warn-and-skip behaviour is unchanged).
+
+		void Walk( const cgltf_node* node, const cgltf_float parentWorld[16] )
+		{
+			cgltf_float local[16]; NodeLocalMatrix( node, local );
+			cgltf_float world[16]; Mat4Mul( parentWorld, local, world );
+
+			const size_t nodeIdx = (size_t)( node - data->nodes );
+
+			// Mesh
+			if( opts.importMeshes && node->mesh ) {
+				const size_t meshIdx = (size_t)( node->mesh - data->meshes );
+
+				// Phase 3: pass the column-major node-world matrix to
+				// AddObjectMatrix verbatim.  No more lossy Euler decomposition.
+				double matD[16];
+				for( int i = 0; i < 16; ++i ) matD[i] = (double)world[i];
+
+				for( size_t pi = 0; pi < node->mesh->primitives_count; ++pi ) {
+					const cgltf_primitive& prim = node->mesh->primitives[ pi ];
+					const std::string geom = GeomName( prefix, meshIdx, pi );
+
+					// Forward material.double_sided so thin cards / leaves /
+					// cloth / decals render with backfaces.  Default to false
+					// (opaque single-sided) when no material is bound.
+					const bool doubleSided = ( prim.material && prim.material->double_sided );
+
+					// flip_v=FALSE: glTF 2.0 spec puts the UV origin at the
+					// upper-left of the texture, matching RISE's
+					// BilinRasterImageAccessor which uses V=0 at row 0 =
+					// top of decoded PNG/JPEG.  No flip needed.  The
+					// rendering bug that was previously chased here
+					// (avocado pit reading green instead of brown) was
+					// actually caused by Landing 2's mip-LOD path
+					// over-averaging the small brown/yellow regions of
+					// the baseColor atlas; with mipmap disabled at the
+					// importer level, base-bilinear sampling at flip_v=
+					// FALSE renders Avocado.glb correctly.  Verified
+					// against the working state at 1c62acb.
+					// Build + register the primitive's geometry through the
+					// already-parsed cgltf_data we own — NOT through
+					// `job.AddGLTFTriangleMeshGeometry`, which would
+					// recursively spin up a fresh GLTFSceneImporter and
+					// re-parse the .gltf for every primitive.  See header
+					// doc, "Lifecycle".
+					//
+					// Multi-node instancing of a shared mesh: any glTF
+					// where multiple nodes reference the same mesh (NewSponza
+					// columns, Khronos OrientationTest, instanced foliage
+					// etc.) means we'll see the SAME meshIdx+primIdx more
+					// than once.  GeomName is keyed by mesh+prim only — so
+					// the second visit's geom.c_str() collides with the
+					// first's.  pGeomManager->AddItem rejects duplicate
+					// names and would propagate false up through
+					// AddPrebuiltTriangleMeshGeometry → ImportPrimitive,
+					// causing the `if (!gOK) continue` below to skip
+					// AddObjectMatrix and silently drop every instance after
+					// the first.  The 2026-05-01 round-2 review caught this
+					// regression vs. the retired loader, which had a
+					// happy accident: it discarded AddItem's bool and
+					// returned LoadTriangleMesh's success bit instead, so
+					// duplicate-name registrations silently no-op'd and
+					// AddObjectMatrix proceeded.  Memoize successful builds
+					// per geom-name so we register exactly once but bind
+					// every instance.  Bonus: the second-visit primitive
+					// extraction is also skipped (a perf win on instancing-
+					// heavy assets, on top of the parse-once win).
+					bool gOK;
+					if( registeredGeoms.find( geom ) != registeredGeoms.end() ) {
+						gOK = true;	// already-built shared-mesh instance
+					} else {
+						bool regFailed = false;
+						gOK = importer.ImportPrimitive(
+							job, geom.c_str(),
+							(unsigned int)meshIdx, (unsigned int)pi,
+							doubleSided,
+							/*face_normals*/ false,
+							/*flip_v*/ false,
+							&regFailed );
+						if( gOK ) {
+							registeredGeoms.insert( geom );
+						} else if( regFailed ) {
+							// A genuine entity-name collision (GenericManager::AddItem already
+							// logged `geom` by name) -- NOT a malformed/unsupported primitive.
+							// Fail the whole import loudly rather than silently dropping this
+							// (and every downstream instance of) the geometry.
+							anyRegistrationFailure = true;
+						}
+					}
+					if( !gOK ) {
+						continue;
+					}
+
+					std::string matName = "none";
+					std::string modName = "none";
+					std::string shaderName = "none";
+					if( opts.importMaterials && prim.material ) {
+						const size_t mi = (size_t)( prim.material - data->materials );
+						matName = MaterialName( prefix, mi );
+						if( opts.importNormalMaps && prim.material->normal_texture.texture ) {
+							modName = ModifierName( prefix, mi );
+						}
+						// Alpha belongs to the material; no shader override is installed.
+
+					}
+
+					RadianceMapConfig rmc;
+					const std::string objName = ObjectName( prefix, nodeIdx, pi );
+					if( !job.AddObjectMatrix(
+						objName.c_str(), geom.c_str(),
+						matName == "none" ? NULL : matName.c_str(),
+						modName == "none" ? NULL : modName.c_str(),
+						shaderName == "none" ? NULL : shaderName.c_str(),
+						rmc, matD,
+						/*casts*/ true, /*receives*/ true ) ) {
+						// AddObjectMatrix already logged the specific reason (a name
+						// collision on `objName`'s own GenericManager::AddItem, or an
+						// unresolved geom/material/modifier/shader/painter reference --
+						// the latter typically a knock-on of an earlier CreateMaterial
+						// registration failure this same import already flagged above).
+						// Either way, fail the import loudly instead of silently leaving
+						// this instance unplaced.
+						anyRegistrationFailure = true;
+						continue;
+					}
+
+					// KHR_materials_volume: the material's interior is a
+					// homogeneous medium (registered up-front in
+					// CreateMaterial under MediumName(prefix, matIdx)).
+					// Bind it to this object instance so Beer-Lambert
+					// absorption applies to rays inside the volume.
+					// Mirrors the gate in CreateMaterial — thin-walled
+					// (thickness_factor == 0) materials don't register a
+					// medium, so don't try to bind one.
+					if( opts.importMaterials && prim.material &&
+					    prim.material->has_volume &&
+					    prim.material->volume.attenuation_distance > 0 &&
+					    prim.material->volume.thickness_factor > 0 ) {
+						const size_t mi = (size_t)( prim.material - data->materials );
+						const std::string medName = MediumName( prefix, mi );
+						job.SetObjectInteriorMedium( objName.c_str(), medName.c_str() );
+					}
+				}
+			}
+
+			// Light.  Pass `nodeIdx` (NOT the light-definition index)
+			// to keep the manager name unique across instances that
+			// reference the same shared light definition — see
+			// LightName comment for the pkg_d_10k_candles motivation.
+			if( opts.importLights && node->light ) {
+				CreateLightForNode( job, prefix, nodeIdx, node->light, world,
+					opts.lightsIntensityOverride,
+					opts.directionalIntensityOverride,
+					opts.pointIntensityOverride,
+					opts.spotIntensityOverride );
+			}
+
+			// Camera.  Multi-camera support (2026-05-01): every camera-
+			// bearing node is registered as a named camera in the scene's
+			// camera manager.  RemoveCamera + SetActiveCamera let the user
+			// switch between them at runtime.  Naming is stable (node-name-
+			// based; index fallback) so a re-import of the same .gltf binds
+			// the same camera names.
+			//
+			// Active-camera policy: the FIRST camera in scene-walk DFS
+			// order is explicitly designated active in ImportScene after
+			// the walk completes, so the authoring tool's primary camera
+			// (typically index 0 / first in scene tree) wins.  This
+			// overrides RISE's intrinsic "last-added wins" auto-promote
+			// during the walk.  A subsequent .RISEscene chunk that adds
+			// its own camera *after* gltf_import will then re-take active
+			// via auto-promote — which is what the Sponza scene relies on
+			// to keep its hand-placed pinhole authoritative while still
+			// registering the asset's six PhysCamera nodes as alternatives.
+			if( opts.importCameras && node->camera ) {
+				const cgltf_camera* cam = node->camera;
+				const size_t nodeIdx = (size_t)( node - data->nodes );
+
+				// glTF cameras look down -Z in their local frame; up is +Y.
+				// Transform those local axes via the world matrix to get
+				// the world-space placement.
+				const double cx = world[12], cy = world[13], cz = world[14];
+				const double lx = cx - world[8],  ly = cy - world[9],  lz = cz - world[10];
+				const double ux = world[4], uy = world[5], uz = world[6];
+
+				const double location[3] = { cx, cy, cz };
+				const double lookat[3]   = { lx, ly, lz };
+				const double up[3]       = { ux, uy, uz };
+				const double orientation[3] = { 0, 0, 0 };
+				const double target_orient[2] = { 0, 0 };
+
+				// Try the node-name-based camera name first; on AddItem
+				// failure (most commonly a duplicate name across nodes
+				// with the same sanitized identifier), fall back to the
+				// index-based name which is guaranteed unique per import.
+				// Both attempts logged on failure so a future non-
+				// duplicate failure mode (null factory, validation reject)
+				// is visible rather than silently swallowed.
+				const std::string preferredName = CameraNameFromNode( prefix, node, nodeIdx );
+				const std::string fallbackName  = CameraNameFromIndex( prefix, nodeIdx );
+				std::string camName = preferredName;
+				bool added = false;
+
+				if( cam->type == cgltf_camera_type_perspective ) {
+					// glTF stores yfov in radians; AddPinholeCamera takes
+					// fov in radians (despite the chunk's "degrees" hint).
+					const double yfov_rad = (double)cam->data.perspective.yfov;
+
+					// glTF doesn't carry an authored render resolution;
+					// install an 800x600 fallback Film so the camera's
+					// projection matches the rasterizer's grid.  CLI
+					// override / GUI panel / a follow-up `film` chunk
+					// can replace the Film later.
+					job.SetFilm( 800, 600, 1.0 );
+					added = job.AddPinholeCamera(
+						camName.c_str(),
+						location, lookat, up,
+						yfov_rad,
+						/*exposure*/ 1.0,
+						/*scanningRate*/ 0.0,
+						/*pixelRate*/ 0.0,
+						orientation, target_orient );
+					if( !added && preferredName != fallbackName ) {
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: camera `%s` could not be registered; "
+							"retrying as `%s` (node-name collision is the typical cause)",
+							preferredName.c_str(), fallbackName.c_str() );
+						camName = fallbackName;
+						added = job.AddPinholeCamera(
+							camName.c_str(),
+							location, lookat, up, yfov_rad,
+							1.0, 0.0, 0.0,
+							orientation, target_orient );
+					}
+					if( !added ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: failed to register pinhole camera for "
+							"node %u (preferred `%s`, fallback `%s`); skipping",
+							(unsigned)nodeIdx, preferredName.c_str(), fallbackName.c_str() );
+					}
+				} else if( cam->type == cgltf_camera_type_orthographic ) {
+					// glTF orthographic xmag/ymag are HALF-extents of the
+					// view frustum (frustum spans [-xmag, +xmag] x
+					// [-ymag, +ymag] per glTF 2.0 §5.21).  RISE's
+					// OrthographicCamera vpScale is the FULL extent —
+					// CameraUtilities.cpp:492-493 documents the mapping
+					// `x = (w/2 - px) / w * vpScale.x`, so px=0 gives
+					// vpScale.x/2 and px=w gives -vpScale.x/2 (full range
+					// = vpScale.x).  Multiply by 2.0 to convert.
+					const double vpScale[2] = {
+						2.0 * (double)cam->data.orthographic.xmag,
+						2.0 * (double)cam->data.orthographic.ymag
+					};
+					// glTF orthographic also carries znear/zfar (clip
+					// planes); RISE's OrthographicCamera doesn't model
+					// clip planes, so we drop them with a one-line note.
+					// Authoring tools that rely on tight ortho clipping
+					// (CAD, blueprint shots) will see geometry beyond the
+					// authored zfar; users wanting that behaviour need to
+					// scene-cull manually.
+					if( cam->data.orthographic.zfar > 0 ) {
+						// Only log when the asset declares a finite far
+						// plane.  znear is spec-required but visually
+						// inconsequential for orthographic, so we don't
+						// pester authors who left it at the default tight
+						// value.  zfar mismatches matter more — geometry
+						// beyond the authored far still gets intersected.
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: orthographic camera node %u declares "
+							"zfar=%.3f; RISE has no orthographic clip planes, so "
+							"geometry beyond the authored far range will still be "
+							"intersected.",
+							(unsigned)nodeIdx,
+							(double)cam->data.orthographic.zfar );
+					}
+					job.SetFilm( 800, 600, 1.0 );	// see Pinhole branch above
+					added = job.AddOrthographicCamera(
+						camName.c_str(),
+						location, lookat, up,
+						vpScale,
+						/*exposure*/ 1.0,
+						/*scanningRate*/ 0.0,
+						/*pixelRate*/ 0.0,
+						orientation, target_orient );
+					if( !added && preferredName != fallbackName ) {
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: camera `%s` could not be registered; "
+							"retrying as `%s`",
+							preferredName.c_str(), fallbackName.c_str() );
+						camName = fallbackName;
+						added = job.AddOrthographicCamera(
+							camName.c_str(),
+							location, lookat, up,
+							vpScale, 1.0, 0.0, 0.0,
+							orientation, target_orient );
+					}
+					if( !added ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: failed to register orthographic camera "
+							"for node %u (preferred `%s`, fallback `%s`); skipping",
+							(unsigned)nodeIdx, preferredName.c_str(), fallbackName.c_str() );
+					}
+				} else {
+					GlobalLog()->PrintEasyWarning(
+						"GLTFSceneImporter:: unrecognised glTF camera type on node; skipping" );
+				}
+
+				if( added && firstCameraName.empty() ) {
+					firstCameraName = camName;
+				}
+			}
+
+			for( cgltf_size c = 0; c < node->children_count; ++c ) {
+				Walk( node->children[c], world );
+			}
+		}
+	};
+
+	// Snapshot the pre-walk active camera so we can preserve a user-
+	// authored camera (e.g. a `pinhole_camera` chunk parsed BEFORE this
+	// `gltf_import` chunk) across the walk's auto-promote storm.  Each
+	// AddXXXCamera call inside the walk auto-promotes to active under the
+	// last-added-wins rule, so without this snapshot the user's pre-walk
+	// hero shot would be silently overridden by whichever asset camera
+	// happened to be visited last in DFS order.  Empty pre-walk active
+	// = no user camera was set up yet, which is the common case.
+	const std::string preWalkActive = job.GetActiveCameraName();
+
+	cgltf_float identity[16]; Mat4Identity( identity );
+	std::set<std::string> registeredGeoms;	// see Walker struct + the dedup site for rationale
+	Walker w = { job, prefix, data, szFilename, opts, firstCameraName, *this, registeredGeoms, anyRegistrationFailure };
+	for( size_t r = 0; r < scene->nodes_count; ++r ) {
+		w.Walk( scene->nodes[r], identity );
+	}
+
+	// Active-camera policy:
+	//   - If a camera was active BEFORE the walk (user authored a
+	//     `pinhole_camera` chunk above this `gltf_import`), restore it.
+	//     Every AddXXXCamera during the walk auto-promotes, so the
+	//     pre-walk active was overwritten — explicit restore is required.
+	//   - Else, override to the FIRST camera in DFS order (matches glTF
+	//     authoring intent: index-0 / first-scene-tree camera = primary).
+	//     The intrinsic last-added-wins rule would otherwise leave the
+	//     LAST DFS camera active, which is arbitrary from the user's POV.
+	// A `pinhole_camera` chunk AFTER this `gltf_import` will then re-take
+	// active via its own auto-promote — Sponza's pattern, where the hand-
+	// placed pinhole stays authoritative while the asset's PhysCamera
+	// nodes register as switchable alternatives.
+	if( !preWalkActive.empty() ) {
+		(void) job.SetActiveCamera( preWalkActive.c_str() );
+	} else if( !firstCameraName.empty() ) {
+		(void) job.SetActiveCamera( firstCameraName.c_str() );
+	}
+
+	// cgltfData is freed in the destructor — same lifecycle as a single
+	// scene walk, owned for the lifetime of the importer object.
+	//
+	// Belt-and-suspenders entity-collision guard: fail loudly instead of the pre-fix
+	// unconditional `return true`, which let every AddItem-collision above (material,
+	// geometry, or object) silently vanish while the import reported success.  Every
+	// specific failure was already logged (by name) at its own site; this just makes
+	// the aggregate outcome match reality.  The name_prefix pre-check in
+	// Job::ImportGLTFScene is the primary defence and fires BEFORE any entity is
+	// touched -- this only remains reachable for a hand-authored entity that happens
+	// to collide with a generated name under a prefix that was otherwise fresh.
+	if( anyRegistrationFailure ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter:: one or more entities failed to register while importing `%s` "
+			"(name_prefix `%s`) -- see the errors above for the specific colliding name(s)",
+			szFilename.c_str(), prefix.c_str() );
+		if( RISE::g_cstFinalizeDiagSink && RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"one or more entities failed to register (name collision) -- see log for the specific name(s)";
+		}
+		return false;
+	}
+	return true;
+}
+
+bool GLTFSceneImporter::ImportPrimitive(
+	IJob&        job,
+	const char*  geomName,
+	unsigned int meshIdx,
+	unsigned int primIdx,
+	bool         doubleSided,
+	bool         faceNormals,
+	bool         flipV,
+	bool*        outRegistrationFailed )
+{
+	if( outRegistrationFailed ) *outRegistrationFailed = false;
+	if( !cgltfData ) {
+		return false;
+	}
+	if( !geomName ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::ImportPrimitive:: geomName is NULL" );
+		return false;
+	}
+
+	// Build the geometry locally; register it with the job's manager
+	// only on success.  On failure (malformed primitive, out-of-range
+	// indices, unsupported topology, Draco compression) the partial
+	// pGeometry is released and never enters the manager.
+	ITriangleMeshGeometryIndexed* pGeometry = NULL;
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, doubleSided, faceNormals );
+	if( !pGeometry ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::ImportPrimitive:: failed to allocate geometry" );
+		return false;
+	}
+
+	bool ok = BuildGeometryFromPrimitive( pGeometry, meshIdx, primIdx, flipV );
+	if( ok ) {
+		ok = job.AddPrebuiltTriangleMeshGeometry( geomName, pGeometry );
+		if( !ok && outRegistrationFailed ) {
+			// Build succeeded -- the ONLY way AddPrebuiltTriangleMeshGeometry
+			// can then fail is GenericManager::AddItem's duplicate-name refusal
+			// (it already logged `geomName` by name), i.e. a genuine entity
+			// collision rather than a malformed/unsupported primitive.
+			*outRegistrationFailed = true;
+		}
+	}
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool GLTFSceneImporter::BuildGeometryFromPrimitive(
+	ITriangleMeshGeometryIndexed* pGeom,
+	unsigned int                  meshIdx,
+	unsigned int                  primIdx,
+	bool                          flipV )
+{
+	if( !pGeom ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: NULL geometry target" );
+		return false;
+	}
+	if( !cgltfData ) {
+		// Constructor logged the parse failure; nothing to extract from.
+		return false;
+	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
+
+	if( meshIdx >= data->meshes_count ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: mesh_index %u out of range "
+			"(file has %u meshes)",
+			meshIdx, (unsigned int)data->meshes_count );
+		return false;
+	}
+	const cgltf_mesh& mesh = data->meshes[ meshIdx ];
+	if( primIdx >= mesh.primitives_count ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive %u out of range "
+			"(mesh `%s` has %u primitives)",
+			primIdx,
+			mesh.name ? mesh.name : "(unnamed)",
+			(unsigned int)mesh.primitives_count );
+		return false;
+	}
+	const cgltf_primitive& prim = mesh.primitives[ primIdx ];
+
+	// Topology gate.  We support the three triangle modes; LINES /
+	// POINTS / LINE_LOOP / LINE_STRIP are not renderable as triangle
+	// meshes and would silently render as empty geometry if accepted.
+	const cgltf_primitive_type topo = prim.type;
+	const bool topoOK =
+		topo == cgltf_primitive_type_triangles    ||
+		topo == cgltf_primitive_type_triangle_strip ||
+		topo == cgltf_primitive_type_triangle_fan;
+	if( !topoOK ) {
+		const char* topoName = "unknown";
+		switch( topo ) {
+			case cgltf_primitive_type_points:     topoName = "POINTS";     break;
+			case cgltf_primitive_type_lines:      topoName = "LINES";      break;
+			case cgltf_primitive_type_line_loop:  topoName = "LINE_LOOP";  break;
+			case cgltf_primitive_type_line_strip: topoName = "LINE_STRIP"; break;
+			default: break;
+		}
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive topology `%s` "
+			"is not a triangle topology and cannot be loaded as triangle geometry.",
+			topoName );
+		return false;
+	}
+
+	// Reject Draco / meshopt compression with a clear error message.
+	// cgltf parses the extension declaration but does NOT decompress;
+	// the buffer bytes we'd read are still compressed and accessor
+	// reads would yield garbage.
+	if( prim.has_draco_mesh_compression ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive uses "
+			"KHR_draco_mesh_compression.  This is not supported (cgltf does not "
+			"decode it).  Re-export the asset without Draco compression." );
+		return false;
+	}
+
+	// Locate the standard attributes we care about.  POSITION is
+	// required by the glTF spec; everything else is optional.
+	const cgltf_attribute* attrPos    = FindAttribute( &prim, cgltf_attribute_type_position, 0 );
+	const cgltf_attribute* attrNormal = FindAttribute( &prim, cgltf_attribute_type_normal,   0 );
+	const cgltf_attribute* attrTan    = FindAttribute( &prim, cgltf_attribute_type_tangent,  0 );
+	const cgltf_attribute* attrUV0    = FindAttribute( &prim, cgltf_attribute_type_texcoord, 0 );
+	const cgltf_attribute* attrUV1    = FindAttribute( &prim, cgltf_attribute_type_texcoord, 1 );
+	const cgltf_attribute* attrCol0   = FindAttribute( &prim, cgltf_attribute_type_color,    0 );
+
+	if( !attrPos ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive has no POSITION attribute" );
+		return false;
+	}
+
+	const cgltf_size numVerts = attrPos->data->count;
+
+	// Fail fast if any optional attribute disagrees with POSITION on
+	// element count -- glTF 2.0 §3.7.2.1 mandates equal counts across
+	// all primitive attributes, but we should not trust an external
+	// file silently.
+	if( attrNormal && attrNormal->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: NORMAL count (%u) != POSITION count (%u)",
+			(unsigned int)attrNormal->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrTan && attrTan->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TANGENT count (%u) != POSITION count (%u)",
+			(unsigned int)attrTan->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrUV0 && attrUV0->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TEXCOORD_0 count (%u) != POSITION count (%u)",
+			(unsigned int)attrUV0->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrUV1 && attrUV1->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TEXCOORD_1 count (%u) != POSITION count (%u)",
+			(unsigned int)attrUV1->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrCol0 && attrCol0->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: COLOR_0 count (%u) != POSITION count (%u)",
+			(unsigned int)attrCol0->data->count, (unsigned int)numVerts );
+		return false;
+	}
+
+	// Optional v2 / v3 sub-interfaces.  v2 carries vertex colors; v3
+	// adds tangents and TEXCOORD_1.  Loaders fall back gracefully if
+	// the geometry implementation predates either.
+	ITriangleMeshGeometryIndexed2* pGeom2 = dynamic_cast<ITriangleMeshGeometryIndexed2*>( pGeom );
+	ITriangleMeshGeometryIndexed3* pGeom3 = dynamic_cast<ITriangleMeshGeometryIndexed3*>( pGeom );
+
+	if( attrCol0 && !pGeom2 ) {
+		GlobalLog()->PrintEasyWarning(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: source has COLOR_0 but the target "
+			"geometry does not implement ITriangleMeshGeometryIndexed2 -- "
+			"colors will be dropped" );
+	}
+	if( (attrTan || attrUV1) && !pGeom3 ) {
+		GlobalLog()->PrintEasyWarning(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: source has TANGENT or TEXCOORD_1 but the "
+			"target geometry does not implement ITriangleMeshGeometryIndexed3 -- "
+			"those attributes will be dropped" );
+	}
+
+	// Unpack the requested attributes up front; we hand them to the
+	// geometry through the typed-array overloads below.
+	std::vector<float> posData;
+	std::vector<float> normalData;
+	std::vector<float> tangentData;
+	std::vector<float> uv0Data;
+	std::vector<float> uv1Data;
+	std::vector<float> colorData;
+
+	if( !UnpackAccessor( attrPos->data, posData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack POSITION accessor" );
+		return false;
+	}
+	if( attrNormal && !UnpackAccessor( attrNormal->data, normalData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack NORMAL accessor" );
+		return false;
+	}
+	if( attrTan && pGeom3 && !UnpackAccessor( attrTan->data, tangentData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TANGENT accessor" );
+		return false;
+	}
+	if( attrUV0 && !UnpackAccessor( attrUV0->data, uv0Data ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TEXCOORD_0 accessor" );
+		return false;
+	}
+	if( attrUV1 && pGeom3 && !UnpackAccessor( attrUV1->data, uv1Data ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TEXCOORD_1 accessor" );
+		return false;
+	}
+	if( attrCol0 && pGeom2 && !UnpackAccessor( attrCol0->data, colorData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack COLOR_0 accessor" );
+		return false;
+	}
+
+	const cgltf_size colorComponents = attrCol0 ? cgltf_num_components( attrCol0->data->type ) : 0;
+
+	// Source indices: read from prim.indices if present, else
+	// 0..numVerts-1 (the implicit array convention in glTF).
+	std::vector<unsigned int> srcIndices;
+	if( prim.indices ) {
+		srcIndices.resize( prim.indices->count );
+		for( cgltf_size i = 0; i < prim.indices->count; ++i ) {
+			srcIndices[i] = (unsigned int)cgltf_accessor_read_index( prim.indices, i );
+		}
+	} else {
+		srcIndices.resize( numVerts );
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			srcIndices[i] = (unsigned int)i;
+		}
+	}
+
+	// Triangulate strip / fan into a flat (i0, i1, i2) sequence.
+	std::vector<unsigned int> triIndices;
+	TriangulateIndices( srcIndices, topo, triIndices );
+
+	if( triIndices.empty() ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive yielded zero triangles "
+			"(mesh `%s`, primitive %u).",
+			mesh.name ? mesh.name : "(unnamed)", primIdx );
+		// Not a hard error -- a degenerate primitive should still let
+		// the surrounding scene load.
+	}
+
+	// Push everything into the geometry.
+
+	pGeom->BeginIndexedTriangles();
+
+	// POSITION
+	for( cgltf_size i = 0; i < numVerts; ++i ) {
+		pGeom->AddVertex( Vertex(
+			posData[ i*3 + 0 ],
+			posData[ i*3 + 1 ],
+			posData[ i*3 + 2 ] ) );
+	}
+
+	// NORMAL.  AddNormal silently drops when the geometry was
+	// constructed with face_normals=true; we always feed the data we
+	// have, the geometry decides what to do with it.
+	if( attrNormal ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			pGeom->AddNormal( Normal(
+				normalData[ i*3 + 0 ],
+				normalData[ i*3 + 1 ],
+				normalData[ i*3 + 2 ] ) );
+		}
+	}
+
+	// TEXCOORD_0.  RISE convention: every face needs a valid iCoords[]
+	// triple.  When the source has no TEXCOORD_0, push a single
+	// (0, 0) placeholder and point every face at it (mirrors how PLY
+	// and 3DS loaders handle missing UVs).
+	if( attrUV0 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const float u = uv0Data[ i*2 + 0 ];
+			const float v = uv0Data[ i*2 + 1 ];
+			pGeom->AddTexCoord( TexCoord( u, flipV ? (1.0f - v) : v ) );
+		}
+	} else {
+		pGeom->AddTexCoord( TexCoord( 0, 0 ) );
+	}
+
+	// TEXCOORD_1 (v3-only).
+	if( attrUV1 && pGeom3 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const float u = uv1Data[ i*2 + 0 ];
+			const float v = uv1Data[ i*2 + 1 ];
+			pGeom3->AddTexCoord1( TexCoord( u, flipV ? (1.0f - v) : v ) );
+		}
+	}
+
+	// TANGENT (v3-only).  glTF stores xyz = tangent direction in
+	// object space, w = bitangent sign (+1 or -1).
+	if( attrTan && pGeom3 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			Tangent4 t;
+			t.dir = Vector3(
+				tangentData[ i*4 + 0 ],
+				tangentData[ i*4 + 1 ],
+				tangentData[ i*4 + 2 ] );
+			t.bitangentSign = tangentData[ i*4 + 3 ];
+			pGeom3->AddTangent( t );
+		}
+	}
+
+	// COLOR_0 (v2-only).  glTF spec stores vertex colors in linear
+	// Rec.709 RGB (NOT sRGB -- this is the explicit difference from
+	// PLY's universal-sRGB convention).  Convert via the Rec709->ROMM
+	// path so painters see the engine's working colour space.
+	if( attrCol0 && pGeom2 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const cgltf_size base = i * colorComponents;
+			const float r = colorData[ base + 0 ];
+			const float g = colorComponents >= 2 ? colorData[ base + 1 ] : r;
+			const float b = colorComponents >= 3 ? colorData[ base + 2 ] : r;
+			// Alpha (component 4) is dropped -- RISEPel is RGB only.
+			Rec709RGBPel src( r, g, b );
+			pGeom2->AddColor( RISEPel( src ) );
+		}
+	}
+
+	// Faces.  glTF uses the same index list to address all attribute
+	// arrays uniformly, so iVertices == iNormals == iCoords for every
+	// face vertex.  When we synthesised a single-element TEXCOORD,
+	// iCoords[] points at index 0 for every face.
+	const bool haveUV0 = (attrUV0 != NULL);
+	for( cgltf_size t = 0; t + 2 < triIndices.size(); t += 3 ) {
+		IndexedTriangle tri;
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int idx = triIndices[ t + k ];
+			tri.iVertices[k] = idx;
+			tri.iNormals[k]  = idx;
+			tri.iCoords[k]   = haveUV0 ? idx : 0u;
+		}
+		pGeom->AddIndexedTriangle( tri );
+	}
+
+	// If the source had no NORMAL, ask the geometry to derive smooth
+	// normals from face topology.  AddNormal was a no-op for face-
+	// normals geometries, so this is the right hook in either case
+	// (ComputeVertexNormals does nothing when bUseFaceNormals is set).
+	if( !attrNormal ) {
+		pGeom->ComputeVertexNormals();
+	}
+
+	pGeom->DoneIndexedTriangles();
+
+	return true;
+}
+
+// Walk every cgltf material slot, collect (image, role) tuples, dedupe by
+// painter name, dispatch one Job::AddTexturePaintersBatch call.  Populates
+// mRegisteredTextures with painter names that decoded + registered
+// successfully.  See header doc for rationale.
+void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& opts )
+{
+	if( !cgltfData ) {
+		return;
+	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
+	const std::string& prefix = opts.namePrefix;
+
+	// Per-tuple state that has to outlive the batch call: we hold the
+	// resolved file path and (for embedded images) the bufferView byte
+	// pointer + length.  TexturePainterBatchRequest stores raw const
+	// char* / const unsigned char* pointers, so the std::string backing
+	// the file path needs to live until after AddTexturePaintersBatch
+	// returns.  Keep them in side vectors keyed by request index.
+	struct PendingDecode
+	{
+		std::string painterName;	// also keyed in `seen` below
+		std::string filePath;		// empty when reading from bytes
+		const unsigned char* bytes;	// null when reading from filePath
+		size_t numBytes;
+		char format;				// 0 = PNG, 1 = JPEG; -1 = skip
+		char colorSpace;
+		char wrap_s;				// per-texture U-axis wrap (eRasterWrapMode); read from cgltf_texture::sampler
+		char wrap_t;				// per-texture V-axis wrap
+		bool mipmap;				// Landing 2: build a mip pyramid for this texture.  False for normal maps (vector quantities — box-filter prefiltering corrupts them; LEAN/LEADR is a separate audit).
+		SpectrumKind spectrumKind;	// Landing 3: spectral-uplift role (Albedo for reflectance; Illuminant for emissive).
+	};
+	std::vector<PendingDecode> pending;
+	std::set<std::string> seen;
+
+	// Helper: queue one (texture, role) tuple.  Idempotent on
+	// (painterName) — multiple materials sharing the same image+role
+	// only enqueue once.  Skips silently when the texture pointer is
+	// null, the image has no resolvable source, or the format isn't a
+	// PNG/JPEG we can decode.
+	auto enqueue = [&]( const cgltf_texture* tex, const char* role )
+	{
+		if( !tex ) return;
+		// L12.E: keep the KTX2 / Basis Universal handling in lock-step
+		// with CreateTexturePainter — without this skip, KTX2-only
+		// bindings would fall through to the PNG/JPEG decode path here
+		// even though CreateTexturePainter rejects them later.  The
+		// PNG decoder asked to read KTX2-formatted bytes is the
+		// observed crash mode (PNGReader::BeginRead AV inside
+		// AddTexturePaintersBatch's ParallelFor on a KTX2-bearing
+		// asset).  Safe: when both paths agree to skip, the binding
+		// gracefully renders as the material's uniform-colour fallback.
+		if( tex->has_basisu && !tex->image ) return;
+		if( !tex->image ) return;
+		const size_t imgIdx = (size_t)( tex->image - data->images );
+		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
+		if( seen.find( painterName ) != seen.end() ) {
+			return;
+		}
+		seen.insert( painterName );
+
+		std::string ext, filePath;
+		const unsigned char* bytes = NULL;
+		size_t len = 0;
+		ResolveImageBytes( data, szFilename, imgIdx, ext, filePath, bytes, len );
+		if( filePath.empty() && bytes == NULL ) {
+			return;	// ResolveImageBytes already logged the cause
+		}
+
+		char format = -1;
+		if(      ext == ".png"                    ) format = 0;
+		else if( ext == ".jpg" || ext == ".jpeg"  ) format = 1;
+		if( format < 0 ) {
+			return;	// not a format AddTexturePaintersBatch handles
+		}
+
+		const char* colorSpace = TextureColorSpace( role );
+		char cs = 1;	// sRGB default
+		if(      std::strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) cs = 0;
+		else if( std::strcmp( colorSpace, "sRGB"             ) == 0 ) cs = 1;
+		else if( std::strcmp( colorSpace, "ROMMRGB_Linear"   ) == 0 ) cs = 2;
+		else if( std::strcmp( colorSpace, "ProPhotoRGB"      ) == 0 ) cs = 3;
+
+		// Address-wrap mode from the texture's sampler (glTF default = REPEAT).
+		char wrapS, wrapT;
+		ResolveTextureWrap( tex, wrapS, wrapT );
+
+		PendingDecode pd;
+		pd.painterName = painterName;
+		pd.filePath    = filePath;	// empty if reading from bytes
+		pd.bytes       = bytes;
+		pd.numBytes    = len;
+		pd.format      = format;
+		pd.colorSpace  = cs;
+		pd.wrap_s      = wrapS;
+		pd.wrap_t      = wrapT;
+		// Landing 2: per-role; false for normal maps.
+		pd.mipmap      = ( std::strcmp( role, "normal" ) != 0 );
+		// Landing 3 / Stage C slice 2: emissive textures uplift as
+		// ILLUMINANT -- HDR values (KHR_materials_emissive_strength > 1)
+		// survive unclamped (same max-channel scale + normalize as
+		// Unbounded) AND the texel carries the reference illuminant's
+		// shape, which is what a radiance source means under the Stage C
+		// convention.  MUST match the slow-path kind chosen in
+		// CreateTexturePainter above, or a pre-decoded painter and a
+		// slow-path one would disagree spectrally for the same texture.
+		// All other glTF texture roles are physically bounded
+		// reflectances and stay on Albedo.
+		pd.spectrumKind = ( std::strcmp( role, "emissive" ) == 0 )
+			? eSpectrumKind_Illuminant
+			: eSpectrumKind_Albedo;
+		pending.push_back( std::move( pd ) );
+	};
+
+	// Walk every material's texture slots.  Mirrors the slots
+	// CreateMaterial reads; if a slot is added there, add it here too.
+	for( size_t mi = 0; mi < data->materials_count; ++mi ) {
+		const cgltf_material& mat = data->materials[ mi ];
+		if( mat.has_pbr_metallic_roughness ) {
+			enqueue( mat.pbr_metallic_roughness.base_color_texture.texture,        "basecolor" );
+			enqueue( mat.pbr_metallic_roughness.metallic_roughness_texture.texture, "metallic_roughness" );
+		}
+		enqueue( mat.emissive_texture.texture, "emissive" );
+		enqueue( mat.normal_texture.texture,   "normal" );
+		// Landing 13: occlusionTexture — pre-decode for the AO modulator
+		// chain in CreateMaterial.  Honoured when the gltf_import chunk's
+		// `respect_baked_occlusion` is TRUE (the default).
+		// Landing 12.B: when the material is ORM-packed (occlusion and MR
+		// reference the same image), enqueue under role "metallic_roughness"
+		// so PreDecodeTextures' `seen` set dedupes against the MR enqueue
+		// above — saves one PNG decode + one painter manager entry per
+		// ORM-packed material.  CreateMaterial's AO modulator chain reads
+		// the same shared painter via EffectiveRole.
+		enqueue( mat.occlusion_texture.texture, EffectiveRole( mat, "occlusion" ) );
+		// Landing 12.C: KHR_materials_specular textures (per-pixel L7).
+		if( mat.has_specular ) {
+			enqueue( mat.specular.specular_texture.texture,       "specular" );
+			enqueue( mat.specular.specular_color_texture.texture, "specular_color" );
+		}
+		// Landing 12.C: KHR_materials_anisotropy texture (per-pixel L8).
+		if( mat.has_anisotropy ) {
+			enqueue( mat.anisotropy.anisotropy_texture.texture, "anisotropy" );
+		}
+		// Phase-5 sheen / clearcoat texture slots intentionally left out
+		// — those code paths are #if 0 in CreateMaterial today.
+	}
+
+	if( pending.empty() ) {
+		return;
+	}
+
+	// Build the contiguous request array AddTexturePaintersBatch consumes.
+	// Pointers in TexturePainterBatchRequest reference strings owned by
+	// `pending` (filePath via .c_str()) or by the cgltf buffer (bytes); both
+	// outlive the batch call.
+	std::vector<TexturePainterBatchRequest> requests;
+	requests.reserve( pending.size() );
+	const double identityScale[3] = { 1.0, 1.0, 1.0 };
+	const double zeroShift[3]     = { 0.0, 0.0, 0.0 };
+	for( const PendingDecode& pd : pending ) {
+		TexturePainterBatchRequest r = {};
+		r.name       = pd.painterName.c_str();
+		r.filePath   = pd.filePath.empty() ? NULL : pd.filePath.c_str();
+		r.bytes      = pd.bytes;
+		r.numBytes   = pd.numBytes;
+		r.format     = pd.format;
+		r.colorSpace = pd.colorSpace;
+		r.filterType = 1;		// bilinear
+		r.wrap_s     = pd.wrap_s;	// from cgltf_texture::sampler (glTF default REPEAT)
+		r.wrap_t     = pd.wrap_t;
+		r.lowmemory  = opts.lowmemTextures;	// chunk-controlled; default false.
+								// When true, defers color-space convert to
+								// per-sample.  Saves ~4x texture RAM + 5-10x
+								// load on heavy-PBR scenes; pays ~25%
+								// per-sample render cost.  Match the
+								// CreateTexturePainter slow path if changing.
+		r.mipmap     = pd.mipmap;	// Landing 2: per-role; false for normal maps
+		r.spectrumKind = pd.spectrumKind;	// Landing 3: per-role; Illuminant for emissive
+		std::memcpy( r.scale, identityScale, sizeof(identityScale) );
+		std::memcpy( r.shift, zeroShift,     sizeof(zeroShift) );
+		requests.push_back( r );
+	}
+
+	// Dispatch.  Per-request success array lets us memoize ONLY the
+	// painter names that decoded AND registered — not just the ones we
+	// asked to register.  Critical: if a malformed PNG decode failed (or
+	// AddItem rejected a duplicate), the painter never reached the
+	// manager, so memoizing its name would let CreateTexturePainter's
+	// fast path return a name that downstream AddChannelPainter /
+	// AddBlendPainter / AddPBRMetallicRoughnessMaterial calls then fail
+	// to look up.  A single broken texture would poison the whole
+	// material graph through that fast path.  By recording only true
+	// successes, the fast path stays correct, and the slow path in
+	// CreateTexturePainter retries the decode (or the material code
+	// substitutes a uniform-color fallback when the slow path also
+	// fails).
+	// `std::vector<bool>` is the bit-packed specialization that doesn't
+	// expose a `bool*` — use a plain heap array (RAII-wrapped) instead.
+	std::unique_ptr<bool[]> requestSuccess( new bool[requests.size()]() );	// () zero-inits to false
+	(void) job.AddTexturePaintersBatch( requests.data(), requests.size(),
+	                                    requestSuccess.get() );
+
+	for( size_t i = 0; i < pending.size(); ++i ) {
+		if( requestSuccess[i] ) {
+			mRegisteredTextures.insert( pending[i].painterName );
+		}
+	}
+}
+

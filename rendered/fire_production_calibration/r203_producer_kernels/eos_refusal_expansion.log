@@ -1,0 +1,43 @@
+OWNER_EOS_DIAGNOSTIC checkpoint_sha256=4a5d1c2f5bac9b23bf149f5e700668314e52658c83e22f15eef597294ca8300a build=afd6c9023a3361291d4e893b82b2aec24db92bf879db8397633fdce49a863713 accepted_steps=44 beginning_s=0.072435702662914991 migration_authority=false
+EOS_REFUSAL_INPUT_V1 stage=0 raw_iteration=4294967295 cell=179246 nx=69 ny=69 nz=106 Tmin=300 Tmax=2300 pressure=101325 dynamics_bound=0.25 scope=failed_candidate_only publication=false
+EOS_REFUSAL_COMPONENT field=0 component=0 bits=2911411995 value=-1.5532066952039791e-11
+EOS_REFUSAL_COMPONENT field=0 component=1 bits=2921228213 value=-3.6017151067158082e-11
+EOS_REFUSAL_COMPONENT field=0 component=2 bits=1049346736 value=0.27296972274780273
+EOS_REFUSAL_COMPONENT field=0 component=3 bits=1063658519 value=0.89898818731307983
+EOS_REFUSAL_COMPONENT field=0 component=4 bits=776277514 value=4.4805083254662037e-11
+EOS_REFUSAL_COMPONENT field=0 component=5 bits=776624364 value=4.6008460929947148e-11
+EOS_REFUSAL_COMPONENT field=0 component=6 bits=772830492 value=3.2845823283444986e-11
+EOS_REFUSAL_COMPONENT field=0 component=7 bits=2906723385 value=-1.0975270171853513e-11
+EOS_REFUSAL_COMPONENT field=0 component=8 bits=772006681 value=2.9987654720509127e-11
+EOS_REFUSAL_COMPONENT field=1 component=0 bits=2909926593 value=-1.3753610229871871e-11
+EOS_REFUSAL_COMPONENT field=1 component=1 bits=2920452034 value=-3.3324239201437678e-11
+EOS_REFUSAL_COMPONENT field=1 component=2 bits=1049346736 value=0.27296972274780273
+EOS_REFUSAL_COMPONENT field=1 component=3 bits=1063658520 value=0.89898824691772461
+EOS_REFUSAL_COMPONENT field=1 component=4 bits=775613682 value=4.2501953345652765e-11
+EOS_REFUSAL_COMPONENT field=1 component=5 bits=776032389 value=4.3954635070564407e-11
+EOS_REFUSAL_COMPONENT field=1 component=6 bits=772349718 value=3.1177803394566439e-11
+EOS_REFUSAL_COMPONENT field=1 component=7 bits=2905963428 value=-1.031611254753706e-11
+EOS_REFUSAL_COMPONENT field=1 component=8 bits=772522672 value=3.1777858122694624e-11
+EOS_REFUSAL_COMPONENT field=2 component=0 bits=2909926593 value=-1.3753610229871871e-11
+EOS_REFUSAL_COMPONENT field=2 component=1 bits=2920452034 value=-3.3324239201437678e-11
+EOS_REFUSAL_COMPONENT field=2 component=2 bits=1049346736 value=0.27296972274780273
+EOS_REFUSAL_COMPONENT field=2 component=3 bits=1063658520 value=0.89898824691772461
+EOS_REFUSAL_COMPONENT field=2 component=4 bits=775613682 value=4.2501953345652765e-11
+EOS_REFUSAL_COMPONENT field=2 component=5 bits=776032389 value=4.3954635070564407e-11
+EOS_REFUSAL_COMPONENT field=2 component=6 bits=772349718 value=3.1177803394566439e-11
+EOS_REFUSAL_COMPONENT field=2 component=7 bits=2905963428 value=-1.031611254753706e-11
+EOS_REFUSAL_COMPONENT field=2 component=8 bits=772522672 value=3.1777858122694624e-11
+EOS_REFUSAL_COMPONENT field=3 component=0 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=1 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=2 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=3 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=4 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=5 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=6 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=7 bits=0 value=0
+EOS_REFUSAL_COMPONENT field=3 component=8 bits=0 value=0
+EOS_REFUSAL_FP64 accepted=1 temperature_K=300 pressure_ratio=0.99999997019767695 projected_ratio=0.99999994039535522 lower_midpoint=0.99999991059303284 upper_midpoint=0.99999997019767761 lower_distance_ratio=5.960464410925681e-08 upper_distance_ratio=6.6613381477509392e-16 error=
+EOS_REFUSAL_EXPANSION temperature=300 hi=1 lo=-2.9802322387695312e-08 tail=-5.1471439347565255e-16 bound=4.6725329510620597e-22 rounded=1 unique=0 lower_order=1 upper_order=-1
+capstone solver diagnostic steps=44 time=0.072435702662914991: solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33565184 eos_failure_cell=179246 eos_failure_term_bitmap=3
+capstone accepted EOS drift history tail=0.00138865505,0.00144124631,0.00149498382,0.00154992404,0.00160602413,0.00166346469,0.00172217458,0.00178212022
+OWNER_EOS_DIAGNOSTIC_END solver_accepted=0 checkpoint_unchanged=1 migration_authority=false error=solver_failure:projected-Heun resident stage device validation failed: stage=0 bitmap=33565184 eos_failure_cell=179246 eos_failure_term_bitmap=3

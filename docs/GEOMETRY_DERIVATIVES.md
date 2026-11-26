@@ -1,0 +1,351 @@
+# Surface Derivative Conventions
+
+Contract for `IGeometry::ComputeSurfaceDerivatives` and how consumers (SMS
+`ManifoldSolver`, future derivative-aware code) must interpret its output.
+
+## The contract
+
+```cpp
+struct SurfaceDerivatives {
+    Vector3 dpdu;   // position partial derivative w.r.t. surface parameter u
+    Vector3 dpdv;   // position partial derivative w.r.t. surface parameter v
+    Vector3 dndu;   // normal partial derivative w.r.t. u
+    Vector3 dndv;   // normal partial derivative w.r.t. v
+    Point2  uv;     // surface parameters at this point
+    bool    valid;  // true on success
+
+    // The TEXCOORD CHART MAP (added 2026-09-06) -- d(s,t)/d(u,v),
+    // where (s,t) is what the geometry stamps into
+    // RayIntersectionGeometric::ptCoord.  Default identity with
+    // texChartValid = false, i.e. "this geometry did not say".
+    Scalar  dsdu, dsdv, dtdu, dtdv;
+    bool    texChartValid;
+};
+```
+
+**Inputs.** Object-space intersection point and object-space normal. The normal
+must be consistent with the one `IntersectRay` fills into
+`RayIntersectionGeometric::vNormal` (object-space, interpolated for smooth
+meshes, face for flat meshes).
+
+**Invariants every implementation must satisfy.**
+
+1. **Tangency.** `dpdu · n ≈ 0` and `dpdv · n ≈ 0`. The position derivatives
+   live in the tangent plane.
+2. **Normal stays unit.** `dndu · n ≈ 0` and `dndv · n ≈ 0`, because `|n| = 1`
+   identically implies `2·n·(dn/d*) = 0`.
+3. **Handedness.** `(dpdu × dpdv) · n > 0`. The local `(dpdu, dpdv, n)` frame
+   is **right-handed** with the outward normal. Consumers may rely on this
+   sign without inspecting the specific geometry **for any per-`IGeometry`
+   output** — every `IGeometry` implementation must satisfy it at every
+   point; the one documented exception is downstream of them, at the
+   CSG-composition layer, on a **final `CSGObject` subtraction cavity-wall
+   hit** (a composition-layer negation, not a per-geometry one) — see
+   "CSG-subtraction exception" under the Handedness audit below.
+4. **Finite values.** No NaN / Inf at any valid surface point. Degenerate
+   parameter values (poles, caps) must return `valid = true` with a
+   well-defined tangent frame (pick an arbitrary but deterministic frame
+   at a singular point — e.g. `(1,0,0)`/`(0,0,1)`).
+5. **Finite-difference agreement.** For small `eps`, a central FD of
+   position/normal in tangent directions must match the analytical result
+   to O(eps²). This is the load-bearing test per geometry.
+
+## Magnitudes and parameter scaling
+
+Implementations are **free to pick their own natural parameterization**. The
+Jacobian-determinant consumer (SMS `ManifoldSolver`) converts from parameter
+to world tangent-plane coordinates by dividing by `|dpdu| × |dpdv|` per
+vertex, so the absolute magnitude does not matter as long as it is consistent
+with the derivative scale.
+
+Do **not** artificially unit-normalize `dpdu` / `dpdv` if the natural
+parameterization has non-unit metric. Doing so would corrupt the
+metric-conversion step. Specifically:
+
+- A parametric surface like a sphere should return `|dpdu| = r·sin θ` (NOT
+  unit) — the metric is `r sin θ` for the azimuth parameter and `r` for the
+  polar parameter.
+- A flat unit-metric surface (disk, box face, plane) returns unit vectors —
+  the parameterization IS world coordinates.
+
+## The texcoord chart map
+
+The freedom granted above has a consequence: **`dpdu`/`dpdv` and
+`ri.ptCoord` are, in general, two different charts of the same surface.**
+`dpdu` differentiates the geometry's own natural parameter — an azimuth
+in radians, an axial world coordinate — while `ptCoord` is the
+normalised `[0, 1]²` coordinate a texture is actually sampled at, which
+the matching `GeometricUtilities::*TextureCoord` produces and which may
+be scaled, axis-swapped, sign-flipped or offset relative to the
+derivative parameter. Only the triangle-mesh path has the two coincide,
+because there `dpdu` is *defined* by inverting the per-vertex UV
+Jacobian.
+
+Any consumer that combines `ptCoord` with a `dpdu`-chart derivative
+therefore needs the bridge between them, and cannot guess it. So every
+implementation that populates `ri.derivatives` **must also state its
+chart map**:
+
+```
+ds = dsdu·du + dsdv·dv
+dt = dtdu·du + dtdv·dv
+```
+
+**`texChartValid = false` is the correct answer** when the geometry has
+no such map — most importantly the mesh intersectors' barycentric-edge
+fallback, whose `dpdu`/`dpdv` are triangle edge vectors with no relation
+to `ptCoord` at all. Consumers must treat false as "no texcoord
+Jacobian available" and decline, **not** as "assume the identity": an
+unset flag on a geometry whose two charts differ by 2π is precisely the
+bug this field exists to prevent.
+
+The map is **local**. At a wrap seam or a pole the underlying map is not
+differentiable, and these four numbers describe the local branch only.
+
+Today's only consumer is `SolveFootprintUV`
+([TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h)):
+it solves the pixel differentials in the derivative chart and then
+multiplies through by this map, so the `dudx…dvdy` it publishes are in
+the same chart as `ptCoord` — the pairing `TexturePainter::
+SampleTextured` and `WeaveBRDF` assume. Before the map existed, each
+analytic primitive published radians where the sampler expects `[0, 1]`,
+mipping 1.59 (cylinder) to 2.65 (torus) LOD levels too blurry; the
+regression guard is `Test11_ChartOracle` in
+[tests/TextureFootprintTest.cpp](../tests/TextureFootprintTest.cpp),
+which finite-differences `ptCoord` across a pixel's own ray
+differentials and compares.
+
+Per-geometry maps as shipped:
+
+| Geometry | derivative `(u, v)` | `ptCoord (s, t)` | map |
+|---|---|---|---|
+| `SphereGeometry` | φ azimuth, θ polar | `((π−φ)/2π, θ/π)` | `dsdu = −1/2π`, `dtdv = 1/π` |
+| `EllipsoidGeometry` | φ azimuth, θ polar | same form, φ measured from `−x` | `dsdu = −1/2π`, `dtdv = 1/π` |
+| `CylinderGeometry` (side) | axial, θ | `(θ/2π, (axial−axisMin)/height)` | SWAPPED: `dtdu = 1/height`, `dsdv = ±1/2π` (sign per the axis's right-handedness fix-up: `+` on y, `−` on x and z) |
+| `CylinderGeometry` (end cap) | disk `(ra, rb)` in `[0,1]` | the same disk coordinate | identity, TRANSPOSED on ONE of the two caps — `+y` for a y-axis cylinder, `−x` / `−z` for the other two (see below) |
+| `TorusGeometry` | tube angle, ring angle | `(ring/2π, tube/2π)` | SWAPPED: `dsdv = dtdu = 1/2π` |
+| both mesh classes, `useUVJacobian` | stored per-vertex UV | the same UV | identity, with `dtdv = −1` when the handedness flip negates `dpdv` |
+| both mesh classes, barycentric fallback | triangle edges | unrelated | **`texChartValid = false`** |
+| `BilinearPatchGeometry`, `BezierPatchGeometry` | patch `(u, v)` at intersection (DL-20) | `(u, v)` | **`texChartValid = false`** (`ri.derivatives` populated at intersection; point-only query invalid) |
+| every other geometry | — | — | does not populate `ri.derivatives` at all |
+
+Note the sphere/ellipsoid sign: the texture azimuth runs *backwards*
+from the derivative one (`s = 0` sits at `−X` and `s` increases toward
+`+Z`). Mip LOD squares, so it would not notice — anisotropic filtering
+and the finite-difference oracle do.
+
+And the end-cap row's asymmetry, because it looks like a typo and is
+not: the swap fires on whichever cap's outward normal *opposes*
+`dpdu × dpdv`, and the `(ra, rb)` pairs `CylinderGeometry` picks are not
+consistently cyclic — `x → (y, z)`, `y → (x, z)`, `z → (x, y)`, where the
+cyclic choice for `y` would have been `(z, x)`. So `dpdu × dpdv` is `+X`
+on the x axis, `−Y` on the y axis and `+Z` on the z axis, and the
+transposed cap is `−x`, **`+y`**, `−z` respectively. This table said "the
+`−axis` cap" until fix round 2 of the relief follow-ups, which measured
+all six caps by instrumenting the swap site.
+
+## Per-geometry conventions
+
+| Geometry | `u` | `v` | `|dpdu|` | `|dpdv|` | `u` range | `v` range | Status |
+|---|---|---|---|---|---|---|---|
+| `SphereGeometry` | φ azimuth | θ polar from +Y | `r·sin θ` | `r` | `(-π, π]` | `[0, π]` | ✅ curvature-aware |
+| `TorusGeometry` | v on cross-section (tube) | u around major axis (ring) | `r` | `R + r·cos v_tube` | `(-π, π]` | `(-π, π]` | ✅ curvature-aware (swapped from natural order for right-handedness) |
+| `CylinderGeometry` | axial coord | θ around axis | `1` | `r` | cylinder height | `(-π, π]` | ✅ curvature-aware (swapped from natural order for right-handedness) |
+| `EllipsoidGeometry` | φ azimuth | θ polar | non-trivial | non-trivial | `(-π, π]` | `[0, π]` | ✅ curvature-aware (gradient-based normal) |
+| `BoxGeometry` | face-local u | face-local v | `1` | `1` | `[0, 1]` per face | `[0, 1]` per face | ✅ correctly flat |
+| `CircularDiskGeometry` | world X on face | world Y on face | `1` | `1` | `[-1, 1]` scaled by radius | `[-1, 1]` | ✅ correctly flat |
+| `ClippedPlaneGeometry` | normalized along edge 0→1 | n × dpdu | `1` | `1` | barycentric-like | barycentric-like | ✅ correctly flat |
+| `InfinitePlaneGeometry` | world X | world Y | `1` | `1` | `(-∞, ∞)` | `(-∞, ∞)` | ✅ correctly flat |
+| `TriangleMeshGeometry` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (UV-Jacobian invert + tangent-plane projection, barycentric-edge fallback) |
+| `TriangleMeshGeometryIndexed` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (shared with non-indexed via `ComputeTriangleDerivatives`) |
+| `BilinearPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ✅ Analytical at intersection (DL-20); point-only query invalid |
+| `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ✅ Analytical at intersection (DL-20; conservative-reject when ray-facing winding flip fires); point-only query invalid |
+| `DisplacedGeometry` | forwards to baked mesh (or base for `ComputeAnalyticalDerivatives`) | forwards | forwards | forwards | forwards | forwards | 🔁 forwards `IntersectRay` / `ComputeSurfaceDerivatives` to its baked mesh (carrying smooth transported shading normals via `ApplyTransportedShading` on smooth-normal mesh bases) and implements `ComputeAnalyticalDerivatives` (chain-rule composition of base analytical derivatives with `displacement`/`height`, scaled by `1 − smoothing`) |
+
+### Intersection note — `ClippedPlaneGeometry` / `BilinearPatchGeometry`
+
+Both route their `IntersectRay` through the shared
+[`RayBilinearPatchIntersection`](../src/Library/Intersection/RayBilinearPatchIntersection.cpp),
+so the `(u, v)` in the table above is whatever that solver reports.  Until
+2026-09-06 (commit `14e0f45d`) it eliminated the ray parameter on a
+hard-coded `z` axis and therefore **missed every ray travelling in the XY
+plane** — a `clipped_plane` viewed dead-on from above was invisible.  The
+solver now picks the elimination axis as the largest `|Dir|` component;
+see docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §10.6 and
+`GeometryUVRoundtripTest::TestBilinearEliminationAxis`.
+
+### Handedness audit
+
+`(dpdu × dpdv) · n` must be positive at every non-degenerate point.  The torus and cylinder originally returned left-handed frames under their natural `(ring, cross-section)` / `(θ, axial)` parameterisation.  **Resolved**: both implementations swap their natural `u`/`v` ordering so that `(dpdu × dpdv) · n > 0` at every point.  See the code comments in [TorusGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/TorusGeometry.cpp) and [CylinderGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/CylinderGeometry.cpp) — the per-axis cylinder permutation is worked out case-by-case so that the swap produces right-handed frames for x-, y-, and z-axis cylinders.
+
+Current sign check at representative non-degenerate points (all must be **+**):
+
+- **SphereGeometry**, point at `(r, 0, 0)`, n=`(1,0,0)`: `dpdu = (0,0,r)`, `dpdv = (0,-r,0)` → cross dot n = **+r²** ✅
+- **TorusGeometry** (post-swap), u=tube v=ring, u=π/2 v=0 (top of ring): right-handed by construction ✅
+- **CylinderGeometry** (post-swap, per-axis), u=axial v=θ: right-handed by construction ✅
+- **BoxGeometry**, +X face: **+1** ✅
+- **EllipsoidGeometry**: **+** (gradient-based normal, same handedness as sphere) ✅
+- **CircularDiskGeometry**, z-axis: **+1** ✅
+- **ClippedPlaneGeometry**: `dpdv = n × dpdu` by construction, cross dot n = **+** ✅
+- **InfinitePlaneGeometry**: **+1** ✅
+
+Handedness is now uniform across all implemented geometries.  Consumers that care about orientation sign (texture-space normal mapping, future glossy SMS) can rely on `(dpdu × dpdv) · n > 0` without per-geometry conditioning.
+
+### CSG-subtraction exception (invariant 3 does not hold on a carved cavity wall)
+
+`CSG_SUBTRACTION`'s three entry-flip branches ([CSGObject.cpp](../src/Library/Objects/CSGObject.cpp), P1-1) report the carving operand B's normal NEGATED (`ri.geometric.vNormal = -riObjB.geometric.vNormal`) — the ray is leaving A's solid into the void B carved out of it, so the reported shading normal points the opposite way from B's own outward normal. `dpdu`/`dpdv` are left UNCHANGED (still B's own, un-negated, object-space tangent frame at that surface point) — flipping them would reparameterize the surface and break UV-keyed re-queries such as `ManifoldSolver`'s SMS two-stage-solver `ComputeAnalyticalDerivatives(vertex.uv)` path, which expects `uv` to keep meaning the same thing regardless of which CSG operand exposed the point. `dndu`/`dndv` ARE negated (alongside `vNormal`), because they must stay derivatives of whichever normal FIELD is actually being reported (see the `CSGObject::IntersectRay` bullet above).
+
+Net effect: on these cavity-wall hits, `(dpdu × dpdv) · n` is **negative** — the local `(dpdu, dpdv, n)` frame is intentionally LEFT-handed, because `n` flipped and `dpdu`/`dpdv` deliberately did not. This is not a bug to fix; it's the direct consequence of leaving `dpdu`/`dpdv` at their un-reparameterized values while reporting the physically-correct (into-the-cavity) shading normal. Weingarten-map / signed-curvature consumers (`e = dndu · dpdu`, etc.) stay self-consistent under this convention — both `n` and `dndu`/`dndv` flipped together, so the signed curvature correctly reports the concave cavity (opposite sign from the same mesh surface hit as a stand-alone convex object) — but any consumer that assumes invariant 3 unconditionally (e.g. to infer front/back-facing from the frame's handedness alone, independent of `n`) must special-case a CSG-subtraction cavity wall.
+
+## World-space transform
+
+`IGeometry::ComputeSurfaceDerivatives` / `IGeometry::ComputeAnalyticalDerivatives`
+and a mesh geometry's own `IntersectRay` all report `dpdu, dpdv, dndu, dndv`
+in OBJECT space, per the contract above.  Promotion to WORLD space happens at
+exactly three call sites, each applying **its own** object transform once:
+
+- `Object::IntersectRay`'s derivatives block
+  ([Object.cpp](../src/Library/Objects/Object.cpp), immediately after the
+  block that promotes `vNormal`/`vGeomNormal`) — fires when the wrapped
+  geometry populated `ri.geometric.derivatives.valid` during its own
+  `IntersectRay`.  **As of 2026-08-29 that is the two triangle-mesh classes
+  PLUS the analytic curved primitives** — `SphereGeometry`,
+  `EllipsoidGeometry`, `TorusGeometry` and `CylinderGeometry` now publish
+  the closed-form Weingarten map they already computed, at intersection
+  time, so `ri.derivatives` carries an exact tangent/curvature frame there
+  instead of nothing (geometry-derived shading signals Phase 1, see
+  [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+  §5.4).  Three consequences worth knowing:
+  **(1)** `NormalMap`'s tangent-frame fallback ladder now takes its
+  `derivatives.dpdu` rung on those primitives instead of the arbitrary
+  ONB rung its own warning calls "correct only … essentially never";
+  **(2)** SMS's `ComputeVertexDerivatives` reads the record's analytic
+  frame instead of its geometry-agnostic finite-difference fallback;
+  **(3)** several `CSGObject` branches whose `dndu`/`dndv` negation was
+  documented as UNREACHABLE ("no analytic geometry sets
+  derivatives.valid") are now live, and are covered by
+  `tests/CsgSurfacePayloadTest.cpp` Tests 18/19.
+  Planar primitives deliberately stay unpopulated.  **As of 2026-09-17
+  (DL-20)** `BilinearPatchGeometry` and `BezierPatchGeometry` also populate
+  exact analytical Weingarten derivatives (`dpdu`, `dpdv`, `dndu`, `dndv`)
+  at intersection time in `RayElementIntersection`; only their point-only
+  `ComputeSurfaceDerivatives(point, normal)` query (and a Bezier hit that
+  triggered the ray-facing winding-consistency flip) remains conservatively
+  `valid = false` so absence is never misreported as flatness.
+- `Object::ComputeAnalyticalDerivatives` ([Object.cpp](../src/Library/Objects/Object.cpp))
+  — the `(u, v)`-keyed analytical query used by the SMS two-stage solver;
+  wraps `IGeometry::ComputeAnalyticalDerivatives` (currently implemented by
+  `EllipsoidGeometry` and `DisplacedGeometry`, which forwards to its base).
+- `CSGObject::IntersectRay`'s derivatives block
+  ([CSGObject.cpp](../src/Library/Objects/CSGObject.cpp)) — mirrors
+  `Object::IntersectRay`'s block exactly, applying THIS CSG level's own
+  transform to whatever the operand below (a plain `Object`, or a
+  further-nested `CSGObject`) already promoted one level.  CSG nesting
+  composes correctly because each level applies its own transform to the
+  level-local normal field in turn — the same pattern the `vNormal` /
+  `vTangent` promotions in that function already use — **provided
+  `ri.geometric.derivatives` is already paired with the same normal FIELD
+  `ri.geometric.vNormal` reports at the point this block runs**. That
+  pairing is not automatic: `CSG_SUBTRACTION`'s three entry-flip branches
+  (the two "we're inside one/both operands" branches and the "outside
+  both, B's entry is the visible boundary" branch) report a NEGATED
+  operand normal (`ri.geometric.vNormal = -riObjB.geometric.vNormal`) while
+  starting from a whole-record `ri = riObjB` copy that still carries B's
+  UN-negated `dndu`/`dndv` — so each of those three branches explicitly
+  negates `ri.geometric.derivatives.dndu`/`dndv` to re-pair them with the
+  negated normal (P1-1, 2026-08-29) before this promotion block ever runs.
+  Without that per-branch negation the composition claim above would be
+  false for every subtraction cavity wall a mesh operand carves, not just
+  imprecise. See the CSG-subtraction exception in the Handedness section
+  below for the follow-on frame-orientation consequence.
+
+### Two extra record-only scalars (not part of `SurfaceDerivatives`)
+
+`SurfaceDerivativesInfo` — the record-riding twin — additionally carries
+`scaleHint` (a characteristic LENGTH, the geometry's bounding-box diagonal)
+and `curvature` / `curvatureValid` (a DIRECT signed mean curvature, in
+1/length, for families like the SDF that answer the curvature question
+better than a synthesized `dndu`/`dndv` pair could).  **Neither exists on
+`SurfaceDerivatives`, and `IGeometry::ComputeSurfaceDerivatives`'s contract
+is unchanged by them.**  Both are stamped OBJECT-space by the geometry and
+folded to world measure at the same three transform sites below —
+`scaleHint` multiplied by `|det M|^(1/3)`, `curvature` divided by it —
+and that fold sits deliberately OUTSIDE the `derivatives.valid` gate,
+because the SDF family sets `curvatureValid` while leaving `valid` false.
+Both are populated only when something in the process actually reads
+curvature; see
+[GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+§5.2/§5.4.
+
+**The two field kinds transform differently, and dndu/dndv are NOT a plain
+inverse-transpose:**
+
+- `dpdu`, `dpdv` are tangent VECTORS (directions along the surface) — the
+  forward transform `m_mxFinalTrans`'s linear part, same as `vTangent`.
+- The normal `n` is transformed by the inverse-transpose
+  `m_mxInvTranspose`'s linear part and then RENORMALIZED (`n_w =
+  normalize(M⁻ᵀ n_obj)`) — this renormalization is the detail that matters
+  for what comes next.
+- `dndu`, `dndv` are derivatives of that RENORMALIZED normal FIELD, not of
+  the raw inverse-transpose output.  Differentiating a quotient (the
+  normalize) rather than just the linear map gives the quotient rule:
+  ```
+  n_w(u,v)  = M⁻ᵀ n_obj(u,v) / ‖M⁻ᵀ n_obj(u,v)‖
+  dn_w/du   = (I − n_w n_wᵀ) · (M⁻ᵀ dndu_obj) / ‖M⁻ᵀ n_obj‖
+  dn_w/dv   = (I − n_w n_wᵀ) · (M⁻ᵀ dndv_obj) / ‖M⁻ᵀ n_obj‖
+  ```
+  A plain inverse-transpose (skipping both the projection and the divide by
+  `‖M⁻ᵀ n_obj‖`) is correct only for a RIGID transform, where
+  `‖M⁻ᵀ n_obj‖ == 1` identically and the projection removes a component
+  that's already ~0 by invariant 2 above (`dndu · n ≈ 0`).  Under any
+  non-rigid transform (scale, non-uniform stretch, shear) it under-corrects:
+  for a uniform scale `s`, the plain inverse-transpose gives world mean
+  curvature `H_obj / s²` instead of the correct `H_obj / s` (2026-08-29 fix;
+  see [tests/GeometryUVRoundtripTest.cpp](../tests/GeometryUVRoundtripTest.cpp)'s
+  `TestObjectWorldDerivatives()` for the regression coverage, including a
+  direct check that the old `s²` behaviour is excluded).
+- The degenerate case (`‖M⁻ᵀ n_obj‖` below `NEARZERO`, i.e. the transform is
+  singular along the normal direction) has no well-defined unit world
+  normal to differentiate against; both fixed call sites mark the
+  derivatives invalid there rather than dividing by ~0.
+
+## Consumer expectations (SMS `ManifoldSolver`)
+
+Given the conventions above, the solver:
+
+1. Reads `sd.dpdu, sd.dpdv, sd.dndu, sd.dndv` — already in WORLD space by
+   the time the solver sees them.  The solver itself does NOT transform
+   these fields; the promotion happened in `Object::IntersectRay` /
+   `Object::ComputeAnalyticalDerivatives` / `CSGObject::IntersectRay` per
+   the "World-space transform" section above.  (The solver also has its
+   own geometry-agnostic central-finite-difference fallback path — see
+   [docs/SMS.md](SMS.md) "Surface derivatives" — for geometries that don't
+   populate `derivatives.valid` and don't implement
+   `ComputeAnalyticalDerivatives`; that path never touches `M⁻ᵀ` at all,
+   since it differences world-space ray-cast hits directly.)
+2. Projects `dpdu` into the tangent plane (removes any tiny n-component
+   from numerical noise), then Gram-Schmidts `dpdv` against `dpdu`
+   (`OrthonormalizeTangentFrame`), which also applies the matching
+   correction to `dndv` so it stays consistent with the re-orthogonalized
+   `v` direction.
+3. Computes `ds_du`, `dt_du`, etc. via the Cycles product-rule formula
+   ([ManifoldSolver.cpp](../src/Library/Utilities/ManifoldSolver.cpp) in
+   `BuildJacobian`).
+4. Includes the per-vertex metric `|dpdu| × |dpdv|` in the final metric
+   conversion from parameter-space Jacobian to world tangent-plane
+   Jacobian.
+
+## Test battery requirements
+
+Every `ComputeSurfaceDerivatives` implementation must pass:
+
+1. **Finite-difference agreement**: 5+ test points per geometry, analytical
+   vs `(pos(u+ε,v) - pos(u-ε,v)) / 2ε`, tolerance 1e-3 with ε=1e-4.
+2. **Tangency**: `|dpdu·n| < 1e-6` and `|dpdv·n| < 1e-6`.
+3. **Normal unit preservation**: `|dndu·n| < 1e-6`, `|dndv·n| < 1e-6`.
+4. **Handedness**: `(dpdu × dpdv)·n > 0` at a representative point.
+5. **Validity**: `sd.valid == true` for surface-interior points.
+6. **Degenerate-point graceful handling**: No NaN / Inf at poles / caps.
+
+See [tests/GeometrySurfaceDerivativesTest.cpp](../tests/GeometrySurfaceDerivativesTest.cpp)
+(created in Stage 1) for the concrete test harness.

@@ -14,14 +14,19 @@
 
 #include "pch.h"
 #include "DonnerJensenSkinSSSShaderOp.h"
+#include "SSSContainment.h"
 #include "../../Materials/BioSpecSkinData.h"
+#include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Materials/MultipoleDiffusion.h"
 #include "../../Utilities/HankelTransform.h"
 #include "../../Utilities/GeometricUtilities.h"
-#include "../../Utilities/stl_utils.h"
+#include "../../Utilities/BSSRDFSampling.h"		// ExteriorIOR (DL-291)
 #include "../../Sampling/HaltonPoints.h"
 #include "../../RISE_API.h"
 #include "../../Interfaces/ILog.h"
+#include "../../Utilities/Color/RGBSpectra.h"	// RGBUnboundedSpectrum (RGB->spectral uplift for PerformOperationNM)
+#include <memory>
+#include <mutex>									// std::lock_guard (exception-safe create_mutex)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -157,11 +162,17 @@ void DonnerJensenSkinSSSShaderOp::ComputePerLayerCoefficients(
 
 void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelength(
 	const Scalar nm,
-	const int channel
-	)
+	const int channel,
+	const Scalar exteriorIOR,
+	RISEPel* table_out
+	) const
 {
 	LayerParams layers[2];
 	ComputePerLayerCoefficients( nm, layers );
+
+	// DL-291: each slab's extrapolation term is evaluated against the medium
+	// around the body; exactly a no-op in air (see MultipoleDiffusion.h).
+	RelativizeLayersToExterior( layers, 2, exteriorIOR );
 
 	const LayerParams& epi = layers[0];
 	const LayerParams& derm = layers[1];
@@ -220,20 +231,20 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelength(
 			Rd_final = Rd_ref;
 		}
 
-		m_Rd_table[i][channel] = Rd_final;
+		table_out[i][channel] = Rd_final;
 	}
 
 	// Enforce monotone decrease past the peak
 	int peak = 0;
 	for( int i = 1; i < TABLE_SIZE; i++ )
 	{
-		if( m_Rd_table[i][channel] > m_Rd_table[peak][channel] )
+		if( table_out[i][channel] > table_out[peak][channel] )
 			peak = i;
 	}
 	for( int i = peak + 1; i < TABLE_SIZE; i++ )
 	{
-		if( m_Rd_table[i][channel] > m_Rd_table[i - 1][channel] )
-			m_Rd_table[i][channel] = m_Rd_table[i - 1][channel];
+		if( table_out[i][channel] > table_out[i - 1][channel] )
+			table_out[i][channel] = table_out[i - 1][channel];
 	}
 }
 
@@ -260,7 +271,7 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeProfile()
 	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
 	for( int c = 0; c < 3; c++ )
 	{
-		TabulateProfileAtWavelength( rgb_wavelengths[c], c );
+		TabulateProfileAtWavelength( rgb_wavelengths[c], c, 1.0, m_Rd_table );
 	}
 
 	GlobalLog()->PrintEx( eLog_Info,
@@ -278,6 +289,7 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelengthInto(
 	const Scalar mel_frac,
 	const Scalar hb_epi,
 	const Scalar hb_derm,
+	const Scalar exteriorIOR,
 	RISEPel* table_out,
 	Scalar table_r2_max_val,
 	Scalar table_r2_step_val
@@ -320,6 +332,9 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelengthInto(
 	layers[1].thickness = 1.0;
 	layers[1].ior = ior_dermis;
 	ComputeLayerDerivedParams( layers[1] );
+
+	// DL-291: relative to the medium around the body (no-op in air).
+	RelativizeLayersToExterior( layers, 2, exteriorIOR );
 
 	// Hankel composite
 	static const int N_FREQ = 512;
@@ -433,12 +448,24 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 		if( m_max_distance_lut < 0.1 ) m_max_distance_lut = 0.1;
 	}
 
+	// Allocate LUT storage
+	m_lut_tables = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
+	FillLUT( 1.0, m_lut_tables );
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"DonnerJensenSkinSSSShaderOp: LUT precomputed (%dx%dx%d = %d entries, max_r=%.3f cm)",
+		N_MEL, N_HBE, N_HBD, LUT_TOTAL, m_max_distance_lut );
+}
+
+void DonnerJensenSkinSSSShaderOp::FillLUT(
+	const Scalar exteriorIOR,
+	RISEPel* lut
+	) const
+{
 	const Scalar lut_r2_max = m_max_distance_lut * m_max_distance_lut;
 	const Scalar lut_r2_step = lut_r2_max / TABLE_SIZE;
 
-	// Allocate LUT storage
-	m_lut_tables = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
-    memset( (void*)m_lut_tables, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
+    memset( (void*)lut, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
 
 	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
 
@@ -449,22 +476,18 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 		{
 			for( int i_hbd = 0; i_hbd < N_HBD; i_hbd++ )
 			{
-				RISEPel* table = &m_lut_tables[ LUTIndex(i_mel, i_hbe, i_hbd) ];
+				RISEPel* table = &lut[ LUTIndex(i_mel, i_hbe, i_hbd) ];
 
 				for( int c = 0; c < 3; c++ )
 				{
 					TabulateProfileAtWavelengthInto(
 						rgb_wavelengths[c], c,
 						m_mel_grid[i_mel], m_hbe_grid[i_hbe], m_hbd_grid[i_hbd],
-						table, lut_r2_max, lut_r2_step );
+						exteriorIOR, table, lut_r2_max, lut_r2_step );
 				}
 			}
 		}
 	}
-
-	GlobalLog()->PrintEx( eLog_Event,
-		"DonnerJensenSkinSSSShaderOp: LUT precomputed (%dx%dx%d = %d entries, max_r=%.3f cm)",
-		N_MEL, N_HBE, N_HBD, LUT_TOTAL, m_max_distance_lut );
 }
 
 //=============================================================
@@ -472,6 +495,7 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 //=============================================================
 
 void DonnerJensenSkinSSSShaderOp::InterpolateProfile(
+	const RISEPel* lut,
 	Scalar mel, Scalar hbe, Scalar hbd,
 	RISEPel* table_out
 	) const
@@ -515,14 +539,14 @@ void DonnerJensenSkinSSSShaderOp::InterpolateProfile(
 		(hbd - m_hbd_grid[i0_hbd]) / (m_hbd_grid[i0_hbd+1] - m_hbd_grid[i0_hbd]) : 0;
 
 	// 8 corner tables for trilinear interpolation
-	const RISEPel* c000 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd) ];
-	const RISEPel* c001 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd+1) ];
-	const RISEPel* c010 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd) ];
-	const RISEPel* c011 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd+1) ];
-	const RISEPel* c100 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd) ];
-	const RISEPel* c101 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd+1) ];
-	const RISEPel* c110 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd) ];
-	const RISEPel* c111 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd+1) ];
+	const RISEPel* c000 = &lut[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd) ];
+	const RISEPel* c001 = &lut[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd+1) ];
+	const RISEPel* c010 = &lut[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd) ];
+	const RISEPel* c011 = &lut[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd+1) ];
+	const RISEPel* c100 = &lut[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd) ];
+	const RISEPel* c101 = &lut[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd+1) ];
+	const RISEPel* c110 = &lut[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd) ];
+	const RISEPel* c111 = &lut[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd+1) ];
 
 	// Trilinear interpolation weights
 	const Scalar w000 = (1-t_mel) * (1-t_hbe) * (1-t_hbd);
@@ -701,6 +725,41 @@ Scalar DonnerJensenSkinSSSShaderOp::GetMaximumDistanceForError(
 	return m_max_distance;
 }
 
+const DonnerJensenSkinSSSShaderOp::ExteriorTables& DonnerJensenSkinSSSShaderOp::TablesForExterior(
+	const Scalar exteriorIOR
+	) const
+{
+	// Built once per distinct exterior (DL-291).  The table extents
+	// (m_table_r2_max, m_max_distance_lut) depend only on the dermis
+	// transport coefficient, not on the boundary term, so they are shared.
+	return m_exterior_tables.Get( exteriorIOR, [this]( const Scalar n ) {
+		static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
+		ExteriorTables* tables = new ExteriorTables;
+		for( int i = 0; i < TABLE_SIZE; i++ )
+			tables->Rd[i] = RISEPel( 0, 0, 0 );
+		for( int c = 0; c < 3; c++ )
+			TabulateProfileAtWavelength( rgb_wavelengths[c], c, n, tables->Rd );
+		if( m_has_offset_painters )
+		{
+			tables->lut = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
+			FillLUT( n, tables->lut );
+		}
+		return tables;
+	} );
+}
+
+RISEPel DonnerJensenSkinSSSShaderOp::ComputeTotalExtinctionForExterior(
+	const Scalar distance,
+	const Scalar exteriorIOR
+	) const
+{
+	if( exteriorIOR == 1.0 || !( exteriorIOR > 0 ) || !( exteriorIOR < RISE_INFINITY ) ) {
+		return ComputeTotalExtinction( distance );
+	}
+	LocalProfile profile( TablesForExterior( exteriorIOR ).Rd, m_table_r2_max, m_table_r2_step, m_max_distance );
+	return profile.ComputeTotalExtinction( distance );
+}
+
 //=============================================================
 // IShaderOp — two-pass BSSRDF evaluation
 //=============================================================
@@ -715,7 +774,10 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	const ScatteredRayContainer* pScat
 	) const
 {
+	SSSContainmentScope containment;
 	c = RISEPel( 0.0 );
+    SMSReferenceRadianceScope returnRadiance(rc);
+    const auto cacheKey=std::make_pair(ri.pObject,rc.smsForceLegacy);
 
 	const IScene* pScene = caster.GetAttachedScene();
 	if( !pScene ) return;
@@ -723,23 +785,64 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	// Only on normal pass for view rays
 	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) return;
 
+	// Fast-preview fallback for the interactive viewport.  See the
+	// matching branch in SubSurfaceScatteringShaderOp::PerformOperation
+	// for the full rationale; in short, the irradiance point-set
+	// build below performs numPoints ×
+	// full Shade calls, blocking the cancel-restart loop entirely
+	// on first hit.  In interactive preview, delegate to the
+	// embedded irradiance-capture shader for a fast direct-lit
+	// fallback.  Production rasterizers leave bFastPreview false
+	// and get the full multi-layer skin BSSRDF.
+	if( rc.bFastPreview )
+	{
+		RecordSSSContainedChildLaunch();
+		shader.Shade( rc, ri, caster, rs, c, ior_stack );
+		return;
+	}
+
 	// State cache check
 	if( cache )
 	{
-		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast ) )
+		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast, &rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) ) )
 			return;
 	}
 
 	// --- Pass 1: Lazy octree construction ---
-	PointSetMap::iterator it = pointsets.find( ri.pObject );
-	PointSetOctree* ps = 0;
-
-	if( it == pointsets.end() )
-	{
-		create_mutex.lock();
-		PointSetMap::iterator again = pointsets.find( ri.pObject );
-		if( again == pointsets.end() )
-		{
+    // Serialize map lookup and publication, never arbitrary capture shaders.
+    // Published trees are immutable until the stopped-render reset lifecycle.
+	PointSetOctree* ps = nullptr;
+    bool needsBuild = false;
+    {
+        std::lock_guard<RMutex> guard(create_mutex);
+        const auto it = pointsets.find(cacheKey);
+        needsBuild = it == pointsets.end();
+        if(!needsBuild) ps = it->second;
+    }
+    if(needsBuild) {
+        std::unique_ptr<PointSetOctree> built;
+			// SSS point-set generation uniformly samples the object's SURFACE via
+			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
+			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
+			// collapse the samples -> a bogus irradiance cache.  Refuse SSS on such
+			// geometry, with a diagnostic, rather than build a garbage sample set.
+			//
+			// NULL GEOMETRY (crash-sibling fix, see LuminaryManager::AddToLuminaryList):
+			// ri.pObject->GetGeometry() can legitimately be null (a CSGObject has no
+			// single owned geometry).  The condition used to be `pSSSGeom &&
+			// !pSSSGeom->CanBeAreaLight()`, which short-circuits to false -- i.e.
+			// "acceptable" -- for exactly the null case, letting a null-geometry
+			// object fall through to `ri.pObject->GetArea()` / `UniformRandomPoint(...)`
+			// below, which null-deref (Object::GetArea/UniformRandomPoint -> pGeometry->...).
+			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+			if( !pSSSGeom || !pSSSGeom->CanBeAreaLight() ) {
+				{
+                    std::lock_guard<RMutex> guard(create_mutex);
+                    if(pointsets.emplace(cacheKey,nullptr).second) GlobalLog()->PrintEasyWarning( "DonnerJensenSkinSSSShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false, or no directly-owned geometry, e.g. a csg_object); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
+                }
+				c = RISEPel( 0.0 );
+				return;
+			}
 			GlobalLog()->PrintEasyInfo( "DonnerJensenSkinSSSShaderOp:: Generating irradiance samples" );
 
 			PointSetOctree::PointSet points;
@@ -766,27 +869,88 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 
 			MultiHalton mh;
 
+			// REPRODUCIBILITY (1 of 2): a dedicated fixed-seed RNG for the irradiance
+			// capture, independent of the render thread's scheduling-dependent
+			// rc.random.  Concurrent local builds each use the same fixed capture
+			// sampling. Previously consuming the triggering thread's rc.random STATE made
+			// the captured irradiance vary run-to-run.  buildRc leaves pSampler null so
+			// the irradiance shade falls back to buildRng, not the (also
+			// scheduling-dependent) QMC sampler; the capture keeps fresh owning caches and copies the
+            // anchor legacy-mode bit below; its sampling uses {random, pSampler, pass}.
+			// (The OTHER half of the fix is the sample-point geometric frame set on
+			// newri below -- without it the build still craters: for a delta light the
+			// RNG here does not even affect the value, but the frame does.)
+			RandomNumberGenerator buildRng( 0x9E3779B9u );	// fixed seed (golden ratio)
+			RuntimeContext buildRc( buildRng, rc.pass, rc.bThreaded );
+            buildRc.smsForceLegacy=rc.smsForceLegacy;
+
 			for( unsigned int i = 0; i < numPoints; i++ )
 			{
 				PointSetOctree::SamplePoint sp;
 				Vector3 normal;
+				Point2 sampleCoord;
 				Point3 random_variables(
 					mh.mod1(mh.halton(0,i)),
 					mh.mod1(mh.halton(1,i)),
 					mh.mod1(mh.halton(2,i)) );
 
-				ri.pObject->UniformRandomPoint( &sp.ptPosition, &normal, 0, random_variables );
+				ri.pObject->UniformRandomPoint( &sp.ptPosition, &normal, &sampleCoord, random_variables );
 
 				RayIntersection newri( ri );
 				newri.geometric.ray = Ray( sp.ptPosition, -normal );
 				newri.geometric.bHit = true;
 				newri.geometric.ptIntersection = sp.ptPosition;
 				newri.geometric.vNormal = normal;
+				// REPRODUCIBILITY (2 of 2) + correctness: `RayIntersection newri( ri )`
+				// above copied the TRIGGERING pixel's full geometric.  A uniform surface
+				// sample carries only position + normal + uv, so represent THAT and clear
+				// every trigger-pixel field the irradiance shade can read -- otherwise the
+				// capture is both WRONG (shaded with the trigger's frame/coords) and
+				// NON-DETERMINISTIC (the trigger is whichever thread/sample first hits the
+				// object).  Fields the shade reads:
+				//   onb           - BSDF reflect-side test (LambertianBRDF onb.w()) + aniso frame
+				//   ptCoord       - 2D-textured reflectance
+				//   ptObjIntersec - 3D-solid-textured reflectance: the sample's OBJECT-space
+				//                   point.  UniformRandomPoint returns the WORLD point, so map
+				//                   it back through the object inverse transform (as
+				//                   DirectVolumeRenderingShader does) -- exact even for a
+				//                   transformed object, matching a normal camera-ray hit.
+				//   rast          - optimal-MIS tile -> null tile (DETERMINISTIC under optimal-
+				//                   MIS; the build's auxiliary samples then feed accumulator
+				//                   tile (0,0) while it trains -- pre-existing and off-by-
+				//                   default: the build is not a camera path, and fed a
+				//                   scheduling-dependent tile before)
+				//   txFootprint   - mip LOD (cleared: a build sample has no ray differentials)
+				//   bHas{TexCoord1,VertexColor,Tangent} - per-vertex MESH attributes a random
+				//                   surface point does not carry; cleared so painters use
+				//                   their no-data defaults
+				// The surface cosine uses vNormal (set above); vGeomNormal is set for frame
+				// consistency (not read on the Lambertian path).  This frame leak is the
+				// dominant non-determinism source; with buildRng the build is fully
+				// reproducible.
+				newri.geometric.vGeomNormal = normal;
+				newri.geometric.onb.CreateFromW( normal );
+				newri.geometric.ptCoord = sampleCoord;
+				newri.geometric.ptObjIntersec = Point3Ops::Transform( ri.pObject->GetFinalInverseTransformMatrix(), sp.ptPosition );
+				newri.geometric.rast = nullRasterizerState;
+				newri.geometric.txFootprint = TextureFootprint();
+				newri.geometric.bHasTexCoord1 = false;
+				newri.geometric.bHasVertexColor = false;
+				newri.geometric.bHasTangent = false;
 				newri.geometric.ray.Advance( 1e-8 );
 
-				shader.Shade( rc, newri, caster, rs, sp.irrad, ior_stack );
+				RecordSSSContainedChildLaunch();
+				{
+                    SMSReferenceRadianceScope sampleRadiance(buildRc);
+                    shader.Shade( buildRc, newri, caster, rs, sp.irrad, ior_stack );
+                    sp.smsReferenceRadiance=sampleRadiance.HasReferenceRadiance();
+                }
 
-				if( ColorMath::MaxValue(sp.irrad) > 0 )
+				// Signed reference transport must survive the cached return. The
+                // ordinary-only capture retains its native positive filter.
+                if( ColorMath::MaxValue(sp.irrad) > 0 ||
+                    (sp.smsReferenceRadiance && std::isfinite(sp.irrad[0]) && std::isfinite(sp.irrad[1]) && std::isfinite(sp.irrad[2]) &&
+                     (sp.irrad[0]!=0 || sp.irrad[1]!=0 || sp.irrad[2]!=0)) )
 				{
 					sp.irrad = sp.irrad * dA;
 					points.push_back( sp );
@@ -797,27 +961,28 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 			if( points.size() > 0 )
 			{
 				bbox.EnsureBoxHasVolume();
-				ps = new PointSetOctree( bbox, maxPointsPerNode );
-				ps->AddElements( points, maxDepth );
+				built.reset(new PointSetOctree(bbox,maxPointsPerNode));
+				built->AddElements( points, maxDepth );
 			}
 
-			// Store even if null — prevents repeated generation attempts
-			pointsets[ri.pObject] = ps;
-		}
-		else
-		{
-			ps = again->second;
-		}
-		create_mutex.unlock();
-	}
-	else
-	{
-		ps = it->second;
-	}
+        // Capture is outside the mutex. Publish the first completed tree
+        // (including a null no-illumination sentinel); discard local copies
+        // from concurrent or reentrant builders without replacing live data.
+        std::lock_guard<RMutex> guard(create_mutex);
+        const auto published = pointsets.emplace(cacheKey,built.get());
+        if(published.second) built.release();
+        ps = published.first->second;
+    }
 
 	// --- Pass 2: Hierarchical octree evaluation ---
 	if( ps )
 	{
+		// DL-291: the multipole's boundary term is a function of the layer
+		// indices relative to the medium the body sits in -- the IOR-stack
+		// top the ray caster stamped on this hit (1.0 = air: the constructor
+		// tables, exactly the pre-DL-291 path).
+		const Scalar exteriorIOR = BSSRDFSampling::ExteriorIOR( ri.geometric );
+
 		if( m_has_offset_painters && m_lut_tables )
 		{
 			// Spatially-varying: evaluate offset painters at shading point,
@@ -844,26 +1009,35 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 
 			// Stack-allocated interpolated table: 1024 × 24 bytes = 24 KB
 			RISEPel local_table[TABLE_SIZE];
-			InterpolateProfile( mel_eff, hbe_eff, hbd_eff, local_table );
+			InterpolateProfile( exteriorIOR == 1.0 ? m_lut_tables : TablesForExterior( exteriorIOR ).lut,
+				mel_eff, hbe_eff, hbd_eff, local_table );
 
 			const Scalar lut_r2_max = m_max_distance_lut * m_max_distance_lut;
 			const Scalar lut_r2_step = lut_r2_max / TABLE_SIZE;
 			LocalProfile profile( local_table, lut_r2_max, lut_r2_step, m_max_distance_lut );
 
-			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric );
+			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
+		}
+		else if( exteriorIOR == 1.0 )
+		{
+			// Uniform skin: use base table via *this, zero overhead
+			ps->Evaluate( c, ri.geometric.ptIntersection, *this, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
 		}
 		else
 		{
-			// Uniform skin: use base table via *this, zero overhead
-			ps->Evaluate( c, ri.geometric.ptIntersection, *this, error, 0, ri.geometric );
+			// Uniform skin in a non-air exterior: that exterior's table (DL-291)
+			LocalProfile profile( TablesForExterior( exteriorIOR ).Rd, m_table_r2_max, m_table_r2_step, m_max_distance );
+			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric, nullptr, 1.0, &rc.smsReferenceRadiance );
 		}
 
 		// Normalize by sample count (each sample's irradiance * dA already applied)
 		c = c * (1.0 / Scalar(numPoints));
 	}
 
+    if(c[0]==0 && c[1]==0 && c[2]==0) rc.smsReferenceRadiance=false;
+
 	if( cache )
-		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast );
+		rc.StateCache_SetState( this, c, ri.pObject, ri.geometric.rast, rc.smsReferenceRadiance, unsigned(rc.smsForceLegacy) );
 }
 
 Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
@@ -877,8 +1051,47 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat
 	) const
 {
-	// TODO: spectral version
-	return 0;
+	// Spectral path: evaluate the full RGB skin BSSRDF (this reuses the
+	// per-object irradiance octree -- built once and shared across all
+	// wavelengths) and uplift the RGB exitant radiance to wavelength `nm`
+	// via the same chroma-preserving JH uplift the RGB painters use for
+	// GetColorNM.  The prior `return 0` stub rendered every skin object
+	// BLACK under the *_spectral_* rasterizers.
+	//
+	// NOTE: this skin model is physically spectral (per-wavelength
+	// melanin / haemoglobin / carotene absorption -- ComputePerLayer-
+	// Coefficients(nm)), but its diffusion profile is tabulated at RGB
+	// (m_Rd_table, the R=615/G=550/B=465 nm channels) and the irradiance
+	// octree is RGB-valued, so a true per-lambda evaluation would need a
+	// per-wavelength profile plus a per-wavelength irradiance cache.
+	// Uplifting the RGB result keeps the spectral render matching the RGB
+	// appearance (the uplift round-trips through the CMFs) and reuses the
+	// existing tabulation; the per-lambda diffusion radius is RGB-
+	// resolution, not re-derived -- documented approximation, true
+	// spectral skin is future work.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is the
+	// exitant RADIANCE, a source term at this boundary -- see the twin
+	// comment in SubSurfaceScatteringShaderOp::PerformOperationNM.
+	// Ordinary-only returns use EnsurePositve, per the twin and FinalGatherShaderOp:
+	// FromRGB scales by the MAX CHANNEL, so a single negative component
+	// flips the scale's sign and corrupts every wavelength.
+	SMSReferenceRadianceScope returnRadiance(rc);
+	RISEPel c;
+	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+    Scalar result;
+    if(returnRadiance.HasReferenceRadiance() && (c[0]<0 || c[1]<0 || c[2]<0)) {
+        // Extend the native positive-radiance uplift to signed reference
+        // returns by subtraction. Do not project away a negative component.
+        RISEPel positive(0.0),negative(0.0);
+        for(unsigned i=0;i<3;++i) {positive[i]=std::max(Scalar(0),c[i]);negative[i]=std::max(Scalar(0),-c[i]);}
+        result=RGBIlluminantSpectrum::FromRGB(positive).Eval(nm)-RGBIlluminantSpectrum::FromRGB(negative).Eval(nm);
+    } else {
+        ColorMath::EnsurePositve(c);
+        result=RGBIlluminantSpectrum::FromRGB(c).Eval(nm);
+    }
+    if(result==0) rc.smsReferenceRadiance=false;
+    return result;
 }
 
 void DonnerJensenSkinSSSShaderOp::ResetRuntimeData() const

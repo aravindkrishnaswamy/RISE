@@ -1,0 +1,17 @@
+{
+ "//": "Arc-77 imagination-target battery, GEMINI ARM ONLY (user 2026-08-11: qwen arm deferred; arms therefore NOT interleaved -- recorded as an instrument note, not hidden). Tree at 67ea79b7: part-plan gate v2 (required outline sketch per part, 3-refusal cap), render{isolate,target} IoU comparison, composite re-surfacing. PRE-COMMITTED FINGERPRINTS (77 \u00a711, census over authored tool-call args validated against the final scene): (1) plans filed with real outlines vs blobs (point count / area-fraction distributions); (2) any render{isolate,target} calls at all; (3) HEADLINE: geometry revisions (replace_geometry_scaffold, geometry chunk re-insert, or geometry param edit on an existing part) occurring AFTER a target comparison -- baseline is the thrice-measured ZERO; (4) IoU trajectory within a run; (5) re-filing order (sketch-then-build vs sketch-revised-toward-build); (6) gate give-up rate. PRE-COMMITTED STOP RULES: (a) give-up fires in >=3/9 runs -> the one-call artifact is too heavy, SPLIT (construction at gate, sketch on first isolate) -- no wording iteration; (b) sketches filed but ZERO comparisons across all 9 runs -> the pre-named escalation is auto-compare on isolate (payload-fact form), never description rewording; (c) comparisons happen, IoU reported, geometry revisions still zero -> the criterion was not the binding constraint; record the accept-the-deficit exit for the imagination hypothesis honestly; (d) SUCCESS FLOOR: >=1 post-comparison geometry revision in >=2 of 6 non-counterweight runs with IoU moving between looks -> bank, price Phase 2. Counterweight guard: build_ambiguous_scene ask-rate unchanged vs S-series anchors.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_dreamscape_figure.json",
+  "evals/scenarios/bare_prompt_build_courtyard.json",
+  "evals/scenarios/build_ambiguous_scene.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.5-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 3,
+ "runDir": "evals/runs/imagine_g3_gemini"
+}

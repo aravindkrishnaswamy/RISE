@@ -1,12 +1,11 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           torture_corridor_pt.RISEscene                                                           #
-#   Description:    Torture test: long corridor (4000 units) with 20 equally-spaced                         #
-#                   point lights.  From any shading point, only 2-3 nearby lights                           #
-#                   contribute significantly (1/d^2), but the alias table distributes                       #
-#                   samples uniformly across all 20.  ~85% of sampling budget wasted.                       #
+#   File:           corridor_20lights_bvh.RISEscene                                                           #
+#   Description:    Light-BVH variant of the 20-light corridor. The spatial sampler                         #
+#                   should focus the 64spp budget on the 2-3 nearby lights that                              #
+#                   dominate by 1/d^2. Compare with the alias variant.                                      #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      March 30, 2026                                                                          #
 #                                                                                                           #
@@ -42,20 +41,158 @@ file_rasterizeroutput
 # Camera near start of corridor
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			100 100 200
 	lookat				100 80 2000
 	up					0 1 0
-	width				512
-	height				512
 	fov					70.0
 }
 
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -96,6 +233,7 @@ omni_light
 	name		light_01
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 100
 }
 
@@ -104,6 +242,7 @@ omni_light
 	name		light_02
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 300
 }
 
@@ -112,6 +251,7 @@ omni_light
 	name		light_03
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 500
 }
 
@@ -120,6 +260,7 @@ omni_light
 	name		light_04
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 700
 }
 
@@ -128,6 +269,7 @@ omni_light
 	name		light_05
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 900
 }
 
@@ -136,6 +278,7 @@ omni_light
 	name		light_06
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1100
 }
 
@@ -144,6 +287,7 @@ omni_light
 	name		light_07
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1300
 }
 
@@ -152,6 +296,7 @@ omni_light
 	name		light_08
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1500
 }
 
@@ -160,6 +305,7 @@ omni_light
 	name		light_09
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1700
 }
 
@@ -168,6 +314,7 @@ omni_light
 	name		light_10
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 1900
 }
 
@@ -176,6 +323,7 @@ omni_light
 	name		light_11
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2100
 }
 
@@ -184,6 +332,7 @@ omni_light
 	name		light_12
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2300
 }
 
@@ -192,6 +341,7 @@ omni_light
 	name		light_13
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2500
 }
 
@@ -200,6 +350,7 @@ omni_light
 	name		light_14
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2700
 }
 
@@ -208,6 +359,7 @@ omni_light
 	name		light_15
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 2900
 }
 
@@ -216,6 +368,7 @@ omni_light
 	name		light_16
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3100
 }
 
@@ -224,6 +377,7 @@ omni_light
 	name		light_17
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3300
 }
 
@@ -232,6 +386,7 @@ omni_light
 	name		light_18
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3500
 }
 
@@ -240,6 +395,7 @@ omni_light
 	name		light_19
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3700
 }
 
@@ -248,6 +404,7 @@ omni_light
 	name		light_20
 	power		80000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 190 3900
 }
 
@@ -350,3 +507,4 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
+

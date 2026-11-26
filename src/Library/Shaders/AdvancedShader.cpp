@@ -16,9 +16,73 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "DirectLightingShaderOp.h"
+#include "DistributionTracingShaderOp.h"
+#include "PathTracingShaderOp.h"
+#include "ReflectionShaderOp.h"
+#include "RefractionShaderOp.h"
+#include "AreaLightShaderOp.h"
+#include "EmissionShaderOp.h"
+#include "FinalGatherShaderOp.h"
+#include "GlobalPelPhotonMapShaderOp.h"
+#include "GlobalSpectralPhotonMapShaderOp.h"
+#include "CausticPelPhotonMapShaderOp.h"
+#include "CausticSpectralPhotonMapShaderOp.h"
+#include "TranslucentPelPhotonMapShaderOp.h"
+#include "ShadowPhotonMapShaderOp.h"
+#include "SSS/SubSurfaceScatteringShaderOp.h"
+#include "SSS/DonnerJensenSkinSSSShaderOp.h"
+#include "SSS/SSSContainment.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+    // These exact native providers overwrite their result independently of
+    // the incoming accumulator, including their early-return paths. Unknown
+    // providers and input-dependent alpha/transparency ops retain provenance.
+    bool SMSIndependentShaderResult(const IShaderOp& op) {
+        const auto& type=typeid(op);
+        return type==typeid(PathTracingShaderOp)
+            || type==typeid(ReflectionShaderOp)
+            || type==typeid(RefractionShaderOp)
+            || type==typeid(AreaLightShaderOp)
+            || type==typeid(EmissionShaderOp)
+            || type==typeid(FinalGatherShaderOp)
+            || type==typeid(GlobalPelPhotonMapShaderOp)
+            || type==typeid(GlobalSpectralPhotonMapShaderOp)
+            || type==typeid(CausticPelPhotonMapShaderOp)
+            || type==typeid(CausticSpectralPhotonMapShaderOp)
+            || type==typeid(TranslucentPelPhotonMapShaderOp)
+            || type==typeid(ShadowPhotonMapShaderOp)
+            || type==typeid(DirectLightingShaderOp)
+            || type==typeid(DistributionTracingShaderOp)
+            || type==typeid(SubSurfaceScatteringShaderOp)
+            || type==typeid(DonnerJensenSkinSSSShaderOp);
+    }
+    bool SMSReplacesShaderResult(char operation) {return operation=='=' || operation=='e';}
+}
+
+void AdvancedShader::ResolveChainFlagsForDepth(
+	unsigned int depth,
+	bool& outHasDirectLightingOp,
+	bool& outHasBsdfContinuationOp
+	) const
+{
+	outHasDirectLightingOp = false;
+	outHasBsdfContinuationOp = false;
+	for( ShadeOpListType::const_iterator i=shaderops.begin(); i!=shaderops.end(); i++ ) {
+		if( depth < i->nMinDepth || depth > i->nMaxDepth ) {
+			continue;
+		}
+		if( dynamic_cast<DirectLightingShaderOp*>( i->pShaderOp ) ) {
+			outHasDirectLightingOp = true;
+		}
+		if( dynamic_cast<DistributionTracingShaderOp*>( i->pShaderOp ) ) {
+			outHasBsdfContinuationOp = true;
+		}
+	}
+}
 
 AdvancedShader::AdvancedShader(
 	const ShadeOpListType& shaderops_
@@ -32,10 +96,26 @@ AdvancedShader::AdvancedShader(
 			break;
 		}
 	}
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->addref();
+	}
+}
+
+AdvancedShader::AdvancedShader( const AdvancedShader& other ) :
+	Reference( other ),
+	shaderops( other.shaderops ),
+	bComputeSPF( other.bComputeSPF )
+{
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->addref();
+	}
 }
 
 AdvancedShader::~AdvancedShader( )
 {
+	for( const SHADE_OP& op : shaderops ) {
+		op.pShaderOp->release();
+	}
 }
 
 void AdvancedShader::Shade(
@@ -44,7 +124,7 @@ void AdvancedShader::Shade(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [out] RISEPel value at the point
-	const IORStack& ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in] Index of refraction stack
 			) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -52,6 +132,10 @@ void AdvancedShader::Shade(
 	if( !pScene ) {
 		return;
 	}
+
+    const bool incomingReference=rc.smsReferenceRadiance;
+    SMSReferenceRadianceScope shaderReturn(rc);
+    if(c[0]!=0 || c[1]!=0 || c[2]!=0) rc.smsReferenceRadiance=incomingReference;
 
 	const ISPF* pSPF = ri.pMaterial?ri.pMaterial->GetSPF():0;
 
@@ -62,13 +146,26 @@ void AdvancedShader::Shade(
 		pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 	}
 
+	// DL-171/DL-209: resolve THIS call's depth-filtered chain composition
+	// -- see ResolveChainFlagsForDepth's doc.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
+
 	// Iterate through the shader ops and accumulate the results
 	ShadeOpListType::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
 			RISEPel cthis = c;
-			op.pShaderOp->PerformOperation( rc, ri, caster, rs, cthis, ior_stack, pSPF?&scattered:0 );
+            const bool accumulatedReference=rc.smsReferenceRadiance;
+            if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+			} else {
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs2, cthis, ior_stack, pSPF?&scattered:0 );
+			}
+            if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 			switch( op.operation ) {
 				default:
 				case 'a':
@@ -106,7 +203,7 @@ Scalar AdvancedShader::ShadeNM(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -125,13 +222,27 @@ Scalar AdvancedShader::ShadeNM(
 	}
 
 	Scalar c = 0;
+    SMSReferenceRadianceScope shaderReturn(rc);
+
+	// DL-171/DL-209 -- see Shade's identical construction above.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
 
 	// Iterate through the shader ops and accumulate the results
 	ShadeOpListType::const_iterator i, e;
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
-			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs, c, nm, ior_stack, pSPF?&scattered:0 );
+            const bool accumulatedReference=rc.smsReferenceRadiance;
+            if(accumulatedReference && SMSIndependentShaderResult(*op.pShaderOp)) rc.smsReferenceRadiance=false;
+			Scalar cthis = 0;
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+			} else {
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs2, c, nm, ior_stack, pSPF?&scattered:0 );
+			}
+            if(!SMSReplacesShaderResult(op.operation)) rc.smsReferenceRadiance=accumulatedReference || rc.smsReferenceRadiance;
 
 			switch( op.operation ) {
 				default:
@@ -197,6 +308,10 @@ void AdvancedShader::ShadeHWSS(
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		caccum[i] = 0;
 
+	// DL-171/DL-209 -- see Shade's identical construction above.
+	IRayCaster::RAY_STATE rs2 = rs;
+	ResolveChainFlagsForDepth( rs.depth, rs2.chainHasNEEOp, rs2.chainHasBsdfContinuationOp );
+
 	// Iterate through shader ops with depth filtering and blend modes
 	ShadeOpListType::const_iterator it, e;
 	for( it=shaderops.begin(), e=shaderops.end(); it!=e; it++ )
@@ -205,8 +320,14 @@ void AdvancedShader::ShadeHWSS(
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth )
 		{
 			Scalar opResult[SampledWavelengths::N];
-			op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs, caccum, swl,
-				ior_stack, pSPF?&scattered:0, opResult );
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			} else {
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs2, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			}
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
@@ -243,6 +364,18 @@ void AdvancedShader::ShadeHWSS(
 		c[i] = caccum[i];
 }
 
+//! DL-465: does any op keep runtime data (see IShader::HasRuntimeData)?
+bool AdvancedShader::HasRuntimeData() const
+{
+	ShadeOpListType::const_iterator i, e;
+	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
+		if( i->pShaderOp->HasRuntimeData() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 //! Tells the shader to reset itself
 void AdvancedShader::ResetRuntimeData() const
 {
@@ -251,5 +384,4 @@ void AdvancedShader::ResetRuntimeData() const
 		i->pShaderOp->ResetRuntimeData();
 	}
 }
-
 

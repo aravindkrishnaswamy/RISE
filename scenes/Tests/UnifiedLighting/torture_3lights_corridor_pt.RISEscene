@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #   Control: same corridor geometry as 100-light version, but only 3 nearby lights.                         #
 #   This simulates what spatial selection would achieve — 100% of samples go to                              #
@@ -26,17 +26,155 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			100 100 200
 	lookat				100 80 5000
 	up					0 1 0
-	width				512
-	height				512
 	fov					70.0
 }
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -68,6 +206,7 @@ omni_light
 	name				l001
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 50
 }
 
@@ -76,6 +215,7 @@ omni_light
 	name				l002
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 150
 }
 
@@ -84,6 +224,7 @@ omni_light
 	name				l003
 	power				80000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			100 190 250
 }
 
@@ -182,3 +323,5 @@ standard_object
 	geometry			farwallgeom
 	material			white
 }
+
+

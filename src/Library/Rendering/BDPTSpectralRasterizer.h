@@ -27,7 +27,10 @@
 
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedSpectralIntegratingRasterizer.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/Color/CIE_XYZ.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"
+#include "../Interfaces/ILog.h"
 #include <stdint.h>
 
 namespace RISE
@@ -43,9 +46,25 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Spectral Rasterizing: "; }
 
+			// See BDPTPelRasterizer for the diamond-disambiguation rationale.
+			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+			{
+				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
+			}
+
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
 			/// the default from PixelBasedRasterizerHelper.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Override to use this BDPT rasterizer's adaptive sampling config.
+			unsigned int GetProgressiveTotalSPP() const;
+
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
 
 			Scalar GetSplatSampleScale() const { return bUseHWSS ? static_cast<Scalar>( nSpectralSamples * SampledWavelengths::N ) : static_cast<Scalar>( nSpectralSamples ); }
 
@@ -77,7 +96,8 @@ namespace RISE
 				uint32_t pixelSeed,
 				uint32_t mortonIndex,
 				uint32_t log2SPP,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
 			/// Evaluates BDPT at a specific wavelength for a single camera ray.
@@ -92,10 +112,18 @@ namespace RISE
 				const Scalar nm,
 				uint32_t sampleIndex,
 				uint32_t pixelSeed,
-				PixelAOV* pAOV
+				PixelAOV* pAOV,
+				bool* pPrimaryHit = 0
 				) const;
 
+			AdaptiveSamplingConfig		adaptiveConfig;
+
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the spectral shader-
+			// graph base's true).
+			bool ConsumesScenePhotonMaps() const { return false; }
+
 			BDPTSpectralRasterizer(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
@@ -104,11 +132,12 @@ namespace RISE
 				const Scalar lambda_end,
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
-				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
+				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

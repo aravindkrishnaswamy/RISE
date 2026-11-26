@@ -1,0 +1,124 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           cloth_chain_scene_inputs.RISEscene                                                      #
+#   Description:    Simulation M4: scene inputs and a dependency.  `drape` falls on a rising ball           #
+#                   (`collider_object ball`: the ball's geometry, tessellated in world space at t = 0, as a #
+#                   mesh collider moving rigidly with the ball's keyframes).  `cover` collides with the     #
+#                   object showing drape's surface (retimed to drape's last frame), so it depends on drape: #
+#                   its cache key embeds drape's key and the consumer's retiming; editing drape makes both  #
+#                   stale.                                                                                  #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> cover   (bakes drape first, then cover)            #
+#                   bin/tools/rise_sim status <this scene>                                                  #
+#   Unbaked:        both consumers load empty and hidden (warnings); `cover` reports missing, upstream out  #
+#                   of date, until drape is baked.                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+}
+
+pinhole_camera
+{
+	location		1.5 1.2 2.2
+	lookat			0 0.4 0
+	up				0 1 0
+	fov				40.0
+}
+
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.25
+}
+
+standard_object
+{
+	name			ball
+	geometry		geo_ball
+	position		0 0.25 0
+}
+
+timeline
+{
+	element_type	object
+	element			ball
+	param			position
+
+	time			0.0
+	value			0 0.25 0
+
+	time			2.0
+	value			0 0.4 0
+}
+
+cloth_simulation
+{
+	name			drape
+	vertices_u		25
+	vertices_v		25
+	frames			61
+	substeps		16
+	origin			-0.5 0.6 0.5
+	collider_object	ball
+}
+
+simulated_mesh_geometry
+{
+	name			geo_drape
+	source			drape.surface
+	time_offset		-2			# scene time 0 shows drape's last frame (t = 2 s) ...
+	end_policy		hold
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			drape_object
+	geometry		geo_drape
+}
+
+cloth_simulation
+{
+	name			cover
+	size_u			0.5
+	size_v			0.5
+	vertices_u		25
+	vertices_v		25
+	frames			61
+	substeps		16
+	origin			-0.25 0.9 0.25
+	material		silk-lightweight
+	collider_object	drape_object	# ... so cover lands on the draped shape (a mesh collider is sampled at t = 0)
+}
+
+simulated_mesh_geometry
+{
+	name			geo_cover
+	source			cover
+	output			surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			cover_object
+	geometry		geo_cover
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.4 -1 -0.6
+}

@@ -19,12 +19,22 @@
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/FiniteMath.h"
+#include "EXRCompression.h"
+#include <string>
+#include <utility>
+#include <vector>
 
 #ifndef NO_EXR_SUPPORT
 	// OpenEXR includes
 	#include <ImfRgbaFile.h>
+	#include <ImfOutputFile.h>
+	#include <ImfChannelList.h>
+	#include <ImfFrameBuffer.h>
 	#include <ImfIO.h>
 	#include <ImfArray.h>
+	#include <limits>
+	#include <stdexcept>
 #endif
 
 namespace RISE
@@ -37,25 +47,55 @@ namespace RISE
 		{
 		protected:
 			IWriteBuffer& pBuffer;
+			std::uint64_t origin;
+			bool failed = false;
 
 		public:
-			OStreamWrapper( IWriteBuffer& buffer ) : Imf::OStream( "none" ), pBuffer( buffer )
+			OStreamWrapper( IWriteBuffer& buffer, std::uint64_t origin_ = 0 ) :
+				Imf::OStream( "none" ), pBuffer( buffer ), origin( origin_ )
 			{}
+
+			bool Failed() const { return failed; }
+			void ResetFailure() { failed = false; }
+			void SetOrigin( std::uint64_t position ) { origin = position; }
 
 			void write( const char c[/*n*/], int n )
 			{
-				pBuffer.ResizeForMore(n);
-				pBuffer.setBytes( c, n );
+				try {
+					if( n < 0 ) throw std::runtime_error("EXR output length is negative");
+					pBuffer.ResizeForMore( static_cast<unsigned int>(n) );
+					if( !pBuffer.setBytes(c, static_cast<unsigned int>(n)) )
+						throw std::runtime_error("EXR output write failed");
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 
 			uint64_t tellp()
 			{
-				return pBuffer.getCurPos();
+				try {
+					const auto position = BufferPosition(pBuffer);
+					if( position < origin || position == std::numeric_limits<std::uint64_t>::max() )
+						throw std::runtime_error("EXR output position is unavailable");
+					return position - origin;
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 
 			void seekp( uint64_t pos )
 			{
-				pBuffer.seek( IBuffer::START, static_cast<int>(pos) );
+				try {
+					const auto limit = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+					if( origin > limit || pos > limit - origin ||
+						!BufferSeek(pBuffer, IBuffer::START, static_cast<std::int64_t>(origin + pos)) )
+						throw std::runtime_error("EXR output seek failed");
+				} catch( ... ) {
+					failed = true;
+					throw;
+				}
 			}
 		};
 	#endif
@@ -66,32 +106,91 @@ namespace RISE
 
 		#ifndef NO_EXR_SUPPORT
 			OStreamWrapper			out;
-			Imf::RgbaOutputFile*	exrout;
-			Imf::Array2D<Imf::Rgba>	exrbuffer;
+			Imf::RgbaOutputFile*	exrout;			///< half (FP16) path; NULL when write_float
+			Imf::OutputFile*		exrout_float;	///< 32-bit FLOAT path; NULL unless write_float
+			Imf::Array2D<Imf::Rgba>	exrbuffer;		///< half scanline buffer
+			std::vector<float>		floatbuffer;	///< interleaved R,G,B,A float scanline buffer (write_float)
 		#endif
 
 			IWriteBuffer&			buffer;
 			COLOR_SPACE				color_space;
+			EXR_COMPRESSION			compression;
+			bool					with_alpha;
+			bool					write_float;	///< true => 32-bit FLOAT channels (no FP16 65504 clamp); false => half
+			float					pixel_aspect_ratio;
+			std::vector<std::pair<std::string, std::string> > string_attributes;
 			unsigned int			horzpixels;
 			unsigned int			scanlines;
 
 		#ifndef NO_EXR_SUPPORT
+			// A finite double narrowed to float/half overflows to +/-Inf once its
+			// magnitude exceeds the target type's finite range (IEEE-754 narrowing
+			// rule).  Clamp the magnitude, sign preserved, before the cast; the
+			// producers (renderer, tonemapper) are the real fix for legitimately
+			// huge values, this is just a backstop against a silent Inf leaking
+			// into the file.  NaN and infinities are also collapsed to zero
+			// through the shared optimisation-safe finite predicate.
+			static double ClampMagnitudeForCast( const double v, const double limit )
+			{
+				if( !RISE::IsFiniteDouble( v ) ) {
+					return 0.0;
+				}
+				if( v > limit ) {
+					return limit;
+				}
+				if( v < -limit ) {
+					return -limit;
+				}
+				return v;
+			}
+
 			template< typename T >
 			void WriteColorToEXRBuffer( const T& c, const unsigned int x, const unsigned int y )
 			{
-				// Convert from our scalar format to the half format
-				// Note that OpenEXR is defined as a premultiplied alpha for transparency
-				exrbuffer[y][x].r = half( static_cast<float>( c.base.r*c.a ) );
-				exrbuffer[y][x].g = half( static_cast<float>( c.base.g*c.a ) );
-				exrbuffer[y][x].b = half( static_cast<float>( c.base.b*c.a ) );
-				exrbuffer[y][x].a = half( static_cast<float>( c.a ) );
+				// OpenEXR is defined as premultiplied alpha for transparency.
+				if( write_float ) {
+					// 32-bit FLOAT path: stores the full linear-radiance range.
+					// half (FP16) caps at 65504, which silently turns legitimate
+					// bright HDR pixels (caustic / specular fireflies) into +Inf.
+					static const double kFloatMax = static_cast<double>( std::numeric_limits<float>::max() );
+					const std::size_t idx =
+						( static_cast<std::size_t>( y ) * horzpixels + x ) * 4u;
+					floatbuffer[idx + 0u] = static_cast<float>( ClampMagnitudeForCast( c.base.r * c.a, kFloatMax ) );
+					floatbuffer[idx + 1u] = static_cast<float>( ClampMagnitudeForCast( c.base.g * c.a, kFloatMax ) );
+					floatbuffer[idx + 2u] = static_cast<float>( ClampMagnitudeForCast( c.base.b * c.a, kFloatMax ) );
+					floatbuffer[idx + 3u] = static_cast<float>( ClampMagnitudeForCast( c.a, kFloatMax ) );
+				} else {
+					static const double kHalfMax = 65504.0;
+					exrbuffer[y][x].r = half( static_cast<float>( ClampMagnitudeForCast( c.base.r*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].g = half( static_cast<float>( ClampMagnitudeForCast( c.base.g*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].b = half( static_cast<float>( ClampMagnitudeForCast( c.base.b*c.a, kHalfMax ) ) );
+					exrbuffer[y][x].a = half( static_cast<float>( ClampMagnitudeForCast( c.a, kHalfMax ) ) );
+				}
 			}
 		#endif
 
 		public:
-			EXRWriter( IWriteBuffer& buffer, const COLOR_SPACE color_space_ );
+			static std::string SoftwareAttribute();
+
+			EXRWriter(
+				IWriteBuffer&         buffer,
+				const COLOR_SPACE     color_space_,
+				const EXR_COMPRESSION compression_ = eExrCompression_Piz,
+				const bool            with_alpha_  = true,
+				const bool            write_float_ = false );
 
 			virtual ~EXRWriter();
+
+			void SetStringAttributes(
+				const std::vector<std::pair<std::string, std::string> >& attributes )
+			{
+				string_attributes = attributes;
+			}
+
+			void SetPixelAspectRatio( const float ratio )
+			{
+				pixel_aspect_ratio = ratio;
+			}
 
 			void	BeginWrite( const unsigned int width, const unsigned int height );
 			void	WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y );

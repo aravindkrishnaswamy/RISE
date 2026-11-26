@@ -1,0 +1,39 @@
+{
+  "schema": "rise.fire.r246.captured-scene-gate.v1",
+  "status": "accepted_zero_p1_p2",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "26044cabd12ceca30dd7911364e1a7d340924f325cb1015238490f4b3e03af23",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_scene_runtime.v3",
+  "executable_sha256": "cf8175fe3948e0efac2d86e5c7b2c2ff6cb4b18dfa4847c1cb2bf36f3dc79868",
+  "build_identity_sha256": "8f64a1026c156c9b3de2c22cf0d871c2e8f93d839ec0a91d1adbd3f3aa15b3bc",
+  "embedded_revision": "cf16da41adda6e6eb0bba8af380b3d28f511e8dd",
+  "embedded_dirty_state": "dirty",
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_scene_validation.v3",
+  "controls": {
+    "initial_green": true,
+    "old_mutable_reopen_green": true,
+    "captured_changed_receipt_red": true,
+    "same_capture_green_with_mutable_path_changed": true,
+    "path_red": true,
+    "empty_red": true,
+    "malformed_canonical_red": true
+  },
+  "limitations": [
+    "Scene/receipt bytes and synthetic consumed inventory only, no EXR/native provenance or render promoted.",
+    "Recovered spectrum context now carries explicit snapshot manifest path but no recovered command is exposed; reviewed snapshot/source admission remains mandatory for later composition.",
+    "Movie receipt/sidecar admission and full recovery remain pending."
+  ],
+  "completed_utc": "2026-10-04T10:16:49.608248+00:00",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_scene.v3.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "build_exit_code": 0,
+  "gate_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_scene.v3.gate.log",
+  "gate_log_sha256": "0d0946fe03e71928beb8a6c707aac3570967b6decb3242c46e6b3c06a97279e6",
+  "gate_exit_code": 0,
+  "independent_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_captured_scene.v3.independent.log",
+  "independent_log_sha256": "ac9fc0ab7884726ea5e9cf326f79f34ec88c15fde19215b18532cf0cf51d540e",
+  "independent_exit_code": 0,
+  "independent_script_sha256": "32883685174e8e0f8bf9c6bb45c7a91abf1d0dc7544b886c3d5cdc86d4eed847",
+  "independent_report_sha256": "b1e9c61ce52f24b123fe0d56fea5a70fb4aa925ca27a963b66357504d44a2304"
+}

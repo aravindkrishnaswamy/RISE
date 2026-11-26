@@ -1,0 +1,83 @@
+# Engineering Skills
+
+Process skills distilled from hard-won RISE development sessions. Each
+file captures a discipline that we repeatedly wanted to follow after
+the fact but forgot to apply up front. The intent is for any
+LLM-powered agent or human contributor working on the repo to read the
+relevant skill BEFORE starting a task of the matching kind, not to
+re-derive the lessons from first principles every time.
+
+## How To Use
+
+- Read the skill whose trigger matches the task you are about to do.
+- Follow the procedure; prefer it over ad-hoc judgment on the covered
+  points.  The lessons are here precisely because ad-hoc judgment
+  reliably misses them.
+- If a new lesson is hard-earned during a session, add a new skill
+  here rather than burying it in commit messages.
+
+## Format
+
+Each skill is a plain Markdown file with YAML frontmatter (`name`,
+`description`).  The frontmatter is consumable by tooling that wants
+auto-discovery (e.g. Claude Code loads `name`/`description` into the
+session's available-skills list); the body is ordinary prose readable
+by any model or human.
+
+Standard body layout:
+
+- **When to use / When NOT to use** — triggering conditions.
+- **Procedure** — numbered steps.
+- **Anti-patterns** — shapes of wrong that look right.
+- **Concrete example** — a real case from this repo.
+- **Stop rule** — how to know when the skill's work is done.
+
+## Claude Code Integration
+
+`.claude/` is gitignored local harness state, not tracked in git.  When
+using Claude Code locally, you may optionally place a thin companion shim
+at `.claude/skills/<name>/SKILL.md` whose only job is to register the
+trigger with the Claude Code harness and point back at the full content
+here.  The source of truth is always `docs/skills/`; any local shim stays
+thin and optional.
+
+Other LLM tools (Cursor, Aider, Codex CLI, etc.) should be configured
+to read `docs/skills/` at session start via their own equivalent
+mechanism, or follow references from [AGENTS.md](../../AGENTS.md).
+Do not mirror full skill bodies into tool-specific directories such as
+`.agents/`; those locations are local harness state and should only
+point back here when a tool requires a shim.
+
+## Available Skills
+
+| Skill | Trigger |
+|---|---|
+| [implementation-review-loop](implementation-review-loop.md) | **The definition of done for ALL implementation work** (feature / refactor / bug fix / perf / structural change). Not done until a fresh round of independent reviewers returns ZERO P1s. Self-driven loop: implement → gate → spawn orthogonal reviewers → fix every P1 → commit → re-spawn fresh reviewers → repeat to convergence. Wraps adversarial-code-review. |
+| [adversarial-code-review](adversarial-code-review.md) | Validate a non-trivial change; user asks for multiple / adversarial reviewers. |
+| [performance-work-with-baselines](performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
+| [const-correctness-over-escape-hatches](const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — stop and apply this decision tree first. |
+| [precision-fix-the-formulation](precision-fix-the-formulation.md) | Tempted to widen a `< NEARZERO` / `< EPSILON` check, add an ε fudge, or use a magic `1e-N` to silence FP-noise speckle / firefly / near-zero misclassification.  Find the cancellation and reformulate. |
+| [sms-firefly-diagnosis](sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; "fireflies" reported; a new SMS scene differs from its VCM reference by bright speckles. |
+| [variance-measurement](variance-measurement.md) | Need to prove a rendering change reduces variance / RMSE — K=16 EXR protocol with `bin/tools/HDRVarianceTest.exe`, master-vs-fix stash-rebuild-pop, both pure variance and RMSE-vs-reference. |
+| [write-highly-effective-tests](write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into real regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
+| [effective-rise-scene-authoring](effective-rise-scene-authoring.md) | Authoring a new `.RISEscene` from scratch, porting from another tool (glTF / Blender / Unity / Unreal), or diagnosing a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) checklist + the Lambertian-control-sphere diagnostic. |
+| [bdpt-vcm-mis-balance](bdpt-vcm-mis-balance.md) | BDPT or VCM render disagrees with PT (mean off, max blown out, splotches not fading with sample count); user reports "fireflies even at high spp"; you've just changed MIS code (`MISWeight`, `EvaluateNEE`, `EvaluateMerges`, `Convert*Subpath`, the auto-radius pre-pass). |
+| [audit-by-bug-pattern](audit-by-bug-pattern.md) | You just fixed a non-trivial bug.  Before declaring done, sweep the codebase for sibling sites carrying the same pattern — Pel / NM / HWSS triplets, snell / uniform variants, biased / unbiased branches, fallback / photon-aided paths.  The fix isn't done when the user-reported site is fixed; it's done when no sibling carries the same pattern. |
+| [rise-animation-render](rise-animation-render.md) | Render a RISE animation to an HDR movie, encode EXR frames as ProRes/HDR10, or diagnose a `.mov` that plays back as SDR. |
+
+## Authoring New Skills
+
+A new skill is worth writing when:
+
+1. You caught yourself repeating a discipline across two or more
+   sessions.
+2. The discipline has clear trigger conditions and a concrete
+   procedure — not just "be careful."
+3. You can cite a real example where skipping the discipline caused
+   rework.
+
+Copy the structure of an existing skill, keep the body under ~300
+lines, and add the trigger row to the table above.  Because `.claude/`
+is gitignored local state, `.claude/skills/<name>/SKILL.md` shims are
+optional local shims for Claude Code auto-discovery rather than tracked
+files in git.

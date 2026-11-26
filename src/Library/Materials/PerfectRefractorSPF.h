@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,22 +28,36 @@ namespace RISE
 		class PerfectRefractorSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				refractivity;
-			const IPainter&				Nt;
+			//! Pointer storage so the interactive editor can rebind
+			//! via SetRefractivity / SetIOR.  See LambertianBRDF
+			//! for the matching pattern + lifetime contract.
+			const IPainter*				pRefractivity;			// Per-wavelength refractive attenuation (color)
+			const IScalarPainter*		pNt;						// Index of refraction (physical scalar, supports dispersion via spectral painter)
 
 			virtual ~PerfectRefractorSPF( );
 
 			void DoSingleRGBComponent(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,							///< [in] Index of refraction stack
 				const int oneofthree,
 				const Scalar newIOR,
-				const Scalar cosine
+				const Scalar cosine,
+				const Scalar nm = 0
 				) const;
 
 		public:
-			PerfectRefractorSPF( const IPainter& ref, const IPainter& Nt_ );
+			PerfectRefractorSPF( const IPainter& ref, const IScalarPainter& Nt_ );
+
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.  refractivity is an IPainter
+			//! (per-wavelength colour attenuation); Nt is an
+			//! IScalarPainter (physical scalar IOR with optional
+			//! per-channel dispersion).
+			inline const IPainter&       GetRefractivity() const { return *pRefractivity; }
+			inline const IScalarPainter& GetIOR()          const { return *pNt; }
+			void SetRefractivity( const IPainter& ref );
+			void SetIOR( const IScalarPainter& Nt_ );
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -52,9 +67,11 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetColor( ri )[0];
-				info.attenuation = refractivity.GetColor( ri );
+				info.attenuationAppliesToReflection = false;
+				info.ior = pNt->GetValuesAt( ri ).v[0];
+				info.attenuation = ReflectanceColor( *pRefractivity, ri );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 
@@ -67,8 +84,11 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetColorNM( ri, nm );
+				info.attenuationAppliesToReflection = false;
+				info.ior = pNt->GetValueAtNM( ri, nm );
+				info.attenuationNM = ReflectanceColorNM( *pRefractivity, ri, nm );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 
@@ -78,7 +98,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -89,11 +109,15 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
+			//! DL-24 review P1-1: the reflect/refract lobe weights are a deterministic
+			//! function of the query (warps keep each lobe on its side; wrong-side
+			//! lobes are re-derived, never dropped at random).
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric&, const Scalar ) const { return true; }
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;

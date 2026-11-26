@@ -194,16 +194,18 @@ void CircularDiskDetector::PerformMeasurement(
 			ScatteredRayContainer scattered;
 
 			IndependentSampler samplerWrapper( random );
+			// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 			pSPF->Scatter( ri, samplerWrapper, scattered, ior_stack );
 
-			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+			Scalar selectedProbability=0;
+			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 
 			if( pScat )
 			{
 				// If the ray wasn't absorbed, then fire it at the detector patches
 				int idx = FindDepositedDetector( pScat->ray );
 				if( idx != -1 ) {
-					m_pPatches[ idx ].dRatio += power_each_sample*ColorMath::MaxValue(pScat->kray);
+					m_pPatches[ idx ].dRatio += (power_each_sample/selectedProbability)*ColorMath::MaxValue(pScat->kray);
 				}
 			}
 		}

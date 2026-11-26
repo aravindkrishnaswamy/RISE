@@ -1,13 +1,23 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           realistic.RISEScene                                                                     #
-#   Description:    Demonstrates use of the realistic camera with settings for 35mm equivalent              #
+#   File:           realistic.RISEscene                                                                     #
+#   Description:    Demonstrates the photographic thin-lens camera with full-frame 35mm settings.            #
+#                   (Was previously the `realistic_camera` stub; migrated when the keyword was reserved      #
+#                   for the future multi-element lens camera. See docs/CAMERAS_ROADMAP.md Phase 4.)         #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      May 5, 2006                                                                             #
 #                                                                                                           #
 #############################################################################################################
+
+##################################################
+# Scene-level options.  Geometry is in metres (scene_unit defaults
+# to 1.0).  A 15 m painted box at the origin, viewed from 30 m by
+# a 50 mm "normal" lens wide-open at f/1.4.  Focus pulled to 8 m
+# (well in front of the box) so the box defocuses to a soft bokeh
+# field — full-frame 35mm cinematic DOF on a normal lens.
+##################################################
 
 ##################################################
 # Setup a renderer
@@ -16,18 +26,17 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
+	shaderop	DefaultPathTracing
 }
 
-adaptivepixelpel_rasterizer
+# Migrated from pixelpel_rasterizer by tools/migrate_scenes_legacy_rasterizer.py (--mode direct, legacy-deprecation Phase 2).
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	min_samples			32
-	max_samples			2000
-	num_steps			46
-	lum_samples			1
-	threshold			0.0005
-#	show_samples		true
+	samples					32
+	adaptive_max_samples	2000
+	adaptive_threshold		0.0005
+#	show_adaptive_map		true
+	max_diffuse_bounce		0
 }
 
 file_rasterizeroutput
@@ -43,24 +52,162 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
-realistic_camera
+film
+{
+	width			512
+	height			512
+}
+
+thinlens_camera
 {
 	location			0 0 30
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				512
-	film_size			36				# 35mm film
-	fstop				4				# f/4
-	focal_length		24				# 24mm lens
-	focus_distance		28.0			# focus distance
+	sensor_size			36              # mm — full-frame 35mm-still
+	focal_length		50              # mm — normal lens
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		8               # metres — pulled in front of the cube
 }
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 png_painter
 {
@@ -109,4 +256,6 @@ directional_light
 	color		1.0 1.0 1.0
 	direction	0.0 0.0 1.0
 }
+
+
 

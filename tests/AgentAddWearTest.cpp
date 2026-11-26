@@ -1,0 +1,3145 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  AgentAddWearTest.cpp - docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+//    sec 11 / sec 13 Phase 4 (2026-08-30): add_wear, the VERB half of
+//    design-note condition L and the C-VERB escalation the 2026-08-29
+//    curv census earned.
+//
+//  WHAT THIS VERB HAS TO GET RIGHT, and therefore what is measured here.
+//  Its contract is "band around the colour that is already there" --
+//  vary_material's contract, on the colour pipe -- with one extra
+//  obligation vary_material does not carry: the composition it writes
+//  is only worth anything if the GEOMETRY SIGNAL actually drives it.  A
+//  wear painter that parses, derives and renders a perfectly uniform
+//  base colour is a silent no-op dressed as a success, and it is the
+//  specific failure the census measured models talking themselves into
+//  (a `P.z` threshold that "looks like" wear).  So the positive cases
+//  assert four things a weaker test would miss --
+//    (a) the minted colour painter responds to CURVATURE in the right
+//        DIRECTION: evaluated through IPainter::GetColor at three
+//        synthetic hits that differ ONLY in mean curvature (same world
+//        point, so the fbm breakup contributes identically), a convex
+//        hit must come back LIGHTER than a flat one and a concave hit
+//        DARKER -- an execution-level proof of the sign convention, not
+//        a render-pixel check that Monte-Carlo noise would satisfy on
+//        its own;
+//    (b) the minted roughness painter reads the SAME two masks, in the
+//        same direction (polished on the rubbed edge, rougher in the
+//        crevice), and every sample lands inside the band its `param`
+//        metadata advertises;
+//    (c) the numbers it emitted really are the ones that were already
+//        there -- base_r/g/b equal the authored uniformcolor RGB,
+//        rough_base equals the authored roughness, and the band is
+//        vary_material's own VaryBandFor_ rule;
+//    (d) the material chunk really points at both minted chunks, read
+//        back out of the DOCUMENT, and the whole scene still derives
+//        and renders.
+//
+//  Cases:
+//    A  QUALIFY + SELECT + REWRITE.  Three flat-colour ggx materials on
+//       sdf_geometry; the bare call takes the one bound to the MOST
+//       objects (not the first in the document), mints an
+//       expression_painter AND a scalar_painter, rebinds rd + alphax +
+//       alphay, and the document still derives + renders.
+//    A2 BAND-AROUND-EXISTING, numerically (the (c) claim above).
+//    A3 THE SIGNAL DRIVES IT (the (a)/(b) claims above).
+//    B  SELECTION: `material` overrides the auto-pick; the lexicographic
+//       tie-break decides between two equally-used materials.
+//    B2 A LAMBERTIAN (no microsurface at all) gets the colour half only
+//       -- not a refusal, and no roughness chunk minted.
+//    B4 A material authored with a literal roughness of 0.0 (a perfect
+//       mirror) is a FOUND constant, not an absent one -- both halves
+//       are rewritten, and the emitted band respects VaryBandFor_'s
+//       degenerate-band floor rather than a live/inverted band.
+//    C  DETERMINISM: two runs from the SAME input document produce
+//       BYTE-IDENTICAL output.  No clock, no PRNG state.
+//    D  REFUSALS, each with the document BYTE-IDENTICAL afterwards:
+//       nothing qualifies; a colour that already varies; a material
+//       already reading curv; PLANAR-ONLY geometry; an unknown name; a
+//       named chunk with no colour slot this can read.
+//    E  UNDO through a live SceneEditController restores the pre-verb
+//       document EXACTLY -- two painters and three slot rebinds are ONE
+//       undo step.
+//    F  AUTONOMY: refused under Read; refused with a Propose-specific
+//       message under Propose; refused (document byte-identical) under
+//       External authority.
+//    G  THE NOTE fires exactly on the predicate (>= 3 candidates), NAMES
+//       the verb and the material, is byte-identical across its two
+//       carriers, must NOT fire at 2, must NOT fire on planar-only
+//       geometry, and STOPS firing once the verb has taken the document
+//       below the gate.
+//    H  WIRE SURFACE: dispatches through AgentRpcDispatcher, is declared
+//       in the shared chat-codec tool table, and -- the 1ed4e7c3
+//       two-list-drift lesson -- is ADVERTISED and ROUTABLE on MCP.
+//
+//  Self-contained: no RISE_MEDIA_PATH, inline native-v7 scenes.
+//
+//  Author: Aravind Krishnaswamy
+//  Tabs: 4
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <vector>
+#include <cctype>
+
+#include "../src/Library/Job.h"
+#include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Intersection/RayIntersection.h"
+#include "../src/Library/Agent/AgentSession.h"
+#include "../src/Library/Agent/AgentRpc.h"
+#include "../src/Library/Agent/AgentMcpAdapter.h"
+#include "../src/Library/Agent/AgentChatCodecs.h"
+#include "../src/Library/Agent/AgentDiagnostic.h"
+#include "../src/Library/Agent/Json.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const std::string& w )
+{
+	if( c ) ++g_pass;
+	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
+}
+
+static std::string TempPath( const char* name )
+{
+	std::string dir = std::filesystem::temp_directory_path().generic_string();
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+	return dir + name;
+}
+
+static Job* LoadScene( const std::string& text, const std::string& path )
+{
+	{ std::ofstream o( path.c_str(), std::ios::binary ); o << text; }
+	Job* pJob = new Job();
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+		pJob->release();
+		std::remove( path.c_str() );
+		return nullptr;
+	}
+	return pJob;
+}
+
+//----------------------------------------------------------------------
+// A NO-OP-render SceneEditController, so case E can drive the REAL
+// Undo() the GUI's Cmd-Z drives.  No Start() -- the test never needs a
+// render thread, and not spawning one keeps the case deterministic.
+//----------------------------------------------------------------------
+class QuietController : public SceneEditController
+{
+public:
+	explicit QuietController( IJobPriv& job )
+	: SceneEditController( job, /*interactiveRasterizer*/0 ) {}
+protected:
+	void DoOneRenderPass() override {}
+};
+
+//----------------------------------------------------------------------
+// THE OBSERVABLE, and the reason this file exists rather than a render
+// diff: a hit record whose ONLY varying quantity is the mean curvature.
+// Same world point, same UV, same everything -- so the fbm breakup term
+// contributes the SAME amount to all three probes and any difference in
+// the result is attributable to `curv` alone.
+//
+// `curvatureValid` + `curvature` is the SDF family's own path into
+// ExpressionPainter::BuildContext (RayIntersectionGeometric.h's
+// SurfaceDerivativesInfo doc: "BuildContext PREFERS this when
+// curvatureValid"), and `scaleHint` 1.0 is the honest default, so `curv`
+// reads back exactly the number set here.
+//----------------------------------------------------------------------
+static RayIntersectionGeometric ProbeHit( double meanCurvature )
+{
+	RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+	ri.bHit = true;
+	ri.ptCoord = Point2( 0.31, 0.62 );
+	ri.ptIntersection = Point3( 0.4, -0.2, 0.7 );
+	ri.ptObjIntersec  = Point3( 0.4, -0.2, 0.7 );
+	ri.vNormal = Vector3( 0, 1, 0 );
+	ri.onb = OrthonormalBasis3D( Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ), Vector3( 0, 1, 0 ) );
+	ri.derivatives.scaleHint      = 1.0;
+	ri.derivatives.curvature      = meanCurvature;
+	ri.derivatives.curvatureValid = true;
+	return ri;
+}
+
+static double LumaOf( const RISEPel& p )
+{
+	return 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+}
+
+//! The value on the FIRST `param <which> <value> ...` line at or after
+//! chunk `chunkName`'s `name` line.
+//! THE NAME MUST MATCH AT A WORD BOUNDARY.  `add_wear` mints `X_wear` and
+//! `X_wearrough`, and the roughness chunk is spliced LAST so it lands
+//! FIRST -- so a bare `find(chunkName)` asked for the COLOUR chunk returns
+//! a position inside the ROUGHNESS one, and the forward `param` scan then
+//! reads the wrong chunk's value.  The same shape as the `ChunkTextOf` bug
+//! §8.4 S5 records; this pre-existing helper carried it too, and the
+//! contact params (which exist in BOTH chunks with the same values) are
+//! exactly where it would have gone unnoticed.
+static double ParamValueInChunk( const std::string& doc, const std::string& chunkName,
+                                 const std::string& which, bool& ok )
+{
+	ok = false;
+	std::size_t namePos = std::string::npos;
+	{
+		std::size_t at = doc.find( chunkName );
+		while( at != std::string::npos ) {
+			const std::size_t e = at + chunkName.size();
+			const bool endsClean = ( e >= doc.size() ) ||
+				!( std::isalnum( static_cast<unsigned char>( doc[e] ) ) || doc[e] == '_' );
+			// ...AND IT MUST BE THE CHUNK'S OWN `name` LINE, not a
+			// reference to it from a material slot.  Without this the
+			// helper depends on every painter chunk preceding the material
+			// that binds it -- true today, and not a property this file
+			// should rest on.
+			std::size_t bol = doc.rfind( '\n', at );
+			bol = ( bol == std::string::npos ) ? 0 : bol + 1;
+			const std::string line = doc.substr( bol, at - bol );
+			const std::size_t ls = line.find_first_not_of( " \t" );
+			const bool isNameLine = ( ls != std::string::npos ) &&
+				line.compare( ls, 4, "name" ) == 0;
+			if( endsClean && isNameLine ) { namePos = at; break; }
+			at = doc.find( chunkName, at + 1 );
+		}
+	}
+	if( namePos == std::string::npos ) return 0.0;
+	std::size_t pos = namePos;
+	while( true ) {
+		pos = doc.find( "param", pos );
+		if( pos == std::string::npos ) return 0.0;
+		const std::size_t eol = doc.find( '\n', pos );
+		const std::string line = doc.substr( pos, eol - pos );
+		const std::size_t w = line.find( which );
+		if( w != std::string::npos ) {
+			const std::size_t vs = line.find_first_not_of( " \t", w + which.size() );
+			if( vs != std::string::npos ) {
+				ok = true;
+				return std::strtod( line.c_str() + vs, nullptr );
+			}
+		}
+		pos = ( eol == std::string::npos ) ? doc.size() : eol;
+		if( pos >= doc.size() ) return 0.0;
+	}
+}
+
+//----------------------------------------------------------------------
+// Fixtures.  Each derives on its own -- shader, rasterizer, film,
+// camera, painters, materials, geometry -- so a failure is never "the
+// scene did not load".
+//----------------------------------------------------------------------
+static std::string Preamble()
+{
+	return
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 2 9\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_bronze\n\tcolor 0.42 0.28 0.14\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_spec\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"directional_light\n{\n\tname key\n\tpower 3.0\n\tcolor 1 1 1\n\tdirection 0.4 0.5 0.9\n}\n\n";
+}
+
+//! An sdf_geometry blob -- the family `curv` is EXACT on, and the one
+//! the design doc's own worked example uses.
+static std::string SdfBlob( const std::string& name )
+{
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart sphere union 0     0 0 0     0 0 0   1 1 1   0.75 0 0   0\n"
+	       "\tpart sphere subtract 0.08   0.35 0.1 0.55   0 0 0   1 1 1   0.42 0 0   0\n"
+	       "\tpart sphere union 0     -0.455 0.273 0.727   0 0 0   1 1 1   0.25 0 0   0\n}\n\n";
+}
+
+static std::string Ggx( const std::string& name, const std::string& rd, const std::string& alpha )
+{
+	return "ggx_material\n{\n\tname " + name + "\n\trd " + rd + "\n\trs pnt_spec\n"
+	       "\talphax " + alpha + "\n\talphay " + alpha + "\n\tior 1.5\n\textinction 0.0\n}\n\n";
+}
+
+static std::string Obj( const std::string& name, const std::string& geo,
+                        const std::string& mat, double x )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", x );
+	return "standard_object\n{\n\tname " + name + "\n\tgeometry " + geo + "\n\tmaterial " + mat +
+	       "\n\tposition " + buf + " 0 0\n}\n\n";
+}
+
+//! Three qualifying flat-colour ggx materials on curv-bearing geometry.
+//! `mat_b` is bound to THREE objects, `mat_a` to two and `mat_c` to one,
+//! so the bare call has a unique most-prominent answer that is NOT the
+//! first in document order -- a fixture whose document order and
+//! prominence agreed could not tell the two selection rules apart.
+static std::string SceneThreeMaterials()
+{
+	std::string s = Preamble();
+	s += SdfBlob( "blob" );
+	s += Ggx( "mat_a", "pnt_bronze", "0.3" );
+	s += Ggx( "mat_b", "pnt_bronze", "0.25" );
+	s += Ggx( "mat_c", "pnt_bronze", "0.4" );
+	s += Obj( "o1", "blob", "mat_a", -3 );
+	s += Obj( "o2", "blob", "mat_a", -2 );
+	s += Obj( "o3", "blob", "mat_b", -1 );
+	s += Obj( "o4", "blob", "mat_b", 0 );
+	s += Obj( "o5", "blob", "mat_b", 1 );
+	s += Obj( "o6", "blob", "mat_c", 2 );
+	return s;
+}
+
+//----------------------------------------------------------------------
+
+static void TestQualifySelectRewrite()
+{
+	std::printf( "A: qualify + select + rewrite -- the bare call takes the most-bound material\n" );
+	const std::string tmp = TempPath( "addwear_a.RISEscene" );
+	Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+	Check( pJob != nullptr, "A: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string docBefore = sess->ReadDocument();
+
+	const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+	Check( r.ok && r.applied, std::string( "A: the no-argument call APPLIED -- " ) + r.message );
+	Check( r.status == "applied", "A: status is \"applied\"" );
+	Check( r.material == "mat_b",
+	       "A MONEY: it took `mat_b` -- the material bound to the MOST objects (3), not `mat_a`, "
+	       "which is FIRST in the document (2 objects)" );
+	Check( r.materialKind == "ggx_material", "A: the result names the material's kind" );
+	Check( r.qualifyingMaterials == 3, "A: all three flat-colour materials qualified" );
+	Check( r.boundObjects == 3, "A: it reports how many objects bind the chosen material" );
+	Check( r.geometryKind == "sdf_geometry",
+	       "A MONEY: it names the geometry family that makes the signal READ -- the clause that "
+	       "separates a real wear pass from one that renders the flat colour it started from" );
+	Check( r.colorSlot == "rd",
+	       "A: it rebound `rd`, the ALBEDO slot, not `rs` (the preference list decides, not "
+	       "descriptor order alone)" );
+	Check( r.roughnessSlots.size() == 2 &&
+	       r.roughnessSlots[0] == "alphax" && r.roughnessSlots[1] == "alphay",
+	       "A: BOTH ggx roughness slots were rebound (a ggx with only alphax varying would be "
+	       "anisotropic by accident)" );
+	Check( !r.colorPainter.empty() && !r.roughnessPainter.empty(),
+	       "A: it names BOTH chunks it minted" );
+
+	const std::string docAfter = sess->ReadDocument();
+	Check( docBefore != docAfter, "A: the document really changed" );
+	Check( docAfter.find( "expression_painter" ) != std::string::npos,
+	       "A: an expression_painter chunk landed (the colour half)" );
+	Check( docAfter.find( "scalar_painter" ) != std::string::npos,
+	       "A: ...and a scalar_painter chunk (the microsurface half)" );
+	Check( docAfter.find( "rd " + r.colorPainter ) != std::string::npos,
+	       "A MONEY: the DOCUMENT's rd names the minted colour chunk (the rebind is real, read back "
+	       "out of the text rather than assumed from the result struct)" );
+	Check( docAfter.find( "alphax " + r.roughnessPainter ) != std::string::npos &&
+	       docAfter.find( "alphay " + r.roughnessPainter ) != std::string::npos,
+	       "A: ...and both microsurface slots name the minted roughness chunk" );
+	Check( docAfter.find( "curv*edge_wear" ) != std::string::npos &&
+	       docAfter.find( "-curv*crevice_grime" ) != std::string::npos,
+	       "A MONEY: the emitted body reads `curv` in BOTH signs -- positive for the edge mask, "
+	       "negative for the crevice mask, which IS the composition the census found models will "
+	       "not author unprompted" );
+	Check( docAfter.find( "occlusion(0.08)" ) != std::string::npos,
+	       "A MONEY: the occlusion radius is a NUMERIC LITERAL -- a `param`-bound radius compiles to "
+	       "the DynR twin, which reads the neutral fallback on every triangle mesh and would "
+	       "silently delete the cavity term (ExpressionEval.h's literalRadiusArg)" );
+	// THE HUMAN-EDITABILITY CONTRACT: this verb's own output must obey the
+	// rule the skills teach, or the worked example a model copies is wrong.
+	Check( docAfter.find( "min " ) != std::string::npos && docAfter.find( "max " ) != std::string::npos &&
+	       docAfter.find( "step " ) != std::string::npos && docAfter.find( "label " ) != std::string::npos,
+	       "A MONEY: every emitted `param` carries min/max/step/label metadata -- the verb's own "
+	       "output follows the human-editability contract it exists to teach" );
+	Check( docAfter.find( "\tseed" ) != std::string::npos, "A: ...and a `seed` line for per-instance jitter" );
+	// The two untouched materials are untouched.
+	Check( docAfter.find( "rd pnt_bronze" ) != std::string::npos,
+	       "A: the other two materials keep their own flat colour -- ONE material was worn, not all "
+	       "three" );
+
+	Check( pJob->GetScene() != nullptr, "A: the rewritten document still derives" );
+
+	// It renders, non-black, with no diagnostics.
+	{
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, "A: the rewritten scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0, "A: ...and is non-black" );
+	}
+	{
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( docAfter );
+		bool anyError = false;
+		for( const Agent::AgentDiagnostic& d : diags )
+			if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+		Check( !anyError,
+		       "A MONEY: the rewritten document validates with ZERO error diagnostics -- the "
+		       "generated expression bodies really compile in the VM, not merely parse as text" );
+	}
+
+	// ---- A2: BAND AROUND WHAT IS ALREADY THERE, numerically -------------
+	{
+		bool okR = false, okG = false, okB = false;
+		const double br = ParamValueInChunk( docAfter, r.colorPainter, "base_r", okR );
+		const double bg = ParamValueInChunk( docAfter, r.colorPainter, "base_g", okG );
+		const double bb = ParamValueInChunk( docAfter, r.colorPainter, "base_b", okB );
+		Check( okR && okG && okB, "A2: the three base-colour params are readable out of the chunk" );
+		Check( std::fabs( br - 0.42 ) < 1e-9 && std::fabs( bg - 0.28 ) < 1e-9 &&
+		       std::fabs( bb - 0.14 ) < 1e-9,
+		       "A2 MONEY: base_r/g/b are EXACTLY the authored `pnt_bronze` 0.42 0.28 0.14 -- the "
+		       "composition is banded around the colour that was already there, never a colour this "
+		       "verb invented" );
+		Check( std::fabs( r.baseR - 0.42 ) < 1e-9 && std::fabs( r.baseG - 0.28 ) < 1e-9 &&
+		       std::fabs( r.baseB - 0.14 ) < 1e-9,
+		       "A2: ...and the result struct reports the same three numbers" );
+
+		bool okBase = false, okLo = false, okHi = false;
+		const double rBase = ParamValueInChunk( docAfter, r.roughnessPainter, "rough_base", okBase );
+		const double rLo   = ParamValueInChunk( docAfter, r.roughnessPainter, "rough_polished", okLo );
+		const double rHi   = ParamValueInChunk( docAfter, r.roughnessPainter, "rough_crusted", okHi );
+		Check( okBase && okLo && okHi, "A2: the three roughness params are readable out of the chunk" );
+		Check( std::fabs( rBase - 0.25 ) < 1e-9,
+		       "A2 MONEY: rough_base is EXACTLY the authored 0.25" );
+		Check( std::fabs( r.previousRoughness - 0.25 ) < 1e-12,
+		       "A2: ...and the result struct reports the constant it banded around" );
+		// vary_material's OWN band rule (VaryBandFor_): 0.7x .. 1.4x below 1.
+		// Pinned numerically, not merely as an inequality, so a private
+		// second band rule growing here is caught.
+		Check( std::fabs( rLo - 0.25 * 0.7 ) < 1e-9 && std::fabs( rHi - 0.25 * 1.4 ) < 1e-9,
+		       "A2 MONEY: the roughness band is vary_material's own VaryBandFor_ rule (0.7x .. 1.4x "
+		       "of 0.25), SHARED rather than re-derived -- two verbs cannot grow two ideas of a safe "
+		       "roughness band" );
+	}
+
+	// ---- A3: THE SIGNAL DRIVES IT ---------------------------------------
+	{
+		IPainterManager* pm = pJob->GetPainters();
+		IPainter* colourField = pm ? pm->GetItem( r.colorPainter.c_str() ) : nullptr;
+		Check( colourField != nullptr, "A3: the minted colour painter resolved in the live manager" );
+		if( colourField ) {
+			const double convex = LumaOf( colourField->GetColor( ProbeHit(  1.5 ) ) );
+			const double flat   = LumaOf( colourField->GetColor( ProbeHit(  0.0 ) ) );
+			const double concav = LumaOf( colourField->GetColor( ProbeHit( -1.5 ) ) );
+			std::printf( "    A3: colour luma  convex %.4f  flat %.4f  concave %.4f\n",
+			             convex, flat, concav );
+			Check( convex > flat + 1e-4,
+			       "A3 MONEY: a CONVEX hit comes back LIGHTER than a flat one at the SAME world "
+			       "point -- the edge mask is genuinely driven by positive `curv`, with the fbm "
+			       "breakup held constant across the three probes so nothing else can explain it" );
+			Check( concav < flat - 1e-4,
+			       "A3 MONEY: a CONCAVE hit comes back DARKER than flat -- the crevice mask is "
+			       "driven by negative `curv`. Together these two pin the SIGN CONVENTION the "
+			       "descriptor states, which is the one thing a mask built from `P.z` can never "
+			       "reproduce" );
+		}
+
+		IScalarPainterManager* sm = pJob->GetScalarPainters();
+		IScalarPainter* roughField = sm ? sm->GetItem( r.roughnessPainter.c_str() ) : nullptr;
+		Check( roughField != nullptr, "A3: the minted roughness painter resolved in the live manager" );
+		if( roughField ) {
+			const double convex = roughField->GetValuesAt( ProbeHit(  1.5 ) ).v[0];
+			const double flat   = roughField->GetValuesAt( ProbeHit(  0.0 ) ).v[0];
+			const double concav = roughField->GetValuesAt( ProbeHit( -1.5 ) ).v[0];
+			std::printf( "    A3: roughness    convex %.4f  flat %.4f  concave %.4f\n",
+			             convex, flat, concav );
+			Check( convex < flat - 1e-4,
+			       "A3 MONEY: a CONVEX hit is SMOOTHER -- a rubbed edge is polished, which is what "
+			       "the composition claims" );
+			Check( concav > flat + 1e-4,
+			       "A3 MONEY: a CONCAVE hit is ROUGHER -- crusted crevice. The colour and roughness "
+			       "chunks read the SAME two masks, so they cannot disagree about where the wear is" );
+			const double lo = 0.25 * 0.7, hi = 0.25 * 1.4;
+			Check( convex >= lo - 1e-9 && concav <= hi + 1e-9 &&
+			       flat >= lo - 1e-9 && flat <= hi + 1e-9,
+			       "A3: every probe lands INSIDE the band the emitted params advertise -- the clamps "
+			       "on the two masks are what make that metadata true rather than decorative" );
+		}
+	}
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestSelection()
+{
+	std::printf( "B: selection -- `material` overrides, and ties break lexicographically\n" );
+
+	// (1) A NAMED material overrides the most-prominent pick.
+	{
+		const std::string tmp = TempPath( "addwear_b1.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "B1: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_c" );
+			Check( r.ok && r.applied && r.material == "mat_c",
+			       std::string( "B1 MONEY: `material` takes the named one, not the most prominent -- " ) +
+			       r.message );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (2) TWO equally-used materials: the LEXICOGRAPHIC tie-break decides,
+	//     not document position -- so reordering two equally-bound chunks
+	//     cannot silently change which one a bare call takes.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += Ggx( "zeta", "pnt_bronze", "0.3" );
+		body += Ggx( "alpha", "pnt_bronze", "0.3" );
+		body += Obj( "o1", "blob", "zeta", -1 );
+		body += Obj( "o2", "blob", "alpha", 1 );
+		const std::string tmp = TempPath( "addwear_b2.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "B2: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied && r.material == "alpha",
+			       std::string( "B2 MONEY: the tie between two 1-object materials breaks "
+			                    "LEXICOGRAPHICALLY (`alpha`), not by document order (`zeta` is "
+			                    "first) -- " ) + r.message );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
+static void TestLambertianColourOnly()
+{
+	std::printf( "B3: a material with NO microsurface gets the colour half only -- not a refusal\n" );
+	std::string body = Preamble();
+	body += SdfBlob( "blob" );
+	body += "lambertian_material\n{\n\tname mat_flat\n\treflectance pnt_bronze\n}\n\n";
+	body += Obj( "o1", "blob", "mat_flat", 0 );
+	const std::string tmp = TempPath( "addwear_b3.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "B3: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+	Check( r.ok && r.applied, std::string( "B3: applied -- " ) + r.message );
+	Check( r.material == "mat_flat" && r.colorSlot == "reflectance",
+	       "B3: it rebound lambertian's `reflectance`" );
+	Check( r.roughnessSlots.empty() && r.roughnessPainter.empty(),
+	       "B3 MONEY: NO roughness chunk was minted -- the microsurface half is opportunistic, never "
+	       "part of qualification, so a lambertian is a perfectly good colour-wear target rather "
+	       "than a refusal" );
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "scalar_painter" ) == std::string::npos,
+	       "B3: ...and no scalar_painter chunk is in the document at all" );
+	Check( doc.find( "reflectance " + r.colorPainter ) != std::string::npos,
+	       "B3: the rebind is real, read back out of the document" );
+	Check( pJob->GetScene() != nullptr, "B3: the rewritten document still derives" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestRoughnessZeroSentinel()
+{
+	std::printf( "B4: a material authored with a literal roughness of 0.0 still gets BOTH halves\n" );
+	std::string body = Preamble();
+	body += SdfBlob( "blob" );
+	body += Ggx( "mat_mirror", "pnt_bronze", "0.0" );
+	body += Obj( "o1", "blob", "mat_mirror", 0 );
+	const std::string tmp = TempPath( "addwear_b4.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "B4: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+	Check( r.ok && r.applied, std::string( "B4: applied -- " ) + r.message );
+	Check( r.material == "mat_mirror" && r.colorSlot == "rd", "B4: it rebound the colour slot" );
+	Check( r.roughnessSlots.size() == 2 &&
+	       r.roughnessSlots[0] == "alphax" && r.roughnessSlots[1] == "alphay",
+	       "B4 MONEY: a material authored with a literal roughness of 0.0 (a perfect mirror) is a "
+	       "FOUND constant, not an absent one -- both ggx roughness slots were rebound, exactly as "
+	       "any other flat-roughness material would be" );
+	Check( !r.roughnessPainter.empty(),
+	       "B4 MONEY: a roughness (scalar_painter) chunk WAS minted -- roughness 0.0 must never be "
+	       "conflated with \"no roughness slot found\", which is what a `roughness > 0.0` found-check "
+	       "would do" );
+	Check( std::fabs( r.previousRoughness - 0.0 ) < 1e-12,
+	       "B4: the result struct reports the authored constant, 0.0" );
+
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "scalar_painter" ) != std::string::npos,
+	       "B4: ...and the scalar_painter chunk really is in the document" );
+
+	bool okBase = false, okLo = false, okHi = false;
+	const double rBase = ParamValueInChunk( doc, r.roughnessPainter, "rough_base", okBase );
+	const double rLo   = ParamValueInChunk( doc, r.roughnessPainter, "rough_polished", okLo );
+	const double rHi   = ParamValueInChunk( doc, r.roughnessPainter, "rough_crusted", okHi );
+	Check( okBase && okLo && okHi, "B4: the three roughness params are readable out of the chunk" );
+	Check( std::fabs( rBase - 0.0 ) < 1e-9, "B4: rough_base is EXACTLY the authored 0.0" );
+	// VaryBandFor_'s own degenerate-band fallback (AgentSession.cpp ~33661-33664):
+	// the primary band collapses to zero width at roughness 0.0 (0.7x and 1.4x of
+	// 0 are both 0), so the function falls back to its floor -- lo=0.001,
+	// hi=0.041 -- rather than emitting an inverted or zero-width band.  This is
+	// the SAME shared rule vary_material uses; pinned numerically so a future
+	// change to it is caught here too.
+	Check( rLo > 0.0 && rHi > rLo,
+	       "B4 MONEY: the emitted band is neither zero-width nor inverted for a roughness-0.0 "
+	       "material -- VaryBandFor_'s floor is doing exactly the job this material needs" );
+	Check( std::fabs( rLo - 0.001 ) < 1e-9 && std::fabs( rHi - 0.041 ) < 1e-9,
+	       "B4: the degenerate-band floor's exact numbers (0.001 .. 0.041), matching VaryBandFor_'s "
+	       "own fallback rule for a roughness of 0.0" );
+
+	Check( pJob->GetScene() != nullptr, "B4: the rewritten document still derives" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestDeterminism()
+{
+	std::printf( "C: determinism -- two runs from the same input produce byte-identical output\n" );
+	const std::string tmpA = TempPath( "addwear_c1.RISEscene" );
+	const std::string tmpB = TempPath( "addwear_c2.RISEscene" );
+	std::string first, second;
+
+	for( int pass = 0; pass < 2; ++pass ) {
+		const std::string& tmp = pass ? tmpB : tmpA;
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "C: fixture derives" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+		Check( r.ok && r.applied, "C: applied" );
+		( pass ? second : first ) = sess->ReadDocument();
+		sess.reset();
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
+	Check( !first.empty() && first == second,
+	       "C MONEY: the two documents are BYTE-IDENTICAL -- every field scale and the `seed` are "
+	       "hashed from the MATERIAL NAME (FNV-1a), so there is no clock and no PRNG state in this "
+	       "verb's output" );
+}
+
+static void ExpectRefusal( const char* label, const std::string& body,
+                           const std::string& expectSubstr,
+                           const std::string& material = std::string() )
+{
+	const std::string tmp = TempPath( ( std::string( "addwear_ref_" ) + label + ".RISEscene" ).c_str() );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, std::string( "D(" ) + label + "): fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const std::string before = sess->ReadDocument();
+	const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( material );
+	Check( !r.ok && !r.applied && r.status.empty(),
+	       std::string( "D(" ) + label + "): REFUSED pre-commit (ok=false, empty status)" );
+	Check( r.message.find( expectSubstr ) != std::string::npos,
+	       std::string( "D(" ) + label + "): the message names THIS rule (\"" + expectSubstr +
+	       "\") -- got: " + r.message );
+	Check( sess->ReadDocument() == before,
+	       std::string( "D(" ) + label + "): the document is BYTE-IDENTICAL afterwards" );
+	Check( r.colorPainter.empty() && r.roughnessPainter.empty() && r.colorSlot.empty() &&
+	       r.roughnessSlots.empty(),
+	       std::string( "D(" ) + label + "): it reports no chunk and no rebind (a caller that "
+	       "believed them would go looking for something that does not exist)" );
+
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestRefusals()
+{
+	std::printf( "D: refusals -- each specific, each non-mutating\n" );
+
+	// (1) NOTHING QUALIFIES: the only material's colour already varies.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "perlin3d_painter\n{\n\tname pnt_noise\n\tcolora pnt_bronze\n\tcolorb pnt_spec\n}\n\n";
+		body += Ggx( "mat_v", "pnt_noise", "0.3" );
+		body += Obj( "o1", "blob", "mat_v", 0 );
+		ExpectRefusal( "nothing-qualifies", body, "no material in this document is a flat, readable colour" );
+	}
+
+	// (2) A NAMED material whose colour already varies -- the SPECIFIC rule,
+	//     not the generic nothing-qualifies text, because the two need
+	//     different corrections.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "perlin3d_painter\n{\n\tname pnt_noise\n\tcolora pnt_bronze\n\tcolorb pnt_spec\n}\n\n";
+		body += Ggx( "mat_v", "pnt_noise", "0.3" );
+		body += Ggx( "mat_ok", "pnt_bronze", "0.3" );
+		body += Obj( "o1", "blob", "mat_v", -1 );
+		body += Obj( "o2", "blob", "mat_ok", 1 );
+		ExpectRefusal( "already-varying", body, "its colour already varies", "mat_v" );
+	}
+
+	// (3) ALREADY WORN: the material's roughness slot already reads `curv`,
+	//     so a second pass would stack two wear layers.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_worn\n\tparam k 3.0\n"
+		        "\texpression clamp(-curv*k + 0.5, 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_worn", "pnt_bronze", "sp_worn" );
+		body += Obj( "o1", "blob", "mat_worn", 0 );
+		ExpectRefusal( "already-worn", body, "already binds an expression that reads `curv`", "mat_worn" );
+		// ...and it is not silently taken by a BARE call either.
+		ExpectRefusal( "already-worn-bare", body,
+		               "no material in this document is a flat, readable colour" );
+	}
+
+	// (4) PLANAR-ONLY GEOMETRY.  Every object bound to the material sits on
+	//     a box, where `curv` is 0 everywhere a ray can land -- the whole
+	//     composition would render the flat colour it started from, which is
+	//     the silent no-op this refusal exists to prevent.
+	{
+		std::string body = Preamble();
+		body += "box_geometry\n{\n\tname slab\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		body += Ggx( "mat_box", "pnt_bronze", "0.3" );
+		body += Obj( "o1", "slab", "mat_box", 0 );
+		ExpectRefusal( "planar-only", body, "planar geometry", "mat_box" );
+		ExpectRefusal( "planar-only-bare", body,
+		               "no material in this document is a flat, readable colour" );
+	}
+
+	// (5) A NAMED material that does not exist at all.
+	{
+		std::string body = SceneThreeMaterials();
+		ExpectRefusal( "unknown-name", body, "no chunk named", "not_a_thing" );
+	}
+
+	// (6) A NAMED chunk that EXISTS but carries no colour slot this can read
+	//     -- a geometry chunk.  Distinct message from (5).
+	{
+		std::string body = SceneThreeMaterials();
+		ExpectRefusal( "wrong-kind", body, "carries no colour slot this can read", "blob" );
+	}
+}
+
+static void TestUndo()
+{
+	std::printf( "E: undo -- ONE step restores the pre-verb document EXACTLY\n" );
+	const std::string tmp = TempPath( "addwear_undo.RISEscene" );
+	Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+	Check( pJob != nullptr, "E: fixture derives" );
+	if( !pJob ) return;
+
+	{
+		QuietController c( *pJob );
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		sess->AttachController( &c );
+
+		const std::string before = sess->ReadDocument();
+		const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+		Check( r.ok && r.applied, std::string( "E: applied through the controller -- " ) + r.message );
+		const std::string after = sess->ReadDocument();
+		Check( after != before, "E: the controller-attached commit really changed the document" );
+
+		c.Undo();
+		Check( sess->ReadDocument() == before,
+		       "E MONEY: ONE Undo() restores the pre-verb document BYTE-EXACTLY -- TWO painter "
+		       "inserts and THREE slot rebinds are one undoable unit, so undo can never strand a "
+		       "material pointing at a chunk that is gone" );
+		c.Redo();
+		Check( sess->ReadDocument() == after, "E: Redo() reinstalls the post-verb document" );
+
+		sess->AttachController( nullptr );
+		sess.reset();
+	}
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+static void TestAutonomyAndAuthority()
+{
+	std::printf( "F: autonomy + authority -- Read refuses, Propose refuses with its own message, "
+	             "External has no staged form\n" );
+
+	const std::string tmp = TempPath( "addwear_autonomy.RISEscene" );
+
+	// (1) READ autonomy: the dispatcher's deny-by-default gate refuses the
+	//     verb BEFORE it reaches AgentSession.
+	{
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "F1: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			Agent::AgentRpcDispatcher disp( std::move( sess ), Agent::AgentAutonomy::Read );
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"add_wear\",\"params\":{}}" );
+			Agent::JsonValue env; std::string perr;
+			Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "F1: response parses" );
+			Check( env.has( "error" ),
+			       "F1 MONEY: add_wear is REFUSED under Read autonomy -- it is not on the read-safe "
+			       "allowlist, so the deny-by-default gate catches it without any per-verb code" );
+			const std::string readResp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"read_document\",\"params\":{}}" );
+			Agent::JsonValue readEnv; std::string rerr;
+			Check( Agent::JsonParse( readResp, readEnv, rerr ) &&
+			       readEnv.get( "result" ).get( "document" ).asString() == before,
+			       "F1: the document is BYTE-IDENTICAL after the Read-autonomy refusal" );
+		}
+	}
+
+	// (2) PROPOSE autonomy: refused too, with the Propose-SPECIFIC message.
+	{
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "F2: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Agent::AgentRpcDispatcher disp( std::move( sess ), Agent::AgentAutonomy::Propose );
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"add_wear\",\"params\":{}}" );
+			Agent::JsonValue env; std::string perr;
+			Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "F2: response parses" );
+			Check( env.has( "error" ), "F2: refused under Propose autonomy as well" );
+			const std::string msg = env.get( "error" ).get( "message" ).asString();
+			Check( msg.find( "add_wear" ) != std::string::npos, "F2: the refusal NAMES the verb" );
+			Check( msg.find( "--agent-autonomy=propose" ) != std::string::npos &&
+			       msg.find( "--agent-autonomy=commit" ) != std::string::npos,
+			       "F2 MONEY: the Propose refusal is the verb's OWN message -- truthful about the "
+			       "current posture and about commit being the real escape hatch, not the generic "
+			       "Read-flavoured fallback" );
+		}
+	}
+
+	// (3) EXTERNAL authority: refused, document byte-identical, and the
+	//     message names the staged steps that DO exist.
+	{
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "F3: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess =
+				Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( !r.ok && !r.applied, "F3: an External-authority session cannot commit this verb" );
+			Check( r.message.find( "no staged-proposal form" ) != std::string::npos,
+			       "F3 MONEY: the refusal states the SAME reason vary_material gives -- ONE composite "
+			       "document swap is no AgentProposalKind an Owner could approve card-by-card -- "
+			       "rather than inventing a different staging shape" );
+			Check( r.message.find( "insert_chunk" ) != std::string::npos &&
+			       r.message.find( "propose_patch" ) != std::string::npos,
+			       "F3: ...and names the staged steps that DO exist, so the refusal is actionable" );
+			Check( sess->ReadDocument() == before, "F3: the document is byte-identical" );
+			// F3 reaches this refusal AFTER the candidate is fully composed, so
+			// it is the case that proves the result fields are published on the
+			// COMMIT, not on the plan.
+			Check( r.colorPainter.empty() && r.roughnessPainter.empty() && r.colorSlot.empty(),
+			       "F3 MONEY: a refusal that happens AFTER the candidate was composed still reports "
+			       "no painter and no rebind -- those fields describe the document, never a "
+			       "discarded plan" );
+			Check( r.material == "mat_b" && r.qualifyingMaterials == 3,
+			       "F3: ...while `material`/`qualifying` stay set, because those describe the "
+			       "document as it stands and are true either way" );
+			sess.reset();
+			pJob->release();
+		}
+	}
+	std::remove( tmp.c_str() );
+}
+
+static void TestNote()
+{
+	std::printf( "G: the design note -- fires exactly on the predicate, and NAMES the verb\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode = "DESIGN_UNWORN_MATERIALS";
+
+	// (1) THREE candidates -> FIRES, and names the verb + the material.
+	{
+		const std::string doc = SceneThreeMaterials();
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "G1: three flat-colour materials on curved geometry FIRES" );
+		if( d ) {
+			Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+			       "G1: it is an Info-severity ADVISORY, not a correctness problem" );
+			Check( d->message.find( "add_wear" ) != std::string::npos,
+			       "G1 MONEY: the clause NAMES THE VERB -- the 2026-08-29 census measured descriptor "
+			       "text plus a worked example at 1/6 adoption, so the note's whole job is to state "
+			       "a call" );
+			Check( d->message.find( "NO ARGUMENTS" ) != std::string::npos,
+			       "G1: ...and states the zero-argument form, the lowest-friction one" );
+			Check( d->message.find( "mat_b" ) != std::string::npos,
+			       "G1 MONEY: it names the SAME material a bare call takes -- note and verb read one "
+			       "shared predicate, so the note cannot advertise a call that edits something else" );
+			Check( d->message.find( "curv" ) != std::string::npos,
+			       "G1: ...and names the signal, so a model that wants to hand-author it can" );
+			Check( d->message.find( "REFUSES" ) != std::string::npos,
+			       "G1: ...and is honest about the refusal, so trying it is knowably free" );
+			Check( d->message.find( "ignore and do not churn" ) != std::string::npos,
+			       "G1: ...and carries its own anti-churn escape" );
+
+			const std::string note = Agent::AgentSession::ComputeDesignNote( doc );
+			Check( note.find( d->message ) != std::string::npos,
+			       "G1 MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the "
+			       "render-result note -- one shared formatter, two carriers, so they cannot drift" );
+		}
+	}
+
+	// (2) TWO candidates -> SILENT.  The gate is three.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += Ggx( "m1", "pnt_bronze", "0.3" );
+		body += Ggx( "m2", "pnt_bronze", "0.2" );
+		body += Obj( "o1", "blob", "m1", -1 );
+		body += Obj( "o2", "blob", "m2", 1 );
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "G2 MONEY: TWO candidates does NOT fire -- the gate is three, and a note that fired "
+		       "on every small scene would be noise" );
+	}
+
+	// (3) PLANAR-ONLY geometry -> SILENT even at three materials.  The note
+	//     must not ask for a mask that would render nothing.
+	{
+		std::string body = Preamble();
+		body += "box_geometry\n{\n\tname slab\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		body += Ggx( "m1", "pnt_bronze", "0.3" );
+		body += Ggx( "m2", "pnt_bronze", "0.2" );
+		body += Ggx( "m3", "pnt_bronze", "0.4" );
+		body += Obj( "o1", "slab", "m1", -1 );
+		body += Obj( "o2", "slab", "m2", 0 );
+		body += Obj( "o3", "slab", "m3", 1 );
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "G3 MONEY: three flat materials on BOX geometry does NOT fire -- `curv` is 0 "
+		       "everywhere a ray can land there, so advertising the call would be advertising a "
+		       "no-op. The note and the verb share the geometry clause, not just the colour one" );
+	}
+
+	// (4) SELF-DISARM: after the verb runs, the document drops below the
+	//     gate and the note goes quiet -- the fired-forever failure
+	//     materials-realism item 1 found in the OLD binary disarms.
+	{
+		const std::string tmp = TempPath( "addwear_g4.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "G4: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			Check( hasCode( Agent::AgentSession::ValidateText( sess->ReadDocument() ), kCode ) != nullptr,
+			       "G4: the note fires before the call" );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied, "G4: the verb applied" );
+			Check( hasCode( Agent::AgentSession::ValidateText( sess->ReadDocument() ), kCode ) == nullptr,
+			       "G4 MONEY: the note STOPS firing on the document the verb just produced -- the "
+			       "worn material leaves the candidate set (clause (d): it now reads `curv`), which "
+			       "drops the count below the gate. The predicate self-disarms as work lands rather "
+			       "than nagging forever" );
+			sess.reset();
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
+static void TestWireSurface()
+{
+	std::printf( "H: wire surface -- RPC dispatch, chat-codec table, MCP advertised AND routable\n" );
+
+	{
+		const std::string defs = Agent::ChatToolDefsFingerprint();
+		Check( defs.find( "add_wear" ) != std::string::npos,
+		       "H: the verb is declared in the shared kToolDefs table (so every provider codec "
+		       "carries it -- one table, four formatters)" );
+	}
+
+	const std::string tmp = TempPath( "addwear_rpc.RISEscene" );
+	Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+	Check( pJob != nullptr, "H: fixture derives" );
+	if( !pJob ) return;
+
+	// MCP: ADVERTISED and ROUTABLE.  The 1ed4e7c3 lesson is that the adapter
+	// keeps two independent lists (BuildToolsList and IsKnownToolName) and a
+	// verb can land in one but not the other -- advertised, and answering
+	// -32601 to every call.
+	{
+		std::unique_ptr<Agent::AgentSession> mcpSess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentMcpAdapter mcp( std::move( mcpSess ), Agent::AgentAutonomy::Commit );
+
+		Agent::JsonValue listEnv; std::string lerr;
+		Check( Agent::JsonParse( mcp.HandleLine(
+		           "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{}}" ),
+		       listEnv, lerr ), "H: tools/list parses" );
+		bool advertised = false;
+		const Agent::JsonValue& tools = listEnv.get( "result" ).get( "tools" );
+		for( std::size_t i = 0; i < tools.size(); ++i )
+			if( tools.at( i ).get( "name" ).asString() == "add_wear" ) advertised = true;
+		Check( advertised, "H MONEY: tools/list ADVERTISES add_wear" );
+
+		Agent::JsonValue callEnv; std::string cerr;
+		Check( Agent::JsonParse( mcp.HandleLine(
+		           "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\","
+		           "\"params\":{\"name\":\"add_wear\",\"arguments\":{}}}" ),
+		       callEnv, cerr ), "H: tools/call parses" );
+		const bool disowned = callEnv.has( "error" ) &&
+		                      callEnv.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+		Check( !disowned,
+		       "H MONEY: tools/call ROUTES add_wear (not -32601) -- the two-list-drift bug 1ed4e7c3 "
+		       "fixed for build_element/place_element cannot recur for this verb" );
+	}
+
+	pJob->release();
+	std::remove( tmp.c_str() );
+
+	// JSON-RPC dispatch, on a FRESH job (the MCP block above owned its own
+	// session and mutated the document).
+	{
+		const std::string tmp2 = TempPath( "addwear_rpc2.RISEscene" );
+		Job* pJob2 = LoadScene( SceneThreeMaterials(), tmp2 );
+		Check( pJob2 != nullptr, "H: rpc fixture derives" );
+		if( pJob2 ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob2 );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"add_wear\",\"params\":{}}" );
+			Agent::JsonValue env; std::string perr;
+			Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H: the response parses" );
+			const Agent::JsonValue& result = env.get( "result" );
+			Check( result.get( "applied" ).asBool(), "H: the RPC form applied the rewrite" );
+			Check( result.get( "material" ).asString() == "mat_b", "H: ...and echoes the material" );
+			Check( result.get( "colorSlot" ).asString() == "rd", "H: ...and the colour slot" );
+			Check( result.get( "roughSlots" ).isArray() && result.get( "roughSlots" ).size() == 2,
+			       "H: ...and the microsurface slots it rebound" );
+			Check( !result.get( "painter" ).asString().empty() &&
+			       !result.get( "roughPainter" ).asString().empty(),
+			       "H: ...and both painters it minted" );
+			Check( result.get( "geometry" ).asString() == "sdf_geometry",
+			       "H: ...and the geometry family that makes the signal read" );
+			Check( result.get( "baseColor" ).isArray() && result.get( "baseColor" ).size() == 3,
+			       "H: ...and the base colour it banded around" );
+			pJob2->release();
+			std::remove( tmp2.c_str() );
+		}
+	}
+
+	// A REFUSAL comes back as a SUCCESSFUL JSON-RPC response with ok=false --
+	// not an error envelope -- because "nothing here qualifies" is an answer.
+	{
+		std::string body = Preamble();
+		body += "box_geometry\n{\n\tname slab\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		body += Ggx( "mat_box", "pnt_bronze", "0.3" );
+		body += Obj( "o1", "slab", "mat_box", 0 );
+		const std::string tmp3 = TempPath( "addwear_rpc3.RISEscene" );
+		Job* pJob3 = LoadScene( body, tmp3 );
+		Check( pJob3 != nullptr, "H-refuse: fixture derives" );
+		if( pJob3 ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob3 );
+			Agent::AgentRpcDispatcher disp( std::move( sess ) );
+			const std::string resp = disp.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"add_wear\",\"params\":{}}" );
+			Agent::JsonValue env; std::string perr;
+			Check( Agent::JsonParse( resp, env, perr ) && env.isObject(), "H-refuse: response parses" );
+			Check( !env.has( "error" ),
+			       "H-refuse MONEY: a pre-commit refusal is a SUCCESSFUL response, not a JSON-RPC "
+			       "error -- \"nothing here qualifies\" is an answer, not a malformed call" );
+			Check( !env.get( "result" ).get( "ok" ).asBool() &&
+			       env.get( "result" ).get( "status" ).asString().empty(),
+			       "H-refuse: ok=false with an EMPTY status, so a caller branches on `applied`" );
+			Check( !env.get( "result" ).get( "message" ).asString().empty(),
+			       "H-refuse: ...and the reason rides in `message`" );
+			pJob3->release();
+			std::remove( tmp3.c_str() );
+		}
+	}
+}
+
+//----------------------------------------------------------------------
+// Condition M (2026-08-30): the "emissive-on-opaque-shell" translucency
+// fake -- DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL.  A sibling design-note
+// condition to L (both ride the SAME ComputeDesignNoteConditionsFromDoc_
+// scan and the same ValidateText/ComputeDesignNote carriers this file
+// already exercises for L), so its coverage lives in this file too even
+// though there is no `add_wear`-style verb for it to test alongside --
+// condition M is note/diagnostic-only.
+//
+// Cases, mirroring condition L's TestNote coverage:
+//   (a) opaque pbr-family shell + interior omni_light + a spatially-
+//       VARYING `emissive` -> fires, BOTH sentences.
+//   (b) same shell + light, no `emissive` bound at all -> fires, first
+//       sentence only.
+//   (c) SELF-DISARM: the shell is `translucent_material` -> silent.
+//   (d) no positional light in the document at all (only the Preamble's
+//       directional key light) -> silent.
+//   (e) the "shell" is a scene-encompassing box that also contains the
+//       camera (a room, not a lantern) -> silent.
+//   (f) a small lambertian_luminaire_material "flame" sits at the SAME
+//       point as the light, inside a bigger opaque shell -> the flame is
+//       never flagged (it is an emitter, excluded from the opaque set by
+//       the same rule that excludes it from condition I's), the outer
+//       shell is.
+//   (g) P1 coverage: a genuine sdf_geometry shell (a single sphere part)
+//       with an interior light -> fires, exactly like the analytic-kind
+//       shells above.
+//   (h) THE P1 REGRESSION: a thin, elongated sdf_geometry cylinder part
+//       (radius 0.05, half-height 3) with a light 2 units off its SIDE
+//       (laterally, off the thin radius) -> does NOT fire.  Originally a
+//       regression against the pre-fix SDFGeometryLocalBounds_, which
+//       broadcast the part's isotropic reach radius (~3.0) onto every axis
+//       and would have falsely claimed containment.  That hand-rolled
+//       reader is GONE (2026-08-30: condition M reads the derived scene),
+//       so (h) and (h2) now pin the SAME per-axis / signed-scale behaviour
+//       through the REAL SDFGeometry::ComputeBounds -- which is the point:
+//       the property is a fact about the engine, not about a port of it.
+//   (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both
+//       enclose the light -> the finding names the SMALLER (inner) one,
+//       never the outer.
+//   (j) an analytic-kind shell beyond box_geometry (sphere_geometry) also
+//       fires.
+//   (k) THE MEASURED BLIND SPOT (2026-08-30): a multi-piece element -- a
+//       container root, an opaque shell with `parent <root>`, and a
+//       `shape_light` with `parent <root>` inside it -> fires, names the
+//       shell.  Impossible before condition M read the derived scene: the
+//       document-side scan excluded every `parent`-bearing object and every
+//       parented area light, which is EVERY piece of every element
+//       `build_element` writes.  Carries M13 too -- the shape_light's own
+//       derived emissive object trivially contains its own centre and must
+//       never be named as the shell.  Shell and light carry DIFFERENT
+//       non-zero local offsets (not both (0,0,0)) so the fixture actually
+//       requires both kinds' parent composition to run with the right sign;
+//       (k2) is its companion negative -- mirroring the light's local
+//       offset composes to a world point just outside the shell's box, and
+//       must NOT fire.
+//   (l) THE GEOMETRY-KIND GAP (2026-08-30): a `lathe_geometry` vessel
+//       around an interior omni -> fires.  lathe was outside the old
+//       analytic allowlist entirely, so no lathe shell could ever be seen.
+//   (m)/(n) THE UNBOUNDED-SENTINEL REGRESSION (P2-1, 2026-08-30): an
+//       axis-aligned and a rotated `infiniteplane_geometry` (opaque
+//       material) with a light above it -> silent in both.  The
+//       box-usability filter must reject the plane's +-DBL_MAX bbox via an
+//       explicit sentinel-magnitude check, not merely rely on `hi - lo`
+//       overflowing to +inf.
+//----------------------------------------------------------------------
+
+//! `ggx_material` with an explicit (possibly empty) `emissive` binding.
+static std::string GgxEmissive( const std::string& name, const std::string& rd,
+                                const std::string& alpha, const std::string& emissive )
+{
+	std::string s = "ggx_material\n{\n\tname " + name + "\n\trd " + rd + "\n\trs pnt_spec\n"
+	                "\talphax " + alpha + "\n\talphay " + alpha + "\n\tior 1.5\n\textinction 0.0\n";
+	if( !emissive.empty() ) s += "\temissive " + emissive + "\n";
+	s += "}\n\n";
+	return s;
+}
+
+static std::string Box( const std::string& name, double size )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", size );
+	return "box_geometry\n{\n\tname " + name + "\n\twidth " + buf + "\n\theight " + buf +
+	       "\n\tdepth " + buf + "\n}\n\n";
+}
+
+static std::string OmniAtOrigin( const std::string& name )
+{
+	return "omni_light\n{\n\tname " + name + "\n\tpower 5.0\n\tcolor 1 1 1\n\tposition 0 0 0\n}\n\n";
+}
+
+static std::string OmniAt( const std::string& name, double x, double y, double z )
+{
+	char buf[128];
+	std::snprintf( buf, sizeof( buf ), "%g %g %g", x, y, z );
+	return "omni_light\n{\n\tname " + name + "\n\tpower 5.0\n\tcolor 1 1 1\n\tposition " +
+	       buf + "\n}\n\n";
+}
+
+//! A single-sphere-part sdf_geometry -- a genuine sdf SHELL (as opposed to
+//! SdfBlob's dissolved creature), for condition M's (g) coverage: the local-
+//! bounds reader must handle sdf_geometry as an enclosure candidate exactly
+//! like the analytic allowlist kinds.
+static std::string SdfSphereShell( const std::string& name, double radius )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", radius );
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart sphere union 0   0 0 0   0 0 0   1 1 1   " + buf + " 0 0   0\n}\n\n";
+}
+
+//! P1 regression fixture (review-round M): ONE thin, elongated sdf_geometry
+//! part -- a cylinder of radius 0.05 and half-height 3, axis-aligned along
+//! local Y, no rotation.  The pre-fix SDFGeometryLocalBounds_ broadcast
+//! SDFPartReachRadius_'s ISOTROPIC envelope radius (sqrt(0.05^2+3^2) ~= 3.0)
+//! onto every axis, so a point 2 units off the cylinder's THIN side (radius
+//! 0.05) still fell inside the resulting ~3x3x3 cube -- a false "enclosed"
+//! claim.  The fixed reader keeps radius 0.05 on X/Z and only extends +-3 on
+//! Y, so the same point is correctly outside.
+static std::string SdfThinCylinderShell( const std::string& name )
+{
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart cylinder union 0   0 0 0   0 0 0   1 1 1   0.05 3 0   0\n}\n\n";
+}
+
+//! P1 regression fixture (convergence round on 49718c7e): a roundcone is the
+//! ONE primitive whose local box is asymmetric about the origin on Y
+//! (ry0 = min(-a, c-b), ry1 = max(a, c+b) -- here [-0.1, 3.1] for
+//! a=b=0.1, c=3), and a NEGATIVE per-part scale component is a legitimate
+//! mirroring construct the parser preserves.  scale = (1,-1,1) reflects the
+//! true bound to [-3.1, 0.1]; an abs()-scale corner transform leaves it at
+//! [-0.1, 3.1] -- shifted to the WRONG side of the origin, capable of a
+//! false "enclosed" claim for a light the mirrored geometry never wraps.
+static std::string SdfMirroredRoundconeShell( const std::string& name )
+{
+	return "sdf_geometry\n{\n\tname " + name + "\n"
+	       "\tpart roundcone union 0   0 0 0   0 0 0   1 -1 1   0.1 0.1 3   0\n}\n\n";
+}
+
+static void TestEnclosedLightShellNote()
+{
+	std::printf( "M: the design note -- the emissive-on-opaque-shell translucency fake\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// (a) Opaque shell + interior light + a VARYING emissive -> fires, BOTH
+	//     sentences: the containment fact, then the impersonation fact.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += "expression_painter\n{\n\tname pnt_glow_varying\n\texpr vec3(u,u,u)\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "pnt_glow_varying" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M1: an omni_light enclosed by an opaque shell FIRES" );
+		if( d ) {
+			Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+			       "M1: it is an Info-severity ADVISORY" );
+			Check( d->message.find( "candle" ) != std::string::npos,
+			       "M1: it NAMES the light" );
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M1: ...and the enclosing object" );
+			Check( d->message.find( "mat_shell" ) != std::string::npos,
+			       "M1: ...and its material" );
+			Check( d->message.find( "impersonating" ) != std::string::npos,
+			       "M1 MONEY: the shell's OWN varying `emissive` earns the sharper second sentence" );
+			Check( d->message.find( "materials-and-media-basics" ) != std::string::npos,
+			       "M1: ...and points at the fix (thickness()-driven tau on translucent_material)" );
+			Check( d->message.find( "bounding-box" ) != std::string::npos,
+			       "M1: ...and hedges the geometric claim as a bbox test, not a watertight one" );
+
+			const std::string note = Agent::AgentSession::ComputeDesignNote( body );
+			Check( note.find( d->message ) != std::string::npos,
+			       "M1 MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the render-result "
+			       "note -- one shared formatter, two carriers" );
+		}
+	}
+
+	// (b) Same shell + light, NO `emissive` bound at all -> fires, but only
+	//     the first sentence -- nothing to call "impersonating".
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M2: fires without any `emissive` bound" );
+		if( d ) {
+			Check( d->message.find( "opaque" ) != std::string::npos,
+			       "M2: the containment sentence is still there" );
+			Check( d->message.find( "impersonating" ) == std::string::npos,
+			       "M2 MONEY: ...but the sharper sentence is ABSENT -- there is no painted emissive to "
+			       "call out" );
+		}
+	}
+
+	// (c) SELF-DISARM: the shell is `translucent_material` -- light genuinely
+	//     can transmit, so this is not the failure at all.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += "translucent_material\n{\n\tname mat_shell\n\tref pnt_bronze\n\ttau pnt_bronze\n}\n\n";
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M3 MONEY: a translucent_material shell does NOT fire -- switching the material kind "
+		       "self-disarms the predicate, no state needed" );
+	}
+
+	// (d) No positional light in the document at all (only the Preamble's
+	//     directional key light) -> silent, even with the same opaque shell.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M4 MONEY: a directional-only document never fires -- a direction carries no world "
+		       "point for this condition to place" );
+	}
+
+	// (e) A scene-encompassing box (a room) also contains the CAMERA
+	//     (Preamble's is at 0 2 9) -- the room-box heuristic skips it even
+	//     though it geometrically contains the light too.
+	{
+		std::string body = Preamble();
+		body += Box( "room", 40.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_room", "room", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M5 MONEY: an enclosure that ALSO contains the camera is a room/backdrop, not a "
+		       "one-light shell -- skipped" );
+	}
+
+	// (f) The flame-fixture case: a small lambertian_luminaire_material
+	//     "flame" sits at the SAME point as the light, inside a bigger
+	//     opaque shell.  The flame is never the finding (it is itself an
+	//     emitter, excluded from the opaque set exactly as condition I
+	//     excludes a luminaire from its own); the outer shell is.
+	{
+		std::string body = Preamble();
+		body += "sphere_geometry\n{\n\tname flame_sphere\n\tradius 0.1\n}\n\n";
+		body += Box( "shell", 4.0 );
+		body += "lambertian_luminaire_material\n{\n\tname mat_flame\n\texitance pnt_bronze\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_flame", "flame_sphere", "mat_flame", 0 );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M6: fires (the outer shell still encloses the light)" );
+		if( d ) {
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M6 MONEY: it names the OUTER shell..." );
+			Check( d->message.find( "obj_flame" ) == std::string::npos,
+			       "M6 MONEY: ...and never the coincident inner emissive fixture, which IS the light" );
+		}
+	}
+
+	// (g) P1 coverage: a genuine sdf_geometry shell -- a single sphere part
+	//     big enough to enclose the light -- fires exactly like the
+	//     analytic-kind shells above.
+	{
+		std::string body = Preamble();
+		body += SdfSphereShell( "sdf_shell", 2.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sdf_shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M7: a genuine sdf_geometry shell (a sphere part) encloses the light -- FIRES" );
+		if( d ) {
+			Check( d->message.find( "obj_shell" ) != std::string::npos,
+			       "M7: ...and names the sdf shell object" );
+		}
+	}
+
+	// (h) THE P1 REGRESSION: a thin, elongated sdf cylinder part (radius
+	//     0.05, half-height 3, axis-aligned along Y, unrotated) with a
+	//     light 2 units off its SIDE -- well outside the true radius-0.05
+	//     lateral extent -- must NOT read as enclosed.  Pre-fix,
+	//     SDFGeometryLocalBounds_ broadcast SDFPartReachRadius_'s isotropic
+	//     envelope (sqrt(0.05^2+3^2) ~= 3.0004) onto EVERY axis, so this
+	//     exact light position fell inside the resulting ~3x3x3 cube and
+	//     falsely fired -- verified by reasoning against the pre-fix
+	//     formula above (and confirmed by briefly reverting
+	//     SDFGeometryLocalBounds_ to the old cube-of-SDFPartReachRadius_
+	//     form during development, which flips this Check to fail).
+	{
+		std::string body = Preamble();
+		body += SdfThinCylinderShell( "sdf_thin_cyl" );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sdf_thin_cyl", "mat_shell", 0 );
+		body += OmniAt( "candle", 2.0, 0.0, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "M8 P1 REGRESSION MONEY: a light 2 units off the SIDE of a thin elongated sdf cylinder "
+		       "(radius 0.05, half-height 3) is NOT enclosed -- the per-axis bound correctly rejects it, "
+		       "where the old isotropic-radius broadcast (reach ~3 on every axis) would have falsely "
+		       "claimed containment" );
+	}
+
+	// (h2) SIGNED-SCALE REGRESSION (convergence round): a mirrored roundcone
+	//      part (scale 1 -1 1) has its true bound reflected to Y in
+	//      [-3.1, 0.1].  A light at y=+2.5 sits inside the UNMIRRORED
+	//      bound only -- an abs()-scale transform falsely fires here; the
+	//      signed-scale transform correctly does not.  The control at
+	//      y=-2.5 sits inside the true mirrored bound and DOES fire,
+	//      proving the negative direction isn't a vacuous pass.
+	{
+		std::string bodyA = Preamble();
+		bodyA += SdfMirroredRoundconeShell( "sdf_mirrored_cone" );
+		bodyA += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		bodyA += Obj( "obj_shell", "sdf_mirrored_cone", "mat_shell", 0 );
+		bodyA += OmniAt( "candle", 0.0, 2.5, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( bodyA ), kCode ) == nullptr,
+		       "M8b SIGNED-SCALE MONEY: a light at y=+2.5 beside a scale-(1,-1,1) roundcone "
+		       "(true bound Y in [-3.1, 0.1]) is NOT enclosed -- an abs()-scale corner "
+		       "transform would leave the bound un-mirrored at [-0.1, 3.1] and falsely fire" );
+
+		std::string bodyB = Preamble();
+		bodyB += SdfMirroredRoundconeShell( "sdf_mirrored_cone" );
+		bodyB += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		bodyB += Obj( "obj_shell", "sdf_mirrored_cone", "mat_shell", 0 );
+		bodyB += OmniAt( "candle", 0.0, -2.5, 0.0 );
+
+		Check( hasCode( Agent::AgentSession::ValidateText( bodyB ), kCode ) != nullptr,
+		       "M8b CONTROL: the same light at y=-2.5 sits inside the true mirrored bound "
+		       "and fires -- the negative case above is not a vacuous pass" );
+	}
+
+	// (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both
+	//     enclose the light -- the finding names the SMALLER (inner) one,
+	//     never the outer.
+	{
+		std::string body = Preamble();
+		body += Box( "shell_outer", 6.0 );
+		body += Box( "shell_inner", 2.0 );
+		body += GgxEmissive( "mat_outer", "pnt_bronze", "0.3", "" );
+		body += GgxEmissive( "mat_inner", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_outer", "shell_outer", "mat_outer", 0 );
+		body += Obj( "obj_inner", "shell_inner", "mat_inner", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M9: two nested opaque shells both enclose the light -- fires" );
+		if( d ) {
+			Check( d->message.find( "obj_inner" ) != std::string::npos,
+			       "M9 MONEY: the SMALLER (inner) shell is named..." );
+			Check( d->message.find( "obj_outer" ) == std::string::npos,
+			       "M9 MONEY: ...and the larger outer shell is never named" );
+		}
+	}
+
+	// (j) An analytic-kind shell beyond box_geometry -- sphere_geometry --
+	//     also fires.
+	{
+		std::string body = Preamble();
+		body += "sphere_geometry\n{\n\tname sphere_shell\n\tradius 2.0\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "sphere_shell", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr, "M10: a sphere_geometry shell (an analytic kind besides box) also fires" );
+	}
+
+	// (k) THE MEASURED BLIND SPOT -- the reason condition M was reworked to
+	//     read the derived scene at all.  A MULTI-PIECE ELEMENT, exactly as
+	//     `build_element` writes one: a container root, then every piece
+	//     carrying `parent <root>`.  The shipped document-side scan excluded
+	//     any object with a `parent` (it could not resolve a scene-graph
+	//     chain by hand) and any rect/shape light with one (their `center` is
+	//     LOCAL to the parent), so on a harness-authored scene it saw NOTHING
+	//     -- a live p3 altar run rendered an opaque shell around a shape_light
+	//     the harness's own light audit measured at ZERO luminance and this
+	//     condition stayed silent.
+	//
+	//     BOTH pieces below are parented to `lantern_root` (world position
+	//     5,0,0), and -- unlike the shell and the light sharing local (0,0,0)
+	//     in an earlier draft of this fixture -- they carry DIFFERENT,
+	//     non-zero local offsets:
+	//       shell (obj_shell):     local (-1, 0,   0), half-width 0.8
+	//       light (lantern_flame): local (-1, 0.2, 0)
+	//     A local (0,0,0) shell coinciding with a local (0,0,0) light is a
+	//     degenerate point: parent composition maps a shared local point to
+	//     a shared world point NO MATTER what the parent offset is (even 0,
+	//     i.e. composition silently skipped), so the light is trivially at
+	//     the shell's own centre regardless of whether composition ran at
+	//     all -- the pair could pass with parent composition deleted
+	//     entirely.  Distinct offsets close that: `obj_shell`'s composed
+	//     world box is centred at (5,0,0)+(-1,0,0) = (4,0,0), extents
+	//     x[3.2,4.8] y/z[-0.8,0.8]; `lantern_flame`'s composed world centre
+	//     is (5,0,0)+(-1,0.2,0) = (4,0.2,0), inside that box ONLY because
+	//     BOTH the shell's and the light's own parent-composition ran, with
+	//     the correct (+5,0,0) offset, on their own local values.  If either
+	//     kind's composition is skipped, or applied with the wrong sign, one
+	//     of the two points lands >= 4 units away on X against a box only
+	//     1.6 units wide -- well outside -- and the finding does not fire.
+	//     (Composition dropped identically, for the SAME numeric value, on
+	//     BOTH kinds at once is not distinguishable by any point-in-box test
+	//     -- a uniform additive offset cancels out of a containment check
+	//     between two points that share it -- but RISE has exactly one
+	//     shared `ComposeWorldTransforms` walk for every object-graph node
+	//     (`ObjectManager::ComposeWorldTransforms`, which both
+	//     `standard_object` and the object a `shape_light` derives to run
+	//     through identically), so a regression that broke it wholesale
+	//     would fail essentially every other position-dependent test in
+	//     this suite, not just this one.)
+	//
+	//     This case also carries (M13): a shape_light derives to an emissive
+	//     OBJECT of its own name, which trivially contains its own centre --
+	//     the finding must name the SHELL, never that fixture.
+	{
+		std::string body = Preamble();
+		body += "standard_object\n{\n\tname lantern_root\n\tposition 5 0 0\n}\n\n";
+		body += Box( "shell_box", 1.6 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n"
+		        "\tparent lantern_root\n\tposition -1 0 0\n}\n\n";
+		body += "shape_light\n{\n\tname lantern_flame\n\tparent lantern_root\n\tshape sphere\n"
+		        "\tcenter -1 0.2 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr,
+		       "M11 MONEY: a PARENTED opaque shell enclosing a PARENTED shape_light FIRES -- the "
+		       "multi-piece-element shape every harness-authored scene has, and the exact case the "
+		       "document-side scan was structurally blind to.  The shell and light have DIFFERENT "
+		       "local offsets, so this only fires when BOTH kinds' parent composition genuinely ran "
+		       "with the correct sign" );
+		if( d ) {
+			Check( d->message.find( "sits inside `obj_shell`" ) != std::string::npos,
+			       "M11: it names the parented SHELL as the enclosure..." );
+			Check( d->message.find( "sits inside `lantern_flame`" ) == std::string::npos,
+			       "M13 MONEY: ...and NEVER the light's own derived emissive fixture, which trivially "
+			       "contains its own centre" );
+			Check( d->message.find( "`shape_light lantern_flame`" ) != std::string::npos,
+			       "M11: ...and names the light by its authored kind and name" );
+		}
+	}
+
+	// (k2) M11's COMPANION NEGATIVE.  Identical to (k) -- same root, same
+	//     shell at local (-1,0,0) -- except the light's local offset is
+	//     mirrored to (+1, 0.2, 0), composing to world
+	//     (5,0,0)+(1,0.2,0) = (6, 0.2, 0), which sits 1.2 units past the
+	//     shell's world box edge at x=4.8 -- OUTSIDE.  This pins that the
+	//     containment test is a real bounded interval check, not a loose
+	//     "some positional light is somewhere near this parented shell"
+	//     heuristic: (k)'s and (k2)'s shell are byte-identical, and only the
+	//     sign of the light's local X offset differs, so a test that fires
+	//     on BOTH fixtures would mean the geometry check is not precise
+	//     enough to tell -1 from +1 once a parent offset is in play.
+	{
+		std::string body = Preamble();
+		body += "standard_object\n{\n\tname lantern_root\n\tposition 5 0 0\n}\n\n";
+		body += Box( "shell_box", 1.6 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n"
+		        "\tparent lantern_root\n\tposition -1 0 0\n}\n\n";
+		body += "shape_light\n{\n\tname lantern_flame\n\tparent lantern_root\n\tshape sphere\n"
+		        "\tcenter 1 0.2 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M11 NEGATIVE: mirroring the light's local offset to the OTHER side of the shell's "
+		       "local centre composes to a world point outside the shell's world box, and must NOT "
+		       "fire -- pins that (k)'s fire is a precise bounded-box result, not a loose proximity "
+		       "match on the parented pair" );
+	}
+
+	// (l) THE GEOMETRY-KIND GAP: a lathe_geometry vessel (a closed profile of
+	//     revolution -- r=0 at both ends, so a watertight vase) around an
+	//     interior omni.  lathe was OUTSIDE the old scan's analytic allowlist
+	//     (box/sphere/ellipsoid/cylinder/torus/sdf), so no lathe shell could
+	//     ever fire; the derived scene has a real box for it, as it does for
+	//     every other geometry kind.
+	{
+		std::string body = Preamble();
+		body += "lathe_geometry\n{\n\tname vessel\n"
+		        "\tprofile_point 0 -2\n"
+		        "\tprofile_point 1.5 -1\n"
+		        "\tprofile_point 1.8 0\n"
+		        "\tprofile_point 1.5 1\n"
+		        "\tprofile_point 0 2\n"
+		        "\taxis y\n\tsweep_degrees 360\n\tn_radial 24\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_vessel", "vessel", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr,
+		       "M12 MONEY: a lathe_geometry vessel enclosing an omni FIRES -- a geometry kind the old "
+		       "analytic allowlist could not size at all" );
+		if( d ) {
+			Check( d->message.find( "sits inside `obj_vessel`" ) != std::string::npos,
+			       "M12: ...and names the lathe object" );
+		}
+	}
+
+	// (m) THE UNBOUNDED-SENTINEL REGRESSION (P2-1): an axis-aligned
+	//     `infiniteplane_geometry` (opaque, non-luminaire material) with a
+	//     light above it must NEVER be read as an enclosing shell.  Its
+	//     default-constructed BoundingBox is +-RISE_INFINITY == +-DBL_MAX on
+	//     every axis, which IS finite by IsFiniteDouble -- the box-usability
+	//     filter in CollectDerivedSceneFacts_ must reject it via the
+	//     explicit sentinel-magnitude check (>= 1e29), not rely on `hi - lo`
+	//     happening to overflow to +inf, since a smaller-but-still-huge
+	//     finite sentinel (RISE's own +-1e30 / +-FLT_MAX family) would
+	//     satisfy both IsFiniteDouble AND a finite non-overflowing
+	//     subtraction.
+	{
+		std::string body = Preamble();
+		body += "infiniteplane_geometry\n{\n\tname inf_plane\n\txtile 1.0\n\tytile 1.0\n}\n\n";
+		body += GgxEmissive( "mat_plane", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_plane", "inf_plane", "mat_plane", 0 );
+		body += OmniAt( "sun", 0, 0, 5 );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M14 (P2-1): an axis-aligned infinite plane is NEVER read as an enclosing shell -- its "
+		       "+-DBL_MAX bbox must be rejected as an unbounded sentinel, not merely happen to fail a "
+		       "later finite-extent check" );
+	}
+
+	// (n) THE UNBOUNDED-SENTINEL REGRESSION, ROTATED (P2-1): the same
+	//     opaque infinite plane, but the object also carries a non-trivial
+	//     `orientation` -- a rotated instance's world corners are computed
+	//     by transforming the +-DBL_MAX local bounds, which the pre-fix
+	//     code only rejected because THAT corner transform overflowed to
+	//     +-inf.  The explicit sentinel check catches it directly instead,
+	//     so this must stay silent exactly like the axis-aligned case.
+	{
+		std::string body = Preamble();
+		body += "infiniteplane_geometry\n{\n\tname inf_plane\n\txtile 1.0\n\tytile 1.0\n}\n\n";
+		body += GgxEmissive( "mat_plane", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_plane\n\tgeometry inf_plane\n\tmaterial mat_plane\n"
+		        "\torientation 30 15 0\n\tposition 0 0 0\n}\n\n";
+		body += OmniAt( "sun", 0, 0, 5 );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M14 (P2-1), rotated variant: a rotated infinite plane is ALSO never read as an "
+		       "enclosing shell -- the explicit sentinel check catches it directly rather than "
+		       "depending on the rotated corner transform overflowing" );
+	}
+}
+
+//----------------------------------------------------------------------
+// Condition N (2026-08-30): the DIM HERO LIGHT -- DESIGN_DIM_HERO_LIGHT.
+// Condition M's sibling, and here for M's reason: both ride the SAME
+// ComputeDesignNoteConditionsFromDoc_ scan and the same carriers this
+// file already exercises, and N's own M-SUPPRESSION rule can only be
+// tested where M's fixtures are.
+//
+// WHAT IS DIFFERENT ABOUT IT, and therefore what these cases have to
+// pin: N's input is a MEASUREMENT held in SESSION STATE, not a fact
+// recomputable from the bytes.  So every case drives the cache through
+// the same public seam `light_scene`'s own measurement pass calls
+// (AgentSession::RecordLightSoloMeasurements) and then reads the note
+// through a SESSION carrier (AgentSession::Validate), never the
+// stateless text-only one -- which N1c pins as deliberately SILENT.
+//
+// Cases:
+//   (a) N1  FIRES: a shape_light authored at `exitance 5000` whose
+//       cached solo audit measured it at 1.9% of the scene's measured
+//       light total -- the motivating trajectory's own numbers (1.3
+//       against a 67.9 all-lights frame).  Both numbers in the clause,
+//       byte-identical across the two carriers, and SILENT through the
+//       cache-less static carrier.
+//   (b) N2  VALIDITY: the light's chunk is edited (exitance 5000 ->
+//       6000) -> the cached entry is dropped and the note goes silent.
+//       A stale measurement never speaks.
+//   (c) N3  HEALTHY SHARE: the same light measured at 30% -> silent.
+//   (d) N4  AUTHORED FAINT: an `omni_light power 0.1` measured at 0.5%
+//       -> silent (a deliberate whisper is not a bug).  N4b is its
+//       companion positive: the SAME fixture at `power 5` and the SAME
+//       measured share DOES fire, so the only thing separating them is
+//       clause (ii).
+//   (e) N5  M-SUPPRESSION: one light both enclosed by an opaque shell
+//       (M fires) and dim in the cache -> M present, N ABSENT.  M says
+//       WHY it is dark; N alone would only say "it is dark".
+//   (f) N6  DELETED LIGHT: the cached light's chunk is gone from the
+//       document -> silent, no crash (the orphaned entry cannot match
+//       a chunk that is not there).
+//   (g) N7  INTEGRATION: the REAL `light_scene` path -- enumeration,
+//       build, N solo renders -- populates the cache itself, with the
+//       right kind and the chunk's verbatim bytes, and records ONLY the
+//       four positional kinds.
+//   (h) N8  MERGE-PRESERVE (P2, 2026-08-30): a SECOND audit that solos a
+//       DIFFERENT light and never attempts the first must not erase the
+//       first light's still-valid cached measurement -- the shape a
+//       capped or partially-failed MeasureLightContributions_ pass
+//       produces for every light it never got to.  Validity is
+//       unaffected by the merge: editing the preserved light's own chunk
+//       still drops it, exactly as N2 pins for a freshly-recorded entry.
+//----------------------------------------------------------------------
+
+//! A `shape_light` -- the one-chunk area-light form the motivating
+//! trajectory's lantern candle took, and condition N's headline case.
+static std::string ShapeLightAt( const std::string& name, double exitance, const char* center )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", exitance );
+	return "shape_light\n{\n\tname " + name + "\n\tshape sphere\n\tcenter " + center +
+	       "\n\tsize 0.15\n\texitance " + buf + "\n\tcolor 1 0.9 0.7\n}\n\n";
+}
+
+//! An `omni_light` with an explicit `power`, for clause (ii)'s pair.
+static std::string OmniPowerAt( const std::string& name, double power, const char* position )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", power );
+	return "omni_light\n{\n\tname " + name + "\n\tpower " + buf +
+	       "\n\tcolor 1 1 1\n\tposition " + position + "\n}\n\n";
+}
+
+//! N4c's fixture (originally round-3 P3 fix coverage for `DimLightColorMax_`): a SHORT `color` (2 of 3
+//! components).  SUPERSEDED 2026-09-17 by DL-32 round 2 (docs/DEBT_LEDGER.md): `ParseStateBag::GetVec3`
+//! (the shared accessor every `DoubleVec3`-kind parameter reads through, `color` on `omni_light` included)
+//! now HARD-ERRORS on a token count that is not exactly 3, instead of the round-3 P3 design's "the parser
+//! zero-fills the third component" -- so this fixture's scene can no longer derive AT ALL, and
+//! `DimLightColorMax_`'s `n < 3` tolerance (still present, still harmless) is unreachable from any document
+//! that survives a derive.  N4c is repurposed below as a regression guard for the NEW contract instead: the
+//! malformed scene must fail to derive, with a diagnostic naming DL-32.
+static std::string OmniShortColorAt( const std::string& name, double power, const char* position )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", power );
+	return "omni_light\n{\n\tname " + name + "\n\tpower " + buf +
+	       "\n\tcolor 0.5 0.5\n\tcolorspace sRGB\n\tposition " + position + "\n}\n\n";
+}
+
+//! A lit slab, so every fixture has something for the lights to fall on
+//! and derives/renders like a real scene.
+static std::string DimLightSlab()
+{
+	return Box( "slab", 1.0 ) + Ggx( "mat_slab", "pnt_bronze", "0.3" ) +
+	       Obj( "obj_slab", "slab", "mat_slab", 0 );
+}
+
+//! Drive ONE solo audit into `sess` through the SAME public seam
+//! `light_scene`'s measurement pass calls.  `dim*` is the light under
+//! test; `bright*` is the rest of the scene's light, present so the
+//! soloed total is positive (an all-black audit records nothing at all,
+//! by design) and so the share under test is a real fraction of
+//! something.  The bright entry is deliberately the Preamble's
+//! DIRECTIONAL key: it is soloable and it feeds the total, but it is not
+//! one of the four positional kinds, so it must get no cache record.
+static void RecordSoloAudit( Agent::AgentSession& sess, const std::string& dimName,
+                             double dimLuma, double dimShare )
+{
+	Agent::AgentSession::AgentLightSceneResult r;
+	r.ok                = true;
+	r.allLightsMeanLuma = 67.9;
+
+	Agent::AgentSession::AgentLightContribution dim;
+	dim.name               = dimName;
+	dim.kind               = "emissive object";
+	dim.soloed             = true;
+	dim.meanLuma           = dimLuma;
+	dim.shareOfSoloedTotal = dimShare;
+	r.contributions.push_back( dim );
+
+	Agent::AgentSession::AgentLightContribution bright;
+	bright.name               = "key";
+	bright.kind               = "light";
+	bright.soloed             = true;
+	bright.meanLuma           = 66.6;
+	bright.shareOfSoloedTotal = 1.0 - dimShare;
+	r.contributions.push_back( bright );
+
+	sess.RecordLightSoloMeasurements( r );
+	r.contributions.clear();
+}
+
+//! A canned two-answer completer, the AgentChunkCrudTest arc-81 helper's
+//! shape: answer 0 is the source enumeration, answer 1 the build, and the
+//! last answer repeats if a repair retry asks again.
+static Agent::AgentSession::AgentTextCompleter MakeCannedCompleter( std::vector<std::string> answers )
+{
+	Agent::AgentSession::AgentTextCompleter c;
+	c.supported    = true;
+	c.providerName = "mock";
+	c.modelId      = "mock-lighting-1";
+	auto shared = std::make_shared<std::vector<std::string> >( std::move( answers ) );
+	auto count  = std::make_shared<int>( 0 );
+	c.complete = [shared, count]( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+	{
+		Agent::AgentSession::AgentTextCompletionOutcome o;
+		if( shared->empty() ) { o.error = "no canned answer"; return o; }
+		const std::size_t idx = ( static_cast<std::size_t>( *count ) < shared->size() )
+			? static_cast<std::size_t>( *count ) : shared->size() - 1;
+		++( *count );
+		o.ok   = true;
+		o.text = ( *shared )[idx];
+		return o;
+	};
+	return c;
+}
+
+static void TestDimHeroLightNote()
+{
+	std::printf( "N: the design note -- the dim hero light (authored bright, measured dark)\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode  = "DESIGN_DIM_HERO_LIGHT";
+	const char* const kCodeM = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// The motivating trajectory's own figures: a 1.3 mean-luma solo against
+	// a 67.9 all-lights frame, i.e. 1.9% of the measured light total.
+	const double kDimLuma  = 1.3;
+	const double kDimShare = 1.3 / 67.9;
+
+	// (a) N1: FIRES, with BOTH numbers, on both carriers, and only with a
+	//     cache.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n1.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N1 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			Check( hasCode( sess->Validate( body ), kCode ) == nullptr,
+			       "N1 BEFORE any measurement the note is silent -- nothing has been measured, so "
+			       "there is nothing for it to speak from" );
+
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+			Check( d != nullptr,
+			       "N1 MONEY: a light authored at exitance 5000 whose own solo audit measured it at "
+			       "1.9% of the scene's light total FIRES -- the measurement rides the note carrier "
+			       "instead of dying in one turn's result text" );
+			if( d ) {
+				Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+				       "N1 it is an Info-severity ADVISORY" );
+				Check( d->message.find( "lantern_candle" ) != std::string::npos,
+				       "N1 it NAMES the light" );
+				Check( d->message.find( "exitance 5000" ) != std::string::npos,
+				       "N1 MONEY: ...quotes what the author WROTE" );
+				Check( d->message.find( "1.9%" ) != std::string::npos,
+				       "N1 MONEY: ...and what the audit MEASURED -- the mismatch between the two IS "
+				       "the finding, and either number alone reads as an opinion" );
+				Check( d->message.find( "not reaching the scene" ) != std::string::npos,
+				       "N1 ...states the consequence" );
+				Check( d->message.find( "re-run light_scene" ) != std::string::npos,
+				       "N1 ...and the action, including the re-measure" );
+				Check( d->message.find( "edits ELSEWHERE" ) != std::string::npos,
+				       "N1 MONEY: ...and HEDGES honestly -- the cached figure tracks this light's own "
+				       "chunk and nothing else, which is the one thing the validity key cannot cover" );
+
+				const std::string note = Agent::AgentSession::ComputeDesignNote(
+					body, false, &sess->LightSoloMeasurements() );
+				Check( note.find( d->message ) != std::string::npos,
+				       "N1 MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the "
+				       "render-result note -- one shared formatter, two carriers" );
+			}
+
+			// N1c: the documented limitation, pinned rather than assumed.
+			Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+			       "N1c MONEY: the STATELESS text-only carrier is SILENT on N -- it holds no session "
+			       "and therefore no measurement, and a condition whose input the caller does not "
+			       "have must be absent, never guessed" );
+			Check( Agent::AgentSession::ComputeDesignNote( body ).find( "light_scene's own solo" ) ==
+			       std::string::npos,
+			       "N1c ...and so is the stateless note wrapper, on the same bytes" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (b) N2: VALIDITY.  The measurement was taken against `exitance 5000`;
+	//     retune the light and the entry is dropped SILENTLY rather than
+	//     quoting a number the document no longer says.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n2.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N2 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( body ), kCode ) != nullptr,
+			       "N2 the un-edited document still fires (the control for the case below)" );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCode ) == nullptr,
+			       "N2 MONEY: editing the light's own chunk DROPS the cached measurement -- a stale "
+			       "figure never speaks, and the note goes silent until light_scene re-measures" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (c) N3: a HEALTHY share is not a finding.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n3.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N3 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+			Check( hasCode( sess->Validate( body ), kCode ) == nullptr,
+			       "N3 MONEY: a light measured at 30% of the scene's light total is WORKING -- a note "
+			       "that fires on a working light is how this family loses the right to be read" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (d) N4/N4b: clause (ii), both directions.  Same geometry, same
+	//     measured share -- only the AUTHORED intensity differs.
+	{
+		const std::string faint = Preamble() + DimLightSlab() +
+			OmniPowerAt( "candle", 0.1, "0 3 0" );
+		const std::string tmpF = TempPath( "addwear_dim_n4.RISEscene" );
+		Job* pJobF = LoadScene( faint, tmpF );
+		Check( pJobF != nullptr, "N4 faint fixture derives" );
+		if( pJobF ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobF );
+			RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
+			Check( hasCode( sess->Validate( faint ), kCode ) == nullptr,
+			       "N4 MONEY: a light AUTHORED at power 0.1 measuring 0.5% is a deliberate whisper "
+			       "doing exactly what it was asked to -- never a finding" );
+			pJobF->release();
+			std::remove( tmpF.c_str() );
+		}
+
+		const std::string bright = Preamble() + DimLightSlab() +
+			OmniPowerAt( "candle", 5.0, "0 3 0" );
+		const std::string tmpB = TempPath( "addwear_dim_n4b.RISEscene" );
+		Job* pJobB = LoadScene( bright, tmpB );
+		Check( pJobB != nullptr, "N4b bright fixture derives" );
+		if( pJobB ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobB );
+			RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
+			// NAMED, not a temporary: `hasCode` hands back a pointer INTO the
+			// vector, so binding the call inline would leave `d` dangling the
+			// moment the full expression ends.
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( bright );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+			Check( d != nullptr,
+			       "N4b MONEY: the SAME fixture at power 5 and the SAME 0.5% share DOES fire -- the "
+			       "only thing separating N4 from N4b is the authored intensity, which is exactly "
+			       "what clause (ii) claims to test" );
+			if( d ) Check( d->message.find( "power 5" ) != std::string::npos,
+			               "N4b ...and the clause quotes the omni's `power`, not an `exitance` it "
+			               "does not have" );
+			pJobB->release();
+			std::remove( tmpB.c_str() );
+		}
+
+		// N4c: SUPERSEDED 2026-09-17 by DL-32 round 2 -- a SHORT `color` (2 of
+		// 3 components) is now a HARD PARSE ERROR (ParseStateBag::GetVec3),
+		// not the round-3 P3 design's silent zero-fill this fixture used to
+		// probe.  See OmniShortColorAt's doc above.  Repurposed as a
+		// regression guard for the NEW contract: the malformed scene must
+		// fail to derive, with a diagnostic naming DL-32.
+		{
+			const std::string shortColor = Preamble() + DimLightSlab() +
+				OmniShortColorAt( "candle", 5.0, "0 3 0" );
+			const std::string tmpC = TempPath( "addwear_dim_n4c.RISEscene" );
+			Job* pJobC = LoadScene( shortColor, tmpC );
+			Check( pJobC == nullptr,
+			       "N4c MONEY: `color 0.5 0.5` (2 of 3 components) on omni_light no longer derives at "
+			       "all -- DL-32 round 2 hard-errors a short DoubleVec3 at the shared accessor instead "
+			       "of the round-3 P3 design's silent zero-fill (RED pre-fix: this fixture derived "
+			       "successfully with color (0.5, 0.5, 0))" );
+			if( pJobC ) { pJobC->release(); }
+			std::remove( tmpC.c_str() );
+
+			// Confirm the diagnostic itself names DL-32, using the same
+			// Cst::ParseToCst + Cst::DeriveToJob seam ParseStateBagArityTest.cpp
+			// uses (LoadScene/LoadAsciiSceneViaCst does not surface diagnostics).
+			RISE::Cst::Document doc = RISE::Cst::ParseToCst( shortColor );
+			Job* pDiagJob = new Job();
+			std::vector<std::string> diags;
+			RISE::Cst::DeriveToJob( doc, *pDiagJob, &diags );
+			bool sawDL32 = false;
+			for( const std::string& diag : diags ) {
+				if( diag.find( "DL-32" ) != std::string::npos ) { sawDL32 = true; break; }
+			}
+			Check( sawDL32, "N4c diagnostic names DL-32" );
+			pDiagJob->release();
+		}
+	}
+
+	// (e) N5: M-SUPPRESSION.  One light, both enclosed and dim.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += ShapeLightAt( "lantern_candle", 5000.0, "0 0 0" );
+		const std::string tmp = TempPath( "addwear_dim_n5.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N5 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			Check( hasCode( diags, kCodeM ) != nullptr,
+			       "N5 condition M fires on the enclosed light" );
+			Check( hasCode( diags, kCode ) == nullptr,
+			       "N5 MONEY: condition N is SUPPRESSED for the same light -- M already names it AND "
+			       "says why it is dark, and N alone would add only \"it is dark, find out why\"" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (f) N6: the cached light's chunk is GONE.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n6.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N6 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string deleted = Preamble() + DimLightSlab();
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( deleted );
+			Check( hasCode( diags, kCode ) == nullptr,
+			       "N6 MONEY: a cache entry whose light chunk no longer exists is SILENT, not a crash "
+			       "and not a note about a light that is not there -- the orphan simply never matches" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (g) N7: THE REAL PATH.  `light_scene` -- enumeration, build, its own
+	//     solo renders -- must be what populates the cache; a seam only the
+	//     tests call would be a condition that never fires in production.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n7.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N7 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->SetTextCompleter( MakeCannedCompleter( {
+				"a warm candle burning inside the lantern\n",
+				"rect_light\n{\n\tname lit_panel\n\tcenter 0 3 1\n\tsize 2 1\n"
+				"\tfacing 0 -1 0\n\texitance 40\n\tcolor 1 1 1\n}\n" } ) );
+
+			const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+			Check( r.ok, "N7 light_scene completes" );
+			Check( r.soloedCount >= 1, "N7 and it soloed at least one light" );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache =
+				sess->LightSoloMeasurements();
+			const Agent::AgentSession::AgentLightSoloMeasurementMap::const_iterator it =
+				cache.find( "lantern_candle" );
+			Check( it != cache.end(),
+			       "N7 MONEY: the REAL light_scene measurement pass wrote the cache itself -- the "
+			       "seam the cases above drive is the one production calls, not a test-only door" );
+			if( it != cache.end() ) {
+				Check( it->second.kind == "shape_light",
+				       "N7 ...with the AUTHORED chunk keyword, joined by name to the emissive object "
+				       "the shape_light derives to" );
+				Check( it->second.chunkText.find( "exitance 5000" ) != std::string::npos,
+				       "N7 ...and the chunk's VERBATIM bytes as the validity key" );
+				Check( it->second.intensityParam == "exitance" &&
+				       it->second.authoredIntensity == 5000.0,
+				       "N7 ...and the authored intensity it was measured against" );
+			}
+			Check( cache.find( "key" ) == cache.end(),
+			       "N7 MONEY: the Preamble's DIRECTIONAL light is soloed and reported exactly as "
+			       "before but gets NO record -- condition N's scope is the four positional kinds, "
+			       "and nothing outside it is cached for a condition that would never read it" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (h) N8 (P2, 2026-08-30): MERGE-PRESERVE across subset audits.  A
+	//     second audit that solos a DIFFERENT light and never attempts the
+	//     first must not erase the first light's still-valid cached
+	//     measurement -- MeasureLightContributions_ itself produces exactly
+	//     this shape whenever the render cap or a mid-pass failure limits
+	//     it to a subset, and RecordLightSoloMeasurements used to
+	//     `clear()` unconditionally before repopulating only what THIS
+	//     pass soloed.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n8.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N8 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// First audit solos ONLY lantern_candle (A), dim.
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( body ), kCode ) != nullptr,
+			       "N8 setup: A fires after its own audit" );
+
+			// Second audit solos ONLY lantern_candle_b (B), measured HEALTHY
+			// (30%, well clear of the gate) so B never itself qualifies for
+			// N and cannot be confused with A in the checks below.  A is not
+			// in this result AT ALL, exactly the shape a capped or
+			// partially-failed MeasureLightContributions_ pass produces for
+			// the lights it never got to.
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache =
+				sess->LightSoloMeasurements();
+			Check( cache.find( "lantern_candle" ) != cache.end(),
+			       "N8 MONEY: A's cache entry SURVIVES a later audit that never attempted it -- "
+			       "merge-preserve, not blind replace" );
+			Check( cache.find( "lantern_candle_b" ) != cache.end(),
+			       "N8 ...and B's fresh measurement from this audit is recorded too" );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			Check( hasCode( diags, kCode ) != nullptr,
+			       "N8 MONEY: N still fires for A off the PRESERVED entry, even though the most "
+			       "recent audit never soloed it" );
+
+			// Validity is unaffected by the merge: editing A's own chunk
+			// still drops its (preserved) entry, exactly as N2 pins.
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" ) +
+				ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCode ) == nullptr,
+			       "N8 ...and a preserved entry is still just as subject to the validity key -- "
+			       "editing A's chunk drops it exactly as N2 pins for a freshly-recorded one" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
+//----------------------------------------------------------------------
+// Condition O (2026-08-31): the RE-MEASURE NUDGE -- DESIGN_DIM_LIGHT_
+// REMEASURE.  Closes the handoff void between M and N: M fires on an
+// enclosed dim light, an agent "fixes" it by EDITING THE LIGHT (which is
+// N's own invalidation event), and without a re-run of `light_scene` the
+// fix's effect is never measured.  O picks up exactly that silence.
+//
+// Every case reuses N's own fixtures/helpers (ShapeLightAt, OmniPowerAt,
+// DimLightSlab, RecordSoloAudit) -- O's whole predicate is defined in
+// terms of a RECORDED N-style measurement plus an edit since, so the
+// natural fixture for it IS an N fixture carried one step further.
+//
+// Cases:
+//   (a) O1  FIRES: seed a dim measurement (N1's own numbers), edit the
+//       light's chunk (exitance 5000 -> 6000, same position) -> O fires
+//       quoting the RECORDED numbers (5000, 1.9%), N is silent (its own
+//       validity key just broke).
+//   (b) O2  THE DISARM LOOP, both branches: re-measuring the EDITED
+//       light HEALTHY produces a fresh, validly-keyed entry -> both N
+//       and O silent.  Re-measuring it STILL DIM produces a fresh entry
+//       that is once again validly keyed to the (unchanged since re-
+//       measurement) chunk -> N fires on the fresh number, O is silent
+//       (nothing stale left to nudge).
+//   (c) O3  NEVER A REAL FINDING: the recorded measurement was HEALTHY
+//       (30%) -- edit the light anyway -> O stays silent; a cache entry
+//       that was never a qualified N finding has nothing to nudge a
+//       re-measure over.
+//   (d) O4  M-SUPPRESSION: the light is enclosed by an opaque shell
+//       (M's own N5 fixture) AND dim AND edited since -> M still fires
+//       (the enclosure itself was never touched) -> O is SUPPRESSED,
+//       same "speak together or not at all" rule N follows for M.
+//   (e) O5  DELETED LIGHT: dim + recorded, then the light's chunk is
+//       removed entirely -> silent, no crash.
+//   (f) O6  KIND SWAP: the cached name is re-authored as a DIFFERENT
+//       light kind (shape_light -> omni_light) -> silent, exactly like a
+//       deletion -- there is no live chunk of the RECORDED kind to nudge
+//       a re-measure on.
+//   (g) O7  CARRIER PARITY: the diagnostic message appears byte-
+//       identically inside the render-result note, and both stateless
+//       (no-cache) carriers are silent -- N's own carrier-parity
+//       contract, unchanged for O.
+//   (h) O8  RETENTION P1 (2026-08-31, condition-O review, the reviewer's
+//       own live probe): seed A's qualified dim measurement, edit A's
+//       chunk through the REAL mutating path (ProposePatch, not a
+//       hand-built candidate string) so O fires, then drive a SECOND
+//       RecordLightSoloMeasurements that solos ONLY the unrelated light
+//       B -- A is not attempted at all.  O must STILL fire for A off
+//       the SAME recorded numbers (and N must still be absent) --
+//       before the fix, the merge-preserve pass keyed retention on
+//       chunk-text byte match, so this unrelated audit silently dropped
+//       A's stale-by-edit entry and BOTH N and O went silent on a light
+//       that was never re-measured: the exact unverified-glow failure O
+//       exists to prevent.  Then a REAL re-measure of A, healthy,
+//       disarms both -- the fix does not defeat the legitimate disarm
+//       path, only the accidental one.
+//   (i) O9  RETENTION, AUDIT-TIME DELETION: A's chunk is removed via
+//       RemoveChunk (the real mutating path) and THEN an audit runs
+//       (soloing only B) -- the retention pass itself drops A's now-
+//       orphaned entry (existence, not byte match, is the key, and a
+//       gone chunk fails either key), so O is silent afterwards with no
+//       crash.  O5's own case, reconfirmed at audit time rather than
+//       only at read time.
+//----------------------------------------------------------------------
+
+static void TestDimLightRemeasureNote()
+{
+	std::printf( "O: the design note -- the re-measure nudge (dim + edited since, unverified)\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCodeO = "DESIGN_DIM_LIGHT_REMEASURE";
+	const char* const kCodeN = "DESIGN_DIM_HERO_LIGHT";
+	const char* const kCodeM = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// The motivating trajectory's own figures, N1's exact fixture: a 1.3
+	// mean-luma solo against a 67.9 all-lights frame, i.e. 1.9% of the
+	// measured light total.
+	const double kDimLuma  = 1.3;
+	const double kDimShare = 1.3 / 67.9;
+
+	// (a) O1: FIRES, quoting the RECORDED (pre-edit) numbers, with N
+	//     silent on the same bytes.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o1.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O1 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( original ), kCodeO ) == nullptr,
+			       "O1 BEFORE any edit: the cache is still valid, so this is N's territory, not O's" );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCodeO );
+			Check( d != nullptr,
+			       "O1 MONEY: editing the light AFTER a qualified dim measurement fires the re-measure "
+			       "nudge -- the exact handoff void an agent's own fix otherwise falls into" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O1 ...and N is silent on the SAME bytes -- N's own validity key just broke, which "
+			       "is precisely what makes this O's moment to speak instead" );
+			if( d ) {
+				Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+				       "O1 it is an Info-severity ADVISORY" );
+				Check( d->message.find( "lantern_candle" ) != std::string::npos,
+				       "O1 it NAMES the light" );
+				Check( d->message.find( "1.9%" ) != std::string::npos,
+				       "O1 MONEY: ...quotes the RECORDED share (from BEFORE the edit) -- N1's own 1.9%, "
+				       "not anything about the edited chunk" );
+				Check( d->message.find( "exitance 5000" ) != std::string::npos,
+				       "O1 MONEY: ...and the RECORDED authored intensity -- exitance 5000, the value "
+				       "that was in effect when light_scene measured it, NOT the edited chunk's 6000" );
+				Check( d->message.find( "6000" ) == std::string::npos,
+				       "O1 MONEY: ...and never the edited chunk's new value -- this clause speaks only "
+				       "from what was actually measured" );
+				Check( d->message.find( "edited since" ) != std::string::npos,
+				       "O1 ...states that the edit happened" );
+				Check( d->message.find( "UNVERIFIED" ) != std::string::npos,
+				       "O1 ...and that the fix is UNVERIFIED" );
+				Check( d->message.find( "Re-run light_scene" ) != std::string::npos,
+				       "O1 MONEY: ...with the concrete action -- re-run light_scene to re-measure" );
+
+				// (g) O7a: carrier parity -- the SAME message appears
+				// byte-identically inside the render-result note.
+				const std::string note = Agent::AgentSession::ComputeDesignNote(
+					edited, false, &sess->LightSoloMeasurements() );
+				Check( note.find( d->message ) != std::string::npos,
+				       "O7a MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the "
+				       "render-result note -- one shared formatter, two carriers" );
+			}
+
+			// (g) O7b: the stateless carriers hold no cache and so are
+			// silent, N's own limitation restated for O.
+			Check( hasCode( Agent::AgentSession::ValidateText( edited ), kCodeO ) == nullptr,
+			       "O7b MONEY: the STATELESS text-only carrier is SILENT on O -- it holds no session "
+			       "and therefore no recorded measurement to nudge a re-run of" );
+			Check( Agent::AgentSession::ComputeDesignNote( edited ).find( "UNVERIFIED" ) ==
+			       std::string::npos,
+			       "O7b ...and so is the stateless note wrapper, on the same bytes" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (b) O2: the disarm loop, both branches.  A FRESH session loaded
+	// directly from the EDITED (post-fix) text stands in for "the agent's
+	// edit already landed"; RecordSoloAudit against THAT session's own
+	// document is what `light_scene`'s real re-run would do -- the
+	// measurement it takes is validity-keyed to the edited chunk, not the
+	// original one.
+	{
+		const std::string edited = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+
+		// O2a: re-measured HEALTHY -> both N and O silent.
+		{
+			const std::string tmp = TempPath( "addwear_remeasure_o2a.RISEscene" );
+			Job* pJob = LoadScene( edited, tmp );
+			Check( pJob != nullptr, "O2a fixture derives" );
+			if( pJob ) {
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+				RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+				Check( hasCode( diags, kCodeN ) == nullptr,
+				       "O2a MONEY: re-measuring the edited light HEALTHY -- N is silent, the fix worked" );
+				Check( hasCode( diags, kCodeO ) == nullptr,
+				       "O2a MONEY: ...and O is silent too -- the fresh entry is validly keyed to the "
+				       "current chunk, nothing stale left to nudge" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+
+		// O2b: re-measured STILL DIM -> N fires on the fresh number, O
+		//      stays silent (the fresh entry is validly keyed).
+		{
+			const std::string tmp = TempPath( "addwear_remeasure_o2b.RISEscene" );
+			Job* pJob = LoadScene( edited, tmp );
+			Check( pJob != nullptr, "O2b fixture derives" );
+			if( pJob ) {
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+				RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+				Check( hasCode( diags, kCodeN ) != nullptr,
+				       "O2b MONEY: re-measuring the edited light STILL DIM -- N fires on the fresh, "
+				       "validly-keyed number; the fix did not work" );
+				Check( hasCode( diags, kCodeO ) == nullptr,
+				       "O2b MONEY: ...and O is silent -- the fresh entry matches the current chunk, so "
+				       "there is nothing stale for O to nudge a re-measure over" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+	}
+
+	// (c) O3: the recorded measurement was NEVER a qualified N finding
+	//     (a healthy 30% share) -- editing the light afterwards still
+	//     gives O nothing to nudge.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o3.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O3 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCodeO ) == nullptr,
+			       "O3 MONEY: the RECORDED measurement was healthy, so it was never a qualified N "
+			       "finding to begin with -- editing the light afterwards does not manufacture one" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (d) O4: M-SUPPRESSION.  The light is enclosed (M's own N5 fixture),
+	//     dim, AND edited since -- but the enclosure itself is untouched,
+	//     so M still fires and O must stay suppressed.
+	{
+		std::string original = Preamble();
+		original += Box( "shell", 4.0 );
+		original += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		original += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		original += ShapeLightAt( "lantern_candle", 5000.0, "0 0 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o4.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O4 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			std::string edited = Preamble();
+			edited += Box( "shell", 4.0 );
+			edited += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+			edited += Obj( "obj_shell", "shell", "mat_shell", 0 );
+			edited += ShapeLightAt( "lantern_candle", 6000.0, "0 0 0" );   // edited, still enclosed
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+			Check( hasCode( diags, kCodeM ) != nullptr,
+			       "O4 condition M still fires -- the shell was never touched, the light is still "
+			       "enclosed" );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O4 MONEY: O is SUPPRESSED while M still names the same light -- the enclosure isn't "
+			       "fixed yet, so nudging a re-measure is premature" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (e) O5: the cached light's chunk is GONE entirely.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o5.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O5 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string deleted = Preamble() + DimLightSlab();
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( deleted );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O5 MONEY: a cache entry whose light chunk no longer exists is SILENT, not a crash "
+			       "and not a nudge to re-measure a light that is not there" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (f) O6: KIND SWAP -- the same name, re-authored as a different
+	//     light kind.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o6.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O6 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string swapped = Preamble() + DimLightSlab() +
+				OmniPowerAt( "lantern_candle", 5.0, "0 3 0" );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( swapped );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O6 MONEY: the cached NAME now belongs to a different light KIND -- silent, exactly "
+			       "like a deletion, since there is no live chunk of the RECORDED kind left to nudge" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O6 ...and N is silent too, for the same kind-mismatch reason its own validity check "
+			       "already covers" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (h) O8 (P1 regression, 2026-08-31): the retention pass must not let
+	//     an UNRELATED audit erase a stale-by-edit entry.  Every other O
+	//     case above drives the "edit" by handing an alternate candidate
+	//     STRING to the stateless Validate(text) overload -- the
+	//     session's own live document (what RecordLightSoloMeasurements
+	//     actually keys retention against) never changes.  This case
+	//     mutates the REAL document via ProposePatch, which is the only
+	//     way to exercise the merge-preserve pass's own retention key at
+	//     all.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o8.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "O8 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// Seed A's qualified dim measurement.
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			// Edit A's OWN chunk for real -- the session's live document
+			// now differs from what RecordSoloAudit measured against.
+			Agent::AgentSetPatch p;
+			p.target = "lantern_candle";
+			p.kind   = "shape_light";
+			p.param  = "exitance";
+			p.value  = "6000";
+			Check( sess->ProposePatch( p ).applied, "O8 setup: the edit to A's own chunk lands" );
+
+			const std::string afterEdit = sess->ReadDocument();
+			Check( hasCode( sess->Validate( afterEdit ), kCodeO ) != nullptr,
+			       "O8 setup: O fires right after the edit, against the REAL mutated document (O1's "
+			       "own case, reconfirmed here because O8 needs the live document actually changed)" );
+
+			// A SECOND audit that solos ONLY B -- A is not attempted at
+			// all, exactly the shape a capped or partially-failed
+			// MeasureLightContributions_ pass produces for a light it
+			// never got to (N8's own scenario, now checked against O).
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( afterEdit );
+			Check( hasCode( diags, kCodeO ) != nullptr,
+			       "O8 MONEY (the P1): O STILL fires for A after an audit that solos only the UNRELATED "
+			       "light B -- the stale-by-edit entry survives an audit that never touched it. Before "
+			       "the fix, merge-preserve keyed retention on chunk-text byte match, so this unrelated "
+			       "audit silently dropped A's entry and BOTH N and O went silent on a light that was "
+			       "never re-measured -- the exact unverified-glow failure O exists to prevent" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O8 ...and N is still absent -- the surviving entry is still keyed to A's ORIGINAL "
+			       "(pre-edit) chunk text, so N's own byte-match check at read time still fails it" );
+			if( const Agent::AgentDiagnostic* d = hasCode( diags, kCodeO ) ) {
+				Check( d->message.find( "lantern_candle_b" ) == std::string::npos,
+				       "O8 ...naming A, not the light the unrelated audit actually soloed" );
+				Check( d->message.find( "1.9%" ) != std::string::npos &&
+				       d->message.find( "exitance 5000" ) != std::string::npos,
+				       "O8 MONEY: ...and still quoting A's RECORDED (pre-edit) numbers -- the surviving "
+				       "entry is the SAME snapshot from before the unrelated audit ran, not something "
+				       "that audit fabricated" );
+			}
+
+			// The legitimate disarm path still works: a REAL re-measure
+			// of A (not just an unrelated audit) replaces the surviving
+			// entry, and a healthy result silences both.
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+			const std::vector<Agent::AgentDiagnostic> healthy = sess->Validate( afterEdit );
+			Check( hasCode( healthy, kCodeO ) == nullptr,
+			       "O8 ...re-measuring A for real disarms O -- the fresh entry is validly keyed to the "
+			       "edited chunk" );
+			Check( hasCode( healthy, kCodeN ) == nullptr,
+			       "O8 ...and N stays silent too -- the fresh measurement is healthy" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (i) O9: audit-time deletion.  A's chunk is removed via RemoveChunk
+	//     (the real mutating path) and THEN an audit runs, soloing only
+	//     B -- the retention pass itself must drop A's now-orphaned entry
+	//     (existence, not byte match, is the key: a gone chunk fails
+	//     either one), matching O5's read-time silence with an audit-time
+	//     check of the same fact.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o9.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "O9 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			Check( sess->RemoveChunk( "lantern_candle", "shape_light" ).applied,
+			       "O9 setup: A's chunk is removed" );
+
+			// An audit that solos only B runs AFTER the deletion.
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache = sess->LightSoloMeasurements();
+			Check( cache.find( "lantern_candle" ) == cache.end(),
+			       "O9 MONEY: the retention pass drops A's orphaned entry once an audit actually runs "
+			       "after the deletion -- there is no live chunk of any kind left to key against" );
+
+			const std::string afterDelete = sess->ReadDocument();
+			Check( hasCode( sess->Validate( afterDelete ), kCodeO ) == nullptr,
+			       "O9 ...and O is silent afterwards, no crash" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
+
+//----------------------------------------------------------------------
+// P: contact_radius -- the CROSS-OBJECT half of the wear composition
+// (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.6).
+//----------------------------------------------------------------------
+
+//! The text of the chunk whose `name` line names `chunkName`, from its
+//! keyword line to the closing brace.  Substring assertions on the WHOLE
+//! document cannot tell the colour chunk from the roughness one, and the
+//! two carry the same shared prelude -- so "exactly once" is only a real
+//! claim per chunk.
+//! The MATCH MUST END AT A WORD BOUNDARY.  `add_wear` mints `X_wear` and
+//! `X_wearrough`, and the roughness chunk is spliced LAST so it lands
+//! FIRST -- so a plain `find("name X_wear")` returns the ROUGHNESS chunk
+//! when asked for the colour one, and every assertion about the colour
+//! recipe then silently measures the other chunk.  (It did, once.)
+static std::string ChunkTextOf( const std::string& doc, const std::string& chunkName )
+{
+	std::size_t at = doc.find( chunkName );
+	while( at != std::string::npos ) {
+		const std::size_t e = at + chunkName.size();
+		const bool endsClean = ( e >= doc.size() ) ||
+			!( std::isalnum( static_cast<unsigned char>( doc[e] ) ) || doc[e] == '_' );
+		// ...and it must be the chunk's own `name` line, not a reference to
+		// it from a material slot.
+		std::size_t bol = doc.rfind( '\n', at );
+		bol = ( bol == std::string::npos ) ? 0 : bol + 1;
+		const std::string line = doc.substr( bol, at - bol );
+		const bool isNameLine = ( line.find( "name" ) != std::string::npos ) &&
+			( line.find_first_not_of( " \t" ) != std::string::npos ) &&
+			( line.substr( line.find_first_not_of( " \t" ) ).compare( 0, 4, "name" ) == 0 );
+		if( endsClean && isNameLine ) {
+			const std::size_t open  = doc.rfind( '{', at );
+			const std::size_t close = doc.find( '}', at );
+			if( open == std::string::npos || close == std::string::npos ) return std::string();
+			return doc.substr( open, close - open + 1 );
+		}
+		at = doc.find( chunkName, at + 1 );
+	}
+	return std::string();
+}
+
+static int CountOccurrences( const std::string& hay, const std::string& needle )
+{
+	if( needle.empty() ) return 0;
+	int n = 0;
+	std::size_t at = hay.find( needle );
+	while( at != std::string::npos ) { ++n; at = hay.find( needle, at + needle.size() ); }
+	return n;
+}
+
+//! EVERY `param` a chunk declares must be READ somewhere in that chunk
+//! outside its own declaration line.  The VM has no compile-time backstop
+//! for an unreferenced `param` -- `AddParam` only registers a slot -- so a
+//! recipe that dropped a consumer while keeping its knob would ship an
+//! inert slider and nothing would say so.  Asserted BY NAME over the
+//! emitted text, which is the only place the fact lives.
+static bool EveryParamIsRead( const std::string& chunkText, std::string& firstDead )
+{
+	firstDead.clear();
+	std::vector<std::string> names;
+	std::size_t at = chunkText.find( "param" );
+	while( at != std::string::npos ) {
+		const std::size_t eol = chunkText.find( '\n', at );
+		const std::string line = chunkText.substr( at, ( eol == std::string::npos ? chunkText.size() : eol ) - at );
+		const std::size_t ns = line.find_first_not_of( " \t", 5 );
+		if( ns != std::string::npos ) {
+			const std::size_t ne = line.find_first_of( " \t", ns );
+			if( ne != std::string::npos ) names.push_back( line.substr( ns, ne - ns ) );
+		}
+		at = ( eol == std::string::npos ) ? std::string::npos : chunkText.find( "param", eol );
+	}
+	for( const std::string& nm : names ) {
+		// Count every whole-word occurrence; one of them is the declaration.
+		int uses = 0;
+		std::size_t p = chunkText.find( nm );
+		while( p != std::string::npos ) {
+			const bool leftOk  = ( p == 0 ) ||
+				!( std::isalnum( static_cast<unsigned char>( chunkText[p-1] ) ) || chunkText[p-1] == '_' );
+			const std::size_t e = p + nm.size();
+			const bool rightOk = ( e >= chunkText.size() ) ||
+				!( std::isalnum( static_cast<unsigned char>( chunkText[e] ) ) || chunkText[e] == '_' );
+			if( leftOk && rightOk ) ++uses;
+			p = chunkText.find( nm, p + 1 );
+		}
+		if( uses < 2 ) { firstDead = nm; return false; }
+	}
+	return true;
+}
+
+//! A flat BOX receiver with a neighbour close enough for the contact seam
+//! to have something to measure -- the flagship case the curvature-only
+//! verb has always refused.
+static std::string SceneFlatReceiver()
+{
+	std::string s = Preamble();
+	s += "box_geometry\n{\n\tname slab\n\twidth 4\n\theight 0.2\n\tdepth 4\n}\n\n";
+	s += "sphere_geometry\n{\n\tname pebble\n\tradius 0.35\n}\n\n";
+	s += Ggx( "mat_deck", "pnt_bronze", "0.3" );
+	// THE NEIGHBOUR MUST NOT ITSELF QUALIFY, or the scene has a curved
+	// candidate and the "no material qualifies" and "qualifyingMaterials
+	// is 0" checks below would be measuring the pebble instead of the
+	// deck.  A perlin-bound reflectance already varies, so clause (a)
+	// turns it down -- and it is still a perfectly good NEIGHBOUR for the
+	// deck's contact seam, which is all this fixture needs it to be.
+	s += "perlin3d_painter\n{\n\tname pnt_pebble\n\tcolora pnt_bronze\n\tcolorb pnt_spec\n}\n\n";
+	s += "lambertian_material\n{\n\tname mat_pebble\n\treflectance pnt_pebble\n}\n\n";
+	s += "standard_object\n{\n\tname o_deck\n\tgeometry slab\n\tmaterial mat_deck\n\tposition 0 0 0\n}\n\n";
+	s += "standard_object\n{\n\tname o_pebble\n\tgeometry pebble\n\tmaterial mat_pebble\n\tposition 0 0.45 0\n}\n\n";
+	return s;
+}
+
+static void TestContactRadius()
+{
+	std::printf( "P: contact_radius -- the contact seam, and the flat receiver it unlocks\n" );
+
+	// ---- P1: contact_radius 0 keeps TODAY'S body, to the line ----------
+	//
+	// The byte-identity claim §5.6 makes, expressed as assertions over the
+	// emitted text: the prelude's own `crevice_mask` line unchanged, both
+	// CONSUMING lines unchanged, and not one contact token anywhere.
+	{
+		const std::string tmp = TempPath( "addwear_p1.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "P1: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_b", nullptr, 0.0, 0.5 );
+			Check( r.ok && r.applied, std::string( "P1: contact_radius 0 applies as before -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+			Check( doc.find( "clamp(crevice_raw*cavity_boost, 0, 1)" ) != std::string::npos,
+			       "P1 MONEY: the `crevice_mask` line is TODAY'S, with no addend -- the shared prelude "
+			       "is byte-identical at contact_radius 0" );
+			Check( doc.find( "mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)" ) != std::string::npos,
+			       "P1: ...the colour chunk's consuming line is unchanged" );
+			Check( doc.find( "mix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)" )
+			       != std::string::npos,
+			       "P1: ...and the roughness chunk's" );
+			Check( doc.find( "contact_" ) == std::string::npos,
+			       "P1 MONEY: not one `contact_` token is emitted -- the argument is genuinely off, "
+			       "not merely defaulted to something inert" );
+			Check( doc.find( "proximity(" ) == std::string::npos,
+			       "P1: ...and no proximity() call at all" );
+			Check( r.qualifyingMaterials == 3,
+			       "P1: the scan's own count is unchanged -- `qualifyingMaterials` still reports the "
+			       "CURVED candidates" );
+			Check( r.geometryKind == "sdf_geometry", "P1: ...and the geometry kind it names" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P2: a CURVING receiver, with the contact term folded in --------
+	{
+		const std::string tmp = TempPath( "addwear_p2.RISEscene" );
+		Job* pJob = LoadScene( SceneThreeMaterials(), tmp );
+		Check( pJob != nullptr, "P2: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_b", nullptr, 0.002, 0.6 );
+			Check( r.ok && r.applied, std::string( "P2: applied -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+
+			Check( doc.find( "clamp(crevice_raw*cavity_boost + contact_grime*contact_mask, 0, 1)" )
+			       != std::string::npos,
+			       "P2 MONEY: the contact term enters at the ONE `crevice_mask` line BOTH chunks read, "
+			       "so the colour and roughness halves agree by construction -- and the result is "
+			       "CLAMPED, which is the only bound that holds (a `param`'s max is slider metadata "
+			       "the VM ignores, and `mix` does not clamp its weight)" );
+			Check( doc.find( "mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)" ) != std::string::npos &&
+			       doc.find( "mix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)" )
+			       != std::string::npos,
+			       "P2 MONEY: the two CONSUMING lines are BYTE-IDENTICAL to the contact-free recipe's "
+			       "-- the term was added to the shared prelude, not to each consumer" );
+
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			const std::string roughChunk  = ChunkTextOf( doc, r.roughnessPainter );
+			Check( !colourChunk.empty() && !roughChunk.empty(), "P2: both minted chunks are locatable" );
+			Check( CountOccurrences( colourChunk, "proximity(" ) == 1,
+			       "P2 MONEY: the colour chunk calls proximity() EXACTLY ONCE (got " +
+			       std::to_string( CountOccurrences( colourChunk, "proximity(" ) ) + ")" );
+			Check( CountOccurrences( roughChunk, "proximity(" ) == 1,
+			       "P2: ...and so does the roughness chunk" );
+			Check( colourChunk.find( "proximity(contact_r)" ) != std::string::npos,
+			       "P2 MONEY: the radius is the RETUNABLE `contact_r` param, not a baked literal -- "
+			       "safe here precisely because `proximity` has no DynR twin, unlike the "
+			       "occlusion(0.08) on the line above it" );
+			Check( colourChunk.find( "occlusion(0.08)" ) != std::string::npos,
+			       "P2: ...and that occlusion literal is still a literal, for the opposite reason" );
+
+			bool okR = false, okG = false;
+			const double cr = ParamValueInChunk( doc, r.colorPainter, "contact_r", okR );
+			const double cg = ParamValueInChunk( doc, r.colorPainter, "contact_grime", okG );
+			Check( okR && okG && std::fabs( cr - 0.002 ) < 1e-12 && std::fabs( cg - 0.6 ) < 1e-12,
+			       "P2: the two arguments land in the emitted params verbatim (contact_r 0.002, "
+			       "contact_grime 0.6)" );
+
+			std::string dead;
+			Check( EveryParamIsRead( colourChunk, dead ),
+			       "P2: every param the colour chunk declares is READ (dead: " + dead + ")" );
+			Check( EveryParamIsRead( roughChunk, dead ),
+			       "P2: every param the roughness chunk declares is READ (dead: " + dead + ")" );
+
+			Check( pJob->GetScene() != nullptr, "P2: the rewritten document still derives" );
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "P2 MONEY: ZERO error diagnostics -- the contact body really compiles "
+				       "in the VM, `proximity(contact_r)` and all" );
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P3: a FLAT receiver, accepted from the barren list -------------
+	{
+		const std::string tmp = TempPath( "addwear_p3.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P3: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// WITHOUT the argument it is still refused, with the same words.
+			{
+				const Agent::AgentSession::AgentAddWearResult no = sess->AddWear( "mat_deck" );
+				Check( !no.ok && !no.applied,
+				       "P3 MONEY: WITHOUT contact_radius the flat receiver is still refused" );
+				Check( no.message.find( "planar geometry" ) != std::string::npos,
+				       "P3: ...with the same clause-(c) words as before -- got: " + no.message );
+			}
+
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_deck", nullptr, 0.01, 0.7 );
+			Check( r.ok && r.applied,
+			       std::string( "P3 MONEY: WITH contact_radius the flat box receiver is ACCEPTED -- " ) + r.message );
+			Check( r.geometryKind == "box_geometry",
+			       "P3: ...and the result names the BARREN geometry kind it landed on" );
+			Check( r.qualifyingMaterials == 0,
+			       "P3 MONEY: `qualifyingMaterials` still reports the CURVED count (0 here) -- the "
+			       "barren list is a second source, not a widening of the scan's own output" );
+			Check( r.message.find( "touch" ) != std::string::npos ||
+			       r.message.find( "proximity" ) != std::string::npos,
+			       "P3: the success message says it TOUCHES a neighbour rather than that it curves -- "
+			       "got: " + r.message );
+
+			const std::string doc = sess->ReadDocument();
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			const std::string roughChunk  = ChunkTextOf( doc, r.roughnessPainter );
+			Check( !colourChunk.empty() && !roughChunk.empty(), "P3: both minted chunks are locatable" );
+
+			// THE CONTACT RECIPE: no curv, no occlusion, no wear_mask.  On a
+			// flat face `curv` is 0 everywhere, so the edge/crevice half
+			// would collapse to a pure-noise wash plus a dead occlusion call
+			// per shade.
+			Check( colourChunk.find( "curv" ) == std::string::npos &&
+			       roughChunk.find( "curv" ) == std::string::npos,
+			       "P3 MONEY: the barren body reads NO `curv` -- it is 0 everywhere on a box, so a "
+			       "curvature mask there is a pure-noise wash dressed as wear" );
+			Check( colourChunk.find( "occlusion" ) == std::string::npos &&
+			       roughChunk.find( "occlusion" ) == std::string::npos,
+			       "P3 MONEY: ...and no `occlusion()` -- a dead call per shade otherwise" );
+			Check( colourChunk.find( "wear_mask" ) == std::string::npos &&
+			       roughChunk.find( "wear_mask" ) == std::string::npos,
+			       "P3: ...and no `wear_mask`" );
+			Check( colourChunk.find( "edge_tint" ) == std::string::npos &&
+			       colourChunk.find( "edge_desat" ) == std::string::npos &&
+			       colourChunk.find( "edge_lift" ) == std::string::npos,
+			       "P3: ...and none of the edge half's knobs or defs" );
+			Check( roughChunk.find( "rough_polished" ) == std::string::npos,
+			       "P3: ...and no `rough_polished`, which rides the mask that is not there" );
+
+			Check( doc.find( "clamp(contact_grime*contact_mask, 0, 1)" ) != std::string::npos,
+			       "P3 MONEY: the barren `crevice_mask` IS the contact mask, clamped" );
+			Check( colourChunk.find( "mix(base, patina_tint, crevice_mask)" ) != std::string::npos,
+			       "P3: the colour chunk consumes it as a single mix" );
+			Check( roughChunk.find( "mix(rough_base, rough_crusted, crevice_mask)" ) != std::string::npos,
+			       "P3: ...and the roughness chunk as its own" );
+			Check( CountOccurrences( colourChunk, "proximity(" ) == 1 &&
+			       CountOccurrences( roughChunk, "proximity(" ) == 1,
+			       "P3: exactly one proximity() call per chunk" );
+
+			std::string dead;
+			Check( EveryParamIsRead( colourChunk, dead ),
+			       "P3 MONEY: every param the barren colour chunk declares is READ -- no inert "
+			       "slider (dead: " + dead + ")" );
+			Check( EveryParamIsRead( roughChunk, dead ),
+			       "P3 MONEY: ...and every param of the barren roughness chunk (dead: " + dead + ")" );
+
+			Check( pJob->GetScene() != nullptr, "P3 MONEY: the rewritten flat-receiver scene DERIVES" );
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( doc );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags )
+					if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "P3: ...with ZERO error diagnostics" );
+			}
+			{
+				Agent::AgentRenderParams rp;
+				rp.width = 32; rp.height = 32; rp.samples = 4;
+				const Agent::AgentRenderResult rr = sess->Render( rp );
+				Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+				       "P3: ...and renders non-black" );
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P4: the BARE call selects over the union -----------------------
+	{
+		const std::string tmp = TempPath( "addwear_p4.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P4: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( std::string(), nullptr, 0.01, 0.5 );
+			Check( r.ok && r.applied && r.material == "mat_deck",
+			       std::string( "P4 MONEY: the BARE call takes the flat receiver when contact_radius is "
+			       "set -- the union pool, under the SAME prominence rule -- " ) + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P4b: THE TWO ROUND-1 FIXES, pinned -----------------------------
+	//
+	// (a) `contact_r`'s slider bounds must CONTAIN the value written on
+	// them.  A fixed `max 1` looked harmless: `min`/`max` are metadata the
+	// VM ignores at evaluation, so a metre-scale scene asking for a 2-unit
+	// radius got `contact_r 2` sitting under `max 1`, and the first touch
+	// of that slider in a property panel would have halved it.  Nothing
+	// exercised the widening branch until this check.
+	{
+		const std::string tmp = TempPath( "addwear_p4b.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P4b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r =
+				sess->AddWear( "mat_deck", nullptr, 2.5, 0.5 );
+			Check( r.ok && r.applied,
+				std::string( "P4b: a metre-scale contact_radius applies -- " ) + r.message );
+			const std::string doc = sess->ReadDocument();
+			const std::string colourChunk = ChunkTextOf( doc, r.colorPainter );
+			Check( !colourChunk.empty(), "P4b: the minted chunk is locatable" );
+			bool okR = false;
+			const double cr = ParamValueInChunk( doc, r.colorPainter, "contact_r", okR );
+			Check( okR && std::fabs( cr - 2.5 ) < 1e-12, "P4b: contact_r carries the 2.5 asked for" );
+			// The line reads `param contact_r 2.5 min <lo> max <hi> ...`;
+			// what matters is that `hi` is not below the value.
+			const std::size_t at = colourChunk.find( "contact_r" );
+			Check( at != std::string::npos, "P4b: the contact_r line is present" );
+			if( at != std::string::npos ) {
+				const std::size_t eol = colourChunk.find( '\n', at );
+				const std::string line = colourChunk.substr( at, eol - at );
+				const std::size_t mx = line.find( "max " );
+				Check( mx != std::string::npos, "P4b: it declares a max" );
+				if( mx != std::string::npos ) {
+					const double hi = std::strtod( line.c_str() + mx + 4, nullptr );
+					Check( hi >= 2.5 - 1e-12,
+						"P4b MONEY -- the slider max (" + std::to_string( hi ) + ") CONTAINS the "
+						"2.5 written on the same line, so scrubbing the slider cannot silently "
+						"shrink the radius the caller asked for" );
+				}
+			}
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+	// (b) the bare-call clause about `contact_radius` is ADVICE FOR A CALL
+	// THAT DID NOT SET IT.  P6b pins that it PRINTS at 0; this pins that it
+	// is ABSENT when the caller already passed the argument and still
+	// found nothing -- repeating the advice back would read as the verb not
+	// having noticed.  The fixture's only colour-bearing materials are
+	// already worn, so nothing qualifies on either list.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_worn3\n\tparam k 3.0\n"
+		        "\texpression clamp(-curv*k + 0.5, 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_worn3", "pnt_bronze", "sp_worn3" );
+		body += Obj( "o1", "blob", "mat_worn3", 0 );
+		const std::string tmp = TempPath( "addwear_p4c.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "P4c: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r =
+				sess->AddWear( std::string(), nullptr, 0.01, 0.5 );
+			Check( !r.ok && !r.applied, "P4c: nothing qualifies even with contact_radius set" );
+			Check( r.message.find( "no material in this document is a flat, readable colour" )
+			       != std::string::npos,
+				"P4c: ...and the opening words are the same" );
+			Check( r.message.find( "contact_radius" ) == std::string::npos,
+				"P4c MONEY -- the appended clause is ABSENT when the caller ALREADY passed "
+				"contact_radius: it is advice for a call that did not, and handing it back to a "
+				"caller who took it would read as the verb not having noticed -- got: " + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+
+	// ---- P5: it REFUSES a body that already reads the cross-object pair -
+	//
+	// `proximity` IS the contact signal this argument writes, so a body
+	// already reading it is already painting this wear; `interior` is its
+	// signed sibling and joins the list for the same reason.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_prox\n\tparam k 1.0\n"
+		        "\texpression clamp(k*proximity(0.002), 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_prox", "pnt_bronze", "sp_prox" );
+		body += Obj( "o1", "blob", "mat_prox", 0 );
+		ExpectRefusal( "already-contact", body, "already binds an expression that reads", "mat_prox" );
+	}
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_int\n\tparam k 1.0\n"
+		        "\texpression clamp(k*interior(0.002), 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_int", "pnt_bronze", "sp_int" );
+		body += Obj( "o1", "blob", "mat_int", 0 );
+		ExpectRefusal( "already-interior", body, "already binds an expression that reads", "mat_int" );
+	}
+
+	// ---- P6: the TWO pinned exceptions to the byte-identity claim -------
+	//
+	// Both print at contact_radius 0, so both had to be asserted by NEW
+	// checks: the existing ones match only the OPENING substring of each
+	// message, which an appended clause and a widened list leave intact.
+	{
+		std::string body = Preamble();
+		body += SdfBlob( "blob" );
+		body += "scalar_painter\n{\n\tname sp_worn2\n\tparam k 3.0\n"
+		        "\texpression clamp(-curv*k + 0.5, 0.05, 0.9)\n}\n\n";
+		body += Ggx( "mat_worn2", "pnt_bronze", "sp_worn2" );
+		body += Obj( "o1", "blob", "mat_worn2", 0 );
+		const std::string tmp = TempPath( "addwear_p6a.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "P6a: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear( "mat_worn2" );
+			Check( !r.ok && r.message.find( "`interior`" ) != std::string::npos,
+			       "P6a MONEY: clause (d)'s decline string names ALL SIX signals including `interior` "
+			       "-- the predicate has matched more than the three it used to list since "
+			       "`convexity` shipped, and the text is only now caught up -- got: " + r.message );
+			Check( r.message.find( "`convexity`" ) != std::string::npos &&
+			       r.message.find( "`proximity`" ) != std::string::npos,
+			       "P6a: ...and `convexity` and `proximity` with it" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+	{
+		// The bare-call "nothing qualifies" message, on a scene where the
+		// only material sits on a flat box: the appended clause has to tell
+		// the caller that `contact_radius` is what unlocks it.
+		const std::string tmp = TempPath( "addwear_p6b.RISEscene" );
+		Job* pJob = LoadScene( SceneFlatReceiver(), tmp );
+		Check( pJob != nullptr, "P6b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( !r.ok && !r.applied, "P6b: the bare call at contact_radius 0 still refuses" );
+			Check( r.message.find( "no material in this document is a flat, readable colour" ) != std::string::npos,
+			       "P6b: ...with its OPENING words unchanged (which is why the appended clause needs "
+			       "its own check)" );
+			Check( r.message.find( "contact_radius" ) != std::string::npos,
+			       "P6b MONEY: ...and an APPENDED clause telling the caller that a FLAT receiver "
+			       "qualifies once `contact_radius` is set -- advice for exactly this call, which is "
+			       "why it prints at contact_radius 0 -- got: " + r.message );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+	}
+}
+
+//! Roadmap 0.1.2: since DL-20 gave BezierPatchGeometry and BilinearPatchGeometry
+//! exact analytical Weingarten curvature at intersection time, neither kind
+//! belongs in CurvBarrenGeometryKind_.  Both must qualify for add_wear
+//! directly without contact_radius, and the resulting curv-driven wear
+//! material must derive and render cleanly on real patch ray hits.
+static void TestPatchGeometriesAccepted()
+{
+	std::printf( "N: PATCH GEOMETRIES -- bezierpatch_geometry and bilinearpatch_geometry qualify for add_wear\n" );
+	{
+		// Self-contained 1-patch curved bicubic Bezier cap facing the camera
+		// at z = 0..0.4 over [-0.8, 0.8]^2 (no RISE_MEDIA_PATH dependency).
+		const std::string bezFile = TempPath( "addwear_cap.bezier" );
+		{
+			std::ofstream o( bezFile.c_str(), std::ios::binary );
+			o << "1\n";
+			const double g[4] = { -0.8, -0.25, 0.25, 0.8 };
+			for( int j = 0; j < 4; ++j ) {
+				for( int k = 0; k < 4; ++k ) {
+					const bool inner = ( j == 1 || j == 2 ) && ( k == 1 || k == 2 );
+					const double z = inner ? 0.45 : 0.0;
+					o << g[k] << " " << g[j] << " " << z << "\n";
+				}
+			}
+		}
+		std::string body = Preamble();
+		body += "bezierpatch_geometry\n{\n\tname teapot_geo\n\tfile " + bezFile + "\n}\n\n";
+		body += Ggx( "mat_bez", "pnt_bronze", "0.3" );
+		body += Obj( "o_bez", "teapot_geo", "mat_bez", 0 );
+		const std::string tmp = TempPath( "addwear_bezier.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N1: bezierpatch fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied, std::string( "N1 MONEY: add_wear accepts bezierpatch_geometry: " ) + r.message );
+			if( r.ok && r.applied ) std::printf( "  PASS: N1 MONEY: add_wear accepts bezierpatch_geometry\n" );
+			Check( r.material == "mat_bez" && r.geometryKind == "bezierpatch_geometry",
+			       "N1: selects mat_bez on bezierpatch_geometry (got " + r.material + " / " + r.geometryKind + ")" );
+			Agent::AgentRenderParams rp;
+			rp.width = 24; rp.height = 24; rp.samples = 2;
+			const Agent::AgentRenderResult rr = sess->Render( rp );
+			Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+			       "N1: worn bezierpatch_geometry renders non-black" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+		std::remove( bezFile.c_str() );
+	}
+	{
+		// Self-contained 1-patch non-planar bilinear saddle over [-0.8, 0.8]^2.
+		const std::string bilinFile = TempPath( "addwear_saddle.bilinear" );
+		{
+			std::ofstream o( bilinFile.c_str(), std::ios::binary );
+			o << "1\n"
+			  << "-0.8 -0.8 0.0\n"
+			  << " 0.8 -0.8 0.35\n"
+			  << "-0.8  0.8 0.35\n"
+			  << " 0.8  0.8 0.0\n";
+		}
+		std::string body = Preamble();
+		body += "bilinearpatch_geometry\n{\n\tname bilin_geo\n\tfile " + bilinFile + "\n}\n\n";
+		body += Ggx( "mat_bilin", "pnt_bronze", "0.3" );
+		body += Obj( "o_bilin", "bilin_geo", "mat_bilin", 0 );
+		const std::string tmp = TempPath( "addwear_bilinear.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N2: bilinearpatch fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWearResult r = sess->AddWear();
+			Check( r.ok && r.applied, std::string( "N2 MONEY: add_wear accepts bilinearpatch_geometry: " ) + r.message );
+			Check( r.material == "mat_bilin" && r.geometryKind == "bilinearpatch_geometry",
+			       "N2: selects mat_bilin on bilinearpatch_geometry (got " + r.material + " / " + r.geometryKind + ")" );
+			Agent::AgentRenderParams rp;
+			rp.width = 24; rp.height = 24; rp.samples = 2;
+			const Agent::AgentRenderResult rr = sess->Render( rp );
+			Check( rr.ok && rr.meanR + rr.meanG + rr.meanB > 0.0,
+			       "N2: worn bilinearpatch_geometry renders non-black" );
+			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+		}
+		std::remove( bilinFile.c_str() );
+	}
+}
+
+int main()
+{
+	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
+	TestQualifySelectRewrite();
+	TestSelection();
+	TestLambertianColourOnly();
+	TestRoughnessZeroSentinel();
+	TestDeterminism();
+	TestRefusals();
+	TestUndo();
+	TestAutonomyAndAuthority();
+	TestNote();
+	TestWireSurface();
+	TestEnclosedLightShellNote();
+	TestDimHeroLightNote();
+	TestDimLightRemeasureNote();
+	TestContactRadius();
+	TestPatchGeometriesAccepted();
+	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
+	return g_fail ? 1 : 0;
+}

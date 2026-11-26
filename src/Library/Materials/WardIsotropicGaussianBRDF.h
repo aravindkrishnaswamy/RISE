@@ -20,6 +20,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,25 +28,39 @@ namespace RISE
 	namespace Implementation
 	{
 		class WardIsotropicGaussianBRDF :
-			public virtual IBSDF, 
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~WardIsotropicGaussianBRDF();
 
-			const IPainter&	diffuse;
-			const IPainter& specular;
-			const IPainter& alpha;			// standard deviation (RMS) of the surface slope
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pAlpha;			// surface slope RMS (physical scalar)
 
 		public:
-			WardIsotropicGaussianBRDF( 
+			WardIsotropicGaussianBRDF(
 				const IPainter& diffuse_,
 				const IPainter& specular_,
-				const IPainter& alpha_
+				const IScalarPainter& alpha_
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! DL-481 (IBSDF::valueByScatterType): the value split by its SPF's lobe labels.
+			virtual bool valueByScatterType( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const IORStack* pIORStack, RISEPel out[5] ) const;
+			virtual bool valueByScatterTypeNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack* pIORStack, Scalar out[5] ) const;
+			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()  const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular() const { return *pSpecular; }
+			inline const IScalarPainter& GetAlpha()    const { return *pAlpha; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlpha( const IScalarPainter& v );
 		};
 	}
 }

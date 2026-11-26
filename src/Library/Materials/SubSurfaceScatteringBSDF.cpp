@@ -6,7 +6,7 @@
 //  With the BSSRDF approach, only surface reflection is evaluated:
 //
 //  Both outside (front/front): GGX microfacet BRDF for rough
-//    surfaces, diffuse Fresnel approximation for smooth surfaces.
+//    surfaces; smooth reflection is delta, with zero finite value.
 //  All other cases: return 0.  Subsurface transport is handled
 //    by the diffusion profile, not the BSDF connection.
 //
@@ -19,6 +19,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Optics.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "../Utilities/MicrofacetUtils.h"
 
@@ -26,43 +27,35 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 SubSurfaceScatteringBSDF::SubSurfaceScatteringBSDF(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
 	const Scalar g_,
 	const Scalar roughness_
 	) :
-  ior( ior_ ),
-  absorption( absorption_ ),
-  scattering( scattering_ ),
+  pIOR( &ior_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ )
 {
-	ior.addref();
-	absorption.addref();
-	scattering.addref();
+	pIOR->addref();
 }
 
 SubSurfaceScatteringBSDF::~SubSurfaceScatteringBSDF()
 {
-	ior.release();
-	absorption.release();
-	scattering.release();
+	safe_release( pIOR );
+}
+
+void SubSurfaceScatteringBSDF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 /// Exact dielectric Fresnel reflectance from cosine and IOR.
 /// Matches Optics::CalculateDielectricReflectance used in the SPF.
 static Scalar DielectricFresnel( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
 {
-	const Scalar sinI2 = 1.0 - cosI * cosI;
-	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
-	if( sinT2 >= 1.0 ) return 1.0;  // total internal reflection
-	const Scalar cosT = sqrt(1.0 - sinT2);
-
-	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
-	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
-	return (rs * rs + rp * rp) * 0.5;
+	return Optics::CalculateDielectricReflectanceCosine( cosI, eta_i, eta_t );
 }
 
 RISEPel SubSurfaceScatteringBSDF::value(
@@ -82,7 +75,7 @@ RISEPel SubSurfaceScatteringBSDF::value(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return RISEPel( 0, 0, 0 );
 
-	const Scalar n_ior = ior.GetColor( ri )[0];
+	const Scalar n_ior = pIOR->GetValuesAt( ri ).v[0];
 
 	if( alpha > 1e-6 )
 	{
@@ -97,7 +90,13 @@ RISEPel SubSurfaceScatteringBSDF::value(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: Fresnel against the exterior the ray arrived through
+		// (`ri.ambientIOR`, stamped from the IOR stack; 1.0 = air), the
+		// same index SubSurfaceScatteringSPF's VNDF reflection reads from
+		// `ior_stack.top()` -- was hardcoded air, so NEE through this BSDF
+		// and the SPF's sampled reflection priced two different interfaces
+		// whenever the SSS body sat in a non-air medium.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 
 		const Scalar val = D * F * G / (4.0 * NdotO * NdotI);
 		return RISEPel( val, val, val );
@@ -125,7 +124,7 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return 0;
 
-	const Scalar n_ior = ior.GetColorNM( ri, nm );
+	const Scalar n_ior = pIOR->GetValueAtNM( ri, nm );
 
 	if( alpha > 1e-6 )
 	{
@@ -137,10 +136,21 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: see value() -- exterior index, not hardcoded air.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}
 
 	// Smooth surface: delta interaction, BSDF = 0 for non-specular directions
 	return 0;
+}
+
+RISEPel SubSurfaceScatteringBSDF::albedo( const RayIntersectionGeometric& /*ri*/ ) const
+{
+	// The visible "color" for SSS materials comes from BSSRDF transport,
+	// not from this BSDF's surface term (which is GGX reflection only).
+	// Closed-form total reflectance under SSS isn't available here, so
+	// return white — OIDN treats the surface as illumination-only,
+	// which is the correct assumption for skin / wax / marble.
+	return RISEPel( 1.0, 1.0, 1.0 );
 }

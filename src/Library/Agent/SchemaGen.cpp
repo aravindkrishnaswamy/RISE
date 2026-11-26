@@ -1,0 +1,377 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SchemaGen.cpp - descriptor -> JSON-Schema-ish emitter (see SchemaGen.h).
+//
+//  The mapping from ValueKind to a JSON-Schema-ish "type" is deliberately
+//  coarse (this is a first-pass filter, not the parser -- the parser is
+//  always authoritative, docs/agentic-redesign/50-agentic-surface.md §5):
+//    Bool                 -> "boolean"
+//    UInt                 -> "integer"
+//    Double               -> "number"
+//    DoubleVec3/4, Mat4   -> "array" (of number, with a fixed length hint)
+//    String / Filename    -> "string"
+//    Enum                 -> "string" + an `enum` array
+//    Reference            -> "string" + a `references` array of category names
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "pch.h"
+#include "SchemaGen.h"
+
+#include "Json.h"
+#include "../SceneEditor/ChunkDescriptorRegistry.h"
+#include "../SceneEditorSuggestions/SceneGrammar.h"
+#include "../Parsers/ChunkDescriptor.h"
+#include "../Utilities/RString.h"
+#include "../Cst/Cst.h"   // Cst::RetiredChunkAdvice -- a removed keyword (e.g. `bumpmap_modifier`) gets the
+                          // same directed replacement/migrator message the CST derive's own diagnostic does,
+                          // instead of the bare "unknown chunk type" a keyword RISE never had gets
+
+#include <set>
+#include <string>
+
+namespace RISE
+{
+	namespace Agent
+	{
+		namespace
+		{
+			//! Append `s` as a JSON string literal (quotes included).  Slice
+			//! 0c FACTORED the escaper into the shared JSON codec
+			//! (JsonAppendEscapedString) -- this is now a thin forwarder so
+			//! SchemaGen and the JSON-RPC transport share ONE correct RFC-8259
+			//! escaper (no drift possible).
+			void AppendJsonString( std::string& out, const std::string& s )
+			{
+				JsonAppendEscapedString( out, s );
+			}
+
+			//! The JSON-Schema-ish "type" token for a ValueKind.
+			const char* TypeFor( ValueKind k )
+			{
+				switch( k ) {
+					case ValueKind::Bool:       return "boolean";
+					case ValueKind::UInt:       return "integer";
+					case ValueKind::Double:     return "number";
+					case ValueKind::DoubleVec2:
+					case ValueKind::DoubleVec3:
+					case ValueKind::DoubleVec4:
+					case ValueKind::DoubleMat4: return "array";
+					case ValueKind::String:
+					case ValueKind::Filename:
+					case ValueKind::Enum:
+					case ValueKind::Reference:  return "string";
+				}
+				return "string";
+			}
+
+			//! Fixed array length for the vector/matrix kinds (0 = not an array).
+			int ArrayLenFor( ValueKind k )
+			{
+				switch( k ) {
+					case ValueKind::DoubleVec2: return 2;
+					case ValueKind::DoubleVec3: return 3;
+					case ValueKind::DoubleVec4: return 4;
+					case ValueKind::DoubleMat4: return 16;
+					default:                    return 0;
+				}
+			}
+
+			//! A stable lowercase name for a ParameterSemantics::pipe value
+			//! (S17, ChunkDescriptor.h).  Own small vocabulary, deliberately
+			//! NOT reusing CategoryName below -- pipe is a finer split than
+			//! ChunkCategory (`Painter` alone splits into `color` and `scalar`).
+			const char* PipeName( ParameterPipe p )
+			{
+				switch( p ) {
+					case ParameterPipe::Unspecified: return "unspecified";
+					case ParameterPipe::Color:       return "color";
+					case ParameterPipe::Scalar:      return "scalar";
+					case ParameterPipe::Material:    return "material";
+					case ParameterPipe::Function1D:  return "function1d";
+					case ParameterPipe::Function2D:  return "function2d";
+					case ParameterPipe::Geometry:    return "geometry";
+					case ParameterPipe::Other:       return "other";
+				}
+				return "other";
+			}
+
+			//! A stable lowercase name for a ChunkCategory (for a Reference
+			//! param's `references` array).  Mirrors the descriptor category
+			//! namespace the design keys references on (§2.5).
+			const char* CategoryName( ChunkCategory c )
+			{
+				switch( c ) {
+					case ChunkCategory::Painter:          return "painter";
+					case ChunkCategory::Function:         return "function";
+					case ChunkCategory::Material:         return "material";
+					case ChunkCategory::Camera:           return "camera";
+					case ChunkCategory::Film:             return "film";
+					case ChunkCategory::Geometry:         return "geometry";
+					case ChunkCategory::Modifier:         return "modifier";
+					case ChunkCategory::Medium:           return "medium";
+					case ChunkCategory::Object:           return "object";
+					case ChunkCategory::ShaderOp:         return "shaderop";
+					case ChunkCategory::Shader:           return "shader";
+					case ChunkCategory::Rasterizer:       return "rasterizer";
+					case ChunkCategory::RasterizerOutput: return "rasterizer_output";
+					case ChunkCategory::Light:            return "light";
+					case ChunkCategory::PhotonMap:        return "photon_map";
+					case ChunkCategory::PhotonGather:     return "photon_gather";
+					case ChunkCategory::IrradianceCache:  return "irradiance_cache";
+					case ChunkCategory::Animation:        return "animation";
+					case ChunkCategory::SceneVariant:     return "scene_variant";
+					case ChunkCategory::HairGuides:       return "hair_guides";
+					case ChunkCategory::Simulation:       return "simulation";
+				}
+				return "unknown";
+			}
+
+			//! Emit one ParameterDescriptor as a JSON object into `out`.
+			void EmitParameter( std::string& out, const ParameterDescriptor& p )
+			{
+				out += '{';
+				out += "\"type\":";
+				AppendJsonString( out, TypeFor( p.kind ) );
+
+				const int arrLen = ArrayLenFor( p.kind );
+				if( arrLen > 0 ) {
+					out += ",\"items\":{\"type\":\"number\"}";
+					out += ",\"minItems\":";
+					out += std::to_string( arrLen );
+					out += ",\"maxItems\":";
+					out += std::to_string( arrLen );
+				}
+
+				if( p.kind == ValueKind::Enum && !p.enumValues.empty() ) {
+					out += ",\"enum\":[";
+					for( size_t i = 0; i < p.enumValues.size(); ++i ) {
+						if( i ) out += ',';
+						AppendJsonString( out, p.enumValues[i] );
+					}
+					out += ']';
+				}
+
+				if( p.kind == ValueKind::Reference && !p.referenceCategories.empty() ) {
+					out += ",\"references\":[";
+					for( size_t i = 0; i < p.referenceCategories.size(); ++i ) {
+						if( i ) out += ',';
+						AppendJsonString( out, CategoryName( p.referenceCategories[i] ) );
+					}
+					out += ']';
+				}
+
+				// S17, additive: which manager/pipe a Reference-kind param's value
+				// actually resolves against (ParameterSemantics, ChunkDescriptor.h).
+				// Emitted ONLY when audited (pipe != Unspecified) -- most chunk
+				// families outside this slice's Painter/Material scope have no
+				// semantics populated yet, and an unaudited "unspecified" pipe on
+				// the wire would read as a claim rather than an honest "don't know".
+				if( p.semantics.pipe != ParameterPipe::Unspecified ) {
+					out += ",\"pipe\":";
+					AppendJsonString( out, PipeName( p.semantics.pipe ) );
+					if( p.semantics.requireSingle ) {
+						out += ",\"pipeRequireSingle\":true";
+					}
+					if( !p.semantics.keywordAllowlist.empty() ) {
+						out += ",\"pipeKeywordAllowlist\":[";
+						for( size_t i = 0; i < p.semantics.keywordAllowlist.size(); ++i ) {
+							if( i ) out += ',';
+							AppendJsonString( out, p.semantics.keywordAllowlist[i] );
+						}
+						out += ']';
+					}
+					if( !p.semantics.note.empty() ) {
+						out += ",\"pipeNote\":";
+						AppendJsonString( out, p.semantics.note );
+					}
+				}
+
+				out += ",\"required\":";
+				out += ( p.required ? "true" : "false" );
+
+				out += ",\"repeatable\":";
+				out += ( p.repeatable ? "true" : "false" );
+
+				if( !p.description.empty() ) {
+					out += ",\"description\":";
+					AppendJsonString( out, p.description );
+				}
+				if( !p.defaultValueHint.empty() ) {
+					out += ",\"default\":";
+					AppendJsonString( out, p.defaultValueHint );
+				}
+				if( !p.unitLabel.empty() ) {
+					out += ",\"unit\":";
+					AppendJsonString( out, p.unitLabel );
+				}
+				if( p.deprecated ) {
+					out += ",\"deprecated\":true";
+					if( !p.replacement.empty() ) {
+						out += ",\"replacement\":";
+						AppendJsonString( out, p.replacement );
+					}
+				}
+				out += '}';
+			}
+
+			//! Emit a whole ChunkDescriptor as a JSON object into `out`.
+			void EmitChunk( std::string& out, const ChunkDescriptor& d )
+			{
+				out += '{';
+				out += "\"keyword\":";
+				AppendJsonString( out, d.keyword );
+				out += ",\"category\":";
+				AppendJsonString( out, CategoryName( d.category ) );
+				// Emitted ONLY when true (keeps the common singleton case unbloated): tells the agent
+				// this keyword may legally appear UNNAMED more than once (the derive APPENDS), so a
+				// second unnamed insert is accepted and removal is by explicit text edit / named address.
+				if( d.unnamedRepeatable ) {
+					out += ",\"unnamedRepeatable\":true";
+				}
+				// DL-323 follow-through: emitted ONLY when true, like unnamedRepeatable.  Tells the agent
+				// the chunk still works but a modern replacement exists (and how to translate to it);
+				// the description is ALSO prefixed with the notice, so a reader of `description` alone
+				// sees it too.
+				if( d.deprecated ) {
+					out += ",\"deprecated\":true,\"replacement\":";
+					AppendJsonString( out, d.replacement );
+				}
+				// Legacy-deprecation Phase 1 (2026-10-09): emitted ONLY when true.  A FROZEN chunk
+				// is legacy and UNSUPPORTED -- it still loads and renders, an existing one may be
+				// edited, but insert_chunk / insert_chunks / a param splice refuse to CREATE one.
+				if( d.frozen ) {
+					out += ",\"frozen\":true";
+				}
+				if( !d.description.empty() ) {
+					out += ",\"description\":";
+					AppendJsonString( out, d.description );
+				}
+				out += ",\"properties\":{";
+				for( size_t i = 0; i < d.parameters.size(); ++i ) {
+					if( i ) out += ',';
+					AppendJsonString( out, d.parameters[i].name );
+					out += ':';
+					EmitParameter( out, d.parameters[i] );
+				}
+				out += "}}";
+			}
+		}
+
+		std::string SchemaGenForChunk( const std::string& keyword )
+		{
+			const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+			if( !d ) {
+				// `keyword` echoes what was ASKED FOR, so this object is
+				// self-identifying exactly like a successful one.  It matters in
+				// read_schema's batch form: an element that failed to resolve has
+				// no descriptor to name itself from, and without this a caller
+				// would have to count array positions to find out which of its
+				// keywords was the typo.
+				std::string out;
+				out += "{\"keyword\":";
+				AppendJsonString( out, keyword );
+				out += ",\"error\":";
+				const char* const retired = RISE::Cst::RetiredChunkAdvice( keyword );
+				AppendJsonString( out, retired
+					? ( "chunk type '" + keyword + "' has been removed -- " + retired )
+					: ( "unknown chunk type '" + keyword + "'" ) );
+				out += '}';
+				return out;
+			}
+			std::string out;
+			EmitChunk( out, *d );
+			return out;
+		}
+
+		std::string SchemaGenAll()
+		{
+			// SchemaGenAll enumerates via the SceneGrammar singleton;
+			// SchemaGenForChunk resolves via DescriptorForKeyword (a separate
+			// process-lifetime static).  Both derive from the same
+			// CreateAllChunkParsers() factory output, so per-chunk and
+			// whole-grammar schemas cannot drift.
+			const SceneEditorSuggestions::SceneGrammar& g = SceneEditorSuggestions::SceneGrammar::Instance();
+			const std::vector<const ChunkDescriptor*>& all = g.AllChunks();
+
+			// Dedupe by keyword.  SceneGrammar's mDescriptors has one entry
+			// PER REGISTERED PARSER, not per distinct chunk (see
+			// SceneGrammar.cpp's constructor comment): a legacy alias like
+			// `mis_pathtracing_shaderop` shares its parser CLASS with the
+			// canonical `pathtracing_shaderop` entry, and Describe() reports
+			// the canonical keyword on both -- so `all` contains the same
+			// `d->keyword` twice.  Emitting it twice here is harmless for
+			// Anthropic/OpenAI (tool results ride as opaque strings) but is
+			// a hard failure for Gemini, whose protobuf-Struct backend
+			// rejects duplicate map keys outright (HTTP 400).  First
+			// occurrence wins (matches SceneGrammar's own registration
+			// order, which lists the canonical keyword before its aliases).
+			std::set<std::string> seen;
+
+			std::string out;
+			out += '{';
+			bool first = true;
+			for( const ChunkDescriptor* d : all ) {
+				if( !d ) continue;
+				if( !seen.insert( d->keyword ).second ) continue;
+				if( !first ) out += ',';
+				first = false;
+				AppendJsonString( out, d->keyword );
+				out += ':';
+				EmitChunk( out, *d );
+			}
+			out += '}';
+			return out;
+		}
+
+		std::string SchemaGenCategory( const std::string& category )
+		{
+			// Same enumeration + keyword-dedup discipline as SchemaGenAll
+			// (see its comment): one entry per registered parser, deduped by
+			// keyword so an alias never lists twice.  Here we filter to ONE
+			// category and emit ONLY {keyword, description} -- the cheap
+			// discovery listing, not the full per-parameter schema.
+			const SceneEditorSuggestions::SceneGrammar& g = SceneEditorSuggestions::SceneGrammar::Instance();
+			const std::vector<const ChunkDescriptor*>& all = g.AllChunks();
+
+			std::set<std::string> seen;
+			std::string chunks;
+			bool first = true;
+			for( const ChunkDescriptor* d : all ) {
+				if( !d ) continue;
+				if( category != CategoryName( d->category ) ) continue;
+				if( !seen.insert( d->keyword ).second ) continue;
+				if( !first ) chunks += ',';
+				first = false;
+				chunks += "{\"keyword\":";
+				AppendJsonString( chunks, d->keyword );
+				if( !d->description.empty() ) {
+					chunks += ",\"description\":";
+					AppendJsonString( chunks, d->description );
+				}
+				chunks += '}';
+			}
+
+			std::string out;
+			out += "{\"category\":";
+			AppendJsonString( out, category );
+			out += ",\"chunks\":[";
+			out += chunks;
+			out += ']';
+			// An empty result means the caller named a category that no chunk
+			// declares -- either a typo or an empty-string request.  Surface
+			// it LOUDLY as an `"error"` key (a caller can test for it) rather
+			// than silently returning an empty listing that looks legitimate.
+			if( seen.empty() ) {
+				out += ",\"error\":";
+				AppendJsonString( out, "unknown or empty category '" + category +
+					"' (want one of: painter, function, material, camera, film, geometry, "
+					"modifier, medium, object, shaderop, shader, rasterizer, rasterizer_output, "
+					"light, photon_map, photon_gather, irradiance_cache, animation, scene_variant, "
+					"hair_guides)" );
+			}
+			out += '}';
+			return out;
+		}
+	}
+}

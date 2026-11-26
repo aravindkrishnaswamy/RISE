@@ -16,9 +16,12 @@
 #define ISOTROPICPHONG_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "IsotropicPhongBRDF.h"
 #include "IsotropicPhongSPF.h"
+#include "../Interfaces/IContinuationClosure.h"
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -37,7 +40,7 @@ namespace RISE
 			IsotropicPhongSPF*			pSPF;
 
 		public:
-			IsotropicPhongMaterial( const IPainter& Rd_, const IPainter& Rs_, const IPainter& exp )
+			IsotropicPhongMaterial( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp )
 			{
 				pBRDF = new IsotropicPhongBRDF( Rd_, Rs_, exp );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
@@ -47,13 +50,63 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {		return pBRDF; };
+			inline IBSDF* GetBSDF() const override {		return pBRDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
+
+			//! DL-471 (IMaterial::ConnectionScatterTypes): diffuse and glossy-reflection lobes only.
+			inline unsigned int ConnectionScatterTypes() const override { return ( 1u << ScatteredRay::eRayDiffuse ) | ( 1u << ScatteredRay::eRayReflection ); }
+			//! DL-481: its BSDF splits the connection value by its SPF's lobe labels (IBSDF::valueByScatterType).
+			inline bool HasConnectionTypeSplit() const override { return true; }
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack&,
+				const ContinuationPathState& pathState ) const override
+			{
+				const ScalarTriple exponent = pBRDF->GetExponent().GetValuesAt(ri);
+				if( pBRDF->GetExponent().HasPerChannelVariation() ||
+					!exponent.IsUniform() ||
+					!RISE::IsFiniteDouble(exponent.v[0]) || exponent.v[0] < 0.0 ) {
+					return 0;
+				}
+				return CreateIsotropicPhongContinuationClosurePel(
+					ri,ReflectanceColor(pBRDF->GetRd(),ri),ReflectanceColor(pBRDF->GetRs(),ri),
+					exponent.v[0],pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack&, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateIsotropicPhongContinuationClosureNM(
+					ri,ReflectanceColorNM(pBRDF->GetRd(),ri,nm),
+					ReflectanceColorNM(pBRDF->GetRs(),ri,nm),
+					pBRDF->GetExponent().GetValueAtNM(ri,nm),pathState);
+			}
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep so the two
+			//! lobe instances never reference different painters.
+			inline const IPainter&       GetRd()       const { return pBRDF->GetRd(); }
+			inline const IPainter&       GetRs()       const { return pBRDF->GetRs(); }
+			inline const IScalarPainter& GetExponent() const { return pBRDF->GetExponent(); }
+			inline void SetRd( const IPainter& v )       { pBRDF->SetRd( v );       pSPF->SetRd( v ); }
+			inline void SetRs( const IPainter& v )       { pBRDF->SetRs( v );       pSPF->SetRs( v ); }
+			inline void SetExponent( const IScalarPainter& v ) { pBRDF->SetExponent( v ); pSPF->SetExponent( v ); }
+
+			unsigned int GetPathDependence() const override
+			{
+				return IMaterial::GetPathDependence() |
+					pBRDF->GetRd().GetPathDependence() |
+					pBRDF->GetRs().GetPathDependence() |
+					pBRDF->GetExponent().GetPathDependence();
+			}
 		};
 	}
 }

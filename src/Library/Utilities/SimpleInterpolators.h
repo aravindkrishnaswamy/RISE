@@ -39,7 +39,7 @@ namespace RISE
 		}
 
 		T	Interpolate2Values( 
-			typename std::vector<T>& values, 
+			const typename std::vector<T>& values, 
 			typename std::vector<T>::const_iterator& first, 
 			typename std::vector<T>::const_iterator& second, 
 			const Scalar x 
@@ -70,7 +70,7 @@ namespace RISE
 		}
 
 		T	Interpolate2Values( 
-			typename std::vector<T>& values, 
+			const typename std::vector<T>& values, 
 			typename std::vector<T>::const_iterator& first, 
 			typename std::vector<T>::const_iterator& second, 
 			const Scalar x 

@@ -1,0 +1,26 @@
+{
+  "id": "altar_stress",
+  "title": "Museum-vitrine altar still-life -- geometry-signals stress test (2026-08-30)",
+  "//": "One-off comparison instrument, not a standing census scenario. The prompt is the user's five-element altar stress test, previously run interactively through the GUI (trajectory 20260830T170134Z-75b8b2fa, gemini-3.7-flash): each element quietly demands a shipped geometry signal -- (1) SDF/skeleton guardian: curv edge wear + occlusion patina (the add_wear sweet spot); (2) CSG-subtraction plinth: grime IN the carvings; (3) thin-walled lantern: thickness-driven translucency; (4) three scaled copies of one geometry: curv instancing invariance; (5) lathe goblet: mesh-family bake path. The rerun measures whether the 2026-08-30 hardening (specific expression-compile diagnostics through the finalize sink a71313e4, kind-changed re-land disclosure 2073484d/4d603822, sdf part <a b c> descriptor + degenerate-shape warning 989bfb08) changes agent behaviour: in the GUI run, opaque rejections silently flattened the guardian/plinth expression painters inside build_element's retry, and a box-extents-in-scale-slot slip produced a degenerate plinth SDF. Checkpoints are the generic adoption battery from rich_material_closeup (widened chunk_count for a 5-element scene, same render/diagnostics/trajectory shape); grading of the five elements is post-hoc over the trajectory + final scene, not checkpoint-gated.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "Build me a small altar still-life, lit like a museum vitrine at dusk:\n\n- A weathered bronze guardian figurine as the hero -- a creature with a rounded body, tapering limbs and a horned head. Centuries of handling: the raised edges and horn tips rubbed back to bright polished metal, dark green-brown patina and grime settled deep into every fold, seam and recess of the casting.\n- It stands on a carved stone plinth with recessed panels and chiseled grooves cut into each face -- dust and soot collected in the carvings, the flat faces and outer edges swept clean.\n- Beside it, a thin-walled porcelain lantern glowing from a small warm light inside -- the walls should read translucent where they're thin, with the glow dying out where the porcelain thickens toward the base.\n- In front, a procession of three identical smaller copies of the guardian at three different sizes, same worn-bronze look on all three -- the wear should sit in the same places on each regardless of size.\n- One turned wooden goblet, lathe-profile silhouette, its rim and foot edges worn pale through the dark finish.\n\nMacro camera, shallow depth of staging, one key light plus the lantern. Render and show me."
+  ],
+  "budgets": {
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 900000
+  },
+  "checkpoints": [
+    { "kind": "document", "op": "chunk_count", "chunkKind": "standard_object", "min": 5, "max": 60 },
+    { "kind": "document", "op": "any_param_references_kind", "referencedKind": "scalar_painter", "weight": 3, "metricLabel": "spatially_varying_scalar" },
+    { "kind": "document", "op": "distinct_chunk_kinds", "kinds": ["expression_painter", "ramp_painter"], "distinctMin": 1, "weight": 2, "metricLabel": "expression_family" },
+    { "kind": "document", "op": "distinct_chunk_kinds", "category": "painter", "exclude": ["uniformcolor_painter", "scalar_painter"], "distinctMin": 3, "weight": 1.5, "metricLabel": "painter_kinds" },
+    { "kind": "render", "samples": 512, "width": 32, "height": 24, "meanLumaMin": 0.008, "meanLumaMax": 0.35, "channelBalanceMax": 4.0 },
+    { "kind": "diagnostics", "expect": "clean" },
+    { "kind": "trajectory", "terminalStatus": "final_text", "noMechanicalLoop": true, "requiredToolInOrder": ["read_document", "render"] }
+  ]
+}

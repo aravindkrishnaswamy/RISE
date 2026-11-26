@@ -17,6 +17,7 @@
 #include "../Interfaces/IRadianceMap.h"
 #include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Profiling.h"
 
 namespace RISE
 {
@@ -48,11 +49,14 @@ namespace RISE
 
 			//! Returns the radiance from that direction in the scene
 			/// \return The radiance
-			RISEPel GetRadiance( 
+			RISEPel GetRadiance(
 				const Ray& ray,
 				const RasterizerState& rast
 				) const
 			{
+				RISE_PROFILE_PHASE(RadianceMap);
+				RISE_PROFILE_INC(nRadianceMapLookups);
+
 				// Transform the world co-ordinates to the texture lookup
 				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
@@ -60,8 +64,8 @@ namespace RISE
 				RayIntersectionGeometric rig( ray, rast );
 				rig.ptCoord.x = 0.5 + v.x * r;
 				rig.ptCoord.y = 0.5 - v.y * r;
-				
-				return pRadianceMap.GetColor( rig ) * dScale;
+
+				return pRadianceMap.GetRadianceColor( rig ) * dScale;
 			}
 
 			//! Returns the radiance from that direction for the given wavelength
@@ -71,6 +75,9 @@ namespace RISE
 				const Scalar nm
 				) const
 			{
+				RISE_PROFILE_PHASE(RadianceMap);
+				RISE_PROFILE_INC(nRadianceMapLookups);
+
 				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
 
@@ -78,7 +85,16 @@ namespace RISE
 				rig.ptCoord.x = 0.5 + v.x * r;
 				rig.ptCoord.y = 0.5 - v.y * r;
 				
-				return pRadianceMap.GetColorNM( rig, nm ) * dScale;
+				// A radiance map IS a source term, so the painter is read
+				// through GetRadianceNM (Stage C slice 2): the map's RGB is
+				// "the colour the sky has", i.e. reflectance-under-D65 times
+				// D65.  This covers every painter-backed environment --
+				// uniform dome colours (including the AgentSession studio
+				// dome), HDR/EXR lat-longs through TexturePainter, and
+				// procedural sky painters.  HosekWilkieSpectralRadianceMap
+				// is a separate IRadianceMap with a PHYSICAL SPD and does
+				// not come through here.
+				return pRadianceMap.GetRadianceNM( rig, nm ) * dScale;
 			}
 
 			//! Sets the orientation of this map
@@ -107,6 +123,11 @@ namespace RISE
 			Scalar GetScale() const
 			{
 				return dScale;
+			}
+
+			void SetScale( const Scalar scale )
+			{
+				dScale = scale;
 			}
 
 			const Matrix4& GetTransform() const

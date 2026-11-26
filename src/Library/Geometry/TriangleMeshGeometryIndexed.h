@@ -16,20 +16,40 @@
 #define TRIANGLE_MESH_GEOMETRY_INDEXED_
 
 #include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness() dispatch (design doc Phase 3)
 #include "Geometry.h"
-#include "../Octree.h"
-#include "../BSPTreeSAH.h"
+#include "MeshSignalBake.h"
+#include "../Acceleration/BVH.h"
+#include "../Acceleration/AccelerationConfig.h"
+#include <atomic>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class TriangleMeshGeometryIndexed : 
-			public virtual ITriangleMeshGeometryIndexed, 
+		//! Also an ISurfaceSignalProvider and its own bake occluder: the
+		//! `occlusion(r)` / `thickness(r)` expression builtins are answered
+		//! for meshes out of a LAZY per-vertex bake this class owns, traced
+		//! against its own BVH (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7).
+		//!
+		//! The bake is keyed on THIS GEOMETRY -- never on an IObject* --
+		//! which is what makes invalidation free: the incremental derive
+		//! path drops and recreates a geometry on edit (so a fresh instance
+		//! starts with an empty cache), while object chunks are re-pointed
+		//! IN PLACE and would have kept a stale bake (§7.2's named trap).
+		class TriangleMeshGeometryIndexed :
+			public virtual ITriangleMeshGeometryIndexed5,
 			public virtual Geometry,
-			public virtual TreeElementProcessor<const PointerTriangle*>
+			public virtual TreeElementProcessor<const PointerTriangle*>,
+			public ISurfaceSignalProvider,
+			public MeshSignalBake::ISelfOccluder,
+			public MeshSignalBake::IInputSource
 		{
+		public:
+			class MeshGrid;			// defined below (a builder's authored grid structure)
 		protected:
 			virtual ~TriangleMeshGeometryIndexed();
 
@@ -42,6 +62,8 @@ namespace RISE
 			typedef VerticesListType					MyPointsList;
 			typedef NormalsListType						MyNormalsList;
 			typedef TexCoordsListType					MyCoordsList;
+			typedef VertexColorsListType				MyColorsList;
+			typedef Tangent4ListType					MyTangentsList;
 
 			typedef std::vector<Scalar>					TriangleAreasList;
 
@@ -50,18 +72,101 @@ namespace RISE
 			MyPointsList			pPoints;			// The list of points
 			MyNormalsList			pNormals;			// The list of normals
 			MyCoordsList			pCoords;			// The list of coords
+			//! Optional per-vertex colors.  Indices into this array match
+			//! position indices (i.e. a face's `iVertices[k]` selects the
+			//! colour at `pColors[iVertices[k]]`).  Empty when the source
+			//! mesh has no color data — the vertex-color painter falls
+			//! back to its configured default in that case.
+			MyColorsList			pColors;
+			//! Optional per-vertex tangents (v3 interface).  Same indexing
+			//! convention as colors: tangent[i] is paired with position[i].
+			//! Empty when absent.  Live-only state — not yet persisted in
+			//! the .risemesh format (Phase 1 glTF import has no consumer).
+			MyTangentsList			pTangents;
+            std::vector<Vector3> pShaderDirections; // position-indexed; independent of UV/Mikk tangents
+			//! Optional secondary UV set (TEXCOORD_1, v3 interface).
+			//! Indexed via face's iCoords[k] — same indices as primary UVs.
+			//! Empty when absent.  Same persistence note as pTangents.
+			MyCoordsList			pTexCoords1;
+			//! Optional named per-corner RGBA attributes (v5 interface).
+			//! Flat array of 4 linear floats per triangle corner (`triIdx*3 + k`).
+			//! Live-only state (not persisted in .risemesh).
+			struct NamedCornerAttribute
+			{
+				std::string			name;
+				std::vector<float>	rgba;		///< numCorners * 4 floats
+			};
+			std::vector<NamedCornerAttribute>	pNamedCornerAttributes;
 			MyPointerTriangleList	ptr_polygons;		// The list of pointer triangles
 
-			unsigned int			nMaxPerOctantNode;	// Maximum number of polygons per octant node
-			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
-
 			bool					bDoubleSided;		// Are the polygons all double sided?
-			bool					bUseBSP;			// Are we using BSP trees ?
-			
 			bool					bUseFaceNormals;	// Are we going to use computed face normals rather than interpolated vertex normals?
 
-			Octree<const PointerTriangle*>*		pPtrOctree;
-			BSPTreeSAH<const PointerTriangle*>*	pPtrBSPtree;
+			//! DL-31.  True iff every edge of `ptr_polygons` is shared by
+			//! EXACTLY two triangles -- the cheap necessary condition for
+			//! "closed manifold" this class uses to decide whether it may
+			//! answer `SignedDistanceLower` (the parity inside-test is only
+			//! meaningful for a mesh with no boundary). Computed initially in
+			//! `DoneIndexedTriangles` or modern (v4+) `Deserialize`, from the position-index pairs of
+			//! `ptr_polygons` (recovered via pointer arithmetic into
+			//! `pPoints`, since `indexedtris` -- which carries the indices
+			//! directly -- is freed earlier in the same function).  An open
+			//! sheet (a plane, a lone quad, a mesh missing one face) and a
+			//! non-manifold mesh (an edge shared by more or fewer than two
+			//! triangles) both read false here and stay an unsigned-only
+			//! sheet, matching every other refusing family's convention.
+			//! DL-150: the edge count alone cannot tell a real seam
+			//! (welded by DL-143's position epsilon) from two independent
+			//! open sheets welded together by the SAME epsilon exceeding
+			//! their physical gap -- `ComputeWatertightness` additionally
+			//! refuses when the weld produces two geometrically COINCIDENT
+			//! triangles (two distinct triangles sharing the same 3
+			//! post-weld vertices), the signature of a false stitch at any
+			//! dihedral angle.  (An earlier per-corner-orientation
+			//! discriminator was REMOVED, 2026-09-18: it falsely refused a
+			//! legitimately closed solid with a sharp convex crease, since
+			//! a real wedge's own face-normal cosine approaches -1 just as
+			//! a false stitch's does -- see that function's own comment
+			//! for the full account and the current mechanism's documented
+			//! residual.)
+			bool					m_bWatertight;
+			// NOTE: neither the chart bits (m_uvPeriodic), the grid structure, the displacement weld
+			// policy nor the weld domains are carried by .risemesh Serialize/Deserialize -- all of
+			// them describe what a procedural BUILDER knew when it built the mesh.  A deserialized
+			// (imported) mesh therefore never wraps its chart, is refined uniformly (median-edge
+			// 1->4 levels), never grid-wise, and reloads with the default kWeldCreaseCone policy.
+			std::shared_ptr<const MeshGrid>	m_grid;		//!< set by a builder (lathe / sweep / skin); see MeshGrid
+			int							m_weldPolicy;	//!< DisplacementWeldPolicy: how DisplacedGeometry welds this mesh's coincident vertices
+			std::vector<unsigned int>	m_weldDomains;	//!< optional per-position weld DOMAIN id (path_instances: the instance); empty = one domain
+			std::vector<unsigned char>	m_uvPeriodic;	//!< per-position-index kUPeriodic/kVPeriodic bits (see SetUVPeriodicRegion); empty = none
+
+			//! Computes and caches `m_bWatertight`.  Called from
+			//! `DoneIndexedTriangles` or modern `Deserialize` once `ptr_polygons` is final; a
+			//! changed-position update also calls it unless a retained geometric
+			//! proof already establishes refusal. Fixed array indices do not
+			//! preserve position welding or the folded-face discriminator.
+            //! Legacy v1-v3 deserialization retains unsigned eligibility and
+            //! clears any prior closed certificate (DL-382 compatibility).
+			void ComputeWatertightness();
+
+			//! DL-31.  Casts one ray from `ptObject` along a fixed,
+			//! non-axis-aligned direction (chosen to make an exact tangency
+			//! with an authored, typically axis-aligned, face/edge/vertex a
+			//! measure-zero coincidence) and counts GEOMETRIC crossings --
+			//! `IntersectRay` is asked for both faces, so orientation and
+			//! `bDoubleSided` cannot change the count -- by repeatedly
+			//! re-casting from just past the previous hit.  Odd count means
+			//! inside.  Only meaningful, and only called, when
+			//! `m_bWatertight` is true.
+			bool RayParityInsideTest( const Point3& ptObject, bool& outInside ) const;
+
+			// BVH is the sole active acceleration structure (Tier A2 cleanup,
+			// 2026-04-27).  Legacy BSP/octree members were dropped along with
+			// the on-disk v4 format that stops emitting BSP/octree bytes.
+			// Pre-A2 v1/v2/v3 .risemesh files still load — the legacy bytes
+			// are read into Deserialize-local temporaries, validated, and
+			// discarded, never reaching this class as state.
+			BVH<const PointerTriangle*>*		pPtrBVH;
 
 			TriangleAreasList		areas;				// Areas of the triangles
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
@@ -75,73 +180,545 @@ namespace RISE
 			size_t numTriangles() const { return ptr_polygons.size(); }
 #endif
 
+            // Intrinsic winding audit, refreshed with the area cache on real
+            // mesh mutation. Shared instances/preparation only read it.
+            bool smsUncertainNormalOrientation = true;
+            unsigned long long smsOrientationAudits = 0, smsOrientationTriangleVisits = 0;
+            // Face-rule proof and planar zero-volume proof are distinct.
+            // A cracked solid can pass the former, never the latter.
+            bool m_bProvablyOpenSheet = false;
+            bool m_bZeroVolumeSheet = false;
+            bool m_bOpenSignedVolumeNegative = false;
+            bool m_bShapeOpenSheet = false;
+            unsigned long long openCertificateAudits = 0;
+            // A certified embedded projection remains a graph under height
+            // changes. Exact projected coordinates and coincident heights
+            // are checked before overwriting vertices.
+            int openGraphAxis = -1;
+            std::vector<std::pair<size_t,size_t>> openGraphCoincidentPairs;
+            // A pair of coincident corners in one triangle is a necessary
+            // refusal witness for the general (non-degenerate) certificate.
+            size_t openRefusalPair[2] = {size_t(-1),size_t(-1)};
+			struct WatertightEdgeWitness
+			{
+				unsigned int t1 = 0;
+				unsigned int t2 = 0;
+				unsigned char opp1 = 0;
+				unsigned char opp2 = 0;
+				unsigned int edgeA = 0;
+				unsigned int edgeB = 0;
+				unsigned int thirdW1 = 0;
+			};
+			std::vector<Vector3> m_faceNormals;
+			std::vector<unsigned char> m_vertexReferenced;
+			std::size_t m_referencedVertexCount = 0;
+			std::vector<unsigned int> m_lastWeldedId;
+			Scalar m_lastWeldEps = Scalar( 0 );
+			bool m_lastWeldTransitive = false;
+			bool m_lastWeldValid = false;
+			std::vector<unsigned int> m_cachedOpenTopologyWeldedId;
+			bool m_cachedTopologicalOpenRefusal = false;
+			bool m_cachedOpenTopologyPassed = false;
+			bool m_certifiedOpenExactSeams = false;
+			Scalar m_certifiedOpenSeparation = Scalar( 0 );
+			MyPointsList m_certifiedOpenPositions;
+			std::vector<std::pair<std::size_t, std::size_t>> m_certifiedOpenSeamPairs;
+			size_t openRefusalTris[2] = { size_t( -1 ), size_t( -1 ) };
+			std::vector<unsigned int> m_watertightTopologyWeldedId;
+			bool m_cachedTopologicalWatertightRefusal = false;
+			std::vector<WatertightEdgeWitness> m_watertightEdges;
+			mutable std::atomic<int> m_topologicalOpenness{ -2 };
+
+			void EnsureReferencedVertices();
+			bool WeldReferencedVertices();
+			void InvalidateTopologyProofCaches();
+
 			//! Computes the triangle areas and the CDF
-			void ComputeAreas();
+			void ComputeAreas(bool positionsChanged = true, bool graphProofReusable = false, bool refusalProofReusable = false);
+
+			//! UpdateVerticesLean's half of ComputeAreas: areas, CDF, face
+			//! normals and the SMS orientation audit, then every open-sheet /
+			//! watertight certificate cleared to UNCERTIFIED.
+			void ComputeAreasUncertified();
+			void ClearSurfaceCertificates();
+
+			//! Rebuilds pPtrBVH from ptr_polygons (the SAH-degradation fallback
+			//! UpdateVertices inlines; used by UpdateVerticesLean).
+			void RebuildBVHFromPolygons();
+
+			//! The surface-signal stamp of a mesh hit -- provider, object-space
+			//! point and shading normal, triangle and barycentrics -- exactly as
+			//! RayElementIntersection writes it, for SimulatedMeshGeometry's
+			//! interpolating element test (simulation M3b).  Defined beside
+			//! RayElementIntersection so the signal channel keeps its closed set
+			//! of writers (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md section 5.1).
+			void StampSurfaceSignals( RayIntersectionGeometric& ri, const PointerTriangle* elem,
+				const Scalar range, const Vector3& shadingNormal, const Scalar a, const Scalar b ) const;
+
+			//! LAZY per-vertex signal bakes (occlusion / thickness), one
+			//! table per (kind, radius).  `mutable` + the cache's own mutex
+			//! is the sanctioned ARCHITECTURE.md §Known Exceptions pattern
+			//! (SSS point-set precedent); see MeshSignalBake.h for why the
+			//! build cannot be eager.
+			mutable MeshSignalBakeCache	m_signalBakes;
+
+			//! MeshSignalBake::IInputSource -- writes ONE outward orientation
+			//! per vertex POSITION.  NOT the same array as `pNormals`: that
+			//! one is independently indexed (a position can carry several
+			//! normals) and may be empty on a face-normal mesh, while a
+			//! per-vertex bake needs exactly one orientation per POSITION.
+			//! Accumulates each incident corner's authored normal, or the
+			//! face normal where none is authored.
+			//!
+			//! A PURE function of the current vertex data into the caller's
+			//! array -- it caches nothing here.  The cache owns the result,
+			//! because the result is derived from the same vertices the
+			//! tables are and must die in the same single locked
+			//! invalidation they do.
+			void BuildVertexNormals( std::vector<Vector3>& out ) const override;
+
+			//! MeshSignalBake::IInputSource -- assembles the bake input for
+			//! `radiusFraction` around the cache-owned normals, called by the
+			//! cache from inside its lock on a miss.  Object space
+			//! throughout; the radius is a FRACTION of this mesh's own
+			//! bounding-box diagonal (design doc §9), which is what makes a
+			//! shared bake correct for every instance of this geometry.
+			bool MakeBakeInput( const Scalar radiusFraction,
+				const std::vector<Vector3>& vertexNormals,
+				MeshSignalBake::Input& out ) const override;
+
+			//! Answers a baked signal at a hit: validate the radius per
+			//! §7.1's constant-radius precondition, find-or-build, then
+			//! barycentrically interpolate.  The shared body of
+			//! ComputeOcclusion / ComputeThickness.
+			//! Drops the lazy bakes and the per-position normals they were
+			//! built from.  Called wherever the vertex data underneath them
+			//! changes -- rebuild (`BeginIndexedTriangles`/
+			//! `DoneIndexedTriangles`), vertex-level animation
+			//! (`UpdateVertices`), `Deserialize`, and `ComputeVertexNormals`.
+			//!
+			//! §14 item 10 asked whether deforming geometry could stale a
+			//! bake, on the assumption that RISE animates transforms rather
+			//! than vertices.  `UpdateVertices` is the counter-example: the
+			//! keyframed-painter DisplacedGeometry path replaces the vertex
+			//! array IN PLACE, so one IGeometry* genuinely does change shape
+			//! over time.  Free invalidation does not cover it, and this is
+			//! the explicit invalidation it needs instead.  Same contract as
+			//! UpdateVertices itself: between frames, never concurrent with
+			//! rendering -- asserted in DEBUG whenever there was actually
+			//! something live to drop (see the body).
+			void InvalidateSignalBakes();
+
+			bool LookupBakedSignal(
+				const MeshSignalBake::Kind kind,
+				const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction,
+				const bool bRadiusIsConstant,
+				Scalar& outValue ) const;
+
+			//! Resolve one triangle's indices into pointers into pPoints /
+			//! pNormals / pCoords, validating every index (all builds).
+			//! Returns false, leaving `out` unspecified, when an index is out
+			//! of range; see the definition for the empty-list convention.
+			bool MakePointerTriangle(
+				const unsigned int iVerts[3],
+				const unsigned int iNorms[3],
+				const unsigned int iTex[3],
+				PointerTriangle& out );
 
 		public:
-			TriangleMeshGeometryIndexed( 
-				const unsigned int max_polys_per_node, 
-				const unsigned char max_recursion_level, 
+            bool HasUncertainSMSNormalOrientation() const {return smsUncertainNormalOrientation;}
+            bool IsProvablyOpenSheet() const {return m_bProvablyOpenSheet;}
+            bool IsZeroVolumeSheet() const {return m_bZeroVolumeSheet && !smsUncertainNormalOrientation;}
+            unsigned long long OpenCertificateAudits() const {return openCertificateAudits;}
+            bool HasNegativeOpenSignedVolume() const {return m_bOpenSignedVolumeNegative;}
+            //! DL-382: certified closed (DL-143/150/197).  Neither this nor
+            //! IsProvablyOpenSheet() -> the mesh is UNCERTIFIED.
+            bool IsCertifiedWatertight() const {return m_bWatertight;}
+            //! DL-621(a): topological openness (see GeometricUtilities::TriangleMeshOpenness).
+            int TopologicalOpenness() const;
+            unsigned long long SMSOrientationAudits() const {return smsOrientationAudits;}
+            unsigned long long SMSOrientationTriangleVisits() const {return smsOrientationTriangleVisits;}
+			TriangleMeshGeometryIndexed(
 				const bool bDoubleSided_,
-				const bool bUseBSP,
 				const bool bUseFaceNormals
 				);
 
 			// From ISerializable interface
-			void Serialize( IWriteBuffer& buffer ) const;
-			void Deserialize( IReadBuffer& buffer );
+			void Serialize( IWriteBuffer& buffer ) const override;
+			void Deserialize( IReadBuffer& buffer ) override;
 
-			void GenerateMesh( );
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			// Pass-through tessellation: re-emits the stored triangles with same-index
+			// (iVertices == iNormals == iCoords) semantics, ONE output vertex per distinct
+			// original (position, normal, uv) index triple (first-seen order), so the source
+			// mesh's shared topology survives -- smooth per-vertex normals stay smooth under
+			// DisplacedGeometry's post-displacement normal recompute, while intentionally
+			// duplicated hard-edge/cap/pole vertices (distinct normal indices) stay split.
+			// A face-normal mesh (no stored normals) is flattened per corner instead.
+			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const;
-			BoundingBox GenerateBoundingBox() const;
-			bool DoPreHitTest( ) const { return true; };
+			//! Chart bits for SetUVPeriodicRegion / TessellateToMeshEx.
+			//!  kU/kVPeriodic : the chart WRAPS on that axis (see below).
+			//!  kU/kVPolar    : that axis' chart value is a PLACEHOLDER at this vertex --
+			//!                  the coordinate is genuinely undefined there (a lathe pole's
+			//!                  u: every angle maps to the one point, stored as 0.5; a skin
+			//!                  pinch's v).  Refinement then never averages the placeholder
+			//!                  into a neighbour: an edge with exactly one polar end takes
+			//!                  the OTHER end's value on that axis.
+			enum { kUPeriodic = 1, kVPeriodic = 2, kUPolar = 4, kVPolar = 8 };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea() const;
+			//! The AUTHORED GRID STRUCTURE a procedural builder (lathe / sweep / skin) records
+			//! while it emits its triangles: which authored triangles form quads of a regular
+			//! grid (and between which line FAMILIES -- every edge of a family is subdivided the
+			//! same number of times, so neighbouring quads agree on shared edges), and which form
+			//! pole / pinch fans.  Triangles in neither (end caps, degenerate leftovers such as a
+			//! skin triangle the builder's zero-area test half-ate) are NOT cells: they are
+			//! subdivided only along the edges they share with a refined cell (see
+			//! TessellateRefined), so the result has no T-junction.  Used by TessellateRefined() to
+			//! put MORE SAMPLES on the authored surface without changing it -- see the principle there.
+			class MeshGrid
+			{
+			public:
+				//! A quad: the two authored triangles are (q0,q1,q2) and (q0,q2,q3) (diagonal
+				//! q0-q2).  Edges q0q1 and q3q2 are in family famS, q0q3 and q1q2 in famT.
+				struct Quad { unsigned int q[4]; unsigned int famS, famT, tri[2]; };
+				//! A fan around a pole / pinch: the authored triangle (t0,t1,t2), t[pole] being the
+				//! collapsed vertex.  The two spokes are in family famSpoke, the opposite (ring)
+				//! edge in famRing.
+				struct Fan { unsigned int t[3]; unsigned int pole, famSpoke, famRing, tri; };
+				std::vector<Quad> quads;
+				std::vector<Fan>  fans;
+				unsigned int      numFamilies;
+				MeshGrid() : numFamilies( 0 ) {}
+			};
+			void SetGrid( const std::shared_ptr<const MeshGrid>& g ) { m_grid = g; }
+			const MeshGrid* GetGrid() const { return m_grid.get(); }
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			//! REFINEMENT NEVER CHANGES THE AUTHORED SURFACE.  Subdivides the recorded grid so
+			//! every edge family is <= targetEdge long (quad diagonals are up to sqrt(2) longer)
+			//! while the total stays <= maxTriangles.  Every new vertex lies on the authored
+			//! piecewise-linear surface (the authored triangles, never a re-evaluated or rounded
+			//! one), its normal and UV are interpolated from the authored vertices' (barycentric
+			//! within the authored triangle; UVs respect the periodic / polar chart bits), creases
+			//! exist only where the author made them (inserted rows are single, smooth rows),
+			//! and correspondence (loft pairing, caps) is the authored one.  An authored triangle
+			//! no cell replaced that touches a subdivided edge (an end cap; a half-eaten skin
+			//! triangle) subdivides that edge by the same count -- the edge is found by POSITION
+			//! (GeometricUtilities::WeldVertexPositions), because a cap's rim vertices are
+			//! duplicates of the wall's -- and closes its boundary with a fan to its centroid (a
+			//! collinear triangle: a fan from a corner), so no refined vertex lies inside a
+			//! single-use edge and a cap's rim matches the wall's rim vertex for vertex.  Output uses the
+			//! same-index contract; authored vertices keep their indices, new ones follow.
+			//! Returns 1 with the refined arrays, or 0 (arrays untouched) when there is no grid or
+			//! the authored mesh is already at least that dense.
+			int TessellateRefined( const Scalar targetEdge, const size_t maxTriangles,
+				IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals,
+				TexCoordsListType& coords, std::vector<unsigned char>* pUVFlags ) const;
+
+			//! True when this mesh shades with computed face normals (bUseFaceNormals): its
+			//! tessellation is flattened per corner, so it has no shared topology to refine.
+			bool UsesFaceNormals() const { return bUseFaceNormals; }
+
+			//! Declare chart bits (kUPeriodic ... kVPolar) over a range of vertices.  For the
+			//! periodic bits: the UV chart WRAPS on an axis over those vertices:
+			//! the builders that stitch a ring back to its first column with NO
+			//! duplicated seam column (a full-turn lathe's u; a sweep's closed-
+			//! profile u, and its v when the path is closed) leave the wrap edge
+			//! spanning ~(1 -> 0) in chart space, so a midpoint taken linearly
+			//! lands on the far side of the texture.  Only edges whose BOTH
+			//! endpoints carry the axis bit are treated as periodic (a sweep's
+			//! planar end caps share the mesh but not the wrap).  Call AFTER the
+			//! vertices exist.  Default: no axis periodic (every imported /
+			//! prebuilt mesh) -- the chart is then always interpolated linearly.
+			void SetUVPeriodicRegion( const unsigned char mask, const unsigned int firstVertex, const unsigned int count );
+
+			//! TessellateToMesh plus, optionally, the per-OUTPUT-vertex periodicity bits
+			//! (the bits of the vertex's source position), index-parallel to `vertices`.
+			//! pWeldDomains (optional): the weld-domain id of each output vertex's source position
+			//! (see SetDisplacementWeldDomains); left untouched when the mesh has no domains.
+			bool TessellateToMeshEx( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail, std::vector<unsigned char>* pUVPeriodic, std::vector<unsigned int>* pWeldDomains = 0 ) const;
+
+			//! Install per-position periodicity bits wholesale (DisplacedGeometry's baked mesh).
+			void SetUVPeriodicFlags( const std::vector<unsigned char>& flags ) { m_uvPeriodic = flags; }
+
+			//! How DisplacedGeometry welds the vertices of this mesh that are COINCIDENT in the
+			//! undisplaced mesh (a crease, a cap rim, a pinch's two poles, a UV seam are separate
+			//! vertices at one position).  Welded vertices move to one shared displaced position
+			//! (the mean of their displacement vectors), so the crease stays closed.
+			//!  kWeldCreaseCone : (default; an import, a deserialized .risemesh, a hand-built mesh)
+			//!                    weld a coincident group's members whose base normals lie within a
+			//!                    crease cone of each other (angle < 120 deg: a seam, a cube edge, a
+			//!                    cap against a wall) -- coincident OPPOSITE-facing sheets (a two-sided
+			//!                    leaf, cloth) are NOT one surface and stay independent.
+			//!  kWeldAll        : a procedural builder (lathe / sweep / skin): every coincident group
+			//!                    is, by construction, the builder's own crease / cap rim / duplicated
+			//!                    profile point / pinch pole / skin crease station, so all of it is welded
+			//!                    whatever its normals (a pinch's two poles face opposite ways).
+			//!  kWeldNone       : weld nothing (a face-normal template's instances).
+			//! WELD DOMAINS: when the mesh carries per-position domain ids
+			//! (SetDisplacementWeldDomains), coincident vertices are welded only WITHIN a domain,
+			//! by this policy.  path_instances_geometry makes each instance a domain (policy: the
+			//! template's own), so a creased template stays closed inside every instance while
+			//! TOUCHING instances stay independent bodies.
+			enum DisplacementWeldPolicy { kWeldCreaseCone = 0, kWeldAll = 1, kWeldNone = 2 };
+			void SetDisplacementWeldPolicy( const int p ) { m_weldPolicy = p; }
+			int  GetDisplacementWeldPolicy() const { return m_weldPolicy; }
+			void SetDisplacementWeldDomains( const std::vector<unsigned int>& d ) { m_weldDomains = d; }
+			const std::vector<unsigned int>& GetDisplacementWeldDomains() const { return m_weldDomains; }
+
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
+			BoundingBox GenerateBoundingBox() const override;
+			bool DoPreHitTest( ) const override { return true; };
+
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea() const override;
+			//! DL-320: a back-face hit reports a ray-facing normal (see IGeometry).
+			bool IsDoubleSided() const override { return bDoubleSided; }
+
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! EXACT unsigned distance from a point to ONE triangle -- the
+			//! standard closest-point-on-triangle region (Voronoi) method,
+			//! Ericson, *Real-Time Collision Detection* §5.1.5.
+			//!
+			//! PUBLIC AND STATIC ON PURPOSE.  It is the leaf half of
+			//! `DistanceToSurface`, and `MeshClosestPointTest`'s differential
+			//! drives THIS function for its brute-force reference.  The
+			//! design's exactness claim for the mesh family is "identical to
+			//! brute force UNDER THE SAME POINT-TRIANGLE FORMULA"
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2), and a test that
+			//! re-derived its own formula would be comparing two
+			//! approximations instead of pinning the traversal.
+			//!
+			//! DEGENERATE TRIANGLES (zero area -- collinear or coincident
+			//! vertices) are handled explicitly rather than left to the
+			//! barycentric interior branch, whose denominator is the
+			//! (vanishing) doubled area and would produce inf/NaN.  A
+			//! degenerate triangle IS the union of its three edges, so the
+			//! fallback -- the minimum of the three point-to-SEGMENT
+			//! distances -- is the exact answer for it, not a patch.
+			static Scalar PointTriangleDistance(
+				const Point3& p, const Point3& a, const Point3& b, const Point3& c );
+
+			//! IGeometry::DistanceToSurface -- EXACT for this family, via a
+			//! bounded-radius closest-point traversal of this mesh's own BVH
+			//! (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.2, Phase 2).
+			//!
+			//! A MESH IS A SHEET FOR THIS QUERY, and that is a real
+			//! difference from every solid family that shipped in Phase 1.
+			//! `SphereGeometry`, `BoxGeometry`, the capped cylinder and the
+			//! SDFs all clamp a SIGNED field at zero, so a point inside them
+			//! reads 0 -- the signal's "interpenetration IS contact" rule
+			//! (design §2).  A triangle mesh has no inside test at all: it
+			//! may be open, self-intersecting or non-manifold, and nothing
+			//! in this class distinguishes "inside the bunny" from "in the
+			//! air beside it".  So there is NO interpenetration clamp here;
+			//! a point in the middle of a closed mesh reports its honest
+			//! distance to the nearest triangle.  That is the SAFE direction
+			//! for this signal (an over-report under-paints, never
+			//! over-paints), and it is why the design's family table calls
+			//! this row "sheets".
+			//!
+			//! REFUSES when the BVH is absent (a mesh still being fed, or a
+			//! failed deserialize) -- honest absence over a wrong distance.
+			bool DistanceToSurface( const Point3& ptObject, const Scalar maxDistObject, Scalar& outDist ) const override;
+
+			//! IGeometry::SignedDistanceLower -- DL-31.  Every solid family
+			//! clamps its signed field at zero ("interpenetration is
+			//! contact"); a mesh had no inside test at all and so
+			//! contributed 0 to `interior(r)` even when genuinely closed and
+			//! buried in.  For a WATERTIGHT mesh (`m_bWatertight`, a
+			//! position-weld edge-count check -- see the member comment) this
+			//! now answers EXACTLY: the magnitude is `DistanceToSurface`'s
+			//! own answer, which this family already computes exactly (not
+			//! merely bounded, unlike the ellipsoid/SDF families) via a
+			//! bounded-radius closest-point BVH traversal, so reusing it
+			//! costs nothing extra; the sign comes from a parity ray-cast
+			//! (`RayParityInsideTest`) against this mesh's own BVH. Both
+			//! halves are exact, so `outExact` is set whenever this
+			//! answers -- honoured by `Object::SignedDistanceLower`'s
+			//! `geomExact && m_sigmaExact` combination the same way every
+			//! other exact solid family's flag is.
+			//!
+			//! REFUSES (stays a sheet) when the mesh is not watertight, or
+			//! when either half of the query itself refuses -- never
+			//! guesses a sign for a mesh this check cannot certify.
+			bool SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+				Scalar& outSigned, bool& outExact ) const override;
+
+			//! IGeometry::SelfHitRootFloor -- RayTriangleIntersection's gate,
+			//! `NEARZERO * (1 + |origin|_1 + max vertex |.|_1)`, is per
+			//! TRIANGLE and the query names only a point, so bound every
+			//! triangle at once via Geometry::BoundingBoxRootFloor (see its
+			//! note).  Direction-independent.
+			//!
+			//! No in-tree caller needs this today -- CSGObject's exit-face
+			//! probe is the only consumer and a mesh operand never reaches it
+			//! (a mesh publishes an infinite `range2`, which the probe's own
+			//! guard rejects up front) -- but the DEFAULT would under-state
+			//! the gate by the whole vertex term, so leaving it unreported
+			//! would be a live trap for the next caller.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
+			{
+				(void)localDir; (void)localNormal;
+				return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+			}
+
+			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin on
+			//! the mesh family (design doc §7).  Reads the per-vertex AO bake
+			//! for `radiusFraction`, building it on this first call if it
+			//! does not exist yet, and interpolates it barycentrically over
+			//! the hit triangle stamped in `hit`.
+			//!
+			//! REFUSES (neutral fallback) when the radius was not proven a
+			//! compile-time constant, when the hit carries no triangle, or
+			//! when the bake could not be built -- never substitutes a
+			//! different radius's table (§7.1's mismatch contract: a
+			//! wrong-scale mask that looks plausible is worse than a flat one
+			//! that is visibly absent).
+			bool ComputeOcclusion( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- the `thickness(radius)` builtin.
+			//! Same bake / interpolate / refuse structure as ComputeOcclusion.
+			bool ComputeThickness( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- the `convexity(radius)` builtin
+			//! (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §4.2).  Same
+			//! bake / interpolate / refuse structure again; the table it
+			//! reads is a FULL-SPHERE accessibility bake, not a re-read of
+			//! the occlusion one, because a cosine hemisphere saturates at 1
+			//! for a plane and for every convex feature alike and so carries
+			//! no convexity information to re-read.
+			//!
+			//! Its REFUSAL substitutes a different neutral from the other
+			//! two -- 0 (flat), not 1 -- so an unbaked or wrong-radius
+			//! `convexity()` mask wears nothing rather than wearing
+			//! everything.
+			bool ComputeConvexity( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- evaluates a named per-corner RGBA
+			//! attribute at `hit` (barycentrically interpolated over `hit.primId`,
+			//! or re-projected onto the triangle plane when `pQueryObjPos != 0`).
+			bool EvaluateNamedAttribute(
+				const SurfaceSignalInfo& hit,
+				const char* name,
+				Scalar outRGBA[4],
+				const Point3* pQueryObjPos = 0 ) const override;
+
+			//! MeshSignalBake::ISelfOccluder -- boolean any-hit against THIS
+			//! mesh's own triangles, through its own BVH.  Used only during a
+			//! bake build; sees nothing but this mesh (design doc §8).
+			bool AnyHitWithin( const Point3& origin, const Vector3& unitDir, const Scalar maxDist ) const override;
+
+			//! MeshSignalBake::ISelfOccluder -- nearest self-hit distance.
+			bool NearestHitWithin( const Point3& origin, const Vector3& unitDir,
+				const Scalar maxDist, Scalar& outDist ) const override;
 
 			// Functions special to this class
 			// Adds indexed triangle lists
-			void BeginIndexedTriangles( );				// I'm going to feed you a bunch of indexed triangles
-			void AddVertex( const Vertex& point );		// Adds a point
-			void AddNormal( const Normal& normal );		// Adds a normal
-			void AddTexCoord( const TexCoord& coord );	// Adds a texture co-ordinate
-			void AddVertices( const VerticesListType& points );
-			void AddNormals( const NormalsListType& normals );
-			void AddTexCoords( const TexCoordsListType& coords );
-			void AddIndexedTriangle( const IndexedTriangle& tri );
-			void AddIndexedTriangles( const IndexTriangleListType& tris );
-			unsigned int numPoints( ) const		{ return static_cast<unsigned int>(pPoints.size()); }
-			unsigned int numNormals( ) const	{ return static_cast<unsigned int>(pNormals.size()); }
-			unsigned int numCoords( ) const		{ return static_cast<unsigned int>(pCoords.size()); }
+			void BeginIndexedTriangles( ) override;				// I'm going to feed you a bunch of indexed triangles
+			void AddVertex( const Vertex& point ) override;		// Adds a point
+			void AddNormal( const Normal& normal ) override;	// Adds a normal
+			void AddTexCoord( const TexCoord& coord ) override;	// Adds a texture co-ordinate
+			void AddVertices( const VerticesListType& points ) override;
+			void AddNormals( const NormalsListType& normals ) override;
+			void AddTexCoords( const TexCoordsListType& coords ) override;
+			void AddIndexedTriangle( const IndexedTriangle& tri ) override;
+			void AddIndexedTriangles( const IndexTriangleListType& tris ) override;
+			unsigned int numPoints( ) const	override	{ return static_cast<unsigned int>(pPoints.size()); }
+			unsigned int numNormals( ) const override	{ return static_cast<unsigned int>(pNormals.size()); }
+			unsigned int numCoords( ) const	override	{ return static_cast<unsigned int>(pCoords.size()); }
 			MyPointsList const& getVertices() const { return pPoints; }
 			MyNormalsList const& getNormals() const { return pNormals; }
 			MyCoordsList const& getCoords() const { return pCoords; }
 			MyPointerTriangleList const& getFaces() const { return ptr_polygons; }
-			void DoneIndexedTriangles( );				// I'm done feeding you a bunch of indexed triangles
 
-			void ComputeVertexNormals();
+			// ITriangleMeshGeometryIndexed2 — per-vertex color support.
+			void AddColor( const VertexColor& color ) override;
+			void AddColors( const VertexColorsListType& colors ) override;
+			unsigned int numColors() const override { return static_cast<unsigned int>(pColors.size()); }
+			VertexColorsListType const& getColors() const override { return pColors; }
+
+			// ITriangleMeshGeometryIndexed3 — tangents + secondary UV set.
+			void AddShaderDirection(const Vector3& direction) override { pShaderDirections.push_back(direction); }
+            void AddTangent( const Tangent4& tangent ) override;
+			void AddTangents( const Tangent4ListType& tangents ) override;
+			unsigned int numTangents() const override { return static_cast<unsigned int>(pTangents.size()); }
+			Tangent4ListType const& getTangents() const override { return pTangents; }
+			void AddTexCoord1( const TexCoord& coord ) override;
+			void AddTexCoords1( const TexCoordsListType& coords ) override;
+			unsigned int numTexCoords1() const override { return static_cast<unsigned int>(pTexCoords1.size()); }
+			TexCoordsListType const& getTexCoords1() const override { return pTexCoords1; }
+
+			// ITriangleMeshGeometryIndexed5 — named per-corner RGBA attributes.
+			bool AddNamedCornerAttribute( const char* name, const float* cornerRGBA, unsigned int numCorners ) override;
+			unsigned int numNamedCornerAttributes() const override { return static_cast<unsigned int>(pNamedCornerAttributes.size()); }
+
+			void DoneIndexedTriangles( ) override;				// I'm done feeding you a bunch of indexed triangles
+
+			//! Tier 1 §3 animation support.  Replace the vertex and
+			//! normal arrays in place (count must match the existing
+			//! arrays — topology is preserved), then refit the BVH
+			//! bottom-up rather than rebuild from scratch.
+			//!
+			//! Returns the BVH refit duration in milliseconds for
+			//! caller bench reporting.  Returns 0 if there is no
+			//! current BVH (caller should call DoneIndexedTriangles
+			//! first) or on size mismatch.
+			//!
+			//! Thread-safety: must be called between frames, never
+			//! concurrent with intersection.  See docs/BVH_ACCELERATION_PLAN.md
+			//! §4.6 for the full design.
+			unsigned int UpdateVertices( const VerticesListType& newVertices,
+			                             const NormalsListType&  newNormals ) override;
+
+			//! Simulation M3b: the per-frame install for a FIXED-TOPOLOGY
+			//! deforming mesh (SimulatedMeshGeometry), under the same
+			//! between-frames contract as UpdateVertices.  It overwrites the
+			//! positions and normals, recomputes the triangle areas / CDF /
+			//! face normals / SMS orientation audit when `recomputeAreas`
+			//! (needed by area sampling and GetArea), bumps the shape
+			//! revision, drops the signal bakes and refits the BVH (rebuilding
+			//! it past the 2x SAH guard, as UpdateVertices does) -- without the
+			//! Info-level refit logging, and WITHOUT the open-sheet /
+			//! watertight certificates (the position weld and its sort, which
+			//! dominate UpdateVertices on a mesh whose every coordinate moves).
+			//! The mesh is left UNCERTIFIED instead (neither watertight nor a
+			//! provably open sheet): the conservative state every consumer of
+			//! those certificates already handles.  Existing callers keep
+			//! UpdateVertices, unchanged.  Returns as UpdateVertices does.
+			unsigned int UpdateVerticesLean( const VerticesListType& newVertices,
+			                                 const NormalsListType&  newNormals,
+			                                 const bool recomputeAreas );
+
+			void ComputeVertexNormals() override;
 
 			// From TreeElementProcessor
 			typedef const PointerTriangle*	MYOBJ;
-				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
-				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const override;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const override;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const override;
 
-			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
-			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
+			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const override;
+			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const override;
+
+			//! Phase 2 BVH float-filter: extract per-vertex float positions.
+			bool GetFloatTriangleVertices( const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const override;
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0; };
-			void SetIntermediateValue( const IKeyframeParameter& val ){};
-			void RegenerateData( ){};
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override { return 0; };
+			void SetIntermediateValue( const IKeyframeParameter& val ) override {};
+			void RegenerateData( ) override {};
 		};
 	}
 }

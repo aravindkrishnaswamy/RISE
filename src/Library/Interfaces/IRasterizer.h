@@ -23,10 +23,26 @@
 #include "ISampling2D.h"
 #include "IEnumCallback.h"
 #include "IProgressCallback.h"
+#include "IRenderPreparationController.h"
 
 namespace RISE
 {
-	class IRasterizer : public virtual IReference 
+	namespace Implementation { class FrameStore; }
+
+	//! Shared sign-aware bound used by prepared rasterizers and the primary
+	//! path-time sampler. fieldParity is 0/1 for a field or 2 for both.
+	RenderTimeSupport ComputePathTimeSupport(
+		const IScene& scene, Scalar nominal, const Rect* crop,
+		unsigned int fieldParity );
+
+	enum class FireRenderPreflightAuthorization
+	{
+		None,
+		Prediction,
+		Render
+	};
+
+	class IRasterizer : public virtual IReference
 	{
 	protected:
 		IRasterizer(){};
@@ -88,6 +104,163 @@ namespace RISE
 		virtual void SetProgressCallback(
 			IProgressCallback* pFunc						///< [in] Callback functor to call to report progress
 			) = 0;
+
+		//! L6 Phase 2 — canonical FrameStore the rasterizer writes
+		//! into.  In L6a (foundation) the rasterizer holds the
+		//! pointer but doesn't use it — internal `mPersistentImage`
+		//! (RISERasterImage) is still the write target.  L6b moves
+		//! the per-tile splat path through the FrameStore's beauty
+		//! channel.  May return nullptr if the caller (typically
+		//! `Job`) hasn't supplied one to the factory; rasterizer
+		//! consumers MUST check before dereferencing.  Non-pure
+		//! with a null default so existing out-of-tree IRasterizer
+		//! subclasses (mocks / test stubs) don't break — the
+		//! in-tree `Rasterizer` base class overrides.
+		//!
+		//! Lifetime contract — IMPORTANT for L6b consumers:
+		//! the returned raw pointer is owned by the rasterizer,
+		//! NOT addref'd before return.  Callers that need to
+		//! retain the pointer past the rasterizer's lifetime MUST
+		//! `addref()` it themselves and `release()` when done.  A
+		//! caller that just dereferences the pointer for an
+		//! immediate read/write MUST hold a counted reference to
+		//! the rasterizer for the duration of the dereference,
+		//! otherwise a concurrent rasterizer destruction (Job
+		//! swap, scene reload) drops the FrameStore underneath.
+		//! Mirror the `ViewportFrameStore::SnapshotFrameStore`
+		//! addref-snapshot pattern (Rendering/ViewportFrameStore.cpp)
+		//! when handing the FrameStore to a thread that may outlive
+		//! the rasterizer.
+		virtual Implementation::FrameStore* GetFrameStore() const { return nullptr; }
+
+		//! Auto-dispatcher introspection — for the auto_rasterizer + the "Auto"
+		//! UI surfacing.  A plain rasterizer is not a dispatcher; AutoRasterizer
+		//! overrides these to report the concrete integrator it resolved to
+		//! (valid after the first render) and the one-line reason.  The cross-UI
+		//! query surface: every C++ bridge reaches it via IJobPriv::GetRasterizer().
+		virtual bool IsAutoDispatcher() const { return false; }
+		virtual const char* ResolvedIntegratorName() const { return ""; }
+		virtual const char* ResolveReason() const { return ""; }
+
+		//! Whether this rasterizer's integration path actually READS the scene's
+		//! photon maps (caustic/global/translucent/shadow) — i.e. runs the shaderop
+		//! graph that may contain a photon-map shaderop.  Gates the deferred
+		//! BuildPendingPhotonMaps shoot: an integrator that never consults the maps
+		//! (PT/BDPT/VCM/MLT — own transport) leaves the shoots PENDING, so they cost
+		//! nothing and are still available if the active rasterizer is later switched
+		//! to a photon-mapping one.  Default FALSE; the shaderop-graph rasterizers
+		//! that run an arbitrary material shaderop graph (PixelBasedPelRasterizer +
+		//! the spectral-integrating rasterizers, and subclasses like
+		//! InteractivePelRasterizer) return true; dedicated integrators (PT/BDPT/VCM/
+		//! MLT) stay false.  Defaulted + declared last -> ABI-stable.
+		virtual bool ConsumesScenePhotonMaps() const { return false; }
+
+		//! Model-B F2 slice S3 (EffectiveRenderConfig): a TRANSIENT,
+		//! render-scoped override of this rasterizer's samples-per-pixel,
+		//! for a caller (the Agent surface's `render{"samples":N}`) that
+		//! wants a one-shot sample-count override WITHOUT mutating the
+		//! scene's retained CST Document (the `samples` param on the
+		//! rasterizer's own chunk, e.g. `pathtracing_pel_rasterizer
+		//! { samples 8 }`).  Capture/apply/restore symmetry is the
+		//! caller's responsibility (mirrors AgentSession.cpp's
+		//! RenderOverrideRestoreGuard house pattern for the film-dims /
+		//! camera-pose overrides): call GetSampleCountOverride() BEFORE
+		//! this to capture the current count, call this to apply the
+		//! override, render, then call this AGAIN with the captured value
+		//! to restore it -- so the rasterizer is left EXACTLY as found
+		//! regardless of whether the override was ever requested.
+		//!
+		//! Returns true iff this rasterizer supports the override and
+		//! applied it; false (a no-op -- the rasterizer's sample count is
+		//! UNCHANGED) means "honestly unsupported", the safe default for
+		//! every rasterizer that does not override this -- MLT, photon-
+		//! map-only integrators, and AutoRasterizer's outer dispatcher
+		//! wrapper all report false here (a caller should surface that
+		//! honestly rather than silently ignore the request).  `samples`
+		//! < 1 is never applied (returns false, no state change) -- a
+		//! caller wanting "no override" should simply not call this at
+		//! all, matching the existing -1-means-absent convention on the
+		//! Agent surface's AgentRenderParams::samples.
+		//!
+		//! Implemented on the pixel-based rasterizer family (PT, spectral
+		//! PT, BDPT, VCM -- everything deriving from
+		//! Implementation::PixelBasedRasterizerHelper, which already owns
+		//! a swappable `ISampling2D* pSampling` -- see SubSampleRays) via
+		//! ONE base-class override; every other IRasterizer subclass
+		//! inherits this safe default unchanged.  Defaulted + declared
+		//! last -> ABI-stable (same convention as ConsumesScenePhotonMaps
+		//! above).
+		virtual bool SetSampleCountOverride( int samples ) { (void)samples; return false; }
+
+		//! The CURRENT effective samples-per-pixel, for capturing the
+		//! pre-override value before calling SetSampleCountOverride (see
+		//! that method's capture/apply/restore contract).  Returns -1 when
+		//! this rasterizer does not support the override (mirrors
+		//! SetSampleCountOverride's false return -- "unknown/unsupported",
+		//! never guessed) or has no sample count meaningfully configured
+		//! yet (e.g. queried before any render has run and no explicit
+		//! `samples` param was authored).  Defaulted + declared last ->
+		//! ABI-stable.
+		virtual int GetSampleCountOverride() const { return -1; }
+
+		//! Whether RasterizeScene honors a non-null pRect region.  The
+		//! pixel-based integrators (PT/BDPT/VCM and the shaderop-graph
+		//! rasterizers) restrict work to the region via BoundsFromRect;
+		//! MLT's splat film is global and silently ignores pRect (see
+		//! MLTRasterizer::RasterizeScene), so region-render UIs must not
+		//! pretend a region box does anything there — this is the honesty
+		//! query those UIs consult.  Defaulted + declared last ->
+		//! ABI-stable (same convention as the overrides above).
+		virtual bool HonorsRegion() const { return true; }
+
+		//! Overrides OIDN post-process denoising on an already-constructed
+		//! rasterizer without rebuilding it (preserving attached
+		//! IRasterizerOutput sinks and FrameStore bindings — used by the
+		//! `--denoise` / `--no-denoise` CLI flags).  Returns true if the
+		//! requested state is honored; returns false when `enabled == true`
+		//! on a build without `RISE_ENABLE_OIDN` or on a custom rasterizer
+		//! that does not implement OIDN denoising.  Defaulted + declared
+		//! last -> ABI-stable.
+		virtual bool SetDenoisingOverride( bool enabled ) { (void)enabled; return false; }
+
+		//! Queries the effective OIDN denoising state: 1 = enabled,
+		//! 0 = disabled, -1 = unsupported / unknown.  Defaulted + declared
+		//! last -> ABI-stable.
+		virtual int GetDenoisingOverride() const { return -1; }
+
+		//! Prepared time-varying-media entry points. Legacy methods are only
+		//! valid for scenes whose HasTimeVaryingMedia() is false.
+		virtual unsigned int PredictTimeToRasterizeScenePrepared(
+			const IScene&, const ISampling2D&, unsigned int*, const Scalar,
+			IRenderPreparationController& ) const { return 0xFFFFFFFFu; }
+		virtual void RasterizeScenePrepared(
+			const IScene&, const Scalar, IRenderPreparationController&,
+			const Rect*, IRasterizeSequence* ) const {}
+		virtual void RasterizeSceneAnimationPrepared(
+			const IScene&, const Scalar, const Scalar, const unsigned int,
+			const bool, const bool, IRenderPreparationController&, const Rect*,
+			const unsigned int*, IRasterizeSequence* ) const {}
+
+		//! Enables or disables transparent background alpha (camera rays
+		//! that miss all geometry contribute alpha 0 instead of 1, matching
+		//! Blender's `film_transparent`).  Defaulted + declared last ->
+		//! ABI-stable.  MLT rasterizers (and the frozen spectral pixel
+		//! rasterizer) ignore this setting.
+		virtual void SetTransparentBackground( bool ) {}
+		virtual bool GetTransparentBackground() const { return false; }
+
+	};
+
+	//! Queryable completion capability kept outside IRasterizer's historical
+	//! vtable so old rasterizer plugins remain safe to inspect. Fire renders
+	//! require the in-tree Rasterizer authorization path separately.
+	class IFireRasterizerState
+	{
+	protected:
+		virtual ~IFireRasterizerState() {}
+	public:
+		virtual bool LastRenderCompleted() const = 0;
+		virtual bool ResolveForFirePreflight( const IScene& ) const { return true; }
 	};
 }
 

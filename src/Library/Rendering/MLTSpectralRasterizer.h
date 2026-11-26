@@ -70,6 +70,11 @@ namespace RISE
 			Scalar				lambda_end;			///< End of spectral range (nm)
 			unsigned int		nSpectralSamples;	///< Spectral samples per MLT evaluation
 			bool				bUseHWSS;			///< Use Hero Wavelength Spectral Sampling
+			/// DL-461: spectral integral normalization (lambda_end - lambda_begin) / k_y,
+			/// k_y = integral of ybar over the band -- the same factor every other
+			/// spectral rasterizer carries as `mYNormalization`
+			/// (PixelBasedSpectralIntegratingRasterizer).  ~3.74 over [380, 780] nm.
+			Scalar				yNormalization;
 
 			virtual ~MLTSpectralRasterizer();
 
@@ -117,25 +122,34 @@ namespace RISE
 			/// Thread procedure for parallel spectral chain execution
 			static void* SpectralRoundThread_ThreadProc( void* lpParameter );
 
-			/// Evaluate BDPT at a single wavelength.  Returns per-strategy
-			/// scalar contributions with pixel positions.
-			void EvaluateSingleWavelength(
-				const IScene& scene,
-				const ICamera& camera,
-				ISampler& sampler,
+			/// Spectral analog of MLTRasterizer::RenderFrameOfMLT.
+			/// Shared by RasterizeScene and RasterizeSceneAnimation
+			/// so both observe identical spectral chain semantics
+			/// (independent chains per call, fresh bootstrap CDF).
+			/// See MLTRasterizer::RenderFrameOfMLT for full contract.
+			bool RenderFrameOfMLTSpectral(
+				const IScene& pScene,
+				const ICamera& pCamera,
 				const unsigned int width,
 				const unsigned int height,
-				const Ray& cameraRay,
-				const Point2& screenPos,
-				const Point2& cameraRasterPos,
-				const Scalar nm,
-				const RuntimeContext& rc,
-				std::vector<BDPTIntegrator::ConnectionResultNM>& results,
-				std::vector<BDPTVertex>& lightVerts,
-				std::vector<BDPTVertex>& eyeVerts
+				IRasterImage*& pImageOut
+				) const;
+
+			/// Explicit per-call progress sink; animation supplies a stack
+			/// frame-slot adapter without changing the authored callback.
+			bool RenderFrameOfMLTSpectral(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut,
+				IProgressCallback* progress
 				) const;
 
 		public:
+#ifdef RISE_ENABLE_OIDN
+			double EstimateDenoiseWorkPerMegapixel() const { return nMutationsPerPixel * 1.6; }
+#endif
 			MLTSpectralRasterizer(
 				IRayCaster* pCaster_,
 				const unsigned int maxEyeDepth,
@@ -147,17 +161,31 @@ namespace RISE
 				const Scalar lambda_begin_,
 				const Scalar lambda_end_,
 				const unsigned int nSpectralSamples_,
-				const bool useHWSS_
+				const bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			//////////////////////////////////////////////////////////////
-			// IRasterizer interface — overrides RasterizeScene to use
-			// the spectral evaluation path
+			// IRasterizer interface — overrides RasterizeScene and
+			// RasterizeSceneAnimation to use the spectral evaluation
+			// path (HWSS / per-wavelength BDPT NM).
 			//////////////////////////////////////////////////////////////
 
 			void RasterizeScene(
 				const IScene& pScene,
 				const Rect* pRect,
+				IRasterizeSequence* pRasterSequence
+				) const;
+
+			void RasterizeSceneAnimation(
+				const IScene& pScene,
+				const Scalar time_start,
+				const Scalar time_end,
+				const unsigned int num_frames,
+				const bool do_fields,
+				const bool invert_fields,
+				const Rect* pRect,
+				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
 				) const;
 		};

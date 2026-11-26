@@ -1,0 +1,216 @@
+{
+  "scope": "early_pre_statistics_retained_checkpoint_endpoints_accepted_stage_ledger_differences",
+  "run_directory": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge",
+  "definition": "Nearest retained checkpoint endpoints to 6, 7, 8, 9, 10 seconds; inventories and cumulative accepted R1 boundary/source integrals are read from their matching immutable ledgers. No solver replay or state mutation.",
+  "interval": {
+    "start_s": 5.993228656006977,
+    "end_s": 9.973831140669063,
+    "start_step": 3730,
+    "end_step": 6148,
+    "duration_s": 3.9806024846620858,
+    "supplied_kg": 0.002625777421296044,
+    "burner_supplied_kg": 0.002625760530824699,
+    "consumed_kg": 0.002618533724052575,
+    "consumed_fraction": 0.9972413133022167,
+    "beginning_inventory_kg": 7.350571171888422e-05,
+    "ending_inventory_kg": 6.730074345785756e-05,
+    "inventory_change_kg": -6.204968261026665e-06,
+    "top_outward_kg": 1.3431602620239085e-05,
+    "top_inward_kg": 2.25714065490796e-09,
+    "top_outward_fraction_of_supply": 0.005115286052543421,
+    "all_outward_kg": 1.344861468165136e-05,
+    "balance_residual_kg": -5.082284466002291e-11,
+    "balance_residual_fraction_of_supply": -1.935535138958485e-08,
+    "reported_closure_residual_kg": -5.0823893268967525e-11,
+    "interstep_change_kg": 0.0
+  },
+  "subintervals": [
+    {
+      "start_s": 5.993228656006977,
+      "end_s": 6.980988237774,
+      "start_step": 3730,
+      "end_step": 4330,
+      "duration_s": 0.9877595817670226,
+      "supplied_kg": 0.0006515684708166392,
+      "burner_supplied_kg": 0.0006515647150755199,
+      "consumed_kg": 0.0006552210926969188,
+      "consumed_fraction": 1.0056058910826389,
+      "beginning_inventory_kg": 7.350571171888422e-05,
+      "ending_inventory_kg": 6.630538077754355e-05,
+      "inventory_change_kg": -7.200330941340669e-06,
+      "top_outward_kg": 3.539619777099203e-06,
+      "top_inward_kg": 3.4419740267268933e-10,
+      "top_outward_fraction_of_supply": 0.005432460187434857,
+      "all_outward_kg": 3.5477015632144965e-06,
+      "balance_residual_kg": -7.497846568417437e-12,
+      "balance_residual_fraction_of_supply": -1.150738088818211e-08,
+      "reported_closure_residual_kg": -7.498103765556555e-12,
+      "interstep_change_kg": 0.0
+    },
+    {
+      "start_s": 6.980988237774,
+      "end_s": 8.00496567087248,
+      "start_step": 4330,
+      "end_step": 4952,
+      "duration_s": 1.02397743309848,
+      "supplied_kg": 0.0006754595081078984,
+      "burner_supplied_kg": 0.0006754554212949557,
+      "consumed_kg": 0.0006656242434537147,
+      "consumed_fraction": 0.985439149888149,
+      "beginning_inventory_kg": 6.630538077754355e-05,
+      "ending_inventory_kg": 7.287660341182612e-05,
+      "inventory_change_kg": 6.571222634282566e-06,
+      "top_outward_kg": 3.260232439937631e-06,
+      "top_inward_kg": 3.7931683892350785e-10,
+      "top_outward_fraction_of_supply": 0.004826688203812861,
+      "all_outward_kg": 3.2640229046773296e-06,
+      "balance_residual_kg": -1.9115223845675046e-11,
+      "balance_residual_fraction_of_supply": -2.8299585121276525e-08,
+      "reported_closure_residual_kg": -1.911549373633409e-11,
+      "interstep_change_kg": 0.0
+    },
+    {
+      "start_s": 8.00496567087248,
+      "end_s": 9.01906550815329,
+      "start_step": 4952,
+      "end_step": 5568,
+      "duration_s": 1.0140998372808099,
+      "supplied_kg": 0.0006689443256344258,
+      "burner_supplied_kg": 0.0006689397741442005,
+      "consumed_kg": 0.0006690705961270088,
+      "consumed_fraction": 1.0001887608396458,
+      "beginning_inventory_kg": 7.287660341182612e-05,
+      "ending_inventory_kg": 6.906806468701697e-05,
+      "inventory_change_kg": -3.808538724809149e-06,
+      "top_outward_kg": 3.6795066123283175e-06,
+      "top_inward_kg": 6.310697561571465e-10,
+      "top_outward_fraction_of_supply": 0.005500467634341138,
+      "all_outward_kg": 3.6822487635235757e-06,
+      "balance_residual_kg": -1.9468702567470815e-11,
+      "balance_residual_fraction_of_supply": -2.9103621663890678e-08,
+      "reported_closure_residual_kg": -1.9468965496352598e-11,
+      "interstep_change_kg": 0.0
+    },
+    {
+      "start_s": 9.01906550815329,
+      "end_s": 9.973831140669063,
+      "start_step": 5568,
+      "end_step": 6148,
+      "duration_s": 0.9547656325157731,
+      "supplied_kg": 0.0006298051167370809,
+      "burner_supplied_kg": 0.0006298006203100228,
+      "consumed_kg": 0.0006286177917749327,
+      "consumed_fraction": 0.9981147740299419,
+      "beginning_inventory_kg": 6.906806468701697e-05,
+      "ending_inventory_kg": 6.730074345785756e-05,
+      "inventory_change_kg": -1.767321229159414e-06,
+      "top_outward_kg": 2.952243790873934e-06,
+      "top_inward_kg": 9.025566571546164e-10,
+      "top_outward_fraction_of_supply": 0.0046875512955007964,
+      "all_outward_kg": 2.9546414502359595e-06,
+      "balance_residual_kg": -4.741071678459618e-12,
+      "balance_residual_fraction_of_supply": -7.527839251326423e-09,
+      "reported_closure_residual_kg": -4.7413302707242785e-12,
+      "interstep_change_kg": 0.0
+    }
+  ],
+  "checkpoints": [
+    {
+      "time_s": 5.993228656006977,
+      "step": 3730,
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000003730.checkpoint",
+      "sidecar": {
+        "schema": "rise.fire.published-payload.v2",
+        "case_record_id": "a7c6302dbcb23b7f3115469befc63f8fefb5f88155dd299bdd45e76468eda070",
+        "sha256_v1": "0755af3e45a92f498f446a982a93207a8a6ed794933e4ce0419c1dc150ccbaab",
+        "v2": {
+          "digest_format": "rise-payload-sha256-merkle",
+          "digest_version": 2,
+          "chunk_bytes": 4096,
+          "fan_in": 16,
+          "payload_bytes": 65505930,
+          "root_sha256": "880c8834e9b42abd0e4a6c9e8cf55e87240028f9deca28a2cc97fda3cbda3f03"
+        }
+      }
+    },
+    {
+      "time_s": 6.980988237774,
+      "step": 4330,
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000004330.checkpoint",
+      "sidecar": {
+        "schema": "rise.fire.published-payload.v2",
+        "case_record_id": "a7c6302dbcb23b7f3115469befc63f8fefb5f88155dd299bdd45e76468eda070",
+        "sha256_v1": "aecc7e462a033551e6c7c0a1d5c89d7092f981b1158bea84065b06e6021cf55a",
+        "v2": {
+          "digest_format": "rise-payload-sha256-merkle",
+          "digest_version": 2,
+          "chunk_bytes": 4096,
+          "fan_in": 16,
+          "payload_bytes": 65520458,
+          "root_sha256": "2aa7660ec7db05186a2e7914bba717049a1bff31b0957a755a9b3ea6f914850d"
+        }
+      }
+    },
+    {
+      "time_s": 8.00496567087248,
+      "step": 4952,
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000004952.checkpoint",
+      "sidecar": {
+        "schema": "rise.fire.published-payload.v2",
+        "case_record_id": "a7c6302dbcb23b7f3115469befc63f8fefb5f88155dd299bdd45e76468eda070",
+        "sha256_v1": "131b58d1dd2c6fcdd5b46429a51ee26036a1262b7d94ee1000facae40a39d971",
+        "v2": {
+          "digest_format": "rise-payload-sha256-merkle",
+          "digest_version": 2,
+          "chunk_bytes": 4096,
+          "fan_in": 16,
+          "payload_bytes": 65535514,
+          "root_sha256": "77189bdc1e8cdd1ad25ae13d659d463ea7571067126e5e9c865ed36457e636b8"
+        }
+      }
+    },
+    {
+      "time_s": 9.01906550815329,
+      "step": 5568,
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000005568.checkpoint",
+      "sidecar": {
+        "schema": "rise.fire.published-payload.v2",
+        "case_record_id": "a7c6302dbcb23b7f3115469befc63f8fefb5f88155dd299bdd45e76468eda070",
+        "sha256_v1": "0a6cac8140492a8295d3ea3e59bf9dd48f48409331fea9a7e345f8fe5e67a7cd",
+        "v2": {
+          "digest_format": "rise-payload-sha256-merkle",
+          "digest_version": 2,
+          "chunk_bytes": 4096,
+          "fan_in": 16,
+          "payload_bytes": 65550418,
+          "root_sha256": "825bbad4a2da0570cbca22103bbafb01f0493a75e250cdde6b7ad001efb58fbd"
+        }
+      }
+    },
+    {
+      "time_s": 9.973831140669063,
+      "step": 6148,
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r250_tier8_parcel_edge/checkpoint_history/step_0000006148.checkpoint",
+      "sidecar": {
+        "schema": "rise.fire.published-payload.v2",
+        "case_record_id": "a7c6302dbcb23b7f3115469befc63f8fefb5f88155dd299bdd45e76468eda070",
+        "sha256_v1": "5f8b5feb10852a6e40471ee4bb862bf38ac4fe18a6cec8eecde59fa283cef3d8",
+        "v2": {
+          "digest_format": "rise-payload-sha256-merkle",
+          "digest_version": 2,
+          "chunk_bytes": 4096,
+          "fan_in": 16,
+          "payload_bytes": 65564450,
+          "root_sha256": "abd5c0d6c4096b0226ab19a300b0813854d5a0d426066bc56cb64c28e472e0e0"
+        }
+      }
+    }
+  ],
+  "artifacts": {
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r250/early_step_003730.csv": "0847c9766163268e1192e6a932f844ab0968a1b80ab4fe1ef60ac0353a4aaa26",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r250/early_step_004330.csv": "e26c2475d992a0e575429373c939db6af82b8b2628d2bc6198f1ee3559885ccb",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r250/early_step_004952.csv": "88bcfd437fb5c043faee5000c77d97eead07014cd82a642a6ff68cbd98a211b2",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r250/early_step_005568.csv": "908f4125337370d26edf49c77ba063ae59161cc28ec370576ca5fe0b9ee71b9a",
+    "/Volumes/SSD/Working/RISE/docs/data/fire_r250/early_step_006148.csv": "d38163810b2a0658707bc9a18066490fcdbd78e2dbf3800fc46df1ba05fb3ce1"
+  }
+}

@@ -1,3 +1,10 @@
+# Film and channel storage share header-only Utilities/CheckedSize.h.
+# Header-only endian helpers live in Utilities/LittleEndian.h.
+# Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
+# Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
+# Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
+# Graded-index media share header-only Utilities/GradedIndexMedium.h (DL-09).
+# Time-indexed motion blur shares header-only Animation/TimeIndexedView.h (DL-465).
 ##################################################################################################
 #
 #  Filelist for Realistic Image Synthesis Engine (R.I.S.E)
@@ -35,17 +42,38 @@ SRCDRISE =\
 
 # Utilities
 SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Agent/AgentChatCodecs.cpp		\
+	$(PATHLIBRARY)Agent/AgentChatLoop.cpp			\
+	$(PATHLIBRARY)Agent/AgentSimulation.cpp			\
+	$(PATHLIBRARY)Agent/AgentEvalRunner.cpp		\
+	$(PATHLIBRARY)Agent/AgentLoopbackHttpServer.cpp	\
+	$(PATHLIBRARY)Agent/AgentMcpAdapter.cpp		\
+	$(PATHLIBRARY)Agent/AgentRpc.cpp			\
+	$(PATHLIBRARY)Agent/AgentSession.cpp		\
+	$(PATHLIBRARY)Agent/Base64.cpp				\
+	$(PATHLIBRARY)Agent/ChatTrajectory.cpp		\
+	$(PATHLIBRARY)Agent/InMemoryRasterizerOutput.cpp	\
+	$(PATHLIBRARY)Agent/Json.cpp				\
+	$(PATHLIBRARY)Agent/SchemaGen.cpp			\
+	$(PATHLIBRARY)Cst/Cst.cpp					\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
+	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable.cpp		\
+	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable_LUTData.cpp	\
+	$(PATHLIBRARY)Utilities/Color/RGBSpectra.cpp				\
+	$(PATHLIBRARY)Utilities/HosekWilkieSkyModel.cpp				\
+	$(PATHLIBRARY)Rendering/HosekWilkieSpectralRadianceMap.cpp	\
 	$(PATHLIBRARY)Utilities/Log/Log.cpp							\
 	$(PATHLIBRARY)Utilities/Log/MemoryTracker.cpp				\
 	$(PATHLIBRARY)Utilities/Log/StreamPrinter.cpp				\
 	$(PATHLIBRARY)Utilities/Threads/ThreadsPTHREADs.cpp			\
+	$(PATHLIBRARY)Utilities/ThreadPool.cpp					\
+	$(PATHLIBRARY)Utilities/CPUTopology.cpp					\
 	$(PATHLIBRARY)Utilities/CPU_Count.cpp					\
 	$(PATHLIBRARY)Utilities/DiskBuffer.cpp						\
 	$(PATHLIBRARY)Utilities/DiskFileReadBuffer.cpp				\
 	$(PATHLIBRARY)Utilities/DiskFileWriteBuffer.cpp				\
-	$(PATHLIBRARY)Utilities/DynamicProperties.cpp				\
+	$(PATHLIBRARY)Utilities/RenderParallelScope.cpp						\
 	$(PATHLIBRARY)Utilities/GeometricUtilities.cpp				\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
 	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
@@ -53,15 +81,68 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/RandomWalkSSS.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
 	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
+	$(PATHLIBRARY)Utilities/SMSPhotonMap.cpp					\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
+	$(PATHLIBRARY)Utilities/RISECBOR64.cpp				\
+	$(PATHLIBRARY)Utilities/FireOptics.cpp				\
+	$(PATHLIBRARY)Utilities/FireSimulationRecords.cpp		\
+	$(PATHLIBRARY)Utilities/FireProductionTables.cpp		\
+	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionProjection.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionTransport.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionSource.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionForce.cpp	\
+	$(PATHLIBRARY)Utilities/FireCase.cpp			\
+	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireRunCheckpoint.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunFrames.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRunDriver.cpp		\
+	$(PATHLIBRARY)Simulation/Fire/FireRun.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireSolver.cpp			\
+	$(PATHLIBRARY)Simulation/Fire/FireParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationGrid.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationCache.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationMesh.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationField.cpp			\
+	$(PATHLIBRARY)Simulation/SimulatedMeshSource.cpp		\
+	$(PATHLIBRARY)Simulation/SimulationSolver.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationHost.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationWorker.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationTimeline.cpp		\
+	$(PATHLIBRARY)Simulation/BuiltinSolvers.cpp			\
+	$(PATHLIBRARY)Simulation/SimulationParameterSchema.cpp	\
+	$(PATHLIBRARY)Simulation/SceneSimulation.cpp		\
+	$(PATHLIBRARY)Simulation/SceneInputs.cpp		\
+	$(PATHLIBRARY)Simulation/SceneSimulationWorker.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationProcess.cpp	\
+	$(PATHLIBRARY)Simulation/SimulationBakeManager.cpp	\
+	$(PATHLIBRARY)Simulation/Cloth/ClothMaterial.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothLinearAlgebra.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothModel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothParallel.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothContact.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothValidation.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothSolver.cpp		\
+	$(PATHLIBRARY)Simulation/Cloth/ClothParameterSchema.cpp	\
+	$(PATHLIBRARY)Utilities/FireSequenceCache.cpp			\
+	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
+	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
+	$(PATHLIBRARY)Utilities/ProceduralNoiseCore.cpp			\
+	$(PATHLIBRARY)Utilities/OslNoise.cpp			\
+	$(PATHLIBRARY)Utilities/OslVoronoi.cpp			\
+	$(PATHLIBRARY)Utilities/OslColor.cpp			\
+	$(PATHLIBRARY)Utilities/OslMath.cpp				\
+	$(PATHLIBRARY)Utilities/OslVector.cpp			\
+	$(PATHLIBRARY)Utilities/OslShaderNodes.cpp		\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
+	$(PATHLIBRARY)Utilities/RenderETAEstimator.cpp				\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
 	$(PATHLIBRARY)Utilities/MediumTransport.cpp				\
@@ -72,12 +153,46 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\
 	$(PATHLIBRARY)Functions/Resultant.cpp
 
+# Eval-harness slice E4: the platform-HTTPS transport for the live headless
+# runner (src/Library/Agent/ChatHttpTransport.h).  EXACTLY ONE leg compiles
+# per OS -- OS-gated on IS_MACOS_BUILD (set in Config.OSX only), so the Linux
+# make build NEVER sees the ObjC++ .mm (g++ has no .mm rule / no Foundation).
+#   * macOS -> TlsTransportMac.mm  (NSURLSession; built via the %.o:%.mm rule)
+#   * Linux -> TlsTransportUnsupported.cpp (an honest "unsupported" stub)
+# The Windows leg (TlsTransportWin.cpp) lives ONLY in Library.vcxproj; the make
+# build never references it.  Appended with += (SRCLIBUTILITIES is a `=\`
+# block above and can't hold an ifdef mid-list); this still lands before SRCLIB
+# is assembled below.
+ifdef IS_MACOS_BUILD
+SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionForceMac.mm
+else
+SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionForceUnsupported.cpp
+endif
+
 # Noise
 SRCLIBNOISE =\
 	$(PATHLIBRARY)Noise/InterpolatedNoise.cpp					\
 	$(PATHLIBRARY)Noise/PerlinNoise1D.cpp						\
 	$(PATHLIBRARY)Noise/PerlinNoise2D.cpp						\
-	$(PATHLIBRARY)Noise/PerlinNoise3D.cpp
+	$(PATHLIBRARY)Noise/PerlinNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/TurbulenceNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/WorleyNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/PerlinWorleyNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/DomainWarpNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/CurlNoise3D.cpp							\
+	$(PATHLIBRARY)Noise/SDFPrimitives3D.cpp						\
+	$(PATHLIBRARY)Noise/SimplexNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/GaborNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/WaveletNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/ReactionDiffusion3D.cpp
 
 
 # Painters
@@ -88,8 +203,30 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/LinesPainter.cpp						\
 	$(PATHLIBRARY)Painters/MandelbrotPainter.cpp				\
 	$(PATHLIBRARY)Painters/Painter.cpp							\
+	$(PATHLIBRARY)Importers/GLTFSceneImporter.cpp				\
+	$(PATHLIBRARY)Importers/HairFileLoader.cpp					\
 	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
+	$(PATHLIBRARY)Painters/ControlledSmoothness2DPainter.cpp	\
+	$(PATHLIBRARY)Painters/CompositeFunction2DPainter.cpp		\
+	$(PATHLIBRARY)Painters/PolynomialFunction2DPainter.cpp		\
+	$(PATHLIBRARY)Painters/GerstnerWavePainter.cpp				\
+	$(PATHLIBRARY)Painters/ExpressionPainter.cpp				\
+	$(PATHLIBRARY)Painters/ExpressionOslBuiltins.cpp			\
+	$(PATHLIBRARY)Painters/RampPainter.cpp						\
+	$(PATHLIBRARY)Painters/MappingPainter.cpp					\
+	$(PATHLIBRARY)Painters/StochasticTilePainter.cpp			\
+	$(PATHLIBRARY)Painters/ScatterPainter.cpp					\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/Worley3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/PerlinWorley3DPainter.cpp			\
+	$(PATHLIBRARY)Painters/DomainWarp3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/CurlNoise3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/SDF3DPainter.cpp						\
+	$(PATHLIBRARY)Painters/Simplex3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Gabor3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Wavelet3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/ReactionDiffusion3DPainter.cpp		\
 	$(PATHLIBRARY)Painters/SpectralColorPainter.cpp				\
 	$(PATHLIBRARY)Painters/TexturePainter.cpp					\
 	$(PATHLIBRARY)Painters/Voronoi2DPainter.cpp					\
@@ -101,25 +238,44 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
-	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
-	$(PATHLIBRARY)Materials/BioSpecSkinRWMaterial.cpp					\
 	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
+	$(PATHLIBRARY)Materials/CoatedBRDF.cpp									\
+	$(PATHLIBRARY)Materials/CoatedSPF.cpp									\
+	$(PATHLIBRARY)Materials/FabricBRDF.cpp									\
+	$(PATHLIBRARY)Materials/FabricSPF.cpp									\
+	$(PATHLIBRARY)Materials/WeaveBRDF.cpp									\
+	$(PATHLIBRARY)Materials/WeaveSPF.cpp									\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
 	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
+	$(PATHLIBRARY)Materials/DataDrivenSPF.cpp									\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/DiffuseTransmissionMaterial.cpp							\
+	$(PATHLIBRARY)Materials/MixMaterial.cpp											\
+	$(PATHLIBRARY)Materials/RoughDielectricMaterial.cpp								\
+	$(PATHLIBRARY)Utilities/RoughDielectricEnergy.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
+	$(PATHLIBRARY)Materials/HairBSDF.cpp										\
+	$(PATHLIBRARY)Materials/HairMedullaProfile.cpp							\
+	$(PATHLIBRARY)Materials/HairMedullaProfile_LUTData.cpp					\
+	$(PATHLIBRARY)Materials/SheenBRDF.cpp									\
+	$(PATHLIBRARY)Materials/SheenSPF.cpp									\
+	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo.cpp						\
+	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo_LUTData.cpp				\
+	$(PATHLIBRARY)Materials/SchlickDirectionalAlbedo_LUTData.cpp				\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
+	$(PATHLIBRARY)Materials/ContinuationClosure.cpp						\
 	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
+	$(PATHLIBRARY)Materials/NullBoundaryMaterial.cpp						\
 	$(PATHLIBRARY)Materials/LambertianSPF.cpp								\
 	$(PATHLIBRARY)Materials/LambertianEmitter.cpp							\
 	$(PATHLIBRARY)Materials/OrenNayarBRDF.cpp								\
@@ -127,6 +283,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/PerfectReflectorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PerfectRefractorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PhongEmitter.cpp								\
+	$(PATHLIBRARY)Materials/PolishedBRDF.cpp									\
 	$(PATHLIBRARY)Materials/PolishedSPF.cpp									\
 	$(PATHLIBRARY)Materials/ScatteredRayContainer.cpp						\
 	$(PATHLIBRARY)Materials/SchlickBRDF.cpp									\
@@ -153,17 +310,22 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/ClippedPlaneGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/CylinderGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/CylindricalUVGenerator.cpp			\
+	$(PATHLIBRARY)Geometry/DisplacedGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/EllipsoidGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/Geometry.cpp							\
 	$(PATHLIBRARY)Geometry/GeometryUtilities.cpp				\
+	$(PATHLIBRARY)Geometry/HairGenerator.cpp						\
+	$(PATHLIBRARY)Geometry/HairGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/InfinitePlaneGeometry.cpp			\
+	$(PATHLIBRARY)Geometry/MeshSignalBake.cpp					\
 	$(PATHLIBRARY)Geometry/SphereGeometry.cpp					\
+	$(PATHLIBRARY)Geometry/SDFGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/SphericalUVGenerator.cpp				\
 	$(PATHLIBRARY)Geometry/TorusGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometryIndexed.cpp		\
+	$(PATHLIBRARY)Geometry/SimulatedMeshGeometry.cpp		\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoader3DS.cpp			\
-	$(PATHLIBRARY)Geometry/TriangleMeshLoaderBezier.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderPLY.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW2.cpp
@@ -171,7 +333,8 @@ SRCLIBGEOMETRY = \
 # Objects
 SRCLIBOBJECT = \
 	$(PATHLIBRARY)Objects/CSGObject.cpp							\
-	$(PATHLIBRARY)Objects/Object.cpp
+	$(PATHLIBRARY)Objects/Object.cpp							\
+	$(PATHLIBRARY)Objects/SnapshotLeafClone.cpp
 
 
 # Ray primitive intersections
@@ -200,7 +363,8 @@ SRCLIBSAMPLINGFILTERING =\
 	$(PATHLIBRARY)Sampling/StratifiedSampling2D.cpp				\
 	$(PATHLIBRARY)Sampling/UniformSampling1D.cpp				\
 	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp				\
-	$(PATHLIBRARY)Sampling/SobolSampling2D.cpp
+	$(PATHLIBRARY)Sampling/SobolSampling2D.cpp				\
+	$(PATHLIBRARY)Sampling/SobolDirectionNumbers.cpp
 
 # Photon mapping
 SRCLIBPHOTONMAPPING =\
@@ -230,29 +394,50 @@ SRCLIBCAMERA =\
 # Rendering
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
+	$(PATHLIBRARY)Rendering/DisplayTransformWriter.cpp						\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/InteractivePelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
+	$(PATHLIBRARY)Rendering/TimeIndexedMotionBlur.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/EnvironmentSampler.cpp							\
+	$(PATHLIBRARY)Rendering/Film.cpp										\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
+	$(PATHLIBRARY)Rendering/ThreadLocalSplatBuffer.cpp						\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
+	$(PATHLIBRARY)Rendering/AdaptiveTileSizer.cpp							\
+	$(PATHLIBRARY)Rendering/PreviewScheduler.cpp							\
+	$(PATHLIBRARY)Rendering/BidirectionalRasterizerBase.cpp					\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
 	$(PATHLIBRARY)Rendering/PathTracingPelRasterizer.cpp					\
+	$(PATHLIBRARY)Rendering/AutoRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/VCMRasterizerBase.cpp							\
+	$(PATHLIBRARY)Rendering/VCMPelRasterizer.cpp							\
+	$(PATHLIBRARY)Rendering/VCMSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/MLTSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
-	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp
+	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp								\
+	$(PATHLIBRARY)Rendering/FrameStoreColorSpace.cpp						\
+	$(PATHLIBRARY)Rendering/TargetFormat.cpp								\
+	$(PATHLIBRARY)Rendering/ViewTransform.cpp								\
+	$(PATHLIBRARY)Rendering/FrameStore.cpp								\
+	$(PATHLIBRARY)Rendering/FrameEncoders.cpp							\
+	$(PATHLIBRARY)Rendering/FrameSink.cpp								\
+	$(PATHLIBRARY)Rendering/FileEncoderObserver.cpp						\
+	$(PATHLIBRARY)Rendering/ViewportFrameStore.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
+	$(PATHLIBRARY)Shaders/SSS/SSSContainment.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
@@ -270,8 +455,13 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/TransparencyShaderOp.cpp						\
+	$(PATHLIBRARY)Shaders/AlphaTestShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/TranslucentPelPhotonMapShaderOp.cpp			\
-	$(PATHLIBRARY)Shaders/BDPTIntegrator.cpp
+	$(PATHLIBRARY)Shaders/BDPTIntegrator.cpp							\
+	$(PATHLIBRARY)Shaders/VCMRecurrence.cpp								\
+	$(PATHLIBRARY)Shaders/VCMLightVertexStore.cpp						\
+	$(PATHLIBRARY)Shaders/VCMPathOps.cpp								\
+	$(PATHLIBRARY)Shaders/VCMIntegrator.cpp
 
 # Shaders
 SRCLIBSHADERS =\
@@ -290,7 +480,11 @@ SRCLIBSCENEMANAGEMENT =\
 
 # Intersection modifiers
 SRCLIBMODIFIERS =\
-	$(PATHLIBRARY)Modifiers/BumpMap.cpp
+	$(PATHLIBRARY)Modifiers/GlintModifier.cpp					\
+	$(PATHLIBRARY)Modifiers/BlendedModifier.cpp				\
+	$(PATHLIBRARY)Modifiers/ModifierStack.cpp					\
+	$(PATHLIBRARY)Modifiers/NormalMap.cpp					\
+	$(PATHLIBRARY)Modifiers/ReliefModifier.cpp
 
 # Raster Images
 SRCLIBRASTERIMAGES =\
@@ -299,6 +493,7 @@ SRCLIBRASTERIMAGES =\
 	$(PATHLIBRARY)RasterImages/HDRReader.cpp					\
 	$(PATHLIBRARY)RasterImages/HDRWriter.cpp					\
 	$(PATHLIBRARY)RasterImages/PPMWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/JPEGReader.cpp					\
 	$(PATHLIBRARY)RasterImages/PNGReader.cpp					\
 	$(PATHLIBRARY)RasterImages/PNGWriter.cpp					\
 	$(PATHLIBRARY)RasterImages/RGBEAWriter.cpp					\
@@ -320,15 +515,51 @@ SRCLIBANIMATION =\
 	$(PATHLIBRARY)Animation/Animator.cpp						\
 	$(PATHLIBRARY)Animation/ElementTimeline.cpp					\
 	$(PATHLIBRARY)Animation/KeyframableHelper.cpp					\
+	$(PATHLIBRARY)Animation/KeyframableStrictParse.cpp				\
 	$(PATHLIBRARY)Animation/Timeline.cpp
 
 # Parsers
 SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/AsciiCommandParser.cpp				\
-	$(PATHLIBRARY)Parsers/AsciiSceneParser.cpp					\
+	$(PATHLIBRARY)Parsers/ChunkParserRegistry.cpp				\
 	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
-	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
 	$(PATHLIBRARY)Options.cpp
+
+# Scene-editor suggestion engine
+SRCLIBSCENEEDITORSUGGESTIONS =\
+	$(PATHLIBRARY)SceneEditorSuggestions/SceneGrammar.cpp			\
+	$(PATHLIBRARY)SceneEditorSuggestions/CompletionContext.cpp		\
+	$(PATHLIBRARY)SceneEditorSuggestions/NameIndex.cpp				\
+	$(PATHLIBRARY)SceneEditorSuggestions/SuggestionEngine.cpp
+
+# Interactive 3D scene editor (cross-platform GUI viewport backend)
+SRCLIBSCENEEDITOR =\
+	$(PATHLIBRARY)SceneEditor/EditHistory.cpp						\
+	$(PATHLIBRARY)SceneEditor/CancellableProgressCallback.cpp		\
+	$(PATHLIBRARY)SceneEditor/SceneEditor.cpp						\
+	$(PATHLIBRARY)SceneEditor/SceneEditController.cpp				\
+	$(PATHLIBRARY)SceneEditor/LiveSimulation.cpp				\
+	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/ObjectIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/LightIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/RasterizerIntrospection.cpp			\
+	$(PATHLIBRARY)SceneEditor/FilmIntrospection.cpp					\
+	$(PATHLIBRARY)SceneEditor/MaterialIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/MediaIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp			\
+	$(PATHLIBRARY)SceneEditor/TransformSnapshot.cpp					\
+	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
+	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp						\
+	$(PATHLIBRARY)SceneEditor/CstIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/PainterIntrospection.cpp			\
+	$(PATHLIBRARY)SceneEditor/PainterPreview.cpp					\
+	$(PATHLIBRARY)SceneEditor/MaterialPreview.cpp					\
+	$(PATHLIBRARY)SceneEditor/EntityTemplates.cpp					\
+	$(PATHLIBRARY)SceneEditor/ReferenceGraph.cpp					\
+	$(PATHLIBRARY)SceneEditor/ConnectionLegality.cpp				\
+	$(PATHLIBRARY)SceneEditor/OwnershipClosure.cpp				\
+	$(PATHLIBRARY)SceneEditor/GraphLayout.cpp						\
+	$(PATHLIBRARY)SceneEditor/GraphLayoutSidecar.cpp
 
 # Miscellaneous stuff
 SRCLIBMISC =\
@@ -337,6 +568,12 @@ SRCLIBMISC =\
 
 SRCLIBINTERFACES =\
 	$(PATHLIBRARY)Materials/IMaterial.cpp
+
+# Vendored single-header libraries that RISE compiles inline.  These
+# live outside $(PATHLIBRARY) so spell the path explicitly.
+SRCLIBEXTLIB =\
+	../../../extlib/stb/stb_image.cpp							\
+	../../../extlib/cgltf/cgltf.cpp
 
 # We assemble the final list of sources here
 SRCLIB =\
@@ -359,6 +596,8 @@ SRCLIB =\
 	$(SRCLIBLIGHTS)					\
 	$(SRCLIBANIMATION)				\
 	$(SRCLIBPARSERS)				\
+	$(SRCLIBSCENEEDITORSUGGESTIONS)	\
+	$(SRCLIBSCENEEDITOR)			\
 	$(SRCLIBMISC)					\
-	$(SRCLIBSCENEMANAGEMENT)
-
+	$(SRCLIBSCENEMANAGEMENT)		\
+	$(SRCLIBEXTLIB)

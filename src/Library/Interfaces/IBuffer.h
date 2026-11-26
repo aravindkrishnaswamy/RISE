@@ -14,6 +14,9 @@
 #ifndef I_BUFFER_H_
 #define I_BUFFER_H_
 
+#include <cstdint>
+#include <limits>
+
 #include "IReference.h"
 
 namespace RISE
@@ -58,6 +61,43 @@ namespace RISE
 		/// \return The position of the cursor in bytes from the begining of the buffer
 		virtual unsigned int getCurPos( ) const = 0;
 	};
+	// Optional large-buffer queries preserve the existing IBuffer vtable.
+	class IBuffer64
+	{
+	protected:
+		virtual ~IBuffer64() = default;
+	public:
+		virtual std::uint64_t Size64() const = 0;
+		virtual std::uint64_t getCurPos64() const = 0;
+		virtual bool seek64( IBuffer::eSeek origin, std::int64_t amount ) = 0;
+	};
+
+	inline std::uint64_t BufferSize( const IBuffer& buffer )
+	{
+		if( const auto* wide = dynamic_cast<const IBuffer64*>(&buffer) ) return wide->Size64();
+		return buffer.Size();
+	}
+
+	inline std::uint64_t BufferPosition( const IBuffer& buffer )
+	{
+		if( const auto* wide = dynamic_cast<const IBuffer64*>(&buffer) ) return wide->getCurPos64();
+		return buffer.getCurPos();
+	}
+
+	inline std::uint64_t BufferBytesAvailable( const IBuffer& buffer )
+	{
+		const auto size = BufferSize(buffer);
+		const auto position = BufferPosition(buffer);
+		return position < size ? size - position : 0;
+	}
+
+	inline bool BufferSeek( IBuffer& buffer, IBuffer::eSeek origin, std::int64_t amount )
+	{
+		if( auto* wide = dynamic_cast<IBuffer64*>(&buffer) ) return wide->seek64(origin, amount);
+		if( amount < std::numeric_limits<int>::min() || amount > std::numeric_limits<int>::max() ) return false;
+		return buffer.seek( origin, static_cast<int>(amount) );
+	}
+
 }
 
 #endif

@@ -1,0 +1,34 @@
+fire_production_subdominance_protocol_v1
+date 2026-08-22
+amends r120_r136_full_step_bfp32_only
+amendment_before_measurement true
+measurement_performed false
+same_scheme_binary64_mirror_required true
+oracle_forbidden_for_precision_test true
+slice_restart_policy shared_golden_beginning_per_slice
+slice_count 8
+subdominance_power_of_two 0.125
+verified_spatial_order 1.8
+production_distance_rule max(E5_rescaled_to_6,E6)
+E_coarse_rule D/(1-2^-1.8)
+E5_rescale_rule (5/6)^1.8
+streaming_walker_bounds diagnostic_only
+full_step_B_rule abs(prod32-prod64)<=0.125*dist_production_to_limit
+scheme_rule abs(prod64-oracle)<=dist_production_to_limit+dist_oracle_to_limit
+scalar_production_distance_tier6 2.8085208531210572e-05 2.2468142898031565e-05 4.2048664343697656e-05 8.959132636974052e-05 1.4950124230940121e-05 1.2615650590495973e-05 1.961472544908731e-07 4.121280016785162e-08 27.653248739970653
+scalar_subdominance_bound 3.510651066401322e-06 2.808517862253946e-06 5.256083042962208e-06 1.1198915796217567e-05 1.8687655288675154e-06 1.5769563238119969e-06 2.451840681135914e-08 5.151600020981453e-09 3.456656092496332
+velocity_production_distance_tier6 0.005890459160549289
+velocity_subdominance_bound 0.0007363073950686612
+inventory_production_distance_tier6 4.775211365302803e-06 3.820143199333491e-06 8.286387166931656e-06 1.486715205768287e-05 2.5419365647931674e-06 2.1450181877577826e-06 3.335092439581219e-08 7.007171123344935e-09 3.6115702367503015
+inventory_subdominance_bound 5.969014206628505e-07 4.775178999166865e-07 1.0357983958664572e-06 1.858394007210359e-06 3.17742070599146e-07 2.681272734697229e-07 4.168865549476525e-09 8.758963904181169e-10 0.45144627959378775
+preliminary_velocity_guard 3e-05
+preliminary_velocity_guard_status pending_measurement_supersession
+r136_proof_gap_bitmap 0xff
+r136_candidate_velocity_bound 0.021145425678289562
+r136_candidate_status rejected_not_contractual
+nonlinear_FCT_gain_reason state_dependent_shared_alpha_cross_component
+projection_reason variable_density_resolvent_and_pointwise_product
+source_producer_rule same_subdominance_mechanism_after_source_mirror
+bit_exact_positive_zero_source_rule remains_until_source_subdominance_certifies
+preview_rule source_maps_metal_first_light_uncertified_monitored_preview_primary_sequence_backed
+golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947

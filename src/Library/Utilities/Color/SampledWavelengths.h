@@ -28,9 +28,9 @@
 //  they would follow different geometric paths (Snell's law depends
 //  on IOR which depends on wavelength).  After termination, only the
 //  hero survives and the path degenerates to single-wavelength
-//  transport for the dispersive segment.  For rough dispersive BSDFs,
-//  MIS over wavelengths remains valid and companions are not
-//  terminated.
+//  transport for the dispersive segment. Rough dispersive BSDFs can in
+//  principle retain companions. The current rough dielectric instead uses
+//  hero-only transport because the walkers share one medium stack/eta scale.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 9, 2026
@@ -74,12 +74,14 @@ namespace RISE
 		/// @param u        Uniform random number in [0, 1) for hero placement.
 		/// @param lambda_min  Start of wavelength range (nm), e.g. 380.
 		/// @param lambda_max  End of wavelength range (nm), e.g. 780.
+		/// @param numWavelengths  Rasterizer grid size; >=10000 keeps continuous sampling.
 		/// @return A SampledWavelengths with hero at index 0 and 3 companions
 		///         at equidistant spectral offsets with wrap-around.
 		static SampledWavelengths SampleEquidistant(
 			const Scalar u,
 			const Scalar lambda_min,
-			const Scalar lambda_max
+			const Scalar lambda_max,
+			const unsigned int numWavelengths = 10000
 			)
 		{
 			SampledWavelengths swl;
@@ -102,6 +104,18 @@ namespace RISE
 				swl.terminated[i] = false;
 			}
 
+            // DL-391: rasterizers use a left-endpoint discrete quadrature when
+            // num_wavelengths < 10000. Snap EACH continuous lane, rather than
+            // snapping the hero before shifting: each marginal stays uniform
+            // even when the grid size is not a multiple of the bundle size.
+            if(numWavelengths > 0 && numWavelengths < 10000) {
+                const Scalar step = range / Scalar(numWavelengths);
+                for(unsigned int i=0;i<N;++i) {
+                    const unsigned int bin = static_cast<unsigned int>(
+                        (swl.lambda[i]-lambda_min)/range * Scalar(numWavelengths));
+                    swl.lambda[i] = lambda_min + Scalar(bin < numWavelengths ? bin : numWavelengths-1)*step;
+                }
+            }
 			return swl;
 		}
 
@@ -112,8 +126,8 @@ namespace RISE
 		}
 
 		/// Terminate all companion wavelengths (indices 1..N-1).
-		/// Called at specular dispersive interfaces where companions
-		/// would follow different geometric paths.
+		/// Called when companions cannot share the current path's geometry
+		/// or medium state (dispersive deltas and rough dielectric interfaces).
 		/// The hero (index 0) is never terminated.
 		inline void TerminateSecondary()
 		{
@@ -121,6 +135,14 @@ namespace RISE
 			{
 				terminated[i] = true;
 			}
+		}
+
+		/// Each independently sampled bundle has equal weight, including a
+		/// black bundle. Average its active lanes before combining bundles;
+		/// pooling active counts would weight unterminated paths N times more.
+		template<class T> T BundleAverage(const T& sum) const
+		{
+			return sum * (Scalar(1) / Scalar(NumActive()));
 		}
 
 		/// Returns true if all companion wavelengths have been terminated,

@@ -1,12 +1,12 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           spotlights_stage_alias.RISEscene                                                        #
+#   File:           spotlights_stage_bvh.RISEscene                                                          #
 #   Description:    Stage-like room with 12 spotlights pointing in various directions.                      #
 #                   Tests orientation cone importance in the Light BVH.  From any                            #
 #                   shading point, only a few spots actually illuminate it; the rest                         #
-#                   point away.  Alias table wastes samples on misdirected spots.                            #
+#                   point away.  The BVH orientation cones should reject those lights.                      #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      April 9, 2026                                                                           #
 #                                                                                                           #
@@ -42,20 +42,158 @@ file_rasterizeroutput
 # Camera
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			250 150 50
 	lookat				250 100 300
 	up					0 1 0
-	width				512
-	height				512
 	fov					70.0
 }
 
 ##################################################
 # Painters
 ##################################################
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -108,6 +246,7 @@ spot_light
 	name		spot_01
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	100 280 100
 	target		200 0 250
 	inner		10.0
@@ -119,6 +258,7 @@ spot_light
 	name		spot_02
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	250 280 100
 	target		250 0 250
 	inner		10.0
@@ -130,6 +270,7 @@ spot_light
 	name		spot_03
 	power		200000.0
 	color		1.0 0.95 0.85
+	colorspace	sRGB
 	position	400 280 100
 	target		300 0 250
 	inner		10.0
@@ -142,6 +283,7 @@ spot_light
 	name		spot_04
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	100 280 400
 	target		200 0 250
 	inner		10.0
@@ -153,6 +295,7 @@ spot_light
 	name		spot_05
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	250 280 400
 	target		250 0 250
 	inner		10.0
@@ -164,6 +307,7 @@ spot_light
 	name		spot_06
 	power		200000.0
 	color		0.85 0.90 1.0
+	colorspace	sRGB
 	position	400 280 400
 	target		300 0 250
 	inner		10.0
@@ -176,6 +320,7 @@ spot_light
 	name		spot_07
 	power		150000.0
 	color		1.0 0.7 0.5
+	colorspace	sRGB
 	position	10 200 150
 	target		250 50 250
 	inner		15.0
@@ -187,6 +332,7 @@ spot_light
 	name		spot_08
 	power		150000.0
 	color		1.0 0.7 0.5
+	colorspace	sRGB
 	position	10 200 350
 	target		250 50 250
 	inner		15.0
@@ -198,6 +344,7 @@ spot_light
 	name		spot_09
 	power		150000.0
 	color		0.5 0.7 1.0
+	colorspace	sRGB
 	position	490 200 150
 	target		250 50 250
 	inner		15.0
@@ -209,6 +356,7 @@ spot_light
 	name		spot_10
 	power		150000.0
 	color		0.5 0.7 1.0
+	colorspace	sRGB
 	position	490 200 350
 	target		250 50 250
 	inner		15.0
@@ -221,6 +369,7 @@ spot_light
 	name		spot_11
 	power		100000.0
 	color		0.8 1.0 0.8
+	colorspace	sRGB
 	position	150 10 200
 	target		150 300 200
 	inner		20.0
@@ -232,6 +381,7 @@ spot_light
 	name		spot_12
 	power		100000.0
 	color		0.8 1.0 0.8
+	colorspace	sRGB
 	position	350 10 300
 	target		350 300 300
 	inner		20.0
@@ -349,3 +499,4 @@ standard_object
 	material			white
 	position			250 10 250
 }
+

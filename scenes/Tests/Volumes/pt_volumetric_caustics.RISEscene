@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 7
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -72,13 +72,17 @@ file_rasterizeroutput
 # Camera
 ##################################################
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 300
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 
@@ -94,13 +98,165 @@ homogeneous_medium
 	phase		isotropic
 }
 
-> set global_medium fog
+global_medium
+{
+medium fog
+}
 
 ##################################################
 # Painters
 ##################################################
 
-> run scenes/colors.RISEscript
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+
+
+
+
+
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+
+
+
+
+#############################################################################################################
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           povray_colors.RISEscene                                                                 #
+#   Description:    Contains colors taken from POV-Ray                                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uniformcolor_painter
 {
@@ -108,21 +264,7 @@ uniformcolor_painter
 	color				1.0 1.0 1.0
 }
 
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.9999 0.9999 0.9999
-	colorspace			RISERGB
-}
 
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-# This will cause dispersion which will create a lot of branching in rays
-#	color				2.79 2.2 1.5
-	color 				2.5 2.5 2.5
-	colorspace			RISERGB
-}
 
 ##################################################
 # Materials
@@ -150,15 +292,15 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				1000.0
+	scale				100.0
 	material			none
 }
 
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau			0.9999
+	ior			2.5
 }
 
 ##################################################
@@ -282,3 +424,5 @@ standard_object
 	material			glass
 	position			278 350 300
 }
+
+

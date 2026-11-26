@@ -19,6 +19,9 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/BoundingBox.h"
 #include "../Polygon.h"
+#include <vector>
+#include <cstdint>
+#include <cstring>
 
 namespace RISE
 {
@@ -46,9 +49,85 @@ namespace RISE
 					const Scalar around									///< [in] Perturbation amount in phi
 					);
 
+		//! Perturbs the given vector by `down` in theta, with the azimuth
+		//! drawn UNIFORMLY on the sub-arc for which the result stays in
+		//! the half-space `Dot(result, clipN) > 0`.
+		//!
+		//! This is DL-68's construction (`TranslucentSPFDetail::
+		//! SampleClippedPhong`, TranslucentSPF.cpp, which carries the full
+		//! derivation), written as a SECOND implementation so DL-111's
+		//! callers can reuse it for
+		//! lobes whose POLAR marginal is not `cos^N` -- `DielectricSPF`'s
+		//! `scattering` warp draws its `down` from either a Phong
+		//! `cos^N` inverse CDF or a Henyey-Greenstein one.  The
+		//! construction does not care: ANY lobe that is azimuthally
+		//! uniform about `vec` at fixed `down` has a clipped conditional
+		//! that is still uniform in azimuth (the clip is a plane through
+		//! the origin and the lobe is azimuthally symmetric), so drawing
+		//! the azimuth uniformly on the valid arc
+		//!
+		//!     halfArc = PI                             if cot(down)cot(phi) >= 1
+		//!             = acos( -cot(down)cot(phi) )     otherwise,
+		//!
+		//! with `phi` the angle between `vec` and `clipN`, is EXACT, uses
+		//! exactly ONE canonical number, and renormalizes the
+		//! clipped-away energy into the valid region rather than dropping
+		//! it.  The caller composes its own density by scaling its
+		//! unclipped azimuth-marginal `1/(2 PI)` to `1/(2 halfArc)`
+		//! (`outHalfArc` reports it); a caller whose lobe is treated as a
+		//! delta (pdf 1) simply ignores it.
+		//!
+		//! The two are deliberately NOT folded into one:
+		//! `SampleClippedPhong` draws `cos(theta)` from its own `cos^N`
+		//! inverse CDF and has that VALUE in hand, while this one takes an
+		//! ANGLE (its callers' marginals hand it one), so delegating would
+		//! insert an `acos`/`cos` round trip into a path whose untilted
+		//! branch is pinned bit-for-bit by `TranslucentSpectralParityTest`.
+		//! **A change to the arc math belongs in BOTH.**
+		//!
+		//! THREE PRECONDITIONS, all checked and reported (review P3,
+		//! 2026-09-17 -- only the first was documented before, and the
+		//! other two failed SILENTLY):
+		//!
+		//!  1. `Dot(vec, clipN) >= 0` -- the axis must already be inside
+		//!     the half-space, or the valid arc can be empty.  Callers
+		//!     orient it first (`OrientedLobeAxis`, or a re-derivation
+		//!     about the clip normal itself).
+		//!  2. `clipN` must be UNIT.  It is read as a cosine, so a
+		//!     non-unit `clipN` scales that cosine -- and at `|clipN| > 1`
+		//!     the internal `min(1, .)` clamp then reports `cos(phi) == 1`
+		//!     / `sin(phi) == 0`, which SILENTLY DISABLES the clip and
+		//!     draws the full circle.  A non-unit normal is now
+		//!     normalized with a warning (the treatment
+		//!     `Optics::CalculateRefractedRay` gives its own inputs); a
+		//!     degenerate one returns the axis unperturbed.
+		//!  3. `down` must leave a non-empty arc.  At `down > PI/2` the
+		//!     cone can lie ENTIRELY outside the half-space, and the
+		//!     arc-half-width `acos(-cot(down)cot(phi))` is then `acos`
+		//!     of an argument `> 1`: a NaN that propagates into the
+		//!     returned DIRECTION.  Production never reaches it (every
+		//!     caller gates `down < PI/2`); it is now detected and
+		//!     returns the axis unperturbed with `outHalfArc = 0`.
+		//!
+		//! On any of the three the function returns `vec` UNPERTURBED and
+		//! sets `outHalfArc` to 0, so a caller that checks it can skip the
+		//! emit rather than trust a manufactured direction.
+		//!
+		//! When the clip is inactive at this `down` (the whole cone is
+		//! valid), `outHalfArc` is exactly PI and the draw covers the full
+		//! circle.
+		/// \return Perturbed vector, guaranteed to satisfy the clip
+		extern Vector3 PerturbClipped(
+					const Vector3& vec,									///< [in] Vector to perturb (must satisfy Dot(vec,clipN) >= 0)
+					const Scalar down,									///< [in] Perturbation amount in theta
+					const Vector3& clipN,								///< [in] Half-space normal the result must satisfy
+					const Scalar u,										///< [in] One canonical random number
+					Scalar* outHalfArc = 0								///< [out] Optional: half-width of the valid azimuth arc
+					);
+
 		//! Generates a random point on a sphere
 		/// \return Point on sphere
-		extern Point3 PointOnSphere( 
+		extern Point3 PointOnSphere(
 					const Point3& ptCenter,								///< [in] Center of the sphere
 					const Scalar radius,								///< [in] Radius of the sphere
 					const Point2& coord									///< [in] Two canonical random numbers
@@ -173,13 +252,19 @@ namespace RISE
 					Point2& uv											///< [out] The generated co-ordinate
 					);
 
-		//! Computes texture co-ordinates for a torus
-		extern void TorusTextureCoord( 
-					const Vector3& vUp,									///< [in] The up vector, these vectors determine how the sphere is wrapped
-					const Vector3& vForward, 							///< [in] The forward vector
-					const Point3& ptPoint, 								///< [in] Point to generate co-ordinate for
-					const Vector3& vNormal,								///< [in] The normal at the point of intersection
-					Point2& uv											///< [out] The generated co-ordinate
+		//! Computes texture co-ordinates for a torus.
+		//! The (u, v) returned matches TorusGeometry::TessellateToMesh's
+		//! parameterisation: u = ring-angle/2π, v = tube-angle/2π.
+		//! vUp / vForward / vNormal are unused (kept for ABI compat) — the
+		//! parameterisation is derived from the position alone.
+		extern void TorusTextureCoord(
+					const Vector3& vUp,									///< [in] (unused — see body comment)
+					const Vector3& vForward, 							///< [in] (unused)
+					const Point3& ptPoint, 								///< [in] Point on the torus surface (object space)
+					const Vector3& vNormal,								///< [in] (unused)
+					Point2& uv,											///< [out] The generated co-ordinate
+					const Scalar dMajorRadius,							///< [in] Ring radius R
+					const Scalar dMinorRadius							///< [in] Tube radius r
 					);
 
 		//! Generates a point on a cylinder given two numbers in [0,1]
@@ -241,15 +326,239 @@ namespace RISE
 					);
 
 		//! Evaluates a bilinear patch for the given u and v
-		extern Point3 EvaluateBilinearPatchAt( 
+		extern Point3 EvaluateBilinearPatchAt(
 					const BilinearPatch& patch,							///< [in] The bilinear patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
 					);
 
 		//! Finds the normal of a bilinear patch at the given co-ordinates
-		extern Vector3 BilinearPatchNormalAt( 
+		extern Vector3 BilinearPatchNormalAt(
 					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! DL-20: public accessors for the per-axis tangents BilinearPatchNormalAt
+		//! already computes internally (RISE's OWN `BilinearPatch` corner
+		//! convention -- see BilinearPatchSecondDerivUV's comment).  dP/du
+		//! depends only on v (and vice versa) because a bilinear surface is
+		//! affine along each parameter held fixed.
+		extern Vector3 BilinearPatchTangentU(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BilinearPatchTangentV(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar u										///< [in] Evaluation parameter u
+					);
+
+		//! DL-20: the second mixed partial derivative d2P/dudv of a bilinear
+		//! patch, in RISE's OWN `BilinearPatch` corner convention (pts[0] ->
+		//! (u,v)=(0,0), pts[1] -> (0,1), pts[2] -> (1,0), pts[3] -> (1,1) --
+		//! matching EvaluateBilinearPatchAt / BilinearPatchNormalAt above,
+		//! NOT the canonical (c00,c10,c11,c01) helpers below).  A bilinear
+		//! surface's own P(u,v) is affine in u and in v separately, so
+		//! d2P/du2 = d2P/dv2 = 0 identically and this "saddle term" (constant
+		//! over the whole patch) is the ENTIRE second-derivative data the
+		//! shape operator needs -- see SurfaceCurvature::
+		//! ShapeOperatorFromSecondDerivatives.
+		extern Vector3 BilinearPatchSecondDerivUV(
+					const BilinearPatch& patch							///< [in] The bilinear patch
+					);
+
+		// =========================================================================
+		// Convention-agnostic bilinear-surface utilities.
+		//
+		// These take 4 corners in the canonical (c00, c10, c11, c01) layout —
+		// i.e. (u, v) = (0, 0), (1, 0), (1, 1), (0, 1).  Callers using a
+		// different corner-to-(u, v) mapping (e.g. RISE's BilinearPatch struct
+		// uses pts[0]→(0,0), pts[1]→(0,1), pts[2]→(1,0), pts[3]→(1,1)) must
+		// reorder before calling.
+		//
+		// Surface:    pos(u, v) = c00·(1-u)(1-v) + c10·u(1-v) + c11·uv + c01·(1-u)v
+		// Equivalent: pos(u, v) = A + B·u + C·v + D·u·v
+		//   A = c00,  B = c10 - c00,  C = c01 - c00,
+		//   D = c11 - c10 - c01 + c00   (the "saddle" term; zero for planar
+		//                                 parallelograms)
+		// =========================================================================
+
+		//! Forward formula: pos(u, v) on the bilinear surface.
+		extern Point3 BilinearForward(
+					const Point3& c00,									///< [in] corner at (u=0, v=0)
+					const Point3& c10,									///< [in] corner at (u=1, v=0)
+					const Point3& c11,									///< [in] corner at (u=1, v=1)
+					const Point3& c01,									///< [in] corner at (u=0, v=1)
+					const Scalar u,
+					const Scalar v
+					);
+
+		//! Partial derivative dpos/du at (u, v).
+		extern Vector3 BilinearTangentU(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const Scalar v
+					);
+
+		//! Partial derivative dpos/dv at (u, v).
+		extern Vector3 BilinearTangentV(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const Scalar u
+					);
+
+		//! DL-448: a deterministic uniform stream derived from a sample's
+		//! canonical random point, for REJECTION samplers that must stay a
+		//! pure function of the one Point3 they are handed (the sampler
+		//! interface carries no generator).  SplitMix64 seeded by the bits of
+		//! all three coordinates: the first candidate is still the caller's
+		//! own point (stratification is kept whenever it is accepted); only
+		//! the accept variates and any retries come from this stream.  NESTED
+		//! rejection samplers (a scaled ellipsoid: Object's stretch rejection
+		//! around EllipsoidGeometry's own) MUST pass distinct salts, or both
+		//! levels draw the same accept variates and the result is biased.
+		struct PrandStream
+		{
+			std::uint64_t state;
+			PrandStream( const Point3& prand, const std::uint64_t salt )
+			{
+				static_assert( sizeof( Scalar ) == sizeof( std::uint64_t ), "PrandStream seeds from 64-bit Scalar bit patterns" );
+				std::uint64_t b[3];
+				std::memcpy( &b[0], &prand.x, sizeof( std::uint64_t ) );
+				std::memcpy( &b[1], &prand.y, sizeof( std::uint64_t ) );
+				std::memcpy( &b[2], &prand.z, sizeof( std::uint64_t ) );
+				state = b[0] ^ ( b[1] * 0x9E3779B97F4A7C15ULL ) ^ ( b[2] * 0xC2B2AE3D27D4EB4FULL ) ^ ( salt * 0xD6E8FEB86659FD93ULL );
+				Next();	// mix the seed once before the first variate
+			}
+			Scalar Next()
+			{
+				std::uint64_t z = ( state += 0x9E3779B97F4A7C15ULL );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+				z ^= ( z >> 31 );
+				return Scalar( z >> 11 ) * Scalar( 1.0 / 9007199254740992.0 );
+			}
+		};
+
+		//! AREA-UNIFORM SAMPLING ON A BILINEAR PATCH.
+		//!
+		//! A bilinear patch is uniform in surface area under uniform (u, v)
+		//! ONLY when it is a parallelogram (the saddle term
+		//! D = c11 - c10 - c01 + c00 vanishes, so |dpdu x dpdv| is constant).
+		//! For any other quad the Jacobian varies across the patch, and a
+		//! sampler that draws (u, v) uniformly while its consumer divides by
+		//! 1/GetArea() has a PDF that disagrees with its own claimed density.
+		//! That mismatch silently biases every area-light estimator built on
+		//! it -- the same defect class as the BoxGeometry uniform-by-face
+		//! selection fixed in 098d2565.
+		//!
+		//! These two functions are designed to be used TOGETHER so the area
+		//! and the sampling density come from the SAME quadrature: whatever
+		//! the absolute quadrature error, 1/area is exactly the sampler's
+		//! density, which is the invariant unbiasedness actually depends on.
+		//! Build the table once (geometry Prepare/Regenerate), sample many.
+
+		//! Accumulates a per-cell area table for one bilinear patch onto the
+		//! end of `cdfOut` as a RUNNING cumulative sum (so tables for many
+		//! patches concatenate into one global CDF), and returns the patch's
+		//! area under midpoint quadrature.  `runningTotal` is the cumulative
+		//! area so far; pass 0 for the first patch.
+		//! \return The area of THIS patch (not the running total).
+		extern Scalar AccumulateBilinearAreaCDF(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const unsigned int nCells,							///< [in] Grid resolution per axis
+					const Scalar runningTotal,							///< [in] Cumulative area before this patch
+					std::vector<Scalar>& cdfOut							///< [in,out] Appended with nCells*nCells cumulative entries
+					);
+
+		//! Maps a cell index produced by searching a table from
+		//! AccumulateBilinearAreaCDF, plus two uniform variates, to (u, v).
+		extern void BilinearCellToUV(
+					const unsigned int cellIndex,						///< [in] Index WITHIN a patch's block, in [0, nCells*nCells)
+					const unsigned int nCells,
+					const Scalar rU,									///< [in] Uniform variate for the cell's u extent
+					const Scalar rV,									///< [in] Uniform variate for the cell's v extent
+					Scalar& outU, Scalar& outV
+					);
+
+		//! Inverse: given a 3D point P claimed to lie on the bilinear surface,
+		//! recover (u, v) such that BilinearForward(...,u,v) ≈ P.
+		//!
+		//! Returns true iff a valid (u, v) ∈ [-eps, 1+eps]² was found AND the
+		//! surface residual at the recovered (u, v) is below `tolerance`.
+		//! Uses the 2x2 quadratic-in-v reduction described in
+		//! Heckbert "Tutorial on Texture Mapping" (1989) and used in
+		//! RayBilinearPatchIntersection.cpp; picks the axis pair most
+		//! orthogonal to the patch normal at the centre for conditioning.
+		//!
+		//! For PARALLELOGRAM quads (D = 0) the equation degenerates to linear;
+		//! this routine handles that case without iteration.  For TWISTED quads
+		//! with multiple branches in [0, 1]² the candidate with smallest
+		//! surface residual is returned.
+		extern bool BilinearInverse(
+					const Point3& c00,									///< [in] corner at (u=0, v=0)
+					const Point3& c10,									///< [in] corner at (u=1, v=0)
+					const Point3& c11,									///< [in] corner at (u=1, v=1)
+					const Point3& c01,									///< [in] corner at (u=0, v=1)
+					const Point3& P,									///< [in] query point on surface
+					Scalar& u,											///< [out] recovered u in [0, 1]
+					Scalar& v,											///< [out] recovered v in [0, 1]
+					const Scalar tolerance = 1e-5						///< [in] max surface residual / patch-extent
+					);
+
+		//! Evaluates a bicubic Bezier patch P(u,v) using the Bernstein basis.
+		//! Convention: P(u,v) = sum_{i,j} B_i(u) * B_j(v) * patch.c[i].pts[j]
+		//! where i indexes the curve (u direction) and j indexes the control
+		//! point along the curve (v direction).
+		extern Point3 EvaluateBezierPatchAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Partial derivative dP/du of a bicubic Bezier patch.
+		extern Vector3 BezierPatchTangentU(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Partial derivative dP/dv of a bicubic Bezier patch.
+		extern Vector3 BezierPatchTangentV(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Surface normal = dP/du x dP/dv (not normalized).  Caller should
+		//! normalize.  At degenerate points (coincident tangents) may return
+		//! the zero vector.
+		extern Vector3 BezierPatchNormalAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! DL-20: second partial derivatives of a bicubic Bezier patch, for
+		//! the shape operator (see SurfaceCurvature::ShapeOperatorFromSecondDerivatives).
+		//! Same Bernstein-basis convention as EvaluateBezierPatchAt / the
+		//! tangent functions above -- these are the analogous second
+		//! derivatives of the SAME sum, obtained by differentiating the
+		//! Bernstein basis twice (d2Pduu), once each way (d2Pduv), or twice
+		//! in v (d2Pdvv).
+		extern Vector3 BezierPatchSecondDerivUU(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivUV(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivVV(
+					const BezierPatch& patch,							///< [in] The bezier patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
 					);
@@ -281,6 +590,292 @@ namespace RISE
 					const BoundingBox& bb								///< [in] The bounding box to check
 					);
 
+
+		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
+		//! well-defined front side?  True iff every corner lies within
+		//! `max(1e-9, 1e-6 * bbox diagonal)` of one plane (the DL-143 weld
+		//! epsilon, so the tolerance means the same thing as "the same
+		//! vertex" does elsewhere) AND every non-degenerate triangle's
+		//! WINDING normal points to the same side of it.
+		//!
+		//! Why this is a certificate and not a guess: a planar set has empty
+		//! interior and a connected complement, whatever its topology, holes
+		//! or overlaps; and for any oriented CLOSED surface the flux of a
+		//! constant field vanishes (`integral n . d dA = 0`), so a surface
+		//! whose winding normals ALL satisfy `n . d > 0` has no closed
+		//! oriented component -- in particular a flat closed box (top and
+		//! bottom wound outward) is refused, however thin.  Any pocket the
+		//! tolerance admits is thinner than twice the weld epsilon.
+		//!
+		//! It is deliberately NOT "has a boundary edge": "not certified
+		//! closed" is not "certified open" (DL-143 audited four glTF assets,
+		//! all closed solids, none of which certify closed), and a mesh with
+		//! a boundary can be a box plus a stray quad.  Two parallel sheets
+		//! in ONE mesh (a slab built as one open mesh) are refused too: N
+		//! open sheets can bound a volume no single sheet can (DL-157
+		//! round 3), so a collection is never certified.
+		//!
+		//! `corner( t, k )` returns triangle `t`'s k-th corner.
+		template< class CornerFn >
+		inline bool IsPlanarConsistentlyWoundSheet( const size_t nTris, CornerFn corner )
+		{
+			if( nTris == 0 ) {
+				return false;
+			}
+			BoundingBox bb( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+				Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+			for( size_t t = 0; t < nTris; ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					bb.Include( corner( t, k ) );
+				}
+			}
+			const Vector3 ext = Vector3Ops::mkVector3( bb.ur, bb.ll );
+			const Scalar diag = Vector3Ops::Magnitude( ext );
+			if( !( diag > 0 ) || !( diag < RISE_INFINITY ) ) {
+				return false;
+			}
+			const Scalar eps = diag * 1e-6 > 1e-9 ? diag * 1e-6 : 1e-9;
+			const Scalar degenerate = diag * diag * 1e-12;
+
+			// Reference plane: the largest triangle's.
+			size_t best = nTris;
+			Scalar bestMag = 0;
+			for( size_t t = 0; t < nTris; ++t ) {
+				const Point3& a = corner( t, 0 );
+				const Vector3 c = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( corner( t, 1 ), a ),
+					Vector3Ops::mkVector3( corner( t, 2 ), a ) );
+				const Scalar m = Vector3Ops::Magnitude( c );
+				if( m > bestMag ) {
+					bestMag = m;
+					best = t;
+				}
+			}
+			if( best == nTris || !( bestMag > degenerate ) ) {
+				return false;
+			}
+			const Point3 p0 = corner( best, 0 );
+			const Vector3 n = Vector3Ops::Normalize( Vector3Ops::Cross(
+				Vector3Ops::mkVector3( corner( best, 1 ), p0 ),
+				Vector3Ops::mkVector3( corner( best, 2 ), p0 ) ) );
+
+			for( size_t t = 0; t < nTris; ++t ) {
+				for( int k = 0; k < 3; ++k ) {
+					const Scalar d = Vector3Ops::Dot( Vector3Ops::mkVector3( corner( t, k ), p0 ), n );
+					if( !( d <= eps && d >= -eps ) ) {
+						return false;
+					}
+				}
+				const Point3& a = corner( t, 0 );
+				const Vector3 c = Vector3Ops::Cross(
+					Vector3Ops::mkVector3( corner( t, 1 ), a ),
+					Vector3Ops::mkVector3( corner( t, 2 ), a ) );
+				const Scalar m = Vector3Ops::Magnitude( c );
+				if( m > degenerate && !( Vector3Ops::Dot( c, n ) > 0 ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		//! DL-143.  Welds `points` to a shared id per PHYSICAL corner:
+		//! `outWeldedId[i]` is the welded id of `points[i]`: points are
+		//! visited in order and each joins the NEAREST earlier
+		//! representative within `eps = max(1e-9, 1e-6 x bbox diagonal,
+		//! minEps)` (ties: lowest id), else founds a new one.  The partition
+		//! is a pure function of the input sequence.  It is not an
+		//! equivalence on positions: points within `eps` can fall in
+		//! different classes.  `outTransitive` reports an UNAMBIGUOUS weld
+		//! (each point within `eps/2` of its representative, representatives
+		//! more than `1.5 eps` apart, so every point had exactly one
+		//! candidate); even then different classes are only guaranteed
+		//! `eps/2` apart.  `outEps`, when non-null, receives `eps`.  False
+		//! on a non-finite input.  (Shared with the DL-382 certificate below
+		//! so it welds with exactly the watertightness weld's rule; the full
+		//! rationale is on the definition.)
+		extern bool WeldVertexPositions(
+			const std::vector<Point3>& points,
+			std::vector<unsigned int>& outWeldedId,
+			Scalar* outEps = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			bool* outTransitive = nullptr
+			);
+
+		//! Result of IsEmbeddedOpenOrientedSurface.
+		struct OpenSurfaceCertificate
+		{
+			bool	certified = false;	//!< every test passed
+			bool	topologicalRefusal = false;	//!< refused at Step 2/2b/3 (depends only on post-weld vertex partition)
+			bool	budgetRefusal = false;	//!< refused because Step 4's insertion or pair budget was exceeded (no geometric witness)
+			std::size_t	refusalTriA = std::size_t( -1 );	//!< Step 1 (A == B) or Step 4 (A != B) failure witness
+			std::size_t	refusalTriB = std::size_t( -1 );
+			//! Signed volume of the triangles about their bounding-box
+			//! centre (sum of (a-c).((b-c)x(d-c))/6).  For a closed
+			//! outward-wound solid it is the enclosed volume; negative on a
+			//! certified surface hints at an inside-out cracked solid
+			//! (diagnostic only -- see docs/DL382_OPEN_SHEET_CERTIFICATE.md
+			//! section 2.1).  Filled only when `certified`.
+			Scalar	signedVolumeAboutCentre = 0;
+			//! DL-623: certified lower bound on the Step-4 Euclidean
+			//! separation across all triangle pairs at the certified
+			//! positions (> eps when `certified`).
+			Scalar	separationLowerBound = 0;
+		};
+
+		extern bool CheckOpenSurfaceStep4Pair(
+			const Point3* Pi,
+			const unsigned int* Ii,
+			const Point3* Pj,
+			const unsigned int* Ij,
+			Scalar epsSq
+			);
+
+		//! DL-623 review: a RIGOROUS lower bound on the smallest eigenvalue
+		//! of the symmetric 3x3 matrix `G` (its stored floating-point
+		//! entries taken as exact; only the upper triangle is read), proved
+		//! by floating-point Cholesky of `G - (t + c) I` with a backward-
+		//! error margin `c` (Higham, Accuracy and Stability, Thm 10.3; Rump,
+		//! "Verification of positive definiteness", 2006).  Unlike the
+		//! signs of computed Sylvester minors, whose rounding error relative
+		//! to the minor grows like tr(G)^2 / lambda when two eigenvalues are
+		//! small, the margin is a fixed multiple of eps * tr(G), so the
+		//! bound holds for any conditioning.  Returns 0 when no POSITIVE
+		//! bound can be proved (0 is then NOT a claim that `G` is PSD), and
+		//! for non-finite or out-of-range input.
+		extern Scalar SymmetricMinEigenvalueLowerBound3( const Scalar G[3][3] );
+
+		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
+		//! consistently oriented (readable) face?  The general certificate
+		//! behind the open-sheet face rule for meshes; the full proof is in
+		//! docs/DL382_OPEN_SHEET_CERTIFICATE.md section 2.  `corners` holds
+		//! 3 points per triangle.  Certified iff, after the DL-143 weld
+		//! (WeldVertexPositions):
+		//!  1. no triangle repeats a welded vertex and every triangle's
+		//!     smallest altitude exceeds the weld epsilon;
+		//!  2. every welded edge is used by one or two triangles, a shared
+		//!     edge in OPPOSITE directions (consistent orientation), and no
+		//!     two triangles share all three welded vertices;
+		//!  3. free-face peeling deletes every triangle (=> H_2 = 0: no
+		//!     closed 2-cycle, so no closed component and no closed
+		//!     component plus flaps);
+		//!  4. the triangles meet only in the faces the weld says they
+		//!     share, with margin `eps` (embedded).
+		//! 3 + 4 give a connected complement by Alexander duality, i.e. no
+		//! enclosed volume (pockets thinner than the weld tolerance are
+		//! below resolution, as for the planar certificate).  Authored
+		//! normals agreeing with the winding is the CALLER's check.
+		//! Conservative: anything it cannot prove is refused.
+		extern OpenSurfaceCertificate IsEmbeddedOpenOrientedSurface(
+			const std::vector<Point3>& corners,
+			std::vector<unsigned int>* outWeldedId = nullptr,
+			Scalar minEps = Scalar( 0 ),
+			const std::vector<unsigned int>* preWeldedId = nullptr,
+			Scalar preWeldEps = Scalar( 0 ),
+			bool preWeldTopologyVerified = false
+			);
+
+		//! DL-616: analytic open-versus-closed certification for a PATCH
+		//! SET (one geometry holding many patches).  Exactly one of the
+		//! two outputs can be TRUE, and only when proved:
+		//!  - `outCertifiedWatertight`: the set is a connected, consistently
+		//!    oriented, EMBEDDED closed 2-manifold with positive enclosed
+		//!    volume (outward winding);
+		//!  - `outProvablyOpenSheet`: the set is a connected, consistently
+		//!    oriented, EMBEDDED 2-manifold with non-empty boundary, so it
+		//!    encloses no volume.
+		//! Topology comes only from EXACT seam identity (every matched
+		//! non-collapsed side is the bitwise-reversed control polygon of
+		//! exactly one other side, and a patch may have at most one collapsed
+		//! side whose four control points are bitwise equal to a pole vertex
+		//! where all incident patches form one manifold cycle or chain);
+		//! nothing is welded by tolerance.  Embedding is proved on a grid of
+		//! sub-patches: each sub-patch is injective (every active cross
+		//! product of a u- and a v-derivative control vector lies in one open
+		//! half-space, which by the mean-value theorem makes the map
+		//! injective), every pair sharing a side is injective as a union (the
+		//! same test over both nets), every pair sharing only a vertex or pole
+		//! is strictly separated by a plane through it, and every other pair
+		//! is disjoint by recursive control-hull boxes.  A non-constant
+		//! looping side, a patch with two collapsed sides, a T-junction, a
+		//! non-manifold pole / pinch vertex or a crossing anywhere is refused.
+		//! `outNegativeOpenSignedVolume` reports an open sheet whose exact
+		//! signed volume about its bounding-box centre is negative (the
+		//! inward-winding warning).  `diag`, when given, supplies an optional
+		//! work-budget override and receives the first failed proof step (a
+		//! static string; "" when certified), the sub-patch grid that decided
+		//! and the work spent.  The work budget and a sub-patch count cap
+		//! bound time and memory BEFORE anything large is allocated; past
+		//! either the set is refused.
+		struct PatchSetCertDiagnostics
+		{
+			std::size_t		workBudget = 0;	//!< [in] 0 = the default budget
+			const char*		reason = "";	//!< [out]
+			unsigned int	grid = 0;		//!< [out] 4 or 8 (0: refused before subdividing)
+			std::size_t		workUsed = 0;	//!< [out]
+		};
+
+		extern void CertifyBilinearPatchSet(
+			const std::vector<BilinearPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume,
+			PatchSetCertDiagnostics* diag = nullptr
+			);
+
+		//! DL-617 / DL-624: TOPOLOGICAL openness of a patch set from exact
+		//! seam identity and pole-fan link topology alone -- no embedding
+		//! proof: +1 some non-collapsed side has no glued partner (a free
+		//! boundary), 0 every non-collapsed side is glued (no free boundary),
+		//! -1 undecidable (looping or multi-collapsed patch, non-manifold or
+		//! mismatched seams, or a non-manifold pole / pinch vertex).  Cheap
+		//! (two sorts); decides a composite's operand ROLES, which must not
+		//! depend on whether the embedding proof happens to succeed.
+		extern int BezierPatchSetOpenness( const std::vector<BezierPatch>& patches );
+		extern int BilinearPatchSetOpenness( const std::vector<BilinearPatch>& patches );
+
+		//! DL-621(a): TOPOLOGICAL openness of a triangle mesh from its
+		//! position-welded edge graph alone -- no altitude, normal-agreement,
+		//! coplanar-opposed or Step-4 embedding proof: +1 some edge is used
+		//! by a single triangle (a free boundary) and free-face peeling
+		//! removes every triangle (no closed 2-cycle component alongside it),
+		//! 0 every edge is shared by two oppositely oriented triangles with
+		//! distinct third welded vertices (no free boundary), -1 undecidable
+		//! (empty, non-finite, a triangle with repeated welded corners, an
+		//! edge used by more than two triangles or traversed the same way
+		//! twice, two triangles sharing all three welded corners, or a closed
+		//! 2-cycle mixed with a free boundary).  Decides a composite's
+		//! operand ROLES for meshes and displaced surfaces, which must not
+		//! flip when a geometric certificate comes or goes.
+		//!
+		//! DL-621 review: two guards make the role CONSERVATIVE -- an
+		//! uncertain mesh answers -1, which leaves the composite on its
+		//! solid interval algebra.  (1) +1 additionally needs a SUBSTANTIAL
+		//! free boundary: the vector areas of its boundary components must
+		//! total at least 2 % of the mesh's area, so a "solid" left open by
+		//! a pinhole, a crack or an unwelded T-junction (most imported ones,
+		//! DL-143) is not trimmed as a capless skin.  (2) 0 is refused for a
+		//! closed component that folds flat onto itself across an edge (the
+		//! DL-197 coplanar-opposed discriminator at the weld epsilon) AND
+		//! encloses no volume (thickness 2|V|/A at most the weld epsilon):
+		//! two open sheets welded into a pillow.  Neither guard reads an
+		//! embedding proof.
+		extern int TriangleMeshOpenness( const std::vector<Point3>& corners );
+
+		//! DL-616: a process-wide counter bumped whenever any patch set's
+		//! certificate may have changed (a patch added, a set re-prepared),
+		//! so a composite's cached certificate can tell it is stale.
+		extern unsigned int PatchCertificateEpoch();
+		extern void BumpPatchCertificateEpoch();
+
+		//! DL-616: as `CertifyBilinearPatchSet`, for bicubic Bezier patches
+		//! (a bilinear patch is certified as its exact degree elevation).
+		extern void CertifyBezierPatchSet(
+			const std::vector<BezierPatch>& patches,
+			bool& outCertifiedWatertight,
+			bool& outProvablyOpenSheet,
+			bool& outNegativeOpenSignedVolume,
+			PatchSetCertDiagnostics* diag = nullptr
+			);
 	}
 }
 

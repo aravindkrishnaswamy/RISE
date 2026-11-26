@@ -1,0 +1,3 @@
+Compiling strict calibration owner: ../../../tests/FireSequenceTest.cpp
+Compiling: ../../../src/Library/Job.cpp
+Linking ../../../bin/tests/FireSequenceTest
