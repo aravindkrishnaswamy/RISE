@@ -8,6 +8,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -71,7 +72,126 @@ bool Boolean(const J &v, const std::string &label) {
     Require(v.isBool(), label + " must be boolean");
     return v.asBool();
 }
+void ValidateUnicode(const std::string &text) {
+    // Agent JSON is intentionally permissive; this artifact boundary accepts
+    // only UTF-8 encodings of Unicode scalar values, including object keys.
+    for (std::size_t i = 0; i < text.size();) {
+        const auto first = static_cast<unsigned char>(text[i++]);
+        if (first < 0x80)
+            continue;
+        unsigned continuation = 0, minimum = 0, codepoint = 0;
+        if (first >= 0xc2 && first <= 0xdf) {
+            continuation = 1;
+            minimum = 0x80;
+            codepoint = first & 0x1f;
+        } else if (first >= 0xe0 && first <= 0xef) {
+            continuation = 2;
+            minimum = 0x800;
+            codepoint = first & 0x0f;
+        } else if (first >= 0xf0 && first <= 0xf4) {
+            continuation = 3;
+            minimum = 0x10000;
+            codepoint = first & 0x07;
+        } else {
+            throw std::runtime_error("invalid Unicode: malformed UTF-8");
+        }
+        Require(continuation <= text.size() - i, "invalid Unicode: truncated UTF-8");
+        for (unsigned j = 0; j < continuation; ++j) {
+            const auto next = static_cast<unsigned char>(text[i++]);
+            Require((next & 0xc0) == 0x80, "invalid Unicode: malformed UTF-8 continuation");
+            codepoint = (codepoint << 6) | (next & 0x3f);
+        }
+        Require(codepoint >= minimum && codepoint <= 0x10ffff &&
+                    !(codepoint >= 0xd800 && codepoint <= 0xdfff),
+                "invalid Unicode: non-scalar or overlong UTF-8");
+    }
+}
+bool Digit(char c) {
+    return c >= '0' && c <= '9';
+}
+void ValidateNumericToken(const std::string &token) {
+    // Compare the original decimal magnitude, before strtod can round an
+    // integer identifier such as 9007199254740993 down to 9007199254740992.
+    std::size_t position = token[0] == '-' ? 1 : 0;
+    std::string digits;
+    while (position < token.size() && Digit(token[position]))
+        digits += token[position++];
+    Require(!digits.empty(), "invalid JSON number");
+    Require(digits.size() == 1 || digits[0] != '0', "invalid JSON number: leading zero");
+    std::size_t fractionDigits = 0;
+    if (position < token.size() && token[position] == '.') {
+        ++position;
+        while (position < token.size() && Digit(token[position])) {
+            digits += token[position++];
+            ++fractionDigits;
+        }
+        Require(fractionDigits > 0, "invalid JSON number: missing fractional digits");
+    }
+    std::int64_t exponent = 0;
+    if (position < token.size() && (token[position] == 'e' || token[position] == 'E')) {
+        ++position;
+        bool negative = false;
+        if (position < token.size() && (token[position] == '-' || token[position] == '+'))
+            negative = token[position++] == '-';
+        const std::size_t start = position;
+        // Any larger exponent exceeds the number of significand digits that
+        // could offset it. Saturation bounds work without integer overflow.
+        const auto limit = static_cast<std::int64_t>(token.size()) + 32;
+        while (position < token.size() && Digit(token[position]))
+            exponent = std::min(limit, exponent * 10 + (token[position++] - '0'));
+        Require(position > start, "invalid JSON number: missing exponent digits");
+        if (negative)
+            exponent = -exponent;
+    }
+    Require(position == token.size(), "invalid JSON number");
+    const auto significant = digits.find_first_not_of('0');
+    if (significant == std::string::npos)
+        return;
+    const auto integerPlaces = static_cast<std::int64_t>(digits.size() - significant) + exponent -
+                               static_cast<std::int64_t>(fractionDigits);
+    constexpr const char *maximum = "9007199254740992"; // 2^53, exactly representable.
+    bool supported = integerPlaces < 16;
+    if (integerPlaces == 16) {
+        std::string leading;
+        for (std::size_t i = 0; i < 16; ++i)
+            leading += significant + i < digits.size() ? digits[significant + i] : '0';
+        supported = leading < maximum;
+        if (leading == maximum)
+            supported = digits.find_first_not_of('0', std::min(digits.size(), significant + 16)) ==
+                        std::string::npos;
+    }
+    Require(supported,
+            "supported JSON numeric magnitude is <= 2^53; encode larger identifiers as strings");
+    const double value = std::strtod(token.c_str(), nullptr);
+    Require(std::isfinite(value) && value != 0.0, "JSON number underflows finite binary64 support");
+}
+void ValidateSourceTokens(const std::string &bytes) {
+    ValidateUnicode(bytes);
+    for (std::size_t position = 0; position < bytes.size();) {
+        if (bytes[position] == '"') {
+            // Numeric-looking text inside quoted keys/values remains text.
+            ++position;
+            while (position < bytes.size() && bytes[position] != '"') {
+                if (bytes[position++] == '\\' && position < bytes.size())
+                    ++position;
+            }
+            if (position < bytes.size())
+                ++position;
+        } else if (Digit(bytes[position]) || bytes[position] == '-') {
+            const std::size_t start = position++;
+            while (position < bytes.size() &&
+                   (Digit(bytes[position]) || bytes[position] == '.' || bytes[position] == 'e' ||
+                    bytes[position] == 'E' || bytes[position] == '+' || bytes[position] == '-'))
+                ++position;
+            ValidateNumericToken(bytes.substr(start, position - start));
+        } else {
+            ++position;
+        }
+    }
+}
 void ValidateTree(const J &v) {
+    if (v.isString())
+        ValidateUnicode(v.asString());
     if (v.isNumber())
         Require(std::isfinite(v.asNumber()), "input contains nonfinite number");
     if (v.isArray())
@@ -80,6 +200,7 @@ void ValidateTree(const J &v) {
     if (v.isObject()) {
         std::set<std::string> keys;
         for (const auto &p : v.members()) {
+            ValidateUnicode(p.first);
             Require(keys.insert(p.first).second, "duplicate JSON key: " + p.first);
             ValidateTree(p.second);
         }
@@ -226,6 +347,7 @@ Resolved Resolve(const Options &options) {
     const auto bytes = Read(options.specimen);
     Resolved r;
     std::string error;
+    ValidateSourceTokens(bytes);
     Require(RISE::Agent::JsonParse(bytes, r.original, error), "invalid specimen JSON: " + error);
     ValidateTree(r.original);
     const auto &source = r.original;
@@ -738,6 +860,7 @@ int main(int argc, char **argv) {
         const J output = Measure(options, resolved);
         // Complete serialization precedes any output mutation; temporary is unique.
         const auto bytes = RISE::Agent::JsonSerialize(output) + "\n";
+        ValidateUnicode(bytes);
         AtomicWrite(options.output, bytes);
         std::cout << "Wrote diagnostic measurement for " << options.histories
                   << " incident histories to " << options.output << '\n';

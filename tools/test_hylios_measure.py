@@ -66,11 +66,11 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(self.output.read_text())
 
-    def reject_case(self, value, expected, **changes):
+    def reject_case(self, value, expected, failure_marker="", **changes):
         self.source.write_text(json.dumps(value))
         self.output.write_text("KEEP-EXISTING-OUTPUT")
         result = subprocess.run(self.command(**changes), text=True, capture_output=True, timeout=30)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 0, failure_marker)
         self.assertIn(expected, result.stderr)
         self.assertEqual(self.output.read_text(), "KEEP-EXISTING-OUTPUT")
         self.assertEqual(list(self.root.glob("measurement.json.tmp.*")), [])
@@ -96,6 +96,58 @@ class MeasurementCLI(unittest.TestCase):
         self.assertEqual(a["aggregate_counters"]["acceptedParticles"], 0)
         self.assertEqual(a["aggregate_counters"]["fiberEvents"], 0)
         self.assertEqual(list(self.root.glob("measurement.json.tmp.*")), [])
+
+    def test_lossy_metadata_integer_tokens_are_rejected_atomically(self):
+        for token in ("9007199254740993", "-9007199254740993",
+                      "9.007199254740993e15", "9007199254740993.0"):
+            with self.subTest(token=token):
+                value = specimen()
+                value["provenance"]["sequence_id"] = "RAW_NUMERIC_TOKEN"
+                self.source.write_text(json.dumps(value).replace('"RAW_NUMERIC_TOKEN"', token))
+                self.output.write_text("KEEP-EXISTING-OUTPUT")
+                result = subprocess.run(self.command(), text=True, capture_output=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0, "LOSSLESS_METADATA_INTEGER")
+                self.assertIn("supported JSON numeric magnitude", result.stderr)
+                self.assertEqual(self.output.read_text(), "KEEP-EXISTING-OUTPUT")
+                self.assertEqual(list(self.root.glob("measurement.json.tmp.*")), [])
+                print("PASS: LOSSLESS_METADATA_INTEGER rejects", token)
+
+    def test_invalid_metadata_unicode_is_rejected_atomically(self):
+        for invalid in ("\ud800", "\udc00", "\ud800x", "\ud800\u0041"):
+            for as_key in (False, True):
+                with self.subTest(unicode=repr(invalid), as_key=as_key):
+                    value = specimen()
+                    if as_key:
+                        value["provenance"][invalid] = "invalid key"
+                    else:
+                        value["provenance"]["path"] = invalid
+                    self.reject_case(value, "invalid Unicode", failure_marker="LOSSLESS_METADATA_UNICODE")
+                    print("PASS: LOSSLESS_METADATA_UNICODE rejects", repr(invalid), "key", as_key)
+        for invalid in (b"\xed\xa0\x80", b"\xc0\xaf", b"\xf4\x90\x80\x80", b"\xff"):
+            with self.subTest(raw_utf8=invalid):
+                value = specimen()
+                value["provenance"]["path"] = "RAW_UTF8_TOKEN"
+                self.source.write_bytes(json.dumps(value).encode().replace(b"RAW_UTF8_TOKEN", invalid))
+                self.output.write_text("KEEP-EXISTING-OUTPUT")
+                result = subprocess.run(self.command(), text=True, capture_output=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0, "LOSSLESS_METADATA_UNICODE")
+                self.assertIn("invalid Unicode", result.stderr)
+                self.assertEqual(self.output.read_text(), "KEEP-EXISTING-OUTPUT")
+                self.assertEqual(list(self.root.glob("measurement.json.tmp.*")), [])
+                print("PASS: LOSSLESS_METADATA_UNICODE rejects raw", invalid)
+
+    def test_supported_unicode_and_integer_metadata_round_trip(self):
+        value = specimen()
+        value["provenance"].update(path="café/雪/😀", sequence_id=2 ** 53,
+                                   large_identifier_as_string="9007199254740993")
+        escaped = self.run_case(value)
+        self.assertEqual(escaped["provenance"], value["provenance"])
+        self.source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        result = subprocess.run(self.command(), text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw = json.loads(self.output.read_text(encoding="utf-8"))
+        self.assertEqual(raw["provenance"], value["provenance"])
+        self.assertEqual(raw["input_bytes_sha256"], hashlib.sha256(self.source.read_bytes()).hexdigest())
 
     def test_active_particle_resolution_and_strict_label_preservation(self):
         p = specimen()

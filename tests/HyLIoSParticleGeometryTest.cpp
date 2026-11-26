@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cfenv>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -151,6 +152,7 @@ int main() {
 			Absolute(Dot(extremeTangent->exitOutwardNormal,{0.8,0,0.6}),0,2e-15,"underflowing spheroid coefficients cannot produce a non-tangent tangent normal");
 	}
 	for(double major : {0x1p20,0x1p52,0x1p100}) {
+		try {
 		const ProlateParticle grazing{1,major,z};
 		const ParticleVector rawDirection{1/major,0,1};
 		const auto surfaceChord=IntersectProlateRay(grazing,{1,0,0},rawDirection);
@@ -178,7 +180,29 @@ int main() {
 			VectorNear(midpoint->entryOutwardNormal,{0,0,-1},0,"implicit midpoint chord retains exact polar normal");
 			VectorNear(midpoint->exitPointMetres,{1,0,0},0,"implicit midpoint chord retains exact equator exit");
 		}
+		} catch(const std::range_error&) {
+			Check(major>0x1p20,"ordinary grazing geometry stays inside supported uncertainty domain");
+		}
 	}
+	for(double tangentMajor : {5.0,10.0}) for(ParticleVector tangentDirection : {ParticleVector{-4,3,0},ParticleVector{4,-3,0}}) {
+		const auto ordinaryTangent=IntersectProlateRay({5,tangentMajor,z},{3,4,0},tangentDirection);
+		Check(ordinaryTangent && ordinaryTangent->entryDistanceMetres==0 && ordinaryTangent->exitDistanceMetres==0,
+			"raw implicit metric retains ordinary 3/4/5 tangent in either direction");
+		if(ordinaryTangent) VectorNear(ordinaryTangent->entryOutwardNormal,{0.6,0.8,0},1e-15,"raw implicit tangent has analytic outward normal");
+	}
+	const auto arbitrarySphereAxis=IntersectProlateRay({5,5,{1,2,3}},{3,4,0},{-4,3,0});
+	Check(arbitrarySphereAxis && arbitrarySphereAxis->exitDistanceMetres==0,"sphere tangent metric is independent of irrelevant authored axis");
+	const auto skin=IntersectProlateRay({0.4e-6,1.2e-6,{1,2,3}},{0.1e-6,0,0},{0.3,0.4,0.5});
+	Check(skin.has_value(),"physiological micron axes and ordinary aspect retain general intersection support");
+	for(double major : {0x1p52,0x1p100}) {
+		const double slope=0.7;
+		Throws<std::range_error>([&]{ IntersectProlateRay({1,major,z},{slope/2,0,-major/2},{slope/major,0,1}); },
+			"endpoint uncertainty rejects uncertifiable grazing polar normal");
+	}
+	const double supportedMajor=0x1p20,slope=0.7;
+	const auto supportedGrazing=IntersectProlateRay({1,supportedMajor,z},{slope/2,0,-supportedMajor/2},{slope/supportedMajor,0,1});
+	Check(supportedGrazing.has_value(),"bounded ordinary grazing aspect retains general intersection support");
+	if(supportedGrazing) VectorNear(supportedGrazing->entryOutwardNormal,{0,0,-1},1e-9,"supported grazing normal agrees with analytic pole within its resolved precision");
 	// Independent reference and rotation/scale/axis-sign covariance.
 	std::mt19937_64 generator(0x82b43a6);
 	std::uniform_real_distribution<double> uniform(0,1);
@@ -270,9 +294,11 @@ int main() {
 	const auto subnormalSphere=SampleProlateProjectedHit({smallest,smallest,z},z,0.75,0);
 	Check(subnormalSphere.chord.chordLengthMetres==smallest,"full chord retains subnormal length when half-chord rounds to zero");
 	const ProlateParticle slender{smallest,largest,z};
-	const auto tiny=IntersectProlateRay(slender,{0,0,0},x);
-	Check(tiny && tiny->chordLengthMetres==2*smallest,"axis ratio below representable range keeps transverse subnormal chord");
-	if(tiny) VectorNear(tiny->exitOutwardNormal,x,0,"extreme-ratio transverse normal remains exact");
+	const auto tiny=SampleProlateProjectedHit(slender,x,0,0).chord;
+	Check(tiny.chordLengthMetres==2*smallest,"axis ratio below representable range keeps transverse subnormal chord");
+	VectorNear(tiny.exitOutwardNormal,x,0,"extreme-ratio transverse normal remains exact");
+	Throws<std::range_error>([&]{ IntersectProlateRay(slender,{0,0,0},x); },
+		"general extreme intersection reports unsupported enclosure exponent range");
 	const auto pole=SampleProlateProjectedHit({smallest,1.0,z},z,0,0);
 	Check(pole.chord.chordLengthMetres==2,"extreme-ratio axial chord remains macroscopic");
 	VectorNear(pole.chord.exitOutwardNormal,z,0,"extreme-ratio pole normal survives vanishing a/b");
@@ -297,6 +323,16 @@ int main() {
 	for(double bad : {-0.01,1.0,nan,infinity}) {
 		Throws<std::invalid_argument>([&]{ SampleProlateProjectedHit(prolate,z,bad,0); },"invalid radial uniform is rejected");
 		Throws<std::invalid_argument>([&]{ SampleProlateProjectedHit(prolate,z,0,bad); },"invalid azimuth uniform is rejected");
+	}
+	const int previousRounding=std::fegetround();
+	if(std::fesetround(FE_DOWNWARD)==0) {
+		bool rejected=false;
+		try { ProlateProjectedArea(sphere,z); }
+		catch(const std::runtime_error&) { rejected=true; }
+		catch(...) {}
+		const bool restored=std::fesetround(previousRounding)==0;
+		Check(restored,"geometry test restores floating-point rounding environment");
+		Check(rejected,"geometry rejects unsupported directed rounding environment");
 	}
 	if(failures) { std::cerr << failures << " HyLIoS particle geometry checks failed\n"; return 1; }
 	std::cout << "PASS: HyLIoS particle geometry analytic, independent-reference, sampling and boundary contracts\n";

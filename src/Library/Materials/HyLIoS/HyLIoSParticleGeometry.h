@@ -7,6 +7,8 @@ namespace RISE::HyLIoS {
 // Geometry prerequisite for HyLIoS, not a particle-placement/transport model.
 // The implementation TU requires strict FP (no fast-math/reassociation); its
 // compensated products and sums rely on IEEE binary64 round-to-nearest steps.
+// Calls require FE_TONEAREST and gradual underflow; other environments throw
+// runtime_error before geometry arithmetic.
 // All positions are relative to the particle centre, in metres. Keep scene
 // translation outside these primitives so microscopic chords retain precision.
 struct ParticleVector { double x, y, z; };
@@ -49,8 +51,12 @@ double ProlateProjectedArea(const ProlateParticle& particle, ParticleVector dire
 // nullopt means the infinite line misses, or its exit lies strictly behind the
 // ray origin. Tangency is a valid zero-length chord, including at distance zero.
 // On/inside origins use an implicit quadric, with known surface roots deflated.
-// Its raw-direction parameter roots must be representable, otherwise a range
-// exception is raised even when a corresponding physical distance might fit.
+// Its raw-direction parameter roots must be representable. Finite outward
+// coefficient/root/gradient enclosures are also required: range_error is raised
+// when an enclosure cannot be formed or its gradient uncertainty radius reaches
+// the nominal gradient magnitude. This explicitly excludes poorly resolved
+// grazing normals and extreme exponent combinations. Known surface zeros are
+// deflated only when certified; the projected sampler has no such root enclosure.
 // No ray-origin epsilon or self-intersection policy is imposed by this math.
 std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle,
 	ParticleVector originRelativeMetres, ParticleVector direction);

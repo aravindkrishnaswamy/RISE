@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
+#include <cfenv>
 #include <cstddef>
 #include <initializer_list>
 #include <limits>
@@ -15,6 +17,14 @@
 namespace RISE::HyLIoS {
 namespace {
 constexpr double Pi = 3.141592653589793238462643383279502884;
+void RequireFloatingPointEnvironment() {
+	if (std::fegetround()!=FE_TONEAREST) throw std::runtime_error("particle geometry requires round-to-nearest");
+	volatile double normal=std::numeric_limits<double>::min();
+	volatile double subnormal=std::numeric_limits<double>::denorm_min();
+	volatile double half=0.5,two=2.0;
+	if (normal*half==0.0 || subnormal*two==0.0)
+		throw std::runtime_error("particle geometry requires gradual underflow");
+}
 void Finite(double value) {
 	if (!std::isfinite(value)) throw std::invalid_argument("particle geometry requires finite inputs");
 }
@@ -70,7 +80,7 @@ SumPair TwoSum(double a, double b) {
 // Fixed-size expansion for three products, their FMA residuals, and an
 // optional constant. Its tail stays separate until cancellation is complete.
 template<std::size_t Count> double SumComponents(double (&terms)[Count]) {
-	static_assert(Count==6 || Count==7,"bounded particle arithmetic expansion");
+	static_assert(Count==6 || Count==7 || Count==8,"bounded particle arithmetic expansion");
 	std::sort(terms,terms+Count,[](double a,double b){ return std::abs(a)>std::abs(b); });
 	for (std::size_t i=1; i<Count; ++i) if (std::signbit(terms[i]) != std::signbit(terms[0])) {
 		std::swap(terms[1],terms[i]); break;
@@ -206,11 +216,88 @@ ParticleVector Combine(ParticleVector a, double x, ParticleVector b, double y, P
 	const ParticleVector result{Dot({x,y,z},{a.x,b.x,c.x}),Dot({x,y,z},{a.y,b.y,c.y}),Dot({x,y,z},{a.z,b.z,c.z})};
 	return result;
 }
+// Outward-rounded, finite intervals are a support check, not a replacement
+// transport representation. Unsupported exponent ranges fail explicitly.
+struct Bound { double low,high; };
+using BoundVector=std::array<Bound,3>;
+Bound Point(double x) { return {x,x}; }
+Bound Outward(double low,double high) {
+	low=std::nextafter(low,-std::numeric_limits<double>::infinity());
+	high=std::nextafter(high,std::numeric_limits<double>::infinity());
+	if (!std::isfinite(low) || !std::isfinite(high)) throw std::range_error("particle root uncertainty exceeds supported exponent range");
+	return {low,high};
+}
+Bound AddBound(Bound a,Bound b) {
+	if (a.low==0.0 && a.high==0.0) return b;
+	if (b.low==0.0 && b.high==0.0) return a;
+	if (a.low==a.high && b.low==b.high) {
+		const SumPair sum=TwoSum(a.low,b.low);
+		if (sum.tail==0.0) return Point(sum.head);
+	}
+	return Outward(a.low+b.low,a.high+b.high);
+}
+Bound NegateBound(Bound a) { return {-a.high,-a.low}; }
+// If the exact product quantum is no smaller than denorm_min, a zero
+// FMA residual certifies exactness. Otherwise residual underflow can conceal it.
+bool ProductResidualRepresentable(double a,double b) {
+	if (a==0.0 || b==0.0) return true;
+	int ae=0,be=0; std::frexp(a,&ae); std::frexp(b,&be);
+	return ae+be>=std::numeric_limits<double>::min_exponent+std::numeric_limits<double>::digits;
+}
+Bound MultiplyBound(Bound a,Bound b) {
+	if ((a.low==0.0 && a.high==0.0) || (b.low==0.0 && b.high==0.0)) return Point(0.0);
+	const double values[4]={a.low*b.low,a.low*b.high,a.high*b.low,a.high*b.high};
+	for (double value:values) if (!std::isfinite(value)) throw std::range_error("particle uncertainty product exceeds supported exponent range");
+	if (a.low==a.high && b.low==b.high && ProductResidualRepresentable(a.low,b.low) && std::abs(values[0])>=std::numeric_limits<double>::min() &&
+		std::fma(a.low,b.low,-values[0])==0.0) return Point(values[0]);
+	return Outward(*std::min_element(values,values+4),*std::max_element(values,values+4));
+}
+Bound DivideBound(Bound a,Bound b) {
+	if (b.low<=0.0 && b.high>=0.0) throw std::range_error("particle uncertainty divisor includes zero");
+	if (a.low==0.0 && a.high==0.0) return Point(0.0);
+	const double values[4]={a.low/b.low,a.low/b.high,a.high/b.low,a.high/b.high};
+	for (double value:values) if (!std::isfinite(value)) throw std::range_error("particle uncertainty quotient exceeds supported exponent range");
+	if (a.low==a.high && b.low==b.high && ProductResidualRepresentable(values[0],b.low) && std::abs(values[0])>=std::numeric_limits<double>::min() &&
+		std::fma(values[0],b.low,-a.low)==0.0) return Point(values[0]);
+	return Outward(*std::min_element(values,values+4),*std::max_element(values,values+4));
+}
+Bound SqrtBound(Bound a) {
+	if (a.low<0.0) throw std::range_error("particle discriminant uncertainty includes negative values");
+	const double low=std::sqrt(a.low),high=std::sqrt(a.high);
+	if (a.low==a.high && (low==0.0 || (ProductResidualRepresentable(low,low) && std::abs(a.low)>=std::numeric_limits<double>::min() && std::fma(low,low,-a.low)==0.0))) return Point(low);
+	return Outward(low,high);
+}
+BoundVector PointVector(ParticleVector v) { return {Point(v.x),Point(v.y),Point(v.z)}; }
+Bound DotBound(const BoundVector& a,const BoundVector& b) {
+	return AddBound(AddBound(MultiplyBound(a[0],b[0]),MultiplyBound(a[1],b[1])),MultiplyBound(a[2],b[2]));
+}
+BoundVector CrossBound(const BoundVector& a,const BoundVector& b) {
+	return {AddBound(MultiplyBound(a[1],b[2]),NegateBound(MultiplyBound(a[2],b[1]))),
+		AddBound(MultiplyBound(a[2],b[0]),NegateBound(MultiplyBound(a[0],b[2]))),
+		AddBound(MultiplyBound(a[0],b[1]),NegateBound(MultiplyBound(a[1],b[0])))};
+}
+BoundVector UnitBound(BoundVector v) {
+	const Bound norm=SqrtBound(DotBound(v,v));
+	for (Bound& component:v) component=DivideBound(component,norm);
+	return v;
+}
+BoundVector AxisBound(ParticleVector axis) {
+	const double largest=std::max({std::abs(axis.x),std::abs(axis.y),std::abs(axis.z)});
+	int exponent=0; std::frexp(largest,&exponent); --exponent;
+	const double raw[3]={axis.x,axis.y,axis.z};
+	BoundVector result;
+	for (std::size_t i=0;i<3;++i) {
+		const double scaled=std::ldexp(raw[i],-exponent);
+		result[i]=raw[i]!=0.0 && std::abs(scaled)<std::numeric_limits<double>::min() ? Outward(scaled,scaled) : Point(scaled);
+	}
+	return UnitBound(result);
+}
 struct Projection {
 	double a,b,c,s,radius,axialCoefficient;
 	ParticleVector direction,e,f,radial,axis;
 };
 Projection Project(const ProlateParticle& particle, ParticleVector direction) {
+	RequireFloatingPointEnvironment();
 	Finite(particle.semiMinorMetres); Finite(particle.semiMajorMetres);
 	if (particle.semiMinorMetres <= 0.0 || particle.semiMajorMetres < particle.semiMinorMetres)
 		throw std::invalid_argument("particle requires positive prolate semi-axes");
@@ -264,41 +351,125 @@ ParticleVector Normal(const Projection& p, double X, double Y, double w, double 
 		ExtendedProduct({-sign,p.a,p.c,w},{p.b,p.radius}));
 	return NormalizeGradient(p,radial,side,axial);
 }
-ParticleVector EndpointNormal(const Projection& p, ParticleVector point) {
-	return NormalizeGradient(p,
-		ExtendedProduct({Dot(point,p.radial)},{p.a,p.a}),
-		ExtendedProduct({Dot(point,p.f)},{p.a,p.a}),
-		ExtendedProduct({Dot(point,p.axis)},{p.b,p.b}));
+struct ImplicitFrame {
+	ParticleVector radial,side,axis;
+	BoundVector radialBound,sideBound,axisBound;
+};
+ImplicitFrame MakeImplicitFrame(const Projection& p,ParticleVector rawAxis) {
+	if (p.a==p.b) return {{1,0,0},{0,1,0},{0,0,1},PointVector({1,0,0}),PointVector({0,1,0}),PointVector({0,0,1})};
+	const double x=std::abs(p.axis.x),y=std::abs(p.axis.y),z=std::abs(p.axis.z);
+	const ParticleVector helper=x<=y && x<=z ? ParticleVector{1,0,0} : (y<=z ? ParticleVector{0,1,0} : ParticleVector{0,0,1});
+	const ParticleVector radial=Unit(Cross(helper,p.axis)),side=Unit(Cross(p.axis,radial));
+	const BoundVector axisBound=AxisBound(rawAxis);
+	const BoundVector radialBound=UnitBound(CrossBound(PointVector(helper),axisBound));
+	return {radial,side,p.axis,radialBound,UnitBound(CrossBound(axisBound,radialBound)),axisBound};
+}
+ParticleVector InFrame(ParticleVector v,const ImplicitFrame& frame) {
+	return {Dot(v,frame.radial),Dot(v,frame.side),Dot(v,frame.axis)};
+}
+BoundVector InFrameBound(const BoundVector& v,const ImplicitFrame& frame) {
+	return {DotBound(v,frame.radialBound),DotBound(v,frame.sideBound),DotBound(v,frame.axisBound)};
+}
+ParticleVector ImplicitEndpointNormal(const Projection& p,const ImplicitFrame& frame,ParticleVector point) {
+	const ParticleVector local=InFrame(point,frame);
+	const Extended gradients[3]={ExtendedProduct({local.x},{p.a,p.a}),ExtendedProduct({local.y},{p.a,p.a}),ExtendedProduct({local.z},{p.b,p.b})};
+	int maximum=-10000;
+	for (Extended value:gradients) if (value.fraction!=0.0) maximum=std::max(maximum,value.exponent);
+	const ParticleVector normalized=Unit({std::ldexp(gradients[0].fraction,gradients[0].exponent-maximum+1),
+		std::ldexp(gradients[1].fraction,gradients[1].exponent-maximum+1),std::ldexp(gradients[2].fraction,gradients[2].exponent-maximum+1)});
+	return Unit(Combine(frame.radial,normalized.x,frame.side,normalized.y,frame.axis,normalized.z));
+}
+void CheckEndpointUncertainty(const Projection& p,const ImplicitFrame& frame,ParticleVector origin,ParticleVector direction,
+	ParticleVector point,Bound root) {
+	const BoundVector o=PointVector(origin),d=PointVector(direction);
+	BoundVector endpoint;
+	for (std::size_t i=0;i<3;++i) endpoint[i]=AddBound(o[i],MultiplyBound(d[i],root));
+	const BoundVector localBound=InFrameBound(endpoint,frame);
+	const ParticleVector local=InFrame(point,frame);
+	const double coordinates[3]={local.x,local.y,local.z},axes[3]={p.a,p.a,p.b};
+	double gradients[3],errors[3];
+	for (std::size_t i=0;i<3;++i) {
+		const Bound denominator=MultiplyBound(Point(axes[i]),Point(axes[i]));
+		const Bound gradient=DivideBound(localBound[i],denominator);
+		gradients[i]=coordinates[i]/(axes[i]*axes[i]);
+		errors[i]=std::max(std::abs(gradient.low-gradients[i]),std::abs(gradient.high-gradients[i]));
+	}
+	const double magnitude=std::hypot(std::hypot(gradients[0],gradients[1]),gradients[2]);
+	const double uncertainty=std::hypot(std::hypot(errors[0],errors[1]),errors[2]);
+	if (!std::isfinite(magnitude) || !std::isfinite(uncertainty) || uncertainty>=magnitude)
+		throw std::range_error("particle endpoint uncertainty dominates its surface gradient");
 }
 // Only on/inside origins use this branch. C<=0 makes the discriminant
 // B*B-A*C a sum of nonnegative terms; external distant origins instead use
 // the perpendicular silhouette, where that subtraction would lose the radius.
-bool TryInsideChord(const Projection& p, ParticleVector origin, ParticleVector direction,
+bool TryInsideChord(const Projection& p, ParticleVector rawAxis,ParticleVector origin, ParticleVector direction,
 	std::optional<ParticleChord>& result) {
-	const ParticleVector localOrigin{Dot(origin,p.radial),Dot(origin,p.f),Dot(origin,p.axis)};
+	if (p.a==p.b && ((std::abs(origin.x)==p.a && (origin.y!=0.0 || origin.z!=0.0)) ||
+		(std::abs(origin.y)==p.a && (origin.x!=0.0 || origin.z!=0.0)) ||
+		(std::abs(origin.z)==p.a && (origin.x!=0.0 || origin.y!=0.0)))) return false;
+	const ImplicitFrame frame=MakeImplicitFrame(p,rawAxis);
+	const ParticleVector localOrigin=InFrame(origin,frame);
 	if (std::abs(localOrigin.x)>p.a || std::abs(localOrigin.y)>p.a || std::abs(localOrigin.z)>p.b) return false;
 	const ParticleVector q{ProductRatio({localOrigin.x},{p.a}),ProductRatio({localOrigin.y},{p.a}),ProductRatio({localOrigin.z},{p.b})};
 	// A unit coordinate already exhausts the implicit surface budget; any
 	// other nonzero coordinate is strictly outside, even if its square would
 	// underflow before entering the compensated expansion.
-	if ((std::abs(q.x)==1.0 && (q.y!=0.0 || q.z!=0.0)) ||
+	if (p.a!=p.b && ((std::abs(q.x)==1.0 && (q.y!=0.0 || q.z!=0.0)) ||
 		(std::abs(q.y)==1.0 && (q.x!=0.0 || q.z!=0.0)) ||
-		(std::abs(q.z)==1.0 && (q.x!=0.0 || q.y!=0.0))) return false;
-	const double xx=q.x*q.x,yy=q.y*q.y,zz=q.z*q.z;
-	// Include -1 in the expansion BEFORE rounding. round(sum(q*q))-1
-	// could label a strictly inside/outside point as exactly on the surface.
-	double terms[7]={xx,yy,zz,std::fma(q.x,q.x,-xx),std::fma(q.y,q.y,-yy),std::fma(q.z,q.z,-zz),-1.0};
-	const double constant=SumComponents(terms);
+		(std::abs(q.z)==1.0 && (q.x!=0.0 || q.y!=0.0)))) return false;
+	const double rr=p.a*p.a,xx=localOrigin.x*localOrigin.x,yy=localOrigin.y*localOrigin.y;
+	if (!std::isfinite(rr) || rr==0.0 || !std::isfinite(xx) || !std::isfinite(yy) ||
+		!ProductResidualRepresentable(p.a,p.a) || !ProductResidualRepresentable(localOrigin.x,localOrigin.x) ||
+		!ProductResidualRepresentable(localOrigin.y,localOrigin.y))
+		throw std::range_error("particle raw implicit metric exceeds supported exact-residual range");
+	double equatorialTerms[6]={xx,yy,-rr,std::fma(localOrigin.x,localOrigin.x,-xx),
+		std::fma(localOrigin.y,localOrigin.y,-yy),-std::fma(p.a,p.a,-rr)};
+	const double equatorial=SumComponents(equatorialTerms);
+	double constant=Rounded(ExtendedAdd(ExtendedProduct({equatorial},{p.a,p.a}),
+		ExtendedProduct({localOrigin.z,localOrigin.z},{p.b,p.b})));
+	bool exactFrame=true;
+	for (std::size_t i=0;i<3;++i) exactFrame=exactFrame && frame.radialBound[i].low==frame.radialBound[i].high &&
+		frame.sideBound[i].low==frame.sideBound[i].high && frame.axisBound[i].low==frame.axisBound[i].high;
+	bool certifiedZero=constant==0.0 && exactFrame && equatorial==0.0 && localOrigin.z==0.0;
+	if (p.a==p.b) {
+		const double ox=origin.x*origin.x,oy=origin.y*origin.y,oz=origin.z*origin.z;
+		if (!std::isfinite(ox) || !std::isfinite(oy) || !std::isfinite(oz) ||
+			!ProductResidualRepresentable(origin.x,origin.x) || !ProductResidualRepresentable(origin.y,origin.y) ||
+			!ProductResidualRepresentable(origin.z,origin.z)) throw std::range_error("sphere raw metric exceeds supported exact-residual range");
+		double sphereTerms[8]={ox,oy,oz,-rr,std::fma(origin.x,origin.x,-ox),std::fma(origin.y,origin.y,-oy),std::fma(origin.z,origin.z,-oz),-std::fma(p.a,p.a,-rr)};
+		const double residual=SumComponents(sphereTerms);
+		constant=residual/(p.a*p.a);
+		certifiedZero=residual==0.0;
+	}
 	if (constant>0.0) return false;
-	const ParticleVector localDirection{Dot(direction,p.radial),Dot(direction,p.f),Dot(direction,p.axis)};
-	const Extended A=ExtendedDot(
+	const ParticleVector localDirection=InFrame(direction,frame);
+	Extended A=ExtendedDot(
 		ExtendedProduct({localDirection.x,localDirection.x},{p.a,p.a}),
 		ExtendedProduct({localDirection.y,localDirection.y},{p.a,p.a}),
 		ExtendedProduct({localDirection.z,localDirection.z},{p.b,p.b}),{1,1,1});
-	const Extended B=ExtendedDot(
-		ExtendedProduct({localOrigin.x,localDirection.x},{p.a,p.a}),
-		ExtendedProduct({localOrigin.y,localDirection.y},{p.a,p.a}),
-		ExtendedProduct({localOrigin.z,localDirection.z},{p.b,p.b}),{1,1,1});
+	const double equatorialDot=Dot({localOrigin.x,localOrigin.y,0},{localDirection.x,localDirection.y,0});
+	Extended B=ExtendedAdd(ExtendedProduct({equatorialDot},{p.a,p.a}),
+		ExtendedProduct({localOrigin.z,localDirection.z},{p.b,p.b}));
+	bool certifiedBZero=exactFrame && equatorialDot==0.0 && (localOrigin.z==0.0 || localDirection.z==0.0) &&
+		ProductResidualRepresentable(localOrigin.x,localDirection.x) && ProductResidualRepresentable(localOrigin.y,localDirection.y);
+	if (p.a==p.b) {
+		A=ExtendedProduct({Dot(direction,direction)},{p.a,p.a});
+		const double rawB=Dot(origin,direction);
+		B=ExtendedProduct({rawB},{p.a,p.a});
+		certifiedBZero=rawB==0.0 && ProductResidualRepresentable(origin.x,direction.x) && ProductResidualRepresentable(origin.y,direction.y) && ProductResidualRepresentable(origin.z,direction.z);
+	}
+	const BoundVector boundedOrigin=InFrameBound(PointVector(origin),frame),boundedDirection=InFrameBound(PointVector(direction),frame);
+	BoundVector boundedQ,boundedV;
+	const double axes[3]={p.a,p.a,p.b};
+	for (std::size_t i=0;i<3;++i) {
+		boundedQ[i]=DivideBound(boundedOrigin[i],Point(axes[i]));
+		boundedV[i]=DivideBound(boundedDirection[i],Point(axes[i]));
+	}
+	const Bound boundedA=DotBound(boundedV,boundedV);
+	const Bound boundedB=certifiedBZero ? Point(0.0) : DotBound(boundedQ,boundedV);
+	const Bound boundedC=certifiedZero ? Point(0.0) : AddBound(DotBound(boundedQ,boundedQ),Point(-1.0));
+	if (constant==0.0 && p.a!=p.b && (boundedC.low!=0.0 || boundedC.high!=0.0))
+		throw std::range_error("particle surface root is not certified by its implicit enclosure");
 	Extended first{0.0,0},second{0.0,0};
 	if (constant==0.0) {
 		// Deflate the known surface root. No range test or ray-origin epsilon
@@ -319,9 +490,27 @@ bool TryInsideChord(const Projection& p, ParticleVector origin, ParticleVector d
 	const double entry=Rounded(ExtendedMultiply(first,directionLength));
 	const double exit=Rounded(ExtendedMultiply(second,directionLength));
 	const double length=Rounded(ExtendedMultiply(ExtendedAdd(second,ExtendedMultiply(first,-1.0)),directionLength));
+	Bound firstBound=Point(0.0),secondBound=Point(0.0);
+	if (constant==0.0) {
+		if (certifiedBZero) firstBound=Point(0.0);
+		else firstBound=DivideBound(MultiplyBound(Point(-2.0),boundedB),boundedA);
+	} else {
+		const Bound discriminant=AddBound(MultiplyBound(boundedB,boundedB),NegateBound(MultiplyBound(boundedA,boundedC)));
+		const Bound root=SqrtBound(discriminant);
+		const double sign=B.fraction<0.0 ? -1.0 : 1.0;
+		const Bound numerator=AddBound(NegateBound(boundedB),MultiplyBound(Point(-sign),root));
+		firstBound=DivideBound(numerator,boundedA);
+		secondBound=DivideBound(boundedC,numerator);
+	}
+	// first/second were sorted above; use intervals ordered by their endpoint
+	// signs (inside roots straddle zero, surface includes exact zero).
+	Bound entryBound{std::min(firstBound.low,secondBound.low),std::min(firstBound.high,secondBound.high)};
+	Bound exitBound{std::max(firstBound.low,secondBound.low),std::max(firstBound.high,secondBound.high)};
 	const ParticleVector entryPoint{std::fma(entryParameter,direction.x,origin.x),std::fma(entryParameter,direction.y,origin.y),std::fma(entryParameter,direction.z,origin.z)};
 	const ParticleVector exitPoint{std::fma(exitParameter,direction.x,origin.x),std::fma(exitParameter,direction.y,origin.y),std::fma(exitParameter,direction.z,origin.z)};
-	result=ParticleChord{entry,exit,length,entryPoint,exitPoint,EndpointNormal(p,entryPoint),EndpointNormal(p,exitPoint)};
+	CheckEndpointUncertainty(p,frame,origin,direction,entryPoint,entryBound);
+	CheckEndpointUncertainty(p,frame,origin,direction,exitPoint,exitBound);
+	result=ParticleChord{entry,exit,length,entryPoint,exitPoint,ImplicitEndpointNormal(p,frame,entryPoint),ImplicitEndpointNormal(p,frame,exitPoint)};
 	return true;
 }
 double HalfChord(const Projection& p, double w) {
@@ -352,7 +541,7 @@ std::optional<ParticleChord> IntersectProlateRay(const ProlateParticle& particle
 	Finite(origin);
 	const Projection p = Project(particle,direction);
 	std::optional<ParticleChord> insideChord;
-	if (TryInsideChord(p,origin,direction,insideChord)) return insideChord;
+	if (TryInsideChord(p,particle.axis,origin,direction,insideChord)) return insideChord;
 	// Project the raw line's perpendicular displacement, not the distant
 	// origin onto a rounded normalized frame. The latter can turn an exact
 	// central chord into a miss by amplifying one basis ulp by |origin|.

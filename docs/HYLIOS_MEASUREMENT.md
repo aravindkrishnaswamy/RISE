@@ -51,6 +51,24 @@ Top-level and nested bundle approximation/profile/identity metadata must agree;
 the known strict and approximation profiles cannot contradict their flags.
 All coefficient/index arrays must have the complete grid shape, even at
 unselected wavelengths. Duplicate JSON keys and nonfinite values are rejected.
+
+JSON numbers use binary64 semantics, with supported magnitude at most
+`9007199254740992` (`2^53`). The CLI compares each original decimal numeric token
+against this bound **before** parsing it, including decimal/exponent forms, so an
+integer such as `9007199254740993` cannot silently become its rounded neighbor.
+Nonzero tokens that underflow to zero are also rejected. Larger sequence IDs and
+other exact large quantities must be encoded as JSON strings. Fractional numbers
+retain ordinary binary64 rounding; the report does not claim to preserve arbitrary
+precision decimal values or numeric token spelling. These checks apply to the
+entire resolved artifact, including copied provenance and unselected fields.
+
+Metadata strings and object keys must contain Unicode scalar values encoded as
+valid UTF-8, or equivalent JSON escapes with correctly paired UTF-16 surrogates.
+Unpaired surrogates, overlong encodings and malformed UTF-8 are rejected before
+publication. Valid non-ASCII text and escaped supplementary characters round-trip.
+The complete serialized report is validated again before atomic replacement; any
+unsupported metadata leaves existing output intact. The original source-byte hash
+continues to identify the exact accepted input bytes.
 Active organelles need evaluated internal absorption and individually dispersed
 organization; active complexes are refused. Disabled particles are skipped,
 including their unused geometry/absorption fields, but cannot claim positive
@@ -162,7 +180,7 @@ RISE_HYLIOS_MEASURE=/absolute/path/to/hylios_measure \
 
 Tests default to repository `bin/tools/hylios_measure` (`hylios_measure.exe` on
 Windows). `RISE_HYLIOS_MEASURE` selects another binary without consuming unittest
-arguments. A missing binary explicitly skips the nine contracts with the build
+arguments. A missing binary explicitly skips the twelve contracts with the build
 command. Standard unittest discovery, test selection and flags remain available.
 
 The canonical build uses its platform optimization flags. Particle geometry and
@@ -208,7 +226,7 @@ Pop-Location
 python tools/test_hylios_measure.py -v
 ```
 
-The POSIX SIGINT contract is skipped on Windows; the other eight CLI contracts
+The POSIX SIGINT contract is skipped on Windows; the other eleven CLI contracts
 have no POSIX-specific invocation requirement. Their Windows implementation
 remains unverified here.
 
@@ -249,7 +267,7 @@ validated.
 
 ## Full-suite pinned-fixture runtime
 
-The measurement CLI's nine contracts and the HyLIoS binaries can be tested
+The measurement CLI's twelve contracts and the HyLIoS binaries can be tested
 directly with the commands above. The repository-wide `run_all_tests.sh` also
 checks unrelated committed fire records before applying its test filter.
 
