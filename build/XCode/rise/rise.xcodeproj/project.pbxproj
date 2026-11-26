@@ -8,9 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		C0F1A000000000000000000F /* HyLIoSSlabTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */; };
+		C0F1B0000000000000000003 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; };
 		C0F1A0000000000000000010 /* HyLIoSSlabTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
+		C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1A0000000000000000011 /* HyLIoSSlabTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */; };
+		C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; };
 		C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
+		C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
 		C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
 		C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
@@ -2340,7 +2344,9 @@
 
 /* Begin PBXFileReference section */
 		C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSSlabTransport.cpp; sourceTree = "<group>"; };
+		C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSParticleGeometry.cpp; sourceTree = "<group>"; };
 		C0F1A000000000000000000E /* HyLIoSSlabTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSlabTransport.h; sourceTree = "<group>"; };
+		C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleGeometry.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000007 /* HyLIoSOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOptics.cpp; sourceTree = "<group>"; };
 		C0F1A0000000000000000008 /* HyLIoSOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOptics.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOpticalData.cpp; sourceTree = "<group>"; };
@@ -4239,7 +4245,9 @@
 				F27F08D2069C42900069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp */,
 				F27F08D3069C42900069C9E5 /* AshikminShirleyAnisotropicPhongSPF.h */,
 				C0F1A000000000000000000E /* HyLIoSSlabTransport.h */,
+				C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */,
 				C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */,
+				C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */,
 				C0F1A0000000000000000008 /* HyLIoSOptics.h */,
 				C0F1A0000000000000000007 /* HyLIoSOptics.cpp */,
 				C0F1A0000000000000000002 /* HyLIoSOpticalData.h */,
@@ -5593,6 +5601,7 @@
 				F27F0B3C069C42910069C9E5 /* BioSpecSkinData.h in Headers */,
 				F27F0B3D069C42910069C9E5 /* BioSpecSkinMaterial.h in Headers */,
 				C0F1A0000000000000000010 /* HyLIoSSlabTransport.h in Headers */,
+				C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */,
 				C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */,
 				C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */,
 				F27F0B3F069C42910069C9E5 /* BioSpecSkinSPF.h in Headers */,
@@ -6387,6 +6396,7 @@
 				F27F0B37069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */,
 				F27F0B3A069C42910069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp in Sources */,
 				C0F1A000000000000000000F /* HyLIoSSlabTransport.cpp in Sources */,
+				C0F1B0000000000000000003 /* HyLIoSParticleGeometry.cpp in Sources */,
 				C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */,
 				C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */,
 				F27F0B3E069C42910069C9E5 /* BioSpecSkinSPF.cpp in Sources */,
@@ -7053,7 +7063,9 @@
 				F24B72C72F52A632008304C4 /* BioSpecSkinData.h in Sources */,
 				F24B72C82F52A632008304C4 /* BioSpecSkinMaterial.h in Sources */,
 				C0F1A0000000000000000011 /* HyLIoSSlabTransport.cpp in Sources */,
+				C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */,
 				C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */,
+				C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */,
 				C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */,
 				C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */,
 				C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */,

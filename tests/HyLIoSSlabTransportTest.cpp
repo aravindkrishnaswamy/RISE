@@ -239,6 +239,22 @@ void PauseAndInvalid() {
     const auto smallFresnel=EvaluateSlabSmoothDielectric(smallIndex);
     Check(std::isfinite(smallFresnel.reflectance) && std::abs(smallFresnel.reflectance-1.0/9.0)<1e-15,
           "subnormal IOR common scale preserves Fresnel ratio under fast-math");
+    smallIndex.targetIOR=2;
+    smallIndex.incidentDirection={1,0,2*subnormal};
+    const auto grazingFresnel=EvaluateSlabSmoothDielectric(smallIndex);
+    Check(std::isfinite(grazingFresnel.reflectance) && std::abs(grazingFresnel.reflectance-0.68)<1e-15,
+          "grazing subnormal IOR retains finite polarization ratio");
+    auto thinLayers=Layers();
+    for (auto& layer:thinLayers) layer.thicknessMetres=subnormal;
+    HyLIoSSlabTransport thin(thinLayers,550,1,AbsorptionEstimator::Analog,0);
+    auto thinGrazing=thin.Begin({0,0,0},{1,0,subnormal});
+    Check(thinGrazing.Direction().z==subnormal,"mixed-scale normalization retains representable thinGrazing component");
+    const auto thinGrazingEntry=thinGrazing.PendingBoundary();
+    thin.ResumeBoundary(thinGrazing,thinGrazingEntry.token,SampleSlabSmoothDielectric(thinGrazingEntry,0));
+    Sequence firstInterface({0});
+    thin.Advance(thinGrazing,firstInterface,1);
+    Check(thinGrazing.Counters().flights==1 && thinGrazing.Counters().pathLengthMetres==1 && thinGrazing.Layer()==1,
+          "representable thinGrazing flight reaches next subnormal plane");
 }
 }
 int main() {

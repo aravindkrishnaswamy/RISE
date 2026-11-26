@@ -19,6 +19,9 @@ SlabVector Normalize(SlabVector d) {
     // scale. Its reciprocal could overflow even though each quotient is <=1.
     int exponent=0;
     std::frexp(scale,&exponent);
+    // Keep the largest component in [1,2), not [0.5,1): the latter can
+    // discard a representable subnormal component before normalization.
+    --exponent;
     const SlabVector scaled{std::ldexp(d.x,-exponent),std::ldexp(d.y,-exponent),std::ldexp(d.z,-exponent)};
     const double norm=std::hypot(scaled.x,scaled.y,scaled.z);
     return {scaled.x/norm,scaled.y/norm,scaled.z/norm};
@@ -31,6 +34,20 @@ bool Draw(ISampler& sampler, double& u) {
 SlabAdvanceResult Result(const SlabState& s) {
     return {s.Termination()!=SlabTermination::None ? SlabAdvanceKind::Terminal :
         s.HasPendingBoundary() ? SlabAdvanceKind::OuterBoundaryEncounter : SlabAdvanceKind::YieldBudget, s.Termination()};
+}
+// Form (a*b-c*d)/(a*b+c*d) without materializing either product. Scaling
+// indices alone loses a small index that can still compete with n*cos(theta)
+// at grazing incidence. Scale each polarization's complete products instead.
+long double PolarizationAmplitude(long double a, long double b, long double c, long double d) {
+    if (a==0 || b==0) return -1;
+    if (c==0 || d==0) return 1;
+    int ea=0,eb=0,ec=0,ed=0;
+    const long double lhs=std::frexp(a,&ea)*std::frexp(b,&eb);
+    const long double rhs=std::frexp(c,&ec)*std::frexp(d,&ed);
+    const int scale=std::max(ea+eb,ec+ed);
+    const long double scaledLhs=std::scalbn(lhs,ea+eb-scale);
+    const long double scaledRhs=std::scalbn(rhs,ec+ed-scale);
+    return (scaledLhs-scaledRhs)/(scaledLhs+scaledRhs);
 }
 }
 const SlabBoundaryEncounter& SlabState::PendingBoundary() const {
@@ -57,10 +74,8 @@ SmoothDielectricEvaluation EvaluateSlabSmoothDielectric(const SlabBoundaryEncoun
     if (st>=1) { r.reflectance=1; r.totalInternalReflection=st>1; return r; }
     if (ci==0) { r.reflectance=1; return r; }
     const long double ct=std::sqrt((1-st)*(1+st));
-    const double scale=std::max(e.incidentIOR,e.targetIOR);
-    const long double ni=e.incidentIOR/scale, nt=e.targetIOR/scale;
-    const long double rs=(ni*ci-nt*ct)/(ni*ci+nt*ct);
-    const long double rp=(nt*ci-ni*ct)/(nt*ci+ni*ct);
+    const long double rs=PolarizationAmplitude(e.incidentIOR,ci,e.targetIOR,ct);
+    const long double rp=PolarizationAmplitude(e.targetIOR,ci,e.incidentIOR,ct);
     r.reflectance=static_cast<double>((rs*rs+rp*rp)/2);
     r.transmittedDirection={si==0 ? 0 : static_cast<double>(st*(d.x/si)),
         si==0 ? 0 : static_cast<double>(st*(d.y/si)),

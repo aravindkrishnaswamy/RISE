@@ -25,7 +25,7 @@ For absorptance source datasets, the author scripts store absorbance values; the
 
 Source grid endpoints describe the values actually imported, not a promise that the publication model is validated over that interval. The water absorption and Palmer–Williams real-index candidates reach 2500 nm. The lipid table reaches 2449.5 nm and has irregular source intervals. Other active absorbers cover much narrower ranges: for example, DNA reaches about 360 nm, urocanic acid about 327 nm, keratin about 421 nm, and hemoglobin/melanin tables have distinct endpoints. No strict imported curve is extrapolated, endpoint-held, or given an inferred zero tail. Each JSON includes the source wavelength vector and adjacent interval summary so irregular spacing and gaps remain inspectable.
 
-The source material still leaves scientific interpretation work: the thesis’s printed keratin multiplier conflicts with inverse path-length units; DNA and urocanic-acid concentration scaling and overlapping mixture bases require an explicit model interpretation; extinction conventions need reconciliation before combining coefficients; Table III melanosome dimensions do not clearly identify full axes versus semi-axes; and Table III/Table IV quantities do not by themselves define all layer scaling. The RISE data artifacts and parser do not resolve these choices or implement the HyLIoS transport model.
+The source material still leaves scientific interpretation work: the thesis’s printed keratin multiplier conflicts with inverse path-length units; DNA and urocanic-acid concentration scaling and overlapping mixture bases require an explicit model interpretation; extinction conventions need reconciliation before combining coefficients; Table III melanosome dimensions do not clearly identify full axes versus semi-axes; and Table III/Table IV quantities do not by themselves define all layer scaling. The strict importer does not resolve these choices. The separate [cleanroom composition contract](../../docs/HYLIOS_COMPOSITION.md) names executable interpretations and their sensitivity alternatives; it does not establish author equivalence or implement the full transport model.
 
 ## Explicit spectral approximation profile
 
@@ -49,5 +49,19 @@ The bundle preserves the 15 strict curve objects and both Hale–Querry source g
 - Lipid uses constant endpoint extension. UV water absorption uses Hale–Querry imaginary index via `mu_a = 4*pi*k/lambda`, with a multiplicative continuity splice at 380 nm. Water real index uses Hale–Querry values with an additive continuity splice at 400 nm. These source splices are cleanroom assumptions.
 
 Every query reports `approximate: true`, the profile ID, a canonical generated-bundle SHA-256 fingerprint, applicable policies, and original source-file digests. Loading a bundle checks its generated-content fingerprint and structure; rebuilding from `--source-dir` additionally recomputes the pinned original-byte hashes. The fingerprint is not a signature or a substitute for source verification. No dense resampling or additional concentration, molar-mass, extinction-basis, or tissue-mixture conversion is performed. Numerical tests establish these evaluation contracts, not agreement with published HyLIoS results or measured skin. The strict importer remains independent of this opt-in profile.
+
+## Resolve a specimen
+
+The composition tool converts raw curves once, applies the named layer/blood/organelle conventions, and records constituent contributions, raw evaluation traces and content identities:
+
+```sh
+python3 tools/hylios_compose_specimen.py \
+  --approximation-bundle /tmp/hylios-approximation-profile-v1.json \
+  --preset S3 --wavelength-nm 250 --wavelength-nm 550 \
+  --wavelength-nm 1300 --wavelength-nm 2500 \
+  --output /tmp/hylios-s3-resolved.json
+```
+
+Use `--strict-curves-dir` instead of `--approximation-bundle` for non-extrapolating source curves. It fails when an active constituent lacks coverage; inactive constituents need no spectral evaluation. A resolved specimen is preparation data for the forthcoming full kernel, not a skin simulation result. Its top-level approximation label and composition/coverage identities must survive downstream measurement and bake outputs.
 
 The NPSG files are publicly readable, but redistribution/licensing permission for the source tables has not been established. The repository records URLs and digests and does not vendor those files. No author contact or permission claim is made here.
