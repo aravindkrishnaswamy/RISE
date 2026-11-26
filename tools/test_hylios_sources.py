@@ -11,6 +11,25 @@ from check_hylios_sources import MANIFEST, PRESETS, convert_source_value, valida
 
 
 class HyLIoSSourceEvidenceTest(unittest.TestCase):
+    def test_rejects_missing_evidence_records(self):
+        for document, key in (("presets", "sources"), ("manifest", "sources"),
+                              ("manifest", "unresolved_blockers")):
+            with self.subTest(document=document, key=key):
+                presets, manifest = copy.deepcopy(self.presets), copy.deepcopy(self.manifest)
+                del (presets if document == "presets" else manifest)[key]
+                with self.assertRaises(ValueError):
+                    validate(presets, manifest)
+        presets = copy.deepcopy(self.presets)
+        del presets["table_iii_fields"]["melanosome_dimensions_um"]["interpretation_status"]
+        with self.assertRaisesRegex(ValueError, "interpretation status"):
+            validate(presets, self.manifest)
+
+    def test_rejects_broken_source_reference(self):
+        presets = copy.deepcopy(self.presets)
+        presets["sources"]["table_iii"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            validate(presets, self.manifest)
+
     def test_rejects_water_filename_collision(self):
         changed = copy.deepcopy(self.manifest)
         hale = next(x for x in changed["author_water_data_index"]["items"]

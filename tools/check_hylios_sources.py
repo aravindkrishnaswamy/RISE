@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,29 @@ def convert_source_value(value: float, unit: str) -> tuple[float, str]:
 def validate(presets: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
     require(presets.get("schema_version") == 1, "presets_source schema_version must be 1")
     require(presets.get("not_executable") is True, "source table transcription must remain marked not_executable")
+    sources = manifest.get("sources")
+    require(isinstance(sources, list) and bool(sources), "manifest source provenance is required")
+    by_id = {source["id"]: source for source in sources}
+    require(len(by_id) == len(sources), "duplicate source provenance IDs")
+    for source in sources:
+        require(isinstance(source.get("sha256"), str) and
+                re.fullmatch(r"[0-9a-f]{64}", source["sha256"]) is not None,
+                "source SHA256 must contain 64 lowercase hexadecimal digits")
+        for key in ("id", "citation", "url"):
+            require(isinstance(source.get(key), str) and bool(source[key].strip()),
+                    f"source provenance requires {key}")
+    references = presets.get("sources")
+    require(isinstance(references, dict) and set(references) == {"table_iii", "table_iv", "organization"},
+            "preset source provenance requires both tables and organization")
+    for reference in references.values():
+        require(reference.get("source_id") in by_id, "preset references unknown source ID")
+        require(reference.get("sha256") == by_id[reference["source_id"]]["sha256"],
+                "preset source SHA256 does not match manifest source")
+        require(isinstance(reference.get("citation"), str) and bool(reference["citation"].strip()),
+                "preset source citation is required")
+    blockers = manifest.get("unresolved_blockers")
+    require(isinstance(blockers, list) and all(isinstance(x, str) and x.strip() for x in blockers),
+            "unresolved blocker list is required (may be empty after resolution)")
     require(presets.get("layer_order_outer_to_inner") == EXPECTED_LAYERS, "outer-to-inner source layer order mismatch")
     require(set(presets["organization_by_preset"]) == EXPECTED_IDS, "organization must have exactly S1-S4")
     require(presets["organization_by_preset"]["S1"] == "complexes" and
@@ -63,6 +87,9 @@ def validate(presets: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
             presets["organization_by_preset"]["S4"] == "individually_dispersed_particles",
             "paper Table I organization transcription mismatch")
     fields = presets["table_iii_fields"]
+    require(fields["melanosome_dimensions_um"].get("interpretation_status") in {
+        "unresolved_full_dimensions_vs_semiaxes", "resolved_full_dimensions", "resolved_semiaxes"},
+        "melanosome dimension interpretation status is required")
     units = {
         "surface_fold_aspect_ratio": "dimensionless",
         "thickness_cm_by_layer": "cm",

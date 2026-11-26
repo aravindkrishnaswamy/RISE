@@ -54,8 +54,9 @@ private:
 };
 
 // epsilon is decadic molar extinction in L mol^-1 cm^-1; concentration is mol/L.
-// Conversion reports overflow or underflow when the exact positive result is
-// outside the representable range of double.
+// Results use binary64 rounding. Reject nonfinite results and positive
+// conversions that round to zero. Nonzero subnormal rounding is permitted;
+// these helpers do not promise relative accuracy in the subnormal range.
 double DecadicExtinctionToInverseMetres(double epsilonLPerMolCm, double concentrationMolPerL);
 double NapierianInverseCentimetresToPerMetre(double inverseCentimetres);
 double MeasuredAbsorptanceToInverseMetres(double absorptanceFraction, double pathLengthMetres);

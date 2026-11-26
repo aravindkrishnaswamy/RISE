@@ -23,6 +23,10 @@ int main() {
 	Check(!Near(std::numeric_limits<double>::infinity(), 1.0), "comparison rejects nonfinite actual value");
 	Check(!Near(1.0, std::numeric_limits<double>::infinity()), "comparison rejects nonfinite expected value");
 	const double subnormal = std::numeric_limits<double>::denorm_min();
+	Check(DecadicExtinctionToInverseMetres(subnormal, 0.003) == subnormal,
+		"nonzero subnormal conversion uses binary64 rounding");
+	Check(MeasuredAbsorptanceToInverseMetres(subnormal, 1.5) == subnormal,
+		"nonzero subnormal absorptance conversion uses binary64 rounding");
 	for (const auto quantity : {Quantity::AbsorptionPerMetre, Quantity::RefractiveIndex}) {
 		auto constant = SpectralCurve::Create(quantity, Interpolation::Linear, {{1, subnormal}, {2, subnormal}}, Synthetic());
 		Check(constant.Evaluate(1.5) == subnormal, "interpolation preserves constant subnormal [review-r1-interpolation]");

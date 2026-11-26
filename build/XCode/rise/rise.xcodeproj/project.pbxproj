@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
+		C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
+		C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
+		C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
 		C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */; };
 		C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000002 /* HyLIoSOpticalData.h */; };
 		C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */; };
@@ -2331,6 +2335,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C0F1A0000000000000000007 /* HyLIoSOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOptics.cpp; sourceTree = "<group>"; };
+		C0F1A0000000000000000008 /* HyLIoSOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOptics.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOpticalData.cpp; sourceTree = "<group>"; };
 		C0F1A0000000000000000002 /* HyLIoSOpticalData.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOpticalData.h; sourceTree = "<group>"; };
 		03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MappingPainter.cpp; sourceTree = "<group>"; };
@@ -4226,6 +4232,8 @@
 				F27F08D1069C42900069C9E5 /* AshikminShirleyAnisotropicPhongMaterial.h */,
 				F27F08D2069C42900069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp */,
 				F27F08D3069C42900069C9E5 /* AshikminShirleyAnisotropicPhongSPF.h */,
+				C0F1A0000000000000000008 /* HyLIoSOptics.h */,
+				C0F1A0000000000000000007 /* HyLIoSOptics.cpp */,
 				C0F1A0000000000000000002 /* HyLIoSOpticalData.h */,
 				C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */,
 				F27F08D4069C42900069C9E5 /* BioSpecSkinData.h */,
@@ -5576,6 +5584,7 @@
 				F27F0B3B069C42910069C9E5 /* AshikminShirleyAnisotropicPhongSPF.h in Headers */,
 				F27F0B3C069C42910069C9E5 /* BioSpecSkinData.h in Headers */,
 				F27F0B3D069C42910069C9E5 /* BioSpecSkinMaterial.h in Headers */,
+				C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */,
 				C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */,
 				F27F0B3F069C42910069C9E5 /* BioSpecSkinSPF.h in Headers */,
 				F27F0B41069C42910069C9E5 /* CompositeMaterial.h in Headers */,
@@ -6368,6 +6377,7 @@
 				F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */,
 				F27F0B37069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */,
 				F27F0B3A069C42910069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp in Sources */,
+				C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */,
 				C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */,
 				F27F0B3E069C42910069C9E5 /* BioSpecSkinSPF.cpp in Sources */,
 				F27F0B40069C42910069C9E5 /* BioSpecSkinSPFHelpers.cpp in Sources */,
@@ -7032,6 +7042,8 @@
 				F24B72C62F52A632008304C4 /* AshikminShirleyAnisotropicPhongSPF.h in Sources */,
 				F24B72C72F52A632008304C4 /* BioSpecSkinData.h in Sources */,
 				F24B72C82F52A632008304C4 /* BioSpecSkinMaterial.h in Sources */,
+				C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */,
+				C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */,
 				C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */,
 				C0F1A0000000000000000006 /* HyLIoSOpticalData.h in Sources */,
 				F24B72C92F52A632008304C4 /* BioSpecSkinSPF.cpp in Sources */,
