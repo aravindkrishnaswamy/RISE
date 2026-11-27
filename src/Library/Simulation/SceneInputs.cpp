@@ -296,7 +296,21 @@ std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std:
 		std::vector<Scalar> keyTimes;
 		for (std::size_t n = 0; n < chain.size(); ++n) {
 			Implementation::Object* node = chain[n];
-			c->holders.push_back(node->ClonePoseHolder());
+			Implementation::Object* holder = node->ClonePoseHolder();
+			const auto drivenPose = driven_.find(chainNames[n]);
+			if (drivenPose != driven_.end() && holder) {
+				// The shared object carries the simulation's pose (a scrub, a live run); the holder gets the authored one.
+				for (const auto& pv : {std::make_pair("position", &drivenPose->second.position),
+					std::make_pair("orientation", &drivenPose->second.orientation)}) {
+					if (pv.second->empty()) continue;
+					IKeyframeParameter* value = holder->KeyframeFromParameters(pv.first, pv.second->c_str());
+					if (!value) { holder->release(); error = "cannot pose `" + chainNames[n] + "` at its authored " + pv.first; return nullptr; }
+					holder->SetIntermediateValue(*value);
+					safe_release(value);
+				}
+				holder->RegenerateData();
+			}
+			c->holders.push_back(holder);
 			c->keys.push_back(node);
 			std::vector<String> params;
 			// M6: a simulation-driven object is read at its authored pose.

@@ -11358,7 +11358,7 @@ bool Job::PlanSimulations( std::vector<Simulation::SceneSimulationPlan>& plans,
 	if( !pScene ) { error = "no scene"; return false; }
 	Simulation::SceneObjectInputProvider provider( *pScene,
 		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
-	provider.SetSimulationDriven( transformSourceObjects );   // M6
+	provider.SetSimulationDriven( TransformSourceAuthoredPoses_() );   // M6
 	return simulationGraph->Plan( specs, provider, plans, error );
 }
 
@@ -11370,7 +11370,7 @@ bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& s
 	if( !pScene ) { error = "no scene"; return false; }
 	Simulation::SceneObjectInputProvider provider( *pScene,
 		[this]( const IGeometry* g, Simulation::SimulatedGeometryBinding& b ) { return SimulatedGeometryBindingOf( g, b ); } );
-	provider.SetSimulationDriven( transformSourceObjects );   // M6
+	provider.SetSimulationDriven( TransformSourceAuthoredPoses_() );   // M6
 	if( !simulationGraph->Describe( specs, provider, statuses, error ) ) return false;
 	// M5: which consumer geometries show each simulation (the GUI's live
 	// controls address a live run by its geometry).
@@ -11560,6 +11560,14 @@ void Job::SetLiveTransformProvider( const std::string& simulation, LiveSnapshotP
 {
 	if( provider ) liveTransformProviders[simulation] = std::move( provider );
 	else liveTransformProviders.erase( simulation );
+}
+
+std::map<std::string, Simulation::SceneObjectInputProvider::AuthoredPose> Job::TransformSourceAuthoredPoses_() const
+{
+	std::map<std::string, Simulation::SceneObjectInputProvider::AuthoredPose> poses;
+	for( const auto& entry : transformSourceStates )
+		poses[entry.first] = { entry.second.authoredPosition, entry.second.authoredOrientation };
+	return poses;
 }
 
 std::vector<std::string> Job::TransformSourceObjectsOf( const std::string& simulation ) const

@@ -547,8 +547,10 @@ int BakeWith(const std::string& id,const V& parameters,const ISceneInputs& input
 				out<<"rise-sim: cache already complete for this configuration\n";
 				return WorkerFinished;
 			}
-			// A scene bake resumes its own partial cache and replaces a stale one.
-			if (replace && same) {
+			// A scene bake resumes its own partial cache and replaces a stale one.  A partial cache
+			// with no job record (an interrupted in-app recording: only the host's writer made it)
+			// has nothing to resume from: it is replaced like a stale one.
+			if (replace && same && Exists(root/jobName)) {
 				solver.reset();
 				return Resume(root,options,inputs,out,err);
 			}

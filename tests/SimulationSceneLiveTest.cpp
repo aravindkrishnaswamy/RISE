@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <string>
 #include <thread>
 
@@ -353,6 +354,16 @@ namespace
 
 namespace
 {
+	std::string RigidSceneText()
+	{
+		return std::string( "RISE ASCII SCENE 7\n\nanimation_options\n{\n\ttime_start 0\n\ttime_end 1\n\tnum_frames 31\n}\n\n" )
+			+ "film\n{\n\twidth 64\n\theight 36\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 1.4 2.6\n\tlookat 0 0.55 0\n\tup 0 1 0\n\tfov 40\n}\n\n"
+			"rigid_simulation\n{\n\tname drop\n\tframes 31\n\tcache caches/drop\n\tbody_object ball mass 0.1\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.1\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tposition 0 0.5 0\n\ttransform_source drop.bodies[ball]\n}\n\n";
+	}
+
 	// App-side loose ends (2026-11-27): live stepping of rigid.bodies drives the
 	// objects that follow its bodies (transform_source), as a live cloth drives its mesh.
 	void TestLiveRigid( const fs::path& scratch )
@@ -361,12 +372,7 @@ namespace
 		const fs::path dir = scratch / "rigid";
 		std::error_code ec;
 		fs::create_directories( dir, ec );
-		const std::string text = std::string( "RISE ASCII SCENE 7\n\nanimation_options\n{\n\ttime_start 0\n\ttime_end 1\n\tnum_frames 31\n}\n\n" )
-			+ "film\n{\n\twidth 64\n\theight 36\n}\n\n"
-			"pinhole_camera\n{\n\tlocation 0 1.4 2.6\n\tlookat 0 0.55 0\n\tup 0 1 0\n\tfov 40\n}\n\n"
-			"rigid_simulation\n{\n\tname drop\n\tframes 31\n\tcache caches/drop\n\tbody_object ball mass 0.1\n}\n\n"
-			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.1\n}\n\n"
-			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tposition 0 0.5 0\n\ttransform_source drop.bodies[ball]\n}\n\n";
+		const std::string text = RigidSceneText();
 		Viewport v( text, dir );
 		if( !v.ctrl ) { Check( false, "the rigid scene loads and the viewport starts" ); return; }
 		IObject* ball = const_cast<IObjectManager*>( v.job->GetScene()->GetObjects() )->GetItem( "ball" );
@@ -384,6 +390,7 @@ namespace
 			return s;
 		};
 		const auto statuses = v.Statuses();
+		const std::string key0 = statuses.size() == 1 ? statuses[0].expectedKey : std::string();
 		Check( statuses.size() == 1 && statuses[0].interactive && statuses[0].meshConsumers.size() == 1 &&
 			statuses[0].meshConsumers[0] == "ball", "the rigid simulation is interactive and names the object that follows it" );
 		bool hasAnimation = false;
@@ -412,6 +419,14 @@ namespace
 		const Matrix4 m = object()->GetFinalTransformMatrix();
 		Check( std::fabs( m._30 ) < 1e-9 && std::fabs( m._32 ) < 1e-9, "and moved only along gravity" );
 		Check( scrub( 0.0 ) && std::fabs( height() - 0.5 ) < 1e-9, "the first frame is the authored pose" );
+		{
+			// The simulation's inputs are the authored ones: neither the live pose nor a scrub changes the planned key.
+			Check( scrub( t ) && height() < 0.5 - 0.05, "scrubbed to the live pose again" );
+			const auto live = v.Statuses();
+			Check( !key0.empty() && live.size() == 1 && live[0].expectedKey == key0,
+				"a scrub to the live pose leaves the planned key unchanged while the run is attached" );
+			Check( scrub( 0.0 ), "back to the first frame" );
+		}
 		// Frames that landed after the last scrub are folded in at the next one.
 		const double before = live().latestSceneTime;
 		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play on" );
@@ -443,6 +458,81 @@ namespace
 	}
 }
 
+namespace
+{
+	std::map<std::pair<std::int64_t, std::string>, std::string> DiskDigests( const fs::path& dir, std::string& key, bool& complete )
+	{
+		std::map<std::pair<std::int64_t, std::string>, std::string> out;
+		CacheSnapshot snapshot;
+		std::string error;
+		if( !CacheSnapshot::Open( dir, std::size_t( 64 ) << 20, snapshot, error ) ) return out;
+		key = snapshot.Description().key;
+		complete = snapshot.Complete();
+		for( const auto& e : snapshot.Entries() ) out[{ e.index, e.output }] = e.digest;
+		return out;
+	}
+
+	// Record on a transform producer (rigid.bodies): the run, played to its end, leaves a complete sealed cache that
+	// equals a bake of the same frames; an interrupted recording leaves a partial cache a bake then replaces.
+	void TestRecordRigid( const fs::path& scratch )
+	{
+		std::printf( "record a live rigid run\n" );
+		const fs::path dir = scratch / "rigidrec";
+		std::error_code ec;
+		fs::create_directories( dir, ec );
+		Viewport v( RigidSceneText(), dir );
+		if( !v.ctrl ) { Check( false, "the rigid scene loads and the viewport starts" ); return; }
+		const fs::path recDir = dir / "recorded";
+		const auto live = [&]() {
+			LiveSimulationStatus s;
+			for( int i = 0; i < 2000 && !v.ctrl->GetLiveSimulationStatus( "ball", s ); ++i ) Sleep( 0.001 );
+			return s;
+		};
+		std::string error;
+		Check( v.ctrl->LiveSimulationAttachSimulation( "drop", error ), "attach", error );
+		Check( v.ctrl->LiveSimulationRecord( "ball", recDir.string(), error ), "Record on the rigid run", error );
+		Check( live().recording, "the run is recording" );
+		// Interrupted: stopped before the run ended.
+		std::string key;
+		bool complete = true;
+		const auto partial = DiskDigests( recDir, key, complete );
+		Check( !partial.empty() && !complete, "an unfinished recording is a partial cache" );
+		// Play to the end: sealed.
+		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play" );
+		Check( WaitFor( [&]{ return live().finished; }, 90.0 ), "the recorded run finishes", std::to_string( live().framesPublished ) );
+		v.ctrl->PlaybackPause();
+		// The last frame is published just before the writer seals the cache on the run's thread.
+		Check( WaitFor( [&]{ std::string e; return InspectCache( recDir, std::size_t( 64 ) << 20, e ) == CacheState::Complete; }, 30.0 ),
+			"the recording seals once the run has finished" );
+		std::string recordedKey;
+		bool recordedComplete = false;
+		const auto recorded = DiskDigests( recDir, recordedKey, recordedComplete );
+		Check( recordedComplete && recorded.size() == 31, "the recording is complete with 31 frames", std::to_string( recorded.size() ) );
+		Check( InspectCache( recDir, std::size_t( 64 ) << 20, error ) == CacheState::Complete, "and sealed (the cache inspects as complete)", error );
+		Check( !v.Statuses().empty() && recordedKey == v.Statuses()[0].expectedKey, "under the scene's planned key" );
+		// Equal to a bake of the same frames.
+		std::ostringstream out, err;
+		const int code = WorkerMain( { "bake", v.path.string(), "drop" }, out, err );
+		Check( code == WorkerFinished, "bake the same scene", out.str() + err.str() );
+		std::string bakedKey;
+		bool bakedComplete = false;
+		const auto baked = DiskDigests( dir / "caches" / "drop", bakedKey, bakedComplete );
+		Check( bakedComplete && bakedKey == recordedKey && baked == recorded, "the recorded frames equal the baked frames byte for byte",
+			std::to_string( baked.size() ) + " baked, " + std::to_string( recorded.size() ) + " recorded" );
+		// A second recording interrupted halfway, then a bake into the same directory.
+		const fs::path halfDir = dir / "half";
+		Check( v.ctrl->LiveSimulationRecord( "ball", halfDir.string(), error ), "Record again", error );
+		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play the second recording" );
+		Check( WaitFor( [&]{ return live().framesPublished >= 6; }, 60.0 ), "it records a few frames" );
+		v.ctrl->PlaybackPause();
+		Check( v.ctrl->LiveSimulationDetach( "ball", error ), "detach mid-recording", error );
+		bool halfComplete = true;
+		const auto half = DiskDigests( halfDir, key, halfComplete );
+		Check( !half.empty() && half.size() < 31 && !halfComplete, "the interrupted recording is partial", std::to_string( half.size() ) );
+		Check( !fs::exists( halfDir / "rise-sim.job.cbor" ), "and has no job record" );
+	}
+}
+
 int main()
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
@@ -460,6 +550,7 @@ int main()
 	TestPropertiesCategory( scratch );
 	TestPlaybackRule( scratch );
 	TestLiveRigid( scratch );
+	TestRecordRigid( scratch );
 	fs::remove_all( RISE::TestSupport::ScratchTestRoot( "rise_simulation_scene_live_" ), ec );
 	std::printf( "\n%d passed, %d failed\n", passes, failures );
 	return failures ? 1 : 0;

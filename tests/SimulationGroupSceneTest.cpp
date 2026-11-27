@@ -12,8 +12,12 @@
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/SceneSimulationWorker.h"
 #include "../src/Library/Simulation/SimulationProcess.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IScene.h"
 #include "TestTempDir.h"
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -89,6 +93,27 @@ std::string SceneText(const std::string& mass, const std::string& group, const s
 		"cloth_simulation\n{\n\tname\tsheet\n\tsize_u\t0.6\n\tsize_v\t0.6\n\tvertices_u\t9\n\tvertices_v\t9\n\tframes\t7\n"
 		"\torigin\t-0.3 0 0.3\n\tpin\tu0v0\n\tpin\tu1v0\n\tpin\tu0v1\n\tpin\tu1v1\n\tcollider_port\tball\n" + sheetExtra + "}\n" + group;
 }
+// The trampoline with the ball following its body (`transform_source`), as the sample scene has it.
+std::string FollowerScene(const std::string& y)
+{
+	return "RISE ASCII SCENE 7\n"
+		"pinhole_camera\n{\n\tlocation\t1.2 0.8 1.6\n\tlookat\t0 0 0\n\tup\t0 1 0\n\tfov\t40\n}\n"
+		"sphere_geometry\n{\n\tname\tgeo_ball\n\tradius\t0.1\n}\n"
+		"rigid_simulation\n{\n\tname\tdrop\n\tframes\t7\n\tbody_object\tball mass 0.05\n}\n"
+		"standard_object\n{\n\tname\tball\n\tgeometry\tgeo_ball\n\tposition\t0 " + y + " 0\n\ttransform_source\tdrop.bodies[ball]\n}\n"
+		"cloth_simulation\n{\n\tname\tsheet\n\tsize_u\t0.6\n\tsize_v\t0.6\n\tvertices_u\t9\n\tvertices_v\t9\n\tframes\t7\n"
+		"\torigin\t-0.3 0 0.3\n\tpin\tu0v0\n\tpin\tu1v0\n\tpin\tu0v1\n\tpin\tu1v1\n\tcollider_port\tball\n}\n"
+		"simulation_group\n{\n\tname\ttramp\n\tmembers\tdrop\n\tmembers\tsheet\n"
+		"\tconnect\tdrop.body_state -> sheet.collider_surface via rigid_surface body=ball\n"
+		"\tconnect\tsheet.collider_reaction -> drop.body_load via contact_reaction targets=ball\n"
+		"\tpolicy\timplicit\n\tmember_order\tdrop sheet\n\ttolerance\t1e-6\n\tabsolute_tolerance\t1e-4\n}\n";
+}
+double BallHeight(Scene& s)
+{
+	IObject* ball = const_cast<IObjectManager*>(s.J()->GetScene()->GetObjects())->GetItem("ball");
+	return ball ? ball->GetFinalTransformMatrix()._31 : -1e9;
+}
+
 const char* Group =
 	"simulation_group\n{\n\tname\ttramp\n\tmembers\tdrop\n\tmembers\tsheet\n"
 	"\tconnect\tdrop.body_state -> sheet.collider_surface via rigid_surface body=ball\n"
@@ -214,6 +239,64 @@ int main()
 			"a coupling edit is reported as such", Find(st, "drop")->staleReason);
 		Check(Find(st, "sheet")->staleReason.find("coupling changed") == 0, "for both members", Find(st, "sheet")->staleReason);
 		WriteText(scene, SceneText("0.08", Group));
+	}
+	// ---------------------------------------------------------------- scrubbing a baked group with a transform follower
+	{
+		const fs::path follow = root/"follow";
+		fs::create_directories(follow, ec);
+		const fs::path fscene = follow/"f.RISEscene";
+		WriteText(fscene, FollowerScene("0.4"));
+		std::string out;
+		Check(Worker({"bake", fscene.string(), "tramp"}, &out) == WorkerFinished, "bake the follower group", out);
+		Scene s;
+		Check(Load(fscene, s), "load the baked follower group");
+		auto st = Statuses(s);
+		const auto done = [&](const std::vector<SceneSimulationStatus>& all) {
+			return Find(all, "drop") && Find(all, "sheet") && Find(all, "tramp") &&
+				Find(all, "drop")->state == SceneSimulationState::Complete && Find(all, "sheet")->state == SceneSimulationState::Complete &&
+				Find(all, "tramp")->state == SceneSimulationState::Complete;
+		};
+		Check(done(st), "the baked group is complete after load", Find(st, "drop") ? Find(st, "drop")->staleReason : "");
+		const std::string dropKey0 = Find(st, "drop") ? Find(st, "drop")->expectedKey : "";
+		Check(std::fabs(BallHeight(s) - 0.4) < 1e-9, "the follower is at its authored pose before a scrub", std::to_string(BallHeight(s)));
+		// Scrub: the cache's keys move the ball.
+		s.J()->GetScene()->SetSceneTimeForPreview(0.15);
+		Check(BallHeight(s) < 0.4 - 1e-3, "the scrub moved the follower to the simulated pose", std::to_string(BallHeight(s)));
+		st = Statuses(s);
+		Check(done(st), "after a scrub the caches are still complete (the inputs are the authored ones)",
+			(Find(st, "drop") ? Find(st, "drop")->staleReason : "") + " | " + (Find(st, "sheet") ? Find(st, "sheet")->staleReason : ""));
+		Check(Find(st, "drop") && Find(st, "drop")->expectedKey == dropKey0, "and the key is the same");
+		s.J()->GetScene()->SetSceneTimeForPreview(0.0);
+		Check(done(Statuses(s)), "back at the first frame too");
+		// A genuine authored edit of the object's transform makes it stale.
+		WriteText(fscene, FollowerScene("0.45"));
+		Scene e;
+		Check(Load(fscene, e), "load the edited follower group");
+		st = Statuses(e);
+		Check(Find(st, "drop") && Find(st, "drop")->state == SceneSimulationState::Stale &&
+			Find(st, "sheet") && Find(st, "sheet")->state == SceneSimulationState::Stale,
+			"an authored edit of the body's position makes the caches stale", Find(st, "drop") ? Find(st, "drop")->staleReason : "");
+		e.J()->GetScene()->SetSceneTimeForPreview(0.15);
+		st = Statuses(e);
+		Check(Find(st, "drop") && Find(st, "drop")->state == SceneSimulationState::Stale, "and a scrub does not change that");
+	}
+	// ---------------------------------------------------------------- a partial cache with no job record
+	{
+		// An in-app recording that stopped before the run ended leaves a partial cache written by the host alone
+		// (no job record): a bake replaces it instead of failing on the missing record.
+		const fs::path solo = root/"solo";
+		fs::create_directories(solo, ec);
+		const fs::path sscene = solo/"s.RISEscene";
+		WriteText(sscene, SceneText("0.05", ""));
+		std::string out;
+		Check(Worker({"bake", sscene.string(), "drop", "--stop-after-frames", "2"}, &out) == WorkerStopped, "a stopped solo bake", out);
+		const fs::path cacheDir = Default(sscene, "drop");
+		Check(InspectCache(cacheDir, std::size_t(64) << 20, error) == CacheState::Partial, "the cache is partial", error);
+		std::error_code rc;
+		Check(fs::remove(cacheDir/"rise-sim.job.cbor", rc), "drop its job record");
+		Check(Worker({"bake", sscene.string(), "drop"}, &out) == WorkerFinished, "a bake over a partial cache with no job record succeeds", out);
+		Check(InspectCache(cacheDir, std::size_t(64) << 20, error) == CacheState::Complete, "and the cache is complete", error);
+		Check(DiskDigests(cacheDir).size() == 7, "with all seven frames");
 	}
 	// ---------------------------------------------------------------- port_source from a cache (the M4 gap)
 	{

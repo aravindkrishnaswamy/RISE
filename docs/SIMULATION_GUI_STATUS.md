@@ -104,7 +104,7 @@ the last scrub in before setting the time (cheap: only when a live transform run
 cache or the authored pose. Test: `SimulationSceneLiveTest` "live rigid bodies" (free fall matches y = y0 - g t^2/2, the
 object moves only along gravity, reset, edit restarts the run, detach restores the authored pose). Costs/limits: keys
 are re-derived from all published frames at each scrub that sees new frames (linear in frames); a group containing a
-rigid member has no live mode; `Record` for a transform run uses the generic recorder, not exercised.
+rigid member has no live mode; `Record` for a transform run uses the generic recorder (verified 2026-11-27, §3.3).
 
 ## 2. In-app chat tool catalog
 
@@ -199,7 +199,7 @@ Other probes re-run on the Development build, same scratch setup: `simulation_m5
 (`worker,list,bake,live,scrub,props,playrule`): ALL PASS (63 checks). `simulation_scenes` on `fire_campfire_scene`
 (`list,props,ui`, no bake): ALL PASS (11).
 
-**Defects found by the probes** (the first two fixed, the third not):
+**Defects found by the probes** (all fixed; the third in the fixes below):
 
 1. *Timeline hidden for a rigid-only scene before its first bake.* `SceneEditController::GetHasAnimation` was true for
    keyframed objects, time-varying media and simulated meshes only; a `transform_source` object has no keys until a
@@ -210,18 +210,42 @@ Other probes re-run on the Development build, same scratch setup: `simulation_m5
    `manifest.cbor` in the group job's own directory, which holds only the worker's status file (members carry the
    caches). **Fixed**: jobs with no solver (the group job) are skipped (`SimulationBakeManager.cpp`; members are still
    checked, which the probe shows). No new unit test (the probe is the check); the `Simulation*` tests (20) pass.
-3. *Scrubbing a baked rigid group to a later frame makes its caches read as stale* ("parameters changed (bodies)",
-   cloth "(colliders)"). **Not fixed.** `SceneObjectInputProvider::Capture` clones the driven object's current pose
-   (moved by the scrub) rather than its authored pose, so the recomputed scene inputs differ from the baked ones. The
-   same probe step reports it as a note; `RISE_GUI_HEADLESS_PROBE_STRICT=1` makes it a failing check. It is why the
-   `simulation_scenes` run on the trampoline group (`list,props,bake,show,agent,ui`) FAILS its "complete after bake"
-   check (the probe poses the bodies at the last frame before the bake, and the refresh re-poses them there): 34 pass,
-   2 fail. Expected to appear for `liquid_rigid_bodies` too (not re-run). The earlier 2026-11-26 runs pre-date the
-   recorded-parameter work and passed.
+3. *Scrubbing a baked rigid group to a later frame made its caches read as stale* ("parameters changed (bodies)",
+   cloth "(colliders)"). **Fixed 2026-11-27**, below. (Record on a rigid row was also found here: fixed, below.)
 
-Also observed, not investigated: Record on a rigid row (`RISE_GUI_HEADLESS_PROBE_RECORD=1`, no playback running) leaves
-a partial cache (1 of 31 frames) with no job record, and a following Bake from the panel then fails with "unreadable or
-nonregular cache file: rise-sim.job.cbor". Record for a transform producer is therefore **not** verified.
+**Fixes, 2026-11-27 (from `dd5abbbcf`), probe-verified.**
+
+*Scrub makes caches stale.* Cause: `SceneObjectInputProvider::Capture` posed a driven (`transform_source`) object's
+holder from the shared object's *current* transform, which a scrub, a live run or a bake's key refresh moves to the
+simulated pose; the "authored pose" it intended was only implicit. Fix: the provider now receives each driven object's
+authored `position` / `orientation` (`TransformSourceState`, recorded when `transform_source` is applied at load) and
+poses the captured holder there (`SetSimulationDriven(map)`, `Job::TransformSourceAuthoredPoses_`), ancestors included;
+a driven object is still never read through its animation. So the inputs are the authored ones wherever the timeline
+is, whatever simulation-derived keys exist, and while a live run is attached. A genuine authored edit (scene text
+changed and loaded) changes the authored pose and so the key; keyframe animation of a non-driven collider is read as
+before. Not covered: an in-session editor edit of a driven object's own `position` does not update the recorded
+authored pose (before, it was seen, but indistinguishably from a scrub); reload the scene.
+Tests: `SimulationGroupSceneTest` (bake a follower group, load, scrub to 0.15 s and 0 s: all three still complete with
+the same key; edit the authored position: stale, and still after a scrub; verified to fail without the fix),
+`SimulationSceneLiveTest` "live rigid bodies" (planned key unchanged after scrubbing to a live pose with the run
+attached). Probes: `simulation_scenes` on the trampoline group cut to 5 frames (`list,props,bake,show,agent,ui`,
+BAKE=trampoline): ALL PASS (45 checks; was 34 pass, 2 fail); `simulation_followup` `group` with
+`RISE_GUI_HEADLESS_PROBE_STRICT=1`: ALL PASS (25).
+
+*Record on a rigid row left a broken cache.* Cause, two parts. (a) Record on a live run only starts a recording
+(`InProcessHost::Record`, the same for mesh producers): frames are written as the clock plays the run and the cache is
+sealed when it finishes. The probe's Record was never played, so it left what the app leaves if the user stops early: a
+partial cache written by the host alone, which has no `rise-sim.job.cbor` (only a worker writes one). Record itself is
+correct for transform producers: played to its end it seals a complete cache. (b) `BakeWith` (scene bake) resumed any
+partial cache of the same key, and Resume reads the job record, so the following Bake failed with "unreadable or
+nonregular cache file: rise-sim.job.cbor". Fix: a partial cache with no job record is replaced by the bake like a
+stale one (`SimulationWorker.cpp`; a resumable one, with a job record, is still resumed). No change to Record.
+Tests: `SimulationSceneLiveTest` "record a live rigid run" (Record, play to the end: sealed, 31 frames, under the
+planned key, digests equal a bake of the same scene byte for byte; a recording detached part-way is partial with no job
+record), `SimulationGroupSceneTest` (a solo bake stopped after two frames, job record deleted, then Bake: succeeds,
+complete, seven frames). Probe, `simulation_followup` `rigid` with STRICT=1: `RISE_GUI_HEADLESS_PROBE_RECORD=1` (Record,
+play the clock to 31/31, Stop live: row complete 31/31; the later Bake and delete steps unchanged) ALL PASS (36);
+`RECORD=partial` (Record, not played: row partial 1/31 after detach, the following Bake completes) ALL PASS (35).
 
 The panel's stale line now allows five lines and carries a tooltip (a group lists every member's reason; it was cut at
 two lines).
@@ -234,13 +258,14 @@ two lines).
 - Live rigid stepping in the real app: the model, clock and object transform are probe-verified (§3.3); still to be seen
   by a person: the Live / Stop live / Reset / Record buttons' appearance for a rigid row (the probe checks the
   predicate the panel uses, not the rendered buttons), and the ball moving in the viewport while it plays.
-- Record for a rigid row (§3.3: it left a partial cache that the next Bake refused); Record for any transform producer.
+- Record for a rigid row in the real panel: probe-verified through the model (§3.3 fixes), not the rendered buttons or a
+  person's use of them; an in-session editor edit of a follower object's own pose (§3.3 fixes).
 - Deleting a cache in Finder while the app shows it: the library and model paths are probe-verified (row `missing`, the
   message, playback unbound); the panel's rendering of the message and the viewport redrawing without the frames were
   not watched. The probe deletes with `FileManager`, not Finder (same effect on disk).
 - Group-member reason text in the real panel (wrapping of the longer strings, the new 5-line limit and tooltip).
 - Live liquid stepping and a group's live mode (a group with a rigid member has no live mode, by design): not run.
-- Scrub-makes-stale defect (§3.3, item 3) and anything that depends on it after a scrub of a rigid group.
+- The scrub fix on `liquid_rigid_bodies` (not re-run; the trampoline group is probe-verified).
 - Any fire bake, live run or render (reserved).
 - The in-app chat with a real model: the catalog is tested by the codec tests and the in-app dispatcher by the probe,
   but no provider call was made.

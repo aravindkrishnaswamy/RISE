@@ -445,6 +445,8 @@ namespace RISE
 		};
 		std::map<std::string, TransformSourceState>	transformSourceStates;	//!< by object name
 		bool DeriveTransformSourceKeys_( const char* object, TransformSourceState& state, std::string& error );
+		//! The authored poses a scene-input capture reads the driven objects at.
+		std::map<std::string, Simulation::SceneObjectInputProvider::AuthoredPose> TransformSourceAuthoredPoses_() const;
 		//! The snapshot a transform_source of `simulation` follows now: the live
 		//! run's current publication when one is attached
 		//! (SetLiveTransformProvider), else the cache on disk (null with

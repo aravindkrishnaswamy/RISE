@@ -52,6 +52,8 @@
 //    base, so RISE_SIMULATION_CACHE_DIR and RISE_SIMULATION_TRUSTED_ROOTS must cover both.  It deletes only
 //    the cache directories it baked itself, and refuses any path that is not under the work or cache folder.
 //    RISE_GUI_HEADLESS_PROBE_WORK    scratch folder for the generated scenes (required)
+//    RISE_GUI_HEADLESS_PROBE_RECORD  `1`: Record on the rigid row and play it to the end (complete sealed cache expected);
+//                                    `partial`: Record, never play it (one frame), then the Bake must replace the partial cache
 //    RISE_GUI_HEADLESS_PROBE_STEPS   one of: `rigid` (Live/Reset/Record row, live pose of the follower object,
 //                                    detach, then bake and delete the cache folder), or `group` (bake the group,
 //                                    edit a member, read the member reasons, undo, delete a member's cache)
@@ -324,14 +326,26 @@ enum SimulationProbes {
         note("rigid: after Reset published \(afterReset?.framesPublished ?? 0) (message: \(model.lastMessage))")
         step("rigid: Reset restarted the run (published frames did not keep growing past the earlier count)",
              (afterReset?.framesPublished ?? 99) <= max(run.framesPublished, 1) + 8)
-        // Record: writes the live run into the cache directory through the generic recorder.
-        if env["RISE_GUI_HEADLESS_PROBE_RECORD"] == "1" {
-        model.record("drop")
-        _ = spin(120) { !model.busy.contains("drop") && model.bakeJobs["drop"]?.isActive != true }
-        note("rigid: Record message: '\(model.lastMessage)'")
-        model.refresh()
-        note("rigid: after Record the row is \(model.row("drop")?.state.label ?? "-") \(model.row("drop")?.framesAvailable ?? 0)/\(model.row("drop")?.framesTotal ?? 0); dir exists: \(FileManager.default.fileExists(atPath: model.row("drop")?.cacheDirectory ?? ""))")
-        step("rigid: Record was accepted without an error message", model.lastMessage.isEmpty)
+        // Record: restarts the run and writes every frame it publishes into the cache directory (generic recorder);
+        // the cache is sealed when the run reaches its last frame.  RECORD=1 plays it to the end; RECORD=partial
+        // does not play it (leaves a partial cache with no job record, which the Bake below must replace).
+        let recordMode = env["RISE_GUI_HEADLESS_PROBE_RECORD"] ?? ""
+        if recordMode == "1" || recordMode == "partial" {
+            model.record("drop")
+            _ = spin(120) { !model.busy.contains("drop") && model.bakeJobs["drop"]?.isActive != true }
+            note("rigid: Record message: '\(model.lastMessage)'")
+            step("rigid: Record was accepted without an error message", model.lastMessage.isEmpty)
+            step("rigid: the run is still attached after Record", spin(5) { model.refresh(); return model.isLive("drop") })
+            if recordMode == "1" {
+                jump(0)
+                vm.startPreviewPlay()
+                let want = model.liveRuns["drop"]?.framesTotal ?? 31
+                step("rigid: the recorded run publishes all \(want) frames", spin(120) { model.refresh(); return (model.liveRuns["drop"]?.framesPublished ?? 0) >= want })
+                vm.stopPreviewPlay()
+                spin(1)
+            }
+            model.refresh()
+            note("rigid: recorded run published \(model.liveRuns["drop"]?.framesPublished ?? 0)/\(model.liveRuns["drop"]?.framesTotal ?? 0)")
         }
         // Detach: back to the authored pose (no cache complete yet), and the Live button is back.
         jump(t)
@@ -340,6 +354,16 @@ enum SimulationProbes {
         model.refresh()
         let stateAfterDetach = model.row("drop")?.state.label ?? "-"
         note("rigid: after detach the row is \(stateAfterDetach)")
+        if recordMode == "1" {
+            // The recording is a cache like a bake's: complete, sealed, every frame.
+            let rec = model.row("drop")
+            step("rigid: Record played to the end leaves a complete sealed cache (\(rec?.state.label ?? "-") \(rec?.framesAvailable ?? 0)/\(rec?.framesTotal ?? 0))",
+                 rec?.state == .complete && rec?.framesTotal ?? 0 > 0 && rec?.framesAvailable == rec?.framesTotal)
+        } else if recordMode == "partial" {
+            let rec = model.row("drop")
+            note("rigid: an interrupted recording leaves \(rec?.state.label ?? "-") \(rec?.framesAvailable ?? 0)/\(rec?.framesTotal ?? 0)")
+            step("rigid: an interrupted recording is a partial cache, not a complete one", rec?.state != .complete && (rec?.framesAvailable ?? 0) > 0)
+        }
         // (b) bake, then delete the finished cache's folder.
         vm.stopPreviewPlay()
         guard let r2 = model.row("drop") else { return }

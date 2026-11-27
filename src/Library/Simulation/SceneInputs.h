@@ -35,6 +35,7 @@
 #include "SceneSimulation.h"
 #include "SimulatedMeshSource.h"
 #include <functional>
+#include <map>
 #include <set>
 
 namespace RISE {
@@ -66,11 +67,16 @@ public:
 	//! a scene input reads them at their authored pose (their simulation
 	//! keyframes neither move them nor enter their identity -- a body must not
 	//! depend on its own output).
-	void SetSimulationDriven(std::set<std::string> objects) { driven_ = std::move(objects); }
+	//! Each is given with its authored `position` and `orientation` (keyframe
+	//! value text): the capture poses its holder there, so neither a scrub, a
+	//! live run nor derived simulation keys (which move the shared object)
+	//! change what a simulation reads, while an edit of the authored pose does.
+	struct AuthoredPose { std::string position, orientation; };
+	void SetSimulationDriven(std::map<std::string, AuthoredPose> objects) { driven_ = std::move(objects); }
 private:
 	const IScene& scene_;
 	SimulatedGeometryLookup lookup_;
-	std::set<std::string> driven_;
+	std::map<std::string, AuthoredPose> driven_;
 };
 
 //! Polar decomposition of a 3x3 linear part (column-vector convention,
