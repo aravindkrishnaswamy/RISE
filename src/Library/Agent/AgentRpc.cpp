@@ -116,6 +116,11 @@ namespace RISE
 				       method == "sim_list"        ||
 				       method == "sim_status"      ||
 				       method == "sim_wait"        ||
+				       // GUI status pass: pure reads (cache locations; a solver's
+				       // parameter schema with the chunk's current values).
+				       // sim_param_set is NOT here: it edits the document.
+				       method == "sim_cache"       ||
+				       method == "sim_param_get"   ||
 				       method == "read_image"      ||
 				       // Toolkit slice 1: read_viewport is a PURE READ of the
 				       // live interactive viewport pixels -- it never renders
@@ -5639,6 +5644,82 @@ namespace RISE
 						return MakeError( idValue, kInvalidParams,
 							"refused: " + m + " is available to the document owner's session only "
 							"(an external session can read sim_list/sim_status/sim_wait)" );
+					//----------------------------------------------------------
+					// sim_param_set {simulation, param, value, occurrence?, baseHeadVersion?}
+					//   -> propose_patch's result shape, plus {simulation, validated}.
+					//   The value is checked against the solver's parameter
+					//   schema (type, range, enum), then applied through
+					//   AgentSession::ProposePatch -- the same undoable,
+					//   dirty-marking, re-deriving edit propose_patch makes.
+					//   It marks the cache stale and starts nothing.
+					//----------------------------------------------------------
+					if( m == "sim_param_set" ) {
+						const JsonValue* sim   = params.find( "simulation" );
+						const JsonValue* param = params.find( "param" );
+						const JsonValue* value = params.find( "value" );
+						if( !sim || !sim->isString() || !param || !param->isString() || !value ||
+						    !( value->isString() || value->isNumber() || value->isBool() ) )
+							return MakeError( idValue, kInvalidParams,
+								"Invalid params: 'simulation' and 'param' (strings) and 'value' (string, number or boolean) are required" );
+						// A scene value is text: numbers and booleans are accepted as the
+						// spellings the scene language uses (TRUE / FALSE).
+						std::string valueText;
+						if( value->isString() ) valueText = value->asString();
+						else if( value->isBool() ) valueText = value->asBool() ? "TRUE" : "FALSE";
+						else {
+							char buf[64];
+							std::snprintf( buf, sizeof( buf ), "%.17g", value->asNumber() );
+							valueText = buf;
+						}
+						AgentSetPatch sp;
+						sp.target = sim->asString();
+						sp.kind   = "simulation";
+						sp.param  = param->asString();
+						sp.value  = valueText;
+						{
+							std::string bErr;
+							const int b = ParseBaseHeadVersionParam( params, sp.baseVersion, bErr );
+							if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+							sp.hasBaseVersion = ( b == 1 );
+						}
+						if( const JsonValue* occ = params.find( "occurrence" ) ) {
+							if( !occ->isNumber() )
+								return MakeError( idValue, kInvalidParams, "Invalid params: 'occurrence' must be a number" );
+							const double ov = occ->asNumber();
+							if( !RISE::IsFiniteDouble( ov ) ||
+							    !( ov >= 0.0 && ov <= 1000000.0 && ov == std::floor( ov ) ) )
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'occurrence' must be a non-negative integer" );
+							sp.occurrence    = static_cast<int>( ov );
+							sp.hasOccurrence = true;
+						}
+						std::string why;
+						if( !ValidateSimulationParamEdit( *s->SimulationJob(), s->SimulationController(),
+						                                  sp.target, sp.param, sp.value, sp.hasOccurrence, sp.occurrence, why ) ) {
+							// A refusal the caller can act on is a SUCCESS result, like propose_patch's.
+							JsonValue refused = JsonValue::MakeObject();
+							refused.set( "applied", JsonValue::MakeBool( false ) );
+							refused.set( "validated", JsonValue::MakeBool( false ) );
+							refused.set( "status", JsonValue::MakeString( "rejected" ) );
+							refused.set( "retriable", JsonValue::MakeBool( false ) );
+							refused.set( "simulation", JsonValue::MakeString( sp.target ) );
+							refused.set( "message", JsonValue::MakeString( why ) );
+							return MakeSuccess( idValue, refused );
+						}
+						const AgentPatchResult pr = s->ProposePatch( sp );
+						if( pr.queueFull ) return MakeProposalQueueFullError( idValue, "sim_param_set" );
+						JsonValue edited = JsonValue::MakeObject();
+						edited.set( "applied", JsonValue::MakeBool( pr.applied ) );
+						edited.set( "validated", JsonValue::MakeBool( true ) );
+						edited.set( "simulation", JsonValue::MakeString( sp.target ) );
+						edited.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+						edited.set( "status", JsonValue::MakeString( pr.status ) );
+						edited.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
+						edited.set( "headVersion", HeadVersionJson( pr.headVersion ) );
+						edited.set( "message", JsonValue::MakeString( pr.message ) );
+						if( !pr.issues.empty() ) edited.set( "issues", IssuesJson( pr.issues ) );
+						return MakeSuccess( idValue, edited );
+					}
 					JsonValue simResult;
 					int simCode = 0;
 					std::string simError;

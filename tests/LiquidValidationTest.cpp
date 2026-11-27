@@ -19,7 +19,7 @@
 //      grid (the solid boundary's convergence)
 //   6  volume: raw loss without correction, correction shifts with it
 //   7  observed orders of 2-5 (within each case)
-//   8  dam break against Martin and Moyce 1952 (reported, not gating)
+//   8  dam break against Martin and Moyce 1952 and Lobovsky et al. 2014 (reported, not gating)
 //   mc marching cubes: closed, outward, second-order area and volume
 //
 // Fast tier: the coarse levels (about a minute on 8 threads).  --extended (or
@@ -363,8 +363,22 @@ void DamBreak(bool extended, Pool* pool)
 		}
 		std::printf("|     rms time difference %.3f over %d points; front speed %.2f sqrt(g a) (Martin and Moyce %.2f; Ritter 2)\n",
 			std::sqrt(sumSq/std::max(1, m)), m, speed, (4.89 - 1.44)/(3.29 - 0.80));
+		std::printf("|     second reference, Lobovsky et al. 2014 (100 runs per depth; average front speed for t sqrt(g/H) > 1, v / sqrt(g H)): "
+			"H = 600 mm (square column, ours) %.2f, H = 300 mm (reservoir 2 H wide) %.2f; their reduction of Martin and Moyce %.2f\n",
+			LobovskyFrontSpeed600, LobovskyFrontSpeed300, LobovskyReductionMartinMoyce57);
 		Check(r.steps > 0 && std::fabs(r.volumeDrift) < 1e-4 && speed > 1 && speed < 2.2, "dam break runs, conserves volume, front speed sane",
 			std::to_string(speed));
+		// Wall impact in Lobovsky's tank (the square column, H = 600 mm): reported against their sensor statistics.
+		const DamBreakImpactResult im = RunDamBreakImpact(n, 1.4, o, pool);
+		std::printf("|     impact wall at 1.683 a from the gate, %d cells per a, %d steps, %.1f s; sensor-1 peak at T = %.2f\n",
+			n, im.steps, im.seconds, im.peakTime);
+		for (int q = 0; q < 4; ++q) {
+			const double rg = 9.81*600e-3*1000/100.0;   // rho g H in mbar (H = 0.6 m)
+			const double* e = LobovskyImpact600[q];
+			std::printf("|       sensor %d (%2.0f mm): P* %.2f (wall cell, includes hydrostatic); experiment median %.2f, 2.5-97.5 %% %.2f-%.2f\n",
+				q + 1, e[0], im.peak[q], e[1]/rg, e[2]/rg, e[3]/rg);
+		}
+		Check(im.finite && im.peak[0] > 0, "dam break impact run finite", std::to_string(im.peak[0]));
 	}
 }
 

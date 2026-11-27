@@ -348,6 +348,15 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly) double wallEstimate;                 ///< seconds, a whole bake
 @property (nonatomic, readonly, copy) NSString *estimateSummary;     ///< "≈ 5 h, 4.0 GB"
 @property (nonatomic, readonly, copy) NSString *staleReason;
+/// GUI status pass (GetSimulationEvidence): what stands behind `fidelity` --
+/// the sentence the cache's label covers ("" without a cache), the number of
+/// validation digests bound to it, why `predictive` is not earnable here ("" when
+/// it is, or the solver is not configured), and a group's / port_source's
+/// couplings as authored (newline-separated; "" when uncoupled).
+@property (nonatomic, readonly, copy) NSString *evidenceScope;
+@property (nonatomic, readonly) NSUInteger evidenceCases;
+@property (nonatomic, readonly, copy) NSString *fidelityLimit;
+@property (nonatomic, readonly, copy) NSString *connections;
 @end
 
 /// The library playback clock (GetPlaybackStatus).
@@ -2241,8 +2250,14 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
 /// Process-wide counter bumped on every bake change (poll ~2 Hz).
 + (unsigned long long)simulationBakeChangeCounter;
 /// Installs newly baked frames (rebinding consumers whose cache appeared);
-/// returns YES when something was refreshed.
+/// returns YES when something was refreshed.  Objects that follow a simulated
+/// body (`transform_source`, rigid bodies) are re-keyed from the cache and the
+/// scene re-posed at the current time in the same call.
 - (BOOL)refreshSimulationFrames;
+/// The named object's world transform as the scene is posed now: 16 numbers,
+/// row-major, row vectors (the translation is [12..14]).  nil for no such
+/// object or while the scene is busy (poll again).
+- (nullable NSArray<NSNumber *> *)worldTransformOfObject:(NSString *)name NS_SWIFT_NAME(worldTransform(ofObject:));
 
 /// Cache location policy (process-wide).  -checkCacheLocation returns YES when
 /// the writer would accept the directory; otherwise `error` holds the reason
@@ -2252,6 +2267,9 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
              suggestedRoot:(NSString * _Nullable * _Nullable)suggestedRoot
                      error:(NSString * _Nullable * _Nullable)error;
 + (NSArray<NSString *> *)trustedCacheRoots;
+/// GUI status pass: the base directory caches default to (a simulation without
+/// a `cache` field lives under <base>/<scene>-<hash>/<name>); "" when unknown.
++ (NSString *)simulationCacheBase;
 /// M5c: the rise-sim worker the bake manager would run (its search: an
 /// override, RISE_SIM_WORKER, then beside the app -- Contents/MacOS/rise-sim
 /// in the bundle -- then PATH).  NO with the reason when none is found.

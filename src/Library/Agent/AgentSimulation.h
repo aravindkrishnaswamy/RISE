@@ -9,6 +9,12 @@
 //   sim_live_start {simulation, fps?}                  live controller only
 //   sim_live_stop  {simulation}                        live controller only
 //   sim_seek       {time}                              live controller only
+//   sim_cache      {}                                  read-safe: where the caches live, per simulation
+//   sim_param_get  {simulation, param?}                read-safe: the solver's schema with this chunk's values
+//   sim_param_set  {simulation, param, value, occurrence?, baseHeadVersion?}
+//                                                      Commit autonomy, Owner session; validated against the
+//                                                      solver's schema, then applied through propose_patch
+//                                                      (undo, dirty, re-derive); starts no bake
 //
 // Baking goes through the process-wide SimulationBakeManager, so it works
 // the same in a GUI-hosted session and in headless `rise --agent-stdio` /
@@ -32,8 +38,17 @@ namespace RISE
 		bool IsAgentSimulationVerb( const std::string& method );
 		//! True for the verbs that change something outside the document
 		//! (start or stop a bake, drive the live viewport): sim_bake,
-		//! sim_cancel, sim_live_start, sim_live_stop, sim_seek.
+		//! sim_cancel, sim_live_start, sim_live_stop, sim_seek, sim_param_set.
 		bool IsAgentSimulationControlVerb( const std::string& method );
+
+		//! The schema check sim_param_set makes before it edits: the simulation
+		//! exists and has a parameter schema, `param` is one of its parameters or
+		//! chunk fields, `value` passes the type, range and enum rules, and an
+		//! `occurrence` addresses an existing line of a repeatable field.  False
+		//! with `error` (a sentence naming what is accepted).
+		bool ValidateSimulationParamEdit( IJobPriv& job, SceneEditController* controller,
+			const std::string& simulation, const std::string& param, const std::string& value,
+			bool hasOccurrence, int occurrence, std::string& error );
 
 		//! Runs a sim_* verb.  `controller` is the session's live controller,
 		//! or null (headless).  False with `errorCode` (a JSON-RPC code) and

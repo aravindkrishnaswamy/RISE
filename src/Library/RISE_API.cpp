@@ -11093,6 +11093,7 @@ namespace RISE
 #include "Simulation/BuiltinSolvers.h"
 #include "Simulation/SceneSimulation.h"            // simulation M3c
 #include "Simulation/SimulationBakeManager.h"      // simulation M5
+#include "Simulation/SimulationProcess.h"          // DefaultSimulationCacheDirectory
 #include "Rendering/InteractivePelRasterizer.h"   // GUI render modes P1: ViewportRenderModeInfo registry
 #include "Utilities/Transformable.h"
 
@@ -12753,6 +12754,15 @@ namespace RISE
 		} );
 	}
 
+	bool RISE_API_SceneEditController_GetObjectWorldTransform( SceneEditController* p, const char* objectName,
+		double* outMatrix16, char* errorBuf, unsigned int errorBufLen )
+	{
+		if( !p || !outMatrix16 ) return false;
+		return M3cGuard( errorBuf, errorBufLen, [&]( std::string& error ) {
+			return p->GetObjectWorldTransform( NameOrEmpty( objectName ), outMatrix16, error );
+		} );
+	}
+
 	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
 		const char* simulationName, char* errorBuf, unsigned int errorBufLen )
 	{
@@ -14062,6 +14072,35 @@ namespace RISE
 			M3cSet( outWallSeconds, s.wallEstimate );
 			M3cCopyText( Simulation::FormatSimulationEstimate( s ), summaryBuf, summaryBufLen );
 			M3cCopyText( s.staleReason, staleReasonBuf, staleReasonBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_SceneEditController_GetSimulationEvidence(
+		SceneEditController* p, unsigned int index,
+		char* scopeBuf, unsigned int scopeBufLen, unsigned int* outEvidenceCases,
+		char* limitBuf, unsigned int limitBufLen,
+		char* connectionsBuf, unsigned int connectionsBufLen )
+	{
+		if( !p ) return false;
+		return M3cGuard( nullptr, 0, [&]( std::string& error ) {
+			std::vector<Simulation::SceneSimulationStatus> statuses;
+			if( !p->GetSimulations( statuses, error ) || index >= statuses.size() ) return false;
+			const Simulation::SceneSimulationStatus& s = statuses[index];
+			M3cCopyText( s.evidenceScope, scopeBuf, scopeBufLen );
+			M3cSet( outEvidenceCases, static_cast<unsigned int>( s.evidenceCases ) );
+			M3cCopyText( s.fidelityLimit, limitBuf, limitBufLen );
+			std::string joined;
+			for( const std::string& c : s.connections ) { if( !joined.empty() ) joined += '\n'; joined += c; }
+			M3cCopyText( joined, connectionsBuf, connectionsBufLen );
+			return true;
+		} );
+	}
+
+	bool RISE_API_GetSimulationCacheBase( char* buf, unsigned int bufLen )
+	{
+		return M3cGuard( nullptr, 0, [&]( std::string& ) {
+			M3cCopyText( Simulation::DefaultSimulationCacheDirectory().string(), buf, bufLen );
 			return true;
 		} );
 	}

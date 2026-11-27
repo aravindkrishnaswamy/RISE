@@ -275,6 +275,9 @@ A bake is a separate `rise-sim` process run on the scene **file**, managed by th
 | `sim_live_start` | `{simulation, fps?}` | commit, owner session | `{ok, supported, message?}` |
 | `sim_live_stop` | `{simulation}` | commit, owner session | `{ok, supported, message?}` |
 | `sim_seek` | `{time}` | commit, owner session | `{ok, supported, time, message?}` |
+| `sim_cache` | `{}` | read-safe | `{ok, scene, cacheBase, baseFromEnvironment, sceneCacheDir?, trustedRoots, simulations:[{name, keyword, cacheDir, defaultLocation, exists, accepted, reason?}], note}`: where the caches live and whether the writer would accept each location (nothing is created) (GUI status pass, 2026-11-26) |
+| `sim_param_get` | `{simulation, param?}` | read-safe | `{ok, simulation, keyword, solver, state, parameters:[{name, type, default?, minimum?, maximum?, values?, units, doc, keyed, set, value}], chunkFields:[{name, kind, repeatable, values?, doc, occurrences}]}`: the solver's schema with this chunk's values; `ok:false` for a group or cache |
+| `sim_param_set` | `{simulation, param, value, occurrence?, baseHeadVersion?}` | commit, owner session | `propose_patch`'s result plus `{simulation, validated}`; a schema refusal is `{applied:false, validated:false, message}`. Validated against the solver's parameter schema, then applied through `AgentSession::ProposePatch` (undo, dirty, re-derive); marks the cache stale and starts no bake |
 
 `job` = `{jobId, simulation, state, terminal, resumable, adopted, interrupted, resume, force, solver, backend,
 cacheDir, simulatedTime, endTime, framesWritten, framesTotal, progress, wallSeconds, etaSeconds (null =
@@ -282,15 +285,19 @@ unknown), pid, dependsOn, waitingFor?, detail?, error?, log?}`, `state` one of `
 `running`, `stopping`, `stopped`, `finished`, `failed`, `cancelled`.
 
 - **Headless.** `rise --agent-stdio` / `--mcp` bakes exactly like the GUI (the worker is a separate process
-  found next to the `rise` binary, `bin/tools/rise_sim`); the default read posture allows only the three
+  found next to the `rise` binary, `bin/tools/rise_sim`); the default read posture allows only the five
   read verbs, so `sim_bake` needs `--agent-autonomy=commit`. The live verbs need an in-app viewport and
   answer `{ok:false, supported:false}` headless (not an RPC error, the `render_cancel` honesty convention).
 - **Resume** is `sim_bake` of the same simulation: a partial cache of the current key is continued from its
   checkpoint.
-- **Annotations.** Under `--agent-autonomy=read` the five control tools carry the read-refusal note; under
+- **Annotations.** Under `--agent-autonomy=read` the six control tools carry the read-refusal note; under
   `propose` they carry an "UNAVAILABLE at --agent-autonomy=propose" note (they are on neither allowlist).
-- **Not in the in-app chat catalog** (`AgentChatCodecs.cpp`'s `kToolDefs`): the chat tool set is curated for
-  scene building and pinned by fingerprint tests; adding the bake verbs there is a separate product decision.
+- **In the in-app chat catalog** (`AgentChatCodecs.cpp`'s `kToolDefs`, since the GUI status pass, 2026-11-26): all
+  eleven simulation verbs, with shorter texts than the MCP ones (they ship with every API call). The chat
+  runs each tool on the main thread, so the `sim_wait` text asks for `timeoutMs` of 2000 or less, and the
+  `sim_bake` text tells the model not to bake `fire_simulation` unprompted (hours of GPU). Status of the app
+  side: [../SIMULATION_GUI_STATUS.md](../SIMULATION_GUI_STATUS.md).
+- `sim_list` rows also carry `evidenceScope`, `evidenceCases`, `fidelityLimit`, `connections` and `meshConsumers`.
 
 ### 4.5 Output & persistence
 

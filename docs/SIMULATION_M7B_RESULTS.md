@@ -48,7 +48,9 @@ M7a §13.4).
 ### 2.1 Derivation (from the variational principle)
 
 The paper was not consulted in this pass; the formulation below is derived here from the kinetic-energy
-minimisation that m7a's projection already is (M7a §13.2), and it has the form of Batty et al. 2007 §4.
+minimisation that m7a's projection already is (M7a §13.2), and it has the form of Batty et al. 2007 §4. Compared with the
+paper afterwards (2026-11-26): the same system, ΔtJᵀM⁻¹J added to the matrix, with volume (control-volume) weights beside
+bodies; differences are listed in SIMULATION_M7_REFERENCES.md §7.
 
 m7a's projection minimises ρh³/2 Σ_f A_f θ_f (u_f − u*_f)² (A_f the open fraction, θ_f = 1 between liquid cells,
 the ghost-fluid fraction at the surface) subject to the discrete divergence of every liquid cell c,
@@ -406,5 +408,5 @@ solver); no fire test result is reported. `LiquidRigidValidationTest --extended`
   demo (the crate tilts), but no case has a rotational reference (a torque from a known flow).
 - **Not run:** the VS2022, Android and Xcode builds (lists edited by script; the make build compiles everything);
   256³; the GUI.
-- **Not verified:** Batty, Bertails and Bridson 2007 §4 itself (the formulation is derived here, not checked
-  against the paper's equations); bitwise reproducibility across platforms (per platform, as M7a).
+- **Checked against the paper afterwards (2026-11-26):** Batty, Bertails and Bridson 2007 §§2–3 (M7_REFERENCES §7);
+  not reproduced: the paper's §4 free-surface separation inequality (not built here). Not verified: bitwise reproducibility across platforms (per platform, as M7a).

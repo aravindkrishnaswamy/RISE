@@ -161,13 +161,23 @@ private struct SimulationRowView: View {
             .buttonStyle(.plain)
 
             HStack(spacing: 8) {
-                Text(row.fidelity.isEmpty ? "no cache" : row.fidelity)
+                Text(row.labelText)
+                    .help(row.evidenceText.isEmpty ? "The fidelity label of the cache on disk." : row.evidenceText)
                 Text("\(row.framesAvailable)/\(row.framesTotal) frames")
                 Text(row.timeSupportLabel)
             }
             .font(Theme.mono(9.5))
             .foregroundColor(Theme.textMuted)
             .lineLimit(1)
+
+            if !row.evidenceText.isEmpty {
+                Text(row.evidenceText)
+                    .font(Theme.mono(9.5))
+                    .foregroundColor(Theme.textMuted)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(row.evidenceText)
+            }
 
             if row.state == .stale && !row.staleReason.isEmpty {
                 Text("stale: " + row.staleReason)
@@ -269,7 +279,10 @@ private struct SimulationRowView: View {
             if !row.consumerGeometry.isEmpty { detail("shown by", row.consumerGeometry) }
             if !row.inputs.isEmpty { detail("scene inputs", row.inputs) }
             if !row.upstream.isEmpty {
-                detail("upstream", row.upstream + (row.upstreamOutOfDate ? " (out of date)" : ""))
+                detail(row.isGroup ? "members" : "upstream", row.upstream + (row.upstreamOutOfDate ? " (out of date)" : ""))
+            }
+            ForEach(Array(row.connections.enumerated()), id: \.offset) { _, line in
+                detail("coupling", line)
             }
             if let live {
                 detail("live run", "\(live.framesPublished)/\(live.framesTotal) frames published"

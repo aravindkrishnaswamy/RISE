@@ -576,8 +576,16 @@ void InspectSceneSimulation(const SceneSimulationPlan& plan, SceneSimulationStat
 	s.cacheDir = spec.cacheDir;
 	s.upstream = plan.upstream;
 	s.inputs = spec.sceneInputs;
+	// GUI status pass: the couplings as authored (a group's connect lines and
+	// ownership, then any port_source lines).
+	if (spec.keyword == kSimulationGroupKeyword) {
+		for (const auto& line : TextList(spec.parameters.Find("connect"))) s.connections.push_back(line);
+		for (const auto& line : TextList(spec.parameters.Find("owned"))) s.connections.push_back("owned " + line);
+	}
+	for (const auto& line : spec.portSources) s.connections.push_back("port_source " + line);
 	if (plan.configured && !spec.solverId.empty()) {
 		const auto& d = plan.description;
+		s.fidelityLimit = d.capabilities.fidelityLimit;
 		s.expectedKey = d.cache.key;
 		s.interactive = d.capabilities.interactive;
 		s.backend = d.capabilities.backend;
@@ -612,6 +620,8 @@ void InspectSceneSimulation(const SceneSimulationPlan& plan, SceneSimulationStat
 		const auto& d = snapshot.Description();
 		s.cacheKey = d.key;
 		s.fidelity = d.fidelity;
+		s.evidenceScope = d.evidenceScope;
+		s.evidenceCases = static_cast<std::uint32_t>(d.evidence.size());
 		const auto outputs = d.outputs.size();
 		s.framesAvailable = outputs ? snapshot.Entries().size() / outputs : 0;
 		if (spec.solverId.empty()) {
@@ -704,7 +714,12 @@ bool SceneSimulationGraph::Describe(const std::vector<SceneSimulationSpec>& spec
 				failed = failed || s.state == SceneSimulationState::Failed;
 				g.framesAvailable = std::max(g.framesAvailable, s.framesAvailable);
 				g.framesTotal = std::max(g.framesTotal, s.framesTotal);
-				if (g.fidelity.empty() || s.fidelity == "preview") g.fidelity = s.fidelity;
+				if (g.fidelity.empty() || s.fidelity == "preview") {
+					g.fidelity = s.fidelity;
+					g.evidenceScope = s.evidenceScope;
+					g.evidenceCases = s.evidenceCases;
+					g.fidelityLimit = s.fidelityLimit;
+				}
 			}
 		g.state = all ? SceneSimulationState::Complete : failed ? SceneSimulationState::Failed : baking ? SceneSimulationState::Baking :
 			stale ? SceneSimulationState::Stale : any ? SceneSimulationState::Partial : SceneSimulationState::Missing;

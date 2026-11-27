@@ -40,7 +40,10 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // m7f.1: implicitly coupled sheets are walls of the level set's stencils and its boundary
 // where they hold liquid on one side (docs/SIMULATION_M7F_RESULTS.md); bakes without them
 // publish the frames of m7e.1.
-constexpr const char* SolverVersion = "m7f.1";
+// m7g.1: implicitly coupled sheets: the face liquid moves with the sheet along its normal, a free
+// surface below a sheet is not loaded on it, and the reinitialisation's wall ghosts are constant
+// (docs/SIMULATION_M7G_RESULTS.md); bakes without them publish the frames of m7f.1.
+constexpr const char* SolverVersion = "m7g.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -1046,6 +1049,7 @@ private:
 	double macroStart_ = 0;
 	std::vector<std::string> portNames_;
 	std::uint64_t contacts_ = 0;
+	std::uint64_t pressureIterations_ = 0, pressureSteps_ = 0;   // M7g: this process's PCG iterations (progress detail; not state)
 	// M7d: port sheets (a mesh surface accepted at each exchange's start, the
 	// pressure load offered at its end; one exchange per macro step, or per
 	// segment when free-running with a cached feed).
@@ -1803,9 +1807,14 @@ void LiquidSolver::SheetRotationDiagnostic(double span)
 
 std::string LiquidSolver::SheetRotationDetail() const
 {
-	char buffer[160];
-	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch per macro step up to %.2g%%%s", 100*sheetRotationStretch_,
-		sheetRotationStretch_ > 0.01 ? " (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)" : "");
+	char buffer[400];
+	// m7g: the through-sheet measure (LiquidModel.h sheetCrossedCells): cells that would have
+	// turned wet across a sheet's closed face (held by the guard) and cells that turned wet with no
+	// wet neighbour at all, totals of this run.
+	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch per macro step up to %.2g%%%s, cells wet across a sheet %llu (%.3g m^3, held), "
+		"wet without a wet neighbour %llu", 100*sheetRotationStretch_,
+		sheetRotationStretch_ > 0.01 ? " (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)" : "",
+		static_cast<unsigned long long>(model_.sheetCrossedCells), model_.sheetCrossedVolume, static_cast<unsigned long long>(model_.sheetUnfedCells));
 	return buffer;
 }
 
@@ -2048,6 +2057,7 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			// robustness sweep since m7a.2) in the progress detail, as cloth reports its solver counts.
 			if (progress && !progress->Report(s_.t, end, "steps " + std::to_string(model_.steps) + ", clamped faces " +
 				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps" +
+				", pressure iterations " + std::to_string(pressureIterations_) + " in " + std::to_string(pressureSteps_) + " steps" +
 				(model_.bodies.empty() ? std::string() : ", body wall contacts " + std::to_string(contacts_)) +
 				(implicitSheets_ ? SheetRotationDetail() : std::string())))
 				return Done(result, AdvanceResult::Status::Stopped);
@@ -2056,6 +2066,8 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			StepStats stats;
 			model_.SetTime(s_.t);
 			if (!model_.Step(tn - s_.t, stats, error)) return false;
+			pressureIterations_ += std::uint64_t(stats.pressure.iterations);
+			++pressureSteps_;
 			if (implicitSheets_ && sheetOpen_) sheetSegments_.push_back(sheetSegment_);   // M7e
 			if (!model_.bodies.empty()) WallContact(tn - s_.t);
 			s_.t = tn;

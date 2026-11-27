@@ -2126,6 +2126,8 @@ void Job::DestroyContainers()
 	simulationsMap.clear();
 	simulationOrder.clear();
 	simulatedGeometries.clear();
+	transformSourceObjects.clear();
+	transformSourceStates.clear();
 }
 
 //
@@ -11396,6 +11398,38 @@ bool Job::AddFireMediumFromSimulation(
 		channel_reaction, channel_chem_ch, channel_chem_c2, channel_chem_co2, channel_velocity, chem_model_none );
 }
 
+namespace
+{
+	//! RISE's orientation Euler angles (degrees), R = Rx(a) Ry(b) Rz(c), of the
+	//! rotation O, unwrapped against `last` when `unwrap` (the previous key).
+	void TransformSourceEuler( const double O[3][3], double last[3], const bool unwrap, double e[3] )
+	{
+		e[0] = std::atan2( -O[1][2], O[2][2] );
+		e[1] = std::asin( std::max( -1.0, std::min( 1.0, O[0][2] ) ) );
+		e[2] = std::atan2( -O[0][1], O[0][0] );
+		for( int k = 0; k < 3; ++k ) {
+			e[k] *= 180.0/3.14159265358979323846;
+			if( unwrap ) e[k] += 360.0*std::round( ( last[k] - e[k] )/360.0 );
+			last[k] = e[k];
+		}
+	}
+
+	//! Names a generation of a simulation's transform output: the cache's key
+	//! and epoch, how many frames of the output it holds, and whether it is
+	//! sealed.  Empty when there is no readable cache.  A bake that advances or
+	//! completes, a new epoch and a cleared cache each change it.
+	std::string TransformSourceStamp( const std::filesystem::path& cacheDir, const std::string& output )
+	{
+		Simulation::CacheSnapshot snapshot;
+		std::string error;
+		if( !Simulation::CacheSnapshot::Open( cacheDir, std::size_t( 256 ) << 20, snapshot, error ) ) return std::string();
+		std::size_t frames = 0;
+		for( const auto& e : snapshot.Entries() ) if( e.output == output ) ++frames;
+		return snapshot.Description().key + "|" + snapshot.Description().epoch + "|" + std::to_string( frames ) +
+			( snapshot.Complete() ? "|sealed" : "|partial" );
+	}
+}
+
 // Simulation M6: `transform_source <simulation>.<output>[<body>]`.  The body's
 // motion becomes ordinary keyframes on the object's `position` and
 // `orientation` (the default animation), so scrubbing, playback, the viewport
@@ -11407,6 +11441,8 @@ bool Job::AddFireMediumFromSimulation(
 // transform is its pose at the simulation's first frame; later poses are
 // that pose moved by the body's displacement since then.  A cache that does
 // not exist yet leaves the object where it is authored, with a warning.
+// A bake that completes or advances, or a cache that goes away, re-derives the
+// keys (RefreshTransformSources), through the same code, replacing the old ones.
 bool Job::SetObjectTransformSource( const char* object, const char* source )
 {
 	const auto fail = []( const std::string& message ) {
@@ -11419,49 +11455,113 @@ bool Job::SetObjectTransformSource( const char* object, const char* source )
 	const auto dot = text.find( '.' ), open = text.find( '[' );
 	if( dot == std::string::npos || open == std::string::npos || open < dot || text.back() != ']' || open + 2 > text.size() - 1 )
 		return fail( std::string( "standard_object `" ) + object + "`: transform_source is `<simulation>.<output>[<body>]`, not `" + text + "`" );
-	const std::string simulation = text.substr( 0, dot ), output = text.substr( dot + 1, open - dot - 1 ),
-		body = text.substr( open + 1, text.size() - open - 2 );
-	const auto spec = simulationsMap.find( simulation );
+	TransformSourceState state;
+	state.simulation = text.substr( 0, dot );
+	state.output = text.substr( dot + 1, open - dot - 1 );
+	state.body = text.substr( open + 1, text.size() - open - 2 );
+	const auto spec = simulationsMap.find( state.simulation );
 	if( spec == simulationsMap.end() )
-		return fail( std::string( "standard_object `" ) + object + "`: transform_source names `" + simulation +
+		return fail( std::string( "standard_object `" ) + object + "`: transform_source names `" + state.simulation +
 			"`, which is not a simulation declared before it" );
 	IObject* pObj = pObjectManager ? pObjectManager->GetItem( object ) : 0;
 	if( !pObj ) return fail( std::string( "standard_object `" ) + object + "`: no such object" );
-	Simulation::CacheSnapshot snapshot;
+	// The authored pose: translation p0, rotation O0 (columns of the linear part, normalised).
+	pObj->FinalizeTransformations();
+	const Matrix4 m0 = pObj->GetFinalTransformMatrix();
+	const double A[3][3] = { { m0._00, m0._10, m0._20 }, { m0._01, m0._11, m0._21 }, { m0._02, m0._12, m0._22 } };
+	for( int c = 0; c < 3; ++c ) {
+		const double l = std::sqrt( A[0][c]*A[0][c] + A[1][c]*A[1][c] + A[2][c]*A[2][c] );
+		if( !( l > 0 ) ) return fail( std::string( "standard_object `" ) + object + "`: a degenerate transform cannot follow a body" );
+		for( int r = 0; r < 3; ++r ) state.O0[r][c] = A[r][c]/l;
+	}
+	state.p0[0] = m0._30; state.p0[1] = m0._31; state.p0[2] = m0._32;
+	{
+		// The authored pose as `position` / `orientation` values: what a refresh
+		// puts the object back to when its cache is gone.
+		double e[3], last[3] = { 0, 0, 0 };
+		TransformSourceEuler( state.O0, last, false, e );
+		char pv[160], ov[160];
+		std::snprintf( pv, sizeof( pv ), "%.17g %.17g %.17g", state.p0[0], state.p0[1], state.p0[2] );
+		std::snprintf( ov, sizeof( ov ), "%.17g %.17g %.17g", e[0], e[1], e[2] );
+		state.authoredPosition = pv;
+		state.authoredOrientation = ov;
+	}
+	state.stamp = TransformSourceStamp( spec->second.cacheDir, state.output );
 	std::string error;
-	if( !Simulation::CacheSnapshot::Open( spec->second.cacheDir, std::size_t( 256 ) << 20, snapshot, error ) ) {
+	if( !DeriveTransformSourceKeys_( object, state, error ) ) return fail( error );
+	transformSourceObjects.insert( object );
+	transformSourceStates[object] = state;
+	return true;
+}
+
+bool Job::RefreshTransformSources( bool& changed, std::string& error )
+{
+	changed = false;
+	error.clear();
+	Implementation::Animator* animator = pScene ? dynamic_cast<Implementation::Animator*>( pScene->GetAnimator() ) : nullptr;
+	for( auto& entry : transformSourceStates ) {
+		const std::string& object = entry.first;
+		TransformSourceState& state = entry.second;
+		const auto spec = simulationsMap.find( state.simulation );
+		IKeyframable* pObj = pObjectManager ? pObjectManager->GetItem( object.c_str() ) : 0;
+		if( spec == simulationsMap.end() || !pObj ) continue;
+		const std::string stamp = TransformSourceStamp( spec->second.cacheDir, state.output );
+		if( stamp == state.stamp ) continue;
+		// Replace the keys: drop the old ones, put the body back at its authored
+		// pose (where it stays when the cache is gone), derive again from the cache.
+		if( animator ) {
+			animator->RemoveKeyframes( pObj, "position", String() );
+			animator->RemoveKeyframes( pObj, "orientation", String() );
+		}
+		IKeyframeParameter* position = pObj->KeyframeFromParameters( "position", state.authoredPosition.c_str() );
+		IKeyframeParameter* orientation = pObj->KeyframeFromParameters( "orientation", state.authoredOrientation.c_str() );
+		if( position ) { pObj->SetIntermediateValue( *position ); safe_release( position ); }
+		if( orientation ) { pObj->SetIntermediateValue( *orientation ); safe_release( orientation ); }
+		pObj->RegenerateData();
+		state.stamp = stamp;
+		changed = true;
+		std::string why;
+		if( !DeriveTransformSourceKeys_( object.c_str(), state, why ) ) error += ( error.empty() ? "" : "; " ) + why;
+	}
+	return error.empty();
+}
+
+// Derives the object's keyframes from the cache `state` names.  No cache yet
+// leaves the object where it is, with a warning, and succeeds; a cache that
+// lacks the body fails with `error`.
+bool Job::DeriveTransformSourceKeys_( const char* object, TransformSourceState& state, std::string& error )
+{
+	error.clear();
+	const auto failWith = [&]( const std::string& message ) { error = message; return false; };
+	const std::string& simulation = state.simulation;
+	const std::string& output = state.output;
+	const std::string& body = state.body;
+	const auto spec = simulationsMap.find( simulation );
+	if( spec == simulationsMap.end() ) return failWith( std::string( "standard_object `" ) + object + "`: simulation `" + simulation + "` is gone" );
+	Simulation::CacheSnapshot snapshot;
+	std::string cacheError;
+	if( !Simulation::CacheSnapshot::Open( spec->second.cacheDir, std::size_t( 256 ) << 20, snapshot, cacheError ) ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::SetObjectTransformSource:: `%s`: simulation `%s` has no cache yet (%s); "
 			"the object stays at its authored pose until it is baked (rise-sim bake <scene> %s)", object, simulation.c_str(),
 			spec->second.cacheDir.string().c_str(), simulation.c_str() );
-		transformSourceObjects.insert( object );
 		return true;
 	}
 	const auto& outs = snapshot.Description().outputs;
 	const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == output; } );
 	if( o == outs.end() || o->type != Simulation::TransformCodec )
-		return fail( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output + "` is not a transform.v1 output" );
-	// The authored pose: translation p0, rotation O0 (columns of the linear part, normalised).
-	pObj->FinalizeTransformations();
-	const Matrix4 m0 = pObj->GetFinalTransformMatrix();
-	const double A[3][3] = { { m0._00, m0._10, m0._20 }, { m0._01, m0._11, m0._21 }, { m0._02, m0._12, m0._22 } };
-	double O0[3][3];
-	for( int c = 0; c < 3; ++c ) {
-		const double l = std::sqrt( A[0][c]*A[0][c] + A[1][c]*A[1][c] + A[2][c]*A[2][c] );
-		if( !( l > 0 ) ) return fail( std::string( "standard_object `" ) + object + "`: a degenerate transform cannot follow a body" );
-		for( int r = 0; r < 3; ++r ) O0[r][c] = A[r][c]/l;
-	}
-	const double p0[3] = { m0._30, m0._31, m0._32 };
-	struct Pose { double t; double R[9]; double x[3]; };
+		return failWith( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output + "` is not a transform.v1 output" );
+	const double ( &O0 )[3][3] = state.O0;
+	const double ( &p0 )[3] = state.p0;
 	std::vector<std::pair<double, Simulation::TransformBody>> frames;
 	for( const auto& e : snapshot.Entries() ) {
 		if( e.output != output ) continue;
 		std::shared_ptr<const Simulation::Bytes> bytes;
 		Simulation::TransformFrame f;
-		if( snapshot.Read( e.index, output, std::size_t( 64 ) << 20, bytes, error ) != Simulation::FrameStatus::Ready ||
-			!Simulation::DecodeTransforms( *bytes, std::size_t( 64 ) << 20, f, error ) )
-			return fail( std::string( "standard_object `" ) + object + "`: " + simulation + " frame " + std::to_string( e.index ) + ": " + error );
+		if( snapshot.Read( e.index, output, std::size_t( 64 ) << 20, bytes, cacheError ) != Simulation::FrameStatus::Ready ||
+			!Simulation::DecodeTransforms( *bytes, std::size_t( 64 ) << 20, f, cacheError ) )
+			return failWith( std::string( "standard_object `" ) + object + "`: " + simulation + " frame " + std::to_string( e.index ) + ": " + cacheError );
 		const auto b = std::find_if( f.bodies.begin(), f.bodies.end(), [&]( const Simulation::TransformBody& x ) { return x.name == body; } );
-		if( b == f.bodies.end() ) return fail( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output +
+		if( b == f.bodies.end() ) return failWith( std::string( "standard_object `" ) + object + "`: `" + simulation + "." + output +
 			"` has no body `" + body + "`" );
 		frames.emplace_back( e.time, *b );
 	}
@@ -11515,23 +11615,18 @@ bool Job::SetObjectTransformSource( const char* object, const char* source )
 				p[i] = xb[i];
 				for( int q = 0; q < 3; ++q ) p[i] += D[i][q]*( p0[q] - x0[q] );
 			}
-			// Euler angles of RISE's orientation, R = Rx(a) Ry(b) Rz(c), unwrapped against the previous key.
-			double e[3] = { std::atan2( -O[1][2], O[2][2] ), std::asin( std::max( -1.0, std::min( 1.0, O[0][2] ) ) ), std::atan2( -O[0][1], O[0][0] ) };
-			for( int k = 0; k < 3; ++k ) {
-				e[k] *= 180.0/3.14159265358979323846;
-				if( !first ) e[k] += 360.0*std::round( ( last[k] - e[k] )/360.0 );
-				last[k] = e[k];
-			}
+			// Euler angles of RISE's orientation, unwrapped against the previous key.
+			double e[3];
+			TransformSourceEuler( O, last, !first, e );
 			first = false;
 			char pv[160], ov[160];
 			std::snprintf( pv, sizeof( pv ), "%.17g %.17g %.17g", p[0], p[1], p[2] );
 			std::snprintf( ov, sizeof( ov ), "%.17g %.17g %.17g", e[0], e[1], e[2] );
 			if( !AddKeyframe( "object", object, "position", pv, t, 0, 0 ) || !AddKeyframe( "object", object, "orientation", ov, t, 0, 0 ) )
-				return fail( std::string( "standard_object `" ) + object + "`: cannot keyframe its transform" );
+				return failWith( std::string( "standard_object `" ) + object + "`: cannot keyframe its transform" );
 			++keys;
 		}
 	}
-	transformSourceObjects.insert( object );
 	GlobalLog()->PrintEx( eLog_Info, "Job::SetObjectTransformSource:: `%s` follows %s.%s[%s]: %u poses from %zu frames%s", object,
 		simulation.c_str(), output.c_str(), body.c_str(), keys, frames.size(), snapshot.Complete() ? "" : " (partial cache)" );
 	return true;

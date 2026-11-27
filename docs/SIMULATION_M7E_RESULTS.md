@@ -420,7 +420,7 @@ line of the untracked new scene (148 MATCH, 0 DRIFT). Fire tests were not run.
   member in a group the cache's rule stands (the step's end in Gauss–Seidel), unchanged.
 - **Not run:** the VS2022, Android and Xcode builds (no source file added, so no list changed); the GUI; 128³ or larger
   with a cloth; the full 2 s flap at 128 cells.
-- **Not verified:** Robinson-Mosher et al. 2008 and Guendelman, Bridson and Fedkiw 2005 themselves (the formulation is
+- **Not verified:** Robinson-Mosher et al. 2008 and Guendelman, Selle, Losasso and Fedkiw 2005 themselves (the formulation is
   derived here); bitwise reproducibility across platforms (per platform, as M7a).
 
 ## 12. Pins and change log

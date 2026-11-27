@@ -5203,9 +5203,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! When new frames landed in this scene's caches since the last call,
 	//! rebinds consumers whose cache began a new epoch or had no frames, and
 	//! installs the current time's frames (the scrub path's install) and
-	//! re-renders.  `outRefreshed` false: nothing new (cheap, no lock).
+	//! re-renders.  `outRefreshed` false: nothing new (cheap, no lock).  Objects
+	//! that follow a simulated body (transform_source) are re-keyed from the
+	//! cache and the scene re-posed at the current time too.
 	bool RISE_API_SceneEditController_RefreshSimulationFrames( SceneEditController* p, bool* outRefreshed,
 		char* errorBuf, unsigned int errorBufLen );
+	//! The named object's world transform as the scene is posed now (16
+	//! doubles, row-major, row vectors: the translation is [12..14]).  False
+	//! (with the reason) for no such object or a busy scene: poll again.
+	bool RISE_API_SceneEditController_GetObjectWorldTransform( SceneEditController* p, const char* objectName,
+		double* outMatrix16, char* errorBuf, unsigned int errorBufLen );
 	//! Detach the live run of scene simulation `simulationName` (the partner
 	//! of LiveSimulationAttachSimulation).
 	bool RISE_API_SceneEditController_LiveSimulationDetachSimulation( SceneEditController* p,
@@ -6219,6 +6226,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		unsigned long long* outMemoryBytes, double* outCostEstimate, double* outWallSeconds,
 		char* summaryBuf, unsigned int summaryBufLen,
 		char* staleReasonBuf, unsigned int staleReasonBufLen );
+
+	// ---- Simulation GUI status pass (docs/SIMULATION_GUI_STATUS.md) ----
+
+	//! What stands behind a simulation's label, and how it is coupled.  Same
+	//! index and snapshot rules as GetSimulationDetails.
+	//! `scopeBuf`: the sentence the cache's fidelity label covers ("" without a
+	//! cache or when the manifest states none); `outEvidenceCases`: validation
+	//! digests bound to the label; `limitBuf`: why this configuration cannot
+	//! earn `predictive` ("" when it can, or the solver is not configured here);
+	//! `connectionsBuf`: a group's `connect` / `owned` lines and any
+	//! `port_source` lines as authored, joined by '\n' ("" when uncoupled).
+	bool RISE_API_SceneEditController_GetSimulationEvidence(
+		SceneEditController* p, unsigned int index,
+		char* scopeBuf, unsigned int scopeBufLen, unsigned int* outEvidenceCases,
+		char* limitBuf, unsigned int limitBufLen,
+		char* connectionsBuf, unsigned int connectionsBufLen );
+
+	//! The base directory simulation caches default to
+	//! (`<per-user cache folder>/scene-caches`, or `$RISE_SIMULATION_CACHE_DIR/scene-caches`);
+	//! a simulation without a `cache` field lives under
+	//! `<base>/<scene>-<hash>/<name>`.
+	bool RISE_API_GetSimulationCacheBase( char* buf, unsigned int bufLen );
 
 	//! The playback clock's time scale: scene seconds per wall second (1 =
 	//! real time).  PlaybackPlay(fps <= 0) steps an ordinary animation at 30

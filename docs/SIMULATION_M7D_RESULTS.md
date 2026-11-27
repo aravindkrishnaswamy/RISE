@@ -62,7 +62,10 @@ Two ways to make a zero-thickness sheet block flow:
   it removes volume. A thickness that closes the faces reliably at every angle is about two cells (control-volume
   fractions) or more than one (area fractions), so the cloth would displace a slab two cells thick. That slab is
   buoyant, has added mass of its own and puts a fluid gap between the cloth and the liquid on each side.
-- **Face crossing** (chosen; Guendelman, Bridson and Fedkiw 2005 in form, not checked against the paper). Close
+- **Face crossing** (chosen; Guendelman, Selle, Losasso and Fedkiw 2005 in form; checked against the paper 2026-11-26: it sets a Neumann
+  condition on a face whose cell-centre segment a triangle crosses, with the object's effective velocity there; this solver
+  imposes the normal component only, see M7_REFERENCES §7. The earlier text here and in M7e/M7f misnamed the authors
+  "Guendelman, Bridson and Fedkiw"). Close
   every face whose segment between the two cell centres it separates crosses a sheet triangle. Every path of
   neighbouring cells from one side to the other crosses such a segment, so a sheet spanning a region cannot leak
   through the pressure solve whatever its angle. No volume is removed and the fractions of other faces are
@@ -539,6 +542,7 @@ filtered by the relaxation (§6). The flow under the flap and through the side g
   - the GUI;
   - a full 2 s bake at 128³ with a flap.
 - **Not verified**:
-  - Guendelman, Bridson and Fedkiw 2005 itself (the face-crossing treatment is described from recollection);
-  - the plate added-mass estimate ρπL/4 (standard, not re-derived here);
+  - (checked 2026-11-26: Guendelman, Selle, Losasso and Fedkiw 2005, M7_REFERENCES §7);
+  - the plate added-mass estimate ρπL/4 (standard: the added mass of a 2-D flat plate of width L is ρπL²/4 per unit length, i.e. a
+    cylinder of diameter L; not re-derived here, not found on a fetched page; see M7_REFERENCES §4);
   - bitwise reproducibility across platforms (per platform, as M7a).

@@ -614,6 +614,10 @@ static NSString *RISEM5String(const char *text) {
 @property (nonatomic, readwrite) double wallEstimate;
 @property (nonatomic, readwrite, copy) NSString *estimateSummary;
 @property (nonatomic, readwrite, copy) NSString *staleReason;
+@property (nonatomic, readwrite, copy) NSString *evidenceScope;
+@property (nonatomic, readwrite) NSUInteger evidenceCases;
+@property (nonatomic, readwrite, copy) NSString *fidelityLimit;
+@property (nonatomic, readwrite, copy) NSString *connections;
 @end
 @implementation RISESimulationInfo
 @end
@@ -3902,6 +3906,15 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
             info.memoryEstimate = memory; info.wallEstimate = wall;
         }
         info.estimateSummary = RISEM5String(summary); info.staleReason = RISEM5String(staleReason);
+        // GUI status pass: the label's evidence and the couplings.
+        unsigned int cases = 0;
+        char scope[2048] = {0}, limit[1024] = {0}, connections[4096] = {0};
+        if (RISE_API_SceneEditController_GetSimulationEvidence(_controller, i, scope, sizeof(scope), &cases,
+                limit, sizeof(limit), connections, sizeof(connections))) {
+            info.evidenceCases = cases;
+        }
+        info.evidenceScope = RISEM5String(scope); info.fidelityLimit = RISEM5String(limit);
+        info.connections = RISEM5String(connections);
         [out addObject:info];
     }
     return out;
@@ -4045,6 +4058,16 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     return refreshed ? YES : NO;
 }
 
+- (nullable NSArray<NSNumber *> *)worldTransformOfObject:(NSString *)name {
+    if (!_controller) return nil;
+    double m[16] = {0};
+    char err[256] = {0};
+    if (!RISE_API_SceneEditController_GetObjectWorldTransform(_controller, name.UTF8String, m, err, sizeof(err))) return nil;
+    NSMutableArray<NSNumber *> *out = [NSMutableArray arrayWithCapacity:16];
+    for (int i = 0; i < 16; ++i) [out addObject:@(m[i])];
+    return out;
+}
+
 + (BOOL)addTrustedCacheRoot:(NSString *)root error:(NSString * _Nullable * _Nullable)error {
     char err[2048] = {0};
     const char *path = root.fileSystemRepresentation;
@@ -4070,6 +4093,12 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     if (suggestedRoot) *suggestedRoot = RISEM5String(root);
     if (!ok && error) *error = path ? RISEM5String(err) : @"no cache directory";
     return ok ? YES : NO;
+}
+
++ (NSString *)simulationCacheBase {
+    char buf[4096] = {0};
+    if (!RISE_API_GetSimulationCacheBase(buf, sizeof(buf))) return @"";
+    return RISEM5String(buf);
 }
 
 + (NSArray<NSString *> *)trustedCacheRoots {

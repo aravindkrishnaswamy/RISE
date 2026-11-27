@@ -59,7 +59,7 @@ double Weno5(double v1, double v2, double v3, double v4, double v5);
 struct LevelSetBarrier {
 	std::array<std::vector<std::uint8_t>,3> closed;   // per axis, per face: 0 open, 1 wall, 2 boundary (empty: none)
 	//! One stencil sample: f[i1] + s (f[i1] - f[i2]).
-	struct Sample { std::size_t i1 = 0, i2 = 0; double s = 0; };
+	struct Sample { std::size_t i1 = 0, i2 = 0; double s = 0; bool outside = false; };   // outside (m7g): beyond the domain's edge
 	//! Per axis: the cells whose seven-point stencil (offsets -3..3) reaches past a
 	//! closed face (sorted), and their samples (7 per cell).
 	std::array<std::vector<std::size_t>,3> cells;
@@ -126,8 +126,17 @@ enum class ReinitScheme { None, Sussman, RussoSmereka, RussoSmerekaCentral, Subc
 //! applied every step (its estimate is biased high, so near-cell values
 //! shrink call after call); Subcell is the default.
 //! `barrier` (m7f): closed faces as walls (a neighbour across one is absent).
+//! `wall` (m7g): the ghost values beyond the domain's walls in the pseudo-time
+//! derivatives.  Linear (m7a) lets a wall cell's own deficit lie beyond the wall:
+//! where |phi| falls towards a wall (phi_wall < phi_inner, phi > 0), the ghost is
+//! smaller still, the Godunov Hamiltonian counts the wall-normal difference as an
+//! upwind slope beside the slope from the true interface, |grad phi| > 1, and the
+//! wall cell falls further: a false interface spreads along the wall, settling
+//! with its zero on the wall plane (measured beside the walls below a sagging
+//! sheet, 1.5% of the volume at 40 cells; docs/SIMULATION_M7G_RESULTS.md).
+//! Constant: zero normal slope at the walls (a 90 degree contact angle).
 void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool,
-	const LevelSetBarrier* barrier = nullptr);
+	const LevelSetBarrier* barrier = nullptr, Extension wall = Extension::Linear);
 
 //! The largest | |grad phi| - 1 | (central differences) over cells within
 //! `band` cells of the interface: the trigger for reinitialisation.

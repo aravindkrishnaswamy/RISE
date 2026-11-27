@@ -169,7 +169,7 @@ order against the volume correction and its exclusion from it, and the 2-D proje
 measurements above. Two parts follow published methods in form, as recalled:
 
 - Treating the sheet as a visibility barrier (no stencil reads across it) and assigning swept cells from their new
-  side is the treatment of Guendelman, Bridson and Fedkiw 2005, "Coupling water and smoke to thin deformable and
+  side is the treatment of Guendelman, Selle, Losasso and Fedkiw 2005, "Coupling water and smoke to thin deformable and
   rigid shells". As recalled, they ray-cast between a point and the grid nodes it reads, replace occluded values by
   visible ones, and take the values of cells a shell passes over from the side they end on. Here the axis-aligned
   lattice faces play the ray casts' part, because every stencil is axis-aligned.
@@ -521,4 +521,4 @@ about 0.4 s (M7e §9). Not checked further. The full 2 s wave demo was not baked
   - The full 2 s wave demo with m7f.1.
   - The bag at 64 cells with a cotton sag at macro 1/30 s.
   - 128 cells in 3-D.
-- **Not verified.** Guendelman, Bridson and Fedkiw 2005 and Robinson-Mosher et al. 2008 themselves (§3).
+- **Not verified.** Guendelman, Selle, Losasso and Fedkiw 2005 and Robinson-Mosher et al. 2008 themselves (§3).

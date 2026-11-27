@@ -70,6 +70,30 @@ bool ElementTimeline::InsertKeyframe(
 	return it->second->InsertKeyframe( value, time, pInterp );
 }
 
+bool ElementTimeline::RemoveTimeline( const String& animation, const String& parameter )
+{
+	AnimationTimelineList::iterator a = animations.find( animation );
+	if( a == animations.end() ) {
+		return false;
+	}
+	TimelineList::iterator it = a->second.find( parameter );
+	if( it == a->second.end() ) {
+		return false;
+	}
+	GlobalLog()->PrintDelete( it->second, __FILE__, __LINE__ );
+	delete it->second;
+	a->second.erase( it );
+	if( a->second.empty() ) {
+		animations.erase( a );
+	}
+	return true;
+}
+
+bool ElementTimeline::IsEmpty() const
+{
+	return animations.empty();
+}
+
 void ElementTimeline::EvaluateAtTimeForAnimation( const Scalar time, const String& animation )
 {
 	AnimationTimelineList::iterator a = animations.find( animation );

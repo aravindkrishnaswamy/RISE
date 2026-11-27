@@ -49,7 +49,8 @@ detectable at Configure).
 ### 2.1 Viscosity: derivation from the variational principle
 
 The paper was not consulted in this pass; the discretisation is derived here, and it has the form of Batty and
-Bridson 2008 ("Accurate viscous free surfaces for buckling, coiling, and rotating liquids").
+Bridson 2008 (compared with the paper afterwards, 2026-11-26: same energy and the same control-volume weights on
+cell-centre and edge strains; differences in M7_REFERENCES §7) ("Accurate viscous free surfaces for buckling, coiling, and rotating liquids").
 
 Backward Euler for ρ u_t = ∇·(2μ D(u)), D = ½(∇u + ∇uᵀ), is the stationary point of
 
@@ -165,8 +166,9 @@ start-up show it). Crank–Nicolson was not used: it does not damp the stiff mod
 - **Contact angle.** The curvature stencil mirrors φ at the domain walls (zero normal slope): 90° in the curvature
   only. The level set's advection imposes no angle, and nothing is done at static solids or bodies (φ is not
   extrapolated into them). With solids or bodies the label is preview. No specified angle was built.
-- **Capillary limit.** dt ≤ `capillary_cfl` sqrt(ρh³/(2πσ)) (Brackbill, Kothe and Zemach 1992 with the liquid's
-  density; there is no second phase), `capillary_cfl` 0.5. Symplectic Euler on the capillary wave of the grid's
+- **Capillary limit.** dt ≤ `capillary_cfl` sqrt(ρh³/(2πσ)) (the form of Brackbill, Kothe and Zemach 1992,
+  sqrt((ρ_a + ρ_b)h³/(4πσ)), with the 2π of Denner and van Wachem 2015 and ρ_b = 0 for the absent second phase; checked
+  2026-11-26: the paper's own constant is 4π, so the default `capillary_cfl` 0.5 is 0.35 of its limit), `capillary_cfl` 0.5. Symplectic Euler on the capillary wave of the grid's
   highest wavenumber π/h, ω² = σk³/ρ, is stable for ω dt < 2: 0.90 in these units. Measured on the 2-D viscous static
   drop at 32 cells, 10 capillary times, parasitic Ca: 0.5 → 4.3e-5, 1.0 → 1.1e-4, 1.5 → 1.1e-3 (growing), 2.0 → 1.8e-2
   (unstable). 0.5 leaves a margin of about 2.
@@ -232,8 +234,13 @@ re-measured after it).
   the dissipation integral 2μ∫D:D/U, agree with the formula to 1e-8 (a = 0.15, b = 0.4: 55.2600 μU).
 - **10f.** Stokes U_s = 2(ρ_s/ρ − 1) g a²/(9ν), times the wall factor of Haberman and Sayre 1958 (DTMB report 1143)
   for a sphere on the axis of a long cylinder, K = (1 − 2.105λ + 2.0865λ³ − 1.7068λ⁵ + 0.72603λ⁶)/(1 − 0.75857λ⁵).
-  The report could not be fetched (DTIC refused). The coefficients are from recollection, cross-checked against
-  Bohlin's 1960 series 1 − 2.10443λ + 2.08877λ³ − 0.94813λ⁵ − 1.372λ⁶ + 3.87λ⁸ − 4.19λ¹⁰ (also recollection): at
+  The report could not be fetched (DTIC refused). Checked 2026-11-26 against two secondary sources that print the formula
+  (arXiv:2607.02625 and Kagaku Kogaku 12(3):239, which write it as the inverse, the drag
+  factor (1 − 0.75857λ⁵)/(1 − 2.1050λ + 2.0865λ³ − 1.7068λ⁵ + 0.72603λ⁶)); the coefficients agree digit for digit. They are
+  also cross-checked against
+  Bohlin's 1960 series 1 − 2.10443λ + 2.08877λ³ − 0.94813λ⁵ − 1.372λ⁶ + 3.87λ⁸ − 4.19λ¹⁰ (2.10443 as in the Kagaku Kogaku
+  table, 2.10444 in arXiv:1103.4939; both secondary; both print the λ⁵ coefficient as 6.94813, a typographical error
+  against Faxén's 0.95 and the agreement below, so 0.94813 stands): at
   λ = 0.3 they agree to 5e-6 (0.42200). At λ = 0.1 both give 0.7916, the commonly quoted value. How good the
   reference is:
   - Reynolds number 0.034: the Oseen correction 3Re/16 is 0.6% unbounded, less when confined;
@@ -491,6 +498,6 @@ The contrast reads clearly: smooth and slow against splashing.
   found.
 - **Not run:** 256³; the VS2022, Android and Xcode builds (lists edited by script; the make build compiles
   everything); the GUI; the 3-D oscillating drop and the viscous drop decay after the interface-extension change.
-- **Not verified:** Batty and Bridson 2008 itself (the formulation is derived here); the Haberman–Sayre and Bohlin
-  coefficients against their sources (mutual agreement only); Lamb's 3-D drop formula (standard, not re-derived);
+- **Not verified:** the primary reports of Haberman and Sayre 1958 and Bohlin 1960 (not fetched; secondary reproductions
+  agree, §4.1 10f); Lamb 1932 §349 itself (the decay rate agrees with the secondary statement of it, M7_REFERENCES §2); Lamb's 3-D drop formula (checked against secondary sources, 2026-11-26, not re-derived; the 2-D n(n²−1) form is derived here and agrees with two secondary sources at n = 2);
   bitwise reproducibility across platforms (per platform, as M7a).

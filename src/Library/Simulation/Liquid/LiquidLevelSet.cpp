@@ -174,6 +174,7 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 						// the edge's inner neighbour lies across a closed face).
 						const int inner = t - dir;
 						S.i1 = cellAt(t);
+						S.outside = true;
 						if (inner >= 0 && inner < g.n[a] && faceKind(inner, t) != 1) { S.i2 = cellAt(inner); S.s = double(std::abs(idx[a] + o - t)); }
 						else S.i2 = S.i1;
 						done = true;
@@ -247,7 +248,7 @@ void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector
 				for (auto it = std::lower_bound(cl.begin(), cl.end(), base); it != cl.end() && *it < base + std::size_t(n0); ++it) {
 					const LevelSetBarrier::Sample* S = &barrier->samples[std::size_t(axis)][7*std::size_t(it - cl.begin())];
 					double v[7];
-					for (int m = 0; m < 7; ++m) v[m] = f[S[m].i1] + S[m].s*(f[S[m].i1] - f[S[m].i2]);
+					for (int m = 0; m < 7; ++m) v[m] = !linear && S[m].outside ? f[S[m].i1] : f[S[m].i1] + S[m].s*(f[S[m].i1] - f[S[m].i2]);
 					const double q0 = (v[1] - v[0])*inv, q1 = (v[2] - v[1])*inv, q2 = (v[3] - v[2])*inv;
 					const double q3 = (v[4] - v[3])*inv, q4 = (v[5] - v[4])*inv, q5 = (v[6] - v[5])*inv;
 					const std::size_t i = *it - base;
@@ -303,7 +304,7 @@ void AdvectLevelSet(const Grid& g, std::vector<double>& phi, const CellVelocityA
 }
 
 void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool,
-	const LevelSetBarrier* barrier)
+	const LevelSetBarrier* barrier, Extension wall)
 {
 	if (barrier && barrier->Empty()) barrier = nullptr;
 	if (scheme == ReinitScheme::None || iterations <= 0) return;
@@ -390,7 +391,7 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 	// m7f: boundary values beside a sheet (LevelSetBarrier::fixed) are kept.
 	if (barrier && !barrier->fixed.empty())
 		for (std::size_t c = 0; c < n; ++c) if (barrier->fixed[c]) dtau[c] = 0;
-	const std::array<Extension,3> ext{{Extension::Linear, Extension::Linear, Extension::Linear}};
+	const std::array<Extension,3> ext{{wall, wall, wall}};
 	std::vector<double> g2(n), rhs(n), p1(n), p2(n);
 	const bool subcell = scheme == ReinitScheme::Subcell, frozen = scheme == ReinitScheme::RussoSmereka || scheme == ReinitScheme::RussoSmerekaCentral;
 	auto L = [&](const std::vector<double>& f) {

@@ -165,6 +165,8 @@ int BakeCoupled(const SceneSimulationSpec& spec, const std::vector<SceneSimulati
 	}
 	if (!group.SealRecordings(error)) { status("failed", error); err << "rise-sim: " << spec.name << ": " << error << "\n"; return WorkerFailed; }
 	status("finished", "");
+	// M7g: each member's last progress detail (solver diagnostics, e.g. the liquid's through-sheet counts).
+	for (const auto& m : members) { const std::string d = group.MemberDetail(m); if (!d.empty()) out << "rise-sim: " << spec.name << ": " << m << ": " << d << "\n"; }
 	out << "rise-sim: " << spec.name << ": finished, every member sealed\n";
 	return WorkerFinished;
 }

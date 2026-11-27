@@ -1810,6 +1810,133 @@ namespace RISE
 						"\"required\":[\"uuid\",\"revision\"]}"
 					"},\"required\":[\"revision\"]}"
 				},
+				// Simulation GUI status pass (2026-11-26): the simulation verbs.  Kept
+				// semantically identical to AgentMcpAdapter.cpp's tools/list entries
+				// for the same drift-class reason as the entries above; the chat
+				// texts are shorter because they ship with every API call.
+				{
+					"sim_list",
+					"List the scene's simulations (cloth_simulation, rigid_simulation, liquid_simulation, "
+					"fire_simulation, simulation_group, simulation_cache) with their state against their caches. "
+					"Returns {ok,scene,unsavedChanges,liveSupported,simulations:[{name,keyword,solver,state,"
+					"keyStatus,fidelity,evidenceScope,evidenceCases,fidelityLimit,cacheDir,interactive,backend,"
+					"framesAvailable,framesTotal,startTime,interval,endTime,upstream,inputs,connections,staleReason?,"
+					"estimate,error?,job?}]}. `state`: missing / baking / partial / complete / stale / failed. "
+					"`fidelity` is the cache's label, `preview` or `predictive`; `evidenceScope` says what a label covers "
+					"and `fidelityLimit` why `predictive` is not earnable. A simulation_group lists its members in "
+					"`upstream` and its couplings in `connections`. `job` is the newest bake job, shaped as in sim_status. "
+					"Read-only.",
+					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
+					"sim_status",
+					"A bake job's state: with jobId {found,job}, without {jobs:[...]} for this scene. job = {jobId,simulation,"
+					"state,terminal,resumable,solver,backend,cacheDir,simulatedTime,endTime,framesWritten,framesTotal,progress,"
+					"wallSeconds,etaSeconds,dependsOn,waitingFor?,detail?,error?}. state: queued, waiting-gpu, running, stopping, "
+					"stopped, finished, failed, cancelled. resumable: sim_bake the same simulation to continue it. Read-only.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"jobId\":{\"type\":\"number\",\"description\":\"Optional. A jobId from sim_bake; omit to list every bake job of this scene.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"sim_wait",
+					"Wait up to timeoutMs for a bake job to end (finished, stopped, failed or cancelled); returns {completed,found,job}. "
+					"The app is unresponsive while it waits, so keep timeoutMs short (2000 or less) and poll: read job.progress and "
+					"job.etaSeconds between calls. Read-only.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"jobId\":{\"type\":\"number\",\"description\":\"Required. A jobId from sim_bake.\"},"
+						"\"timeoutMs\":{\"type\":\"number\",\"description\":\"Optional wait bound in milliseconds, clamped to [0,60000]; default 5000. Prefer 2000 or less here.\"}"
+					"},\"required\":[\"jobId\"]}"
+				},
+				{
+					"sim_bake",
+					"Bake a simulation into its cache in the BACKGROUND (a separate rise-sim process on the scene FILE; it survives "
+					"this session and never changes the loaded scene). Upstream simulations that are not complete are baked first; "
+					"a partial cache of the current key is continued, a stale one rebaked. A simulation_group bakes as one job. "
+					"Returns at once with {ok,jobId,jobIds,jobs}: poll sim_status. SAVE RULE: the bake reads the file on disk, so a "
+					"document with unsaved changes that affect the simulation is refused (ok:false, save first). Give exactly one of "
+					"`simulation` and `all`. Do NOT bake fire_simulation unless the user asked for it: it uses the GPU for hours.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"The simulation to bake (its name).\"},"
+						"\"all\":{\"type\":\"boolean\",\"description\":\"Optional. true: bake every simulation that has a solver.\"},"
+						"\"staleOnly\":{\"type\":\"boolean\",\"description\":\"Optional, with all:true: only simulations not complete with their current key.\"},"
+						"\"force\":{\"type\":\"boolean\",\"description\":\"Optional. Rebake even when complete.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"sim_cancel",
+					"Stop a bake. A queued job is cancelled; a running one stops at its next safe point, writes a checkpoint and ends "
+					"`stopped` with resumable:true (sim_bake the same simulation to continue). Returns {cancelled,found,job,message?}. "
+					"Give jobId or simulation.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"jobId\":{\"type\":\"number\",\"description\":\"The job to stop (or give simulation).\"},"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"The simulation whose queued or running bake to stop.\"},"
+						"\"kill\":{\"type\":\"boolean\",\"description\":\"Optional, default false. true ends the worker at once with no checkpoint; only when a normal stop does not end it.\"}"
+					"},\"required\":[]}"
+				},
+				{
+					"sim_live_start",
+					"Run an interactive simulation (cloth in interactive mode) LIVE in the app's viewport and start playback: the "
+					"solver steps in the app and no cache is written. Returns {ok,supported,message?}. Only simulations with "
+					"interactive:true (sim_list) and a simulated_mesh_geometry bound to them run live; liquid and fire bake instead.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"The simulation to run live.\"},"
+						"\"fps\":{\"type\":\"number\",\"description\":\"Optional playback rate; 0 or omitted: the timeline's frame spacing.\"}"
+					"},\"required\":[\"simulation\"]}"
+				},
+				{
+					"sim_live_stop",
+					"Pause playback and detach a live simulation; the viewport shows the baked cache again. Returns {ok,supported,message?}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"The simulation started with sim_live_start.\"}"
+					"},\"required\":[\"simulation\"]}"
+				},
+				{
+					"sim_seek",
+					"Move the viewport's playhead to a scene time (clamped to the latest live frame while a live simulation runs). "
+					"Returns {ok,supported,time,message?}: time is the time shown.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"time\":{\"type\":\"number\",\"description\":\"Scene time in seconds.\"}"
+					"},\"required\":[\"time\"]}"
+				},
+				{
+					"sim_cache",
+					"Where the simulation caches live and whether the cache writer would accept each location. Returns {ok,scene,"
+					"cacheBase,baseFromEnvironment,sceneCacheDir?,trustedRoots,simulations:[{name,keyword,cacheDir,defaultLocation,"
+					"exists,accepted,reason?}],note}. The default is <cacheBase>/<scene>-<hash>/<name> (macOS: "
+					"~/Library/Caches/RISE/scene-caches). accepted:false needs a trusted root, which only the user grants in the "
+					"Simulations panel. Creates nothing. Read-only.",
+					"{\"type\":\"object\",\"properties\":{},\"required\":[]}"
+				},
+				{
+					"sim_param_get",
+					"Read a simulation's parameters with their schema: type, default, range, enum values, units and whether each enters "
+					"the cache key, with this chunk's current value (`set:false` = not stated, the default applies), plus chunk-only "
+					"fields (pins, colliders, object references) with every occurrence. Returns {ok,simulation,keyword,solver,state,"
+					"parameters:[{name,type,default?,minimum?,maximum?,values?,units,doc,keyed,set,value}],chunkFields:[...]}. "
+					"ok:false for a simulation_group or simulation_cache (no solver schema). Read-only.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"Required. The simulation (its name).\"},"
+						"\"param\":{\"type\":\"string\",\"description\":\"Optional. One parameter or chunk field; omit for all.\"}"
+					"},\"required\":[\"simulation\"]}"
+				},
+				{
+					"sim_param_set",
+					"Set one simulation parameter. The value is checked against the solver's schema (type, range, enum) and then applied "
+					"as one undoable propose_patch edit: the document is marked dirty and the scene re-derived. The cache becomes stale "
+					"(sim_list says why) and NO bake starts: call sim_bake when you want one. Returns propose_patch's result "
+					"{applied,status,retriable,headVersion,message} plus {simulation,validated}; a schema refusal is "
+					"{applied:false,validated:false,message} naming what the parameter accepts. Read the headVersion with read_document first.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"simulation\":{\"type\":\"string\",\"description\":\"Required. The simulation (its name).\"},"
+						"\"param\":{\"type\":\"string\",\"description\":\"Required. A parameter or chunk field of its solver (see sim_param_get).\"},"
+						"\"value\":{\"type\":\"string\",\"description\":\"Required. The new value in scene syntax (TRUE/FALSE for booleans).\"},"
+						"\"occurrence\":{\"type\":\"number\",\"description\":\"Optional, 0-based: which line of a repeatable field (pin, collider_object, follow_object) to edit.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":\"The headVersion from your last read_document -- pass it so a stale edit is rejected as a conflict.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"},\"required\":[\"simulation\",\"param\",\"value\"]}"
+				},
 				{
 					"ask_user",
 					"Pause and ask the user a single, SPECIFIC clarifying question when a "

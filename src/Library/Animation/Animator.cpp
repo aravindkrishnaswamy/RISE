@@ -165,6 +165,25 @@ bool Animator::InsertKeyframeForAnimation(
 	return bRet;
 }
 
+bool Animator::RemoveKeyframes( IKeyframable* element, const String& param, const String& animation )
+{
+	const String anim = IsBlankName( animation ) ? String( DEFAULT_ANIM_NAME ) : animation;
+	ElementList::iterator it = elements.find( element );
+	if( it == elements.end() ) {
+		return false;
+	}
+	const bool removed = it->second->RemoveTimeline( anim, param );
+	if( it->second->IsEmpty() ) {
+		ElementTimeline* tm = it->second;
+		IKeyframable* held = it->first;
+		elements.erase( it );
+		GlobalLog()->PrintDelete( tm, __FILE__, __LINE__ );
+		delete tm;
+		held->release();
+	}
+	return removed;
+}
+
 void Animator::EvaluateAtTime( const Scalar time )
 {
 	// EvaluateAtTime is called once per temporal sample during motion blur,

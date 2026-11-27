@@ -248,6 +248,16 @@ velocity. The authored transform is the pose at the first frame, moved by the bo
 named: the keyframe path needs no new renderer code and reuses the verified blur machinery. Scene inputs read a
 driven object at its authored pose (its simulation keys neither move it nor enter its identity), so a body made
 from the object does not depend on its own output.
+**Refresh after an in-app bake (2026-11-26):** the keys are not built once. `Job` keeps, per driven object, the
+body it follows, its authored pose and a stamp of the cache generation the keys came from (key, epoch, frames of
+the output, sealed or partial). `SceneEditController::RefreshSimulationFrames` (the call the app polls when the
+bake manager's frames generation moves) calls `Job::RefreshTransformSources` under the render park, after the mesh
+rebind: an object whose stamp changed (a bake advanced or finished, a new epoch, a cache that is gone) has its
+`position` and `orientation` timelines dropped (`Animator::RemoveKeyframes`), is put back at the authored pose,
+and gets new keys from the cache through the same derivation scene load uses; then the scene is re-posed at the
+current time (`Scene::SetSceneTimeForPreview`: the animator evaluated, the top-level structure invalidated, the
+per-object runtime state reset, exactly the scrub path). A cache that went away leaves the authored pose. Live
+in-process rigid runs still drive nothing (live stepping is meshes only). Test: `SimulationBakeManagerTest` B.
 
 `SimulatedTransformTest`: poses at keys exact (4.4e-16) and between keys exact for this motion; a blurred render of
 the simulated body matches the same motion keyframed by `timeline` chunks (0.9610 vs 0.9599) and the time average

@@ -377,15 +377,20 @@ space. A self-similar variant, with α = atan(1/2) and P on a grid node, gives t
 0.38, 1.14, 0.85 and pressure orders 3.1, 1.89, 1.70 (§13.4).
 
 **Case 8 sources.** Martin & Moyce 1952 (Phil. Trans. R. Soc. A 244, 312–324), table 1, n² = 1, a = 2¼ in. The
-values were transcribed from the JSTOR scan by a research agent; spot-check before relying on single values.
+values were transcribed from the JSTOR scan by a research agent; checked 2026-11-26 against the scan of the paper
+(math.ntu.edu.tw mirror): all 19 means of the n² = 1, a = 2¼ in series agree (M7_REFERENCES §1).
 
 - Scaling: Z = z/a and T = n t √(g/a). The authors normalise time to T = 0.80 at Z = 1.44 (they give no true zero),
   so the comparison aligns there.
 - Lobovský et al. 2014 (J. Fluids Struct. 48, 407–434; arXiv 1308.0115) give front positions only as a plot (their
   Fig. 12). Their Table 1 gives average front speeds for t√(g/H) > 1: 1.56 and 1.34 for H = 300 and 600 mm, and
   their reduction of Martin & Moyce's 57 and 114 mm columns is 1.48 and 1.69. All are below Ritter's 2.
-- **TODO:** Lobovský's front data as numbers (their supplementary MATLAB figures at
-  canal.etsin.upm.es/papers/lobovskyetaljfs2013/ were not fetched).
+- **TODO (cannot be done from the paper):** Lobovský's front positions as numbers. The paper gives them only as its Fig. 12;
+  the supplementary MATLAB figures at canal.etsin.upm.es/papers/lobovskyetaljfs2013/ answer 404 (2026-11-26). No digits
+  were read off the figure. What the paper does give as numbers is carried instead (`LiquidValidation.h`, case 8 report):
+  the average front speeds (1.56, 1.34) and the impact pressure peaks of the 100 runs per depth at four wall sensors
+  (tables 2 and 4: median, 2.5 % and 97.5 % percentiles); the report runs the square column in their tank against
+  the latter (M7_REFERENCES §1).
 
 Our inviscid, free-slip front, 1.51–1.63 √(ga), lies between M&M and Ritter, as expected without bed friction.
 

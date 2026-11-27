@@ -262,7 +262,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 51, "id:null tools/list result carries all 51 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 54, "id:null tools/list result carries all 54 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -336,7 +336,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 51, "tools/list returns EXACTLY the 51 agent verbs" );
+		Check( toolsList.size() == 54, "tools/list returns EXACTLY the 54 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			// S1 (2026-08-11): the two staged-build-protocol verbs.
@@ -361,6 +361,8 @@ int main()
 			// Simulation M5 (2026-11-23): the bake and live-simulation verbs.
 			"sim_list", "sim_status", "sim_wait", "sim_bake", "sim_cancel",
 			"sim_live_start", "sim_live_stop", "sim_seek",
+			// Simulation GUI status pass (2026-11-26): cache locations, parameter schema, validated edit.
+			"sim_cache", "sim_param_get", "sim_param_set",
 			"read_image", "read_viewport", "query_object_at",
 			"scene_inventory",   // Arc 80 (2026-08-12): the FORWARD "where is everything" inventory
 			"light_scene",       // Arc 81 (2026-08-12): the clean-room lighting pass
@@ -1249,7 +1251,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 51, "no-head tools/list still lists all 51 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 54, "no-head tools/list still lists all 54 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

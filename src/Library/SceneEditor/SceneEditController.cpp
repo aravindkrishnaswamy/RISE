@@ -21737,6 +21737,21 @@ bool SceneEditController::RefreshSimulationFrames( bool& refreshed, std::string&
 			}
 		}
 	}
+	// Rigid bodies: a transform_source object's keyframes were derived from the
+	// cache when the scene loaded.  Re-derive the ones whose cache changed (a
+	// bake that completed or advanced, a new epoch, a cache that went away: the
+	// body returns to its authored pose) through the same code, then pose the
+	// scene again at the current time.  Parked like the mesh rebind above: no
+	// render reads the animator or the objects, and the re-pose invalidates the
+	// top-level structure and the per-object runtime state (what a scrub does).
+	if( job ) {
+		bool transformsChanged = false;
+		std::string transformError;
+		if( !job->RefreshTransformSources( transformsChanged, transformError ) )
+			problems += ( problems.empty() ? "" : "; " ) + transformError + " (reload the scene)";
+		const IScene* scene = mJob.GetScene();
+		if( transformsChanged && scene ) scene->SetSceneTimeForPreview( mEditor.LastSceneTime() );
+	}
 	unsigned int meshes = 0;
 	std::string installError;
 	if( !Implementation::InstallSimulatedMeshesAtTime( mJob, mEditor.LastSceneTime(), meshes, installError ) )
@@ -21749,6 +21764,22 @@ bool SceneEditController::RefreshSimulationFrames( bool& refreshed, std::string&
 	mBakeFramesSeen = generation;
 	refreshed = true;
 	if( !problems.empty() ) return LiveFail( error, problems );
+	return true;
+}
+
+bool SceneEditController::GetObjectWorldTransform( const std::string& object, double matrix[16], std::string& error ) const
+{
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return LiveFail( error, "a production render owns the scene" );
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return LiveFail( error, "the scene is busy; poll again" );
+	const IScene* scene = mJob.GetScene();
+	IObjectManager* objects = scene ? const_cast<IObjectManager*>( scene->GetObjects() ) : nullptr;
+	IObject* item = objects ? objects->GetItem( object.c_str() ) : nullptr;
+	if( !item ) return LiveFail( error, "no object `" + object + "`" );
+	const Matrix4 m = item->GetFinalTransformMatrix();
+	const double values[16] = { m._00, m._01, m._02, m._03, m._10, m._11, m._12, m._13,
+		m._20, m._21, m._22, m._23, m._30, m._31, m._32, m._33 };
+	std::copy( values, values + 16, matrix );
 	return true;
 }
 

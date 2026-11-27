@@ -205,7 +205,7 @@ void Description()
 	const double t0 = Seconds();
 	Check(s->Configure(V::MapValue(p), EmptySceneInputs(), d, error), "configure with a body", error);
 	std::printf("  configure with bodies (evidence) %.2f s; version %s\n", Seconds() - t0, d.version.c_str());
-	Check(d.version == "m7f.1", "version m7f.1");
+	Check(d.version == "m7g.1", "version m7g.1");
 	bool bodiesOut = false;
 	for (const auto& o : d.cache.outputs) if (o.name == "bodies" && o.type == TransformCodec) bodiesOut = true;
 	Check(bodiesOut, "the bodies output (transform.v1)");
@@ -551,12 +551,89 @@ void Groups()
 }
 }
 
+// ---------------------------------------------------------------- m7g probe: a dense sphere settling on the floor
+// --settle [cells n] [T s] [density kg/m^3] [restitution e]: a 3-D tank 0.32 m on a side, water to
+// 0.24 m, a sphere of radius 0.04 m released at rest at y = 0.15 m, rigid.bodies owned by the liquid
+// (implicit), the floor a rigid.bodies plane.  Per macro step: the sphere's height and velocity,
+// the liquid's offered force F, and the momentum residual m (v1 - v0) - H (F - m g): what
+// rigid.bodies' contact gave.  At rest the liquid should carry the buoyancy rho V g and the floor
+// the rest, (m - rho V) g.
+void SettleProbe(int argc, char** argv)
+{
+	int n = 40;
+	double T = 2, rho = 2500, e = 0, friction = 0.3;
+	for (int i = 2; i + 1 < argc; i += 2) {
+		const std::string k = argv[i], v = argv[i + 1];
+		if (k == "cells") n = std::atoi(v.c_str());
+		else if (k == "T") T = std::atof(v.c_str());
+		else if (k == "density") rho = std::atof(v.c_str());
+		else if (k == "restitution") e = std::atof(v.c_str());
+	}
+	const double R = 0.04, L = 0.32, H = 1.0/30, Vs = 4.0/3.0*Pi*R*R*R, m = rho*Vs, g = 9.81;
+	const auto frames = std::uint64_t(std::llround(T*30)) + 1;
+	V::Members liquid{{"frames", V::Unsigned(frames)}, {"domain_min", Vec(0, 0, 0)}, {"domain_size", Vec(L, L, L)},
+		{"resolution", V::Unsigned(std::uint64_t(n))},
+		{"liquid", V::ArrayValue({V::MapValue({{"type", V::String("fill")}, {"height", V::Float(0.24)}})})},
+		{"bodies", V::ArrayValue({V::MapValue({{"name", V::String("ball")}, {"shape", V::String("sphere")}, {"radius", V::Float(R)},
+			{"position", Vec(0.16, 0.15, 0.16)}, {"motion", V::String("port")}, {"coupling", V::String("implicit")}})})}};
+	V::Members rigid{{"frames", V::Unsigned(frames)}, {"substeps", V::Unsigned(8)},
+		{"bodies", V::ArrayValue({V::MapValue({{"name", V::String("ball")}, {"shape", V::String("sphere")}, {"radius", V::Float(R)},
+			{"mass", V::Float(m)}, {"position", Vec(0.16, 0.15, 0.16)}})})},
+		{"planes", V::ArrayValue({V::MapValue({{"point", Vec(0, 0, 0)}, {"normal", Vec(0, 1, 0)}, {"restitution", V::Float(e)}, {"friction", V::Float(friction)}})})}};
+	GroupPolicy p;
+	p.order = ExchangeOrder::GaussSeidel;
+	p.memberOrder = {"pool", "drop"};
+	p.ownedExchanges = {{"pool", {"drop"}}};
+	SimulationGroup G;
+	std::string error;
+	bool ok = G.AddMember("pool", Make(LiquidSolverId), V::MapValue(liquid), error) &&
+		G.AddMember("drop", Make(RigidSolverId), V::MapValue(rigid), error) &&
+		G.Connect({"drop", "body_state", "pool", "body_state"}, error) &&
+		G.Connect({"drop", "body_mass_properties", "pool", "body_mass_properties"}, error) &&
+		G.Connect({"pool", "body_load", "drop", "body_load"}, error) && G.Configure(p, EmptySceneInputs(), error) && G.Start(error);
+	if (!ok) { std::printf("failed: %s\n", error.c_str()); return; }
+	std::vector<double> ts, ys, vys, Fs, Js;
+	double lastV = 0;
+	G.SetStepObserver([&](double t, const SimulationGroup& gr) {
+		const auto s = gr.Snapshot("drop");
+		std::shared_ptr<const Bytes> bytes;
+		std::string w;
+		CacheEntry entry;
+		const auto index = static_cast<std::int64_t>(std::llround(t*30));
+		if (!s->FindEntry(index, "bodies", entry) || s->Read(index, "bodies", budget, bytes, w) != FrameStatus::Ready) return;
+		TransformFrame f;
+		if (!DecodeTransforms(*bytes, budget, f, w)) return;
+		double F = 0;
+		if (const auto load = gr.ServedValue(2)) {
+			FieldFrame lf;
+			if (DecodeField(*load, budget, lf, w)) for (const auto& c : lf.channels) if (c.name == "force") F = F32(c.values[1]);
+		}
+		const double v = f.bodies[0].velocity[1];
+		ts.push_back(t); ys.push_back(f.bodies[0].position[1]); vys.push_back(v); Fs.push_back(F);
+		Js.push_back(m*(v - lastV) - H*(F - m*g));
+		lastV = v;
+	});
+	const double w0 = Seconds();
+	while (!G.Finished()) if (!G.StepMacro(error)) { std::printf("failed at t %.3f: %s\n", G.Time(), error.c_str()); break; }
+	const double wall = Seconds() - w0;
+	for (std::size_t k = 0; k < ts.size(); ++k)
+		if (k % 3 == 0 || k + 1 == ts.size())
+			std::printf("  t %.3f y %.5f (gap %+.2e m) vy %+.4f F %.3f N (rho V g %.3f) floor impulse %.3e N s (%.3f N)\n", ts[k], ys[k], ys[k] - R, vys[k], Fs[k],
+				1000*Vs*g, Js[k], Js[k]/H);
+	// Rest: the last third.
+	double my = 0, mF = 0, mJ = 0, sv = 0, cnt = 0, ymin = 1e9, ymax = -1e9;
+	for (std::size_t k = 0; k < ts.size(); ++k) if (ts[k] > 2*T/3) { my += ys[k]; mF += Fs[k]; mJ += Js[k]/H; sv += vys[k]*vys[k]; ++cnt; ymin = std::min(ymin, ys[k]); ymax = std::max(ymax, ys[k]); }
+	if (cnt > 0)
+		std::printf("settle cells %d density %g e %g T %g: rest (last third) y - R %+.2e m (range %.2e), rms vy %.2e m/s, liquid force %.3f N (buoyancy %.3f), floor force %.3f N (expected %.3f), "
+			"sum %.3f N (weight %.3f); %.1f s\n", n, rho, e, T, my/cnt - R, ymax - ymin, std::sqrt(sv/cnt), mF/cnt, 1000*Vs*g, mJ/cnt, (m - 1000*Vs)*g, mF/cnt + mJ/cnt, m*g, wall);
+}
+
 int main(int argc, char** argv)
 {
-	(void)argc; (void)argv;
 	std::string error;
 	Check(RegisterLiquidSolver(error), "register liquid.mac", error);
 	Check(RegisterRigidSolver(error), "register rigid.bodies", error);
+	if (argc > 1 && std::string(argv[1]) == "--settle") { SettleProbe(argc, argv); return 0; }
 	const double t0 = Seconds();
 	OperatorCase(false);
 	OperatorCase(true);

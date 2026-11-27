@@ -710,6 +710,42 @@ DamBreakResult RunDamBreak(int cells, double duration, const SolverOptions& opti
 	return r;
 }
 
+const double LobovskyFrontSpeed300 = 1.56, LobovskyFrontSpeed600 = 1.34, LobovskyReductionMartinMoyce57 = 1.48;
+const double LobovskyImpact300[4][4] = {{3, 91.44, 75.06, 130.98}, {15, 57.49, 53.26, 63.31}, {30, 43.76, 39.79, 49.62}, {80, 30.15, 24.18, 36.32}};
+const double LobovskyImpact600[4][4] = {{3, 185.7, 161.5, 343.8}, {15, 168.4, 149.4, 205.2}, {30, 138.9, 115.4, 153.7}, {80, 90.09, 80.8, 96.1}};
+
+DamBreakImpactResult RunDamBreakImpact(int cells, double duration, const SolverOptions& options, Pool* pool)
+{
+	const double start = Now();
+	DamBreakImpactResult r;
+	const double h = 1.0/cells, wall = 1.0 + 1010.0/600.0;
+	const int nx = static_cast<int>(std::lround(wall*cells));
+	LiquidSetup s = Tank2D(nx, 2*cells, h);
+	Shape col;
+	col.type = Shape::Type::Box;
+	col.lo = {{-1, -1, -1}};
+	col.hi = {{1, 1, 1}};
+	s.liquid.push_back(col);
+	LiquidModel m;
+	std::string error;
+	if (!m.Initialize(s, options, pool ? pool->Threads() : 1, error)) { r.finite = false; return r; }
+	const Grid& g = m.GridSpec();
+	const double heights[4] = {3.0/600, 15.0/600, 30.0/600, 80.0/600};   // in units of H = a
+	int rows[4];
+	for (int q = 0; q < 4; ++q) rows[q] = std::min(g.n[1] - 1, static_cast<int>(heights[q]/h));
+	const double scale = 1.0/(s.density*9.81);
+	if (!m.Run(duration, 1.0/1000, [&](double t, const StepStats&) {
+		++r.steps;
+		for (int q = 0; q < 4; ++q) {
+			const double p = m.Pressure(g.C(g.n[0] - 1, rows[q], 0))*scale;
+			if (!std::isfinite(p)) r.finite = false;
+			if (p > r.peak[q]) { r.peak[q] = p; if (q == 0) r.peakTime = t*std::sqrt(9.81); }
+		}
+	}, error)) { r.finite = false; return r; }
+	r.seconds = Now() - start;
+	return r;
+}
+
 VolumeResult RunVolumeConservation(int cells, double periods, bool correction, const SolverOptions& options, Pool* pool)
 {
 	const double start = Now();

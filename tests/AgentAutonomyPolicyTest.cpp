@@ -892,8 +892,8 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 51,
-		       "tools/list under Read STILL lists all 51 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 54,
+		       "tools/list under Read STILL lists all 54 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -969,7 +969,7 @@ static void TestMcpLayer()
 		       sawRemoveChunk && sawRemoveChunks &&
 		       sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 28, "EXACTLY 28 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, and -- 88 S5, 2026-08-20 -- vary_material, and -- doc 90 R2, 2026-08-23 -- revert_to_revision, and -- cat plan item 1, 2026-08-25 -- fix_blend_scale, and -- GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30 -- add_wear, and -- WETNESS_COAT_DESIGN sec 6/13, 2026-08-31 -- add_wetness, and -- CLOTH_FABRIC_DESIGN 9.7, 2026-09-02 -- make_fabric, and -- CLOTH_FABRIC_DESIGN Phase 3, 2026-09-03 -- add_fuzz, and -- simulation M5, 2026-11-23 -- the five bake/live control verbs sim_bake/sim_cancel/sim_live_start/sim_live_stop/sim_seek, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 29, "EXACTLY 29 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, and -- 88 S5, 2026-08-20 -- vary_material, and -- doc 90 R2, 2026-08-23 -- revert_to_revision, and -- cat plan item 1, 2026-08-25 -- fix_blend_scale, and -- GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30 -- add_wear, and -- WETNESS_COAT_DESIGN sec 6/13, 2026-08-31 -- add_wetness, and -- CLOTH_FABRIC_DESIGN 9.7, 2026-09-02 -- make_fabric, and -- CLOTH_FABRIC_DESIGN Phase 3, 2026-09-03 -- add_fuzz, and -- simulation M5, 2026-11-23 -- the five bake/live control verbs sim_bake/sim_cancel/sim_live_start/sim_live_stop/sim_seek, and -- simulation GUI status pass, 2026-11-26 -- the validated parameter edit sim_param_set, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -979,7 +979,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 51, "tools/list under Commit lists all 51 tools" );
+		Check( tools.isArray() && tools.size() == 54, "tools/list under Commit lists all 54 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -1017,7 +1017,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 51, "tools/list under Propose lists all 51 tools" );
+		Check( tools.isArray() && tools.size() == 54, "tools/list under Propose lists all 54 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove

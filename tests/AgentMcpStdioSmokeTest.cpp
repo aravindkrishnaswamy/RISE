@@ -206,8 +206,8 @@ int main()
 		       "SECOND response echoes id==2 (tools/list -- the notification in between produced no line)" );
 		if( ok ) {
 			const JsonValue& tools = env.get( "result" ).get( "tools" );
-			Check( tools.isArray() && tools.size() == 51,
-			       "tools/list response lists exactly the 51 agent verbs" );   // simulation M5 (2026-11-23): +8 sim_* verbs
+			Check( tools.isArray() && tools.size() == 54,
+			       "tools/list response lists exactly the 54 agent verbs" );   // simulation M5 (2026-11-23): +8 sim_* verbs; GUI status pass (2026-11-26): +3
 		}
 	}
 

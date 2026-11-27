@@ -1106,8 +1106,74 @@ struct CupRig {
 				lastStageVolume = v;
 			};
 		}
+		if (std::getenv("M7G_DEEP")) {
+			// m7g diagnostic: the region well below the sheet (y < y0 - 0.055 m, below any sag): per
+			// stage, the change of its smoothed volume (1 - H(phi)) h^3, summed over the run, and the
+			// negative marker particles there at each macro step (Sample).
+			m.stageHook = [this](const char* stage) {
+				const double v = DeepVolume();
+				if (lastStageVolume >= 0) stageSums[stage] += v - lastStageVolume;
+				lastStageVolume = v;
+				// The floor region (the lowest 10 rows): the largest fall of phi in one stage.
+				const auto& g = m.GridSpec();
+				if (lastPhi.size() == m.phi.size()) {
+					double worst = 0;
+					std::size_t at = 0;
+					for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < std::min(10, g.n[1]); ++j) for (int i = 0; i < g.n[0]; ++i) {
+						const std::size_t q = g.C(i, j, k);
+						const double fall = lastPhi[q] - m.phi[q];
+						if (fall > worst) { worst = fall; at = q; }
+					}
+					if (worst > 0.2*g.h) {
+						const int i = int(at % std::size_t(g.n[0])), j = int((at/std::size_t(g.n[0])) % std::size_t(g.n[1])), k = int(at/(std::size_t(g.n[0])*std::size_t(g.n[1])));
+						std::printf("    FALL t %.4f stage %s cell (%d %d %d) %.3f -> %.3f h; nbrs x %.2f %.2f y %.2f %.2f z %.2f %.2f\n", m.Time(), stage, i, j, k,
+							lastPhi[at]/g.h, m.phi[at]/g.h, i > 0 ? m.phi[at - 1]/g.h : 99.0, i + 1 < g.n[0] ? m.phi[at + 1]/g.h : 99.0,
+							j > 0 ? m.phi[g.C(i, j - 1, k)]/g.h : 99.0, m.phi[g.C(i, j + 1, k)]/g.h, k > 0 ? m.phi[g.C(i, j, k - 1)]/g.h : 99.0, k + 1 < g.n[2] ? m.phi[g.C(i, j, k + 1)]/g.h : 99.0);
+					}
+				}
+				lastPhi = m.phi;
+				if (const char* col = std::getenv("M7G_COL")) {
+					// "i k t0 t1": the column (i, *, k) and its two wall-side neighbours' least value, per stage within [t0, t1].
+					int ci = 0, ck = 0;
+					double t0 = 0, t1 = 0;
+					if (std::sscanf(col, "%d %d %lf %lf", &ci, &ck, &t0, &t1) == 4 && m.Time() >= t0 && m.Time() <= t1) {
+						std::printf("    COL t %.5f %-13s", m.Time(), stage);
+						for (int j = 0; j < g.n[1]; ++j) {
+							const bool closed = j > 0 && !(m.fraction[1][g.F(1, ci, j, ck)] > 0);
+							std::printf(" %s%.2f", closed ? "|" : "", m.phi[g.C(ci, j, ck)]/g.h);
+						}
+						std::printf("\n");
+					}
+				}
+			};
+		}
 		Relinearise(cfg.material, c.damping);
 		return m.ProjectState(error);
+	}
+	std::vector<double> lastPhi;
+	double DeepVolume() const {
+		const auto& g = m.GridSpec();
+		const double eps = 1.5*g.h, cell = g.h*g.h*g.h;
+		double s = 0;
+		for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) {
+			if ((j + 0.5)*g.h >= y0 - 0.055) break;
+			for (int i = 0; i < g.n[0]; ++i) {
+				const double p = m.phi[g.C(i, j, k)];
+				s += p < -eps ? 1.0 : p > eps ? 0.0 : 1 - 0.5*(1 + p/eps + std::sin(Pi*p/eps)/Pi);
+			}
+		}
+		return s*cell;
+	}
+	//! m7g diagnostic: marker particles below y0 - 0.055 m (negative, positive) and the least phi/h there.
+	void DeepParticles(std::size_t& neg, std::size_t& pos, double& least) const {
+		neg = pos = 0;
+		for (const auto& p : m.particles.Particles()) if (p.x[1] < y0 - 0.055) { if (p.sign < 0) ++neg; else ++pos; }
+		const auto& g = m.GridSpec();
+		least = 1e9;
+		for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) {
+			if ((j + 0.5)*g.h >= y0 - 0.055) break;
+			for (int i = 0; i < g.n[0]; ++i) least = std::min(least, m.phi[g.C(i, j, k)]/g.h);
+		}
 	}
 	Cloth::Material material;
 	bool damped = false;
@@ -1243,13 +1309,21 @@ std::vector<CupSample> RunCup(const CupCase& c, double every, bool& ok, std::str
 	while (rig->m.Time() < c.T - 1e-9) {
 		if (!rig->Macro()) { ok = false; error = rig->error; return out; }
 		out.push_back(rig->Sample());
-		rig->lastStageVolume = rig->m.Volume();   // macro boundaries (the relinearisation's sweep) are not a stage
+		rig->lastStageVolume = std::getenv("M7G_DEEP") ? rig->DeepVolume() : rig->m.Volume();   // macro boundaries (the relinearisation's sweep) are not a stage
 		const CupSample& s = out.back();
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6)
 			std::printf("  t %.3f sag %.4f m, max|v| %.3g; liquid above %.6g, below %.4g (%.2e of V0; beyond the sheet's cells %.2e, wet cells %.2e), elsewhere %.3g; smoothed %.6g; correction added %.3g (%.2e of V0)%s (%.0f s)\n",
 				s.t, s.sag, s.vmax, s.top, s.bottom, s.bottom/V0, s.beyond/V0, s.bottomWet/V0, s.other, s.smoothed, s.added, s.added/V0, s.breached ? " BREACHED" : "", Seconds() - w0);
+		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6 && std::getenv("M7G_DEEP")) {
+			std::size_t neg = 0, pos = 0;
+			double least = 0;
+			rig->DeepParticles(neg, pos, least);
+			std::printf("    deep: volume %.3e of V0, particles %zu negative %zu positive, least phi %.3f h\n", rig->DeepVolume()/V0, neg, pos, least);
+		}
 	}
 	for (const auto& e : rig->stageSums) std::printf("  stage %-14s %+.3e m^3 (%+.2e of V0)\n", e.first.c_str(), e.second, e.second/V0);
+	if (every > 0) std::printf("  through-sheet measure: cells wet across the sheet %llu (%.2e of V0, held), wet without a wet neighbour %llu\n",
+		static_cast<unsigned long long>(rig->m.sheetCrossedCells), rig->m.sheetCrossedVolume/V0, static_cast<unsigned long long>(rig->m.sheetUnfedCells));
 	return out;
 }
 
@@ -1287,6 +1361,54 @@ void CupProbe(int argc, char** argv)
 		"final: above %+.2e, above + below %+.2e, smoothed %+.2e of V0; correction added %+.2e of V0%s\n",
 		c.cells, c.sigma, c.E, c.d, 1/c.macro, c.T, V0, worst/V0, worstBeyond/V0, worstWet/V0, s.back().top/V0 - 1, (s.back().top + s.back().bottom)/V0 - 1,
 		s.back().smoothed/s[0].smoothed - 1, s.back().added/V0, breached ? ", BREACHED" : ", barrier intact");
+}
+
+// ---------------------------------------------------------------- m7g: a thin layer on a rigid floor
+// The control for the layer on a sheet: the cup's tank (L x H x L) with no sheet and a layer of
+// depth d on its floor, set sloshing by a uniform initial velocity u0 along x, the same numerics.
+// Reports the sharp volume sum clamp(1/2 - phi/h, 0, 1) h^3 against its start and the volume the
+// correction added (sum -shift x area).
+void LayerProbe(int argc, char** argv)
+{
+	using namespace Liquid;
+	int cells = 24;
+	double L = 0.3, H = 0.3, d = 0.03, u0 = 0.1, T = 2;
+	bool volume = true;
+	for (int i = 2; i + 1 < argc; i += 2) {
+		const std::string k = argv[i], v = argv[i + 1];
+		if (k == "cells") cells = std::atoi(v.c_str());
+		else if (k == "depth") d = std::atof(v.c_str());
+		else if (k == "u0") u0 = std::atof(v.c_str());
+		else if (k == "T") T = std::atof(v.c_str());
+		else if (k == "volume") volume = std::atoi(v.c_str()) != 0;
+	}
+	const double h = L/cells;
+	LiquidSetup s;
+	s.grid.n = {{cells, int(std::lround(H/h)), cells}};
+	s.grid.h = h;
+	Shape col;
+	col.type = Shape::Type::Box;
+	col.lo = {{-1, -1, -1}};
+	col.hi = {{2, d, 2}};
+	s.liquid.push_back(col);
+	s.initialVelocity = {{u0, 0, 0}};
+	SolverOptions so;
+	so.volumeCorrection = volume;
+	LiquidModel m;
+	std::string e;
+	if (!m.Initialize(s, so, 8, e)) { std::printf("failed: %s\n", e.c_str()); return; }
+	auto sharp = [&]() { double v = 0; for (double p : m.phi) v += std::min(1.0, std::max(0.0, 0.5 - p/h)); return v*h*h*h; };
+	const double V0 = sharp(), S0 = m.Volume();
+	double added = 0, worst = 0;
+	const double w0 = Seconds();
+	for (int q = 1; q <= int(std::lround(T/0.25)); ++q) {
+		if (!m.Run(0.25, 1.0/120, [&](double, const StepStats& st) { added -= st.volumeShift*InterfaceArea(m.GridSpec(), m.phi, nullptr, m.ThreadPool()); }, e)) {
+			std::printf("failed: %s\n", e.c_str()); return; }
+		worst = std::max(worst, std::fabs(sharp()/V0 - 1));
+		std::printf("  t %.2f sharp %+.2e smoothed %+.2e of V0, correction added %+.2e of V0, max|u| %.3f (%.0f s)\n", m.Time(), sharp()/V0 - 1, m.Volume()/S0 - 1, added/V0, m.MaxSpeed(), Seconds() - w0);
+	}
+	std::printf("layer cells %d depth %g (%.1f cells) u0 %g T %g volume %d: sharp %+.2e (worst %.2e), smoothed %+.2e, correction added %+.2e of V0\n",
+		cells, d, d/h, u0, T, int(volume), sharp()/V0 - 1, worst, m.Volume()/S0 - 1, added/V0);
 }
 
 // ---------------------------------------------------------------- m7f: rotation within a macro step
@@ -1783,6 +1905,7 @@ int main(int argc, char** argv)
 	if (argc > 1 && std::string(argv[1]) == "--membrane") { MembraneProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--cup") { CupProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--rotate") { RotateProbe(argc, argv); return 0; }
+	if (argc > 1 && std::string(argv[1]) == "--layer") { LayerProbe(argc, argv); return 0; }
 	const double t0 = Seconds();
 	Operator();
 	Stability();

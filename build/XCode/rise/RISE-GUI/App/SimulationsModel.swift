@@ -85,6 +85,12 @@ struct SimulationRow: Identifiable, Equatable {
     let memoryEstimate: UInt64
     let wallEstimate: Double
     let staleReason: String
+    /// GUI status pass: what stands behind `fidelity` (see RISESimulationInfo).
+    let evidenceScope: String
+    let evidenceCases: Int
+    let fidelityLimit: String
+    /// A group's `connect` / `owned` lines and any `port_source` lines, one per entry.
+    let connections: [String]
 
     init(_ info: RISESimulationInfo) {
         name = info.name
@@ -108,10 +114,32 @@ struct SimulationRow: Identifiable, Equatable {
         memoryEstimate = info.memoryEstimate
         wallEstimate = info.wallEstimate
         staleReason = info.staleReason
+        evidenceScope = info.evidenceScope
+        evidenceCases = Int(info.evidenceCases)
+        fidelityLimit = info.fidelityLimit
+        connections = info.connections.split(separator: "\n").map(String.init)
     }
 
+    /// A `simulation_group` is baked as one job (the bake manager runs its members
+    /// together), so it is a producer although it has no solver of its own.
+    var isGroup: Bool { keyword == "simulation_group" }
+
     /// A `simulation_cache` has no solver: it is never baked or run live.
-    var isProducer: Bool { !solverId.isEmpty }
+    var isProducer: Bool { !solverId.isEmpty || isGroup }
+
+    /// The label shown for the cache: `preview` / `predictive`, or "no cache".
+    var labelText: String { fidelity.isEmpty ? "no cache" : fidelity }
+
+    /// The evidence behind the label, one sentence: what the label covers (and how many
+    /// validation cases back it), or why `predictive` is not earnable. "" when neither is known.
+    var evidenceText: String {
+        var parts: [String] = []
+        if !evidenceScope.isEmpty {
+            parts.append(evidenceScope + (evidenceCases > 0 ? " (\(evidenceCases) validation case\(evidenceCases == 1 ? "" : "s"))" : ""))
+        }
+        if !fidelityLimit.isEmpty && fidelity != "predictive" { parts.append("not predictive: " + fidelityLimit) }
+        return parts.joined(separator: "; ")
+    }
 
     /// "0.000–3.000 s @ 30 Hz" from the configuration's time support.
     var timeSupportLabel: String {

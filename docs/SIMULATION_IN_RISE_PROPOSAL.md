@@ -172,9 +172,16 @@ The sheet's faces are now walls or boundaries of the level set's stencils, and t
 a sheet holding liquid on one side. A pinned bag passes no liquid through the sheet at 24–64 cells over 3 s, the
 membrane at large sag is within 0.8% of its reference, and the stability sweep still passes. A cloth catches a block of
 water in the demo. An implicit sheet's load without its steps is refused, and the rotation stretch of the cloth's
-linear step is reported. Viscosity with sheets stays refused ([M7f results](SIMULATION_M7F_RESULTS.md)). Not done
-within M7: spray and thin films, contact inside the liquid, liquid layers on a sheet thinner than about four cells, and
-the multigrid weakness with large bodies at 256³ (PCG iterations triple).
+linear step is reported. Viscosity with sheets stays refused ([M7f results](SIMULATION_M7F_RESULTS.md)). M7g (in
+review; `liquid.mac` m7g.1, preview): the values growing in a bag's dry corners were a false interface spreading along
+the domain walls from the reinitialisation's linear wall ghosts (constant with coupled sheets; none below a bag at
+24–64 cells now); a light flap's fast motion was two coupling artefacts (the face liquid driving the sheet at 1/n_a
+times its tangential speed, load across an air gap), fixed: above still water 1.15 → 0.09 m/s, dam-break peaks at
+40–64 cells 1.0–4.3 m/s (at 24 cells up to 15 m/s remain, located, not fixed); a through-sheet measure
+is reported (the catch demo: every attempted crossing held, none passed); a dense sphere settles onto the tank floor
+through water exactly at contact without jitter ([M7g results](SIMULATION_M7G_RESULTS.md)). Not done within M7: spray
+and thin films, body–body contact (in any solver), liquid layers on a sheet thinner than about five cells, the cut-cell
+velocity order, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
 
 2026-11-26: **M8 partial** (in review; [M8 results](SIMULATION_M8_RESULTS.md)). Cross-platform playback: every codec and the cache container were already byte-defined little-endian; a committed golden cache (all six frame codecs, a static topology record, changing and empty topology) is decoded value by value and re-encoded to identical bytes by a fast-tier test. The library, `rise`, `rise-sim` and all tests build warning-free with Metal compiled out and the non-fire fast tier passes there. Reading the VS2022 and Android builds found seven certain compile errors (four broke the fire stack on every non-Apple build; `liquid.mac` did not compile with MSVC), all fixed; neither platform was compiled, and neither has a `rise-sim` target. Fire on the CPU: a complete one-step CPU projected-Heun owner exists as a calibration reference, but it is single-threaded, capped at 2 GiB, not callable by the run driver, and lacks r264's centred momentum carrier; on a 64-cell fixture it differs from the Metal owner by 1–3e-6 of field maximum, 4–10× more than rounding explains, cause not isolated. **The fire CPU backend stays `unsupported`; the M8 exit criterion for fire is not met.** 2026-11-26, later: **M8 part A done** ([M8 results §10](SIMULATION_M8_RESULTS.md)): the gap was r264's centred momentum carrier, absent on the CPU side (with it the one-step burner fixture is bit-identical in 7 of 9 rows, velocity within 2 ulps). The CPU owner is now a run-driver backend (`backend: "cpu"`), runs with Metal compiled out, is threaded and bit-identical at any worker count, resumes from checkpoints bit for bit, and agrees with Metal fast mode on the tier-4 coarse case to rounding at step 1 (with matched V-cycle counts) and within 2e-4 (species), 3e-4 (temperature), 1e-2 (velocity) of the field scale over 24 steps, where a localised burner-surface difference from step 2 is not yet explained. **Fire `cpu` is `experimental`; the M8 exit criterion for fire is met.** It is about 15× slower than Metal at tier 8. Windows/Android remain uncompiled.
 

@@ -431,6 +431,20 @@ namespace RISE
 		//! ClearAll (it is keyed by content, never by entity).
 		std::map<std::string, Simulation::SceneSimulationSpec>	simulationsMap;
 		std::set<std::string>	transformSourceObjects;		//!< M6: objects a simulation drives (transform_source)
+		//! What a refresh needs to re-derive one transform_source object's
+		//! keyframes: the body it follows, its authored pose (the pose at the
+		//! simulation's first frame; the rigid rotation columns and translation
+		//! the keys move) and the cache generation its keys came from.
+		struct TransformSourceState
+		{
+			std::string	simulation, output, body;
+			double		p0[3] = { 0, 0, 0 };
+			double		O0[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+			std::string	authoredPosition, authoredOrientation;	//!< the authored pose as keyframe values
+			std::string	stamp;									//!< the cache generation the keys came from ("" = none)
+		};
+		std::map<std::string, TransformSourceState>	transformSourceStates;	//!< by object name
+		bool DeriveTransformSourceKeys_( const char* object, TransformSourceState& state, std::string& error );
 		std::vector<std::string>						simulationOrder;
 		struct SimulatedGeometryRecord
 		{
@@ -2356,6 +2370,16 @@ namespace RISE
 		//! Simulation M6: an object follows a body of a transform.v1 output
 		//! (IJob::SetObjectTransformSource).
 		bool SetObjectTransformSource( const char* object, const char* source );
+
+		//! Re-derives the keyframes of every transform_source object whose
+		//! simulation cache changed since they were derived (a bake that
+		//! completed or advanced, a new epoch, or a cache that went away: the
+		//! body then returns to its authored pose), through the code path scene
+		//! load uses.  `changed` is set when any object's keys were replaced;
+		//! the caller then re-poses the scene at its current time
+		//! (IScene::SetSceneTimeForPreview), parked.  Caller holds the scene
+		//! stable.  False with `error` when a re-derive failed.
+		bool RefreshTransformSources( bool& changed, std::string& error );
 
 		//! M7 prerequisites: simulated_points_geometry (IJob::AddSimulatedPointsGeometry).
 		bool AddSimulatedPointsGeometry(

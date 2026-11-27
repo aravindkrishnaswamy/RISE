@@ -63,8 +63,8 @@ ExteriorIndexInvarianceTest	pool	136
 FabricMaterialChunkTest	pool	5
 FabricRenderTest	pool	11
 FileRasterizerOutputShimTest	exclusive	1	timing windows (concurrent file writers)
-FireCPUBackendTest	exclusive	25	CPU fire solver steps on up to 8 threads (saturates the cores)
-FireCPUMetalAgreementTest	exclusive	20	Metal fire solver steps against CPU fire steps (Metal/CPU agreement)
+FireCPUBackendTest	exclusive	50	CPU fire solver steps on up to 8 threads (saturates the cores)
+FireCPUMetalAgreementTest	exclusive	30	Metal fire solver steps against CPU fire steps (Metal/CPU agreement)
 FireSequenceTest	exclusive	0	not measured here (needs OpenVDB); Metal fire solver steps
 FireSimulationSolverTest	pool	31
 FireSolverTest	exclusive	200	Metal fire solver steps (rise-sim bake, stop and resume of a tier-6 window)

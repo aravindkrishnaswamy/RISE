@@ -29,6 +29,23 @@
 //    RISE_GUI_HEADLESS_PROBE_OUT     directory for PNG snapshots (optional)
 //    RISE_MEDIA_PATH                 repo root, as for every probe
 //
+//    RISE_GUI_HEADLESS_PROBE=simulation_scenes  (GUI status pass, 2026-11-26): the scene-generic
+//    probe -- any scene's simulations (liquid, rigid, cloth, groups, fire status only).
+//    RISE_GUI_HEADLESS_PROBE_SCENE   scene (required)
+//    RISE_GUI_HEADLESS_PROBE_STEPS   comma list of: list, props, agent, bake, show, ui
+//                                    (run in the order list, props, bake, show, agent, ui).  list: rows with label, evidence
+//                                    text, cache directory, couplings; props: the Inspector's
+//                                    Simulation category for every row; agent: the in-app
+//                                    chat/agent verbs sim_list, sim_cache, sim_param_get,
+//                                    sim_param_set (and undo) against the live controller;
+//                                    bake: bake RISE_GUI_HEADLESS_PROBE_BAKE (comma names;
+//                                    default every non-fire producer) and wait; show: scrub
+//                                    each baked mesh consumer and compare viewport pixels;
+//                                    ui: offscreen renders of the panel and timeline.
+//                                    A fire_simulation is NEVER baked or stepped.
+//    RISE_GUI_HEADLESS_PROBE_ROWS    expected rows, `name=keyword:solver[:state]`, comma separated
+//    RISE_GUI_HEADLESS_PROBE_OUT     directory for PNG snapshots
+//
 //    `trust` must run WITHOUT RISE_SIMULATION_TRUSTED_ROOTS covering the
 //    scene's cache (it checks that the library refuses, offers a root,
 //    and accepts after the user-equivalent "Trust" action); it persists
@@ -84,6 +101,7 @@ enum SimulationProbes {
 
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
+        if env["RISE_GUI_HEADLESS_PROBE"] == "simulation_scenes" { runScenes(env); return }
         guard env["RISE_GUI_HEADLESS_PROBE"] == "simulation_m5" else { return }
         let scene = env["RISE_GUI_HEADLESS_PROBE_SCENE"]
             ?? "scenes/Tests/Simulation/cloth_flag_scene.RISEscene"
@@ -250,6 +268,11 @@ enum SimulationProbes {
         step("bake: the timeline range is complete, 91 frames",
              model.ranges.contains { $0.name == "geo_flag" && $0.style == .complete && $0.framesAvailable == 91 })
         note("bake: a partial range was seen while baking: \(sawPartialRange)")
+        if let flag = model.row("flag") {
+            note("bake: label=\(flag.labelText) | evidence=\(flag.evidenceText.isEmpty ? "-" : flag.evidenceText)")
+            step("bake: the row shows a fidelity label and its evidence text",
+                 (flag.fidelity == "preview" || flag.fidelity == "predictive") && !flag.evidenceText.isEmpty)
+        }
         if let vm = probeViewModel { renderUI(vm, probeOutDir, "after_bake") }
     }
 
@@ -533,5 +556,343 @@ enum SimulationProbes {
         var sum = 0
         for i in 0..<ga.count { sum += abs(Int(ga[i]) - Int(gb[i])) }
         return Double(sum) / Double(ga.count) / 255.0
+    }
+}
+
+
+// MARK: - GUI status pass: the scene-generic probe
+
+extension SimulationProbes {
+    private static let isFire: (SimulationRow) -> Bool = { $0.keyword == "fire_simulation" || $0.solverId == "fire.methane" }
+
+    private static func rowSummary(_ r: SimulationRow) -> String {
+        "\(r.name)[\(r.keyword) solver=\(r.solverId.isEmpty ? "-" : r.solverId) state=\(r.state.label) "
+            + "frames=\(r.framesAvailable)/\(r.framesTotal) backend=\(r.backend.isEmpty ? "-" : r.backend) "
+            + "interactive=\(r.interactive) consumer=\(r.consumerGeometry.isEmpty ? "-" : r.consumerGeometry)]"
+    }
+
+    static func runScenes(_ env: [String: String]) {
+        guard let scene = env["RISE_GUI_HEADLESS_PROBE_SCENE"] else {
+            print("SimulationProbe: FAIL -- RISE_GUI_HEADLESS_PROBE_SCENE is required"); exit(2)
+        }
+        let steps = Set((env["RISE_GUI_HEADLESS_PROBE_STEPS"] ?? "list")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+        let outDir = env["RISE_GUI_HEADLESS_PROBE_OUT"]
+        if let outDir { try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true) }
+        let scenePath = scene.hasPrefix("/") ? scene : FileManager.default.currentDirectoryPath + "/" + scene
+        let stem = URL(fileURLWithPath: scenePath).deletingPathExtension().lastPathComponent
+
+        FontBootstrap.registerBundledFonts()
+        let vm = RenderViewModel()
+        probeViewModel = vm
+        probeOutDir = outDir
+        var frames = 0
+        var lastImage: NSImage? = nil
+        let sink = vm.$renderedImage.sink { image in if let image { frames += 1; lastImage = image } }
+
+        vm.loadScene(at: scenePath, untitled: true)
+        step("scene loads (\(stem))", spin(90) { vm.viewportBridge != nil || vm.renderState != .loading })
+        guard let vb = vm.viewportBridge else { step("viewport bridge attached", false); finish(vm) }
+        step("first viewport frame", spin(60) { frames > 0 })
+        let model = vm.simulations
+        step("simulations read", spin(10) { model.refresh(); return model.loaded })
+        spin(1.0)
+        let preBake = lastImage
+        let startedMissing = Set(model.rows.filter { $0.state == .missing }.map { $0.name })
+
+        if steps.contains("list") { scenesList(model, env: env, scenePath: scenePath, stem: stem) }
+        if steps.contains("props") { scenesProps(vm, model, vb) }
+        if steps.contains("bake") { scenesBake(vm, model, vb, env: env, scenePath: scenePath) }
+        if steps.contains("show") {
+            scenesShow(vm, model, vb, frames: { frames }, image: { lastImage }, preBake: preBake, startedMissing: startedMissing, outDir: outDir, stem: stem)
+        }
+        // After the bake, so an edit shows the cache going stale (and Undo bringing it back).
+        if steps.contains("agent") { scenesAgent(vm, model) }
+        if steps.contains("ui") {
+            model.refresh()
+            if let first = model.rows.first(where: { !isFire($0) }) ?? model.rows.first { model.selected = first.name }
+            renderUI(vm, outDir, stem)
+        }
+        _ = sink
+        finish(vm)
+    }
+
+    private static func scenesList(_ model: SimulationsModel, env: [String: String], scenePath: String, stem: String) {
+        let rows = model.rows
+        let base = RISEViewportBridge.simulationCacheBase()
+        note("cache base: \(base.isEmpty ? "(none)" : base)")
+        note("trusted roots: \(RISEViewportBridge.trustedCacheRoots())")
+        for r in rows {
+            note("row " + rowSummary(r))
+            note("  \(r.name): label=\(r.labelText) | evidence=\(r.evidenceText.isEmpty ? "-" : r.evidenceText)")
+            note("  \(r.name): cache=\(r.cacheDirectory)")
+            if !r.upstream.isEmpty { note("  \(r.name): \(r.isGroup ? "members" : "upstream")=\(r.upstream)") }
+            for c in r.connections { note("  \(r.name): coupling \(c)") }
+            if !r.estimateSummary.isEmpty { note("  \(r.name): estimate \(r.estimateSummary)") }
+            if !r.staleReason.isEmpty { note("  \(r.name): stale reason \(r.staleReason)") }
+            if !r.errorMessage.isEmpty { note("  \(r.name): error \(r.errorMessage)") }
+        }
+        step("the scene declares simulations (\(rows.count))", !rows.isEmpty)
+        let hex = Set("0123456789abcdef")
+        for r in rows where r.keyword != "simulation_cache" && !r.cacheDirectory.isEmpty {
+            // <base>/<scene>-<16 hex>/<name> unless the chunk names its own cache.
+            let url = URL(fileURLWithPath: r.cacheDirectory)
+            let sceneDir = url.deletingLastPathComponent().lastPathComponent
+            let hash = sceneDir.hasPrefix(stem + "-") ? String(sceneDir.dropFirst(stem.count + 1)) : ""
+            let inDefault = !base.isEmpty && r.cacheDirectory.hasPrefix(base + "/") && url.lastPathComponent == r.name
+                && hash.count == 16 && hash.allSatisfy { hex.contains($0) }
+            step("\(r.name): cache in the per-scene default location (<base>/\(stem)-<hash>/\(r.name))", inDefault)
+            let home = NSHomeDirectory()
+            if let override = ProcessInfo.processInfo.environment["RISE_SIMULATION_CACHE_DIR"], !override.isEmpty {
+                step("\(r.name): cache is under RISE_SIMULATION_CACHE_DIR (nothing in the home folder)",
+                     r.cacheDirectory.hasPrefix(override) && !r.cacheDirectory.hasPrefix(home + "/Library"))
+            }
+        }
+        if let spec = env["RISE_GUI_HEADLESS_PROBE_ROWS"] {
+            for item in spec.split(separator: ",") {
+                let kv = item.split(separator: "=", maxSplits: 1).map(String.init)
+                guard kv.count == 2, let r = model.row(kv[0]) else { step("row `\(item)` present", false); continue }
+                let want = kv[1].split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+                step("\(r.name): keyword \(want[0]) (got \(r.keyword))", r.keyword == want[0])
+                if want.count > 1, !want[1].isEmpty { step("\(r.name): solver \(want[1]) (got \(r.solverId))", r.solverId == want[1]) }
+                if want.count > 2, !want[2].isEmpty { step("\(r.name): state \(want[2]) (got \(r.state.label))", r.state.label == want[2]) }
+            }
+        }
+        step("no live run before anything is started", rows.allSatisfy { !model.isLive($0.name) })
+        if rows.contains(where: isFire) {
+            step("fire: the scene loads and the panel reports its status without a bake",
+                 rows.filter(isFire).allSatisfy { $0.state != .baking && model.bakeJobs[$0.name] == nil })
+        }
+    }
+
+    private static func scenesProps(_ vm: RenderViewModel, _ model: SimulationsModel, _ vb: RISEViewportBridge) {
+        let entities = vb.categoryEntities(.simulation)
+        note("outliner Simulations: \(entities)")
+        step("props: the outliner lists every declared simulation", Set(entities) == Set(model.rows.map { $0.name }))
+        for r in model.rows {
+            vm.jumpToEntity(category: .simulation, name: r.name)
+            vb.refreshProperties()
+            let rows = vb.propertySnapshot(for: .simulation)
+            let kind = rows.first { $0.name == "chunk_type" }?.value ?? ""
+            note("props: \(r.name): \(rows.count) rows, chunk_type=\(kind)")
+            step("props: \(r.name): selected in the Inspector with its fields (\(rows.count))",
+                 vb.selectionCategory == .simulation && vb.selectionName == r.name && rows.count >= 2 && kind == r.keyword)
+        }
+    }
+
+    /// The in-app agent / chat verbs against the live controller (the same dispatcher the chat uses).
+    private static func scenesAgent(_ vm: RenderViewModel, _ model: SimulationsModel) {
+        func call(_ method: String, _ params: String = "{}") -> String {
+            vm.sendAgentRequest(#"{"jsonrpc":"2.0","id":7,"method":"\#(method)","params":\#(params)}"#)
+        }
+        let list = call("sim_list")
+        note("agent: sim_list -> \(list.prefix(300))")
+        step("agent: sim_list answers ok with liveSupported:true (a live viewport)", list.contains("\"ok\":true") && list.contains("\"liveSupported\":true"))
+        for r in model.rows { step("agent: sim_list names `\(r.name)`", list.contains("\"name\":\"\(r.name)\"")) }
+        step("agent: sim_list carries label, evidence and couplings fields",
+             list.contains("\"fidelity\"") && list.contains("\"evidenceScope\"") && list.contains("\"connections\""))
+        let cache = call("sim_cache")
+        note("agent: sim_cache -> \(cache.prefix(400))")
+        step("agent: sim_cache reports the base and each location", cache.contains("\"cacheBase\"") && cache.contains("\"accepted\""))
+        guard let target = model.rows.first(where: { $0.isProducer && !$0.isGroup && !isFire($0) }) else { return }
+        let pg = call("sim_param_get", #"{"simulation":"\#(target.name)"}"#)
+        note("agent: sim_param_get \(target.name) -> \(pg.prefix(260))")
+        step("agent: sim_param_get returns the solver's schema for `\(target.name)`",
+             pg.contains("\"ok\":true") && pg.contains("\"parameters\"") && pg.contains("\"solver\":\"\(target.solverId)\""))
+        let bad = call("sim_param_set", #"{"simulation":"\#(target.name)","param":"no_such_parameter","value":"1"}"#)
+        step("agent: sim_param_set refuses an unknown parameter without editing", bad.contains("\"applied\":false") && bad.contains("\"validated\":false"))
+        // A real edit through the controller's undo path: a keyed numeric parameter, then undo.
+        guard let (param, value) = editableNumeric(target, call) else { note("agent: no numeric parameter chosen"); return }
+        let before = model.row(target.name)?.state
+        let set = call("sim_param_set", #"{"simulation":"\#(target.name)","param":"\#(param)","value":"\#(value)"}"#)
+        note("agent: sim_param_set \(param)=\(value) -> \(set.prefix(220))")
+        step("agent: sim_param_set applies a validated edit", set.contains("\"applied\":true") && set.contains("\"validated\":true"))
+        _ = spin(10) { model.refresh(); return model.row(target.name)?.state != before }
+        let after = model.row(target.name)?.state
+        note("agent: state \(before?.label ?? "-") -> \(after?.label ?? "-"), reason: \(model.row(target.name)?.staleReason ?? "")")
+        if before == .complete {
+            // A solo bake records the effective parameters, so the reason names the member that changed;
+            // a group member has no per-simulation job record (the group's sidecar holds the run), so its
+            // reason is the generic "configuration changed".
+            let reason = model.row(target.name)?.staleReason ?? ""
+            step("agent: the edit makes the cache stale with a reason (\(reason))",
+                 after == .stale && (reason.contains(param) || reason == "configuration changed"))
+        }
+        step("agent: the edit started no bake", model.bakeJobs[target.name]?.isActive != true)
+        vm.undo()
+        step("agent: Undo reverts it (state \(before?.label ?? "-"))", spin(10) { model.refresh(); return model.row(target.name)?.state == before })
+        let pg2 = call("sim_param_get", #"{"simulation":"\#(target.name)","param":"\#(param)"}"#)
+        step("agent: sim_param_get reads the restored value", !pg2.contains("\"value\":\"\(value)\""))
+    }
+
+    /// A numeric parameter to edit and a different valid value (read through sim_param_get).
+    private static func editableNumeric(_ row: SimulationRow, _ call: (String, String) -> String) -> (String, String)? {
+        let json = call("sim_param_get", #"{"simulation":"\#(row.name)"}"#)
+        guard let data = json.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = envelope["result"] as? [String: Any],
+              let params = result["parameters"] as? [[String: Any]] else { return nil }
+        for p in params {
+            guard let name = p["name"] as? String, (p["keyed"] as? Bool) == true, p["type"] as? String == "count",
+                  let text = p["value"] as? String, let current = Int(text),
+                  name == "substeps" || name == "frames" || name == "resolution" || name == "max_iterations" else { continue }
+            let hi = (p["maximum"] as? Double) ?? Double(Int.max)
+            let next = Double(current + 1) <= hi ? current + 1 : current - 1
+            return (name, String(next))
+        }
+        return nil
+    }
+
+    /// The standard_objects of a scene file that follow a simulated body (`transform_source`).
+    private static func bodyDrivenObjects(_ scenePath: String) -> [String] {
+        guard let text = try? String(contentsOfFile: scenePath, encoding: .utf8) else { return [] }
+        var objects: [String] = []
+        var keyword = "", previous = "", name = "", driven = false, depth = 0
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#") || line.isEmpty { continue }
+            if line == "{" { if depth == 0 { keyword = previous; name = ""; driven = false }; depth += 1; continue }
+            if line == "}" {
+                depth = max(0, depth - 1)
+                if depth == 0 && keyword == "standard_object" && driven && !name.isEmpty { objects.append(name) }
+                continue
+            }
+            if depth == 0 { previous = line; continue }
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            if parts.count >= 2 && parts[0] == "name" { name = parts[1] }
+            if parts.first == "transform_source" { driven = true }
+        }
+        return objects
+    }
+
+    private static func translation(_ m: [NSNumber]?) -> [Double]? {
+        guard let m, m.count == 16 else { return nil }
+        return [m[12].doubleValue, m[13].doubleValue, m[14].doubleValue]
+    }
+
+    private static func distance(_ a: [Double], _ b: [Double]) -> Double {
+        sqrt(zip(a, b).map { ($0 - $1) * ($0 - $1) }.reduce(0, +))
+    }
+
+    private static func scenesBake(_ vm: RenderViewModel, _ model: SimulationsModel, _ vb: RISEViewportBridge,
+                                   env: [String: String], scenePath: String) {
+        // Rigid bodies: the objects that follow them are keyframed from the cache, so the refresh after a
+        // bake must re-derive those keys.  Pose them at the last frame's time before the bake and again
+        // after it, with no reopen and no further scrub.
+        let followers = bodyDrivenObjects(scenePath)
+        let bodyRow = model.rows.first(where: { $0.keyword == "rigid_simulation" }) ?? model.rows.first(where: { $0.isGroup })
+        var poseAtStart: [String: [Double]] = [:]
+        var poseBefore: [String: [Double]] = [:]
+        var lateTime = 0.0
+        func poseNow(_ object: String) -> [Double]? {
+            var pose: [Double]? = nil
+            _ = spin(5) { pose = translation(vb.worldTransform(ofObject: object)); return pose != nil }
+            return pose
+        }
+        func jump(_ t: Double) {
+            vm.jumpTimelineSceneTime(to: t, using: vb)
+            _ = spin(10) { abs(vb.lastSceneTime() - t) < 1e-6 }
+        }
+        if let r = bodyRow, !followers.isEmpty {
+            lateTime = r.startTime + r.interval * Double(max(r.framesTotal, 1) - 1)
+            jump(r.startTime)
+            for o in followers { poseAtStart[o] = poseNow(o) }
+            jump(lateTime)
+            for o in followers { poseBefore[o] = poseNow(o) }
+            note("bake: bodies \(followers) posed at t=\(r.startTime) and t=\(lateTime) before the bake")
+        }
+        var names: [String]
+        if let list = env["RISE_GUI_HEADLESS_PROBE_BAKE"], !list.isEmpty {
+            names = list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        } else {
+            names = model.rows.filter { $0.isProducer && !isFire($0) }.map { $0.name }
+        }
+        var bakedBodies = false
+        for name in names {
+            guard let row = model.row(name) else { step("bake: row `\(name)` present", false); continue }
+            if row.keyword == "rigid_simulation" || row.isGroup { bakedBodies = true }
+            if isFire(row) { step("bake: refused to bake fire simulation `\(name)` (reserved)", true); continue }
+            let started = Date()
+            model.bake(name)
+            step("bake \(name): queued without a trust prompt (\(model.lastMessage))", model.trustRequest == nil && model.lastMessage.isEmpty)
+            var sawJob = false
+            let done = spin(900) {
+                if let j = model.bakeJobs[name] { sawJob = true; if !j.isActive { return true } }
+                return false
+            }
+            let job = model.bakeJobs[name]
+            note(String(format: "bake %@: %@ after %.1f s; job %@ %@", name, done ? "ended" : "timed out",
+                        Date().timeIntervalSince(started), job?.summary ?? "none", job?.errorMessage ?? ""))
+            step("bake \(name): a job appeared and finished", sawJob && job?.state == .finished)
+            _ = spin(10) { model.refresh(); return model.row(name)?.state == .complete }
+            guard let after = model.row(name) else { continue }
+            step("bake \(name): state complete with all frames (\(after.state.label) \(after.framesAvailable)/\(after.framesTotal))",
+                 after.state == .complete && after.framesAvailable == after.framesTotal && after.framesTotal > 0)
+            note("  \(name): label=\(after.labelText) | evidence=\(after.evidenceText.isEmpty ? "-" : after.evidenceText) | cache=\(after.cacheDirectory)")
+            step("bake \(name): a fidelity label is shown (\(after.labelText))", after.fidelity == "preview" || after.fidelity == "predictive")
+            step("bake \(name): evidence text is shown", !after.evidenceText.isEmpty)
+            step("bake \(name): the cache exists at the shown directory", FileManager.default.fileExists(atPath: after.cacheDirectory))
+            if !after.consumerGeometry.isEmpty {
+                step("bake \(name): the timeline range for \(after.consumerGeometry) is complete",
+                     model.ranges.contains { $0.name == after.consumerGeometry && $0.style == .complete && $0.framesAvailable == after.framesTotal })
+            }
+        }
+        if bakedBodies, let r = bodyRow {
+            for o in followers {
+                guard let start = poseAtStart[o] else { step("bake: body object `\(o)` has a pose before the bake", false); continue }
+                // The refresh re-posed the scene at the time it was at (the last frame): no scrub since.
+                var after: [Double]? = nil
+                let moved = spin(20) {
+                    model.refresh()
+                    after = translation(vb.worldTransform(ofObject: o))
+                    return after != nil && distance(after!, start) > 1e-4
+                }
+                note("bake: body object `\(o)` at t=\(lateTime): before \(poseBefore[o] ?? []) after \(after ?? []) (start \(start))")
+                step("bake: body object `\(o)` moved from its authored pose after the in-app bake, without reopening the scene", moved)
+                jump(r.startTime)
+                let back = poseNow(o)
+                step("bake: body object `\(o)` is at its authored pose again at the first frame",
+                     back != nil && distance(back!, start) < 1e-6)
+                jump(lateTime)
+            }
+        }
+        // A group's member rows (one job for the group) all end complete.
+        for g in model.rows where g.isGroup {
+            _ = spin(10) { model.refresh(); return model.row(g.name)?.state == .complete }
+            step("group \(g.name): complete after its members (\(model.row(g.name)?.state.label ?? "-"))", model.row(g.name)?.state == .complete)
+        }
+        if let vm = probeViewModel { renderUI(vm, probeOutDir, "after_bake") }
+    }
+
+    private static func scenesShow(_ vm: RenderViewModel, _ model: SimulationsModel, _ vb: RISEViewportBridge,
+                                   frames: () -> Int, image: () -> NSImage?, preBake: NSImage?, startedMissing: Set<String>,
+                                   outDir: String?, stem: String) {
+        func showAt(_ t: Double) -> NSImage? {
+            vm.jumpTimelineSceneTime(to: t, using: vb)
+            let start = frames()
+            _ = spin(30) { frames() > start }
+            spin(3.0)
+            return image()
+        }
+        for r in model.rows where !r.consumerGeometry.isEmpty && r.state == .complete {
+            let end = r.startTime + r.interval * Double(max(r.framesTotal, 1) - 1)
+            let first = showAt(r.startTime)
+            step("show \(r.name): scene time \(r.startTime) shown", abs(vb.lastSceneTime() - r.startTime) < 1e-6)
+            let mid = showAt((r.startTime + end) / 2)
+            let last = showAt(end)
+            step("show \(r.name): last baked time \(end) shown", abs(vb.lastSceneTime() - end) < 1e-6)
+            if let outDir {
+                if let first { save(first, "\(outDir)/\(stem)_\(r.name)_first.png") }
+                if let mid { save(mid, "\(outDir)/\(stem)_\(r.name)_mid.png") }
+                if let last { save(last, "\(outDir)/\(stem)_\(r.name)_last.png") }
+            }
+            let motion = (first != nil && last != nil) ? meanAbsDifference(first!, last!) : 0
+            let appears = (first != nil && preBake != nil) ? meanAbsDifference(first!, preBake!) : 0
+            note(String(format: "show %@: |first - last| = %.4f; |first - before the bake| = %.4f", r.name, motion, appears))
+            step("show \(r.name): the baked scene changes the viewport between the first and last frame", motion > 0.0005)
+            if startedMissing.contains(r.name) {
+                step("show \(r.name): the surface appears once baked (differs from the unbaked view)", appears > 0.0005)
+            }
+        }
     }
 }

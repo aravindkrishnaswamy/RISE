@@ -101,6 +101,12 @@ namespace RISE
 				const String* interp_param,
 				const String& animation
 				);
+			//! Drops every keyframe `element` has for `param` in the named
+			//! animation (blank => default), and the element itself once it has
+			//! no timeline left.  The scene must be stable (no render running)
+			//! and the caller re-poses it afterwards.  Not on IAnimator: a
+			//! simulation refresh replaces a transform_source object's keys.
+			bool RemoveKeyframes( IKeyframable* element, const String& param, const String& animation );
 			bool DeclareAnimation(
 				const String& name,
 				const double time_start,

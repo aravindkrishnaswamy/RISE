@@ -415,8 +415,9 @@ void SheetDynamics::ApplyS(double dt, const std::vector<double>& V, std::vector<
 		}
 }
 
-SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density)
-	: g_(g), crossings_(faces), sheets_(sheets), scale_(density*g.h*g.h*g.h)
+SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density,
+	const std::vector<std::uint8_t>* skip)
+	: g_(g), crossings_(faces), sheets_(sheets), skip_(skip && !skip->empty() ? skip : nullptr), scale_(density*g.h*g.h*g.h)
 {
 	impulse_.resize(sheets.size());
 	r_.resize(sheets.size());
@@ -432,9 +433,10 @@ SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& fa
 void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
 {
 	faces_.clear();
-	for (const SheetCrossing& c : crossings_) {
+	for (std::size_t k = 0; k < crossings_.size(); ++k) {
+		const SheetCrossing& c = crossings_[k];
 		const LiquidSheet& sh = sheets_[c.sheet];
-		if (!sh.Coupled()) continue;
+		if (!sh.Coupled() || (skip_ && (*skip_)[k])) continue;
 		const auto d = g_.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};

@@ -150,6 +150,21 @@ DamBreakResult RunDamBreak(int cells, double duration, const SolverOptions& opti
 //! (Z, T) pairs, T normalised by the authors to T = 0.80 at Z = 1.44.
 extern const double MartinMoyceSquare[][2];
 extern const int MartinMoyceSquareCount;
+//! Lobovsky et al. 2014 (J. Fluids Struct. 48, 407-434; arXiv 1308.0115): average downstream front speed
+//! v / sqrt(g H) for t sqrt(g / H) > 1 (their table 1).  Their front positions are published as a figure
+//! only, so no position table is carried (see docs/SIMULATION_M7_REFERENCES.md).
+extern const double LobovskyFrontSpeed300, LobovskyFrontSpeed600, LobovskyReductionMartinMoyce57;
+//! Their wall impact pressure peaks over 100 runs (tables 2 and 4): per sensor {height above the bed [mm],
+//! median, 2.5 % percentile, 97.5 % percentile} in mbar; sensors 1 to 4 on the centre line.  Tank 1610 x 600
+//! x 150 mm, the reservoir 600 mm long, the impact wall 1010 mm from the gate; H = 300 mm (reservoir 2H wide)
+//! and H = 600 mm (square column, our geometry).  Pressures scale with rho g H (H = 0.3 m: 2943 Pa).
+extern const double LobovskyImpact300[4][4];
+extern const double LobovskyImpact600[4][4];
+//! The 2-D square column of `RunDamBreak` in Lobovsky's tank (the impact wall 1010/600 of a column width
+//! from the gate, 2 a high): peak P* = p / (rho g a) over the run at the wall cell nearest each of the four
+//! sensor heights (3, 15, 30 and 80 mm of H = 600 mm), and the time T = t sqrt(g / a) of the sensor-1 peak.
+struct DamBreakImpactResult { double peak[4] = {0, 0, 0, 0}; double peakTime = 0, seconds = 0; int steps = 0; bool finite = true; };
+DamBreakImpactResult RunDamBreakImpact(int cells, double duration, const SolverOptions& options, Pool* pool);
 
 //! Long sloshing run for volume conservation: the 2-D tank of the standing
 //! wave, finite depth, larger amplitude (ka = 0.1), `periods` periods;

@@ -470,9 +470,13 @@ static void TestOpenAIRequestShape()
 	// one more.  33 -> 34 (fix_blend_scale, cat plan item 1), 34 -> 35
 	// (add_wear, GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30), and 35 -> 36
 	// (add_wetness, WETNESS_COAT_DESIGN sec 6/13, 2026-08-31) on the same
-	// rule.  Bumped deliberately -- this count is what would catch a tool
+	// rule.  38 -> 49 (simulation GUI status pass, 2026-11-26): the eleven
+	// simulation verbs joined the table (sim_list, sim_status, sim_wait,
+	// sim_bake, sim_cancel, sim_live_start, sim_live_stop, sim_seek,
+	// sim_cache, sim_param_get, sim_param_set).
+	// Bumped deliberately -- this count is what would catch a tool
 	// silently added to one formatter and not the table.
-	Check( tools.isArray() && tools.size() == 38, "body carries thirty-eight OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 49, "body carries forty-nine OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -576,8 +580,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 38,
-		       "xAI body carries the same thirty-eight tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 49,
+		       "xAI body carries the same forty-nine tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -842,7 +846,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 38, "body carries thirty-eight tools" );
+	Check( tools.isArray() && tools.size() == 49, "body carries forty-nine tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1806,7 +1810,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 38, "thirty-eight functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 49, "forty-nine functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {

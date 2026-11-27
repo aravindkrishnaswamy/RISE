@@ -62,6 +62,13 @@ namespace RISE
 			//! the named animation.
 			bool EvaluateIntoForAnimation( const Scalar time, const String& animation, IKeyframable& target ) const;
 
+			//! Drops the named animation's timeline for one parameter (all its
+			//! keyframes).  False if there was none.
+			bool RemoveTimeline( const String& animation, const String& parameter );
+
+			//! True when no animation has any timeline left.
+			bool IsEmpty() const;
+
 			//! DL-465: names of the parameters keyframed in the named animation.
 			void GetAnimatedParameters( const String& animation, std::vector<String>& out ) const;
 

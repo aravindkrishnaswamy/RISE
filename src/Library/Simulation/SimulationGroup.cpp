@@ -268,8 +268,20 @@ struct SimulationGroup::Member {
 	std::vector<std::pair<std::string, std::shared_ptr<const Bytes>>> heldStatics;
 	std::string couplingLimit, baseIdentity;
 	bool coupled = false;
+	std::string detail;   // M7g: the last progress detail (MemberDetail)
 	bool Finished() const { return cached || !solver || solver->Position().finished; }
 };
+
+namespace {
+// M7g: keeps a member's progress detail (the group never stops a member through it).
+class DetailProgress final : public IProgress {
+public:
+	explicit DetailProgress(std::string& out) : out_(out) {}
+	bool Report(double, double, const std::string& detail) override { if (!detail.empty()) out_ = detail; return true; }
+private:
+	std::string& out_;
+};
+} // namespace
 
 struct SimulationGroup::Link {
 	PortConnection c;
@@ -860,7 +872,8 @@ bool SimulationGroup::AdvanceAll(double b, bool buffered, std::string& error)
 		r.macroEnd = b;
 		AdvanceResult result;
 		Sink sink(m, buffered);
-		if (!m.solver->Advance(r, sink, m.exchange.get(), nullptr, result, error))
+		DetailProgress progress(m.detail);
+		if (!m.solver->Advance(r, sink, m.exchange.get(), &progress, result, error))
 			return Fail(error, "member " + m.name + " at t = " + std::to_string(b) + ": " + error);
 		if (result.status == AdvanceResult::Status::Stopped) return Fail(error, "member " + m.name + " stopped inside a macro step");
 	}
@@ -1312,6 +1325,12 @@ bool SimulationGroup::IsCached(const std::string& member) const
 std::string SimulationGroup::MemberFidelity(const std::string& member) const
 {
 	for (const auto& m : members_) if (m->name == member) return m->cached ? m->snapshot->Description().fidelity : m->description.cache.fidelity;
+	return std::string();
+}
+
+std::string SimulationGroup::MemberDetail(const std::string& member) const
+{
+	for (const auto& m : members_) if (m->name == member) return m->detail;
 	return std::string();
 }
 

@@ -86,6 +86,20 @@ struct SceneSimulationStatus {
 	//! costEstimate x the simulated span (startTime + interval x (framesTotal-1)).
 	//! 0 = unknown.  Approximate by construction; see the solver's estimate.
 	double wallEstimate = 0;
+	//! GUI status pass: what stands behind the label.  `evidenceScope` is the
+	//! sentence the cache's fidelity label covers (recorded in its manifest;
+	//! "" when the cache has none or there is no cache) and `evidenceCases` the
+	//! number of validation digests bound to it.  `fidelityLimit` is why this
+	//! configuration cannot earn `predictive` (the solver's own statement; ""
+	//! when it can, or when the solver is not configured here).  A group
+	//! reports the member that limits its label.
+	std::string evidenceScope;
+	std::uint32_t evidenceCases = 0;
+	std::string fidelityLimit;
+	//! GUI status pass: the couplings declared on this simulation -- a
+	//! group's `connect` lines and ownership (`owned a b`), and any
+	//! `port_source` lines -- as authored.  Empty for an uncoupled simulation.
+	std::vector<std::string> connections;
 };
 
 //! M5c: "≈ 5 h, 4.0 GB" (either part may be missing; "" when both are

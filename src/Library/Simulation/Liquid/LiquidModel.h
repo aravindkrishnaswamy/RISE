@@ -170,6 +170,13 @@ public:
 	double Volume() const;
 	//! Totals of StepStats::clamped since Initialize (not checkpointed: a run's own count).
 	std::uint64_t clampedFaces = 0, clampedSteps = 0;
+	//! m7g, coupled sheets: totals since Initialize (not checkpointed) of the cells that turned wet in a step
+	//! without a neighbour that was wet at the step's start across an open face and without a coupled sheet
+	//! sweeping over them, before the guard that holds them (LiquidSheets.h BlockSheetLeaks):
+	//! `sheetCrossed` those with such a neighbour across a sheet's closed face (liquid that would have passed
+	//! the sheet; volume: the cells' sharp fill clamp(1/2 - phi/h, 0, 1) h^3), `sheetUnfed` the others.
+	std::uint64_t sheetCrossedCells = 0, sheetUnfedCells = 0;
+	double sheetCrossedVolume = 0;
 	double TargetVolume() const { return targetVolume_; }
 
 	// State (checkpoints).
@@ -309,6 +316,13 @@ private:
 	void ClearSheetVelocity(MacField& solid);
 	void SetSheetVelocity(MacField& solid);
 	void AccumulateSheetImpulse();
+	//! m7g: the faces a coupled sheet closes whose liquid ends short of the sheet (a free surface
+	//! between the wet cell's centre and the crossing) open for the step's projections; closed again by CloseUnwetted.
+	void OpenUnwetted();
+	void CloseUnwetted();
+	std::vector<std::uint8_t> sheetUnwetted_;
+	std::vector<std::size_t> sweptCells_;        // m7g: the cells swept by coupled sheets in the current step
+	void CountSheetCrossings(const std::vector<double>& phiStart, const std::vector<SheetCrossing>& facesBefore);   // m7g: per crossing (sheetFaces_ order), 1 while opened (empty: none)
 	std::vector<SheetCrossing> sheetFaces_;
 	std::vector<double> sheetSaved_;
 	LevelSetBarrier barrier_;   // m7f: the coupled sheets' closed faces as walls of the level set

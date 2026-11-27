@@ -3826,10 +3826,20 @@ namespace RISE
 		//! topology needs a reload, reported in `error`), installs the frames
 		//! for the current scene time under the render park and kicks a pass --
 		//! the same install the time-scrub and playback paths do.  Geometries
-		//! with a live simulation are left alone.  Cheap when nothing landed
+		//! with a live simulation are left alone.  Objects that follow a
+		//! simulated body (transform_source, rigid bodies) have their
+		//! transform keyframes re-derived from the cache whose generation
+		//! changed (a bake that completed or advanced, a new epoch, a cache
+		//! that is gone: authored pose again) and the scene is re-posed at the
+		//! current time, in the same park.  Cheap when nothing landed
 		//! (`refreshed` false, no lock taken).  Call it when
 		//! RISE_API_SimulationBake_ChangeCounter moves (a ~2 Hz poll).
 		bool RefreshSimulationFrames( bool& refreshed, std::string& error );
+		//! The named object's current world transform (row-major 4x4, row
+		//! vectors: the translation is m[12..14]) as the scene is posed now.
+		//! False with `error` when there is no such object, or the scene is
+		//! busy (a render or a production render owns it: poll again).
+		bool GetObjectWorldTransform( const std::string& object, double matrix[16], std::string& error ) const;
 		//! Simulation M5: detach the live run of scene simulation `simulation`
 		//! (LiveSimulationDetach by its consumer's name).
 		bool LiveSimulationDetachSimulation( const std::string& simulation, std::string& error );

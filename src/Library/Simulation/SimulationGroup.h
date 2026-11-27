@@ -122,6 +122,8 @@ public:
 	std::string MemberFidelity(const std::string& member) const;
 	//! Why the coupling of a member is not predictive (empty when it is, or when nothing feeds it).
 	std::string CouplingLimit(const std::string& member) const;
+	//! The progress detail a member last reported inside a macro step (M7g; a diagnostic, empty if none).
+	std::string MemberDetail(const std::string& member) const;
 
 	struct StepReport {
 		unsigned iterations = 0;        // passes of the last accepted (sub)step

@@ -23,6 +23,9 @@
 //   R  a live controller through the C API: bake from the document, the job rows, the
 //      change counter, and RefreshSimulationFrames binding an unbound consumer as frames
 //      land and rebinding it after a rebake (a new epoch)
+//   B  a rigid body follows its bake without reopening the scene: the object's transform
+//      keyframes are re-derived from the cache (RefreshSimulationFrames), replacing the old
+//      ones, and the scene is re-posed (a bake by the manager, a rebake as a new epoch)
 #include "../src/Library/Simulation/SimulationBakeManager.h"
 #include "../src/Library/Simulation/SimulationProcess.h"
 #include "../src/Library/Simulation/SimulationWorker.h"
@@ -37,6 +40,11 @@
 #include "../src/Library/Agent/Json.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Geometry/SimulatedMeshGeometry.h"
+#include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Simulation/SimulationTransform.h"
 #include "../src/Library/Rendering/InteractivePelRasterizer.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/RISE_API.h"
@@ -825,6 +833,98 @@ void TestAgentVerbs(const fs::path& root)
 	Check(!seek.get("supported").asBool(), "sim_seek headless: supported false");
 	status = Call(rpc, "sim_status", J::MakeObject());
 	Check(status.get("jobs").size() >= 3, "sim_status without a jobId lists the scene's jobs");
+	// GUI status pass (2026-11-26): evidence, couplings, cache locations, parameter schema and a validated edit.
+	{
+		list = Call(rpc, "sim_list", J::MakeObject());
+		const JsonValue& flagRow = list.get("simulations").at(0);
+		Check(flagRow.has("evidenceScope") && flagRow.has("evidenceCases") && flagRow.has("fidelityLimit") &&
+			flagRow.get("connections").isArray() && flagRow.get("meshConsumers").size() == 1 &&
+			flagRow.get("meshConsumers").at(0).asString() == "geo_flag",
+			"sim_list: evidence fields, connections and the mesh consumer are present", Agent::JsonSerialize(flagRow));
+		const std::string label = flagRow.get("fidelity").asString();
+		Check((label == "preview" || label == "predictive") && !flagRow.get("evidenceScope").asString().empty() &&
+			(label == "predictive" || !flagRow.get("fidelityLimit").asString().empty()),
+			"sim_list: a baked cloth carries its label with the sentence it covers (and why not predictive when preview)",
+			Agent::JsonSerialize(flagRow));
+
+		JsonValue cache = Call(rpc, "sim_cache", J::MakeObject(), &rpcError);
+		bool cacheOk = !rpcError && cache.get("ok").asBool() && cache.get("simulations").size() == 2 &&
+			!cache.get("cacheBase").asString().empty() && cache.get("trustedRoots").isArray();
+		if (cacheOk) {
+			const JsonValue& row = cache.get("simulations").at(0);
+			cacheOk = row.get("cacheDir").asString() == (dir/"caches"/"flag").string() && row.get("exists").asBool() &&
+				row.has("accepted") && row.has("defaultLocation") && !row.get("defaultLocation").asBool();
+		}
+		Check(cacheOk, "sim_cache: base, trusted roots and each simulation's directory, existence and acceptance", Agent::JsonSerialize(cache));
+
+		JsonValue get = Call(rpc, "sim_param_get", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")}}), &rpcError);
+		bool getOk = !rpcError && get.get("ok").asBool() && get.get("solver").asString() == "cloth.shell" &&
+			get.get("parameters").size() == 1;
+		if (getOk) {
+			const JsonValue& p = get.get("parameters").at(0);
+			getOk = p.get("type").asString() == "count" && p.get("set").asBool() && p.get("value").asString() == "4" &&
+				p.get("minimum").asNumber() == 1 && p.get("default").asString() == "8" && p.get("keyed").asBool();
+		}
+		Check(getOk, "sim_param_get: substeps with its schema (count, range, default 8) and the chunk's value 4", Agent::JsonSerialize(get));
+		get = Call(rpc, "sim_param_get", Obj({{"simulation", J::MakeString("flag")}}), &rpcError);
+		bool pins = false;
+		for (std::size_t i = 0; !rpcError && i < get.get("chunkFields").size(); ++i)
+			if (get.get("chunkFields").at(i).get("name").asString() == "pin") pins = get.get("chunkFields").at(i).get("occurrences").size() == 2;
+		Check(!rpcError && get.get("parameters").size() > 10 && pins, "sim_param_get: every parameter, and the pin field with its two occurrences");
+		get = Call(rpc, "sim_param_get", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("nope")}}), &rpcError);
+		Check(!rpcError && !get.get("ok").asBool() && get.get("message").asString().find("it has:") != std::string::npos,
+			"sim_param_get: an unknown parameter is refused with the names that exist", Agent::JsonSerialize(get));
+		get = Call(rpc, "sim_param_get", Obj({{"simulation", J::MakeString("ghost")}}), &rpcError);
+		Check(!rpcError && !get.get("ok").asBool() && get.get("message").asString().find("simulations: flag, slow") != std::string::npos,
+			"sim_param_get: an unknown simulation names the ones that exist", Agent::JsonSerialize(get));
+
+		// Refusals leave the document alone.
+		JsonValue set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")},
+			{"value", J::MakeString("0")}}), &rpcError);
+		Check(!rpcError && !set.get("applied").asBool() && !set.get("validated").asBool() &&
+			set.get("message").asString().find("count in [1, 100000]") != std::string::npos,
+			"sim_param_set: a value below the schema's range is refused, naming the range", Agent::JsonSerialize(set));
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")},
+			{"value", J::MakeString("many")}}), &rpcError);
+		Check(!rpcError && !set.get("applied").asBool() && !set.get("validated").asBool(), "sim_param_set: a non-number for a count is refused", Agent::JsonSerialize(set));
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("not_a_parameter")},
+			{"value", J::MakeString("1")}}), &rpcError);
+		Check(!rpcError && !set.get("applied").asBool() && set.get("message").asString().find("has no parameter") != std::string::npos,
+			"sim_param_set: an unknown parameter is refused", Agent::JsonSerialize(set));
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("pin")},
+			{"value", J::MakeString("u0v1")}, {"occurrence", J::MakeNumber(7)}}), &rpcError);
+		Check(!rpcError && !set.get("applied").asBool() && set.get("message").asString().find("does not exist") != std::string::npos,
+			"sim_param_set: an occurrence that does not exist is refused", Agent::JsonSerialize(set));
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}}), &rpcError);
+		Check(rpcError, "sim_param_set without param and value is an invalid-params error");
+		list = Call(rpc, "sim_list", J::MakeObject());
+		Check(State(list, "flag") == "complete" && !list.get("unsavedChanges").asBool(), "refused edits changed nothing: flag still complete");
+
+		// A valid edit: applied through propose_patch, the cache goes stale with the reason, no bake starts.
+		JsonValue before = Call(rpc, "sim_status", J::MakeObject());
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")},
+			{"value", J::MakeNumber(6)}}), &rpcError);
+		Check(!rpcError && set.get("applied").asBool() && set.get("validated").asBool() && set.get("status").asString() == "applied",
+			"sim_param_set: substeps 6 is applied", Agent::JsonSerialize(set));
+		list = Call(rpc, "sim_list", J::MakeObject());
+		Check(State(list, "flag") == "stale" && list.get("unsavedChanges").asBool() &&
+			list.get("simulations").at(0).get("staleReason").asString() == "parameters changed (substeps)",
+			"the edit marks the cache stale with its reason and the document dirty", Agent::JsonSerialize(list.get("simulations").at(0)));
+		get = Call(rpc, "sim_param_get", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")}}));
+		Check(get.get("parameters").at(0).get("value").asString() == "6", "sim_param_get reads the edited value");
+		JsonValue after = Call(rpc, "sim_status", J::MakeObject());
+		Check(after.get("jobs").size() == before.get("jobs").size(), "the edit started no bake");
+		// An occurrence edit of a repeatable field, then the way back to the original value.
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("pin")},
+			{"value", J::MakeString("u0v1")}, {"occurrence", J::MakeNumber(1)}}), &rpcError);
+		Check(!rpcError && set.get("applied").asBool(), "sim_param_set: pin occurrence 1 is applied", Agent::JsonSerialize(set));
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("pin")},
+			{"value", J::MakeString("u1v0")}, {"occurrence", J::MakeNumber(1)}}), &rpcError);
+		set = Call(rpc, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")},
+			{"value", J::MakeString("4")}}), &rpcError);
+		list = Call(rpc, "sim_list", J::MakeObject());
+		Check(State(list, "flag") == "complete", "editing back to the original values makes the cache current again", Agent::JsonSerialize(list.get("simulations").at(0)));
+	}
 	// Read autonomy: the reads work, a bake is refused.
 	{
 		std::unique_ptr<Agent::AgentSession> readOnly = Agent::AgentSession::LoadFromFile(scene.string());
@@ -833,6 +933,13 @@ void TestAgentVerbs(const fs::path& root)
 		Check(!rpcError && r.get("ok").asBool(), "sim_list works under read autonomy");
 		r = Call(reader, "sim_bake", Obj({{"simulation", J::MakeString("flag")}}), &rpcError);
 		Check(rpcError && r.get("code").asNumber() == -32011, "sim_bake is refused under read autonomy", Agent::JsonSerialize(r));
+		r = Call(reader, "sim_param_get", Obj({{"simulation", J::MakeString("flag")}}), &rpcError);
+		Check(!rpcError && r.get("ok").asBool(), "sim_param_get and sim_cache work under read autonomy");
+		r = Call(reader, "sim_cache", J::MakeObject(), &rpcError);
+		Check(!rpcError && r.get("ok").asBool(), "sim_cache works under read autonomy");
+		r = Call(reader, "sim_param_set", Obj({{"simulation", J::MakeString("flag")}, {"param", J::MakeString("substeps")},
+			{"value", J::MakeString("5")}}), &rpcError);
+		Check(rpcError && r.get("code").asNumber() == -32011, "sim_param_set is refused under read autonomy", Agent::JsonSerialize(r));
 	}
 	TrackJobs(SimulationBakeManager::Instance());
 }
@@ -933,6 +1040,153 @@ void TestControllerRefresh(const fs::path& root)
 	TrackJobs(SimulationBakeManager::Instance());
 }
 
+// ---------------------------------------------------------------- B
+
+// A rigid ball's transform_source keyframes are built when the scene loads; an
+// in-app bake must replace them.  The pose at a later frame is the authored one
+// before the bake, and afterwards, with no reload, the cache's.
+void TestRigidRefresh(const fs::path& root)
+{
+	std::printf("B: a rigid body follows its in-app bake without reopening the scene\n");
+	SimulationBakeManager::Instance().SetSettings(Settings(root));
+	const fs::path dir = PrivateDir(root, "rigid");
+	const fs::path path = dir/"rigid.RISEscene";
+	const auto text = [&](const std::string& mass) {
+		return std::string(Header) + "film\n{\n\twidth 64\n\theight 36\n}\n\n" + Camera() +
+			"rigid_simulation\n{\n\tname\tdrop\n\tframes\t6\n\tcache\tcaches/drop\n\tbody_object\tball mass " + mass + "\n}\n\n"
+			"sphere_geometry\n{\n\tname\tgeo_ball\n\tradius\t0.1\n}\n\n"
+			"standard_object\n{\n\tname\tball\n\tgeometry\tgeo_ball\n\tposition\t0 0.5 0\n"
+			"\ttransform_source\tdrop.bodies[ball]\n}\n\n";
+	};
+	WriteText(path, text("0.1"));
+	IJobPriv* job = nullptr;
+	IRasterizer* rasterizer = nullptr;
+	IRayCaster* preview = nullptr;
+	IRayCaster* polish = nullptr;
+	if (!RISE_CreateJobPriv(&job) || !job || !job->LoadAsciiSceneViaCst(path.string().c_str()) ||
+		!Implementation::CreateInteractiveMaterialPreviewPipeline(&rasterizer, &preview, &polish)) {
+		Check(false, "a live controller over the rigid scene");
+		if (job) job->release();
+		return;
+	}
+	SceneEditController* ctrl = new SceneEditController(*job, rasterizer);
+	ctrl->Start();
+	IObject* ball = const_cast<IObjectManager*>(job->GetScene()->GetObjects())->GetItem("ball");
+	Check(ball != nullptr, "the body's object exists");
+	if (!ball) { ctrl->Stop(); delete ctrl; rasterizer->release(); preview->release(); polish->release(); job->release(); return; }
+	const auto position = [&](Vector3& v) { const Matrix4 m = ball->GetFinalTransformMatrix(); v = Vector3(m._30, m._31, m._32); };
+	const auto scrub = [&](double t) {
+		return RISE_API_SceneEditController_OnTimeScrubBegin(ctrl) && RISE_API_SceneEditController_OnTimeScrub(ctrl, t) &&
+			RISE_API_SceneEditController_OnTimeScrubEnd(ctrl);
+	};
+	char error[512] = {};
+	bool refreshed = false;
+	// Before the bake: any time is the authored pose.
+	const double later = 0.2;
+	Vector3 p;
+	Check(scrub(later), "scrub to a later time");
+	position(p);
+	Check(std::fabs(p.x) < 1e-12 && std::fabs(p.y - 0.5) < 1e-12 && std::fabs(p.z) < 1e-12, "before the bake the body is at its authored pose",
+		std::to_string(p.y));
+	// Bake through the manager and refresh: no reload.
+	unsigned long long jobId = 0;
+	Check(RISE_API_SceneEditController_SimulationBake(ctrl, "drop", false, &jobId, error, sizeof error) && jobId != 0, "C API bake", error);
+	BakeJob done = WaitJob(SimulationBakeManager::Instance(), jobId, 40);
+	Check(done.state == BakeJobState::Finished, "the rigid bake finishes", Describe(done));
+	TrackJobs(SimulationBakeManager::Instance());
+	// A rendering controller consumes the generation as it polls; either way it lands.
+	Check(WaitFor([&] {
+		RISE_API_SceneEditController_RefreshSimulationFrames(ctrl, &refreshed, error, sizeof error);
+		return refreshed;
+	}, 10), "the bake landed: the refresh runs", error);
+	// The cache's transform at the scene's time, as scene load derives it.
+	const auto expected = [&](double t, Vector3& out) {
+		CacheSnapshot snapshot;
+		std::string why;
+		if (!CacheSnapshot::Open(dir/"caches"/"drop", std::size_t(64) << 20, snapshot, why)) return false;
+		const CacheEntry* first = nullptr;
+		const CacheEntry* nearest = nullptr;
+		for (const auto& e : snapshot.Entries()) {
+			if (e.output != "bodies") continue;
+			if (!first || e.time < first->time) first = &e;
+			if (!nearest || std::fabs(e.time - t) < std::fabs(nearest->time - t)) nearest = &e;
+		}
+		if (!first || !nearest || std::fabs(nearest->time - t) > 1e-9) return false;
+		TransformBody b0, b;
+		const auto read = [&](const CacheEntry& e, TransformBody& body) {
+			std::shared_ptr<const Bytes> bytes;
+			TransformFrame f;
+			if (snapshot.Read(e.index, "bodies", std::size_t(64) << 20, bytes, why) != FrameStatus::Ready ||
+				!DecodeTransforms(*bytes, std::size_t(64) << 20, f, why) || f.bodies.empty()) return false;
+			body = f.bodies.front();
+			return true;
+		};
+		if (!read(*first, b0) || !read(*nearest, b)) return false;
+		out = Vector3(0 + b.position[0] - b0.position[0], 0.5 + b.position[1] - b0.position[1], 0 + b.position[2] - b0.position[2]);
+		return true;
+	};
+	// A frame time of the cache (the scene's time: where the refresh re-posed).
+	double frameTime = 0;
+	{
+		CacheSnapshot snapshot;
+		std::string why;
+		Check(CacheSnapshot::Open(dir/"caches"/"drop", std::size_t(64) << 20, snapshot, why), "the cache opens", why);
+		for (const auto& e : snapshot.Entries()) if (e.output == "bodies" && e.time > frameTime) frameTime = e.time;
+	}
+	Check(frameTime > 0, "the cache has a later frame");
+	// The refresh re-posed the scene at the time it was at (`later`, between frames): what the keys say there.
+	// Scrub to the last frame: the cache's own pose, exactly.
+	Check(scrub(frameTime), "scrub to the last frame");
+	Vector3 want;
+	position(p);
+	Check(expected(frameTime, want), "the cache's transform at that frame");
+	Check(std::fabs(want.y - 0.5) > 1e-4, "the simulated body moved in the cache", std::to_string(want.y));
+	Check(std::fabs(p.x - want.x) < 1e-9 && std::fabs(p.y - want.y) < 1e-9 && std::fabs(p.z - want.z) < 1e-9,
+		"after the bake, without reloading, the body is at the cache's pose",
+		std::to_string(p.y) + " vs " + std::to_string(want.y));
+	Check(ball->GetFinalTransformMatrix()._31 < 0.5 - 1e-4, "the object's transform (the rendered one) moved");
+	// The scene was re-posed at the time it had: scrub back and the earlier pose is the cache's too.
+	Check(scrub(0.0), "scrub to the first frame");
+	position(p);
+	Check(expected(0.0, want) && std::fabs(p.y - 0.5) < 1e-9 && std::fabs(want.y - 0.5) < 1e-9, "the first frame is the authored pose");
+	// Nothing new landed: no second re-derive.
+	Check(RISE_API_SceneEditController_RefreshSimulationFrames(ctrl, &refreshed, error, sizeof error) && !refreshed,
+		"no new frames since: the refresh does nothing");
+	// A forced rebake is a new epoch: it replaces the keys again.
+	Check(RISE_API_SceneEditController_SimulationBake(ctrl, "drop", true, &jobId, error, sizeof error), "force rebake", error);
+	done = WaitJob(SimulationBakeManager::Instance(), jobId, 40);
+	Check(done.state == BakeJobState::Finished, "the rebake finishes", Describe(done));
+	TrackJobs(SimulationBakeManager::Instance());
+	refreshed = false;
+	Check(WaitFor([&] {
+		RISE_API_SceneEditController_RefreshSimulationFrames(ctrl, &refreshed, error, sizeof error);
+		return refreshed;
+	}, 10), "the rebake landed: the refresh runs", error);
+	Check(scrub(frameTime), "scrub to the last frame again");
+	position(p);
+	Check(expected(frameTime, want) && std::fabs(p.y - want.y) < 1e-9, "after the rebake the body is at the new epoch's pose",
+		std::to_string(p.y) + " vs " + std::to_string(want.y));
+	// A cache that is gone: the keys go and the body returns to its authored pose.
+	ctrl->Stop();
+	std::error_code removed;
+	fs::remove_all(dir/"caches"/"drop", removed);
+	bool changed = false;
+	std::string cleared;
+	Job* j = dynamic_cast<Job*>(job);
+	Check(j && j->RefreshTransformSources(changed, cleared) && changed, "a cleared cache is noticed", cleared);
+	position(p);
+	Check(std::fabs(p.x) < 1e-12 && std::fabs(p.y - 0.5) < 1e-12 && std::fabs(p.z) < 1e-12, "the body is back at its authored pose",
+		std::to_string(p.y));
+	Check(j && !j->GetScene()->GetAnimator()->AreThereAnyKeyframedObjects(), "its keyframes are gone");
+	Check(j && j->RefreshTransformSources(changed, cleared) && !changed, "nothing more to refresh");
+	delete ctrl;
+	rasterizer->release();
+	preview->release();
+	polish->release();
+	job->release();
+	TrackJobs(SimulationBakeManager::Instance());
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -966,6 +1220,7 @@ int main(int argc, char** argv)
 	TestSaveRule(root);
 	TestAgentVerbs(root);
 	TestControllerRefresh(root);
+	TestRigidRefresh(root);
 	KillAll();
 	fs::remove_all(RISE::TestSupport::ScratchTestRoot("rise_bake_manager_"), ec);
 	std::printf("\n%d passed, %d failed (%.1f s)\n", passes, failures,

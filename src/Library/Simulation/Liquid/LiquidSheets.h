@@ -5,7 +5,7 @@
 //  docs/SIMULATION_M7D_RESULTS.md).
 //
 //  A zero-thickness sheet cannot be a signed-distance solid.  It is a
-//  face-crossing barrier instead (Guendelman, Bridson and Fedkiw 2005, in
+//  face-crossing barrier instead (Guendelman, Selle, Losasso and Fedkiw 2005, in
 //  form): a face of the staggered grid is closed when the segment between
 //  the centres of the two cells it separates crosses a sheet triangle.  No
 //  volume is removed (the cell fractions are unchanged); flow through the
@@ -184,7 +184,9 @@ bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const
 //! depend on the thread count.
 class SheetCoupling final : public IPressureCoupling {
 public:
-	SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density);
+	//! `skip` (m7g; may be null): per crossing, 1 for a face left out (opened: the liquid does not reach the sheet there).
+	SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density,
+		const std::vector<std::uint8_t>* skip = nullptr);
 	void Begin(const std::vector<std::uint8_t>& active) override;
 	void ApplyAdd(const std::vector<double>& q, std::vector<double>& out) const override;
 	void AddRhs(std::vector<double>&) const override {}
@@ -205,6 +207,7 @@ private:
 	const Grid& g_;
 	const std::vector<SheetCrossing>& crossings_;
 	const std::vector<LiquidSheet>& sheets_;
+	const std::vector<std::uint8_t>* skip_ = nullptr;
 	double scale_ = 0;              // rho h^3
 	std::vector<Face> faces_;
 	std::vector<std::vector<double>> impulse_;

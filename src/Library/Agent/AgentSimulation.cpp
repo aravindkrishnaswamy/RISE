@@ -7,9 +7,15 @@
 #include "../SceneEditor/LiveSimulation.h"
 #include "../Simulation/SimulationBakeManager.h"
 #include "../Simulation/BuiltinSolvers.h"
+#include "../Simulation/SimulationParameterSchema.h"
+#include "../Simulation/SimulationProcess.h"
+#include "../Simulation/SimulationCache.h"
 #include "../Cst/Cst.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 
@@ -74,6 +80,59 @@ namespace RISE
 				if( s.expectedKey.empty() ) return "unknown";
 				if( s.cacheKey.empty() ) return "missing";
 				return s.cacheKey == s.expectedKey ? "current" : "stale";
+			}
+
+			std::string Trimmed( const std::string& t )
+			{
+				const auto b = t.find_first_not_of( " \t\r\n" );
+				if( b == std::string::npos ) return std::string();
+				return t.substr( b, t.find_last_not_of( " \t\r\n" ) - b + 1 );
+			}
+
+			const char* SchemaTypeName( Simulation::SchemaType t )
+			{
+				switch( t ) {
+					case Simulation::SchemaType::Bool: return "bool";
+					case Simulation::SchemaType::Count: return "count";
+					case Simulation::SchemaType::Real: return "real";
+					case Simulation::SchemaType::Text: return "text";
+					case Simulation::SchemaType::Enum: return "enum";
+					case Simulation::SchemaType::Vector3: return "vector3";
+				}
+				return "text";
+			}
+
+			//! One-line statement of what a parameter accepts, for refusals.
+			std::string DescribeAccepted( const Simulation::SchemaParameter& p )
+			{
+				std::string out = std::string( SchemaTypeName( p.type ) );
+				if( p.type == Simulation::SchemaType::Enum ) {
+					out += " (";
+					for( std::size_t i = 0; i < p.values.size(); ++i ) out += ( i ? ", " : "" ) + p.values[i];
+					out += ")";
+				}
+				if( p.hasRange ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ), " in [%g, %g]", p.minimum, p.maximum );
+					out += buf;
+				}
+				if( !p.units.empty() ) out += " " + p.units;
+				return out;
+			}
+
+			//! The simulation's status row, or a refusal message naming the ones that exist.
+			const Simulation::SceneSimulationStatus* FindSimulation( const Simulation::BakeSceneSnapshot& snapshot,
+				const std::string& name, std::string& error )
+			{
+				for( const auto& s : snapshot.simulations ) if( s.name == name ) return &s;
+				error = "no simulation named `" + name + "`";
+				if( snapshot.simulations.empty() ) error += " (this scene declares none)";
+				else {
+					error += "; simulations: ";
+					for( std::size_t i = 0; i < snapshot.simulations.size(); ++i )
+						error += ( i ? ", " : "" ) + snapshot.simulations[i].name;
+				}
+				return nullptr;
 			}
 
 			bool Refuse( JsonValue& result, const std::string& message )
@@ -147,12 +206,14 @@ namespace RISE
 
 		bool IsAgentSimulationVerb( const std::string& m )
 		{
-			return m == "sim_list" || m == "sim_status" || m == "sim_wait" || IsAgentSimulationControlVerb( m );
+			return m == "sim_list" || m == "sim_status" || m == "sim_wait" || m == "sim_cache" ||
+				m == "sim_param_get" || IsAgentSimulationControlVerb( m );
 		}
 
 		bool IsAgentSimulationControlVerb( const std::string& m )
 		{
-			return m == "sim_bake" || m == "sim_cancel" || m == "sim_live_start" || m == "sim_live_stop" || m == "sim_seek";
+			return m == "sim_bake" || m == "sim_cancel" || m == "sim_live_start" || m == "sim_live_stop" || m == "sim_seek" ||
+				m == "sim_param_set";
 		}
 
 		bool AgentSimulationSnapshot( IJobPriv& job, SceneEditController* controller,
@@ -181,6 +242,68 @@ namespace RISE
 				}
 			}
 			return true;
+		}
+
+		bool ValidateSimulationParamEdit( IJobPriv& job, SceneEditController* controller,
+			const std::string& simulation, const std::string& param, const std::string& value,
+			bool hasOccurrence, int occurrence, std::string& error )
+		{
+			Simulation::BakeSceneSnapshot snapshot;
+			if( !AgentSimulationSnapshot( job, controller, snapshot, error ) ) return false;
+			const Simulation::SceneSimulationStatus* sim = FindSimulation( snapshot, simulation, error );
+			if( !sim ) return false;
+			const Simulation::ParameterSchema* schema = sim->solverId.empty() ? nullptr : Simulation::FindSolverSchema( sim->solverId );
+			if( !schema ) {
+				error = "`" + simulation + "` is a " + sim->keyword + ( sim->solverId.empty() ?
+					" (no solver parameters to validate; edit it with propose_patch)" : " whose solver registered no parameter schema" );
+				return false;
+			}
+			if( const Simulation::SchemaParameter* p = Simulation::FindSchemaParameter( *schema, param ) ) {
+				if( hasOccurrence && occurrence != 0 ) {
+					error = "`" + param + "` appears once on a simulation; `occurrence` applies to repeatable fields only";
+					return false;
+				}
+				RISECBOR64::Value ignored;
+				std::string why;
+				if( !Simulation::SchemaValueFromText( *p, value, ignored, why ) ) {
+					error = "`" + param + "` = `" + value + "` is refused by the " + sim->solverId + " schema: " + why +
+						" (accepts " + DescribeAccepted( *p ) + ")";
+					return false;
+				}
+				return true;
+			}
+			for( const auto& f : schema->chunkFields ) {
+				if( f.name != param ) continue;
+				if( !f.values.empty() && std::find( f.values.begin(), f.values.end(), Trimmed( value ) ) == f.values.end() ) {
+					error = "`" + param + "` = `" + value + "` is not one of: ";
+					for( std::size_t i = 0; i < f.values.size(); ++i ) error += ( i ? ", " : "" ) + f.values[i];
+					return false;
+				}
+				if( Trimmed( value ).empty() ) { error = "`" + param + "` needs a value"; return false; }
+				if( hasOccurrence && !f.repeatable && occurrence != 0 ) {
+					error = "`" + param + "` is not repeatable; `occurrence` must be 0 or absent";
+					return false;
+				}
+				if( hasOccurrence && f.repeatable && job.HasRetainedCstDocument() && job.GetCstDocument() ) {
+					const RISE::Cst::Document* doc = job.GetCstDocument();
+					const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, simulation, nullptr, "simulation", false );
+					const RISE::Cst::NodeRef chunk = id != 0 ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+					const int n = chunk ? RISE::Cst::ParamOccurrenceCount( chunk, param ) : 0;
+					if( occurrence >= n ) {
+						error = "`" + simulation + "` has " + std::to_string( n ) + " `" + param + "` line(s); occurrence " +
+							std::to_string( occurrence ) + " does not exist (add lines with propose_patch/insert_chunk)";
+						return false;
+					}
+				}
+				return true;   // text forms (pins, colliders) and object references: the edit's own dry-run derive checks them
+			}
+			error = "`" + sim->solverId + "` has no parameter `" + param + "`";
+			error += "; it has: ";
+			bool first = true;
+			for( const auto& p : schema->parameters ) { error += ( first ? "" : ", " ) + p.name; first = false; }
+			for( const auto& f : schema->chunkFields ) { error += ( first ? "" : ", " ) + f.name; first = false; }
+			error += ". (`name`, `cache` and `port_source` are edited with propose_patch.)";
+			return false;
 		}
 
 		bool HandleAgentSimulationVerb( const std::string& m, const JsonValue& params,
@@ -228,6 +351,12 @@ namespace RISE
 					o.set( "estimate", Str( Simulation::FormatSimulationEstimate( s ) ) );
 					if( !s.staleReason.empty() ) o.set( "staleReason", Str( s.staleReason ) );
 					if( !s.error.empty() ) o.set( "error", Str( s.error ) );
+					// GUI status pass: what stands behind the label, and the couplings.
+					o.set( "evidenceScope", Str( s.evidenceScope ) );
+					o.set( "evidenceCases", Num( static_cast<double>( s.evidenceCases ) ) );
+					o.set( "fidelityLimit", Str( s.fidelityLimit ) );
+					o.set( "connections", StringArray( s.connections ) );
+					o.set( "meshConsumers", StringArray( s.meshConsumers ) );
 					BakeJob latest;
 					if( !key.empty() && Bakes().LatestJob( key, s.name, latest ) ) o.set( "job", JobJson( latest ) );
 					list.push_back( o );
@@ -237,6 +366,138 @@ namespace RISE
 				result.set( "unsavedChanges", Bool( snapshot.unsavedChanges ) );
 				result.set( "liveSupported", Bool( controller != nullptr ) );
 				result.set( "simulations", list );
+				return true;
+			}
+
+			//------------------------------------------------------------------
+			// sim_cache {} -> {ok, scene, cacheBase, baseFromEnvironment, sceneCacheDir?,
+			//                  trustedRoots, simulations:[{name,cacheDir,defaultLocation,exists,accepted,reason?}]}
+			//   Where the caches live and whether the writer would accept each
+			//   location (nothing is created).  Read-only.
+			//------------------------------------------------------------------
+			if( m == "sim_cache" ) {
+				Simulation::BakeSceneSnapshot snapshot;
+				std::string error;
+				if( !AgentSimulationSnapshot( job, controller, snapshot, error ) ) return Refuse( result, error );
+				namespace fs = std::filesystem;
+				const fs::path base = Simulation::DefaultSimulationCacheDirectory();
+				result.set( "ok", Bool( true ) );
+				result.set( "scene", Str( snapshot.scene.string() ) );
+				result.set( "cacheBase", Str( base.string() ) );
+				const char* env = std::getenv( "RISE_SIMULATION_CACHE_DIR" );
+				result.set( "baseFromEnvironment", Bool( env && *env && fs::path( env ).is_absolute() ) );
+				if( !snapshot.scene.empty() ) {
+					std::string e;
+					const fs::path one = Simulation::DefaultSimulationCachePath( snapshot.scene, "x", e );
+					if( !one.empty() ) result.set( "sceneCacheDir", Str( one.parent_path().string() ) );
+				}
+				JsonValue roots = JsonValue::MakeArray();
+				for( const auto& r : Simulation::TrustedCacheRoots() ) roots.push_back( Str( r.string() ) );
+				result.set( "trustedRoots", roots );
+				JsonValue list = JsonValue::MakeArray();
+				for( const auto& s : snapshot.simulations ) {
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "name", Str( s.name ) );
+					o.set( "keyword", Str( s.keyword ) );
+					o.set( "cacheDir", Str( s.cacheDir.string() ) );
+					const std::string dir = s.cacheDir.lexically_normal().string(), root = base.lexically_normal().string();
+					o.set( "defaultLocation", Bool( dir.size() > root.size() && dir.compare( 0, root.size(), root ) == 0 ) );
+					std::error_code ec;
+					o.set( "exists", Bool( fs::exists( s.cacheDir, ec ) ) );
+					std::string why;
+					const bool accepted = Simulation::CheckCacheLocation( s.cacheDir, false, why );
+					o.set( "accepted", Bool( accepted ) );
+					if( !accepted ) o.set( "reason", Str( why ) );
+					list.push_back( o );
+				}
+				result.set( "simulations", list );
+				result.set( "note", Str( "A refused location needs a trusted root: trust it in the app's Simulations panel or "
+					"list it in RISE_SIMULATION_TRUSTED_ROOTS. Set `cache` on a simulation chunk (propose_patch) to move one cache." ) );
+				return true;
+			}
+
+			//------------------------------------------------------------------
+			// sim_param_get {simulation, param?} -> {ok, simulation, keyword, solver,
+			//   parameters:[{name,type,default?,modeDefaults?,minimum?,maximum?,values?,units,doc,keyed,set,value}],
+			//   chunkFields:[{name,kind,repeatable,values?,doc,occurrences:[...]}]}
+			//   The solver's parameter schema with this chunk's current values.
+			//   `set` is false when the chunk does not state the parameter (the
+			//   default applies; `value` is then the default text).  With `param`,
+			//   only that entry.  Read-only.
+			//------------------------------------------------------------------
+			if( m == "sim_param_get" ) {
+				std::string simulation, param;
+				if( ParseString( params, "simulation", simulation, errorMessage ) < 0 ||
+					ParseString( params, "param", param, errorMessage ) < 0 ) return false;
+				if( simulation.empty() ) { errorMessage = "Invalid params: 'simulation' (string) is required"; return false; }
+				Simulation::BakeSceneSnapshot snapshot;
+				std::string error;
+				if( !AgentSimulationSnapshot( job, controller, snapshot, error ) ) return Refuse( result, error );
+				const Simulation::SceneSimulationStatus* sim = FindSimulation( snapshot, simulation, error );
+				if( !sim ) return Refuse( result, error );
+				const Simulation::ParameterSchema* schema = sim->solverId.empty() ? nullptr : Simulation::FindSolverSchema( sim->solverId );
+				if( !schema )
+					return Refuse( result, "`" + simulation + "` is a " + sim->keyword + ( sim->solverId.empty() ?
+						" (no solver, so no parameter schema); read it with read_document" :
+						" whose solver registered no parameter schema" ) );
+				const RISE::Cst::Document* doc = job.HasRetainedCstDocument() ? job.GetCstDocument() : nullptr;
+				RISE::Cst::NodeRef chunk;
+				if( doc ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, simulation, nullptr, "simulation", false );
+					if( id != 0 ) chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+				}
+				JsonValue plist = JsonValue::MakeArray(), flist = JsonValue::MakeArray();
+				bool matched = param.empty();
+				for( const auto& p : schema->parameters ) {
+					if( !param.empty() && p.name != param ) continue;
+					matched = true;
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "name", Str( p.name ) );
+					o.set( "type", Str( SchemaTypeName( p.type ) ) );
+					if( !p.defaultText.empty() ) o.set( "default", Str( p.defaultText ) );
+					if( !p.modeDefaults.empty() ) o.set( "modeDefaults", Str( p.modeDefaults ) );
+					if( p.hasRange ) { o.set( "minimum", Num( p.minimum ) ); o.set( "maximum", Num( p.maximum ) ); }
+					if( !p.values.empty() ) o.set( "values", StringArray( p.values ) );
+					o.set( "units", Str( p.units ) );
+					o.set( "doc", Str( p.doc ) );
+					o.set( "keyed", Bool( p.keyed ) );
+					bool present = false;
+					std::string value;
+					if( chunk ) value = Trimmed( RISE::Cst::ParamValueAsParsed( chunk, p.name, &present ) );
+					o.set( "set", Bool( present ) );
+					o.set( "value", present ? Str( value ) : Str( p.defaultText ) );
+					plist.push_back( o );
+				}
+				for( const auto& f : schema->chunkFields ) {
+					if( !param.empty() && f.name != param ) continue;
+					matched = true;
+					JsonValue o = JsonValue::MakeObject();
+					o.set( "name", Str( f.name ) );
+					o.set( "kind", Str( f.kind == Simulation::SchemaChunkField::Kind::ObjectReference ? "object" : "text" ) );
+					o.set( "repeatable", Bool( f.repeatable ) );
+					if( !f.values.empty() ) o.set( "values", StringArray( f.values ) );
+					o.set( "doc", Str( f.doc ) );
+					JsonValue occ = JsonValue::MakeArray();
+					if( chunk ) {
+						const int n = RISE::Cst::ParamOccurrenceCount( chunk, f.name );
+						for( int i = 0; i < n; ++i ) occ.push_back( Str( Trimmed( RISE::Cst::ParamValueAtOccurrence( chunk, f.name, i ) ) ) );
+					}
+					o.set( "occurrences", occ );
+					flist.push_back( o );
+				}
+				if( !matched ) {
+					std::string names;
+					for( const auto& p : schema->parameters ) names += ( names.empty() ? "" : ", " ) + p.name;
+					for( const auto& f : schema->chunkFields ) names += ( names.empty() ? "" : ", " ) + f.name;
+					return Refuse( result, "`" + sim->solverId + "` has no parameter `" + param + "`; it has: " + names );
+				}
+				result.set( "ok", Bool( true ) );
+				result.set( "simulation", Str( simulation ) );
+				result.set( "keyword", Str( sim->keyword ) );
+				result.set( "solver", Str( sim->solverId ) );
+				result.set( "state", Str( Simulation::SceneSimulationStateName( sim->state ) ) );
+				result.set( "parameters", plist );
+				result.set( "chunkFields", flist );
 				return true;
 			}
 

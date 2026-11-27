@@ -2614,6 +2614,51 @@ namespace RISE
 						ObjectProp( "", props, required ) ) );
 				}
 				{
+					tools.push_back( MakeTool( "sim_cache",
+						"Where the simulation caches live, and whether the cache writer would accept each location. "
+						"Returns {ok,scene,cacheBase,baseFromEnvironment,sceneCacheDir?,trustedRoots,simulations:"
+						"[{name,keyword,cacheDir,defaultLocation,exists,accepted,reason?}],note}. The default "
+						"location is <cacheBase>/<scene>-<hash>/<name> (macOS: ~/Library/Caches/RISE/scene-caches; "
+						"RISE_SIMULATION_CACHE_DIR replaces the base). A location with accepted:false needs a "
+						"trusted root (the user trusts one in the app; the environment lists others). Creates "
+						"nothing. READ-ONLY.",
+						ObjectProp( "", JsonValue::MakeObject(), std::vector<std::string>() ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "simulation", StringProp( "The simulation (its `name`)." ) );
+					props.set( "param", StringProp( "OPTIONAL. One parameter or chunk field; omit for all." ) );
+					std::vector<std::string> required; required.push_back( "simulation" );
+					tools.push_back( MakeTool( "sim_param_get",
+						"Read a simulation's parameters with their schema: the solver's declared parameters "
+						"(type, default, range, enum values, units, whether it enters the cache key) and the "
+						"chunk's current value of each, plus its chunk-only fields (pins, colliders, object "
+						"references) with every occurrence. Returns {ok,simulation,keyword,solver,state,"
+						"parameters:[{name,type,default?,minimum?,maximum?,values?,units,doc,keyed,set,value}],"
+						"chunkFields:[{name,kind,repeatable,values?,doc,occurrences}]}. `set:false` means the "
+						"chunk does not state it and the default applies. ok:false for a simulation_group or "
+						"simulation_cache (no solver schema). READ-ONLY.",
+						ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "simulation", StringProp( "The simulation (its `name`)." ) );
+					props.set( "param", StringProp( "A parameter or chunk field of its solver (see sim_param_get)." ) );
+					props.set( "value", StringProp( "The new value in scene syntax (a number or boolean is accepted too: TRUE / FALSE). Checked against the schema's type, range and enum before anything changes." ) );
+					props.set( "occurrence", NumberProp( "OPTIONAL, 0-based. Which line of a REPEATABLE field (pin, collider_object, follow_object, ...) to edit; it must exist." ) );
+					props.set( "baseHeadVersion", ObjectProp( "OPTIONAL. The head version you last read (propose_patch's precondition).", JsonValue::MakeObject(), std::vector<std::string>() ) );
+					std::vector<std::string> required; required.push_back( "simulation" ); required.push_back( "param" ); required.push_back( "value" );
+					tools.push_back( MakeTool( "sim_param_set",
+						simControlNote( "sim_param_set" ) + "Set one simulation parameter. The value is validated against the solver's "
+						"parameter schema (type, range, enum), then applied through propose_patch: one undoable "
+						"edit, the document marked dirty, the scene re-derived. It marks the cache stale "
+						"(sim_list shows the reason) and STARTS NO BAKE -- sim_bake when you want one. Returns "
+						"propose_patch's result {applied,status,retriable,headVersion,message,issues?} plus "
+						"{simulation,validated}; a schema refusal is {applied:false,validated:false,message} "
+						"naming what the parameter accepts. Needs commit autonomy.",
+						ObjectProp( "", props, required ) ) );
+				}
+				{
 					JsonValue props = JsonValue::MakeObject();
 					props.set( "time", NumberProp( "Scene time in seconds." ) );
 					std::vector<std::string> required; required.push_back( "time" );
@@ -2951,6 +2996,9 @@ namespace RISE
 					// sim_bake/sim_cancel/sim_live_start/sim_live_stop/sim_seek need commit.
 					"sim_list", "sim_status", "sim_wait", "sim_bake", "sim_cancel",
 					"sim_live_start", "sim_live_stop", "sim_seek",
+					// GUI status pass (2026-11-26): read-safe sim_cache/sim_param_get;
+					// sim_param_set is the validated, undoable parameter edit (commit).
+					"sim_cache", "sim_param_get", "sim_param_set",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
 					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass
