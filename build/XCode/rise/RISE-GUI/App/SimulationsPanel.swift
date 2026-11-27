@@ -183,8 +183,9 @@ private struct SimulationRowView: View {
                 Text("stale: " + row.staleReason)
                     .font(Theme.mono(9.5))
                     .foregroundColor(Theme.dirty)
-                    .lineLimit(2)
+                    .lineLimit(5)   // a group lists each member's reason: do not truncate it
                     .fixedSize(horizontal: false, vertical: true)
+                    .help("stale: " + row.staleReason)
             }
 
             if !row.estimateSummary.isEmpty && job?.isActive != true && row.isProducer {

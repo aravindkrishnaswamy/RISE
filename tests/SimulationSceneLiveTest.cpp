@@ -386,6 +386,9 @@ namespace
 		const auto statuses = v.Statuses();
 		Check( statuses.size() == 1 && statuses[0].interactive && statuses[0].meshConsumers.size() == 1 &&
 			statuses[0].meshConsumers[0] == "ball", "the rigid simulation is interactive and names the object that follows it" );
+		bool hasAnimation = false;
+		Check( v.ctrl->GetHasAnimation( hasAnimation ) && hasAnimation,
+			"a declared simulation shows the timeline although the body has no keys before its first bake" );
 		Check( scrub( 0.3 ) && std::fabs( height() - 0.5 ) < 1e-12, "with no cache and no live run the body is at its authored pose" );
 		std::string error;
 		Check( v.ctrl->LiveSimulationAttachSimulation( "drop", error ), "LiveSimulationAttachSimulation( drop )", error );

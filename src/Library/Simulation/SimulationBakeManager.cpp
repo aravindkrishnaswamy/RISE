@@ -567,6 +567,9 @@ unsigned SimulationBakeManager::VerifyCachesLocked_(std::vector<BakeEvent>& even
 		Entry& e = *l.second;
 		const BakeJob& b = e.job;
 		if (b.cacheDir.empty() || b.cacheMissing) continue;
+		// A simulation_group job has no solver and no cache of its own (its directory holds only the worker's
+		// status file); its members' jobs carry the caches and are checked on their own.
+		if (b.solverId.empty()) continue;
 		const bool hadCache = b.state == BakeJobState::Finished || (b.state == BakeJobState::Stopped && b.framesWritten > 0);
 		if (!hadCache) continue;
 		std::error_code ec;

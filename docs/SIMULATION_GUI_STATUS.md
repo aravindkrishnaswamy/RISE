@@ -1,6 +1,6 @@
 # Simulation in the apps: status of the application-facing side
 
-2026-11-26, branch `simulation-liquid` from `763d654d6`; loose ends of §1.4 closed 2026-11-27 (from `895950cd7`, see §1.5). The simulation library (solvers `fire.methane`,
+2026-11-26, branch `simulation-liquid` from `763d654d6`; loose ends of §1.4 closed 2026-11-27 (from `895950cd7`, see §1.5); app side of those checked by probes 2026-11-27 (from `98a451b05`, §3.3). The simulation library (solvers `fire.methane`,
 `cloth.shell`, `rigid.bodies`, `liquid.mac`; scene chunks; the bake manager; live stepping; caches) was built
 and tested through the command line and unit tests. This note checks what the macOS app and the agent/chat
 layer expose of it, records what was added, and records what was driven headlessly through the app's probes.
@@ -58,7 +58,7 @@ every existing fire scene keeps its key; the app and an agent select it through 
 
 | Gap | Effect | Status |
 |---|---|---|
-| `transform_source` objects (rigid bodies drawn by `standard_object`) were keyframed from the cache **only when the scene was derived**; `RefreshSimulationFrames` rebound simulated meshes only | After an in-app bake of a rigid simulation or a group containing one, the bodies stayed at their authored pose until the scene was reopened. Found by the probe (§3.3) | **Fixed (2026-11-26).** `Job` keeps each driven object's body, authored pose and a stamp of the cache generation its keys came from; `RefreshSimulationFrames` calls `Job::RefreshTransformSources` under the render park, which drops the object's `position`/`orientation` timelines (`Animator::RemoveKeyframes`), restores the authored pose and re-derives the keys through the scene-load code, then re-poses the scene at the current time (invalidating the top-level structure and per-object state, as a scrub does). A bake that advances or finishes, a new epoch, and a cache that is gone (authored pose again) are all covered. The panel's "reopen the scene" notice (`reloadSuggestion`) is removed. Live in-process rigid runs drove nothing then; **fixed 2026-11-27**, §1.5. Tests: `SimulationBakeManagerTest` B; the probe's body-pose checks (§3.1) |
+| `transform_source` objects (rigid bodies drawn by `standard_object`) were keyframed from the cache **only when the scene was derived**; `RefreshSimulationFrames` rebound simulated meshes only | After an in-app bake of a rigid simulation or a group containing one, the bodies stayed at their authored pose until the scene was reopened. Found by the probe (§3.1) | **Fixed (2026-11-26).** `Job` keeps each driven object's body, authored pose and a stamp of the cache generation its keys came from; `RefreshSimulationFrames` calls `Job::RefreshTransformSources` under the render park, which drops the object's `position`/`orientation` timelines (`Animator::RemoveKeyframes`), restores the authored pose and re-derives the keys through the scene-load code, then re-poses the scene at the current time (invalidating the top-level structure and per-object state, as a scrub does). A bake that advances or finishes, a new epoch, and a cache that is gone (authored pose again) are all covered. The panel's "reopen the scene" notice (`reloadSuggestion`) is removed. Live in-process rigid runs drove nothing then; **fixed 2026-11-27**, §1.5. Tests: `SimulationBakeManagerTest` B; the probe's body-pose checks (§3.1) |
 | A group member's stale reason is "configuration changed" | A member baked by a group has `rise-sim.group.cbor`, not a job record | **Fixed (2026-11-27)**, §1.5 |
 | Fire row has no backend and no label before a bake | Expected (prediction path) | The backend is now a scene parameter (`backend`, above; M8d); the row's backend detail still comes from `capabilities.backend`, which a predicted fire does not state, so it stays blank before a bake (not changed) |
 | Group rows show one member's evidence | `Describe` keeps the last `preview` member's label for the group | Left: matches the contract (a group is as good as its weakest member) |
@@ -178,18 +178,69 @@ The cache directory shown was in every run `<base>/scene-caches/<scene>-<16 hex>
 `RISE_SIMULATION_CACHE_DIR`. Rendered panel and timeline images (both appearances) and viewport frames are in
 `/Volumes/SSD/claude-tmp/gui-scratch/out/`.
 
+### 3.3 Follow-up round, probe-verified 2026-11-27 (from `98a451b05`)
+
+New probe `RISE_GUI_HEADLESS_PROBE=simulation_followup` (`SimulationProbes.swift`; `RISE_GUI_HEADLESS_PROBE_WORK`,
+`RISE_GUI_HEADLESS_PROBE_STEPS=rigid|group`; header comment has the details). It writes its own scenes (a free-falling
+ball; `rigid_cloth_trampoline` cut to 5 frames) and deletes only cache folders it baked itself under the scratch cache
+base. Hermetic: `HOME`, cache dir and GPU lock under a scratch folder, trusted roots `/Volumes/SSD`. Development build, no
+window server.
+
+| Check | Result |
+|---|---|
+| `rigid.bodies` row offers Live (interactive, consumer = its follower object `ball`, which is what the panel's Live / Stop live / Reset / Record predicate reads) | PASS |
+| Live: playback starts on the library clock, 31 of 31 frames publish, the follower's world transform (`GetObjectWorldTransform`) falls from y = 0.5 to -4.405 at t = 1 (free fall predicts -4.405), x and z unchanged; the first frame is the authored pose; Reset restarts the run (1 frame published); Stop live detaches | PASS |
+| Bake the rigid scene in-app, delete the finished cache's folder (own scratch folder only) | row turns `missing`; the job reads "... was deleted from disk; bake the simulation again" and is not resumable; the follower object returns to its authored pose with no scrub (within the 6 s the probe waits) | PASS |
+| Same for a group's mesh member: delete the group's cache folders | `sheet` row `missing` after 1.0 s (the bake manager's once-a-second check), the message above, and the `geo_sheet` timeline range disappears (5/5 to none) | PASS |
+| Group member stale reasons after a cloth `substeps` edit through `sim_param_set` | `sheet`: "parameters changed (substeps)"; `drop`: "member sheet: parameters changed (substeps)"; the group row lists both; none is "configuration changed"; no bake started; Undo returns all three rows to complete | PASS |
+| Existing `agent` step (scenes probe) now requires the member's reason to name the edited parameter | tightened (was: also accepted the generic text) | PASS (rigid/liquid solo scenes; see the trampoline failure below) |
+
+Other probes re-run on the Development build, same scratch setup: `simulation_m5` on `cloth_flag_scene`
+(`worker,list,bake,live,scrub,props,playrule`): ALL PASS (63 checks). `simulation_scenes` on `fire_campfire_scene`
+(`list,props,ui`, no bake): ALL PASS (11).
+
+**Defects found by the probes** (the first two fixed, the third not):
+
+1. *Timeline hidden for a rigid-only scene before its first bake.* `SceneEditController::GetHasAnimation` was true for
+   keyframed objects, time-varying media and simulated meshes only; a `transform_source` object has no keys until a
+   cache exists, so the row offered Live but the timeline was absent and the app never started the clock (the live run
+   sat at frame 1). **Fixed**: a declared simulation now counts (`SceneEditController.cpp`; check added to
+   `SimulationSceneLiveTest` "live rigid bodies").
+2. *A finished group job was reported "deleted from disk" a second after the bake.* `VerifyCaches` stat'd
+   `manifest.cbor` in the group job's own directory, which holds only the worker's status file (members carry the
+   caches). **Fixed**: jobs with no solver (the group job) are skipped (`SimulationBakeManager.cpp`; members are still
+   checked, which the probe shows). No new unit test (the probe is the check); the `Simulation*` tests (20) pass.
+3. *Scrubbing a baked rigid group to a later frame makes its caches read as stale* ("parameters changed (bodies)",
+   cloth "(colliders)"). **Not fixed.** `SceneObjectInputProvider::Capture` clones the driven object's current pose
+   (moved by the scrub) rather than its authored pose, so the recomputed scene inputs differ from the baked ones. The
+   same probe step reports it as a note; `RISE_GUI_HEADLESS_PROBE_STRICT=1` makes it a failing check. It is why the
+   `simulation_scenes` run on the trampoline group (`list,props,bake,show,agent,ui`) FAILS its "complete after bake"
+   check (the probe poses the bodies at the last frame before the bake, and the refresh re-poses them there): 34 pass,
+   2 fail. Expected to appear for `liquid_rigid_bodies` too (not re-run). The earlier 2026-11-26 runs pre-date the
+   recorded-parameter work and passed.
+
+Also observed, not investigated: Record on a rigid row (`RISE_GUI_HEADLESS_PROBE_RECORD=1`, no playback running) leaves
+a partial cache (1 of 31 frames) with no job record, and a following Bake from the panel then fails with "unreadable or
+nonregular cache file: rise-sim.job.cbor". Record for a transform producer is therefore **not** verified.
+
+The panel's stale line now allows five lines and carries a tooltip (a group lists every member's reason; it was cut at
+two lines).
+
 ### 3.2 Not verified without a person at a screen
 
 - Layout in the real 344 pt column: wrapping of the new evidence lines, the group row's buttons, the
   (the "reopen the scene" notice is gone); only offscreen `ImageRenderer` renders were looked at.
 - The trust prompt (an alert), hover tooltips, context menus, keyboard flows, the live viewport's look in motion.
-- Live stepping of a liquid, and a group's live behaviour (only the cloth flag was run live in the app probe).
-- Live rigid stepping in the real app (2026-11-27): verified at library level only (`SimulationSceneLiveTest`); the Live
-  button's appearance for a rigid row (its "shown by" line now names an object), the motion in the viewport while playing,
-  and the app probe were not run. The Xcode project was not rebuilt (no Swift or bridge change).
-- Deleting a cache in Finder while the app shows it: the library path is tested; the row turning to "missing" within
-  about a second, and the viewport dropping the frames, were not watched on screen.
-- Group-member reason text in the real panel (wrapping of the longer strings).
+- Live rigid stepping in the real app: the model, clock and object transform are probe-verified (§3.3); still to be seen
+  by a person: the Live / Stop live / Reset / Record buttons' appearance for a rigid row (the probe checks the
+  predicate the panel uses, not the rendered buttons), and the ball moving in the viewport while it plays.
+- Record for a rigid row (§3.3: it left a partial cache that the next Bake refused); Record for any transform producer.
+- Deleting a cache in Finder while the app shows it: the library and model paths are probe-verified (row `missing`, the
+  message, playback unbound); the panel's rendering of the message and the viewport redrawing without the frames were
+  not watched. The probe deletes with `FileManager`, not Finder (same effect on disk).
+- Group-member reason text in the real panel (wrapping of the longer strings, the new 5-line limit and tooltip).
+- Live liquid stepping and a group's live mode (a group with a rigid member has no live mode, by design): not run.
+- Scrub-makes-stale defect (§3.3, item 3) and anything that depends on it after a scrub of a rigid group.
 - Any fire bake, live run or render (reserved).
 - The in-app chat with a real model: the catalog is tested by the codec tests and the in-app dispatcher by the probe,
   but no provider call was made.

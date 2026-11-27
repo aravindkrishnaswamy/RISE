@@ -7197,6 +7197,16 @@ bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
 		const IScene* scene = mJob.GetScene();
 		hasAnimation = scene && ( scene->HasTimeVaryingMedia() || Implementation::SceneBindsSimulatedMesh( *scene ) );
 	}
+	// A declared simulation is time-varying content even before it has a cache: a rigid body's object has no
+	// keys until it is baked, but its live run needs the timeline (found by the GUI probe, 2026-11-27).
+	if( !hasAnimation ) {
+		struct Any : public IEnumCallback<const char*> {
+			bool any = false;
+			bool operator()( const char* const& ) override { any = true; return false; }
+		} declared;
+		mJob.EnumerateSimulationNames( declared );
+		hasAnimation = declared.any;
+	}
 	return true;
 }
 
