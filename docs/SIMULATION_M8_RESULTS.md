@@ -13,6 +13,8 @@ backend detail text and the trusted-roots separator).
   programs build warning-free with Metal compiled out, and the non-fire fast tier passes in that build (§3).
   Reading the Windows and Android builds found seven certain compile errors in the simulation and fire sources,
   four of which also broke every non-Apple build, plus one non-Metal test link error; all are fixed (§4). **Neither Windows nor Android was compiled.**
+- **Follow-up (§11, the same evening):** the step-2 difference is a rim-ignition rule reading rounding residue (not
+  a backend error); CPU fast mode takes Metal's early V-cycle stop; a 2.5 s run of both backends; faster CPU hashing.
 - **Part A (fire on the CPU): finished later the same day, see §10. The CPU backend is now `experimental` and the
   exit criterion is met; the gap below was r264's centred momentum carrier, missing on the CPU side.** The
   first-pass text follows, superseded where §10 says so: **an honest partial. The CPU backend stays `unsupported`.** A complete CPU
@@ -309,7 +311,7 @@ details and `backend` are not keyed, so no cache key changes.
 
 ## 9. Open items
 
-(Items 1 and 5 are done in §10; §10.7 lists what remains.)
+(Items 1 and 5 are done in §10; §10.7 lists what remains, and §11.10 supersedes §10.7 items 1–4.)
 
 1. Fire CPU backend: transport provider and request/result adapters in the library, a driver backend switch with
    CPU-only memory admission, a thread pool with fixed-order reductions, a working-set limit sized to the machine,
@@ -476,6 +478,8 @@ this work moves); no other existing expectation changed.
 
 ### 10.7 Open items
 
+(Items 1, 2 and 4 are addressed in §11 and 5 is designed there; §11.10 is the current list.)
+
 1. The step-2 burner-surface difference (§10.3): find which discrete switch the 1e-7 step-1 difference flips.
 2. Fast mode's adaptive V-cycle stop on the CPU side (Metal's r275 rule), so CPU fast mode matches Metal fast mode at
    step 1 as the fixed-schedule pair does.
@@ -487,3 +491,314 @@ this work moves); no other existing expectation changed.
    driver thread; Windows and Android remain uncompiled (§4).
 6. The CPU backend refuses the Metal-only opt-ins (compact stencil and its variants, scalar Vreman override, FCT alpha
    override, slope variants); porting them is separate work.
+
+## 11. M8c follow-up: the step-2 cause, fast mode's early stop, a long run, cost (2026-11-26, evening)
+
+**Outcome.**
+
+- **The step-2 difference is isolated and is not a backend error.** A burner-rim ignition rule in the shared source
+  build reads rounding residue: before the pilot is established a rim cell becomes reaction-eligible when its
+  CO2+H2O exceeds the ambient zero, and after step 1 those products are signed residue of about 1e-12 kg/m³ that
+  differs in sign between the backends in one cell, which then burns on Metal only (§11.1). From identical bytes
+  both backends take steps 2–5 to binary32 rounding. Metal's bytes are unchanged; the rule is documented, not
+  changed.
+- **Agreement is now explained to rounding for steps 1–5 of a step from identical input, and for the first step
+  of a trajectory in default fast mode** (CPU fast mode now takes Metal's early V-cycle stop, §11.3). A second,
+  smaller owner-level difference appears from step 6 from identical input, in certified and fast mode alike, in
+  eight burner-diagonal cells; it is localised, not isolated (§11.2).
+- **Long run (tier 4, fast mode, 1,495 steps = 2.5 s):** the trajectories had not decorrelated by the end; the
+  temperature RMS difference grows from 1e-5 K to 0.058 K with an e-folding time of about 0.43 s, and the window
+  statistics over 1.5–2.5 s agree to 1e-5–1e-4 (§11.5).
+- **Cost:** the CPU content hashes give identical digests through a sliced FNV-1a (§11.6); the EOS acceptance and
+  base-target loops are threaded. Tier 4 certified 2.2 s per step (3.2 before), fast 1.6 (2.0); tier 8 fast 11.6
+  (14.5), certified 16.0.
+- **Scene selection:** a design is in §11.7 (not implemented).
+
+### 11.1 The step-2 difference: a source-build switch read from rounding residue (isolated)
+
+**Method.** `FireCPUBackendTest --splice-checkpoint SOURCE TARGET OUT` (new diagnostic) rewrites one solver
+checkpoint's configuration digest to another configuration's, so either backend's accepted state can be restored on
+the other and both take the next step from identical bytes. Certified mode, tier 4:
+
+| Comparison (state after step 2) | Temperature, max abs | Velocity, max abs | Unequal T words |
+|---|---:|---:|---:|
+| Metal resumed from its own step 1 vs Metal uninterrupted | 0 | 0 | 0 |
+| CPU resumed from its own step 1 vs CPU uninterrupted | 0 | 0 | 0 |
+| Uninterrupted Metal vs uninterrupted CPU | **0.0149 K** (cell 19,16,0) | 3.8e-4 m/s | 52 |
+| Both from **Metal's** step-1 bytes | 5.7e-13 K | 7.5e-9 m/s | 5 |
+| Both from **CPU's** step-1 bytes | 5.7e-13 K | 7.5e-9 m/s | 2 |
+
+So the step itself agrees to rounding on either input, and nothing in the driver between steps differs: the
+step-2 difference is the step's response to the step-1 difference (≤ 2e-7 K, 9e-8 m/s). The response is discrete:
+from Metal's step-1 state cell (19,16,0) burns (CO2+H2O 2.2e-6 kg/m³, T 305.2298 K), from the CPU's it does not
+(−1.2e-11, 305.2149 K), on both backends.
+
+**The switch.** `FireProductionCanonicalSourceAuthority::Build` (`FireProductionSource.cpp`, shared CPU code, the
+same rule as the driver's `ProductionEstablishedFlameHolderEligible`): before the pilot is established, a burner
+rim (source-boundary contact) cell is made reaction-eligible when it passes the stoichiometric CFT test and its
+product mass fraction (CO2+H2O)/ρ is at least `nextafter(ambient product fraction)`. The ambient has no CO2 or
+H2O, so the witness is the smallest positive double: any positive product trace. After step 1 nothing has reacted
+anywhere, and the product densities are signed rounding residue of the transport step: |ρ_CO2+ρ_H2O| ≤ 2.7e-11
+kg/m³ (against 1.2 kg/m³ of gas; four orders below a binary32 ulp of the gas density), positive in 40 % of cells
+on either backend, with signs that differ cell by cell between the backends. A temporary trace of the rule
+(removed) printed, at the step-2 source build, the rim cells that pass: the same eight on both backends
+(541–543, 610, 645, 649, 681, 682, residues 1.9e-12 to 7.7e-12 kg/m³ agreeing to three digits) plus cell 579 =
+(19,16,0) on Metal only, residue +1.31e-12 there against −9.74e-13 on the CPU. That cell ignites on Metal.
+Confirmation by intervention (temporary, removed): with the witness raised to a product fraction of 1e-9 on both
+backends (no rim cell eligible from residue), certified Metal and CPU agree after step 2 to rounding
+(T 1.4e-9 of its maximum, velocity 3.3e-6 of the maximum speed, against 4.9e-5 and 1.7e-3), and no cell is
+eligible in either run in the first six steps.
+
+**Which side is right.** Neither, and neither is wrong: both backends evaluate the same shared rule on their own
+accepted state, and both states are correct to rounding. In exact arithmetic the residue is zero, the rule is not
+met, and no rim cell would ignite at step 2; the nine cells that do ignite (eight on both, one more on Metal) are
+ignited by rounding residue on both backends. The defect is the rule's witness, which compares a quantity that is
+zero in exact arithmetic with zero. Changing it (a witness above the residue, e.g. a product fraction of order
+1e-9) would change Metal's bytes and the certified trajectories, so per the brief it is documented here, not
+changed (open item 1).
+
+### 11.2 One step from identical bytes, steps 1–7, and the remaining step-6 difference
+
+`/Volumes/SSD/claude-tmp/m8c-scratch/tools/onestep.sh` (scratch): Metal runs 7 steps with a checkpoint after each;
+the CPU backend restores each Metal checkpoint (spliced) and takes one step; the result is compared with Metal's
+next state. Relative to the field scale as in §10.3 (species over the maximum gas density):
+
+| Step taken | Certified: species / T / E / velocity | Fast: species / T / E / velocity |
+|---|---|---|
+| 1 → 2 | 1.9e-13 / 1.9e-15 / 6.3e-10 / 3.4e-8 | 2.5e-8 / 3.7e-15 / 1.8e-12 / 6.8e-8 |
+| 2 → 3 | 5.1e-8 / 5.9e-15 / 8.4e-10 / 6.8e-8 | 9.7e-14 / 5.9e-15 / 4.2e-10 / 3.4e-8 |
+| 3 → 4 | 2.5e-8 / 3.7e-16 / 1.3e-9 / 6.8e-8 | 4.3e-12 / 3.7e-16 / 6.3e-10 / 6.8e-8 |
+| 4 → 5 | 5.1e-8 / 3.6e-16 / 1.0e-9 / 6.8e-8 | 5.1e-8 / 3.8e-14 / 1.0e-9 / 6.8e-8 |
+| 5 → 6 | 5.1e-8 / 8.5e-8 / **6.9e-6** / **2.7e-5** | 1.0e-7 / 8.9e-8 / **6.9e-6** / **2.7e-5** |
+| 6 → 7 | 1.0e-7 / 2.0e-7 / **7.3e-6** / **3.8e-5** | 1.0e-7 / 2.0e-7 / **7.3e-6** / **3.8e-5** |
+
+(A velocity of 6.8e-8 of the maximum speed is 1.5e-8 m/s, one or two binary32 ulps.) Steps 1–5 agree to rounding
+in both modes. From step 6 (t = 8.2 → 9.9 ms) the CPU step differs from Metal's by about 6e-6 m/s and 7e-6 of
+max |E|, the same in certified and fast mode, so it is not fast mode. It is localised: the largest energy
+differences are −0.125 J/m³ (step 6) and −0.154 J/m³ (step 7) in the same eight cells, the z = 0 cells
+(13,15), (13,19), (15,13), (15,21), (19,13), (19,21), (21,15), (21,19) diagonal to the burner's corners, where
+E ≈ 458 J/m³ (0.125 is about 4,000 ulps) and the accepted temperature stays at 300.000 K; 48 cells (step 6) and
+240 (step 7) differ by more than 1e-3 J/m³. Metal is the self-consistent side here: from Metal's certified step-5
+bytes, Metal fast mode's step 6 equals Metal certified's to 1.1e-7 of max |E| and 1.5e-5 of the speed (its
+early V-cycle stop), while the CPU's differs by 7e-6 / 3e-5. The CPU's R2 Picard residuals (`RISE_FIRE_PICARD_TRACE`, fast mode with fixed
+V-cycles) show it: from the step-5 bytes they are 0.012656, 0.004891, 7.2e-6 s⁻¹ against Metal's 0.012563, 0.004891, 7.2e-6 (from the step-4 bytes,
+where the step agrees, the first residual is identical to 9 digits on both). So the R2 initial endpoint target
+already differs, and the cause is upstream of R2 (R1 accepted state, transport, or the first endpoint
+projection) in those eight cells. **Not isolated**: it needs the §10.1 operand bisection on a tier-4 step-6 owner
+request, which was not done (open item 2). Which side is right is not established. It is three orders of
+magnitude below the step-2 event and does not change the agreement bound of the trajectory test.
+
+### 11.3 Fast mode's early V-cycle stop on the CPU side
+
+`ProjectFireProductionCPUImplementation` (`FireProductionProjection.cpp`, mirrored) now applies Metal's r275 rule
+(`FireProductionProjectionMac.mm`): in fast mode (`FireFastAdaptiveVCycles`, so `fast_fixed_vcycles` turns it off
+on both), for a resident owner projection (`cpuResidentSchedule`) with an open boundary and at least 13 scheduled
+cycles, not a restoration, after cycles 11, 13, 15, … below the schedule, correct the faces from the current
+pressure, take the post residual and the maximum velocity (provisional and corrected, as Metal's validation-metrics
+kernel), and stop when `FireProductionProjectionResidualWithinBand` holds. The final correction is then the
+unchanged code, now one lambda shared with the trial (same arithmetic). One adaptation: every Metal owner
+projection preserves its open class and derives the endpoint class from the final velocity afterwards, while the
+CPU owner's R2 iterates derive it inside the projection; the CPU therefore applies the stop to endpoint-classified
+projections too (excluding them, as a first version did, left the R2 iterates at 17 cycles and the terminal
+projection adaptive, so the terminal verification never met the projection tolerance and R2 did not converge).
+Certified mode and the calibration owners (no `cpuResidentSchedule`) are untouched.
+
+### 11.4 Agreement re-measured, and the test
+
+Default fast mode on both backends (CPU now with the early V-cycle stop), tier 4, three runs, identical every
+time (`FireCPUBackendTest --agreement 5`):
+
+| Step | 1 | 2 | 3 | 4 | 5 |
+|---|---:|---:|---:|---:|---:|
+| species, densities (max) | 5.1e-8 | 1.0e-7 | 7.6e-5 | 9.8e-6 | 8.3e-6 |
+| temperature | 4.5e-10 | 2.3e-9 | 1.0e-4 | 1.3e-5 | 1.1e-5 |
+| energy | 1.6e-9 | 8.0e-8 | 3.9e-3 | 3.7e-4 | 2.6e-4 |
+| velocity | 6.2e-7 | 3.5e-6 | 3.6e-3 | 4.0e-3 | 8.0e-5 |
+| one step from Metal's step-2 bytes | | | species 1.3e-13, T 5.9e-15, E 4.2e-10, velocity 3.4e-8 | | |
+
+Step 1 is now rounding (velocity 2.0e-4 before, the early-stop difference). In this run the residue-driven rim
+ignition happens at step 3 instead of step 2 (§10.3): which step and which cell depend on the residue's signs, and
+the event's size is the same.
+
+`FireCPUMetalAgreementTest` now checks, besides the §10.3 per-step bounds for steps 1–5 (kept: they bound one
+rim-ignition event, now explained, 2.6 times its measured peak):
+
+- step 1 to rounding: species 1e-6, temperature 1e-7, energy 1e-6, velocity 1e-5 of the field scale (measured
+  5.1e-8, 4.5e-10, 1.6e-9, 6.2e-7);
+- Metal's accepted step-2 bytes restored on the CPU backend (spliced checkpoint) and one step taken: equal to
+  Metal's step 3 within the same rounding bounds (measured 1.3e-13, 5.9e-15, 4.2e-10, 3.4e-8).
+
+The tighter bounds are about 16 times the measured velocity difference; they would catch a change in the step's
+arithmetic or in the early stop, which the event-sized bounds would not. 20 s in the fast tier (18 s before).
+The early stop's decision could in principle fall on different sides of the band on the two backends in some
+step (a near tie); none happened in the steps measured, and the identical-start check uses step 2→3 only.
+
+### 11.5 Long run: tier 4, fast mode, 1,495 steps (2.5 s), both backends
+
+`FireCPUBackendTest --long-run-child 4 {0,1} 1 3.2 DIR 1495 5 10` (diagnostic, not a test): statistics every 5
+steps, the binary32 state every 10. The CPU run took 3,609 s wall (2.4 s per step on a machine shared with other
+agents' builds and tests), the Metal run 409 s. The step stays at the 1.646 ms source cap throughout on both, so
+step k is the same time on both. Difference against step (field-scale maxima as §10.3; RMS absolute):
+
+| Step | t (s) | species | E | T max | T RMS (K) | velocity max | velocity RMS (m/s) | max speed (m/s) | max T (K) |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.016 | 4.0e-6 | 6.4e-5 | 5.9e-6 | 8.8e-6 | 6.3e-5 | 4.9e-7 | 0.22 | 327 |
+| 100 | 0.16 | 6.4e-6 | 1.3e-5 | 1.0e-5 | 5.7e-5 | 4.2e-5 | 4.2e-7 | 0.40 | 763 |
+| 200 | 0.33 | 1.4e-5 | 1.7e-5 | 1.1e-5 | 1.7e-4 | 3.1e-5 | 5.0e-7 | 0.83 | 1,620 |
+| 300 | 0.49 | 2.5e-5 | 3.7e-5 | 3.4e-5 | 5.7e-4 | 7.8e-3 | 1.0e-4 | 2.1 | 1,770 |
+| 500 | 0.82 | 7.4e-5 | 9.0e-5 | 4.6e-5 | 1.2e-3 | 4.5e-5 | 3.8e-6 | 5.3 | 1,820 |
+| 700 | 1.15 | 7.3e-5 | 8.7e-5 | 4.0e-5 | 1.9e-3 | 1.8e-4 | 2.0e-5 | 8.1 | 2,080 |
+| 900 | 1.48 | 4.0e-4 | 4.8e-4 | 3.4e-4 | 8.8e-3 | 4.8e-4 | 7.7e-5 | 8.5 | 2,100 |
+| 1100 | 1.81 | 1.8e-3 | 8.1e-4 | 3.6e-4 | 0.015 | 2.3e-3 | 3.6e-4 | 8.1 | 2,000 |
+| 1300 | 2.14 | 1.8e-3 | 1.8e-3 | 7.7e-4 | 0.039 | 9.0e-3 | 1.3e-3 | 8.2 | 2,070 |
+| 1490 | 2.45 | 2.7e-3 | 3.6e-3 | 1.4e-3 | 0.058 | 1.5e-2 | 2.2e-3 | 6.8 | 1,490 |
+
+(Full curve: `/Volumes/SSD/claude-tmp/m8c-scratch/longcmp.txt`, scratch.) Reading it: through the laminar start
+(to about step 250, 0.4 s) the difference stays at 1e-5 of the field scale; once the plume accelerates (maximum
+speed 2 → 8 m/s) it grows roughly exponentially, the temperature RMS by a factor of 100 between steps 300 and 1490,
+an e-folding time of about 0.43 s; single-step velocity spikes (step 300: 7.8e-3) are transient. **By 2.5 s the two
+trajectories have not decorrelated**: the largest temperature difference is 1.4e-3 of 2,000 K (about 3 K) against
+an RMS of 0.06 K. At the measured growth rate the RMS would reach the plume's own fluctuation level (centreline
+temperature standard deviation 50–300 K) after another 7–8 e-foldings, about 3.5 s more, so near t ≈ 6 s, roughly
+3,600 steps, which is about 2.5 hours of CPU time at this load; not run.
+
+Statistics over 1.5–2.5 s (120 samples each), Metal / CPU:
+
+| Quantity | Metal mean (sd) | CPU mean | (CPU − Metal) / mean |
+|---|---:|---:|---:|
+| Heat release (frame field, W) | 32,157 (1,920) | 32,158 | 1.5e-5 |
+| Domain mean temperature (K) | 309.194 (0.90) | 309.194 | 5.8e-7 |
+| Maximum temperature (K) | 1,974.7 (174) | 1,974.7 | −8.6e-6 |
+| Methane in the domain (kg) | 6.1508e-5 | 6.1508e-5 | −6.7e-6 |
+| CO2 + H2O in the domain (kg) | 5.9155e-3 | 5.9156e-3 | 1.1e-5 |
+| Volume above 500 K (m³) | 0.1052 (0.016) | 0.1052 | 7.3e-5 |
+| Kinetic-energy measure | 4.678 (1.09) | 4.678 | 3.7e-5 |
+| Centreline T, layers 0 / 8 / 16 / 32 / 48 (K) | 1597.9 / 1072.9 / 763.9 / 467.8 / 350.7 | same | +0.03 / −0.01 / +0.005 / −0.002 / −0.006 K |
+| Centreline w, faces 4 / 16 / 32 / 48 (m/s) | 3.352 / 4.872 / 4.155 / 2.415 | same | +1e-5 / −4e-5 / −1.5e-4 / +5.8e-4 m/s |
+
+(Heat release is the frame's per-cell field summed, about 32 kW against the case's 33 kW; centreline means the 2×2
+column at the axis.) The statistics agree to 1e-5–1e-4 because the trajectories are still close, not because two
+independent samples happen to match; this window does not yet test statistical agreement of decorrelated runs.
+
+### 11.6 Cost: content hashing and the EOS/target loops
+
+**Hashes.** Every CPU content identity is FNV-1a over bytes, which looks serial: h ← (h ⊕ b)·P. But ⊕ with a byte
+touches only the low byte, so h ⊕ b = h + d with d = (l ⊕ b) − l, l = h mod 256, and the low byte evolves by itself
+(l ← ((l ⊕ b)·P) mod 256). A slice of the input therefore needs only its starting low byte: each slice first
+composes its low-byte permutation for all 256 starting values (NEON, sixteen 16-lane vectors), the slices' starting
+low bytes follow in order, then each slice sums Σ d_i P^(m−i), and the slices combine as h·P^m + S. Zero padding
+bytes (the owner hashes each binary32 word as a zero-extended 64-bit word) are one multiplication by P⁴. The digest
+is the same value by construction; `FireProductionFNV1aWords` (`FireProductionAdvection.cpp`, mirrored) implements
+it, used by `OwnerHashFloats` (Force) and `HashFluxValues`, `EOSValueDigest`, `HashSourceDoubleValues`,
+`HashFluxBytes` (Transport) for arrays of 4,096 values or more. It runs on the CPU backend's workers only (one
+worker elsewhere, serial; no NEON: serial). `FireCPUBackendTest` checks it against the plain byte loop for five
+word layouts at 1, 3 and 8 workers; every existing calibration and qualification digest test passes unchanged.
+One tier-8 state digest (4.5 M words): about 31 ms in the original loop (estimated from the 8 multiplications per
+word), 19.6 ms serial with the zero batching, 9.1 ms on 8 workers (measured under load; the first pass, 32 vector
+operations per byte, limits it).
+
+**EOS and target.** `EvaluateFireProductionScalarEOSAcceptanceCPU` and both cell loops of
+`ComposeFireProductionBaseDivergenceTargetCPU` (the canonical temperature inversion and the target composition) run
+on the workers: each cell writes its own outputs, the first failure is the lowest failing cell
+(`FireProductionCPUFirstFailure`, so the message equals the serial loop's), and the maxima are taken afterwards.
+
+**Measured (M1 Max, 8 workers, wall seconds per accepted step; machine shared with other agents, load average 10–16):**
+
+| Case | Before (§10.5) | Now | Steps measured |
+|---|---:|---:|---|
+| tier 4, certified | 3.2 | **2.16** | 4 (2.15–2.17) |
+| tier 4, fast | 2.0 | **1.6** | 4 (1.54–1.82) |
+| tier 8, fast | 14.5 | **11.6** | 3 (24.3 warm-up, then 11.57, 11.57) |
+| tier 8, certified | — | **16.0** | 3 (17.7, 16.2, 16.0) |
+
+Under heavier load (average 16–21) the same tier-4 runs took 4.0 and 2.6 s. A `sample` of a certified tier-4 run
+still attributes 70 % of the busy samples (all threads) to the two hash passes, now spread over the workers: the
+certified mode's per-step content identities remain its largest cost. A cheaper certified mode needs fewer or
+cheaper identities (a protocol change), not more threads.
+
+### 11.7 Choosing the CPU backend from a scene or host (design only, not implemented)
+
+**How fire scenes key today.** A `fire_simulation` chunk is built from `FireParameterSchema()`
+(`ChunkParserRegistry.cpp`, `SimulationChunks::Build`/`FinalizeSolverChunk`): every schema parameter becomes a
+chunk field, and the authored fields become the CBOR parameter map. Fire is keyed by prediction, never configured
+in the application (`SceneSimulation.cpp` `SceneSimulationGraph::Configure`): the schema's `completeParameters`
+(`Complete` in `FireParameterSchema.cpp`) inserts every schema default that the scene does not state,
+`predictEffectiveParameters` adds the derived frame window, and the key is `MakeCacheKey(solver, version,
+predicted)`. The worker later calls `FireSolver::Configure` with the completed map; its effective parameters must
+equal the prediction or the cache reads as stale. `FireSolver::Configure` already omits `backend` when it is
+`metal` or absent and adds `backend: "cpu"` otherwise. The schema has a `keyed = false` flag, but only for
+parameters that do not change bytes (`threads`, `pace_ms`); the backend changes bytes, so it must stay keyed.
+
+**Why a plain schema parameter would change every key.** Added as an ordinary `Enum` with default `metal`,
+`Complete` would insert `backend: "metal"` into every completed map, so every existing fire scene's predicted key
+would change (and would also disagree with the solver's effective map, which omits it).
+
+**Proposal: a keyed parameter that is omitted at its default.**
+
+1. `SchemaParameter` gains `bool omitDefault = false` ("keyed only when it differs from its default"). Fire's
+   `backend` is `Enum {metal, cpu}`, default `metal`, `omitDefault = true`.
+2. Fire's `Complete` does not insert an `omitDefault` parameter that the scene leaves out, and removes it when the
+   scene states the default; `Predict` therefore never sees `backend: "metal"`. Together with the solver's
+   existing omission, the completed map, the predicted effective map and the worker's effective map agree for all
+   three spellings (absent, `metal`, `cpu`).
+3. Result: every existing fire scene, and any scene that writes `backend metal`, keeps its key byte for byte; a
+   scene that writes `backend cpu` gets the CPU key (`FireCPUBackendTest` already checks that the CPU key differs
+   from the Metal default's). The chunk gains one field (its description says "default metal; enters the cache
+   key only as cpu"); chunk keywords stay 191. `FireEstimateCapabilities` already takes the backend for the
+   memory estimate.
+4. The change is local to the schema struct, fire's schema file and its tests; `SceneSimulation.cpp` and the
+   generic completion are untouched (cloth and liquid have no `omitDefault` parameter).
+
+**Host-level override (rejected as an unkeyed switch).** A host setting outside the key (say `rise-sim bake
+--fire-backend cpu`, or honouring `RISE_FIRE_BACKEND` from the environment) would put CPU bytes under a Metal key:
+the backends differ by 1e-4 of the field scale after a few steps and decorrelate later (§11.5), so a cache's frames
+would depend on which host baked them, and a resume on the other backend would splice two trajectories into one
+cache. If a host override is wanted (for example a build without Metal, where fire otherwise refuses at start), it
+should be a host default for the keyed parameter: the host adds `backend: "cpu"` to the authored map before
+completion, so the scene shows the cache under the CPU key (a different, initially missing cache), never a Metal
+cache with CPU contents. No automatic fallback: a scene that does not say `cpu` on a host without Metal should keep
+refusing with the existing message that names the parameter.
+
+### 11.8 What changed
+
+| File | Change |
+|---|---|
+| `src/Library/Utilities/FireProductionProjection.cpp` (mirrored) | Fast mode's early V-cycle stop for the CPU owner's resident projections (§11.3); the face correction is one lambda shared by the trial and the final publication; includes `FireSimulationRecords.h` for `FireFastMode.h`. The cycle loop keeps its single `VCycle` call and no `break` (the P2 source guard in `FireProductionProjectionTest` holds unchanged). |
+| `src/Library/Utilities/FireProductionAdvection.{h,cpp}` (mirrored) | `FireProductionFNV1aWords`, the sliced FNV-1a (§11.6) |
+| `src/Library/Utilities/FireProductionForce.cpp`, `FireProductionTransport.cpp` (mirrored) | Array hashes through it; EOS acceptance and base-target cell loops threaded (§11.6) |
+| `tests/fire_production_fp64/*`, `tests/fire_production_trace/*` | Regenerated; `--check` passes for both generators |
+| `tools/generate_fire_production_roundoff_trace.py` | The multigrid-cycle seam names the new loop body (two added lines) |
+| `src/Library/Simulation/Fire/FireCPUBackend.cpp` | `RISE_FIRE_PICARD_TRACE` prints each stage's Picard residuals and cycle/limiter outcome (`PICARD_CPU`), as the Metal owner's trace does |
+| `src/Library/Simulation/Fire/FireSolver.cpp` | `backendEnvironment` moved inside the `RISE_ENABLE_OPENVDB` block, its only user (an Xcode build without OpenVDB warned it unused); no behaviour change |
+| `tests/FireCPUBackendTest.cpp` (and `FireCPUMetalAgreementTest`, same source) | Sliced-hash check; the agreement check of §11.4; diagnostics `--splice-checkpoint`, `--long-run-child`, `--hash-check`; the per-step run writes `checkpoint_K.bin` |
+
+The temporary eligibility trace and the raised-witness intervention of §11.1 were in `FireProductionSource.cpp`
+only for the measurement and are removed (the file is unchanged). No new source file, so no build list changed.
+Metal source files are untouched; no codec, manifest, checkpoint, key or solver version changed. Pins unchanged.
+
+### 11.9 Verified versus inferred
+
+| Claim | Basis |
+|---|---|
+| The step-2 difference is the rim-ignition rule reading rounding residue | Cross-restores (both backends agree to rounding from either step-1 state); trace of the rule's decisions; intervention removing it (§11.1) |
+| Neither backend is wrong at step 2 | Both evaluate the shared rule on states equal to rounding; in exact arithmetic the residue is zero (inferred from the absence of any reaction at step 1) |
+| Steps 1–5 from identical bytes agree to rounding | Run, certified and fast (§11.2) |
+| The step-6 difference's cause | **Not isolated**; localised to eight cells and to the R2 initial target (§11.2) |
+| CPU fast mode takes Metal's early stop | Code read against `FireProductionProjectionMac.mm`; step 1 agrees to rounding in default fast mode, three identical runs |
+| Sliced hash digests equal the serial digests | Test (5 layouts, 1/3/8 workers) and every calibration/qualification digest test unchanged |
+| Metal output bytes unchanged | No Metal source changed. Fire fast tier after the last library change: 13 of 14 passed; `FireSolverTest` failed once (its stop/resume bake's frames and manifest differed from the uninterrupted bake while the final fire checkpoint was equal), on a machine where other agents were changing the simulation cache layer, and passed when rerun alone and in the run before. The earlier run's one failure (the P2 source guard) was fixed by restructuring the CPU loop, not the test. |
+| CPU determinism at any worker count, resume | `FireCPUBackendTest` (1 and 8 workers, 4-worker resume), passing |
+| Long-run growth and statistics | One 1,495-step run per backend (§11.5) |
+| Cost | Short runs on a shared machine (§11.6) |
+| Builds warning-free | `all tests build-tool/rise_sim build-tool/simulation_cache_import`, no warnings |
+
+### 11.10 Open items (supersedes §10.7 items 1–4)
+
+1. The rim-ignition witness (`nextafter` of the ambient product fraction, §11.1) is decided by rounding residue on
+   every backend. A witness above the residue would make step 2 independent of rounding; it changes Metal's bytes
+   and the certified trajectories, so it needs its own decision.
+2. The step-6 owner difference in the eight burner-diagonal cells (§11.2): run the §10.1 Picard-operand bisection
+   on a tier-4 step-6 request (both owners from the same spliced state), then decide which side is right.
+3. The long comparison to decorrelation (about 3,600 steps at tier 4) and statistics of independent trajectories.
+4. Certified-mode cost is still dominated by content identities (§11.6).
+5. Scene selection (§11.7) and the Windows driver thread remain design and open respectively.

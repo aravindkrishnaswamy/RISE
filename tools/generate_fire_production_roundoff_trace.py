@@ -392,11 +392,14 @@ def transform(text: str, name: str, suffix: str) -> str:
         text = text.replace(interpolation,interpolation+
             "\n\t\t\tFireProductionRoundoffTrace::ProjectionInterpolationScope "
             "topologyScope(fine,fineExtent,coarseExtent);")
+        # M8c: the loop also carries fast mode's adaptive stop (skipped cycles once stopped).
         cycle_loop = ("\t\tfor( unsigned int cycle=0;cycle<cycleCount;++cycle ) {\n"
+                      "\t\t\tif( adaptiveStopped ) continue;\n"
                       "\t\t\tVCycle(hierarchy,0u,request.boundary,nullspace,\n"
                       "\t\t\t\tresult.executedJacobiSweepCount);\n"
                       "\t\t\t++result.executedVCycleCount;\n"
                       "\t\t\tif( nullspace ) RemoveMean(hierarchy[0].pressure);\n"
+                      "\t\t\tif( adaptiveCycles ) adaptiveStopped=adaptiveStop(cycle+1u);\n"
                       "\t\t}")
         if text.count(cycle_loop) != 1:
             raise RuntimeError("projection multigrid-cycle proof scope changed")

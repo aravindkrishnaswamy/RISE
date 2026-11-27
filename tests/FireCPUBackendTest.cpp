@@ -1,23 +1,28 @@
-// The fire.methane CPU backend (simulation M8, part A).
+// The fire.methane CPU backend (simulation M8, part A; M8c follow-up).
 //
-//   default      CPU only (no Metal needed): a coarse tier-4 case stepped through the
-//                solver interface in child processes (in-process host): the same
-//                accepted states at 1, 3 and 8 workers, a checkpoint/restore
-//                continuation equal to the uninterrupted run, finite physical values
-//                that move the right way (fuel enters at the burner, the gas heats
-//                and rises), the solver description (backend "cpu", experimental,
-//                its own cache key) and the refusals.  Each child runs a few steps.
-//   --agreement  (also in the fast tier, skipped where Metal is absent) Metal fast mode
-//                and CPU fast mode from the same start for 8 steps of the same case:
-//                the per-step relative differences, with a tolerance derived from the
-//                one-step burner reference (docs/SIMULATION_M8_RESULTS.md section 10).
+//   default      CPU only (no Metal needed): the sliced content hash equals the serial
+//                one; a coarse tier-4 case stepped through the solver interface in child
+//                processes (in-process host): the same accepted states at 1 and 8
+//                workers, a checkpoint/restore continuation equal to the uninterrupted
+//                run, finite physical values that move the right way (fuel enters at
+//                the burner, the gas heats and rises), the solver description (backend
+//                "cpu", experimental, its own cache key) and the refusals.
+//   --agreement N (FireCPUMetalAgreementTest runs N = 5; skipped where Metal is absent)
+//                Metal fast mode and CPU fast mode from the same start for N steps:
+//                step 1 to rounding, later steps to the size of the burner-rim ignition
+//                event, and one step from identical bytes (Metal's step 2) to rounding
+//                (docs/SIMULATION_M8_RESULTS.md sections 10 and 11).
+//   --agreement-certified N, --agreement-fixed-vcycles N   the same in other modes.
 //   --cost TIER STEPS  timing only: CPU and Metal seconds per step at that tier.
+//   Diagnostics (results section 11): --splice-checkpoint SOURCE TARGET OUT,
+//   --long-run-child ..., --hash-check.
 //
 // Every fire run is a child process: the fire library keeps process-wide state.
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "../src/Library/Simulation/SimulationSolver.h"
 #include "../src/Library/Simulation/Fire/FireSolver.h"
 #include "../src/Library/Utilities/FireProductionCompute.h"
+#include "../src/Library/Utilities/FireProductionAdvection.h"
 #if defined(RISE_ENABLE_OPENVDB)
 #include "../src/Library/Simulation/Fire/FireRun.h"
 #include "../src/Library/Simulation/Fire/FireRunCheckpoint.h"
@@ -67,6 +72,39 @@ void WriteBytes(const fs::path& path, const Bytes& bytes)
 {
 	std::ofstream f(path, std::ios::binary | std::ios::trunc);
 	f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+// SOURCE's fire state and trailer under
+// TARGET's configuration digest, so one backend's accepted state can be restored on the
+// other and both take the next step from identical bytes (results section 11).
+bool SpliceCheckpoint(const fs::path& source, const fs::path& target, const fs::path& out)
+{
+	const Bytes a = ReadAll(source), b = ReadAll(target);
+	auto trailerOf = [](const Bytes& c, std::size_t& fire, V& t) {
+		if (c.size() < 16) return false;
+		std::uint64_t length = 0;
+		for (unsigned i = 0; i < 8; ++i) length |= std::uint64_t(c[c.size()-16+i]) << (8*i);
+		if (length > c.size()-16) return false;
+		fire = c.size() - 16 - static_cast<std::size_t>(length);
+		std::string why;
+		return RISECBOR64::DecodeCanonical(Bytes(c.begin()+static_cast<std::ptrdiff_t>(fire), c.end()-16), t, &why) &&
+			t.GetType() == V::Map;
+	};
+	std::size_t fireA = 0, fireB = 0;
+	V ta, tb;
+	if (!trailerOf(a, fireA, ta) || !trailerOf(b, fireB, tb) || !tb.Find("configuration")) return false;
+	V::Members members;
+	for (const auto& m : ta.GetMap()) members.emplace_back(m.first, m.first == "configuration" ? *tb.Find("configuration") : m.second);
+	Bytes trailer;
+	std::string why;
+	if (!RISECBOR64::Encode(V::MapValue(members), trailer, &why)) return false;
+	Bytes spliced(a.begin(), a.begin()+static_cast<std::ptrdiff_t>(fireA));
+	spliced.insert(spliced.end(), trailer.begin(), trailer.end());
+	const std::uint64_t length = trailer.size();
+	for (unsigned i = 0; i < 8; ++i) spliced.push_back(static_cast<unsigned char>(length >> (8*i)));
+	spliced.insert(spliced.end(), a.end()-8, a.end());
+	WriteBytes(out, spliced);
+	return true;
 }
 
 using NoInputs = NoSceneInputs;
@@ -167,6 +205,7 @@ int SolverRunChild(int argc, char** argv)
 			if (!solver->Checkpoint(state, error) || !FireState(state, dir/"fire.checkpoint", fire, error)) {
 				std::cout << "ERROR step checkpoint " << error << "\n"; return 1; }
 			DumpState(fire, dir/("state_" + std::to_string(accepted) + ".txt"));
+			WriteBytes(dir/("checkpoint_" + std::to_string(accepted) + ".bin"), state);
 		}
 		if (accepted == checkpointAt) {
 			Bytes state;
@@ -183,6 +222,101 @@ int SolverRunChild(int argc, char** argv)
 		<< "\nDONE " << fire.acceptedSteps << "\n";
 	std::cout.flush();
 	// The driver thread is parked; leave without unwinding it (the process ends here).
+	std::_Exit(0);
+}
+#endif
+
+#if defined(RISE_ENABLE_OPENVDB)
+// Diagnostic (--long-run-child TIER CPU FAST END DIR STEPS STATS_EVERY DUMP_EVERY; results
+// section 11): a long run printing domain and centreline statistics every STATS_EVERY steps
+// and dumping the accepted state as binary32 (9 conservative words and T per cell, then the
+// face velocities) every DUMP_EVERY steps, for Metal/CPU trajectory comparisons.
+int LongRunChild(int argc, char** argv)
+{
+	if (argc != 8) return 2;
+	const double tier = std::atof(argv[0]);
+	const bool cpu = std::strcmp(argv[1], "1") == 0, fast = std::strcmp(argv[2], "1") == 0;
+	const double end = std::atof(argv[3]);
+	const fs::path dir = argv[4];
+	const int steps = std::atoi(argv[5]), statsEvery = std::atoi(argv[6]), dumpEvery = std::atoi(argv[7]);
+	std::string error;
+	if (!RegisterFireSolver(error)) { std::cout << "ERROR " << error << "\n"; return 1; }
+	auto solver = CreateSolver("fire.methane", error);
+	SolverDescription d;
+	NoInputs inputs;
+	if (!solver || !solver->Configure(Parameters(tier, cpu, fast, end), inputs, d, error) ||
+		!PrepareCacheDescription(d, inputs, "", error)) { std::cout << "ERROR configure " << error << "\n"; return 1; }
+	fs::create_directories(dir/"legacy");
+	if (!solver->SetSideOutputDirectory(dir/"legacy", error) || !solver->Start(error)) {
+		std::cout << "ERROR start " << error << "\n"; return 1; }
+	NullSink sink;
+	int accepted = 0;
+	const auto runStart = std::chrono::steady_clock::now();
+	std::cout << std::setprecision(9);
+	while (accepted < steps) {
+		AdvanceRequest request;
+		AdvanceResult result;
+		solver->RequestStop();
+		if (!solver->Advance(request, sink, nullptr, nullptr, result, error)) { std::cout << "ERROR advance " << error << "\n"; return 1; }
+		if (result.status == AdvanceResult::Status::Finished) { std::cout << "FINISHED\n"; break; }
+		if (result.status != AdvanceResult::Status::Stopped) continue;
+		++accepted;
+		const bool stats = accepted % statsEvery == 0, dump = dumpEvery > 0 && accepted % dumpEvery == 0;
+		if (!stats && !dump) continue;
+		Bytes state;
+		FireRun::MethaneRunCheckpoint s;
+		if (!solver->Checkpoint(state, error) || !FireState(state, dir/"fire.checkpoint", s, error)) {
+			std::cout << "ERROR step checkpoint " << error << "\n"; return 1; }
+		const std::size_t nx = s.dimensions[0], ny = s.dimensions[1], nz = s.dimensions[2];
+		if (stats) {
+			const double volume = s.cellWidthM*s.cellWidthM*s.cellWidthM;
+			double sumT = 0, maxT = 0, gas = 0, fuel = 0, products = 0, soot = 0, energy = 0, hot = 0;
+			for (const auto& c : s.states) {
+				sumT += c.temperatureK; maxT = std::max(maxT, c.temperatureK);
+				gas += c.GasDensity()*volume; fuel += c.constituent[0]*volume;
+				products += (c.constituent[3] + c.constituent[4])*volume; soot += c.constituent[6]*volume;
+				energy += c.sensibleEnergyJPerM3*volume; if (c.temperatureK > 500) hot += volume;
+			}
+			double ke = 0, maxSpeed = 0, maxUp = 0;
+			for (unsigned axis = 0; axis < 3; ++axis) for (const double v : s.velocity.component[axis]) {
+				maxSpeed = std::max(maxSpeed, std::fabs(v)); if (axis == 2) maxUp = std::max(maxUp, v);
+				ke += 0.5*1.1*v*v*volume; }   // per-face, ambient density: a trend measure only
+			double hrr = 0;
+			for (const float q : s.values.reaction) hrr += static_cast<double>(q)*volume;
+			std::cout << "STAT step " << accepted << " time " << s.simulationTimeS << " meanT " << sumT/s.states.size()
+				<< " maxT " << maxT << " gas_kg " << gas << " fuel_kg " << fuel << " products_kg " << products
+				<< " soot_kg " << soot << " energy_J " << energy << " hot_m3 " << hot << " ke " << ke << " max_speed "
+				<< maxSpeed << " max_w " << maxUp << " frame_hrr_W " << hrr << " clT";
+			// Centreline: the 2x2 column around the axis (nx, ny odd: the centre cell and its +x, +y neighbours).
+			const std::size_t cx = nx/2, cy = ny/2;
+			for (std::size_t z = 0; z < nz; z += 4) {
+				double t = 0; for (std::size_t j = 0; j < 2; ++j) for (std::size_t i = 0; i < 2; ++i)
+					t += s.states[(z*ny + cy + j)*nx + cx + i].temperatureK;
+				std::cout << " " << t/4; }
+			std::cout << " clW";
+			for (std::size_t z = 0; z <= nz; z += 4) {
+				double w = 0; for (std::size_t j = 0; j < 2; ++j) for (std::size_t i = 0; i < 2; ++i)
+					w += s.velocity.component[2][(z*ny + cy + j)*nx + cx + i];
+				std::cout << " " << w/4; }
+			std::cout << " wall_s " << std::chrono::duration<double>(std::chrono::steady_clock::now()-runStart).count()
+				<< std::endl;
+		}
+		if (dump) {
+			std::vector<float> words;
+			words.reserve(s.states.size()*10);
+			for (const auto& cell : s.states) {
+				const auto q = FireSim::ToConservativeVector(cell);
+				for (std::size_t c = 0; c < 9; ++c) words.push_back(static_cast<float>(q[c]));
+				words.push_back(static_cast<float>(cell.temperatureK));
+			}
+			for (unsigned axis = 0; axis < 3; ++axis) for (const double v : s.velocity.component[axis])
+				words.push_back(static_cast<float>(v));
+			std::ofstream o(dir/("dump_" + std::to_string(accepted) + ".bin"), std::ios::binary | std::ios::trunc);
+			o.write(reinterpret_cast<const char*>(words.data()), static_cast<std::streamsize>(words.size()*sizeof(float)));
+		}
+	}
+	std::cout << "RUN_WALL_S " << std::chrono::duration<double>(std::chrono::steady_clock::now()-runStart).count()
+		<< "\nDONE " << accepted << std::endl;
 	std::_Exit(0);
 }
 #endif
@@ -301,8 +435,34 @@ constexpr double kTier = 4;       // the coarse case: 35 x 35 x 53 cells
 constexpr double kEnd = 0.0625;   // one frame at t=0; the steps stop long before the second
 
 #if !defined(RISE_FIRE_CPU_AGREEMENT_ONLY)
+// M8c: the sliced FNV-1a (content hashes on the CPU backend's workers) equals the serial
+// byte loop for every word layout the owner hashes, at 1, 3 and 8 workers.
+void SlicedHashMatchesSerial()
+{
+	std::vector<std::uint64_t> words(300007);
+	std::uint64_t x = 0x9e3779b97f4a7c15ull;
+	for (auto& w : words) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; w = x; }
+	bool same = true;
+	const unsigned layouts[][2] = {{8, 0}, {4, 4}, {4, 0}, {1, 0}, {3, 5}};
+	for (const auto& layout : layouts) {
+		std::uint64_t serial = 0xcbf29ce484222325ull;
+		for (std::uint64_t w : words) {
+			for (unsigned b = 0; b < layout[0]; ++b) { serial ^= (w >> (8*b)) & 0xFF; serial *= 1099511628211ull; }
+			for (unsigned b = 0; b < layout[1]; ++b) serial *= 1099511628211ull;
+		}
+		for (unsigned workers : {1u, 3u, 8u}) {
+			FireProductionCPUParallelScope scope(workers);
+			const std::uint64_t sliced = FireProductionFNV1aWords(0xcbf29ce484222325ull, words.data(), words.size(),
+				layout[0], layout[1]);
+			same = same && sliced == serial;
+		}
+	}
+	Check(same, "the sliced FNV-1a content hash equals the serial byte loop (5 word layouts, 1/3/8 workers)");
+}
+
 void CPUOnly(const fs::path& root)
 {
+	SlicedHashMatchesSerial();
 	const auto t0 = std::chrono::steady_clock::now();
 	std::string a, b, c, d, e;
 	// Fast mode: the same strict binary32 C++ as certified (the CPU backend has no fast
@@ -361,49 +521,83 @@ void CPUOnly(const fs::path& root)
 
 #endif
 
-// Metal fast mode against CPU fast mode from the same start, compared after every step.
-// Step 1 agrees to binary32 rounding once both run the same V-cycle schedule (results
-// section 10.3; Metal fast mode's adaptive V-cycle stop leaves ~2e-4 of the face speed);
-// from step 2 a few burner-surface cells differ by ~0.015 K and the difference peaks at
-// steps 2-4, then decays (measured to step 24). Bounds, per step, of the field scale:
-// species and densities 2e-4 of the maximum gas density, temperature 3e-4 of its maximum,
-// energy 1e-2 of max |E| (small near ambient), face velocity 1e-2 of the maximum speed
-// (about 1.5 times the owner's 1e-3 sqrt(g D*) endpoint velocity tolerance at this case).
+// Metal fast mode against CPU fast mode (results sections 10.3 and 11).
+//  - Trajectories from the same start, compared after every step.  Step 1 agrees to
+//    binary32 rounding (both backends now take fast mode's early V-cycle stop).  From
+//    step 2 a few burner-rim cells can differ by ~0.015 K: before the pilot is
+//    established a rim cell becomes reaction-eligible when its CO2+H2O exceeds the
+//    ambient zero, and after step 1 those products are signed rounding residue
+//    (|rho_p| < 3e-11 kg/m3, no reaction anywhere), different on the two backends.
+//    So steps 2-5 are held to the size of one such ignition event, not to rounding:
+//    species and densities 2e-4 of the maximum gas density, temperature 3e-4 of its
+//    maximum, energy 1e-2 of max |E| (small near ambient), velocity 1e-2 of the
+//    maximum face speed (measured peaks 7.8e-5, 1.0e-4, 4.0e-3, 5.0e-3).
+//  - One step from identical bytes: Metal's accepted step-2 state restored on the
+//    CPU backend; its step must equal Metal's step 3 to rounding, the backends' own
+//    agreement with the noise-driven switch taken out (it reads identical inputs).
 constexpr int kAgreementSteps = 5;
 constexpr double kSpeciesTolerance = 2.0e-4, kTemperatureTolerance = 3.0e-4, kEnergyTolerance = 1.0e-2,
 	kVelocityTolerance = 1.0e-2;
-void Agreement(const fs::path& root, int steps, bool fast = true, const std::vector<std::string>& metalEnv = {})
+constexpr double kRoundingSpeciesTolerance = 1.0e-6, kRoundingTemperatureTolerance = 1.0e-7,
+	kRoundingEnergyTolerance = 1.0e-6, kRoundingVelocityTolerance = 1.0e-5;
+bool WithinRounding(const std::vector<double>& rel)
 {
+	double species = 0;
+	for (std::size_t i = 0; i < 8; ++i) species = std::max(species, rel[i]);
+	return species <= kRoundingSpeciesTolerance && rel[9] <= kRoundingTemperatureTolerance &&
+		rel[8] <= kRoundingEnergyTolerance && rel[10] <= kRoundingVelocityTolerance;
+}
+void PrintAgreement(const char* label, int k, double time, const std::vector<double>& rel)
+{
+	const char* names[] = {"Z", "CH4", "O2", "N2", "CO2", "H2O", "CO", "C(s)", "E", "T", "u"};
+	std::cout << label << " step " << k << " time " << std::setprecision(9) << time << std::setprecision(3);
+	for (std::size_t i = 0; i < rel.size(); ++i) std::cout << " " << names[i] << "=" << rel[i];
+	std::cout << "\n";
+}
+void Agreement(const fs::path& root, int steps, bool fast = true, const std::vector<std::string>& env = {},
+	bool identical = true)
+{
+	// `env` (both backends): RISE_M8B_FIXED_VCYCLES=1 for the fixed V-cycle diagnostic curve.
 	std::string m, c;
-	const int metal = SolverRun(root/"metal", kTier, false, fast, kEnd, steps, -1, "-", metalEnv, m);
-	const int cpu = SolverRun(root/"cpu", kTier, true, fast, kEnd, steps, -1, "-", {}, c);
+	const int metal = SolverRun(root/"metal", kTier, false, fast, kEnd, steps, -1, "-", env, m);
+	const int cpu = SolverRun(root/"cpu", kTier, true, fast, kEnd, steps, -1, "-", env, c);
 	Check(metal == 0 && cpu == 0, "Metal fast mode and CPU fast mode run the coarse case", m + c);
 	if (metal != 0 || cpu != 0) return;
-	const char* names[] = {"Z", "CH4", "O2", "N2", "CO2", "H2O", "CO", "C(s)", "E", "T", "u"};
-	bool within = true;
+	bool within = true, first = true;
 	std::ostringstream curve;
 	for (int k = 1; k <= steps; ++k) {
 		const State a = Load(root/"metal"/("state_" + std::to_string(k) + ".txt"));
 		const State b = Load(root/"cpu"/("state_" + std::to_string(k) + ".txt"));
 		const auto rel = Relative(a, b);
-		std::cout << "AGREEMENT step " << k << " time " << std::setprecision(9) << a.time << std::setprecision(3);
-		double scalar = 0;
-		for (std::size_t i = 0; i < rel.size(); ++i) {
-			std::cout << " " << names[i] << "=" << rel[i];
-			if (i != 7 && i != 10) scalar = std::max(scalar, rel[i]);
-		}
-		std::cout << "\n";
+		PrintAgreement("AGREEMENT", k, a.time, rel);
 		double species = 0;
 		for (std::size_t i = 0; i < 8; ++i) species = std::max(species, rel[i]);
-		scalar = species;
+		if (k == 1) first = a.ok && b.ok && a.time == b.time && WithinRounding(rel);
 		const bool ok = a.ok && b.ok && a.time == b.time && species <= kSpeciesTolerance &&
 			rel[9] <= kTemperatureTolerance && rel[8] <= kEnergyTolerance && rel[10] <= kVelocityTolerance;
-		if (!ok) curve << "step " << k << ": species " << scalar << " E " << rel[8] << " T " << rel[9] << " velocity "
-			<< rel[10] << "; ";
+		if (!ok || (k == 1 && !first)) curve << "step " << k << ": species " << species << " E " << rel[8] << " T "
+			<< rel[9] << " velocity " << rel[10] << "; ";
 		within = within && ok;
 	}
+	Check(first, "step 1 agrees to rounding: species 1e-6, temperature 1e-7, energy 1e-6, velocity 1e-5 of the "
+		"field scale", curve.str());
 	Check(within, "CPU and Metal fast mode agree after each of " + std::to_string(steps) + " steps within 2e-4 "
 		"(species), 3e-4 (temperature), 1e-2 (energy, velocity) of the field scale", curve.str());
+	if (!identical || steps < 3) return;
+	// The CPU backend from Metal's accepted step-2 bytes, one step.
+	std::string r;
+	fs::create_directories(root/"identical");
+	fs::copy(root/"metal"/"legacy", root/"identical"/"legacy", fs::copy_options::recursive);
+	const bool spliced = SpliceCheckpoint(root/"metal"/"checkpoint_2.bin", root/"cpu"/"checkpoint_2.bin",
+		root/"identical"/"input.bin");
+	const int one = spliced ? SolverRun(root/"identical", kTier, true, fast, kEnd, 1, 0,
+		(root/"identical"/"input.bin").string(), env, r) : -1;
+	const State a = Load(root/"metal"/"state_3.txt"), b = Load(root/"identical"/"state.txt");
+	const auto rel = Relative(a, b);
+	PrintAgreement("IDENTICAL_START", 3, a.time, rel);
+	Check(one == 0 && a.ok && b.ok && a.time == b.time && WithinRounding(rel),
+		"from Metal's accepted step-2 state the CPU backend's step 3 equals Metal's to rounding (species 1e-6, "
+		"temperature 1e-7, energy 1e-6, velocity 1e-5 of the field scale)", r);
 }
 #endif
 } // namespace
@@ -462,9 +656,27 @@ int main(int argc, char** argv)
 {
 #if defined(RISE_ENABLE_OPENVDB)
 	if (argc >= 2 && std::strcmp(argv[1], "--solver-run-child") == 0) return SolverRunChild(argc - 2, argv + 2);
+	if (argc >= 2 && std::strcmp(argv[1], "--long-run-child") == 0) return LongRunChild(argc - 2, argv + 2);
 #endif
 	if (argc == 3 && std::strcmp(argv[1], "--configure-child") == 0) return ConfigureChildMain(std::strcmp(argv[2], "1") == 0);
 	if (argc == 2 && std::strcmp(argv[1], "--refusal-child") == 0) return RefusalChildMain();
+	if (argc == 5 && std::strcmp(argv[1], "--splice-checkpoint") == 0) return SpliceCheckpoint(argv[2], argv[3], argv[4]) ? 0 : 1;
+#if !defined(_WIN32) && defined(RISE_ENABLE_OPENVDB) && !defined(RISE_FIRE_CPU_AGREEMENT_ONLY)
+	if (argc == 2 && std::strcmp(argv[1], "--hash-check") == 0) {
+		SlicedHashMatchesSerial();
+		// Throughput of one owner-sized digest (the tier-8 state: 9 x 504,666 words, four bytes and four zeros).
+		std::vector<std::uint64_t> words(9u*504666u, 0x3f8000003f800000ull);
+		for (unsigned workers : {1u, 8u}) {
+			FireProductionCPUParallelScope scope(workers);
+			const auto t0 = std::chrono::steady_clock::now();
+			std::uint64_t h = 0;
+			for (int r = 0; r < 5; ++r) h ^= FireProductionFNV1aWords(0xcbf29ce484222325ull, words.data(), words.size(), 4u, 4u);
+			std::cout << "hash timing: " << workers << " worker(s) " << std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now()-t0).count()/5 << " ms per tier-8 state digest (" << (h & 1) << ")\n";
+		}
+		return failures ? 1 : 0;
+	}
+#endif
 #if defined(_WIN32) || !defined(RISE_ENABLE_OPENVDB)
 	std::cout << "SKIP: fire runs need OpenVDB (the legacy frame export) and a POSIX host for the child runs\n";
 	return 0;

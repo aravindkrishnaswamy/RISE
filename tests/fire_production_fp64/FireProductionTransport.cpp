@@ -100,11 +100,22 @@ namespace RISEFireProductionFP64
 			for(const unsigned char byte:value)HashEOSByte(hash,byte);
 		}
 
+		// M8c: HashEOSFloat over a whole array, through the sliced FNV
+		// (FireProductionFNV1aWords: the same digest) when it is large.
+		void HashEOSFloatArray( std::uint64_t& hash, const std::vector<double>& values )
+		{
+			if(values.size()<4096u){for(const double value:values)HashEOSFloat(hash,value);return;}
+			std::vector<std::uint64_t> words(values.size());
+			for(std::size_t index=0u;index<values.size();++index)
+				words[index]=EOSDoubleBits(static_cast<double>(values[index]));
+			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),8u,0u);
+		}
+
 		std::uint64_t EOSValueDigest( const std::vector<double>& values )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
 			HashEOSUInt64(hash,values.size());
-			for(const double value:values)HashEOSFloat(hash,value);
+			HashEOSFloatArray(hash,values);
 			return hash;
 		}
 
@@ -147,21 +158,26 @@ namespace RISEFireProductionFP64
 		void HashFluxValues( std::uint64_t& hash, const std::vector<double>& values )
 		{
 			HashEOSUInt64(hash,values.size());
-			for(const double value:values)HashEOSFloat(hash,value);
+			HashEOSFloatArray(hash,values);
 		}
 
 		void HashFluxBytes( std::uint64_t& hash,
 			const std::vector<unsigned char>& values )
 		{
 			HashEOSUInt64(hash,values.size());
-			for(const unsigned char value:values)HashEOSByte(hash,value);
+			if(values.size()<4096u){for(const unsigned char value:values)HashEOSByte(hash,value);return;}
+			const std::vector<std::uint64_t> words(values.begin(),values.end());
+			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),1u,0u);
 		}
 
 		void HashSourceDoubleValues( std::uint64_t& hash,
 			const std::vector<double>& values )
 		{
 			HashEOSUInt64(hash,values.size());
-			for(const double value:values)HashEOSDouble(hash,value);
+			if(values.size()<4096u){for(const double value:values)HashEOSDouble(hash,value);return;}
+			std::vector<std::uint64_t> words(values.size());
+			for(std::size_t index=0u;index<values.size();++index)words[index]=EOSDoubleBits(values[index]);
+			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),8u,0u);
 		}
 
 		//! Exact memo for a pure content hash. A hit requires every input byte (and
@@ -2831,7 +2847,11 @@ namespace RISEFireProductionFP64
 					"scalar base divergence-target record identity differs");
 			const std::size_t cells=shape.CellCount();
 			std::vector<double> canonicalTemperatureK(cells,0.0);
-			for(std::size_t cell=0u;cell<cells;++cell){
+			// M8c: independent cells; on the CPU backend's workers the first failure is
+			// the lowest failing cell, as in the serial loop.
+			FireProductionCPUFirstFailure temperatureFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
 				if(role==FireProductionScalarDivergenceTargetRole::R0Base)
 					canonicalTemperatureK[cell]=source.BeginningTemperatureK()[cell];
 				else {
@@ -2839,15 +2859,19 @@ namespace RISEFireProductionFP64
 					for(std::size_t component=0u;component<9u;++component)
 						tuple[component]=static_cast<double>(
 							advectiveRequest.beginning[component*cells+cell]);
-					double temperatureK=0.0,pressureRatio=0.0;
+					double temperatureK=0.0,pressureRatio=0.0;std::string cellError;
 					if(!record.InvertAcceptedConservativeStateByComponentOrder(tuple.data(),
 						tuple.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
-						RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,error))return false;
+						RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,&cellError)){
+						temperatureFailure.Record(cell,cellError);return;}
 					canonicalTemperatureK[cell]=static_cast<double>(temperatureK);
 				}
-				if(static_cast<float>(canonicalTemperatureK[cell])!=static_cast<float>(physicalRequest.temperatureK[cell]))return Fail(error,
-						"scalar base divergence-target temperature lacks accepted-state authority");
+				if(static_cast<float>(canonicalTemperatureK[cell])!=static_cast<float>(physicalRequest.temperatureK[cell])){
+					temperatureFailure.Record(cell,
+						"scalar base divergence-target temperature lacks accepted-state authority");return;}
 			}
+			},1024u);
+			if(temperatureFailure.Failed())return Fail(error,temperatureFailure.Message().c_str());
 			if(role==FireProductionScalarDivergenceTargetRole::R0Base&&
 				!::RISE::FireSim::FireFastMode()&&
 				CanonicalSourceBeginningStateIdentity(shape,advectiveRequest.beginning,
@@ -2866,9 +2890,13 @@ namespace RISEFireProductionFP64
 			computed.fluxCompositionIdentity_=stage.compositionIdentity;
 			const double dt=static_cast<double>(advectiveRequest.timeStepS);
 			const double inverseWidth=1.0/static_cast<double>(shape.cellWidthM);
-			for(std::size_t z=0u;z<shape.nz;++z)for(std::size_t y=0u;y<shape.ny;++y)
-				for(std::size_t x=0u;x<shape.nx;++x){
-					const std::size_t cell=CellIndex(shape,x,y,z);
+			// M8c: independent cells in slices of cell index (z-major, as CellIndex);
+			// first failure by cell, maximum taken after.
+			std::vector<double> cellScaled(cells,0.0);
+			FireProductionCPUFirstFailure targetFailure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+				for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
+					const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,z=cell/(shape.nx*shape.ny);
 					std::array<double,9> state={{}},physicalRate={{}};
 					for(std::size_t component=0u;component<9u;++component){
 						state[component]=static_cast<double>(
@@ -2891,22 +2919,26 @@ namespace RISEFireProductionFP64
 							stage.physicalEnergyFluxWPerM2[left])-static_cast<double>(
 							stage.physicalEnergyFluxWPerM2[right]));
 					}
-					double physicalPerS=0.0;
+					double physicalPerS=0.0;std::string cellError;
 					if(!record.DivergenceFromDiscreteRateByComponentOrder(state.data(),
 						state.size(),physicalRate.data(),physicalRate.size(),static_cast<double>(
 							physicalRequest.temperatureK[cell]),
-						RISE::FireStateProducerPrecision::Binary32,physicalPerS,error))return false;
+						RISE::FireStateProducerPrecision::Binary32,physicalPerS,&cellError)){
+						targetFailure.Record(cell,cellError);return;}
 					const double targetPerS=physicalPerS+static_cast<double>(
 						source.DivergenceTargetPerS()[cell]);
 					const double scaled=dt*targetPerS;
 					double target=static_cast<double>(targetPerS);
-					if(!std::isfinite(scaled)||!std::isfinite(target))return Fail(error,
-						"scalar base divergence-target composition is nonfinite");
+					if(!std::isfinite(scaled)||!std::isfinite(target)){targetFailure.Record(cell,
+						"scalar base divergence-target composition is nonfinite");return;}
 					if(target==0.0)target=0.0;
 					computed.targetPerS_[cell]=target;
-					computed.maximumScaledExpansion_=std::max(
-						computed.maximumScaledExpansion_,std::fabs(scaled));
+					cellScaled[cell]=std::fabs(scaled);
 				}
+			},1024u);
+			if(targetFailure.Failed())return Fail(error,targetFailure.Message().c_str());
+			for(const double scaled:cellScaled)
+				computed.maximumScaledExpansion_=std::max(computed.maximumScaledExpansion_,scaled);
 			computed.sealed_=true;
 			computed.targetIdentity_=BaseDivergenceTargetIdentity(computed);
 			if(!FireProductionScalarDivergenceTargetSealMatches(computed,error))return false;
@@ -3416,14 +3448,22 @@ namespace RISEFireProductionFP64
 			computed.lowerTemperatureK=lowerTemperatureK;
 			computed.upperTemperatureK=upperTemperatureK;
 			computed.temperatureK.resize(cells);
-			for(std::size_t cell=0u;cell<cells;++cell){
+			// M8b/M8c: cells are independent; on the CPU backend's workers each slice
+			// writes its own cells and residuals, the first failure is the lowest
+			// failing cell (the serial loop's), and the maximum is taken after.
+			std::vector<double> cellResidual(cells,0.0);
+			FireProductionCPUFirstFailure failure;
+			FireProductionCPUParallelFor(cells,[&](const std::size_t cellBegin,const std::size_t cellEnd){
+			for(std::size_t cell=cellBegin;cell<cellEnd;++cell){
+				std::string cellError;
 				std::array<double,9> state;
+				bool finite=true;
 				for(std::size_t component=0u;component<9u;++component){
 					const double value=request.conservativeValues[component*cells+cell];
-					if(!std::isfinite(value))return Fail(error,
-						"scalar EOS acceptance conservative value is nonfinite");
+					if(!std::isfinite(value)){finite=false;break;}
 					state[component]=static_cast<double>(value);
 				}
+				if(!finite){failure.Record(cell,"scalar EOS acceptance conservative value is nonfinite");return;}
 				double temperature=0.0,pressureRatio=0.0;
 				// M8b: invert over the record's whole range, the canonical inversion every
 				// consumer recomputes (the R1 base target's accepted-state authority); the
@@ -3432,27 +3472,33 @@ namespace RISEFireProductionFP64
 				// The case bounds below still refuse a temperature outside them.
 				if(!record.InvertAcceptedConservativeStateByComponentOrder(state.data(),
 					state.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
-					request.producerPrecision,temperature,pressureRatio,error))return false;
-				if(temperature<lowerTemperatureK)return Fail(error,
-					"scalar EOS acceptance temperature is below the case floor");
-				if(temperature>=upperTemperatureK)return Fail(error,
-					"scalar EOS acceptance temperature reaches the case ceiling");
+					request.producerPrecision,temperature,pressureRatio,&cellError)){
+					failure.Record(cell,cellError);return;}
+				if(temperature<lowerTemperatureK){failure.Record(cell,
+					"scalar EOS acceptance temperature is below the case floor");return;}
+				if(temperature>=upperTemperatureK){failure.Record(cell,
+					"scalar EOS acceptance temperature reaches the case ceiling");return;}
 				const double publishedTemperature=static_cast<double>(temperature);
 				if(!std::isfinite(publishedTemperature)||
 					static_cast<double>(publishedTemperature)<lowerTemperatureK||
-					static_cast<double>(publishedTemperature)>=upperTemperatureK)
-					return Fail(error,
-						"scalar EOS acceptance temperature publication is outside the case bounds");
+					static_cast<double>(publishedTemperature)>=upperTemperatureK){
+					failure.Record(cell,
+						"scalar EOS acceptance temperature publication is outside the case bounds");return;}
 				double publishedPressureRatio=0.0;
 				if(!record.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
 					state.data(),state.size(),static_cast<double>(publishedTemperature),
-					request.producerPrecision,publishedPressureRatio,error))return false;
+					request.producerPrecision,publishedPressureRatio,&cellError)){
+					failure.Record(cell,cellError);return;}
 				const double residual=std::fabs(publishedPressureRatio-1.0);
-				if(!std::isfinite(residual))return Fail(error,
-					"scalar EOS acceptance pressure residual is nonfinite");
+				if(!std::isfinite(residual)){failure.Record(cell,
+					"scalar EOS acceptance pressure residual is nonfinite");return;}
 				computed.temperatureK[cell]=publishedTemperature;
-				computed.maximumEOSResidual=std::max(computed.maximumEOSResidual,residual);
+				cellResidual[cell]=residual;
 			}
+			},1024u);
+			if(failure.Failed())return Fail(error,failure.Message().c_str());
+			for(const double residual:cellResidual)
+				computed.maximumEOSResidual=std::max(computed.maximumEOSResidual,residual);
 			computed.stateDigest=EOSValueDigest(request.conservativeValues);
 			computed.temperatureDigest=EOSValueDigest(computed.temperatureK);
 			computed.acceptanceIdentity=EOSAcceptanceIdentity(request,computed.caseRecordId,

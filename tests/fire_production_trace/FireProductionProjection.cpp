@@ -12,6 +12,7 @@
 #include "pch.h"
 #include "FireProductionProjection.h"
 #include "FireProductionAdvection.h"   // M8b: FireProductionCPUParallelFor
+#include "../../src/Library/Utilities/FireSimulationRecords.h"     // M8c: FireFastMode.h (fast mode's adaptive V-cycle stop)
 
 #include <algorithm>
 #include <cmath>
@@ -867,17 +868,11 @@ namespace RISEFireProductionTrace
 		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?
 			(execution==CPUProjectionResidentPhysical?
 				request.residentPhysicalOpenVCycleCount:16u):12u;
-		{
-			FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
-			for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
-				VCycle(hierarchy,0u,request.boundary,nullspace,
-					result.executedJacobiSweepCount);
-				++result.executedVCycleCount;
-				if( nullspace ) RemoveMean(hierarchy[0].pressure);
-			}
-		}
-		result.pressurePa=hierarchy[0].pressure;
-
+		// The face correction from a pressure field (the final publication, and the M8c
+		// fast-mode trial below; one definition so both use the same arithmetic).
+		auto correctFaces=[&](const std::vector<FireProductionRoundoffTrace::TraceFloat>& pressure,
+			std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& momentumOut,
+			std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& velocityOut,FireProductionRoundoffTrace::TraceFloat& maximumOut){
 		for( unsigned int axis=0;axis<3u;++axis ) {
 			const std::size_t ex=axis==0u?nx+1u:nx;
 			const std::size_t ey=axis==1u?ny+1u:ny;
@@ -891,18 +886,18 @@ namespace RISEFireProductionTrace
 					if( coordinate>0u&&coordinate<extent ) {
 						std::size_t lx=x,ly=y,lz=z,hx=x,hy=y,hz=z;
 						if( axis==0u ) --lx;if( axis==1u ) --ly;if( axis==2u ) --lz;
-						gradient=(result.pressurePa[CellIndex(nx,ny,hx,hy,hz)]-
-							result.pressurePa[CellIndex(nx,ny,lx,ly,lz)])/shape.cellWidthM;
+						gradient=(pressure[CellIndex(nx,ny,hx,hy,hz)]-
+							pressure[CellIndex(nx,ny,lx,ly,lz)])/shape.cellWidthM;
 					} else {
 						const unsigned int side=2u*axis+(coordinate?1u:0u);
 						if(BurnerFace(request,side,x,y)){
-							result.momentumKGPerM2S[axis][face]=request.bottomFuelMassFluxKGPerM2S[y*nx+x];
-							result.velocityMPerS[axis][face]=result.momentumKGPerM2S[axis][face]/
+							momentumOut[axis][face]=request.bottomFuelMassFluxKGPerM2S[y*nx+x];
+							velocityOut[axis][face]=momentumOut[axis][face]/
 								result.faceDensityKGPerM3[axis][face];continue;
 						}
 						if( request.boundary[side]==FireProductionProjectionWall ) {
-							result.momentumKGPerM2S[axis][face]=0.0f;
-							result.velocityMPerS[axis][face]=0.0f;continue;
+							momentumOut[axis][face]=0.0f;
+							velocityOut[axis][face]=0.0f;continue;
 						}
 						std::size_t cx=x,cy=y,cz=z;
 						if( axis==0u ) cx=coordinate?nx-1u:0u;
@@ -913,22 +908,22 @@ namespace RISEFireProductionTrace
 							if( axis==0u ) {cx=nx-1u;ox=0u;}
 							if( axis==1u ) {cy=ny-1u;oy=0u;}
 							if( axis==2u ) {cz=nz-1u;oz=0u;}
-							gradient=(result.pressurePa[CellIndex(nx,ny,ox,oy,oz)]-
-								result.pressurePa[CellIndex(nx,ny,cx,cy,cz)])/shape.cellWidthM;
+							gradient=(pressure[CellIndex(nx,ny,ox,oy,oz)]-
+								pressure[CellIndex(nx,ny,cx,cy,cz)])/shape.cellWidthM;
 						} else {
 							// Restoration solves a correction with homogeneous head, not
 							// the caller's sealed physical-pressure boundary value.
 							const FireProductionRoundoffTrace::TraceFloat pb=execution==CPUProjectionRestoration?0.0f:
 								boundaryPressure[side][SideFaceIndex(shape,side,cx,cy,cz)];
-							gradient=coordinate?2.0f*(pb-result.pressurePa[
+							gradient=coordinate?2.0f*(pb-pressure[
 								CellIndex(nx,ny,cx,cy,cz)])/shape.cellWidthM:
-								2.0f*(result.pressurePa[CellIndex(nx,ny,cx,cy,cz)]-pb)/
+								2.0f*(pressure[CellIndex(nx,ny,cx,cy,cz)]-pb)/
 								shape.cellWidthM;
 						}
 					}
-					result.momentumKGPerM2S[axis][face]=
+					momentumOut[axis][face]=
 						request.provisionalMomentumKGPerM2S[axis][face]-request.timeStepS*gradient;
-					result.velocityMPerS[axis][face]=result.momentumKGPerM2S[axis][face]/
+					velocityOut[axis][face]=momentumOut[axis][face]/
 						result.faceDensityKGPerM3[axis][face];
 				}
 			if( request.boundary[2u*axis]==FireProductionProjectionPeriodic ) {
@@ -944,13 +939,56 @@ namespace RISEFireProductionTrace
 						const std::size_t low=FaceIndex(nx,ny,axis,x0,y0,z0);
 						const std::size_t high=FaceIndex(nx,ny,axis,x1,y1,z1);
 						result.faceDensityKGPerM3[axis][high]=result.faceDensityKGPerM3[axis][low];
-						result.momentumKGPerM2S[axis][high]=result.momentumKGPerM2S[axis][low];
-						result.velocityMPerS[axis][high]=result.velocityMPerS[axis][low];
+						momentumOut[axis][high]=momentumOut[axis][low];
+						velocityOut[axis][high]=velocityOut[axis][low];
 					}
 			}
-			for( const FireProductionRoundoffTrace::TraceFloat value : result.velocityMPerS[axis] )
-				maximumVelocity=std::max(maximumVelocity,std::fabs(value));
+			for( const FireProductionRoundoffTrace::TraceFloat value : velocityOut[axis] )
+				maximumOut=std::max(maximumOut,std::fabs(value));
 		}
+		};
+		// M8c: fast mode's early V-cycle stop on the CPU side, Metal's r275 rule
+		// (FireProductionProjectionMac.mm): a resident (owner) projection with an
+		// open boundary and at least 13 scheduled cycles, not a restoration, checks
+		// after cycles 11, 13, ... (below the schedule) whether the corrected velocity
+		// already meets the unchanged validation band (same post residual, same
+		// maximum velocity, same predicate) and stops there.  Every Metal owner
+		// projection preserves its class and derives the endpoint class afterwards
+		// from the final velocity; the CPU owner's R2 iterates derive it here, after
+		// the same final correction, so they take the same stop.
+		const bool adaptiveCycles=::RISE::FireSim::FireFastAdaptiveVCycles()&&
+			request.cpuResidentSchedule&&execution==CPUProjectionResidentPhysical&&
+			HasOpenBoundary(request.boundary)&&cycleCount>=13u;
+		const FireProductionRoundoffTrace::TraceFloat adaptiveLength=shape.cellWidthM*static_cast<FireProductionRoundoffTrace::TraceFloat>(std::max(nx,std::max(ny,nz)));
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> trialMomentum,trialVelocity;
+		auto adaptiveStop=[&](const unsigned int executed)->bool{
+			if( executed<11u||executed>=cycleCount||(executed-11u)%2u!=0u ) return false;
+			trialMomentum=result.momentumKGPerM2S;trialVelocity=result.velocityMPerS;
+			FireProductionRoundoffTrace::TraceFloat trialMaximum=maximumVelocity;
+			correctFaces(hierarchy[0].pressure,trialMomentum,trialVelocity,trialMaximum);
+			FireProductionRoundoffTrace::TraceFloat trialResidual=0.0f;
+			for( std::size_t z=0;z<nz;++z ) for( std::size_t y=0;y<ny;++y )
+				for( std::size_t x=0;x<nx;++x ) trialResidual=std::max(trialResidual,
+					std::fabs(divergence(trialVelocity,x,y,z)-
+						request.divergenceTargetPerS[CellIndex(nx,ny,x,y,z)]));
+			bool trialPassed=false;
+			return FireProductionProjectionResidualWithinBand(trialResidual,trialMaximum,
+				adaptiveLength,trialPassed)&&trialPassed;
+		};
+		bool adaptiveStopped=false;
+		{
+			FireProductionRoundoffTrace::ProjectionSolveDependencyScope solveScope;
+			for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
+				if( adaptiveStopped ) continue;
+				VCycle(hierarchy,0u,request.boundary,nullspace,
+					result.executedJacobiSweepCount);
+				++result.executedVCycleCount;
+				if( nullspace ) RemoveMean(hierarchy[0].pressure);
+				if( adaptiveCycles ) adaptiveStopped=adaptiveStop(cycle+1u);
+			}
+		}
+		result.pressurePa=hierarchy[0].pressure;
+		correctFaces(result.pressurePa,result.momentumKGPerM2S,result.velocityMPerS,maximumVelocity);
 		if(request.outputClassificationMode==
 			FireProductionProjectionDeriveEndpointOpenClassification){
 			for(unsigned int side=0u;side<6u;++side){

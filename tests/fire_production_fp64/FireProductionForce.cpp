@@ -1430,7 +1430,13 @@ namespace RISEFireProductionFP64
 		void OwnerHashFloats(std::uint64_t& hash,const std::vector<double>& values)
 		{
 			OwnerHashUInt64(hash,values.size());
-			for(const double value:values)OwnerHashFloat(hash,value);
+			if(values.size()<4096u){for(const double value:values)OwnerHashFloat(hash,value);return;}
+			// M8c: OwnerHashFloat's bytes (four of the word, four zero) through the sliced
+			// FNV (FireProductionFNV1aWords: the same digest).
+			std::vector<std::uint64_t> words(values.size());
+			for(std::size_t index=0u;index<values.size();++index){
+				std::uint64_t bits=0u;std::memcpy(&bits,&values[index],sizeof(bits));words[index]=bits;}
+			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),4u,4u);
 		}
 
 		void OwnerHashDouble(std::uint64_t& hash,const double value)

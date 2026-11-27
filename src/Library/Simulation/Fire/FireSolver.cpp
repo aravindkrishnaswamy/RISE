@@ -140,11 +140,12 @@ const std::vector<OptionSpec>& Options()
 	return options;
 }
 constexpr const char* fastModeEnvironment = "RISE_FIRE_FAST_MODE";
-// M8b: how Configure hands the backend to the fire library (FireRun::FireCPUBackendRequested).
-// Not a legacy default: Configure writes it from the parameter and never reads it.
-constexpr const char* backendEnvironment = "RISE_FIRE_BACKEND";
 
 #if defined(RISE_ENABLE_OPENVDB)
+// M8b: how Configure hands the backend to the fire library (FireRun::FireCPUBackendRequested).
+// Not a legacy default: Configure writes it from the parameter and never reads it.
+// (Inside the OpenVDB block, its only user, so a build without OpenVDB has no unused constant.)
+constexpr const char* backendEnvironment = "RISE_FIRE_BACKEND";
 using namespace RISE::FireRun;
 
 // M8b: the CPU backend's status evidence (docs/SIMULATION_M8_RESULTS.md section 10).

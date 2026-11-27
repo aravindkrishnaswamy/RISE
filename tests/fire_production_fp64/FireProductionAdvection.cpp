@@ -21,6 +21,9 @@
 #include <exception>
 #include <future>
 #include <thread>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace RISEFireProductionFP64
 {
@@ -141,6 +144,107 @@ namespace RISEFireProductionFP64
 
 	bool FireProductionCPUFirstFailure::Failed() const { return failed_; }
 	const std::string& FireProductionCPUFirstFailure::Message() const { return message_; }
+
+	namespace
+	{
+		const std::uint64_t fnvPrime=UINT64_C(1099511628211);
+		// The prime modulo 256 (0xB3): the low byte of h*P depends on the low byte of h only.
+		const unsigned char fnvPrimeLowByte=static_cast<unsigned char>(UINT64_C(1099511628211)&UINT64_C(0xFF));
+
+		std::uint64_t FNVPower(std::uint64_t exponent)
+		{
+			std::uint64_t result=1u,base=fnvPrime;
+			while(exponent){if(exponent&1u)result*=base;base*=base;exponent>>=1u;}
+			return result;
+		}
+
+		unsigned char LowBytePower(unsigned int exponent)
+		{
+			unsigned int result=1u;
+			for(unsigned int i=0u;i<exponent;++i)result=(result*fnvPrimeLowByte)&0xFFu;
+			return static_cast<unsigned char>(result);
+		}
+
+		std::uint64_t FNV1aWordsSerial(std::uint64_t hash,const std::uint64_t* words,
+			const std::size_t count,const unsigned int wordBytes,const std::uint64_t zeroPower)
+		{
+			for(std::size_t index=0u;index<count;++index){
+				const std::uint64_t word=words[index];
+				for(unsigned int byte=0u;byte<wordBytes;++byte){
+					hash^=(word>>(8u*byte))&UINT64_C(0xFF);hash*=fnvPrime;}
+				hash*=zeroPower;
+			}
+			return hash;
+		}
+	}
+
+	std::uint64_t FireProductionFNV1aWords(std::uint64_t hash,const std::uint64_t* words,
+		const std::size_t count,const unsigned int wordBytes,const unsigned int zeroBytes)
+	{
+		const std::uint64_t zeroPower=FNVPower(zeroBytes);
+		const std::size_t wordStride=static_cast<std::size_t>(wordBytes)+zeroBytes;
+		const unsigned int workers=FireProductionCPUParallelWorkers();
+#if defined(__ARM_NEON)
+		// Below about 64 KiB of input (or with one worker) the serial loop is cheaper.
+		const std::size_t grain=(std::size_t(1)<<16u)/(wordStride==0u?1u:wordStride)+1u;
+		if(workers<=1u||count<2u*grain||wordBytes==0u||wordBytes>8u||zeroBytes>8u)
+			return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower);
+		const std::size_t slices=std::min<std::size_t>(workers,(count+grain-1u)/grain);
+		const std::size_t length=(count+slices-1u)/slices;
+		const unsigned char zeroLow=LowBytePower(zeroBytes);
+		// Pass 1: each slice's map from its starting low byte to its ending low byte,
+		// for all 256 starting values at once (sixteen byte lanes per vector).
+		std::vector<std::array<unsigned char,256>> maps(slices);
+		FireProductionCPUParallelFor(slices,[&](const std::size_t first,const std::size_t last){
+			for(std::size_t slice=first;slice<last;++slice){
+				uint8x16_t lane[16];
+				for(unsigned int v=0u;v<16u;++v){unsigned char start[16];
+					for(unsigned int i=0u;i<16u;++i)start[i]=static_cast<unsigned char>(16u*v+i);
+					lane[v]=vld1q_u8(start);}
+				const uint8x16_t prime=vdupq_n_u8(fnvPrimeLowByte),zeros=vdupq_n_u8(zeroLow);
+				const std::size_t begin=slice*length,end=std::min(count,begin+length);
+				for(std::size_t index=begin;index<end;++index){
+					const std::uint64_t word=words[index];
+					for(unsigned int byte=0u;byte<wordBytes;++byte){
+						const uint8x16_t b=vdupq_n_u8(static_cast<unsigned char>((word>>(8u*byte))&UINT64_C(0xFF)));
+						for(unsigned int v=0u;v<16u;++v)lane[v]=vmulq_u8(veorq_u8(lane[v],b),prime);
+					}
+					if(zeroBytes)for(unsigned int v=0u;v<16u;++v)lane[v]=vmulq_u8(lane[v],zeros);
+				}
+				for(unsigned int v=0u;v<16u;++v)vst1q_u8(maps[slice].data()+16u*v,lane[v]);
+			}
+		},1u);
+		std::vector<unsigned char> startLow(slices);
+		unsigned char low=static_cast<unsigned char>(hash&UINT64_C(0xFF));
+		for(std::size_t slice=0u;slice<slices;++slice){startLow[slice]=low;low=maps[slice][low];}
+		// Pass 2: from its known starting low byte, each slice's sum of d P^(m-i).
+		std::vector<std::uint64_t> sums(slices,0u);
+		FireProductionCPUParallelFor(slices,[&](const std::size_t first,const std::size_t last){
+			for(std::size_t slice=first;slice<last;++slice){
+				unsigned int l=startLow[slice];std::uint64_t sum=0u;
+				const std::size_t begin=slice*length,end=std::min(count,begin+length);
+				for(std::size_t index=begin;index<end;++index){
+					const std::uint64_t word=words[index];
+					for(unsigned int byte=0u;byte<wordBytes;++byte){
+						const unsigned int x=l^static_cast<unsigned int>((word>>(8u*byte))&UINT64_C(0xFF));
+						sum=(sum+(static_cast<std::uint64_t>(x)-static_cast<std::uint64_t>(l)))*fnvPrime;
+						l=(x*fnvPrimeLowByte)&0xFFu;
+					}
+					sum*=zeroPower;l=(l*zeroLow)&0xFFu;
+				}
+				sums[slice]=sum;
+			}
+		},1u);
+		for(std::size_t slice=0u;slice<slices;++slice){
+			const std::size_t begin=slice*length,end=std::min(count,begin+length);
+			hash=hash*FNVPower(static_cast<std::uint64_t>(end-begin)*wordStride)+sums[slice];
+		}
+		return hash;
+#else
+		(void)workers;(void)wordStride;
+		return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower);
+#endif
+	}
 
 	std::string FireProductionOwnerKernelSetSHA256(const std::array<std::string,5>& sources)
 	{

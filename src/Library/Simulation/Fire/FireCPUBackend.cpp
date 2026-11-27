@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -327,6 +328,18 @@ namespace RISE
 					return false;
 			}
 			ownerRequest=FireProductionProjectedHeunOwnerRequest();
+			// Diagnostic (RISE_FIRE_PICARD_TRACE, as the Metal owner): each stage's Picard
+			// residuals, open-boundary cycle and limiter-certification outcome.
+			if(std::getenv("RISE_FIRE_PICARD_TRACE")){
+				const FireProductionProjectedHeunCoupledStageResult* stages[3]={&owner.r0,&owner.r1,&owner.r2};
+				for(unsigned int stage=0u;stage<3u;++stage){const auto& s=*stages[stage];
+					std::fprintf(stderr,"PICARD_CPU stage=%u accepted_iterations=%u cycle_length=%u "
+						"canonical_projections=%u limiter_discontinuous=%u active_set_discontinuous=%u residuals=",
+						stage,s.acceptedIterationCount,s.activeSetCycleLength,s.activeSetCanonicalProjectionCount,
+						s.limiterDiscontinuousClass?1u:0u,s.activeSetDiscontinuousClass?1u:0u);
+					for(const float r:s.picardResidualPerS)std::fprintf(stderr," %.9g",static_cast<double>(r));
+					std::fprintf(stderr,"\n");}
+			}
 			if(!owner.accepted||owner.OwnerIdentity()==0u||owner.conservativeValues.size()!=9u*cells)
 				return Fail(error,"CPU projected-Heun owner terminal payload is invalid");
 			// Represented pressure ratio and its absolute deviation from one, per cell, as the
