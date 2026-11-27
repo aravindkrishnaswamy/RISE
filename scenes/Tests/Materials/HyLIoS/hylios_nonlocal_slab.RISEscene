@@ -1,0 +1,112 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           hylios_nonlocal_slab.RISEscene                                                          #
+#   Description:    Baseline test scene for HyLIoS hyperspectral skin material in nonlocal spatial mode     #
+#                   with rise_reciprocal_boundary_v1 and spectral path tracing.                             #
+#                                                                                                           #
+#############################################################################################################
+
+film
+{
+	width				320
+	height				240
+}
+
+pinhole_camera
+{
+	location			0 1.4 2.6
+	lookat				0 0 0
+	up					0 1 0
+	fov					38.0
+}
+
+uniformcolor_painter
+{
+	name				env_white
+	color				0.85 0.85 0.85
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pathtracing_spectral_rasterizer
+{
+	defaultshader		global
+	samples				16
+	nmbegin				380.0
+	nmend				780.0
+	num_wavelengths		64
+	spectral_samples	1
+	oidn_denoise		FALSE
+	hwss				TRUE
+	pixel_filter		gaussian
+	radiance_map		env_white
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/hylios_nonlocal_slab
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+uniformcolor_painter
+{
+	name				floor_gray
+	color				0.35 0.35 0.35
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			floor_gray
+}
+
+hylios_skin_material
+{
+	name				skin_s3_nonlocal
+	preset				S3
+	transport_mode		nonlocal
+	boundary_mode		rise_reciprocal_boundary_v1
+	boundary_roughness	0.25
+	spatial_domain		concentric_sphere
+	domain_radius_m		0.15
+	exterior_ior		1.0
+	specimen_source		scenes/Tests/Materials/HyLIoS/s3_nonlocal_demo.json
+}
+
+sphere_geometry
+{
+	name				skin_sphere_geom
+	radius				0.75
+}
+
+box_geometry
+{
+	name				floor_box_geom
+	width				10.0
+	height				0.2
+	depth				10.0
+}
+
+standard_object
+{
+	name				skin_sphere
+	geometry			skin_sphere_geom
+	position			0 0 0
+	material			skin_s3_nonlocal
+}
+
+standard_object
+{
+	name				floor_plane
+	geometry			floor_box_geom
+	position			0 -0.85 0
+	material			floor_mat
+}

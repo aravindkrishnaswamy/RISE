@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "approximate": true,
+  "composition_revision": "hylios-demo-s3-v1",
+  "coverage_profile_id": "explicit-synthetic-approximation",
+  "spectral_bundle_sha256": "demo_s3_nonlocal_bundle",
+  "resolved_specimen_sha256": "demo_s3_nonlocal_specimen",
+  "preset_id": "S3",
+  "interpretation": "Curated S3-like 6-layer spectral skin demo specimen for RISE HyLIoS nonlocal & radiometric scenes",
+  "units": {
+    "length": "m",
+    "coefficient": "m^-1",
+    "wavelength": "nm",
+    "mass_concentration": "kg/m^3"
+  },
+  "wavelength_nm": [380, 420, 460, 500, 540, 580, 620, 660, 700, 740, 780],
+  "surface_fold_aspect_ratio": 0.75,
+  "provenance": {
+    "purpose": "scene_demo"
+  },
+  "layers": [
+    {
+      "layer_id": "stratum_corneum",
+      "thickness_m": 0.00002,
+      "host_absorption_m_inv": [80, 60, 45, 35, 28, 22, 18, 15, 13, 12, 11],
+      "real_refractive_index": [1.55, 1.55, 1.55, 1.55, 1.55, 1.55, 1.55, 1.55, 1.55, 1.55, 1.55],
+      "constituent_absorption_m_inv": {"demo": [80, 60, 45, 35, 28, 22, 18, 15, 13, 12, 11]},
+      "particles": null
+    },
+    {
+      "layer_id": "stratum_granulosum",
+      "thickness_m": 0.00003,
+      "host_absorption_m_inv": [220, 160, 120, 90, 65, 48, 34, 24, 18, 15, 13],
+      "real_refractive_index": [1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40],
+      "constituent_absorption_m_inv": {"demo": [220, 160, 120, 90, 65, 48, 34, 24, 18, 15, 13]},
+      "particles": null
+    },
+    {
+      "layer_id": "stratum_spinosum",
+      "thickness_m": 0.00005,
+      "host_absorption_m_inv": [260, 190, 140, 105, 75, 55, 38, 26, 19, 15, 13],
+      "real_refractive_index": [1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40],
+      "constituent_absorption_m_inv": {"demo": [260, 190, 140, 105, 75, 55, 38, 26, 19, 15, 13]},
+      "particles": null
+    },
+    {
+      "layer_id": "stratum_basale",
+      "thickness_m": 0.00002,
+      "host_absorption_m_inv": [420, 310, 220, 160, 115, 82, 56, 38, 28, 22, 18],
+      "real_refractive_index": [1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40, 1.40],
+      "constituent_absorption_m_inv": {"demo": [420, 310, 220, 160, 115, 82, 56, 38, 28, 22, 18]},
+      "particles": null
+    },
+    {
+      "layer_id": "papillary_dermis",
+      "thickness_m": 0.0002,
+      "host_absorption_m_inv": [380, 320, 180, 140, 220, 190, 45, 22, 16, 14, 13],
+      "real_refractive_index": [1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38],
+      "constituent_absorption_m_inv": {"demo": [380, 320, 180, 140, 220, 190, 45, 22, 16, 14, 13]},
+      "particles": null
+    },
+    {
+      "layer_id": "reticular_dermis",
+      "thickness_m": 0.0015,
+      "host_absorption_m_inv": [340, 280, 160, 125, 200, 170, 40, 20, 15, 13, 12],
+      "real_refractive_index": [1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38, 1.38],
+      "constituent_absorption_m_inv": {"demo": [340, 280, 160, 125, 200, 170, 40, 20, 15, 13, 12]},
+      "particles": null
+    }
+  ]
+}
