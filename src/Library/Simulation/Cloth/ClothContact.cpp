@@ -1268,13 +1268,19 @@ double BarrierContact::KinematicStep(const ContactFrame& f, const std::vector<do
 {
 	const double ta = stage.t0, tb = stage.t1, span = tb - ta, s = 0.1;
 	double alpha = 1;
+	// A point's path bound depends only on its position and its motion, both
+	// fixed for the whole call, while a vertex appears in many candidate pairs:
+	// each bound is computed once (a negative entry is "not yet").
+	std::vector<double> clothBound(vertices_, -1.0), colliderBound(colliderV0_.size()/3, -1.0);
 	for (const ContactPair& p : f.candidates) {
 		double t = 1;
 		if (p.kind == ContactPair::Shape) {
 			const Motion* m = stage.follow[p.a];
 			if (!m) continue;
 			const V3 x0 = At(x, p.a);
-			const double L = m->PathBound(x0, ta, tb);
+			double& memo = clothBound[p.a];
+			if (memo < 0) memo = m->PathBound(x0, ta, tb);
+			const double L = memo;
 			if (!(L > 0)) continue;
 			const Collider& c = shapes_[p.b];
 			t = Advancement([&](double tau) { V3 grad; return c.Distance(m->Advance(x0, ta, ta + tau*span), grad) - xi_; }, L, s);
@@ -1289,7 +1295,12 @@ double BarrierContact::KinematicStep(const ContactFrame& f, const std::vector<do
 			bool anyMoving = false, rigid = true;
 			for (int k = 0; k < 4; ++k) {
 				ms[k] = cloth[k] ? stage.follow[ids[k]] : stage.mesh[colliderMesh_[ids[k]]];
-				B[k] = ms[k] ? ms[k]->PathBound(xs[k], ta, tb) : 0.0;
+				if (!ms[k]) B[k] = 0.0;
+				else {
+					double& memo = cloth[k] ? clothBound[ids[k]] : colliderBound[ids[k]];
+					if (memo < 0) memo = ms[k]->PathBound(xs[k], ta, tb);
+					B[k] = memo;
+				}
 				anyMoving = anyMoving || ms[k];
 				rigid = rigid && ms[k] == ms[0];
 			}

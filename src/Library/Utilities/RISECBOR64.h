@@ -67,6 +67,9 @@ namespace RISE
 			static Value BytesValue( const Bytes& value );
 			static Value ArrayValue( const Values& value );
 			static Value MapValue( const Members& value );
+			//! The same, taking the elements instead of copying them.
+			static Value ArrayValue( Values&& value );
+			static Value MapValue( Members&& value );
 
 			Type GetType() const { return m_type; }
 			bool GetBoolean() const { return m_boolean; }

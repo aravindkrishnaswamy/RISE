@@ -14,10 +14,14 @@
 #include "pch.h"
 #include "RISECBOR64.h"
 #include <algorithm>
+#if defined(__aarch64__) && defined(__APPLE__)
+#include <arm_neon.h>
+#endif
 #include <fstream>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 using namespace RISE;
 
@@ -502,9 +506,9 @@ namespace
 				for( std::size_t i = 0; i < count; ++i ) {
 					RISECBOR64::Value item;
 					if( !ReadValue(item,depth+1u) ) return false;
-					items.push_back(item);
+					items.push_back(std::move(item));
 				}
-				value = RISECBOR64::Value::ArrayValue(items);
+				value = RISECBOR64::Value::ArrayValue(std::move(items));
 				return true;
 			}
 			case 5u:
@@ -527,9 +531,9 @@ namespace
 					previous = key;
 					RISECBOR64::Value member;
 					if( !ReadValue(member,depth+1u) ) return false;
-					members.push_back(std::make_pair(key,member));
+					members.push_back(std::make_pair(std::move(key),std::move(member)));
 				}
-				value = RISECBOR64::Value::MapValue(members);
+				value = RISECBOR64::Value::MapValue(std::move(members));
 				return true;
 			}
 			case 6u:
@@ -596,7 +600,7 @@ namespace
 			return (value>>bits)|(value<<(32u-bits));
 		}
 
-		void Transform( const unsigned char* block )
+		static const std::uint32_t* Constants()
 		{
 			static const std::uint32_t constants[64] = {
 				0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
@@ -607,6 +611,12 @@ namespace
 				0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
 				0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
 				0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u };
+			return constants;
+		}
+
+		void TransformScalar( const unsigned char* block )
+		{
+
 			std::uint32_t words[64];
 			for( unsigned int i = 0; i < 16u; ++i ) {
 				words[i] = (std::uint32_t(block[4u*i])<<24) |
@@ -626,7 +636,7 @@ namespace
 			for( unsigned int i = 0; i < 64u; ++i ) {
 				const std::uint32_t sum1 = RotateRight(e,6u)^RotateRight(e,11u)^RotateRight(e,25u);
 				const std::uint32_t choice = (e&f)^((~e)&g);
-				const std::uint32_t temp1 = h+sum1+choice+constants[i]+words[i];
+				const std::uint32_t temp1 = h+sum1+choice+Constants()[i]+words[i];
 				const std::uint32_t sum0 = RotateRight(a,2u)^RotateRight(a,13u)^RotateRight(a,22u);
 				const std::uint32_t majority = (a&b)^(a&c)^(b&c);
 				const std::uint32_t temp2 = sum0+majority;
@@ -635,6 +645,49 @@ namespace
 			m_state[0]+=a; m_state[1]+=b; m_state[2]+=c; m_state[3]+=d;
 			m_state[4]+=e; m_state[5]+=f; m_state[6]+=g; m_state[7]+=h;
 		}
+
+#if defined(__aarch64__) && defined(__APPLE__)
+		// The ARMv8 SHA-2 instructions (present on every Apple silicon core):
+		// the same compression function, several times faster than the
+		// portable rounds above, so the digest of any input is unchanged.
+		__attribute__((target("sha2")))
+		void TransformBlocksHardware( const unsigned char* data, std::size_t blocks )
+		{
+			const std::uint32_t* k = Constants();
+			uint32x4_t s0 = vld1q_u32(&m_state[0]);
+			uint32x4_t s1 = vld1q_u32(&m_state[4]);
+			while( blocks-- ) {
+				const uint32x4_t save0 = s0, save1 = s1;
+				uint32x4_t msg[4];
+				for( int i = 0; i < 4; ++i ) msg[i] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data+16*i)));
+				for( int i = 0; i < 16; ++i ) {
+					uint32x4_t& m = msg[i&3];
+					const uint32x4_t tmp = vaddq_u32(m,vld1q_u32(k+4*i));
+					if( i < 12 ) m = vsha256su0q_u32(m,msg[(i+1)&3]);
+					const uint32x4_t previous = s0;
+					s0 = vsha256hq_u32(s0,s1,tmp);
+					s1 = vsha256h2q_u32(s1,previous,tmp);
+					if( i < 12 ) m = vsha256su1q_u32(m,msg[(i+2)&3],msg[(i+3)&3]);
+				}
+				s0 = vaddq_u32(s0,save0);
+				s1 = vaddq_u32(s1,save1);
+				data += 64;
+			}
+			vst1q_u32(&m_state[0],s0);
+			vst1q_u32(&m_state[4],s1);
+		}
+#endif
+
+		void TransformBlocks( const unsigned char* data, std::size_t blocks )
+		{
+#if defined(__aarch64__) && defined(__APPLE__)
+			TransformBlocksHardware(data,blocks);
+#else
+			for( ; blocks; --blocks, data += 64 ) TransformScalar(data);
+#endif
+		}
+
+		void Transform( const unsigned char* block ) { TransformBlocks(block,1u); }
 
 	public:
 		SHA256() :
@@ -648,6 +701,12 @@ namespace
 		{
 			if( !data || size == 0u ) return;
 			m_bitCount += static_cast<std::uint64_t>(size)*8u;
+			if( m_bufferSize == 0u && size >= 64u ) {
+				const std::size_t blocks = size/64u;
+				TransformBlocks(data,blocks);
+				data += 64u*blocks;
+				size -= 64u*blocks;
+			}
 			while( size ) {
 				const std::size_t copy = std::min(size,64u-m_bufferSize);
 				std::memcpy(m_buffer+m_bufferSize,data,copy);
@@ -761,6 +820,22 @@ RISECBOR64::Value RISECBOR64::Value::MapValue( const Members& value )
 	return result;
 }
 
+RISECBOR64::Value RISECBOR64::Value::ArrayValue( Values&& value )
+{
+	Value result;
+	result.m_type = Array;
+	result.m_array = std::move(value);
+	return result;
+}
+
+RISECBOR64::Value RISECBOR64::Value::MapValue( Members&& value )
+{
+	Value result;
+	result.m_type = Map;
+	result.m_map = std::move(value);
+	return result;
+}
+
 const RISECBOR64::Value* RISECBOR64::Value::Find(
 	const std::string& key
 	) const
@@ -815,6 +890,18 @@ bool RISECBOR64::DecodeCanonical(
 
 bool RISECBOR64::IsUTF8NFC( const std::string& text )
 {
+	// Pure ASCII is valid UTF-8 and already in NFC (no ASCII code point
+	// decomposes, has a combining class, or composes with a neighbour), the
+	// case of nearly every key and digest of a manifest or cache record; this
+	// skips the code point vectors and the normalisation passes for it.
+	// RISECBOR64Test-style exhaustive checks of all one-, two- and
+	// three-character ASCII strings against the full path agree (see
+	// docs/SIMULATION_PERFORMANCE.md).
+	bool ascii = true;
+	for( const char c : text ) {
+		if( static_cast<unsigned char>(c) >= 0x80u ) { ascii = false; break; }
+	}
+	if( ascii ) return true;
 	std::vector<std::uint32_t> codePoints;
 	return DecodeUTF8(text,codePoints) && IsNFC(codePoints);
 }

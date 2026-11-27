@@ -20,6 +20,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <future>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -617,32 +618,46 @@ std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k, bool contactPart)
 		c.digest = EvidenceDigest(c.id, EvidenceConfiguration(k, spec.id, resolution), c.error, c.tolerance, c.passed);
 		out.push_back(c);
 	};
+	// The cases are independent, single-threaded and deterministic (each builds
+	// its own system from a copy of the settings), so they run concurrently
+	// and are collected in the order they were always added: the evidence,
+	// digests included, is the same as when they ran one after another.
+	auto launch = [&](int resolution, auto fn) {
+		CaseSettings t = s;
+		t.resolution = resolution;
+		return std::async(std::launch::async, [t, fn]() { return fn(t); });
+	};
 	if (!contactPart) {
-		s.resolution = 20;
-		const CaseResult cat = RunCatenary(s);
-		add(EvidenceSpecs[0], 20, cat, cat.error);
-		CaseResult cw[3], cf;
 		const int levels[3] = {10, 20, 40};
-		for (int l = 0; l < 3; ++l) { s.resolution = levels[l]; cw[l] = RunCantilever(s, false); }
-		s.resolution = 20;
-		cf = RunCantilever(s, true);
+		auto fCat = launch(20, [](const CaseSettings& t) { return RunCatenary(t); });
+		std::future<CaseResult> fCw[3];
+		for (int l = 0; l < 3; ++l) fCw[l] = launch(levels[l], [](const CaseSettings& t) { return RunCantilever(t, false); });
+		auto fCf = launch(20, [](const CaseSettings& t) { return RunCantilever(t, true); });
+		auto fM11 = launch(16, [](const CaseSettings& t) { return RunMembraneMode(t, 1, 1); });
+		auto fM21 = launch(16, [](const CaseSettings& t) { return RunMembraneMode(t, 2, 1); });
+		auto fPlate = launch(16, [](const CaseSettings& t) { return RunPlate(t, false); });
+		auto fEnergy = launch(16, [](const CaseSettings& t) { return RunEnergyDrift(t); });
+		auto fM8 = launch(8, [](const CaseSettings& t) { return RunMembraneMode(t, 1, 1); });
+		const CaseResult cat = fCat.get();
+		add(EvidenceSpecs[0], 20, cat, cat.error);
+		CaseResult cw[3];
+		for (int l = 0; l < 3; ++l) cw[l] = fCw[l].get();
+		const CaseResult cf = fCf.get();
 		add(EvidenceSpecs[1], 20, cw[1], cw[1].error);
 		add(EvidenceSpecs[2], 20, cf, cf.error);
-		s.resolution = 16;
-		const CaseResult m11 = RunMembraneMode(s, 1, 1), m21 = RunMembraneMode(s, 2, 1);
+		const CaseResult m11 = fM11.get(), m21 = fM21.get();
 		add(EvidenceSpecs[3], 16, m11, m11.error);
 		add(EvidenceSpecs[4], 16, m21, m21.error);
-		const CaseResult plate = RunPlate(s, false);
+		const CaseResult plate = fPlate.get();
 		add(EvidenceSpecs[5], 16, plate, plate.error);
-		const CaseResult energy = RunEnergyDrift(s);
+		const CaseResult energy = fEnergy.get();
 		add(EvidenceSpecs[6], 16, energy, energy.error);
 		CaseResult order = cw[2];
 		order.ok = cw[0].ok && cw[1].ok && cw[2].ok;
 		if (!order.ok) order.failure = "a cantilever level failed";
 		const double pc = std::min(ObservedOrder(cw[0].error, cw[1].error), ObservedOrder(cw[1].error, cw[2].error));
 		add(EvidenceSpecs[7], 40, order, std::max(0.0, 2 - pc));
-		s.resolution = 8;
-		CaseResult m8 = RunMembraneMode(s, 1, 1);
+		CaseResult m8 = fM8.get();
 		m8.ok = m8.ok && m11.ok;
 		const double pm = ObservedOrder(m8.error, m11.error);
 		add(EvidenceSpecs[8], 16, m8, std::max(0.0, 2 - pm));
@@ -653,37 +668,49 @@ std::vector<EvidenceCase> RunEvidence(const EvidenceKey& k, bool contactPart)
 		c.barrier = k.barrier;
 		c.barrier.selfCollision = false;
 		c.thickness = k.thickness;
-		s.resolution = 20;
-		const CaseResult rest = RunContactRest(s, c);
-		add(ContactSpecs[0], 20, rest, rest.error);
-		s.resolution = 40;
-		const CaseResult cyl = RunContactCylinder(s, c);
-		add(ContactSpecs[1], 40, cyl, cyl.error);
-		s.resolution = 10;
 		const double mu = c.barrier.friction;
-		CaseResult stick = RunContactIncline(s, c, 0.5*std::atan(mu));
-		if (!(mu > 0)) { stick.ok = false; stick.failure = "no friction"; }
+		ContactSettings sc = c;
+		sc.barrier.selfFriction = k.barrier.selfFriction;
+		const double ms = sc.barrier.selfFriction;
+		auto fRest = launch(20, [c](const CaseSettings& t) { return RunContactRest(t, c); });
+		auto fCyl = launch(40, [c](const CaseSettings& t) { return RunContactCylinder(t, c); });
+		auto fStick = launch(10, [c, mu](const CaseSettings& t) {
+			CaseResult r = RunContactIncline(t, c, 0.5*std::atan(mu));
+			if (!(mu > 0)) { r.ok = false; r.failure = "no friction"; }
+			return r; });
+		auto fSlide = launch(10, [c, mu](const CaseSettings& t) { return RunContactIncline(t, c, std::atan(mu) + 0.2); });
+		auto fMesh = launch(10, [c](const CaseSettings& t) { return RunContactMesh(t, c, false, 0.5); });
+		auto fBounce = launch(10, [c](const CaseSettings& t) { return RunContactBounce(t, c); });
+		std::future<CaseResult> fStack, fSStick, fSSlide, fFold;
+		if (k.self) {
+			fStack = launch(6, [sc](const CaseSettings& t) { return RunSelfStack(t, sc); });
+			fSStick = launch(6, [sc, ms](const CaseSettings& t) {
+				CaseResult r = RunSelfIncline(t, sc, 0.5*std::atan(ms));
+				if (!(ms > 0)) { r.ok = false; r.failure = "no friction between layers"; }
+				return r; });
+			fSSlide = launch(6, [sc, ms](const CaseSettings& t) { return RunSelfIncline(t, sc, std::atan(ms) + 0.2); });
+			fFold = launch(10, [sc](const CaseSettings& t) { return RunSelfFold(t, sc, 1, 1.2); });
+		}
+		const CaseResult rest = fRest.get();
+		add(ContactSpecs[0], 20, rest, rest.error);
+		const CaseResult cyl = fCyl.get();
+		add(ContactSpecs[1], 40, cyl, cyl.error);
+		const CaseResult stick = fStick.get();
 		add(ContactSpecs[2], 10, stick, stick.error);
-		const CaseResult slide = RunContactIncline(s, c, std::atan(mu) + 0.2);
+		const CaseResult slide = fSlide.get();
 		add(ContactSpecs[3], 10, slide, slide.error);
-		const CaseResult mesh = RunContactMesh(s, c, false, 0.5);
+		const CaseResult mesh = fMesh.get();
 		add(ContactSpecs[4], 10, mesh, mesh.error);
-		const CaseResult bounce = RunContactBounce(s, c);
+		const CaseResult bounce = fBounce.get();
 		add(ContactSpecs[5], 10, bounce, bounce.error);
 		if (k.self) {
-			ContactSettings sc = c;
-			sc.barrier.selfFriction = k.barrier.selfFriction;
-			s.resolution = 6;
-			const CaseResult stack = RunSelfStack(s, sc);
+			const CaseResult stack = fStack.get();
 			add(SelfSpecs[0], 6, stack, stack.error);
-			const double ms = sc.barrier.selfFriction;
-			CaseResult sstick = RunSelfIncline(s, sc, 0.5*std::atan(ms));
-			if (!(ms > 0)) { sstick.ok = false; sstick.failure = "no friction between layers"; }
+			const CaseResult sstick = fSStick.get();
 			add(SelfSpecs[1], 6, sstick, sstick.error);
-			const CaseResult sslide = RunSelfIncline(s, sc, std::atan(ms) + 0.2);
+			const CaseResult sslide = fSSlide.get();
 			add(SelfSpecs[2], 6, sslide, sslide.error);
-			s.resolution = 10;
-			const CaseResult fold = RunSelfFold(s, sc, 1, 1.2);
+			const CaseResult fold = fFold.get();
 			add(SelfSpecs[3], 10, fold, fold.error);
 		}
 	}

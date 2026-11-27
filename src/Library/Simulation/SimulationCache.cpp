@@ -133,7 +133,7 @@ bool EncodeManifest(const CacheSnapshot& snapshot, Bytes& encoded, std::string& 
 	for (const auto& f : snapshot.Entries())
 		frames.push_back(V::ArrayValue({V::Signed(f.index),V::String(f.output),V::Float(f.time),
 			V::Unsigned(f.size),V::String(f.digest),V::BytesValue(f.receipt)}));
-	V::Members m{{"description",Describe(snapshot.Description())},{"frames",V::ArrayValue(frames)},
+	V::Members m{{"description",Describe(snapshot.Description())},{"frames",V::ArrayValue(std::move(frames))},
 		{"complete",V::Bool(snapshot.Complete())}};
 	// Format v1 stays byte-identical for caches without static payloads or
 	// evidence scope, so older readers keep reading them.
@@ -144,9 +144,9 @@ bool EncodeManifest(const CacheSnapshot& snapshot, Bytes& encoded, std::string& 
 		for (const auto& st : snapshot.Statics())
 			statics.push_back(V::ArrayValue({V::String(st.digest),V::String(st.type),V::Unsigned(st.size)}));
 		m.emplace_back("format",V::String(formatV2));
-		m.emplace_back("statics",V::ArrayValue(statics));
+		m.emplace_back("statics",V::ArrayValue(std::move(statics)));
 	}
-	return RISECBOR64::Encode(V::MapValue(m),encoded,&error);
+	return RISECBOR64::Encode(V::MapValue(std::move(m)),encoded,&error);
 }
 
 bool Signed(const V& v, std::int64_t& n)

@@ -43,17 +43,28 @@ void ParallelPool::Run(std::uint32_t generation, const std::function<void(std::s
 	}
 }
 
+namespace {
+// A cheap hint to the core that this thread is busy-waiting (no system call).
+inline void SpinHint()
+{
+#if defined(__aarch64__)
+	__asm__ __volatile__("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+	__asm__ __volatile__("pause" ::: "memory");
+#endif
+}
+}
+
 void ParallelPool::Work()
 {
 	std::uint32_t seen = 0;
 	for (;;) {
-		// Spin for a short while (jobs come in quick succession), then sleep.
-		const auto spinUntil = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
+		// Spin for a short while (jobs come in quick succession) without any
+		// system call, then sleep.
+		const auto spinUntil = std::chrono::steady_clock::now() + std::chrono::microseconds(100);
 		for (unsigned k = 0; generation_.load(std::memory_order_acquire) == seen; ++k) {
-			if ((k & 255) == 255) {
-				if (std::chrono::steady_clock::now() > spinUntil) break;
-				std::this_thread::yield();
-			}
+			SpinHint();
+			if ((k & 127) == 127 && std::chrono::steady_clock::now() > spinUntil) break;
 		}
 		std::uint32_t generation;
 		const std::function<void(std::size_t)>* fn;
@@ -79,7 +90,7 @@ void ParallelPool::For(std::size_t chunks, const std::function<void(std::size_t)
 {
 	if (chunks == 0) return;
 	std::uint32_t generation;
-	bool notify;
+	unsigned wake;
 	{
 		std::lock_guard<std::mutex> hold(mutex_);
 		fn_ = &fn;
@@ -88,12 +99,18 @@ void ParallelPool::For(std::size_t chunks, const std::function<void(std::size_t)
 		generation = generation_.load(std::memory_order_relaxed) + 1;
 		ticket_.store(static_cast<std::uint64_t>(generation) << 32, std::memory_order_release);
 		generation_.store(generation, std::memory_order_release);
-		notify = sleepers_ > 0;
+		// The caller takes chunks too, so a job of c chunks needs c - 1 helpers at most.
+		wake = static_cast<unsigned>(std::min<std::size_t>(sleepers_, chunks - 1));
 	}
-	if (notify) wake_.notify_all();
+	for (unsigned k = 0; k < wake; ++k) wake_.notify_one();
 	Run(generation, &fn, chunks);
-	for (unsigned k = 0; done_.load(std::memory_order_acquire) < chunks; ++k)
-		if ((k & 1023) == 1023) std::this_thread::yield();
+	// Wait for the chunks other threads still hold: spin, and give the core up
+	// only if that takes long (the holder may not be scheduled).
+	const auto yieldAfter = std::chrono::steady_clock::now() + std::chrono::microseconds(50);
+	for (unsigned k = 0; done_.load(std::memory_order_acquire) < chunks; ++k) {
+		SpinHint();
+		if ((k & 255) == 255 && std::chrono::steady_clock::now() > yieldAfter) std::this_thread::yield();
+	}
 }
 
 } } }
