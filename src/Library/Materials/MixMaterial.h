@@ -109,6 +109,8 @@ namespace RISE
 			bool HasDeltaPassThrough() const override;
 			bool HasSubsurfaceLeaf() const override;
 			bool HasRandomWalkSSSLeaf() const override;
+			bool IsHyperspectralSkin() const override;
+			bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override;
 
 			//! Round 3 P1-2: true iff mix has pass-through, own alpha, or any
 			//! child with alpha coverage.

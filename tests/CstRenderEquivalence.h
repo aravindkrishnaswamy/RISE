@@ -35,6 +35,7 @@
 #include <set>
 #include <iomanip>
 #include "../src/Library/Lights/PhysicalLightSpectrum.h"
+#include "../src/Library/Materials/HyLIoS/HyLIoSSkinMaterial.h"
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -535,6 +536,17 @@ inline std::string DumpJob( Job& job )
 		if( const RISE::Implementation::DiffuseTransmissionMaterial* dtm = dynamic_cast<const RISE::Implementation::DiffuseTransmissionMaterial*>( mat ) ) {
 			o << " diffuse_transmission(refl=" << ReverseName( job.GetPainters(), &dtm->GetReflectance() )
 			  << " trans=" << ReverseName( job.GetPainters(), &dtm->GetTransmittance() ) << ")";
+		} else if( const RISE::Implementation::HyLIoSSkinMaterial* hylios = dynamic_cast<const RISE::Implementation::HyLIoSSkinMaterial*>( mat ) ) {
+			const auto& s = hylios->GetSummary();
+			char hb[160];
+			std::snprintf( hb, sizeof(hb), " ior=%.9g scale=%.9g band=[%.9g..%.9g]",
+				s.exteriorIOR, s.physicalScale, s.coveredFirstNm, s.coveredLastNm );
+			o << " hylios_skin(mode=" << s.transportMode
+			  << " boundary=" << s.boundaryMode
+			  << " preset=" << s.preset
+			  << " sem=" << s.semanticSHA256
+			  << " content=" << s.contentSHA256
+			  << hb << ")";
 		} else if( const RISE::Implementation::MixMaterial* mix = dynamic_cast<const RISE::Implementation::MixMaterial*>( mat ) ) {
 			o << " mix(children=[";
 			for( unsigned int ci = 0; ci < mix->GetChildCount(); ++ci ) {

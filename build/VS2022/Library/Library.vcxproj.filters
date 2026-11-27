@@ -975,6 +975,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.cpp">
       <Filter>Materials\HyLIoS</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.cpp">
       <Filter>Materials\HyLIoS</Filter>
     </ClCompile>
@@ -2752,6 +2755,9 @@
       <Filter>Materials\HyLIoS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.h">
       <Filter>Materials\HyLIoS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.h">

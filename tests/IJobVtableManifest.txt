@@ -378,3 +378,4 @@ virtual bool AddDiffuseTransmissionMaterial(const char*,const char*,const char*)
 virtual bool AddPhysicalPointOmniLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3],const bool){ return false;}
 virtual bool AddPhysicalPointSpotLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3],const double,const double,const double[3],const bool){ return false;}
 virtual bool AddPhysicalDirectionalLight(const char*,const unsigned int,const double*,const double*,const char*,const double,const double[3]){ return false;}
+virtual bool AddHyLIoSSkinMaterial(const char*,const HyLIoSSkinMaterialConfig&){ return false;}

@@ -1743,6 +1743,12 @@ namespace RISE
 			const char* transmittance
 			);
 
+		//! Adds a HyLIoS hyperspectral skin material (`hylios_skin_material`).
+		bool AddHyLIoSSkinMaterial(
+			const char* name,
+			const HyLIoSSkinMaterialConfig& config
+			);
+
 		//! Adds Schlick material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddSchlickMaterial(

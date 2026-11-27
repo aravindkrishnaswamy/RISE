@@ -26,6 +26,7 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Interfaces/IScene.h"
+#include "../Managers/ObjectManager.h"
 #include "ProgressiveFilm.h"
 
 using namespace RISE;
@@ -108,6 +109,21 @@ void PathTracingSpectralRasterizer::PreRenderSetup(
 	}
 	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
 	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
+}
+
+bool PathTracingSpectralRasterizer::ValidateSceneForRasterizer( const IScene& pScene ) const
+{
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( !pObjMgr->SceneCoversHyLIoSWavelengths( lambda_begin, lambda_end, &offender ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"PathTracingSpectralRasterizer:: Refusing scene: HyLIoS material on object '%s' "
+				"does not cover the requested spectral range [%.2f, %.2f] nm.",
+				offender.c_str(), lambda_begin, lambda_end );
+			return false;
+		}
+	}
+	return true;
 }
 
 unsigned int PathTracingSpectralRasterizer::GetProgressiveTotalSPP() const

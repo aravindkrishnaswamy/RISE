@@ -671,6 +671,19 @@ namespace RISE
 			//! True iff any world-visible object (or CSG operand) carries a `MixMaterial`.
 			bool SceneHasMixMaterial( std::string* outFirstOffender = 0 ) const;
 
+			//! True iff any world-visible object (or CSG operand) carries a HyLIoS
+			//! hyperspectral skin material (directly or wrapped).
+			bool SceneHasHyLIoSMaterial( std::string* outFirstOffender = 0 ) const;
+
+			//! True iff every world-visible HyLIoS material in the scene covers
+			//! `[nmBegin, nmEnd]` (in nanometres).  Returns true when the scene has
+			//! no HyLIoS materials.
+			bool SceneCoversHyLIoSWavelengths(
+				const Scalar nmBegin,
+				const Scalar nmEnd,
+				std::string* outFirstOffender = 0
+				) const;
+
 			void InvalidateSpatialStructure() const;
 			void ClearMotionBounds() const;
 			void BeginMotionSweep() const;

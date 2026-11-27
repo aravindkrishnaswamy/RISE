@@ -248,6 +248,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.cpp" />
@@ -912,6 +915,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.h" />

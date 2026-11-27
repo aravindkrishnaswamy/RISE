@@ -71,6 +71,7 @@ struct LocalAssetDefinition {
 class HyLIoSLocalResponseAsset final {
 public:
     const HyLIoSLocalResponse& Response() const noexcept { return *response_; }
+    const std::shared_ptr<const HyLIoSLocalResponse>& ResponsePtr() const noexcept { return response_; }
     const LocalAssetSemanticIdentity& Semantic() const noexcept { return semantic_; }
     const LocalAssetProductionIdentity& Production() const noexcept { return production_; }
     const std::vector<double>& NormalIncidenceGuide() const noexcept { return guide_; }

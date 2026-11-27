@@ -48,6 +48,7 @@
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include "../Materials/FabricPresets.h"   // fabric_material: the `fabric` enum's preset table (multi-slot seeding)
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h" // HyLIoSSkinMaterialConfig for `hylios_skin_material`
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -3637,6 +3638,89 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Front/back diffuse reflectance painter"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "transmittance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two-sided diffuse transmittance painter"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Color; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct HyLIoSSkinMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name              = bag.GetString( "name", "noname" );
+					const std::string modelRevision     = bag.GetString( "model_revision", "hylios_local_bake_analog_projected_v2" );
+					const std::string dataRevision      = bag.GetString( "data_revision", "hylios_cleanroom_composition_v1" );
+					const std::string transportMode     = bag.GetString( "transport_mode", "baked_local" );
+					const std::string boundaryMode      = bag.GetString( "boundary_mode", "smooth" );
+					const std::string boundaryRevision  = bag.GetString( "boundary_revision", "smooth_planar_dielectric_v1" );
+					const std::string placementPolicy   = bag.GetString( "placement_policy", "null_collision_placement_v1" );
+					const std::string postScatterPolicy = bag.GetString( "post_scatter_policy", "discard_after_scatter_v1" );
+					const std::string preset            = bag.GetString( "preset", "S3" );
+					const std::string responseAsset     = bag.GetString( "response_asset", "" );
+					const std::string specimenSource    = bag.GetString( "specimen_source", "" );
+
+					HyLIoSSkinMaterialConfig cfg;
+					cfg.modelRevision        = modelRevision.c_str();
+					cfg.dataRevision         = dataRevision.c_str();
+					cfg.transportMode        = transportMode.c_str();
+					cfg.boundaryMode         = boundaryMode.c_str();
+					cfg.boundaryRevision     = boundaryRevision.c_str();
+					cfg.placementPolicy      = placementPolicy.c_str();
+					cfg.postScatterPolicy    = postScatterPolicy.c_str();
+					cfg.preset               = preset.c_str();
+					cfg.explicitComplexPackV1 = bag.GetBool( "explicit_complex_pack_v1", false );
+					cfg.exteriorIOR          = bag.GetDouble( "exterior_ior", 1.0 );
+					cfg.physicalScale        = bag.GetDouble( "physical_scale", 1.0 );
+					cfg.fiberRadiusMetres    = bag.GetDouble( "fiber_radius_m", 1e-7 );
+					cfg.fiberFraction        = bag.GetDouble( "fiber_fraction", 0.22 );
+					cfg.fiberRelativeIOR     = bag.GetDouble( "fiber_relative_ior", 1.5 / 1.33 );
+					cfg.responseAssetPath    = responseAsset.empty() ? nullptr : responseAsset.c_str();
+					cfg.specimenSourcePath   = specimenSource.empty() ? nullptr : specimenSource.c_str();
+
+					const double maxFileMiB = bag.GetDouble( "max_file_mib", 256.0 );
+					const double maxResMiB  = bag.GetDouble( "max_resident_mib", 1024.0 );
+					const double aggResMiB  = bag.GetDouble( "aggregate_resident_mib", 2048.0 );
+					if( !std::isfinite( maxFileMiB ) || maxFileMiB <= 0.0 ||
+						!std::isfinite( maxResMiB ) || maxResMiB <= 0.0 ||
+						!std::isfinite( aggResMiB ) || aggResMiB <= 0.0 ) {
+						SetFinalizeDiagIfEmpty( "hylios_skin_material memory budgets must be finite and positive" );
+						return false;
+					}
+					cfg.maximumFileBytes     = static_cast<std::uint64_t>( maxFileMiB * 1024.0 * 1024.0 );
+					cfg.maximumResidentBytes = static_cast<std::uint64_t>( maxResMiB * 1024.0 * 1024.0 );
+					cfg.aggregateResidentCap = static_cast<std::uint64_t>( aggResMiB * 1024.0 * 1024.0 );
+
+					return pJob.AddHyLIoSSkinMaterial( name.c_str(), cfg );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hylios_skin_material"; cd.category = ChunkCategory::Material;
+						cd.description = "HyLIoS hyperspectral layered skin material (Chen et al. 2015) backed by validated local response assets.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                   p.kind = ValueKind::String;   p.description = "Unique material name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "model_revision";         p.kind = ValueKind::String;   p.description = "HyLIoS local bake model revision"; p.defaultValueHint = "hylios_local_bake_analog_projected_v2"; }
+						{ auto& p = P(); p.name = "data_revision";          p.kind = ValueKind::String;   p.description = "HyLIoS optical data revision"; p.defaultValueHint = "hylios_cleanroom_composition_v1"; }
+						{ auto& p = P(); p.name = "transport_mode";         p.kind = ValueKind::Enum;     p.enumValues = {"baked_local", "nonlocal", "diagnostic"}; p.description = "Transport mode (baked_local in P5)"; p.defaultValueHint = "baked_local"; }
+						{ auto& p = P(); p.name = "boundary_mode";          p.kind = ValueKind::Enum;     p.enumValues = {"smooth", "hylios2015"}; p.description = "Outer surface boundary model"; p.defaultValueHint = "smooth"; }
+						{ auto& p = P(); p.name = "boundary_revision";      p.kind = ValueKind::String;   p.description = "Explicit boundary revision tag"; p.defaultValueHint = "smooth_planar_dielectric_v1"; }
+						{ auto& p = P(); p.name = "placement_policy";       p.kind = ValueKind::String;   p.description = "Particle placement policy tag"; p.defaultValueHint = "null_collision_placement_v1"; }
+						{ auto& p = P(); p.name = "post_scatter_policy";    p.kind = ValueKind::String;   p.description = "Post-scatter particle policy tag"; p.defaultValueHint = "discard_after_scatter_v1"; }
+						{ auto& p = P(); p.name = "preset";                 p.kind = ValueKind::Enum;     p.enumValues = {"S1", "S2", "S3", "S4", "custom"}; p.description = "HyLIoS skin specimen preset"; p.defaultValueHint = "S3"; }
+						{ auto& p = P(); p.name = "explicit_complex_pack_v1"; p.kind = ValueKind::Bool;   p.description = "Enable explicit melanosome complex packing v1"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "exterior_ior";           p.kind = ValueKind::Double;   p.description = "Exterior medium refractive index"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "physical_scale";         p.kind = ValueKind::Double;   p.description = "Scene units per metre"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "fiber_radius_m";         p.kind = ValueKind::Double;   p.description = "Dermal collagen fiber radius in metres"; p.defaultValueHint = "1e-7"; }
+						{ auto& p = P(); p.name = "fiber_fraction";         p.kind = ValueKind::Double;   p.description = "Dermal collagen fiber volume fraction"; p.defaultValueHint = "0.22"; }
+						{ auto& p = P(); p.name = "fiber_relative_ior";     p.kind = ValueKind::Double;   p.description = "Collagen fiber relative refractive index"; p.defaultValueHint = "1.12781954887"; }
+						{ auto& p = P(); p.name = "response_asset";         p.kind = ValueKind::Filename; p.description = "Path to baked HyLIoS local response asset (.hylios)"; }
+						{ auto& p = P(); p.name = "specimen_source";        p.kind = ValueKind::Filename; p.description = "Path to specimen JSON for independent semantic verification"; }
+						{ auto& p = P(); p.name = "max_file_mib";           p.kind = ValueKind::Double;   p.description = "Maximum response asset file size (MiB)"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "max_resident_mib";       p.kind = ValueKind::Double;   p.description = "Maximum per-asset resident memory budget (MiB)"; p.defaultValueHint = "1024"; }
+						{ auto& p = P(); p.name = "aggregate_resident_mib"; p.kind = ValueKind::Double;   p.description = "Aggregate resident memory cap across live HyLIoS assets (MiB)"; p.defaultValueHint = "2048"; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -15016,6 +15100,7 @@ namespace RISE
 		add( "isotropic_phong_material",              std::make_unique<IsotropicPhongMaterialAsciiChunkParser>() );
 		add( "translucent_material",                  std::make_unique<TranslucentMaterialAsciiChunkParser>() );
 		add( "biospec_skin_material",                 std::make_unique<BioSpecSkinMaterialAsciiChunkParser>() );
+		add( "hylios_skin_material",                  std::make_unique<HyLIoSSkinMaterialAsciiChunkParser>() );
 		add( "donner_jensen_skin_bssrdf_material",    std::make_unique<DonnerJensenSkinBSSRDFMaterialAsciiChunkParser>() );
 		add( "generic_human_tissue_material",         std::make_unique<GenericHumanTissueMaterialAsciiChunkParser>() );
 		add( "coated_material",                       std::make_unique<CoatedMaterialAsciiChunkParser>() );

@@ -111,6 +111,8 @@ namespace RISE
 				const IScene& pScene,
 				const Rect* pRect
 				) const override;
+
+			bool ValidateSceneForRasterizer( const IScene& pScene ) const override;
 		};
 	}
 }

@@ -82,6 +82,9 @@ namespace RISE
 			inline Scalar Pdf( const Vector3& wo, const RayIntersectionGeometric& ri, const IORStack& ior_stack ) const override { return pMaterial.Pdf( wo, ri, ior_stack ); }
 			inline Scalar PdfNM( const Vector3& wo, const RayIntersectionGeometric& ri, const Scalar nm, const IORStack& ior_stack ) const override { return pMaterial.PdfNM( wo, ri, nm, ior_stack ); }
 			inline bool ScattersFullSphere() const override { return pMaterial.ScattersFullSphere(); }
+			inline bool IsHyperspectralSkin() const override { return pMaterial.IsHyperspectralSkin(); }
+			inline bool EvaluateVisibleGuideAlbedo( const RayIntersectionGeometric& geom, RISEPel& outAlbedo ) const override { return pMaterial.EvaluateVisibleGuideAlbedo( geom, outAlbedo ); }
+			inline bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override { return pMaterial.CoversWavelengthRange( nmBegin, nmEnd ); }
 			unsigned int GetPathDependence() const override
 			{
 				return IMaterial::GetPathDependence() |

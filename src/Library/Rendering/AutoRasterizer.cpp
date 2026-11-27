@@ -573,6 +573,10 @@ AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) con
 			SetResolveReason("path-dependent or varying-SSS-mix material (PT-only)");
 			return AutoIntegratorChoice::PT;
 		}
+		if( pObjMgr->SceneHasHyLIoSMaterial() ) {
+			SetResolveReason("HyLIoS hyperspectral skin material (PT-only)");
+			return AutoIntegratorChoice::PT;
+		}
 	}
 
 	const bool hasTransmissive = SceneHasTransmissiveMaterial( *scene );

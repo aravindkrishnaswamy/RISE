@@ -4319,6 +4319,7 @@ namespace RISE
 #include "Materials/IsotropicPhongMaterial.h"
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
+#include "Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
@@ -4710,6 +4711,27 @@ namespace RISE
 
 	//! Creates a BioSpec skin material
 	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyLIoSSkinMaterial(
+								IMaterial** ppi,
+								const HyLIoSSkinMaterialConfig& config,
+								std::string* outError
+								)
+	{
+		if( !ppi ) {
+			if( outError ) {
+				*outError = "RISE_API_CreateHyLIoSSkinMaterial: null output pointer";
+			}
+			return false;
+		}
+		*ppi = 0;
+		HyLIoSSkinMaterial* pMat = HyLIoSSkinMaterial::Create( config, outError );
+		if( !pMat ) {
+			return false;
+		}
+		*ppi = pMat;
+		return true;
+	}
+
 	bool RISE_API_CreateBioSpecSkinMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
 								const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)

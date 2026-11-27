@@ -189,6 +189,26 @@ bool MixMaterial::HasRandomWalkSSSLeaf() const
 	return false;
 }
 
+bool MixMaterial::IsHyperspectralSkin() const
+{
+	for( size_t i = 0; i < children.size(); ++i ) {
+		if( children[i].pMaterial && children[i].pMaterial->IsHyperspectralSkin() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool MixMaterial::CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const
+{
+	for( size_t i = 0; i < children.size(); ++i ) {
+		if( children[i].pMaterial && !children[i].pMaterial->CoversWavelengthRange( nmBegin, nmEnd ) ) {
+			return false;
+		}
+	}
+	return true;
+}
+
 bool MixMaterial::HasAlphaCoverage() const
 {
 	if( pPassthroughWeight || alphaMode_ != eAlphaOpaque ) {
@@ -461,7 +481,9 @@ void MixMaterial::EvaluateExpectedGuides(
 		if( bClayOverride && pClayBRDF ) {
 			leafAlbedo = pClayBRDF->albedo( childGeom );
 		} else if( const IMaterial* pChild = children[i].pMaterial ) {
-			if( const IBSDF* pBSDF = pChild->GetBSDF() ) {
+			if( pChild->EvaluateVisibleGuideAlbedo( childGeom, leafAlbedo ) ) {
+				// Leaf supplied a dedicated visible guide albedo (e.g. HyLIoS).
+			} else if( const IBSDF* pBSDF = pChild->GetBSDF() ) {
 				leafAlbedo = pBSDF->albedo( childGeom );
 			} else if( pChild->GetSPF() ) {
 				// Pure delta / specular leaf (has SPF, no BSDF): white albedo per OIDN.

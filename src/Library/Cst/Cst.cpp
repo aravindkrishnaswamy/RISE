@@ -3825,6 +3825,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
 		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
 		if( node->role == "let" ) { diags.push_back( "incremental: a let-binding edit requires a full derive (its consumers are not yet traced)" ); return 0; }   // #5 slice 3
+		if( node->role == "hylios_skin_material" ) { diags.push_back( "incremental: hylios_skin_material edits fall back to a full derive" ); return 0; }
 		IAsciiChunkParser::ParamsList plist;
 		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
 		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.

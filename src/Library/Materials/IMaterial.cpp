@@ -104,6 +104,8 @@ void RISE::EvaluateMaterialAOVGuides(
 	} else if( !ri.pMaterial ) {
 		// Round 3 P1-1: black absorber (no material) reports black albedo, not white.
 		outAlbedo = RISEPel( 0, 0, 0 );
+	} else if( ri.pMaterial->EvaluateVisibleGuideAlbedo( geom, outAlbedo ) ) {
+		// Material supplied a dedicated visible guide albedo (e.g. HyLIoS).
 	} else if( const IBSDF* pBSDF = ri.pMaterial->GetBSDF() ) {
 		outAlbedo = pBSDF->albedo( geom );
 	} else if( ri.pMaterial->GetSPF() ) {

@@ -40,6 +40,7 @@
 #include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "SceneEditor/CancellableProgressCallback.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
@@ -7244,6 +7245,40 @@ bool Job::AddDiffuseTransmissionMaterial(
 	IMaterial* pMaterial = 0;
 	if( !RISE_API_CreateDiffuseTransmissionMaterial( &pMaterial, *pRefl, *pTrans ) || !pMaterial ) {
 		RISE::SetFinalizeDiagIfEmpty( "diffuse_transmission_material creation failed" );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
+
+bool Job::AddHyLIoSSkinMaterial(
+	const char* name,
+	const HyLIoSSkinMaterialConfig& config
+	)
+{
+	HyLIoSSkinMaterialConfig resolved = config;
+	std::string resolvedAssetPath;
+	std::string resolvedSpecimenPath;
+
+	if( config.responseAssetPath && config.responseAssetPath[0] ) {
+		resolvedAssetPath = GlobalMediaPathLocator().Find( config.responseAssetPath ).c_str();
+		resolved.responseAssetPath = resolvedAssetPath.c_str();
+	}
+	if( config.specimenSourcePath && config.specimenSourcePath[0] ) {
+		resolvedSpecimenPath = GlobalMediaPathLocator().Find( config.specimenSourcePath ).c_str();
+		resolved.specimenSourcePath = resolvedSpecimenPath.c_str();
+	}
+
+	IMaterial* pMaterial = 0;
+	std::string err;
+	if( !RISE_API_CreateHyLIoSSkinMaterial( &pMaterial, resolved, &err ) || !pMaterial ) {
+		if( err.empty() ) {
+			err = "hylios_skin_material creation failed";
+		}
+		GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", err.c_str() );
+		RISE::SetFinalizeDiagIfEmpty( err.c_str() );
 		return false;
 	}
 

@@ -290,7 +290,7 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, 
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 # HYLIOS compensated geometry, certified overlap and normalized surface laws require strict arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
-	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o)
+	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o HyLIoSSkinMaterial.o)
 # Compensated beauty moments preserve binary64 error-free transforms.
 TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
@@ -604,6 +604,10 @@ $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.o : $(PATHLIBRARY)Materials
 
 $(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.cpp
 	@echo "Compiling (strict HYLIOS bake): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.o : $(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.cpp
+	@echo "Compiling (strict HYLIOS skin material): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 # Compensated beauty moments must not reassociate error-free transforms.

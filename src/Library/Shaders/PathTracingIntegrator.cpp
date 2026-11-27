@@ -7527,7 +7527,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// hero-bundle path instead of unconditionally falling back to
 		// per-wavelength for a surface that no longer has any SSS behavior
 		// to represent.
-		if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
+		const bool isHyLIoS = firstHit.pMaterial && firstHit.pMaterial->IsHyperspectralSkin();
+		if( ( pProfile || pRWParams || hasRWNM || isHyLIoS ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 		{
 			std::optional<HWSSLaneSeeds> laneSeeds;
 			if( !preseededOriginLanes_ ) {
@@ -8441,7 +8442,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// the entry-point Fallback 2 routing above -- don't route away
 			// from HWSS for a surface that no longer has SSS behavior
 			// under clay_lights.
-			if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
+			const bool isHyLIoS = ri.pMaterial && ri.pMaterial->IsHyperspectralSkin();
+			if( ( pProfile || pRWParams || hasRWNM || isHyLIoS ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
 				HWSSLaneSeeds laneSeeds( iorStack, swl, ri.geometric.ray.origin,
 					Point3Ops::mkPoint3( ri.geometric.ray.origin, ri.geometric.ray.Dir() * ( ri.geometric.range * 0.5 ) ),

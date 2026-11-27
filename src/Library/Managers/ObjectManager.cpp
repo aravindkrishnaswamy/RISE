@@ -61,6 +61,7 @@
 #include "../Materials/RandomWalkSSSMaterial.h"
 #include "../Materials/GenericHumanTissueMaterial.h"
 #include "../Materials/BioSpecSkinMaterial.h"
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "../Materials/GGXMaterial.h"
 #include "../Materials/SheenMaterial.h"
 #include <atomic>
@@ -144,6 +145,7 @@ bool AuditedMaterialGraph(const IMaterial& material)
         || type==typeid(RandomWalkSSSMaterial)
         || type==typeid(GenericHumanTissueMaterial)
         || type==typeid(BioSpecSkinMaterial)
+        || type==typeid(HyLIoSSkinMaterial)
         || type==typeid(GGXMaterial)
         || type==typeid(SheenMaterial);
 }
@@ -207,6 +209,47 @@ bool ObjectHasMixMaterialImpl( const IObject& object, std::unordered_set<const C
         }
     }
     return false;
+}
+bool ObjectHasHyLIoSMaterialImpl( const IObject& object, std::unordered_set<const CSGObject*>& visited )
+{
+    if( const IMaterial* mat = object.GetMaterial() ) {
+        if( mat->IsHyperspectralSkin() ) return true;
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>( &object ) ) {
+        if( visited.insert( csg ).second ) {
+            if( const IObjectPriv* a = csg->GetOperandA() ) {
+                if( ObjectHasHyLIoSMaterialImpl( *a, visited ) ) return true;
+            }
+            if( const IObjectPriv* b = csg->GetOperandB() ) {
+                if( ObjectHasHyLIoSMaterialImpl( *b, visited ) ) return true;
+            }
+        }
+    }
+    return false;
+}
+bool ObjectCoversHyLIoSWavelengthsImpl(
+    const IObject& object,
+    const Scalar nmBegin,
+    const Scalar nmEnd,
+    std::unordered_set<const CSGObject*>& visited
+    )
+{
+    if( const IMaterial* mat = object.GetMaterial() ) {
+        if( mat->IsHyperspectralSkin() && !mat->CoversWavelengthRange( nmBegin, nmEnd ) ) {
+            return false;
+        }
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>( &object ) ) {
+        if( visited.insert( csg ).second ) {
+            if( const IObjectPriv* a = csg->GetOperandA() ) {
+                if( !ObjectCoversHyLIoSWavelengthsImpl( *a, nmBegin, nmEnd, visited ) ) return false;
+            }
+            if( const IObjectPriv* b = csg->GetOperandB() ) {
+                if( !ObjectCoversHyLIoSWavelengthsImpl( *b, nmBegin, nmEnd, visited ) ) return false;
+            }
+        }
+    }
+    return true;
 }
 std::string FormatPathDependenceFlags( const unsigned int mask )
 {
@@ -2947,6 +2990,42 @@ bool ObjectManager::SceneHasMixMaterial( std::string* outFirstOffender ) const
 		}
 	}
 	return false;
+}
+
+bool ObjectManager::SceneHasHyLIoSMaterial( std::string* outFirstOffender ) const
+{
+	std::unordered_set<const CSGObject*> visited;
+	for( const auto& item : items ) {
+		const IObjectPriv* obj = item.second.first;
+		if( !obj || !obj->IsWorldVisible() ) continue;
+		if( ObjectHasHyLIoSMaterialImpl( *obj, visited ) ) {
+			if( outFirstOffender ) {
+				*outFirstOffender = item.first.c_str();
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ObjectManager::SceneCoversHyLIoSWavelengths(
+	const Scalar nmBegin,
+	const Scalar nmEnd,
+	std::string* outFirstOffender
+	) const
+{
+	std::unordered_set<const CSGObject*> visited;
+	for( const auto& item : items ) {
+		const IObjectPriv* obj = item.second.first;
+		if( !obj || !obj->IsWorldVisible() ) continue;
+		if( !ObjectCoversHyLIoSWavelengthsImpl( *obj, nmBegin, nmEnd, visited ) ) {
+			if( outFirstOffender ) {
+				*outFirstOffender = item.first.c_str();
+			}
+			return false;
+		}
+	}
+	return true;
 }
 
 void ObjectManager::PrepareForRendering() const

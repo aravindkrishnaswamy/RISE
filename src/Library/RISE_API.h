@@ -1043,6 +1043,16 @@ namespace RISE
 								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
 								);
 
+	struct HyLIoSSkinMaterialConfig;
+
+	//! Creates a HyLIoS hyperspectral skin material (P5 local baked mode).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyLIoSSkinMaterial(
+								IMaterial** ppi,											///< [out] Pointer to receive the material
+								const HyLIoSSkinMaterialConfig& config,						///< [in] Versioned HyLIoS material config
+								std::string* outError = 0									///< [out] Optional diagnostic string on failure
+								);
+
 	//! Creates a BioSpec skin material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBioSpecSkinMaterial(
