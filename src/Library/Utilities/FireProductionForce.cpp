@@ -3177,6 +3177,7 @@ namespace RISE
 			eosRequest.producerPrecision=FireStateProducerPrecision::Binary32;
 			eosRequest.methaneRecordId=request_.source.MethaneRecordId();
 			eosRequest.caseRecordEnvelope=request_.caseRecordEnvelope;
+			eosRequest.caseBracketInversion=request_.physicalContract.canonicalInversionUpperK!=0.0;
 			eosRequest.conservativeValues=predictor;
 			FireProductionScalarEOSAcceptanceResult predictorEOS;
 			if(!EvaluateFireProductionScalarEOSAcceptanceCPU(eosRequest,predictorEOS,error))
@@ -3253,6 +3254,7 @@ namespace RISE
 			eosRequest.producerPrecision=FireStateProducerPrecision::Binary32;
 			eosRequest.methaneRecordId=request_.source.MethaneRecordId();
 			eosRequest.caseRecordEnvelope=request_.caseRecordEnvelope;
+			eosRequest.caseBracketInversion=request_.physicalContract.canonicalInversionUpperK!=0.0;
 			eosRequest.conservativeValues=committed;
 			FireProductionScalarEOSAcceptanceResult committedEOS;
 			if(!EvaluateFireProductionScalarEOSAcceptanceCPU(eosRequest,committedEOS,error))

@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <sstream>
 #include <iomanip>
@@ -208,6 +209,14 @@ namespace RISE
 			// The resident owner's projection schedule (17 V-cycles with an open boundary,
 			// doubled while validation fails), not the standalone 16.
 			owner.residentProjectionSchedule=true;
+			// M8d: the canonical accepted-state inversion over the case bounds (solver spec
+			// r74), as the source build and the Metal owner's EOS invert, in the EOS
+			// acceptance and the R1 base target alike (results section 12.1).
+			FireCase::RecordV1 sealedCase;std::string caseError;
+			if(!FireCase::ValidateMethaneEnvelopeV1(eos.caseRecordEnvelope,fuel,sealedCase,caseError))
+				return Fail(error,"CPU fire owner case record is invalid: "+caseError);
+			owner.physicalContract.canonicalInversionLowerK=sealedCase.derived.pilotAmbientTemperatureK;
+			owner.physicalContract.canonicalInversionUpperK=sealedCase.derived.maximumAcceptedTemperatureK;
 			owner.workingSetLimitBytes=FireRun::FireCPUBackendHostCeilingBytes();
 			if(owner.workingSetLimitBytes==0u)return Fail(error,"CPU fire owner: host memory size is unknown");
 			return true;
@@ -227,6 +236,141 @@ namespace RISE
 		{
 			return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(values.data()),
 				values.size()*sizeof(float));
+		}
+
+		// Diagnostic only (RISE_FIRE_CPU_BISECT=1; docs/SIMULATION_M8_RESULTS.md section 12):
+		// the Metal owner is run on the same request with its qualification trace, and every
+		// operand of every Picard-map evaluation is compared with the CPU owner's trace, as
+		// FireSequenceTest --fire-production-burner-bisect does on its fixture.  Prints only;
+		// the CPU result published is the one computed without reference to Metal.
+		void PrintBisect(const FireProductionProjectedHeunMetalOwnerRequest& request,
+			const FireProductionProjectedHeunOwnerResult& owner)
+		{
+			const FireProductionProjectionShape& shape=request.lineage.eos.physicalFlux.transport.shape;
+			const std::size_t cells=shape.CellCount();
+			auto traced=request;traced.qualificationCaptureIterationTrace=true;
+			traced.qualificationProductionStageTokens=true;
+			FireProductionProjectedHeunMetalOwnerResult metal;std::string error;
+			if(!AttemptFireProductionProjectedHeunMetalOwner(traced,metal,&error)){
+				std::fprintf(stderr,"BISECT_CPU metal_trace_refused=%s\n",error.c_str());return;}
+			std::fprintf(stderr,"BISECT_CPU final_state_equal=%d\n",metal.conservativeValues==owner.conservativeValues?1:0);
+			FireCase::RecordV1 sealedCase;std::string caseError;
+			FireCase::ValidateMethaneEnvelopeV1(request.lineage.eos.caseRecordEnvelope,
+				FireSimulationMethaneRecord::PhysicalV1(),sealedCase,caseError);
+			const double caseLowerK=sealedCase.derived.pilotAmbientTemperatureK,
+				caseUpperK=sealedCase.derived.maximumAcceptedTemperatureK;
+			const char* dumpName=std::getenv("RISE_FIRE_CPU_BISECT_DUMP");
+			const double dumpRel=std::getenv("RISE_FIRE_CPU_BISECT_DUMP_REL")?
+				std::atof(std::getenv("RISE_FIRE_CPU_BISECT_DUMP_REL")):0.0;
+			auto where=[&](const std::size_t index,const std::size_t size)->std::string{
+				std::ostringstream out;
+				if(size%cells==0u){const std::size_t c=index%cells;out<<"c"<<index/cells<<"("<<c%shape.nx<<","
+					<<(c/shape.nx)%shape.ny<<","<<c/(shape.nx*shape.ny)<<")";}
+				else out<<"i"<<index;
+				return out.str();};
+			auto faceWhere=[&](const unsigned int axis,const std::size_t face)->std::string{
+				const std::size_t nx=shape.nx+(axis==0u?1u:0u),ny=shape.ny+(axis==1u?1u:0u);
+				std::ostringstream out;out<<"a"<<axis<<"("<<face%nx<<","<<(face/nx)%ny<<","<<face/(nx*ny)<<")";
+				return out.str();};
+			const FireProductionProjectedHeunCoupledStageResult* stages[3]={&owner.r0,&owner.r1,&owner.r2};
+			for(unsigned int stage=0u;stage<3u;++stage){
+				const auto& mt=metal.qualificationIterationTrace[stage];const auto& ct=stages[stage]->qualificationIterationTrace;
+				std::fprintf(stderr,"BISECT_CPU stage=R%u metal_iterations=%zu cpu_iterations=%zu metal_accepted=%u cpu_accepted=%u\n",
+					stage,mt.size(),ct.size(),metal.acceptedPicardIterations[stage],stages[stage]->acceptedIterationCount);
+				for(std::size_t k=0u;k<std::min(mt.size(),ct.size());++k){
+					const auto& m=mt[k];const auto& c=ct[k];
+					auto report=[&](const char* name,const std::vector<float>& a,const std::vector<float>& b,
+						const std::function<std::string(std::size_t)>& at){
+						if(a.empty()&&b.empty())return;
+						if(a.size()!=b.size()){std::fprintf(stderr,"BISECT_CPU R%u it=%d %s size_metal=%zu size_cpu=%zu\n",
+							stage,static_cast<int>(m.iteration),name,a.size(),b.size());return;}
+						double diff=0.0,scale=0.0;std::size_t unequal=0u,worst=0u;
+						for(std::size_t i=0u;i<a.size();++i){const double d=std::fabs(double(a[i])-double(b[i]));
+							if(d>diff){diff=d;worst=i;}scale=std::max(scale,std::fabs(double(b[i])));
+							if(std::memcmp(&a[i],&b[i],sizeof(float))!=0)++unequal;}
+						std::fprintf(stderr,"BISECT_CPU R%u it=%d %-28s n=%7zu unequal=%7zu metal_cpu=%.3e scale=%.3e rel=%.3e at %s "
+							"metal=%.9g cpu=%.9g\n",stage,static_cast<int>(m.iteration),name,a.size(),unequal,diff,scale,
+							scale>0.0?diff/scale:0.0,unequal?at(worst).c_str():"-",a.empty()?0.0:double(a[worst]),
+							b.empty()?0.0:double(b[worst]));
+						if(dumpName&&std::strcmp(dumpName,name)==0){unsigned int shown=0u;
+							for(std::size_t i=0u;i<a.size()&&shown<40u;++i)if(a[i]!=b[i]&&
+								std::fabs(double(a[i])-double(b[i]))>dumpRel*scale){++shown;
+								std::fprintf(stderr,"BISECT_CPU_DUMP R%u it=%d %s %s metal=%.9g cpu=%.9g\n",stage,
+									static_cast<int>(m.iteration),name,at(i).c_str(),double(a[i]),double(b[i]));
+								// A per-cell operand: also the cell's accepted tuple on both sides.
+								if(a.size()==cells&&m.acceptedConservativeValues.size()==9u*cells&&
+									c.acceptedConservativeValues.size()==9u*cells){
+									std::fprintf(stderr,"BISECT_CPU_TUPLE metal");
+									for(std::size_t q=0u;q<9u;++q)std::fprintf(stderr," %a",
+										double(m.acceptedConservativeValues[q*cells+i]));
+									std::fprintf(stderr,"\nBISECT_CPU_TUPLE cpu  ");
+									for(std::size_t q=0u;q<9u;++q)std::fprintf(stderr," %a",
+										double(c.acceptedConservativeValues[q*cells+i]));
+									std::fprintf(stderr,"\n");
+									// The canonical inversion of the CPU tuple over both brackets, and in binary64.
+									std::array<double,9> tuple={{}};
+									for(std::size_t q=0u;q<9u;++q)tuple[q]=double(c.acceptedConservativeValues[q*cells+i]);
+									const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+									double t[2]={0.0,0.0},r[2]={0.0,0.0};
+									fuel.InvertAcceptedConservativeStateByComponentOrder(tuple.data(),9u,fuel.TemperatureMinK(),
+										fuel.TemperatureMaxK(),FireStateProducerPrecision::Binary32,t[0],r[0],0);
+									fuel.InvertAcceptedConservativeStateByComponentOrder(tuple.data(),9u,caseLowerK,caseUpperK,
+										FireStateProducerPrecision::Binary32,t[1],r[1],0);
+									// The lower-endpoint snap band of each bracket: E <= E(lower) + kappa eps32 scale.
+									auto band=[&](const double lower,const double upper){
+										std::array<double,7> hl{},hu{};
+										fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(lower,hl.data(),7u,0);
+										fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(upper,hu.data(),7u,0);
+										double el=0.0,scale=std::fabs(tuple[8]);
+										for(std::size_t q=0u;q<7u;++q){el+=tuple[1u+q]*hl[q];
+											scale+=std::fabs(hl[q]*tuple[1u+q])+std::fabs(hu[q]*tuple[1u+q]);}
+										return el+fuel.AcceptedStateFeasibilityEnvelope().kappaEpsilon32*
+											double(std::numeric_limits<float>::epsilon())*std::max(1.0,scale);};
+									std::fprintf(stderr,"BISECT_CPU_INVERSION E=%.9g record32 T=%.9g ratio=%.9g snap_below=%.6g "
+										"case32 T=%.9g ratio=%.9g snap_below=%.6g\n",tuple[8],t[0],r[0],
+										band(fuel.TemperatureMinK(),fuel.TemperatureMaxK()),t[1],r[1],band(caseLowerK,caseUpperK));}}}};
+					auto cell=[&](const char* name,const std::vector<float>& a,const std::vector<float>& b){
+						report(name,a,b,[&](const std::size_t i){return where(i,a.size());});};
+					auto face=[&](const char* name,const std::array<std::vector<float>,3>& a,
+						const std::array<std::vector<float>,3>& b){
+						for(unsigned int axis=0u;axis<3u;++axis){const std::string label=std::string(name)+"["+
+							std::to_string(axis)+"]";report(label.c_str(),a[axis],b[axis],
+							[&](const std::size_t i){return faceWhere(axis,i);});}};
+					std::size_t classDiff=0u,nextDiff=0u;std::string classes;
+					for(unsigned int side=0u;side<6u;++side){
+						for(std::size_t f=0u;f<m.activeClass[side].size()&&f<c.activeClass[side].size();++f)
+							if(m.activeClass[side][f]!=c.activeClass[side][f]){++classDiff;
+								if(classes.size()<200u)classes+=" s"+std::to_string(side)+"f"+std::to_string(f);}
+						for(std::size_t f=0u;f<m.nextActiveClass[side].size()&&f<c.nextActiveClass[side].size();++f)
+							if(m.nextActiveClass[side][f]!=c.nextActiveClass[side][f])++nextDiff;}
+					std::fprintf(stderr,"BISECT_CPU R%u it=%d activeClass differ=%zu next_differ=%zu%s\n",stage,
+						static_cast<int>(m.iteration),classDiff,nextDiff,classes.c_str());
+					cell("transportConservative",m.transportConservativeValues,c.transportConservativeValues);
+					cell("transportTemperatureK",m.transportTemperatureK,c.transportTemperatureK);
+					cell("gasDensity",m.gasDensityKGPerM3,c.gasDensityKGPerM3);
+					cell("diffusivity",m.diffusivityM2PerS,c.diffusivityM2PerS);
+					cell("conductivity",m.conductivityWPerMK,c.conductivityWPerMK);
+					cell("molecularNu",m.molecularKinematicViscosityM2PerS,c.molecularKinematicViscosityM2PerS);
+					cell("projectionTargetPerS",m.projectionTargetPerS,c.projectionTargetPerS);
+					face("provisionalMomentum",m.provisionalMomentumKGPerM2S,c.provisionalMomentumKGPerM2S);
+					face("projectedVelocity",m.projectedVelocityMPerS,c.projectedVelocityMPerS);
+					face("faceDensity",m.faceDensityKGPerM3,c.faceDensityKGPerM3);
+					cell("scalarLowFlux",m.scalarLowFlux,c.scalarLowFlux);
+					cell("scalarFluxDelta",m.scalarFluxDelta,c.scalarFluxDelta);
+					cell("physicalMassFlux",m.physicalMassFluxKGPerM2S,c.physicalMassFluxKGPerM2S);
+					cell("physicalEnergyFlux",m.physicalEnergyFluxWPerM2,c.physicalEnergyFluxWPerM2);
+					face("sharedFaceAlpha",m.sharedFaceAlpha,c.sharedFaceAlpha);
+					cell("acceptedConservative",m.acceptedConservativeValues,c.acceptedConservativeValues);
+					cell("representedPressureRatio",m.representedPressureRatio,c.representedPressureRatio);
+					cell("producedTargetPerS",m.producedTargetPerS,c.producedTargetPerS);
+					face("advectionMomentumRate",m.advectionMomentumRateKGPerM2S2,c.advectionMomentumRateKGPerM2S2);
+					face("buoyancyMomentumRate",m.buoyancyMomentumRateKGPerM2S2,c.buoyancyMomentumRateKGPerM2S2);
+					face("stressMomentumRate",m.stressMomentumRateKGPerM2S2,c.stressMomentumRateKGPerM2S2);
+					face("phaseSourceMomentumRate",m.phaseSourceMomentumRateKGPerM2S2,c.phaseSourceMomentumRateKGPerM2S2);
+					face("nextCandidateMomentum",m.nextCandidateMomentumKGPerM2S,c.nextCandidateMomentumKGPerM2S);
+					face("heunR0AdvectionRate",m.heunR0AdvectionRateKGPerM2S2,c.heunR0AdvectionRateKGPerM2S2);
+				}
+			}
 		}
 	}
 
@@ -273,8 +417,14 @@ namespace RISE
 				cells*256u;
 			const std::uint64_t publication=(9u*cells+12u*faces+4u*cells)*sizeof(float)+
 				(26u*faces)*sizeof(float);
-			if(owner>UINT64_MAX-request-transport-publication)return false;
-			bytes=owner+request+transport+publication;
+			// M8d: the certified mode's exact stage-identity memo (three retained flux-stage
+			// payload copies, FireProductionTransport.cpp HeunFluxStageIdentity).
+			std::uint64_t stage=0u;
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(shape,stage,0,true)||stage>UINT64_MAX/3u)
+				return false;
+			const std::uint64_t memo=3u*stage;
+			if(owner>UINT64_MAX-request-transport-publication-memo)return false;
+			bytes=owner+request+transport+publication+memo;
 			return true;
 		}
 
@@ -318,6 +468,8 @@ namespace RISE
 			if(!FireRun::FireCPUBackendAdmits(shape,reason))return Fail(error,reason);
 			FireProductionProjectedHeunOwnerRequest ownerRequest;
 			if(!BuildCPUOwnerRequest(request,ownerRequest,error))return false;
+			const bool bisect=EnvironmentIs("RISE_FIRE_CPU_BISECT","1");
+			ownerRequest.qualificationCaptureIterationTrace=bisect;
 			CPUTransportProvider transport(request.lineage.eos.physicalFlux,workers);
 			FireProductionProjectedHeunOwnerResult owner;
 			{
@@ -328,6 +480,7 @@ namespace RISE
 					return false;
 			}
 			ownerRequest=FireProductionProjectedHeunOwnerRequest();
+			if(bisect)PrintBisect(request,owner);
 			// Diagnostic (RISE_FIRE_PICARD_TRACE, as the Metal owner): each stage's Picard
 			// residuals, open-boundary cycle and limiter-certification outcome.
 			if(std::getenv("RISE_FIRE_PICARD_TRACE")){
@@ -343,16 +496,24 @@ namespace RISE
 			if(!owner.accepted||owner.OwnerIdentity()==0u||owner.conservativeValues.size()!=9u*cells)
 				return Fail(error,"CPU projected-Heun owner terminal payload is invalid");
 			// Represented pressure ratio and its absolute deviation from one, per cell, as the
-			// Metal owner publishes them for the monitored manifold diagnostics.
+			// Metal owner publishes them for the monitored manifold diagnostics (M8d: from the
+			// inversion over the case bounds, as the Metal EOS and the owner's EOS acceptance).
+			FireCase::RecordV1 sealedCase;std::string caseError;
+			if(!FireCase::ValidateMethaneEnvelopeV1(request.lineage.eos.caseRecordEnvelope,
+				FireSimulationMethaneRecord::PhysicalV1(),sealedCase,caseError))
+				return Fail(error,"CPU projected-Heun owner case record is invalid: "+caseError);
+			const double caseLowerK=sealedCase.derived.pilotAmbientTemperatureK,
+				caseUpperK=sealedCase.derived.maximumAcceptedTemperatureK;
 			std::vector<float> ratio(cells),deviation(cells);bool ratioValid=true;
 			std::vector<unsigned char> ratioOK(cells,1u);
 			ParallelSlices(cells,workers,[&](const std::size_t begin,const std::size_t end){
 				for(std::size_t cell=begin;cell<end;++cell){std::array<double,9> tuple={{}};
 					for(std::size_t component=0u;component<9u;++component)tuple[component]=
 						static_cast<double>(owner.conservativeValues[component*cells+cell]);
-					double value=0.0;
-					if(!FireSimulationMethaneRecord::PhysicalV1().AcceptedConservativeVolumeRatioByComponentOrder(
-						tuple.data(),tuple.size(),FireStateProducerPrecision::Binary32,value,0)||!std::isfinite(value)){
+					double value=0.0,temperatureK=0.0;
+					if(!FireSimulationMethaneRecord::PhysicalV1().InvertAcceptedConservativeStateByComponentOrder(
+						tuple.data(),tuple.size(),caseLowerK,caseUpperK,FireStateProducerPrecision::Binary32,
+						temperatureK,value,0)||!std::isfinite(value)){
 						ratioOK[cell]=0u;continue;}
 					ratio[cell]=static_cast<float>(value);deviation[cell]=std::fabs(ratio[cell]-1.0f);}});
 			for(const unsigned char ok:ratioOK)ratioValid=ratioValid&&ok!=0u;

@@ -164,10 +164,12 @@ namespace RISE
 		}
 
 		std::uint64_t FNV1aWordsSerial(std::uint64_t hash,const std::uint64_t* words,
-			const std::size_t count,const unsigned int wordBytes,const std::uint64_t zeroPower)
+			const std::size_t count,const unsigned int wordBytes,const std::uint64_t zeroPower,
+			const std::uint64_t leadingPower)
 		{
 			for(std::size_t index=0u;index<count;++index){
 				const std::uint64_t word=words[index];
+				hash*=leadingPower;
 				for(unsigned int byte=0u;byte<wordBytes;++byte){
 					hash^=(word>>(8u*byte))&UINT64_C(0xFF);hash*=fnvPrime;}
 				hash*=zeroPower;
@@ -177,19 +179,20 @@ namespace RISE
 	}
 
 	std::uint64_t FireProductionFNV1aWords(std::uint64_t hash,const std::uint64_t* words,
-		const std::size_t count,const unsigned int wordBytes,const unsigned int zeroBytes)
+		const std::size_t count,const unsigned int wordBytes,const unsigned int zeroBytes,
+		const unsigned int leadingZeroBytes)
 	{
-		const std::uint64_t zeroPower=FNVPower(zeroBytes);
-		const std::size_t wordStride=static_cast<std::size_t>(wordBytes)+zeroBytes;
+		const std::uint64_t zeroPower=FNVPower(zeroBytes),leadingPower=FNVPower(leadingZeroBytes);
+		const std::size_t wordStride=static_cast<std::size_t>(wordBytes)+zeroBytes+leadingZeroBytes;
 		const unsigned int workers=FireProductionCPUParallelWorkers();
 #if defined(__ARM_NEON)
 		// Below about 64 KiB of input (or with one worker) the serial loop is cheaper.
 		const std::size_t grain=(std::size_t(1)<<16u)/(wordStride==0u?1u:wordStride)+1u;
-		if(workers<=1u||count<2u*grain||wordBytes==0u||wordBytes>8u||zeroBytes>8u)
-			return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower);
+		if(workers<=1u||count<2u*grain||wordBytes==0u||wordBytes>8u||zeroBytes>8u||leadingZeroBytes>8u)
+			return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower,leadingPower);
 		const std::size_t slices=std::min<std::size_t>(workers,(count+grain-1u)/grain);
 		const std::size_t length=(count+slices-1u)/slices;
-		const unsigned char zeroLow=LowBytePower(zeroBytes);
+		const unsigned char zeroLow=LowBytePower(zeroBytes),leadingLow=LowBytePower(leadingZeroBytes);
 		// Pass 1: each slice's map from its starting low byte to its ending low byte,
 		// for all 256 starting values at once (sixteen byte lanes per vector).
 		std::vector<std::array<unsigned char,256>> maps(slices);
@@ -199,10 +202,12 @@ namespace RISE
 				for(unsigned int v=0u;v<16u;++v){unsigned char start[16];
 					for(unsigned int i=0u;i<16u;++i)start[i]=static_cast<unsigned char>(16u*v+i);
 					lane[v]=vld1q_u8(start);}
-				const uint8x16_t prime=vdupq_n_u8(fnvPrimeLowByte),zeros=vdupq_n_u8(zeroLow);
+				const uint8x16_t prime=vdupq_n_u8(fnvPrimeLowByte),zeros=vdupq_n_u8(zeroLow),
+					leading=vdupq_n_u8(leadingLow);
 				const std::size_t begin=slice*length,end=std::min(count,begin+length);
 				for(std::size_t index=begin;index<end;++index){
 					const std::uint64_t word=words[index];
+					if(leadingZeroBytes)for(unsigned int v=0u;v<16u;++v)lane[v]=vmulq_u8(lane[v],leading);
 					for(unsigned int byte=0u;byte<wordBytes;++byte){
 						const uint8x16_t b=vdupq_n_u8(static_cast<unsigned char>((word>>(8u*byte))&UINT64_C(0xFF)));
 						for(unsigned int v=0u;v<16u;++v)lane[v]=vmulq_u8(veorq_u8(lane[v],b),prime);
@@ -223,6 +228,7 @@ namespace RISE
 				const std::size_t begin=slice*length,end=std::min(count,begin+length);
 				for(std::size_t index=begin;index<end;++index){
 					const std::uint64_t word=words[index];
+					sum*=leadingPower;l=(l*leadingLow)&0xFFu;
 					for(unsigned int byte=0u;byte<wordBytes;++byte){
 						const unsigned int x=l^static_cast<unsigned int>((word>>(8u*byte))&UINT64_C(0xFF));
 						sum=(sum+(static_cast<std::uint64_t>(x)-static_cast<std::uint64_t>(l)))*fnvPrime;
@@ -240,7 +246,7 @@ namespace RISE
 		return hash;
 #else
 		(void)workers;(void)wordStride;
-		return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower);
+		return FNV1aWordsSerial(hash,words,count,wordBytes,zeroPower,leadingPower);
 #endif
 	}
 

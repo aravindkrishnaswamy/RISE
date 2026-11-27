@@ -729,7 +729,8 @@ void TestFire(const fs::path& root)
 	V completed;
 	std::string error;
 	Check(schema.completeParameters && schema.completeParameters(p, completed, error) &&
-		completed.GetMap().size() == schema.parameters.size(), "completion states every schema parameter", error);
+		completed.GetMap().size() == schema.parameters.size() - 1 && !completed.Find("backend"),
+		"completion states every schema parameter but backend (keyed only as cpu)", error);
 	Check(completed.Find("fast_fixed_vcycles") && !completed.Find("fast_fixed_vcycles")->GetBoolean() &&
 		completed.Find("source_step_cap_s") && completed.Find("source_step_cap_s")->GetText().empty() &&
 		completed.Find("pool_diameter_m") && completed.Find("pool_diameter_m")->GetFloat() == 0.3,
@@ -751,6 +752,16 @@ void TestFire(const fs::path& root)
 	const std::string base = keyOf(window);
 	Check(!base.empty() && base == keyOf(window + "\tadvective_cfl\t0.5\n\tmode\tcertified\n\tinert_plume\tFALSE\n"),
 		"an option given its default value keys like the option left out");
+	// M8d: scene selection of the CPU backend (docs/SIMULATION_M8_RESULTS.md section 12.4). These
+	// keys were recorded with the build before `backend` became a scene parameter: an existing
+	// fire scene keeps its key byte for byte, and so does one that states the default.
+	const std::string pinnedBase = "f005c0acf146b0aedcc953526163caa25e4fee096aee4af2ab7a38c0ebdadf27", pinnedOptions = "5b419d961b459741f349dc819838c5d5ab5463a0b0a6732d69903c6a79ac712f";
+	std::printf("fire keys: base %s options %s\n", base.c_str(), key.c_str());
+	Check(base == pinnedBase && key == pinnedOptions, "existing fire scenes keep their keys (pinned before the backend "
+		"parameter)", base + " " + key);
+	Check(keyOf(window + "\tbackend\tmetal\n") == base, "backend metal (the default) keys like backend left out");
+	const std::string cpuKey = keyOf(window + "\tbackend\tcpu\n");
+	Check(!cpuKey.empty() && cpuKey != base && cpuKey.size() == 64, "backend cpu has its own key", cpuKey);
 	for (const std::string& change : {"\tmode\tfast\n", "\ttier\t6\n", "\tinert_plume\tTRUE\n", "\tadvective_cfl\t0.4\n",
 		"\tsoot_self_absorption\t1\n", "\tvreman_zone\tbelow:16:0.2857\n\tcompact_viscous_stencil\tTRUE\n"})
 		Check(keyOf(window + change) != base, "the key follows " + change.substr(1, change.find('\t', 1) - 1));
@@ -775,6 +786,7 @@ void TestFire(const fs::path& root)
 	Check(refused("level", FireScene(window + "\tsoot_self_absorption\t3\n")), "soot_self_absorption 3 is refused (0..2)");
 	Check(refused("pool", FireScene(window + "\tpool_diameter_m\t0.4\n")), "a pool other than 0.30 m is refused");
 	Check(refused("mode", FireScene(window + "\tmode\tturbo\n")), "an unknown mode is refused");
+	Check(refused("backend", FireScene(window + "\tbackend\tgpu\n")), "an unknown backend is refused");
 	Check(refused("predictive", FireScene(window, "\tfidelity_mode\tpredictive\n")), "a predictive fire with no cache fails closed");
 	// Legality across producers and consumers.
 	Check(refused("fire_to_mesh", FireScene(window) + Consumer("geo", "campfire.volume")),

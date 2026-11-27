@@ -242,6 +242,15 @@ namespace RISEFireProductionFP64
 		std::vector<unsigned char> bottomFuelMask;
 		std::vector<double> bottomFuelMassFluxKGPerM2S;
 		std::array<double,9> injectedConservative={{}};
+		//! M8d: bracket of the canonical accepted-state temperature inversion the R1 base
+		//! divergence target recomputes. Zero (the default, the calibration reference)
+		//! inverts over the methane record's whole range; the CPU production backend sets
+		//! the case bounds [pilot ambient, maximum accepted temperature], the energy row
+		//! of solver spec r74 that the source build and the Metal owner's EOS use. The
+		//! binary32 inversion's endpoint tolerance scales with the bracket's upper
+		//! enthalpy, so the two brackets give different temperatures within ~0.7 K of
+		//! the lower bound (docs/SIMULATION_M8_RESULTS.md section 12.1).
+		double canonicalInversionLowerK=0.0,canonicalInversionUpperK=0.0;
 
 		FireProductionScalarPhysicalFluxPrerequisiteRequest() : ambientTemperatureK(0.0)
 		{
@@ -365,6 +374,10 @@ namespace RISEFireProductionFP64
 		//! API surface.
 		RISE::RISECBOR64::Bytes caseRecordEnvelope;
 		std::vector<double> conservativeValues;
+		//! M8d: when true the inversion bracket is the case bounds (solver spec r74),
+		//! as FireProductionScalarPhysicalFluxPrerequisiteRequest::canonicalInversion*;
+		//! false (the default) keeps the record's whole range.
+		bool caseBracketInversion=false;
 
 		FireProductionScalarEOSAcceptanceRequest() : timeStepS(0.0),
 			attemptIdentity(0u),stage(static_cast<FireProductionScalarEOSStage>(0u)),

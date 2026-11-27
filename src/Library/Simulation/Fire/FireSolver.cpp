@@ -146,6 +146,9 @@ constexpr const char* fastModeEnvironment = "RISE_FIRE_FAST_MODE";
 // Not a legacy default: Configure writes it from the parameter and never reads it.
 // (Inside the OpenVDB block, its only user, so a build without OpenVDB has no unused constant.)
 constexpr const char* backendEnvironment = "RISE_FIRE_BACKEND";
+// M8d: the test-only rim-ignition witness (parameter rim_product_witness; FireCase::RimProductWitnessOverride).
+// Written from the parameter (empty when absent), never read here.
+constexpr const char* rimWitnessEnvironment = "RISE_FIRE_RIM_PRODUCT_WITNESS";
 using namespace RISE::FireRun;
 
 // M8b: the CPU backend's status evidence (docs/SIMULATION_M8_RESULTS.md section 10).
@@ -576,7 +579,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	if (!environmentError_.empty()) return Fail(error,environmentError_);
 	if (parameters.GetType()!=V::Map) return Fail(error,"parameters must be a map");
 	std::vector<std::string> known={"tier","frame_cadence_s","frame_origin_s","end_time_s","pool_diameter_m",
-		"heat_release_rate_kw","mode","backend"};
+		"heat_release_rate_kw","mode","backend","rim_product_witness"};
 	for (const auto& o : Options()) known.emplace_back(o.parameter);
 	for (const auto& m : parameters.GetMap())
 		if (std::find(known.begin(),known.end(),m.first)==known.end()) return Fail(error,"unknown parameter "+m.first);
@@ -612,6 +615,14 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 			return Fail(error,"parameter backend must be \"metal\" or \"cpu\"");
 		cpu_=v->GetText()=="cpu";
 	}
+	// M8d, test only (docs/SIMULATION_M8_RESULTS.md section 12.2): the pre-pilot burner-rim ignition
+	// witness as a product mass fraction. Absent = the historical witness (no key or byte changes);
+	// given, it enters the effective parameters and so the key. Not in the scene schema.
+	double rimWitness=0.0;
+	if (const V* v=given("rim_product_witness"); v && (!Number(v,rimWitness) || !(rimWitness>0.0) || !(rimWitness<1.0)))
+		return Fail(error,"parameter rim_product_witness must be a product mass fraction in (0, 1)");
+	std::string rimWitnessText;
+	if (rimWitness>0.0) { char text[40]; std::snprintf(text,sizeof text,"%.17g",rimWitness); rimWitnessText=text; }
 
 	// Result-affecting options: explicit > legacy environment > library default.
 	V::Members options;
@@ -631,6 +642,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 	if (!given("mode")) for (const auto& f : fromEnvironment_) if (f.first=="mode") notes.push_back("mode from legacy "+f.second);
 	environment.emplace_back(fastModeEnvironment,fast_ ? "1" : "");
 	environment.emplace_back(backendEnvironment,cpu_ ? "cpu" : "");
+	environment.emplace_back(rimWitnessEnvironment,rimWitnessText);
 	auto option=[&](const char* name) -> const V& {
 		for (const auto& m : options) if (m.first==name) return m.second;
 		return options.front().second;
@@ -695,6 +707,7 @@ bool FireSolver::Configure(const V& parameters,const ISceneInputs&,SolverDescrip
 		{"heat_release_rate_kw",V::Float(hrr)},{"mode",V::String(mode)},{"pool_diameter_m",V::Float(diameter)},
 		{"tier",V::Unsigned(static_cast<std::uint64_t>(tier_))}};
 	if (cpu_) members.emplace_back("backend",V::String("cpu"));
+	if (rimWitness>0.0) members.emplace_back("rim_product_witness",V::Float(rimWitness));
 	for (auto& m : options) members.push_back(m);
 	effective_=V::MapValue(members);
 

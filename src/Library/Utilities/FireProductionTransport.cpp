@@ -104,9 +104,17 @@ namespace RISE
 		{
 			if(values.size()<4096u){for(const float value:values)HashEOSFloat(hash,value);return;}
 			std::vector<std::uint64_t> words(values.size());
-			for(std::size_t index=0u;index<values.size();++index)
+			std::uint64_t lowBytes=0u;
+			for(std::size_t index=0u;index<values.size();++index){
 				words[index]=EOSDoubleBits(static_cast<double>(values[index]));
-			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),8u,0u);
+				lowBytes|=words[index]&UINT64_C(0xFFFFFF);}
+			// M8d: a binary32 value widened to binary64 has its low 29 mantissa bits zero, so
+			// its first three bytes are zero: then it is hashed as three zero bytes and five
+			// (the same digest, fewer operations). Checked, not assumed: the binary64 mirror
+			// passes wider values here and takes the eight-byte form.
+			if(lowBytes!=0u){hash=FireProductionFNV1aWords(hash,words.data(),words.size(),8u,0u);return;}
+			for(std::uint64_t& word:words)word>>=24u;
+			hash=FireProductionFNV1aWords(hash,words.data(),words.size(),5u,0u,3u);
 		}
 
 		std::uint64_t EOSValueDigest( const std::vector<float>& values )
@@ -205,6 +213,38 @@ namespace RISE
 		private:
 			std::mutex mutex_;bool valid_=false;std::uint64_t value_=0u;
 			std::vector<std::vector<unsigned char> > copies_;
+		};
+		//! M8d: the same exact memo with a few entries (least recently used replaced),
+		//! for a content hash re-evaluated on several live objects in turn. Each hit
+		//! compares every input byte with a retained copy, so it returns exactly the
+		//! value the hash would recompute.
+		template<std::size_t Capacity> class ExactContentHashMemoSet
+		{
+		public:
+			template<std::size_t N,typename Hash>
+			std::uint64_t Evaluate(const std::array<ExactContentHashMemo::Span,N>& spans,const Hash& hash)
+			{
+				std::lock_guard<std::mutex> lock(mutex_);
+				++clock_;
+				for(Entry& entry:entries_){
+					bool hit=entry.valid&&entry.copies.size()==N;
+					for(std::size_t index=0u;hit&&index<N;++index)hit=entry.copies[index].size()==spans[index].bytes&&
+						(spans[index].bytes==0u||std::memcmp(entry.copies[index].data(),spans[index].data,
+							spans[index].bytes)==0);
+					if(hit){entry.used=clock_;return entry.value;}
+				}
+				Entry* victim=&entries_[0];
+				for(Entry& entry:entries_)if(!entry.valid||entry.used<victim->used){victim=&entry;if(!entry.valid)break;}
+				victim->valid=false;const std::uint64_t value=hash();victim->copies.resize(N);
+				for(std::size_t index=0u;index<N;++index){
+					const unsigned char* first=static_cast<const unsigned char*>(spans[index].data);
+					victim->copies[index].assign(first,first+spans[index].bytes);}
+				victim->value=value;victim->used=clock_;victim->valid=true;return value;
+			}
+		private:
+			struct Entry { bool valid=false;std::uint64_t value=0u,used=0u;
+				std::vector<std::vector<unsigned char> > copies; };
+			std::mutex mutex_;std::uint64_t clock_=0u;std::array<Entry,Capacity> entries_;
 		};
 		template<typename Value> ExactContentHashMemo::Span MemoSpan( const std::vector<Value>& values )
 		{
@@ -590,15 +630,37 @@ namespace RISE
 			// M8b, fast mode (as the Metal owner's): a lineage token over the stage's
 			// authenticated inputs and parents below, not a hash of the payload bytes.
 			if(!::RISE::FireSim::FireFastMode()){
-			HashFluxValues(hash,pair.lowFlux);HashFluxValues(hash,pair.fluxDelta);
-			HashPrescribedInlet(hash,stage);
-			HashFluxValues(hash,stage.physicalMassFluxKGPerM2S);
-			HashFluxValues(hash,stage.physicalEnergyFluxWPerM2);
-			for(unsigned int axis=0u;axis<3u;++axis){
-				HashFluxValues(hash,stage.physicalGasFluxKGPerM2S[axis]);
-				HashFluxValues(hash,stage.advectiveGasLowFluxKGPerM2S[axis]);
-				HashFluxValues(hash,stage.advectiveGasFluxDeltaKGPerM2S[axis]);
-			}
+			auto payload=[&stage,&pair](std::uint64_t value){
+				HashFluxValues(value,pair.lowFlux);HashFluxValues(value,pair.fluxDelta);
+				HashPrescribedInlet(value,stage);
+				HashFluxValues(value,stage.physicalMassFluxKGPerM2S);
+				HashFluxValues(value,stage.physicalEnergyFluxWPerM2);
+				for(unsigned int axis=0u;axis<3u;++axis){
+					HashFluxValues(value,stage.physicalGasFluxKGPerM2S[axis]);
+					HashFluxValues(value,stage.advectiveGasLowFluxKGPerM2S[axis]);
+					HashFluxValues(value,stage.advectiveGasFluxDeltaKGPerM2S[axis]);
+				}
+				return value;};
+			// M8d: a stage's identity is recomputed by every consumer that validates it (the
+			// Heun average, the solve, the compatible momentum), on unchanged bytes. On the
+			// CPU backend's workers an exact three-entry memo of the payload part returns
+			// the same value without the second pass (FireCPUBackendWorkingSetBytes counts
+			// its copies); with one worker (calibration, the mirrors' tests) it is not used.
+			if(FireProductionCPUParallelWorkers()>1u){
+				static ExactContentHashMemoSet<3u> memo;
+				const std::array<ExactContentHashMemo::Span,17> spans={{MemoScalar(hash),MemoSpan(pair.lowFlux),
+					MemoSpan(pair.fluxDelta),MemoSpan(stage.bottomFuelMask),MemoSpan(stage.bottomFuelMassFluxKGPerM2S),
+					MemoScalar(stage.injectedConservative),MemoSpan(stage.physicalMassFluxKGPerM2S),
+					MemoSpan(stage.physicalEnergyFluxWPerM2),
+					MemoSpan(stage.physicalGasFluxKGPerM2S[0]),MemoSpan(stage.advectiveGasLowFluxKGPerM2S[0]),
+					MemoSpan(stage.advectiveGasFluxDeltaKGPerM2S[0]),
+					MemoSpan(stage.physicalGasFluxKGPerM2S[1]),MemoSpan(stage.advectiveGasLowFluxKGPerM2S[1]),
+					MemoSpan(stage.advectiveGasFluxDeltaKGPerM2S[1]),
+					MemoSpan(stage.physicalGasFluxKGPerM2S[2]),MemoSpan(stage.advectiveGasLowFluxKGPerM2S[2]),
+					MemoSpan(stage.advectiveGasFluxDeltaKGPerM2S[2])}};
+				const std::uint64_t before=hash;
+				hash=memo.Evaluate(spans,[&](){return payload(before);});
+			}else hash=payload(hash);
 			}
 			HashEOSString(hash,stage.methaneRecordId);
 			HashEOSUInt64(hash,stage.attemptIdentity);
@@ -2844,6 +2906,15 @@ namespace RISE
 				stage.methaneRecordId!=record.RecordId())return Fail(error,
 					"scalar base divergence-target record identity differs");
 			const std::size_t cells=shape.CellCount();
+			// M8d: the inversion bracket (zero: the record's whole range).
+			const bool caseBracket=physicalRequest.canonicalInversionUpperK!=0.0;
+			const double inversionLowerK=caseBracket?physicalRequest.canonicalInversionLowerK:
+				record.TemperatureMinK();
+			const double inversionUpperK=caseBracket?physicalRequest.canonicalInversionUpperK:
+				record.TemperatureMaxK();
+			if(!(inversionLowerK>=record.TemperatureMinK())||!(inversionUpperK<=record.TemperatureMaxK())||
+				!(inversionLowerK<inversionUpperK))return Fail(error,
+					"scalar base divergence-target inversion bracket is invalid");
 			std::vector<float> canonicalTemperatureK(cells,0.0f);
 			// M8c: independent cells; on the CPU backend's workers the first failure is
 			// the lowest failing cell, as in the serial loop.
@@ -2859,7 +2930,7 @@ namespace RISE
 							advectiveRequest.beginning[component*cells+cell]);
 					double temperatureK=0.0,pressureRatio=0.0;std::string cellError;
 					if(!record.InvertAcceptedConservativeStateByComponentOrder(tuple.data(),
-						tuple.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
+						tuple.size(),inversionLowerK,inversionUpperK,
 						FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,&cellError)){
 						temperatureFailure.Record(cell,cellError);return;}
 					canonicalTemperatureK[cell]=static_cast<float>(temperatureK);
@@ -3468,8 +3539,10 @@ namespace RISE
 				// iterate depends on the bracket, and inverting over the case bounds published
 				// a temperature one binary32 ulp from it in rare cells (seen at tier 4, step 6).
 				// The case bounds below still refuse a temperature outside them.
+				// M8d: or over the case bounds when the request asks (caseBracketInversion).
 				if(!record.InvertAcceptedConservativeStateByComponentOrder(state.data(),
-					state.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
+					state.size(),request.caseBracketInversion?lowerTemperatureK:record.TemperatureMinK(),
+					request.caseBracketInversion?upperTemperatureK:record.TemperatureMaxK(),
 					request.producerPrecision,temperature,pressureRatio,&cellError)){
 					failure.Record(cell,cellError);return;}
 				if(temperature<lowerTemperatureK){failure.Record(cell,

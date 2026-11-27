@@ -7,11 +7,12 @@
 //                run, finite physical values that move the right way (fuel enters at
 //                the burner, the gas heats and rises), the solver description (backend
 //                "cpu", experimental, its own cache key) and the refusals.
-//   --agreement N (FireCPUMetalAgreementTest runs N = 5; skipped where Metal is absent)
+//   --agreement N (FireCPUMetalAgreementTest runs N = 8; skipped where Metal is absent)
 //                Metal fast mode and CPU fast mode from the same start for N steps:
-//                step 1 to rounding, later steps to the size of the burner-rim ignition
-//                event, and one step from identical bytes (Metal's step 2) to rounding
-//                (docs/SIMULATION_M8_RESULTS.md sections 10 and 11).
+//                step 1 to rounding, the burner-rim ignition event's two steps to its
+//                size, the steps after it to the decaying remainder, and one step from
+//                identical bytes (Metal's steps 2 and 5) to rounding
+//                (docs/SIMULATION_M8_RESULTS.md sections 10-12).
 //   --agreement-certified N, --agreement-fixed-vcycles N   the same in other modes.
 //   --cost TIER STEPS  timing only: CPU and Metal seconds per step at that tier.
 //   Diagnostics (results section 11): --splice-checkpoint SOURCE TARGET OUT,
@@ -21,6 +22,8 @@
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "../src/Library/Simulation/SimulationSolver.h"
 #include "../src/Library/Simulation/Fire/FireSolver.h"
+#include "../src/Library/Simulation/Fire/FireParameterSchema.h"
+#include "../src/Library/Simulation/SimulationCache.h"
 #include "../src/Library/Utilities/FireProductionCompute.h"
 #include "../src/Library/Utilities/FireProductionAdvection.h"
 #if defined(RISE_ENABLE_OPENVDB)
@@ -30,6 +33,7 @@
 #include "TestTempDir.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -122,6 +126,8 @@ V Parameters(double tier, bool cpu, bool fast, double endS)
 	if (fast) m.emplace_back("mode", V::String("fast"));
 	// Diagnostic: Metal fast mode with the certified fixed V-cycle count (agreement curve).
 	if (fast && std::getenv("RISE_M8B_FIXED_VCYCLES")) m.emplace_back("fast_fixed_vcycles", V::Bool(true));
+	// Diagnostic: the test-only rim-ignition witness (results section 12.2).
+	if (const char* w = std::getenv("RISE_M8D_RIM_WITNESS")) m.emplace_back("rim_product_witness", V::Float(std::atof(w)));
 	return V::MapValue(m);
 }
 
@@ -443,21 +449,84 @@ void SlicedHashMatchesSerial()
 	std::uint64_t x = 0x9e3779b97f4a7c15ull;
 	for (auto& w : words) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; w = x; }
 	bool same = true;
-	const unsigned layouts[][2] = {{8, 0}, {4, 4}, {4, 0}, {1, 0}, {3, 5}};
+	// {data bytes, trailing zero bytes, leading zero bytes}
+	const unsigned layouts[][3] = {{8, 0, 0}, {4, 4, 0}, {4, 0, 0}, {1, 0, 0}, {3, 5, 0}, {5, 0, 3}, {2, 1, 4}};
 	for (const auto& layout : layouts) {
 		std::uint64_t serial = 0xcbf29ce484222325ull;
 		for (std::uint64_t w : words) {
+			for (unsigned b = 0; b < layout[2]; ++b) serial *= 1099511628211ull;
 			for (unsigned b = 0; b < layout[0]; ++b) { serial ^= (w >> (8*b)) & 0xFF; serial *= 1099511628211ull; }
 			for (unsigned b = 0; b < layout[1]; ++b) serial *= 1099511628211ull;
 		}
 		for (unsigned workers : {1u, 3u, 8u}) {
 			FireProductionCPUParallelScope scope(workers);
 			const std::uint64_t sliced = FireProductionFNV1aWords(0xcbf29ce484222325ull, words.data(), words.size(),
-				layout[0], layout[1]);
+				layout[0], layout[1], layout[2]);
 			same = same && sliced == serial;
 		}
 	}
-	Check(same, "the sliced FNV-1a content hash equals the serial byte loop (5 word layouts, 1/3/8 workers)");
+	Check(same, "the sliced FNV-1a content hash equals the serial byte loop (7 word layouts, leading and trailing "
+		"zero bytes, 1/3/8 workers)");
+}
+
+// M8d (results section 12.4): `backend cpu` chosen in a fire scene.  rise-sim bakes it on the
+// CPU backend (the launch receipt names the CPU step) under the scene's predicted key, and the
+// same completed parameters run through the in-process host with that key.
+int RunTool(const fs::path& tool, const std::vector<std::string>& args, const std::vector<std::string>& extra,
+	const fs::path& log)
+{
+	std::vector<std::string> env;
+	for (char** e = environ; *e; ++e) { const std::string s = *e; if (s.rfind("RISE_FIRE_", 0) != 0) env.push_back(s); }
+	for (const auto& e : extra) env.push_back(e);
+	std::vector<std::string> argv{tool.string()};
+	argv.insert(argv.end(), args.begin(), args.end());
+	std::vector<char*> a, p;
+	for (auto& s : argv) a.push_back(&s[0]);
+	a.push_back(nullptr);
+	for (auto& s : env) p.push_back(&s[0]);
+	p.push_back(nullptr);
+	std::cout.flush(); std::cerr.flush();
+	const pid_t child = ::fork();
+	if (child == 0) {
+		const int fd = ::open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		if (fd >= 0) { ::dup2(fd, 1); ::dup2(fd, 2); }
+		::execve(a[0], a.data(), p.data());
+		::_exit(127);
+	}
+	if (child < 0) return -1;
+	int status = 0;
+	while (::waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
+	return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+}
+
+void SceneSelection(const fs::path& root)
+{
+	const fs::path dir = root/"scene";
+	fs::create_directories(dir);
+	{
+		std::ofstream f(dir/"cpu.RISEscene");
+		f << "RISE ASCII SCENE 7\npinhole_camera\n{\n\tlocation\t0 1 3\n\tlookat\t0 0.5 0\n\tup\t0 1 0\n\tfov\t40\n}\n\n"
+			"fire_simulation\n{\n\tname\tcampfire\n\tcache\tcache_cpu\n\tbackend\tcpu\n\tmode\tfast\n\ttier\t6\n"
+			"\tframe_origin_s\t0\n\tend_time_s\t0.001\n}\n\n";
+	}
+	const fs::path tool = self.parent_path().parent_path()/"tools"/"rise_sim";
+	const std::vector<std::string> trust{"RISE_SIMULATION_TRUSTED_ROOTS=" + root.string()};
+	const int baked = RunTool(tool, {"bake", (dir/"cpu.RISEscene").string(), "campfire"}, trust, dir/"bake.log");
+	const int status = RunTool(tool, {"status", (dir/"cpu.RISEscene").string()}, trust, dir/"status.log");
+	const std::string receipt = ReadText(dir/"cache_cpu"/"legacy"/"window_launch.v1"), st = ReadText(dir/"status.log");
+	Check(baked == 0 && status == 0 && st.find("campfire: complete") != std::string::npos &&
+		receipt.find("cpu-m8-v1") != std::string::npos,
+		"rise-sim bakes a fire scene with backend cpu on the CPU backend (receipt cpu-m8-v1), complete under its key",
+		ReadText(dir/"bake.log") + st);
+	std::string in;
+	const int ran = Run({"--in-process-scene-child", (dir/"inprocess").string()}, {}, dir/"inprocess.log");
+	in = ReadText(dir/"inprocess.log");
+	const std::string key = Field(in, "KEY");
+	const std::string shown = st.substr(st.find("key: ") == std::string::npos ? 0 : st.find("key: ") + 5, 12);
+	Check(ran == 0 && key.size() == 64 && key == Field(in, "PREDICTED") && key.compare(0, 12, shown) == 0 &&
+		Field(in, "BACKEND") == "cpu" && Field(in, "FINISHED") == "1",
+		"the same scene parameters run on the CPU backend through the in-process host, under the scene's predicted key",
+		in + " status key " + shown);
 }
 
 void CPUOnly(const fs::path& root)
@@ -516,6 +585,7 @@ void CPUOnly(const fs::path& root)
 	const int refused = Run({"--refusal-child"}, {}, root/"refusal.log");
 	Check(refused == 0, "an invalid backend and a Metal-only operator on the CPU backend are refused",
 		ReadText(root/"refusal.log"));
+	SceneSelection(root);
 	std::cout << "cpu-only checks: " << std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count() << " s\n";
 }
 
@@ -532,12 +602,21 @@ void CPUOnly(const fs::path& root)
 //    species and densities 2e-4 of the maximum gas density, temperature 3e-4 of its
 //    maximum, energy 1e-2 of max |E| (small near ambient), velocity 1e-2 of the
 //    maximum face speed (measured peaks 7.8e-5, 1.0e-4, 4.0e-3, 5.0e-3).
-//  - One step from identical bytes: Metal's accepted step-2 state restored on the
-//    CPU backend; its step must equal Metal's step 3 to rounding, the backends' own
-//    agreement with the noise-driven switch taken out (it reads identical inputs).
-constexpr int kAgreementSteps = 5;
+//    M8d: the event is the first step above rounding (step 2 or 3, by the residue's
+//    signs); it and the next step are held to those bounds. From the second step after
+//    it the difference is what the event left, carried by two steps that agree to
+//    rounding from identical input (section 12.1): it may not grow (5 % slack) and is
+//    held to species 2e-5, temperature 3e-5, energy 7e-4, velocity 2e-4 (measured at
+//    that step 8.3e-6, 1.1e-5, 2.6e-4, 8.0e-5).
+//  - One step from identical bytes: Metal's accepted step-2 and step-5 states restored on
+//    the CPU backend; each step must equal Metal's next step to rounding, the backends'
+//    own agreement with the noise-driven switch taken out (it reads identical inputs).
+//    Step 5 -> 6 is the step the CPU's record-range EOS bracket once moved (section 12.1).
+constexpr int kAgreementSteps = 8;
 constexpr double kSpeciesTolerance = 2.0e-4, kTemperatureTolerance = 3.0e-4, kEnergyTolerance = 1.0e-2,
 	kVelocityTolerance = 1.0e-2;
+constexpr double kAfterSpeciesTolerance = 2.0e-5, kAfterTemperatureTolerance = 3.0e-5, kAfterEnergyTolerance = 7.0e-4,
+	kAfterVelocityTolerance = 2.0e-4, kAfterGrowth = 1.05;
 constexpr double kRoundingSpeciesTolerance = 1.0e-6, kRoundingTemperatureTolerance = 1.0e-7,
 	kRoundingEnergyTolerance = 1.0e-6, kRoundingVelocityTolerance = 1.0e-5;
 bool WithinRounding(const std::vector<double>& rel)
@@ -563,8 +642,10 @@ void Agreement(const fs::path& root, int steps, bool fast = true, const std::vec
 	const int cpu = SolverRun(root/"cpu", kTier, true, fast, kEnd, steps, -1, "-", env, c);
 	Check(metal == 0 && cpu == 0, "Metal fast mode and CPU fast mode run the coarse case", m + c);
 	if (metal != 0 || cpu != 0) return;
-	bool within = true, first = true;
-	std::ostringstream curve;
+	bool within = true, first = true, after = true;
+	int event = 0;   // the first step above rounding (the rim-ignition event), 0 if none
+	std::array<double, 4> previous{};   // species, T, E, velocity at the previous step
+	std::ostringstream curve, afterCurve;
 	for (int k = 1; k <= steps; ++k) {
 		const State a = Load(root/"metal"/("state_" + std::to_string(k) + ".txt"));
 		const State b = Load(root/"cpu"/("state_" + std::to_string(k) + ".txt"));
@@ -573,34 +654,90 @@ void Agreement(const fs::path& root, int steps, bool fast = true, const std::vec
 		double species = 0;
 		for (std::size_t i = 0; i < 8; ++i) species = std::max(species, rel[i]);
 		if (k == 1) first = a.ok && b.ok && a.time == b.time && WithinRounding(rel);
+		if (event == 0 && !WithinRounding(rel)) event = k;
 		const bool ok = a.ok && b.ok && a.time == b.time && species <= kSpeciesTolerance &&
 			rel[9] <= kTemperatureTolerance && rel[8] <= kEnergyTolerance && rel[10] <= kVelocityTolerance;
 		if (!ok || (k == 1 && !first)) curve << "step " << k << ": species " << species << " E " << rel[8] << " T "
 			<< rel[9] << " velocity " << rel[10] << "; ";
 		within = within && ok;
+		const std::array<double, 4> now{{species, rel[9], rel[8], rel[10]}};
+		if (event != 0 && k >= event + 2) {
+			const std::array<double, 4> bound{{kAfterSpeciesTolerance, kAfterTemperatureTolerance, kAfterEnergyTolerance,
+				kAfterVelocityTolerance}};
+			bool okAfter = true;
+			for (std::size_t i = 0; i < 4; ++i) okAfter = okAfter && now[i] <= bound[i] && now[i] <= kAfterGrowth*previous[i];
+			if (!okAfter) afterCurve << "step " << k << ": species " << species << " T " << rel[9] << " E " << rel[8]
+				<< " velocity " << rel[10] << "; ";
+			after = after && okAfter;
+		}
+		previous = now;
 	}
 	Check(first, "step 1 agrees to rounding: species 1e-6, temperature 1e-7, energy 1e-6, velocity 1e-5 of the "
 		"field scale", curve.str());
 	Check(within, "CPU and Metal fast mode agree after each of " + std::to_string(steps) + " steps within 2e-4 "
 		"(species), 3e-4 (temperature), 1e-2 (energy, velocity) of the field scale", curve.str());
-	if (!identical || steps < 3) return;
-	// The CPU backend from Metal's accepted step-2 bytes, one step.
-	std::string r;
-	fs::create_directories(root/"identical");
-	fs::copy(root/"metal"/"legacy", root/"identical"/"legacy", fs::copy_options::recursive);
-	const bool spliced = SpliceCheckpoint(root/"metal"/"checkpoint_2.bin", root/"cpu"/"checkpoint_2.bin",
-		root/"identical"/"input.bin");
-	const int one = spliced ? SolverRun(root/"identical", kTier, true, fast, kEnd, 1, 0,
-		(root/"identical"/"input.bin").string(), env, r) : -1;
-	const State a = Load(root/"metal"/"state_3.txt"), b = Load(root/"identical"/"state.txt");
-	const auto rel = Relative(a, b);
-	PrintAgreement("IDENTICAL_START", 3, a.time, rel);
-	Check(one == 0 && a.ok && b.ok && a.time == b.time && WithinRounding(rel),
-		"from Metal's accepted step-2 state the CPU backend's step 3 equals Metal's to rounding (species 1e-6, "
-		"temperature 1e-7, energy 1e-6, velocity 1e-5 of the field scale)", r);
+	std::cout << "rim-ignition event at step " << event << "\n";
+	Check(after, "from the second step after the rim-ignition event the difference does not grow and stays within "
+		"2e-5 (species), 3e-5 (temperature), 7e-4 (energy), 2e-4 (velocity) of the field scale", afterCurve.str());
+	if (!identical) return;
+	// The CPU backend from Metal's accepted step-k bytes, one step (k = 2 and 5).
+	for (const int k : {2, 5}) {
+		if (steps < k + 1) continue;
+		std::string r;
+		const fs::path dir = root/("identical_" + std::to_string(k));
+		fs::create_directories(dir);
+		fs::copy(root/"metal"/"legacy", dir/"legacy", fs::copy_options::recursive);
+		const bool spliced = SpliceCheckpoint(root/"metal"/("checkpoint_" + std::to_string(k) + ".bin"),
+			root/"cpu"/("checkpoint_" + std::to_string(k) + ".bin"), dir/"input.bin");
+		const int one = spliced ? SolverRun(dir, kTier, true, fast, kEnd, 1, 0, (dir/"input.bin").string(), env, r) : -1;
+		const State a = Load(root/"metal"/("state_" + std::to_string(k + 1) + ".txt")), b = Load(dir/"state.txt");
+		const auto rel = Relative(a, b);
+		PrintAgreement("IDENTICAL_START", k + 1, a.time, rel);
+		Check(one == 0 && a.ok && b.ok && a.time == b.time && WithinRounding(rel),
+			"from Metal's accepted step-" + std::to_string(k) + " state the CPU backend's step " + std::to_string(k + 1) +
+			" equals Metal's to rounding (species 1e-6, temperature 1e-7, energy 1e-6, velocity 1e-5 of the field scale)", r);
+	}
 }
 #endif
 } // namespace
+
+// M8d (results section 12.4): the scene's parameters for a CPU fire, completed by the fire
+// schema exactly as a scene keys them.  Tier 6 (the smallest scene tier), one step.
+V SceneParameters()
+{
+	return V::MapValue({{"backend", V::String("cpu")}, {"mode", V::String("fast")}, {"tier", V::Unsigned(6)},
+		{"frame_origin_s", V::Float(0.0)}, {"end_time_s", V::Float(0.001)}});
+}
+
+// Child: the completed scene parameters through the in-process host, run to the end.
+int InProcessSceneChild(const fs::path& dir)
+{
+	std::string error;
+	if (!RegisterFireSolver(error)) { std::cout << "ERROR " << error << "\n"; return 1; }
+	V completed;
+	const ParameterSchema& schema = FireParameterSchema();
+	if (!schema.completeParameters(SceneParameters(), completed, error)) { std::cout << "ERROR complete " << error << "\n"; return 1; }
+	std::string predicted;
+	if (!MakeCacheKey("fire.methane", schema.solverVersion, completed, {}, predicted, error)) {
+		std::cout << "ERROR key " << error << "\n"; return 1; }
+	auto solver = CreateSolver("fire.methane", error);
+	if (!solver) { std::cout << "ERROR create " << error << "\n"; return 1; }
+	InProcessHost host(std::move(solver));
+	NoInputs inputs;
+	fs::create_directories(dir/"legacy");
+	if (!host.Configure(completed, inputs, error) || !host.SetSideOutputDirectory(dir/"legacy", error) ||
+		!host.Start(error)) { std::cout << "ERROR host " << error << "\n"; return 1; }
+	std::cout << "PREDICTED " << predicted << "\nKEY " << host.Description().cache.key << "\nBACKEND "
+		<< host.Description().capabilities.backend << "\n";
+	if (!host.StepToIndex(0, error)) { std::cout << "ERROR step " << error << "\n"; return 1; }
+	AdvanceResult result;
+	for (int i = 0; i < 8 && result.status != AdvanceResult::Status::Finished; ++i)
+		if (!host.Step(AdvanceRequest(), result, error)) { std::cout << "ERROR advance " << error << "\n"; return 1; }
+	std::cout << "POSITION " << std::setprecision(17) << host.Position().time << "\nFINISHED "
+		<< (result.status == AdvanceResult::Status::Finished) << "\n";
+	std::cout.flush();
+	std::_Exit(0);
+}
 
 int ConfigureChildMain(bool cpu)
 {
@@ -660,6 +797,9 @@ int main(int argc, char** argv)
 #endif
 	if (argc == 3 && std::strcmp(argv[1], "--configure-child") == 0) return ConfigureChildMain(std::strcmp(argv[2], "1") == 0);
 	if (argc == 2 && std::strcmp(argv[1], "--refusal-child") == 0) return RefusalChildMain();
+#if defined(RISE_ENABLE_OPENVDB)
+	if (argc == 3 && std::strcmp(argv[1], "--in-process-scene-child") == 0) return InProcessSceneChild(argv[2]);
+#endif
 	if (argc == 5 && std::strcmp(argv[1], "--splice-checkpoint") == 0) return SpliceCheckpoint(argv[2], argv[3], argv[4]) ? 0 : 1;
 #if !defined(_WIN32) && defined(RISE_ENABLE_OPENVDB) && !defined(RISE_FIRE_CPU_AGREEMENT_ONLY)
 	if (argc == 2 && std::strcmp(argv[1], "--hash-check") == 0) {

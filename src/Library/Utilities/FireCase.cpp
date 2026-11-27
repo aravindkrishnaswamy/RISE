@@ -227,6 +227,15 @@ __attribute__((noinline)) bool RISE::FireCase::InertPlumeSelected()
 	return selected;
 }
 
+__attribute__((noinline)) double RISE::FireCase::RimProductWitnessOverride()
+{
+	static const double witness=[](){const char* value=std::getenv("RISE_FIRE_RIM_PRODUCT_WITNESS");
+		if(!value||!*value)return 0.0;
+		char* end=nullptr;const double parsed=std::strtod(value,&end);
+		return end&&*end=='\0'&&std::isfinite(parsed)&&parsed>0.0&&parsed<1.0?parsed:0.0;}();
+	return witness;
+}
+
 __attribute__((noinline)) double RISE::FireCase::InertPlumeFraction(const std::size_t layer)
 {
 	static const double fraction[InertPlumeLayers]={0.29275044241386805,0.15094146662912586,

@@ -63,9 +63,13 @@ namespace RISE
 	//! serial byte loop's; large inputs on the CPU fire backend's workers are split
 	//! by the low-byte decomposition h' = (h + d)P, d = (l^b) - l with l = h mod 256:
 	//! each slice composes its low-byte permutation, then sums its d terms, and the
-	//! slices combine in order.  wordBytes 1..8, zeroBytes 0..8.
+	//! slices combine in order.  wordBytes 1..8, zeroBytes 0..8.  M8d: each word may
+	//! also be preceded by `leadingZeroBytes` (0..8) zero bytes (a binary32 value widened
+	//! to binary64 has three: hash its bits >> 24 as five bytes); a run of zero bytes
+	//! is one multiplication by a power of the prime, in every pass.
 	std::uint64_t FireProductionFNV1aWords(std::uint64_t hash,const std::uint64_t* words,
-		std::size_t count,unsigned int wordBytes,unsigned int zeroBytes);
+		std::size_t count,unsigned int wordBytes,unsigned int zeroBytes,
+		unsigned int leadingZeroBytes=0u);
 	//! r204 byte-payload digest namespace (distinct from historical manifold
 	//! token digest variants). SHA-256 Merkle tree: 4096-byte leaves, fan-in 16.
 	struct FireProductionPayloadDigestV2

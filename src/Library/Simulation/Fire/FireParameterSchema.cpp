@@ -39,8 +39,15 @@ bool Number(const V* v, double& x)
 bool Complete(const ParameterSchema& schema, const V& authored, V& completed, std::string& error)
 {
 	if (authored.GetType() != V::Map) return Fail(error, "fire parameters must be a map");
-	V::Members m = authored.GetMap();
+	// M8d: `backend` enters the key only as "cpu" (FireSolver::Configure omits "metal"): left
+	// out, or stated as its default, it is not completed, so every existing fire scene keeps
+	// its key (docs/SIMULATION_M8_RESULTS.md section 12.4).
+	V::Members m;
+	for (const auto& member : authored.GetMap())
+		if (!(member.first == "backend" && member.second.GetType() == V::Text && member.second.GetText() == "metal"))
+			m.push_back(member);
 	for (const auto& p : schema.parameters) {
+		if (p.name == "backend") continue;
 		if (authored.Find(p.name)) continue;
 		V value;
 		if (SchemaDefaultValue(p, value)) m.emplace_back(p.name, value);
@@ -92,7 +99,9 @@ void DescribeUnkeyed(const V& effective, SolverDescription& d)
 	Number(effective.Find("tier"), tier);
 	const V* mode = effective.Find("mode");
 	const bool fast = mode && mode->GetType() == V::Text && mode->GetText() == "fast";
-	FireEstimateCapabilities(tier, fast, {{0, 0, 0}}, d.capabilities);
+	const V* backend = effective.Find("backend");
+	const bool cpu = backend && backend->GetType() == V::Text && backend->GetText() == "cpu";
+	FireEstimateCapabilities(tier, fast, {{0, 0, 0}}, d.capabilities, cpu);
 }
 
 ParameterSchema Build()
@@ -101,7 +110,7 @@ ParameterSchema Build()
 	s.solverId = Implementation::FireMethaneSolverId;
 	s.solverVersion = Implementation::FireMethaneSolverVersion;
 	s.summary = "A methane pool fire simulated by the fire.methane solver (the production capstone case: a "
-		"0.30 m pool at 33 kW; Metal; baked by `rise-sim bake <scene>`, never live).  Publishes `volume` "
+		"0.30 m pool at 33 kW; Metal, or the experimental CPU backend with `backend cpu`; baked by `rise-sim bake <scene>`, never live).  Publishes `volume` "
 		"(grid.v1: carbon, temperature and the chemistry channels a fire_medium binds).  Parameters and their "
 		"legacy environment names: docs/SIMULATION_M2_RESULTS.md.  A scene bake passes every option "
 		"explicitly, so the legacy RISE_FIRE_* environment never changes a scene's fire.";
@@ -123,6 +132,11 @@ ParameterSchema Build()
 	{ auto& p = P("heat_release_rate_kw", SchemaType::Real, "33", "kW", "Heat release rate (only the certified 33 kW)"); range(p, 33, 33); }
 	{ auto& p = P("mode", SchemaType::Enum, "certified", "", "certified (bit-reproducible) or fast (r275 uncertified fast mode)");
 	  p.values = {"certified", "fast"}; }
+	// M8d: scene selection of the backend; keyed only when cpu (Complete above).
+	{ auto& p = P("backend", SchemaType::Enum, "metal", "", "The step's backend: metal (default) or cpu (the "
+		"experimental CPU backend, docs/SIMULATION_M8_RESULTS.md sections 10-12; different bytes, its own cache). "
+		"Enters the cache key only as cpu");
+	  p.values = {"metal", "cpu"}; }
 	for (const FireSolverOptionInfo& o : FireSolverOptionInfos()) {
 		const std::string doc = "Result-affecting fire option (legacy " + o.environment + ")";
 		if (o.kind == "flag") {
