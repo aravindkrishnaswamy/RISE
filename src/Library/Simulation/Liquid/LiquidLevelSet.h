@@ -41,38 +41,77 @@ double Weno5(double v1, double v2, double v3, double v4, double v5);
 //! an implicitly coupled sheet closes; docs/SIMULATION_M7F_RESULTS.md).  The two
 //! sides of a sheet are separate regions of the level set; a stencil that reads
 //! across one carries one side's values to the other (the WENO advection, the
-//! reinitialisation, the gradient that triggers it).  Two kinds of face:
-//!   Wall (1): the sheet has the same phase on both sides (submerged, in air, or
-//!     where a free surface meets it): every stencil sees instead the last cell on
-//!     its own side (constant extension: zero normal slope, the 90 degree contact
-//!     condition of a wall).
-//!   Boundary (2): the sheet holds liquid on one side only and is the liquid's
-//!     boundary there, with the level set the signed distance to it on both sides
-//!     (LiquidModel PinSheetInterface): a zero (Dirichlet) condition at the sheet.
-//!     A stencil reads the cell across (its value is that distance) and continues
-//!     linearly beyond it (the signed distance's own continuation), not the other
-//!     side's further values.  A constant extension here biased the WENO
-//!     derivatives beside the sheet (a piston's acceleration 0.2% low, against
-//!     0.01% reading across).
+//! reinitialisation, the gradient that triggers it).
+//! m7l (docs/SIMULATION_M7L_RESULTS.md): the level set is two-valued at a sheet.  The
+//! cells within a stencil's reach of a closed face (`second`) hold, besides their own
+//! value (their own side's level set, phi), the level set of the sheet's other side
+//! extended across the sheet to them along the sheet's normal (as a rigid solid's cells
+//! hold the liquid's; LiquidModel ExtrapolateEnclosed): a stencil that crosses a closed
+//! face reads those second values beyond it, so each side's level set is advected and
+//! reinitialised with its own values on both sides of the sheet, and nothing of one
+//! side reaches the other.  The second values are not state: they are evaluated from the
+//! current field (every Runge-Kutta stage and reinitialisation stage) by linear recipes
+//! that the sheet's geometry fixes.  A stencil that cannot read a second value (a cell
+//! of no single side: a fold, two sheets; the second value undefined; a second closed
+//! face) sees the last value it reached instead (constant extension, m7f's wall: zero
+//! normal slope, the 90 degree contact condition of a wall).  m7f-m7k held the level set
+//! beside a sheet holding liquid on one side at the signed distance to the sheet (a
+//! Dirichlet condition, LiquidModel PinSheetInterface, removed in m7l), which with one
+//! value per cell could not say where a thin layer on a curved sheet ends: a bag's 2.4
+//! cells lost 41% in 2 s and a held bowl's 1.3 cells 44% (docs/SIMULATION_M7J_RESULTS.md).
 //! Beyond the domain the level set's linear extension stays.  Empty: no change to
 //! any arithmetic.
 struct LevelSetBarrier {
-	std::array<std::vector<std::uint8_t>,3> closed;   // per axis, per face: 0 open, 1 wall, 2 boundary (empty: none)
-	//! One stencil sample: f[i1] + s (f[i1] - f[i2]).
-	struct Sample { std::size_t i1 = 0, i2 = 0; double s = 0; bool outside = false; };   // outside (m7g): beyond the domain's edge
+	std::array<std::vector<std::uint8_t>,3> closed;   // per axis, per face: 0 open, 1 closed (empty: none)
+	//! One stencil sample: f[i1] + s (f[i1] - f[i2]); m7l, `second`: the second value of slot i1.
+	struct Sample { std::size_t i1 = 0, i2 = 0; double s = 0; bool outside = false; bool second = false; };   // outside (m7g): beyond the domain's edge
 	//! Per axis: the cells whose seven-point stencil (offsets -3..3) reaches past a
 	//! closed face (sorted), and their samples (7 per cell).
 	std::array<std::vector<std::size_t>,3> cells;
 	std::array<std::vector<Sample>,3> samples;
-	//! Per cell (empty: none): boundary values the reinitialisation keeps (a Dirichlet condition;
-	//! LiquidModel PinSheetInterface sets them each step).
-	std::vector<std::uint8_t> fixed;
+	//! m7l: the second values.  Slot k (cells[k], sorted) has the side `side[k]` (+-(sheet + 1):
+	//! the cell's centre in front of (+) or behind (-) that sheet; 0: no single side) and, when
+	//! `valid[k]`, the value of the other side's level set at the cell
+	//!   v = sum_t w0_t f[term_t] + clamp(-reach_k sum_t w1_t f[term_t], -reach_k, reach_k)
+	//! (the level set at the point x_o 1.5 h beyond the sheet's plane on the other side, the
+	//! foot of the cell's centre moved along the normal, continued linearly to the cell with
+	//! the normal difference to the point a cell further, |slope| <= 1; terms [start[k], start[k + 1])).
+	//! A dry side (`dry`, cells [dryStart[k], dryStart[k + 1]): the other side's cells of the trilinear
+	//! stencil at the foot of the cell's centre on the sheet's plane, a quarter cell to that side): when
+	//! the level set at x_o is >= 0 and at all of them >= dryLevel (h / 4), v = max(v, their least f): a
+	//! side with no liquid at the sheet gets none across it.  Without this, the linear extension of a
+	//! dry side's level set falling towards the sheet (the distance to the liquid on the other side that
+	//! a scene's initial level set gives it) put a zero at the sheet, and the dry side's cells beside it
+	//! hovered about zero: a held bowl's dry side turned 1,234 cell-steps wet in 2 s, a bag's held 1.2%
+	//! of its volume below the sheet.  Without the margin, a liquid side whose cells at the sheet had
+	//! dried to about zero (a bag's corners at its pinned rim) stayed dry: the bag lost 7.8% against 4.0%.
+	struct Second {
+		std::vector<std::size_t> cells;
+		std::vector<std::int32_t> side;
+		std::vector<std::uint8_t> valid;
+		std::vector<std::uint32_t> start, term;
+		std::vector<double> w0, w1, reach;
+		std::vector<std::uint32_t> dryStart, dry;
+		double dryLevel = 0;
+		bool Empty() const { return cells.empty(); }
+		//! The slot of a cell, or -1.
+		std::ptrdiff_t Slot(std::size_t cell) const;
+		//! out[k] = the second value of slot k from f (0 where not valid).
+		void Evaluate(const std::vector<double>& f, std::vector<double>& out, Pool* pool) const;
+		//! One recipe's value from f.
+		double Value(std::size_t k, const std::vector<double>& f) const;
+	};
+	Second second;
 	bool Empty() const { return cells[0].empty() && cells[1].empty() && cells[2].empty(); }
-	//! A wall face (a boundary face is read across).
+	//! Whether some stencil reads a second value.
+	bool ReadsSecond() const { return reads; }
 	bool Closed(int axis, std::size_t face) const { return !closed[std::size_t(axis)].empty() && closed[std::size_t(axis)][face] == 1; }
-	//! `faces`: the closed faces per axis with their kind (1 wall, 2 boundary; any order, one entry per face).
+	//! `faces`: the closed faces per axis (any order, one entry per face; the kind 1); `second`
+	//! (m7l; may be empty): the second values' slots and recipes.
+	void Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces, Second second);
 	void Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces);
 	void Clear();
+	bool reads = false;
 	//! The coordinate along `axis` reached from the cell idx by `offset` steps, stopping
 	//! at a wall face or the domain's edge.
 	int Reach(const Grid& g, const int idx[3], int axis, int offset) const;
@@ -82,10 +121,12 @@ struct LevelSetBarrier {
 //! row by row: emit(first index of the row, dminus[], dplus[]) for every row
 //! (rows run along the first index).  Rows are processed in fixed chunks.
 //! `barrier` (m7f; cell-centred f only, Linear extension): closed faces as walls.
+//! `second` (m7l): the barrier's second values of f (LevelSetBarrier::Second::Evaluate;
+//! null: evaluated here when the barrier's stencils read them).
 void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector<double>& f, int axis,
 	const std::array<Extension,3>& ext, Pool* pool,
 	const std::function<void(std::size_t row, const double* dm, const double* dp)>& emit,
-	const LevelSetBarrier* barrier = nullptr);
+	const LevelSetBarrier* barrier = nullptr, const std::vector<double>* second = nullptr);
 
 //! rhs = -(c . grad f) with upwinded WENO5 derivatives (`assign`: rhs is
 //! overwritten, else accumulated).  c: three arrays of f's dimensions.
@@ -147,9 +188,10 @@ double GradientDeviation(const Grid& g, const std::vector<double>& phi, double b
 //! sum (1 - H(phi)) open h^3 and the interface area sum delta(phi) |grad phi| open h^3.
 //! `open` (may be null) weights each cell (the open fraction outside solids).
 double LiquidVolume(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool);
-//! `exclude` (m7f; may be null): cells left out of the area (beside a coupled sheet, pinned).
+//! `exclude` (m7f; may be null): cells left out of the area.  `barrier` (m7l; may be null):
+//! |grad phi| one-sided at its closed faces (a sheet's two sides are not differenced).
 double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool,
-	const std::vector<std::uint8_t>* exclude = nullptr);
+	const std::vector<std::uint8_t>* exclude = nullptr, const LevelSetBarrier* barrier = nullptr);
 //! Shifts phi by s = (V(phi) - target) / A so that the liquid volume returns
 //! to `target` (one Newton step; the shift is returned: metres).
 double CorrectVolume(const Grid& g, std::vector<double>& phi, double target, const std::vector<double>* open, Pool* pool);

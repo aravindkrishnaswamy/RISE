@@ -38,8 +38,8 @@
 //  velocities and positions follow, each step's impulse on it is kept for
 //  its partner, and cells it swept change sides (SweepSheetCells).  m7f:
 //  the level set's stencils treat the faces such a sheet closes as walls
-//  (LiquidLevelSet.h LevelSetBarrier), and beside a sheet holding liquid on
-//  one side the level set is the signed distance to it (PinSheetInterface).
+//  (LiquidLevelSet.h LevelSetBarrier); m7l: the level set is two-valued at
+//  them (each side's own level set, extended across the sheet for the other).
 //  With the interface advanced by the old velocity and the velocity by the
 //  new interface, the linearised free-surface coupling is the symplectic
 //  Euler scheme: no amplitude error, phase error O((omega dt)^2).
@@ -170,6 +170,8 @@ public:
 	double Pressure(std::size_t cell) const { return lastDt_ > 0 ? q_[cell]*setup_.density*setup_.grid.h/lastDt_ : 0.0; }
 	double MaxSpeed() const;
 	double Volume() const;
+	//! m7l: the coupled sheets' part of Volume (the liquid between the centres of the faces they close, less the cells' share).
+	double SheetVolume() const;
 	//! Totals of StepStats::clamped since Initialize (not checkpointed: a run's own count).
 	std::uint64_t clampedFaces = 0, clampedSteps = 0;
 	//! m7g, coupled sheets: totals since Initialize (not checkpointed) of the cells that turned wet in a step
@@ -263,6 +265,11 @@ public:
 	bool Points(PointsFrame& frame, std::string& error) const;
 
 	Pool* ThreadPool() const { return pool_.get(); }
+	//! m7l: per face the sheets close (SheetFaces order), the liquid fraction of the segment between its
+	//! two cells that moves with the sheet (the face mass's theta; 0 where neither cell is wet).
+	void SheetFaceTheta(std::vector<double>& theta) const;
+	//! m7l: the free surface's position on the open part of faces the coupled sheets close (LiquidFlow.h PressureOptions::faceTheta).
+	void SheetFreeSurface(std::vector<FaceTheta>& out) const;
 	//! m7j, diagnostics: the level set's barrier of the coupled sheets (LiquidLevelSet.h).
 	const LevelSetBarrier& Barrier() const { return barrier_; }
 	//! Diagnostics only (not state; empty in the solver): called with a stage's name inside Step.
@@ -297,14 +304,16 @@ private:
 	//! `before` and the current ones, paired in order along each lattice line), each with
 	//! the cell beyond the old crossing on its new side.
 	struct SweptCell { std::size_t cell = 0, ref = 0; double distance = 0, span = 0; };   // span: |ref - cell| (m)
-	//! m7f: the level set beside a one-sided coupled sheet: the signed distance to it (cells changed).
-	std::size_t PinSheetInterface(std::vector<std::uint8_t>* mask = nullptr);   // mask: the cells set (0/1 per cell)
-	//! m7f: one cell's level set re-distanced from its own side's neighbours (fast marching's update).
-	void Redistance(std::size_t cell);
-	//! m7f: the level set's barrier from the coupled sheets' faces and the current level set.
+	//! m7f: the level set's barrier from the coupled sheets' faces; m7l: with the second values' recipes.
 	void BuildBarrier();
-	//! m7f: whether a cell of the other sign lies within two steps across open faces.
-	bool OwnInterface(std::size_t cell) const;
+	//! m7l: before the first step, the initial level set made two-valued at the coupled sheets (once).
+	void PrepareTwoValued();
+	bool twoValued_ = false;
+	std::pair<std::vector<std::size_t>, std::vector<std::int32_t>> sidesBefore_;   // m7l: the band's cells and sides before the sheets moved
+	std::vector<std::uint32_t> secondRef_;   // m7l: per second-value slot, the crossing (sheetFaces_ index) its recipe extends along
+	//! m7l: the level set of own's side at the cell `other` (other's second value from `second`, the
+	//! barrier's Evaluate of phi, when other is of the opposite side; else phi[other]).
+	double Across(std::size_t own, std::size_t other, const std::vector<double>& second) const;
 	//! m7e: applies the swept cells' sides (cells and particles changed, counts returned).
 	std::pair<std::size_t, std::size_t> SweepSheetCells(const std::vector<SheetCrossing>& before);
 	void SweptSheetCells(const std::vector<SheetCrossing>& before, std::vector<SweptCell>& swept) const;

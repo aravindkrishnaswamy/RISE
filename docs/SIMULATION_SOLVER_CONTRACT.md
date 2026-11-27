@@ -121,11 +121,11 @@ output is at `startTime + (count - 1) × interval`; this is the "end time" every
 - Evidence certifies a model family on canonical problems; it does not bound a given bake's error unless a case
   says so. A solver that cannot earn `predictive` says why (`fidelityLimit`).
 - Stated limits of preview models are documented with the solver, not in the contract. One that authors meet:
-  `liquid.mac`'s implicitly coupled sheets support liquid resting on a sheet only in a layer at least 5 cells deep
-  (a 2.4-cell layer loses 8% of its volume in 2 s with the volume correction and 41% without;
-  [M7i results](SIMULATION_M7I_RESULTS.md) §3; unchanged in m7j.1, where the loss is located in the level set's
-  treatment of a curved sheet in a layer within its stencils' reach, [M7j results](SIMULATION_M7J_RESULTS.md) §1,
-  and in m7k.1, [M7k results](SIMULATION_M7K_RESULTS.md) §2);
+  `liquid.mac`'s implicitly coupled sheets support liquid resting on a sheet in a layer about 2.5 cells deep, as a
+  rigid floor does (m7l.1: the level set two-valued at the sheet; without the volume correction a held bowl's
+  1.3-cell rim sloshing loses 2.5% in 2 s and a sagging bag's 2.4 cells 4%, a rigid floor's sloshing 2.4 cells 4%;
+  [M7l results](SIMULATION_M7L_RESULTS.md) §1; m7f.1-m7k.1 needed 5 cells, a 2.4-cell layer losing 41% in 2 s,
+  [M7i results](SIMULATION_M7I_RESULTS.md) §3, [M7j results](SIMULATION_M7J_RESULTS.md) §1);
   the `liquid_simulation` chunk's `sheet` help says the same. Not a contract change.
 
 ## 7. Scene inputs

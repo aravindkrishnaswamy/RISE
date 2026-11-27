@@ -59,7 +59,11 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // quarter cell of the gap (LiquidModel::OpenUnwetted) instead of switching, and the sheet's copy
 // takes the velocities the cloth's own step gives with the binary32 impulse (SheetDynamics::Replay)
 // (docs/SIMULATION_M7K_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7j.1.
-constexpr const char* SolverVersion = "m7k.1";
+// m7l.1: implicitly coupled sheets: the level set is two-valued at them (each side's own level set,
+// extended across the sheet along its normal for the other side's stencils; LiquidLevelSet.h
+// LevelSetBarrier::Second), in place of m7f's boundary values at a one-sided sheet's distance
+// (docs/SIMULATION_M7L_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7k.1.
+constexpr const char* SolverVersion = "m7l.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";

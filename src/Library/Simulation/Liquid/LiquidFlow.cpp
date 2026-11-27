@@ -383,6 +383,22 @@ public:
 
 std::size_t FaceRows(const Grid& g, int a) { return RowsOf(g.FaceDims(a)); }
 
+} // namespace
+
+// m7l: the ghost-fluid fraction of face f of axis a from its liquid cell (phi pw) to its air cell (pa),
+// or the caller's (PressureOptions::faceTheta).
+double GhostTheta(const PressureOptions& o, int a, std::size_t f, double pw, double pa)
+{
+	if (o.faceTheta && !o.faceTheta->empty()) {
+		const auto it = std::lower_bound(o.faceTheta->begin(), o.faceTheta->end(), std::make_pair(a, f),
+			[](const FaceTheta& x, const std::pair<int, std::size_t>& y) { return x.axis != y.first ? x.axis < y.first : x.face < y.second; });
+		if (it != o.faceTheta->end() && it->axis == a && it->face == f) return std::min(1.0, std::max(o.thetaMin, it->theta));
+	}
+	return std::min(1.0, std::max(o.thetaMin, pw/(pw - pa)));
+}
+
+namespace {
+
 // The ghost-fluid interface value of the scaled pressure (surface tension, m7c):
 // liquid cell l, air cell r, theta the clamped fraction from l.
 double InterfaceJump(const PressureOptions& o, std::size_t l, std::size_t r, double theta)
@@ -677,7 +693,7 @@ void Assemble(const Grid& g, const std::vector<double>& phi, const std::array<st
 					const std::size_t nb = s ? c + strides[a] : c - strides[a];
 					if (fine.active[nb]) { diag += A; if (s) fine.w[a][c] = A; continue; }
 					// Air neighbour (an inactive cell across an open face has phi >= 0).
-					const double theta = std::min(1.0, std::max(options.thetaMin, phi[c]/(phi[c] - phi[nb])));
+					const double theta = GhostTheta(options, a, f, phi[c], phi[nb]);
 					diag += A/theta;
 					if (options.curvature) jump += A*InterfaceJump(options, c, nb, theta)/theta;
 					dir = true;
@@ -860,13 +876,13 @@ bool Project(const Grid& g, const std::vector<double>& phi, const std::array<std
 					const std::uint8_t transported = A >= options.minValidFraction;
 					if (aL && aR) { u.u[a][f] -= q[cr] - q[cl]; valid[a][f] = transported; }
 					else if (aL) {
-						const double theta = hasR ? std::min(1.0, std::max(options.thetaMin, phi[cl]/(phi[cl] - phi[cr])))
+						const double theta = hasR ? GhostTheta(options, a, f, phi[cl], phi[cr])
 							: std::min(0.5, std::max(options.thetaMin, -phi[cl]/g.h));
 						if (options.curvature && hasR) u.u[a][f] += (q[cl] - InterfaceJump(options, cl, cr, theta))/theta;
 						else u.u[a][f] += q[cl]/theta;
 						valid[a][f] = transported;
 					} else if (aR) {
-						const double theta = std::min(1.0, std::max(options.thetaMin, phi[cr]/(phi[cr] - phi[cl])));
+						const double theta = GhostTheta(options, a, f, phi[cr], phi[cl]);
 						if (options.curvature) u.u[a][f] -= (q[cr] - InterfaceJump(options, cr, cl, theta))/theta;
 						else u.u[a][f] -= q[cr]/theta;
 						valid[a][f] = transported;
@@ -905,11 +921,11 @@ void SubtractPressureGradient(const Grid& g, const std::vector<double>& phi, con
 					if (aL && aR) grad = q[cr] - q[cl];
 					else if (interiorOnly) continue;
 					else if (aL) {
-						const double theta = hasR ? std::min(1.0, std::max(options.thetaMin, phi[cl]/(phi[cl] - phi[cr])))
+						const double theta = hasR ? GhostTheta(options, a, f, phi[cl], phi[cr])
 							: std::min(0.5, std::max(options.thetaMin, -phi[cl]/g.h));
 						grad = -((options.curvature && hasR) ? q[cl] - InterfaceJump(options, cl, cr, theta) : q[cl])/theta;
 					} else if (aR) {
-						const double theta = std::min(1.0, std::max(options.thetaMin, phi[cr]/(phi[cr] - phi[cl])));
+						const double theta = GhostTheta(options, a, f, phi[cr], phi[cl]);
 						grad = (options.curvature ? q[cr] - InterfaceJump(options, cr, cl, theta) : q[cr])/theta;
 					} else continue;
 					u.u[a][f] -= scale*grad;

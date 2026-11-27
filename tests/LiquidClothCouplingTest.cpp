@@ -10,6 +10,8 @@
 #include "../src/Library/Simulation/SimulationGroup.h"
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "../src/Library/Simulation/SimulationMesh.h"
+#include "../src/Library/Simulation/SimulationCache.h"
+#include "../src/Library/Simulation/SimulationGrid.h"
 
 #include <chrono>
 #include <cmath>
@@ -1029,17 +1031,12 @@ struct MembraneRig {
 		const LiquidSheet& l = m.sheets[0];
 		double p = m.FluidMomentum()[1];
 		const double scale = m.Setup().density*g.h*g.h*g.h;
+		std::vector<double> theta;   // m7l: the solver's own face liquid (two-valued at the sheet)
+		m.SheetFaceTheta(theta);
 		for (std::size_t k = 0; k < m.SheetFaces().size(); ++k) {
 			const SheetCrossing& x = m.SheetFaces()[k];
 			if (x.axis != 1) continue;
-			const auto d = g.FaceDims(1);
-			int idx[3] = {int(x.face % std::size_t(d[0])), int((x.face/std::size_t(d[0])) % std::size_t(d[1])), 0};
-			const double pr = m.phi[g.C(idx[0], idx[1], 0)];
-			--idx[1];
-			const double pl = m.phi[g.C(idx[0], idx[1], 0)];
-			double theta = 0;
-			if (pl < 0 && pr < 0) theta = 1; else if (pl < 0) theta = std::min(1.0, std::max(1e-3, pl/(pl - pr))); else if (pr < 0) theta = std::min(1.0, std::max(1e-3, pr/(pr - pl)));
-			p += scale*theta*x.velocity;
+			p += scale*theta[k]*x.velocity;
 		}
 		for (std::size_t q = 0; q < l.Vertices(); ++q) p += l.dyn.mass[q]*l.v[3*q + 1];
 		return p;
@@ -1070,8 +1067,9 @@ struct CupCase {
 	double u0 = 0;             // m7j: the liquid's initial velocity along x
 	bool bowl = false;         // m7j: the sheet held in a spherical bowl from the start (needs frozen), the layer d above its rim
 	bool coupled = true;       // m7j: false: the sheet is a moving boundary only (m7d's path)
+	bool under = false;        // m7l: the bowl with liquid below it too (wet on both sides)
 };
-struct CupSample { double t = 0, top = 0, bottom = 0, bottomWet = 0, beyond = 0, other = 0, smoothed = 0, added = 0, sag = 0, vmax = 0; bool breached = false; };
+struct CupSample { double t = 0, top = 0, topSheet = 0, bottom = 0, bottomWet = 0, beyond = 0, other = 0, smoothed = 0, added = 0, sag = 0, vmax = 0; bool breached = false; };
 
 struct CupRig {
 	CupCase c;
@@ -1138,7 +1136,7 @@ struct CupRig {
 			const double from = std::atof(std::getenv("M7F_STAGES"));
 			m.stageHook = [this, from](const char* stage) {
 				if (std::getenv("M7J_TRACE")) Trace(stage);
-				const double v = std::getenv("M7J_SHARP") ? SharpVolume() : m.Volume();
+				const double v = std::getenv("M7L_SIDE") ? SideVolume() : std::getenv("M7J_SHARP") ? SharpVolume() : m.Volume();
 				if (lastStageVolume >= 0 && m.Time() >= from) stageSums[stage] += v - lastStageVolume;
 				lastStageVolume = v;
 			};
@@ -1190,7 +1188,7 @@ struct CupRig {
 			for (int k = 0; k < g.n[2]; ++k) for (int j = 0; j < g.n[1]; ++j) for (int ii = 0; ii < g.n[0]; ++ii) {
 				const double x = (ii + 0.5)*h, y = (j + 0.5)*h, z = (k + 0.5)*h;
 				double& f = p[g.C(ii, j, k)];
-				f = std::max(y - (y0 + c.d), bowlAt(x, z) - y);
+				f = c.under ? y - (y0 + c.d) : std::max(y - (y0 + c.d), bowlAt(x, z) - y);
 			}
 			if (!m.SetLevelSet(p, error)) return false;
 		}
@@ -1309,24 +1307,31 @@ struct CupRig {
 			}
 		}
 		tracePhi = m.phi;
-		if (std::string(stage) == "pinned" && m.Time() >= t0 && m.Time() <= t1) {
-			// m7j: the wet cells held as boundary values (a Dirichlet zero at the sheet) that were not at the last
-			// step's end, and the reverse (their faces back to walls), with the phi change the switch made.
-			const std::vector<std::uint8_t>& fx = m.Barrier().fixed;
-			std::vector<std::uint8_t> now(g.Cells(), 0);
-			for (std::size_t q = 0; q < fx.size(); ++q) now[q] = fx[q] && m.phi[q] < 0 && (topMark.empty() || topMark[q] == 1);
-			if (lastFixed.size() == now.size())
-				for (std::size_t q = 0; q < now.size(); ++q) {
-					if (now[q] && !lastFixed[q]) { switches[0] += 1; }
-					if (!now[q] && lastFixed[q]) { switches[1] += 1; }
-					if (now[q]) switches[2] += 1;
-				}
-			lastFixed = now;
-		}
 	}
-	std::vector<std::uint8_t> lastFixed;
-	double switches[3] = {0, 0, 0};   // m7j: wet cells newly held, released, held (cell-steps)
 	mutable std::vector<std::uint8_t> topMark;   // m7j: the cells reachable from the top row at the last Sample (1)
+	//! m7l diagnostic (M7L_SIDE): the sharp volume over the cells reached from the top row through open faces now.
+	double SideVolume() const {
+		const auto& g = m.GridSpec();
+		std::vector<std::uint8_t> seen(g.Cells(), 0);
+		std::vector<std::size_t> stack;
+		for (int k = 0; k < g.n[2]; ++k) for (int i = 0; i < g.n[0]; ++i) { const std::size_t q = g.C(i, g.n[1] - 1, k); seen[q] = 1; stack.push_back(q); }
+		double v = 0;
+		while (!stack.empty()) {
+			const std::size_t q = stack.back(); stack.pop_back();
+			v += std::min(1.0, std::max(0.0, 0.5 - m.phi[q]/h));
+			const int idx[3] = {int(q % std::size_t(g.n[0])), int((q/std::size_t(g.n[0])) % std::size_t(g.n[1])), int(q/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+			for (int a = 0; a < 3; ++a) for (int dir = -1; dir <= 1; dir += 2) {
+				int nb[3] = {idx[0], idx[1], idx[2]}, f[3] = {idx[0], idx[1], idx[2]};
+				nb[a] += dir;
+				if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
+				if (dir > 0) ++f[a];
+				if (!(m.fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
+				const std::size_t r = g.C(nb[0], nb[1], nb[2]);
+				if (!seen[r]) { seen[r] = 1; stack.push_back(r); }
+			}
+		}
+		return v*h*h*h;
+	}
 	double SharpVolume() const {   // over the top side (the liquid's side of the sheet) once Sample has run
 		double v = 0;
 		for (std::size_t q = 0; q < m.phi.size(); ++q) if (topMark.empty() || topMark[q] == 1) v += std::min(1.0, std::max(0.0, 0.5 - m.phi[q]/h));
@@ -1433,6 +1438,7 @@ struct CupRig {
 		};
 		if (!m.Run(c.macro, c.macro, after, error)) return false;
 		if (c.coupled) Relinearise();
+		if (m.stageHook && std::getenv("M7L_SIDE")) m.stageHook("relinearised");
 		return true;
 	}
 	CupSample Sample() const {
@@ -1489,6 +1495,46 @@ struct CupRig {
 			}
 		}
 		topMark = mark;
+		if (std::getenv("M7L_GUARDDUMP")) {
+			// m7l diagnostic: the second values the dry/wet test changed, by the slot cell's own side.
+			const auto& S = m.Barrier().second;
+			int changed[2] = {0, 0}, valid[2] = {0, 0};
+			double most[2] = {0, 0};
+			for (std::size_t k = 0; k < S.cells.size(); ++k) {
+				if (!S.valid[k]) continue;
+				double v = 0, sl = 0;
+				for (std::uint32_t t = S.start[k]; t < S.start[k + 1]; ++t) { v += S.w0[t]*m.phi[S.term[t]]; sl += S.w1[t]*m.phi[S.term[t]]; }
+				v += std::min(S.reach[k], std::max(-S.reach[k], -S.reach[k]*sl));
+				const double w = S.Value(k, m.phi);
+				const int side = mark[S.cells[k]] == 1 ? 0 : 1;
+				++valid[side];
+				if (std::fabs(w - v) > 1e-3*g.h) {
+					++changed[side]; most[side] = std::max(most[side], std::fabs(w - v)/g.h);
+					if (side == 1 && std::getenv("M7L_GUARDCELLS")) {
+						const std::size_t q = S.cells[k];
+						std::printf("      bottom slot (%d %d %d) phi %.2f h, linear %.2f h, guarded %.2f h\n", int(q % std::size_t(g.n[0])), int((q/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+							int(q/(std::size_t(g.n[0])*std::size_t(g.n[1]))), m.phi[q]/g.h, v/g.h, w/g.h);
+					}
+				}
+			}
+			std::size_t closedFaces = 0;
+			for (int a = 0; a < 3; ++a) for (std::uint8_t x : m.Barrier().closed[std::size_t(a)]) closedFaces += x != 0;
+			std::printf("    second values: %zu slots, %zu terms, %zu dry-test cells for %zu closed faces: %.0f bytes\n", S.cells.size(), S.term.size(), S.dry.size(), closedFaces,
+				double(S.cells.size()*(8 + 4 + 1 + 4 + 8 + 4 + 4) + S.term.size()*(4 + 8 + 8) + S.dry.size()*4));
+			std::printf("    guard: top cells %d/%d changed (largest %.2f h), bottom cells %d/%d (largest %.2f h)\n", changed[0], valid[0], most[0], changed[1], valid[1], most[1]);
+			// Dry cells on the liquid's side with at least four wet face neighbours there (bubbles), and their excess.
+			int bubbles = 0;
+			double excess = 0;
+			for (int k = 1; k + 1 < g.n[2]; ++k) for (int j = 1; j + 1 < g.n[1]; ++j) for (int i = 1; i + 1 < g.n[0]; ++i) {
+				const std::size_t q = g.C(i, j, k);
+				if (mark[q] != 1 || !(m.phi[q] >= 0)) continue;
+				int wetN = 0;
+				const std::size_t nbq[6] = {q - 1, q + 1, g.C(i, j - 1, k), g.C(i, j + 1, k), g.C(i, j, k - 1), g.C(i, j, k + 1)};
+				for (std::size_t r : nbq) wetN += mark[r] == 1 && m.phi[r] < 0;
+				if (wetN >= 4) { ++bubbles; excess += m.phi[q]/g.h; }
+			}
+			std::printf("    bubbles: %d dry cells among wet ones on the liquid's side (mean phi %.2f h)\n", bubbles, bubbles ? excess/bubbles : 0.0);
+		}
 		for (std::size_t q = 0; q < g.Cells(); ++q) {
 			const double v = std::min(1.0, std::max(0.0, 0.5 - m.phi[q]/g.h))*cell;
 			if (mark[q] == 3) s.breached = true;
@@ -1498,6 +1544,27 @@ struct CupRig {
 				if (m.phi[q] < 0) s.bottomWet += cell;
 				if (!besideSheet[q]) s.beyond += v;
 			} else s.other += v;
+		}
+		{
+			// m7l: the sharp count with the sheet's own part (LiquidModel::SheetVolume with the sharp cell
+			// count): the liquid between the centres of each face the sheet closes, theta h, in place of
+			// the two half cells the count gives them, the faces' shares n_a^2 of the sheet's area.
+			std::vector<double> theta;
+			m.SheetFaceTheta(theta);
+			double sheetPart = 0;
+			for (std::size_t k = 0; k < m.SheetFaces().size(); ++k) {
+				const auto& x = m.SheetFaces()[k];
+				if (!x.Barrier()) continue;
+				const auto d = g.FaceDims(x.axis);
+				int idx[3] = {int(x.face % std::size_t(d[0])), int((x.face/std::size_t(d[0])) % std::size_t(d[1])), int(x.face/(std::size_t(d[0])*std::size_t(d[1])))};
+				const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+				--idx[x.axis];
+				const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+				if (mark[L] != 1 && mark[R] != 1) continue;
+				auto fill = [&](std::size_t q) { return mark[q] == 1 ? std::min(1.0, std::max(0.0, 0.5 - m.phi[q]/g.h)) : 0.0; };
+				sheetPart += x.normal[x.axis]*x.normal[x.axis]*x.cover*(theta[k]*g.h - 0.5*g.h*(fill(L) + fill(R)));
+			}
+			s.topSheet = s.top + sheetPart*g.h*g.h;
 		}
 		const auto& l = m.sheets[0];
 		const std::size_t mid = std::size_t(c.vertices/2)*std::size_t(c.vertices) + std::size_t(c.vertices/2);
@@ -1533,11 +1600,11 @@ std::vector<CupSample> RunCup(const CupCase& c, double every, bool& ok, std::str
 	while (rig->m.Time() < c.T - 1e-9) {
 		if (!rig->Macro()) { ok = false; error = rig->error; return out; }
 		out.push_back(rig->Sample());
-		rig->lastStageVolume = std::getenv("M7G_DEEP") ? rig->DeepVolume() : std::getenv("M7J_SHARP") ? rig->SharpVolume() : rig->m.Volume();   // macro boundaries (the relinearisation's sweep) are not a stage
+		rig->lastStageVolume = std::getenv("M7G_DEEP") ? rig->DeepVolume() : std::getenv("M7L_SIDE") ? rig->SideVolume() : std::getenv("M7J_SHARP") ? rig->SharpVolume() : rig->m.Volume();   // macro boundaries (the relinearisation's sweep) are not a stage
 		const CupSample& s = out.back();
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6)
-			std::printf("  t %.3f sag %.4f m, max|v| %.3g; liquid above %.6g, below %.4g (%.2e of V0; beyond the sheet's cells %.2e, wet cells %.2e), elsewhere %.3g; smoothed %.6g; correction added %.3g (%.2e of V0)%s (%.0f s)\n",
-				s.t, s.sag, s.vmax, s.top, s.bottom, s.bottom/V0, s.beyond/V0, s.bottomWet/V0, s.other, s.smoothed, s.added, s.added/V0, s.breached ? " BREACHED" : "", Seconds() - w0);
+			std::printf("  t %.3f sag %.4f m, max|v| %.3g; liquid above %.6g (with the sheet's part %+.3e of V0), below %.4g (%.2e of V0; beyond the sheet's cells %.2e, wet cells %.2e), elsewhere %.3g; smoothed %.6g; correction added %.3g (%.2e of V0)%s (%.0f s)\n",
+				s.t, s.sag, s.vmax, s.top, s.topSheet/out[0].topSheet - 1, s.bottom, s.bottom/V0, s.beyond/V0, s.bottomWet/V0, s.other, s.smoothed, s.added, s.added/V0, s.breached ? " BREACHED" : "", Seconds() - w0);
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6 && std::getenv("M7I_SURFACE")) rig->SurfaceCheck();
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6 && std::getenv("M7J_VMAX")) {
 			// m7j: the fastest valid liquid face (m/s) and where.
@@ -1584,7 +1651,6 @@ std::vector<CupSample> RunCup(const CupCase& c, double every, bool& ok, std::str
 	for (const auto& e : rig->stageSums) std::printf("  stage %-14s %+.3e m^3 (%+.2e of V0)\n", e.first.c_str(), e.second, e.second/V0);
 	for (const auto& e : rig->traceSums) std::printf("  trace %-14s beside the sheet %+.2e, elsewhere %+.2e (within a stencil of the sheet %+.2e) of V0\n", e.first.c_str(), e.second[0]/V0, e.second[1]/V0, e.second[2]/V0);
 	for (const auto& e : rig->traceFlips) std::printf("  flips %-14s beside the sheet: dried %.0f (%+.2e of V0), wetted %.0f (%+.2e of V0)\n", e.first.c_str(), e.second[0], e.second[1]/V0, e.second[2], e.second[3]/V0);
-	if (rig->switches[2] > 0) std::printf("  wet boundary cells (held at the sheet's distance): %.0f cell-steps held, %.0f switches to held, %.0f to released\n", rig->switches[2], rig->switches[0], rig->switches[1]);
 	if (!rig->ring.empty()) { std::printf("  advection by ring:"); for (std::size_t r = 0; r < rig->ring.size()/2; ++r) std::printf(" %+.3f", rig->ring[r]/V0); std::printf("\n"); }
 	if (every > 0) std::printf("  through-sheet measure: cells wet across the sheet %llu (%.2e of V0, held), wet without a wet neighbour %llu\n",
 		static_cast<unsigned long long>(rig->m.sheetCrossedCells), rig->m.sheetCrossedVolume/V0, static_cast<unsigned long long>(rig->m.sheetUnfedCells));
@@ -1731,6 +1797,80 @@ void AirProbe(int argc, char** argv)
 		sigma, V, 1/dt, 1/macro, int(linear), vmax, jump, jumpAt, lag, strain);
 }
 
+
+// m7l: `--measure <pool cache> <cloth cache> [every] [x0 x1 z0 z1]`: from a baked liquid's `fields` (phi) and its
+// sheet's `surface`, per frame (every `every` frames): the sharp liquid volume sum clamp(1/2 - phi/h, 0, 1) h^3
+// above the sheet, below it inside the footprint [x0, x1] x [z0, z1] (the pinned rim's projection; default the
+// catch's 0.1..0.5), and outside the footprint, and the total.  The sheet's height over a cell's column is the
+// largest y of the sheet's triangles whose xz projection holds the column's centre.  The cells within 1.5 h below
+// the sheet hold the dry side's values beside it (m7f-m7k: the distance to the sheet, counted in part); the
+// column `> 1.5 h below` leaves them out.
+void MeasureProbe(int argc, char** argv)
+{
+	if (argc < 4) { std::printf("usage: --measure <pool cache> <cloth cache> [every] [x0 x1 z0 z1]\n"); return; }
+	const int every = argc > 4 ? std::atoi(argv[4]) : 6;
+	double x0 = 0.1, x1 = 0.5, z0 = 0.1, z1 = 0.5;
+	if (argc > 8) { x0 = std::atof(argv[5]); x1 = std::atof(argv[6]); z0 = std::atof(argv[7]); z1 = std::atof(argv[8]); }
+	const std::size_t budget = std::size_t(8) << 30;
+	CacheSnapshot pool, cloth;
+	std::string e;
+	if (!CacheSnapshot::Open(argv[2], budget, pool, e) || !CacheSnapshot::Open(argv[3], budget, cloth, e)) { std::printf("open failed: %s\n", e.c_str()); return; }
+	const auto rf = [](std::uint32_t b) { float f; std::memcpy(&f, &b, 4); return double(f); };
+	std::printf("frame  t(s)   above (L)  below in footprint (L)  of it > 1.5 h below (L)  of that y < 0.15 m (L)  outside footprint (L)  total (L)\n");
+	for (std::int64_t k = 0;; k += every) {
+		std::shared_ptr<const Bytes> gb, mb;
+		if (pool.Read(k, "fields", budget, gb, e) != FrameStatus::Ready || cloth.Read(k, "surface", budget, mb, e) != FrameStatus::Ready) break;
+		GridFrame grid;
+		MeshFrame mesh;
+		if (!DecodeGrid(*gb, budget, grid, e) || !DecodeMesh(*mb, budget, cloth.Resolver(), mesh, e)) { std::printf("decode failed: %s\n", e.c_str()); return; }
+		const GridChannel* phi = nullptr;
+		for (const auto& c : grid.channels) if (c.name == "phi") phi = &c;
+		if (!phi) { std::printf("no phi\n"); return; }
+		const double h = phi->indexToWorld[0], ox = phi->indexToWorld[3], oy = phi->indexToWorld[7], oz = phi->indexToWorld[11];
+		const int n[3] = {int(phi->dimensions[0]), int(phi->dimensions[1]), int(phi->dimensions[2])};
+		std::vector<double> f(std::size_t(n[0])*std::size_t(n[1])*std::size_t(n[2]), 1e9);
+		for (const auto& b : phi->blocks) {
+			const std::size_t cells = std::size_t(b.dimensions[0])*b.dimensions[1]*b.dimensions[2];
+			for (std::size_t q = 0; q < cells; ++q) {
+				const int i = b.origin[0] + int(q % b.dimensions[0]), j = b.origin[1] + int((q/b.dimensions[0]) % b.dimensions[1]), kk = b.origin[2] + int(q/(std::size_t(b.dimensions[0])*b.dimensions[1]));
+				f[std::size_t(i) + std::size_t(n[0])*(std::size_t(j) + std::size_t(n[1])*std::size_t(kk))] = rf(b.constant ? b.values[0] : b.values[q]);
+			}
+		}
+		// The sheet's height over each column.
+		std::vector<double> top(std::size_t(n[0])*std::size_t(n[2]), -1e9);
+		const auto& P = mesh.positions;
+		for (std::size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+			double x[3], y[3], z[3];
+			for (int m = 0; m < 3; ++m) { const std::size_t v = mesh.indices[t + std::size_t(m)]; x[m] = rf(P[3*v]); y[m] = rf(P[3*v + 1]); z[m] = rf(P[3*v + 2]); }
+			const double lo[2] = {std::min({x[0], x[1], x[2]}), std::min({z[0], z[1], z[2]})}, hi[2] = {std::max({x[0], x[1], x[2]}), std::max({z[0], z[1], z[2]})};
+			const double det = (x[1] - x[0])*(z[2] - z[0]) - (x[2] - x[0])*(z[1] - z[0]);
+			if (std::fabs(det) < 1e-14) continue;
+			for (int i = std::max(0, int((lo[0] - ox)/h) - 1); i <= std::min(n[0] - 1, int((hi[0] - ox)/h) + 1); ++i)
+				for (int kk = std::max(0, int((lo[1] - oz)/h) - 1); kk <= std::min(n[2] - 1, int((hi[1] - oz)/h) + 1); ++kk) {
+					const double px = ox + i*h, pz = oz + kk*h;
+					const double a = ((x[1] - px)*(z[2] - pz) - (x[2] - px)*(z[1] - pz))/det, bb = ((x[2] - px)*(z[0] - pz) - (x[0] - px)*(z[2] - pz))/det, c = 1 - a - bb;
+					if (a < -1e-9 || bb < -1e-9 || c < -1e-9) continue;
+					double& tt = top[std::size_t(i) + std::size_t(n[0])*std::size_t(kk)];
+					tt = std::max(tt, a*y[0] + bb*y[1] + c*y[2]);
+				}
+		}
+		double above = 0, below = 0, deep = 0, floor = 0, outside = 0;
+		for (int kk = 0; kk < n[2]; ++kk) for (int j = 0; j < n[1]; ++j) for (int i = 0; i < n[0]; ++i) {
+			const double v = std::min(1.0, std::max(0.0, 0.5 - f[std::size_t(i) + std::size_t(n[0])*(std::size_t(j) + std::size_t(n[1])*std::size_t(kk))]/h))*h*h*h;
+			if (v == 0) continue;
+			const double x = ox + i*h, y = oy + j*h, z = oz + kk*h;
+			const double ys = top[std::size_t(i) + std::size_t(n[0])*std::size_t(kk)];
+			if (x < x0 || x > x1 || z < z0 || z > z1 || ys < -1e8) outside += v;
+			else if (y > ys) above += v;
+			else { below += v; if (y < ys - 1.5*h) { deep += v; if (y < 0.15) floor += v;
+				else if (std::getenv("M7L_AIR")) std::printf("      air cell (%d %d %d) x %.3f y %.3f z %.3f, sheet above at %.3f (%.1f h), phi %.2f h\n", i, j, kk, x, y, z, ys, (ys - y)/h, f[std::size_t(i) + std::size_t(n[0])*(std::size_t(j) + std::size_t(n[1])*std::size_t(kk))]/h); } }
+		}
+		double lowest = 1e9;
+		for (std::size_t v = 0; v < P.size()/3; ++v) lowest = std::min(lowest, rf(P[3*v + 1]));
+		std::printf("%5lld  %.3f  %9.4f  %22.4f  %23.4f  %23.4f  %21.4f  %9.4f  sheet lowest y %.4f\n", static_cast<long long>(k), double(k)/30, 1e3*above, 1e3*below, 1e3*deep, 1e3*floor, 1e3*outside, 1e3*(above + below + outside), lowest);
+	}
+}
+
 void CupProbe(int argc, char** argv)
 {
 	CupCase c;
@@ -1755,6 +1895,7 @@ void CupProbe(int argc, char** argv)
 		else if (k == "u0") c.u0 = std::atof(v.c_str());
 		else if (k == "bowl") { c.bowl = std::atoi(v.c_str()) != 0; c.frozen = c.frozen || c.bowl; }
 		else if (k == "coupled") c.coupled = std::atoi(v.c_str()) != 0;
+		else if (k == "under") c.under = std::atoi(v.c_str()) != 0;
 	}
 	bool ok = false;
 	std::string e;
@@ -1768,8 +1909,8 @@ void CupProbe(int argc, char** argv)
 	}
 	const double V0 = s[0].top;
 	std::printf("cup cells %d sigma %g E %g depth %g macro 1/%g T %g: V0 %.6g m^3; below the sheet: max %.2e of V0 (beyond the sheet's cells %.2e, wet cells %.2e); "
-		"final: above %+.2e, above + below %+.2e, smoothed %+.2e of V0; correction added %+.2e of V0%s\n",
-		c.cells, c.sigma, c.E, c.d, 1/c.macro, c.T, V0, worst/V0, worstBeyond/V0, worstWet/V0, s.back().top/V0 - 1, (s.back().top + s.back().bottom)/V0 - 1,
+		"final: above %+.2e (with the sheet's part %+.2e), above + below %+.2e, smoothed %+.2e of V0; correction added %+.2e of V0%s\n",
+		c.cells, c.sigma, c.E, c.d, 1/c.macro, c.T, V0, worst/V0, worstBeyond/V0, worstWet/V0, s.back().top/V0 - 1, s.back().topSheet/s[0].topSheet - 1, (s.back().top + s.back().bottom)/V0 - 1,
 		s.back().smoothed/s[0].smoothed - 1, s.back().added/V0, breached ? ", BREACHED" : ", barrier intact");
 }
 
@@ -2349,10 +2490,44 @@ void Cup()
 	double beyond = 0, wet = 0;
 	bool breached = false;
 	for (const CupSample& x : s) { beyond = std::max(beyond, x.beyond); wet = std::max(wet, x.bottomWet); breached = breached || x.breached; }
-	const double V0 = s[0].top, total = s.back().top + s.back().bottom;
-	std::printf("  sag %.4f m; below the sheet beyond its cells %.2e, wet cells below %.2e of V0; sharp volume %+.2e of V0%s\n", s.back().sag,
-		beyond/V0, wet/V0, total/V0 - 1, breached ? "; BREACHED" : "");
+	// m7l: the volume with the sheet's part (CupSample::topSheet; the cell count alone moves with the
+	// sheet's motion inside the cells beside it, which m7f-m7k's pinned values made part of the count).
+	const double V0 = s[0].topSheet, total = s.back().topSheet, cells = s.back().top/s[0].top - 1;
+	std::printf("  sag %.4f m; below the sheet beyond its cells %.2e, wet cells below %.2e of V0; sharp volume with the sheet's part %+.2e of V0 (cells alone %+.2e)%s\n", s.back().sag,
+		beyond/V0, wet/V0, total/V0 - 1, cells, breached ? "; BREACHED" : "");
 	Check(!breached && beyond == 0 && wet == 0 && std::fabs(total/V0 - 1) < 0.01, "a pinned bag holds its liquid");
+}
+
+// N (m7l): thin layers on a held curved sheet and on a pinned sagging one, without the volume
+// correction (docs/SIMULATION_M7L_RESULTS.md section 1): the held bowl's 1.3-cell rim sloshing
+// (u0 0.2 m/s; m7k.1: -24% in 1 s, -44% in 2 s) and the bag's 2.4 cells (m7k.1: -18% in 1 s, -41% in 2 s) keep
+// their sharp volume, and no liquid reaches the dry side below the sheet beyond the cells beside it.
+void ThinLayers()
+{
+	std::printf("N: thin layers on sheets (two-valued level set)\n");
+	struct Run { const char* name; CupCase c; double gate; };
+	Run runs[2];
+	runs[0].name = "held bowl, 1.3 cells, sloshing";
+	runs[0].c.cells = 24; runs[0].c.bowl = runs[0].c.frozen = true; runs[0].c.d = 0.016; runs[0].c.u0 = 0.2; runs[0].c.volume = false; runs[0].c.T = 1;
+	runs[0].gate = 0.03;   // m7l.1: -0.8%
+	runs[1].name = "pinned bag, 2.4 cells";
+	runs[1].c.cells = 24; runs[1].c.d = 0.03; runs[1].c.volume = false; runs[1].c.T = 1;
+	runs[1].gate = 0.06;   // 1.25 x the -4.9% measured (m7l.1)
+	for (const Run& r : runs) {
+		bool ok = false;
+		std::string e;
+		const auto s = RunCup(r.c, 0, ok, e);
+		Check(ok, r.name, e);
+		if (!ok) continue;
+		double beyond = 0, wet = 0;
+		bool breached = false;
+		for (std::size_t k = 1; k < s.size(); ++k) { beyond = std::max(beyond, s[k].beyond); wet = std::max(wet, s[k].bottomWet); breached = breached || s[k].breached; }
+		const double V0 = s[0].topSheet, change = s.back().topSheet/V0 - 1, cells = s.back().top/s[0].top - 1;
+		std::printf("  %s: sharp volume above the sheet with the sheet's part %+.2e of V0 in %.1f s (cells alone %+.2e); below the sheet beyond its cells %.2e, wet cells %.2e of V0%s\n",
+			r.name, change, r.c.T, cells, beyond/V0, wet/V0, breached ? "; BREACHED" : "");
+		// The bag: two cells beside the sheet wet for one step at 0.18 s as it sags (1.45e-3 of V0), none beyond them.
+		Check(!breached && beyond == 0 && std::fabs(change) < r.gate && (r.c.bowl || wet < 2e-3*V0), r.name);
+	}
 }
 
 // L (m7f): m7e's linear step within a macro step stretches a rotating sheet by (omega H)^2 / 2;
@@ -2438,25 +2613,30 @@ int main(int argc, char** argv)
 	if (argc > 1 && std::string(argv[1]) == "--copy") { CopyOnlyProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--membrane") { MembraneProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--cup") { CupProbe(argc, argv); return 0; }
+	if (argc > 1 && std::string(argv[1]) == "--measure") { MeasureProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--spin") { SpinProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--air") { AirProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--exchange") { Exchange(); return failures ? 1 : 0; }
 	if (argc > 1 && std::string(argv[1]) == "--rotate") { RotateProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--layer") { LayerProbe(argc, argv); return 0; }
 	const double t0 = Seconds();
-	Operator();
-	Stability();
-	Plate();
-	Piston();
-	Membrane();
-	Exchange();
-	Determinism();
-	Guards();
-	Refusals();
-	LargeSag();
-	Cup();
-	Rotation();
-	Watertight();
+	// LCC_ONLY (diagnostics): the letters of the checks to run (all when unset).
+	const char* only = std::getenv("LCC_ONLY");
+	auto run = [&](char id, void (*f)()) { if (!only || std::strchr(only, id)) f(); };
+	run('A', Operator);
+	run('B', Stability);
+	run('C', Plate);
+	run('D', Piston);
+	run('E', Membrane);
+	run('F', Exchange);
+	run('G', Determinism);
+	run('H', Guards);
+	run('I', Refusals);
+	run('J', LargeSag);
+	run('K', Cup);
+	run('N', ThinLayers);
+	run('L', Rotation);
+	run('M', Watertight);
 	std::printf("LiquidClothCouplingTest: %.1f s\n", Seconds() - t0);
 	if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	std::printf("LiquidClothCouplingTest: all checks passed\n");

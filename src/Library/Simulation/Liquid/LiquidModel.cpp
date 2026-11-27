@@ -73,6 +73,78 @@ double LinearisationCorrection(SheetDynamics& d, const std::vector<std::uint32_t
 // m7k: the band of the gap over which a coupled sheet's contact with a free surface fades (OpenUnwetted), cells.
 constexpr double kContactBand = 0.25;
 
+// m7l: a crossing's point (its lattice line at its coordinate).
+V3 CrossingPoint(const Grid& g, const SheetCrossing& c)
+{
+	const auto d = g.FaceDims(c.axis);
+	const int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])), int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+	V3 p;
+	for (int a = 0; a < 3; ++a) p[std::size_t(a)] = a == c.axis ? c.s : g.origin[std::size_t(a)] + (idx[a] + 0.5)*g.h;
+	return p;
+}
+
+// m7l: the trilinear weights of the cell-centred sample at x (LiquidGrid.cpp Trilinear's clamping), added
+// to `out` (cell, weight) times `scale`.
+void TrilinearWeights(const Grid& g, const V3& x, double scale, std::vector<std::pair<std::size_t, double>>& out)
+{
+	int i0[3];
+	double t[3];
+	for (int a = 0; a < 3; ++a) {
+		const double c = std::min(std::max((x[a] - g.origin[a])/g.h - 0.5, 0.0), double(g.n[a] - 1));
+		int i = static_cast<int>(std::floor(c));
+		if (i >= g.n[a] - 1) i = std::max(0, g.n[a] - 2);
+		i0[a] = i;
+		t[a] = g.n[a] == 1 ? 0.0 : c - i;
+	}
+	for (int m = 0; m < 8; ++m) {
+		const int d[3] = {m & 1, (m >> 1) & 1, (m >> 2) & 1};
+		double w = scale;
+		int q[3];
+		for (int a = 0; a < 3; ++a) { w *= d[a] ? t[a] : 1 - t[a]; q[a] = std::min(i0[a] + d[a], g.n[a] - 1); }
+		if (w != 0) out.emplace_back(g.C(q[0], q[1], q[2]), w);
+	}
+}
+
+// m7l: the recipe of a level set's value at the centre x of a cell, extended along a sheet's normal from
+// the side `target` (+1 in front of the plane through p with unit normal n, -1 behind): the level set at
+// x_o, `offset` beyond the plane on that side at the foot of x, continued linearly to x with its normal
+// difference to x_o + h n_target (LevelSetBarrier::Second).  `side(cell)` gives a cell's side (0: none,
+// 2: not beside the sheet); a recipe reading a cell of another side or of none is refused.  Appends the
+// terms (merged by cell, in cell order); returns false (nothing appended) when refused.
+template <class SideOf>
+bool ExtensionRecipe(const Grid& g, const V3& x, const V3& p, const V3& n, int target, double offset, std::int32_t targetLabel,
+	const SideOf& side, LevelSetBarrier::Second& out, double& reach)
+{
+	const double h = g.h;
+	double d = 0;
+	for (int a = 0; a < 3; ++a) d += (x[a] - p[a])*n[a];
+	V3 xo, x1;
+	for (int a = 0; a < 3; ++a) {
+		xo[a] = x[a] - d*n[a] + target*offset*n[a];
+		x1[a] = xo[a] + target*h*n[a];
+	}
+	reach = offset - target*d;   // |x - x_o| along the normal
+	if (!(reach > 0)) return false;
+	std::vector<std::pair<std::size_t, double>> w0, w1;
+	TrilinearWeights(g, xo, 1, w0);
+	TrilinearWeights(g, x1, 1/h, w1);
+	TrilinearWeights(g, xo, -1/h, w1);
+	for (const auto* list : {&w0, &w1})
+		for (const auto& e : *list) {
+			const std::int32_t s = side(e.first);
+			if (s != 2 && s != targetLabel) return false;
+		}
+	std::map<std::size_t, std::pair<double, double>> terms;
+	for (const auto& e : w0) terms[e.first].first += e.second;
+	for (const auto& e : w1) terms[e.first].second += e.second;
+	for (const auto& e : terms) {
+		out.term.push_back(std::uint32_t(e.first));
+		out.w0.push_back(e.second.first);
+		out.w1.push_back(e.second.second);
+	}
+	return true;
+}
+
 // Cube faces, corners counter-clockwise seen from outside (corner = x + 2y + 4z).
 const int FaceCorners[6][4] = {{0, 4, 6, 2}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 2, 3, 1}, {4, 5, 7, 6}};
 } // namespace
@@ -331,6 +403,8 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	sheetCrossedCells = sheetUnfedCells = 0;
 	sheetCrossedVolume = 0;
 	if (!bodies.empty()) ExtrapolateEnclosed();
+	twoValued_ = false;   // m7l
+	PrepareTwoValued();
 	if (!ProjectState(error)) return false;
 	targetVolume_ = Volume();
 	if (options_.particles) particles.Seed(g, phi, options_.particle, 0, pool);
@@ -360,7 +434,39 @@ double LiquidModel::MaxSpeed() const
 
 double LiquidModel::Volume() const
 {
-	return LiquidVolume(setup_.grid, phi, HasSolids() ? &openCells : nullptr, pool_.get());
+	const double v = LiquidVolume(setup_.grid, phi, HasSolids() ? &openCells : nullptr, pool_.get());
+	return CoupledSheets() ? v + SheetVolume() : v;
+}
+
+double LiquidModel::SheetVolume() const
+{
+	// m7l: the cell measure counts a cell beside a coupled sheet whole on its centre's side; the liquid
+	// between the two centres of a face the sheet closes is the face's theta h (SheetFaceTheta: up to
+	// the crossing on a wet side), so each such face adds n_a^2 h^2 (theta h - (h/2) w_L - (h/2) w_R),
+	// w the cells' measure (1 - H(phi)), n_a^2 sharing the sheet's area among the three axes' faces
+	// (sum n_a^2 = 1), its cover the closed part.  With it the measure follows a sheet's motion inside a
+	// cell: without, a piston's descent of a fraction of a cell read as a loss that the volume correction
+	// put back at the free surface (its acceleration 0.45% low, its momentum audit 0.7%).  m7f-m7k's
+	// pinned values (the distance to the sheet) carried the sheet's position into the cell measure.
+	const Grid& g = setup_.grid;
+	const double h = g.h, eps = 1.5*h;
+	auto w = [&](double x) { return x < -eps ? 1.0 : x > eps ? 0.0 : 1 - 0.5*(1 + x/eps + std::sin(3.14159265358979323846*x/eps)/3.14159265358979323846); };
+	std::vector<double> theta;
+	SheetFaceTheta(theta);
+	double sum = 0;
+	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
+		const SheetCrossing& c = sheetFaces_[k];
+		if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+		--idx[c.axis];
+		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+		const double na = c.normal[c.axis];
+		sum += na*na*c.cover*(theta[k]*h - 0.5*h*(w(phi[L]) + w(phi[R])));
+	}
+	return sum*h*h;
 }
 
 double LiquidModel::MaxStep(double segment) const
@@ -458,14 +564,22 @@ bool LiquidModel::ProjectState(std::string& error)
 		if (sheets.empty()) return Project(setup_.grid, phi, fraction, nullptr, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error);
 		ClearSheetVelocity(sheetSolid_);
 		SetSheetVelocity(sheetSolid_);
-		return Project(setup_.grid, phi, fraction, &sheetSolid_, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error);
+		std::vector<FaceTheta> surface;   // m7l (coupled sheets)
+		SheetFreeSurface(surface);
+		PressureOptions po = FinalPressure();
+		po.faceTheta = &surface;
+		return Project(setup_.grid, phi, fraction, &sheetSolid_, po, {}, u, q_, valid, stats, pool_.get(), error);
 	}
 	// The bodies' current velocities as boundary conditions (kinematic: an impulsive start of the liquid);
 	// bodyImpulse receives the impulse rho h^3 J q the liquid exerts on each.
 	if (!sheets.empty()) ClearSheetVelocity(solidVelocity_);
 	geometry_.SolidVelocity(BodyVelocities(), solidVelocity_);
 	if (!sheets.empty()) SetSheetVelocity(solidVelocity_);
-	if (!Project(setup_.grid, phi, fraction, &solidVelocity_, FinalPressure(), {}, u, q_, valid, stats, pool_.get(), error)) return false;
+	std::vector<FaceTheta> surface;   // m7l (coupled sheets)
+	SheetFreeSurface(surface);
+	PressureOptions po = FinalPressure();
+	po.faceTheta = &surface;
+	if (!Project(setup_.grid, phi, fraction, &solidVelocity_, po, {}, u, q_, valid, stats, pool_.get(), error)) return false;
 	std::vector<std::uint8_t> active;
 	ActiveCells(setup_.grid, phi, fraction, active, pool_.get());
 	for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -480,6 +594,8 @@ bool LiquidModel::SetLevelSet(std::vector<double> levelSet, std::string& error)
 {
 	if (levelSet.size() != setup_.grid.Cells()) { error = "level set of the wrong size"; return false; }
 	phi = std::move(levelSet);
+	twoValued_ = false;   // m7l
+	PrepareTwoValued();
 	targetVolume_ = Volume();
 	if (options_.particles) particles.Seed(setup_.grid, phi, options_.particle, 0, pool_.get());
 	return ProjectState(error);
@@ -508,6 +624,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 {
 	stats = StepStats();
 	stats.dt = dt;
+	if (steps == 0) PrepareTwoValued();   // m7l (when the sheets' barrier came after the level set)
 	const Grid& g = setup_.grid;
 	Pool* pool = pool_.get();
 	const bool hasBodies = !bodies.empty();
@@ -663,42 +780,18 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	}
 	t0 = Now();
 	stats.particles += t0 - t1;
-	if (!coupledSheets) { if (options_.volumeCorrection) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool); }
-	else {
-		// m7f: the level set beside a one-sided coupled sheet is its distance to the sheet
-		// (PinSheetInterface) before the volume is measured, and the correction moves the free
-		// surface only: the pinned cells are left out of its area and keep their values.  Pinned
-		// after a correction that had shifted them too (m7e's order), the cells beside the sheet
-		// returned what the shift had taken from them each step while the free surface kept its
-		// share: a pinned bag lost 12% of its water in 2 s at 24 cells.
-		std::vector<std::uint8_t> pinned;
-		if (stageHook) stageHook("particles");
-		stats.sheetCellsKept += PinSheetInterface(&pinned);
-		if (stageHook) stageHook("pinned");
-		if (options_.volumeCorrection) {
-			// The band of the sheet's zero: the cells set and their neighbours on the same side with
-			// no interface of their own (their values follow the boundary values: shifted, they
-			// were pulled back by the reinitialisation and the pin each step, and the measured
-			// volume crept up by a few per cent per second in a bag at rest).
-			std::vector<std::uint8_t> band = pinned;
-			for (std::size_t c = 0; c < pinned.size(); ++c) {
-				if (!pinned[c]) continue;
-				const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
-					int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
-				for (int a = 0; a < 3; ++a) for (int o = -1; o <= 1; o += 2) {
-					int q[3] = {idx[0], idx[1], idx[2]};
-					q[a] += o;
-					if (q[a] < 0 || q[a] >= g.n[a]) continue;
-					const std::size_t nb = g.C(q[0], q[1], q[2]);
-					if (!band[nb] && (phi[nb] < 0) == (phi[c] < 0) && !OwnInterface(nb)) band[nb] = 2;
-				}
-			}
-			pinned.swap(band);
-			const double v = Volume(), area = InterfaceArea(g, phi, open, pool, &pinned);
+	// m7l: with coupled sheets every cell's value is its own side's level set (no boundary values at
+	// the sheet); the correction measures Volume (with SheetVolume) and its area is one-sided at the
+	// sheets' closed faces.  m7f-m7k pinned
+	// the cells beside a one-sided sheet at its distance here and left them out of the correction.
+	if (coupledSheets && stageHook) stageHook("particles");
+	if (options_.volumeCorrection) {
+		if (!coupledSheets) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool);
+		else {
+			const double v = Volume(), area = InterfaceArea(g, phi, open, pool, nullptr, &barrier_);
 			if (area > 0) {
-				const double shift = (v - targetVolume_)/area;
-				ForRows(pool, phi.size(), 4096, [&](std::size_t a, std::size_t b) { for (std::size_t c = a; c < b; ++c) if (!pinned[c]) phi[c] += shift; });
-				stats.volumeShift = shift;
+				stats.volumeShift = (v - targetVolume_)/area;
+				ForRows(pool, phi.size(), 4096, [&](std::size_t a, std::size_t b) { for (std::size_t c = a; c < b; ++c) phi[c] += stats.volumeShift; });
 			}
 		}
 	}
@@ -708,13 +801,14 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	if (coupledSheets) {
 		// m7e: beside a coupled sheet the creep rule would hold a dry cell's level set while the
 		// sheet approaches it (the false interface could not follow a membrane sagging inside a
-		// cell gap: its oscillation came out stiffer with every step taken); PinSheetInterface
-		// puts that zero at the sheet instead.  The rule elsewhere (cells that fill without a wet
-		// neighbour) stays.
+		// cell gap: its oscillation came out stiffer with every step taken); m7l: the two-valued
+		// level set keeps each side's values apart there.  The rule elsewhere (cells that fill
+		// without a wet neighbour) stays.
 		std::vector<SheetCrossing> others;
 		for (const SheetCrossing& c : sheetFaces_) if (!sheets[c.sheet].Coupled()) others.push_back(c);
 		stats.sheetCellsKept += BlockSheetLeaks(g, others, fraction, phiStart, phi, pool);
 	}
+	if (coupledSheets && stageHook) stageHook("held");   // m7l diagnostic: after the guards that hold cells
 	// m7c: the curvature of the new interface for the surface-tension jump.
 	if (setup_.surfaceTension > 0) Curvature(g, phi, kappa_, pool);
 	if (coupledSheets) OpenUnwetted();   // m7g
@@ -1148,6 +1242,9 @@ void LiquidModel::RestoreSheetFaces()
 	sheetSaved_.clear();
 	sheetClosed_.clear();
 	for (auto& w : sheetWall_) w.clear();
+	// m7l: the sides of the cells beside the sheets before they move (SweepSheetCells).
+	sidesBefore_.first.swap(barrier_.second.cells);
+	sidesBefore_.second.swap(barrier_.second.side);
 	barrier_.Clear();
 }
 
@@ -1176,72 +1273,176 @@ void LiquidModel::CloseSheetFaces()
 		}
 	}
 	BuildBarrier();
+	if (steps == 0) PrepareTwoValued();   // m7l
+}
+
+void LiquidModel::PrepareTwoValued()
+{
+	// m7l: the level set a scene starts with is one-valued: where its liquid ends at a coupled sheet it
+	// holds the distance to the sheet on both sides (a zero at the sheet that is no free surface).  Once,
+	// before the first step, the cells beside the sheets take their own side's level set extended from
+	// 2 h beyond the sheet's plane (ExtensionRecipe; deeper only) where they are wet, and at least 1.5 h
+	// where they are dry with no wet cell within two steps on their side; the target volume is then
+	// measured.  Left as it was, the two sides relaxed to their own level sets over the first steps
+	// (the dry side's values rising away from the sheet, the wet side's falling), which the smoothed
+	// volume measure read as a change of volume: the volume correction then moved the free surface
+	// (a piston's acceleration 0.54% high, against 0.03% without the correction).
+	if (twoValued_ || steps != 0 || barrier_.second.Empty() || phi.size() != setup_.grid.Cells()) return;
+	twoValued_ = true;
+	const Grid& g = setup_.grid;
+	const LevelSetBarrier::Second& S = barrier_.second;
+	const std::vector<double> old = phi;
+	auto sideOf = [&](std::size_t cell) -> std::int32_t { const std::ptrdiff_t k = S.Slot(cell); return k < 0 ? 2 : S.side[std::size_t(k)]; };
+	auto wetNear = [&](std::size_t c0) {
+		std::vector<std::size_t> front{c0}, next;
+		for (int depth = 0; depth < 2; ++depth) {
+			next.clear();
+			for (std::size_t c : front) {
+				const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])), int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+				for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
+					int f[3] = {idx[0], idx[1], idx[2]}, q[3] = {idx[0], idx[1], idx[2]};
+					f[a] += side;
+					q[a] += side ? 1 : -1;
+					if (q[a] < 0 || q[a] >= g.n[a]) continue;
+					const std::size_t face = g.F(a, f[0], f[1], f[2]);
+					if (barrier_.Closed(a, face) || !(fraction[std::size_t(a)][face] > 0)) continue;
+					const std::size_t n = g.C(q[0], q[1], q[2]);
+					if (old[n] < 0) return true;
+					next.push_back(n);
+				}
+			}
+			front.swap(next);
+		}
+		return false;
+	};
+	for (std::size_t k = 0; k < S.cells.size(); ++k) {
+		const std::int32_t own = S.side[k];
+		if (own == 0) continue;
+		const std::size_t cell = S.cells[k];
+		if (old[cell] < 0) {
+			const SheetCrossing& x = sheetFaces_[secondRef_[k]];
+			const V3 centre = g.CellCentre(int(cell % std::size_t(g.n[0])), int((cell/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(cell/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
+			LevelSetBarrier::Second r;
+			r.start = {0};
+			double reach = 0;
+			if (ExtensionRecipe(g, centre, CrossingPoint(g, x), V3{{x.normal[0], x.normal[1], x.normal[2]}}, own > 0 ? 1 : -1, 2*g.h, own, sideOf, r, reach)) {
+				r.start.push_back(std::uint32_t(r.term.size()));
+				r.reach = {reach};
+				phi[cell] = std::min(old[cell], r.Value(0, old));
+			}
+		} else if (!wetNear(cell)) phi[cell] = std::max(old[cell], 1.5*g.h);
+	}
+	targetVolume_ = Volume();
 }
 
 void LiquidModel::BuildBarrier()
 {
 	// m7f: the faces of the implicitly coupled sheets are not read across by the level set's
-	// stencils (LiquidLevelSet.h LevelSetBarrier): boundary faces where the sheet holds liquid
-	// on one side (the two cells differ in sign and have no interface of their own, the cells
-	// PinSheetInterface sets), walls elsewhere.  Other sheets keep m7d's stencils and guards.
+	// stencils (LiquidLevelSet.h LevelSetBarrier).  Other sheets keep m7d's stencils and guards.
+	// m7l: the level set is two-valued at them.  The cells within a stencil's reach of a closed face
+	// along its axis (offsets -3..2 of the face) are the band; each is on one side of every crossing
+	// whose line holds it (in front of the crossed triangle or behind it); a cell given two sides (a
+	// fold, two sheets) has none.  The band cells' second value is the other side's level set
+	// extended to them along the normal of the nearest such crossing (ExtensionRecipe, from 1.5 h
+	// beyond its plane).
 	barrier_.Clear();
+	secondRef_.clear();
 	if (!CoupledSheets()) return;
 	const Grid& g = setup_.grid;
-	// m7h: not before the level set exists (Initialize closes the sheets' faces first; a model given a
-	// coupled sheet's dynamics before Initialize read an empty phi here; the next geometry update builds it).
-	if (phi.size() != g.Cells()) return;
+	const double h = g.h;
 	std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3> faces;
-	std::vector<std::uint8_t> fixed;   // the boundary faces' cells: kept by the reinitialisation
-	for (const SheetCrossing& c : sheetFaces_) {
+	struct Candidate { std::size_t cell; double dist2; std::uint32_t crossing; std::int32_t side; };
+	std::vector<Candidate> candidates;
+	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
+		const SheetCrossing& c = sheetFaces_[k];
 		if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;   // m7i: a face mostly open is read across
+		faces[std::size_t(c.axis)].emplace_back(c.face, std::uint8_t(1));
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
-		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
-		--idx[c.axis];
-		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
-		const bool boundary = (phi[L] < 0) != (phi[R] < 0) && !OwnInterface(L) && !OwnInterface(R);
-		faces[std::size_t(c.axis)].emplace_back(c.face, std::uint8_t(boundary ? 2 : 1));
-		if (boundary) {
-			if (fixed.empty()) fixed.assign(g.Cells(), 0);
-			fixed[L] = fixed[R] = 1;
+		const int fa = idx[c.axis];
+		const V3 p = CrossingPoint(g, c);
+		const std::int32_t label = std::int32_t(c.sheet) + 1;
+		for (int t = fa - 3; t <= fa + 2; ++t) {
+			if (t < 0 || t >= g.n[c.axis]) continue;
+			int q[3] = {idx[0], idx[1], idx[2]};
+			q[c.axis] = t;
+			const V3 x = g.CellCentre(q[0], q[1], q[2]);
+			double d2 = 0;
+			for (int a = 0; a < 3; ++a) d2 += (x[a] - p[a])*(x[a] - p[a]);
+			// The plus cells (t >= fa) are in front of the triangle when its normal points along +axis.
+			const bool front = (t >= fa) == (c.normal[c.axis] >= 0);
+			candidates.push_back({g.C(q[0], q[1], q[2]), d2, std::uint32_t(k), front ? label : -label});
 		}
 	}
-	barrier_.Build(g, faces);
-	barrier_.fixed.swap(fixed);
-}
-
-bool LiquidModel::OwnInterface(std::size_t c0) const
-{
-	// m7f: whether a cell of the other sign lies within two steps across open faces (an interface
-	// on the cell's own side, near enough to be what its value measures).
-	const Grid& g = setup_.grid;
-	const bool neg = phi[c0] < 0;
-	std::size_t frontier[6] = {c0};
-	std::size_t n0 = 1;
-	for (int depth = 0; depth < 2; ++depth) {
-		std::size_t next[6];
-		std::size_t n1 = 0;
-		for (std::size_t e = 0; e < n0; ++e) {
-			const std::size_t c = frontier[e];
-			const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
-				int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
-			for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
-				int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
-				f[a] += side;
-				nb[a] += side ? 1 : -1;
-				if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
-				const std::size_t face = g.F(a, f[0], f[1], f[2]);
-				if (!(fraction[std::size_t(a)][face] > 0) || SheetWall(a, face)) continue;
-				const std::size_t q = g.C(nb[0], nb[1], nb[2]);
-				if ((phi[q] < 0) != neg) return true;
-				if (depth == 0 && n1 < 6) next[n1++] = q;
+	std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+		return a.cell != b.cell ? a.cell < b.cell : a.dist2 != b.dist2 ? a.dist2 < b.dist2 : a.crossing < b.crossing; });
+	LevelSetBarrier::Second second;
+	for (std::size_t i = 0; i < candidates.size();) {
+		std::size_t j = i;
+		bool single = true;
+		for (; j < candidates.size() && candidates[j].cell == candidates[i].cell; ++j) single = single && candidates[j].side == candidates[i].side;
+		second.cells.push_back(candidates[i].cell);
+		second.side.push_back(single ? candidates[i].side : 0);
+		secondRef_.push_back(candidates[i].crossing);   // the nearest crossing
+		i = j;
+	}
+	const std::size_t nb = second.cells.size();
+	second.valid.assign(nb, 0);
+	second.reach.assign(nb, 0.0);
+	second.start.assign(nb + 1, 0);
+	auto sideOf = [&](std::size_t cell) -> std::int32_t {
+		const std::ptrdiff_t k = second.Slot(cell);
+		return k < 0 ? 2 : second.side[std::size_t(k)];
+	};
+	second.dryStart.assign(nb + 1, 0);
+	second.dryLevel = 0.25*h;
+	for (std::size_t k = 0; k < nb; ++k) {
+		second.start[k] = std::uint32_t(second.term.size());
+		second.dryStart[k] = std::uint32_t(second.dry.size());
+		const std::int32_t own = second.side[k];
+		if (own == 0) continue;
+		{
+			// The dry-side test (LevelSetBarrier::Second): the other side's cells of the trilinear stencil at
+			// the foot of the cell's centre on the crossing's plane (moved a quarter cell to that side).
+			const SheetCrossing& c = sheetFaces_[secondRef_[k]];
+			const std::size_t cell = second.cells[k];
+			const V3 x = g.CellCentre(int(cell % std::size_t(g.n[0])), int((cell/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(cell/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
+			const V3 p = CrossingPoint(g, c);
+			const double tgt = own > 0 ? -1.0 : 1.0;
+			double dd = 0;
+			for (int a = 0; a < 3; ++a) dd += (x[a] - p[a])*c.normal[a];
+			V3 foot;
+			for (int a = 0; a < 3; ++a) foot[a] = x[a] - dd*c.normal[a] + tgt*0.25*h*c.normal[a];
+			std::vector<std::pair<std::size_t, double>> w;
+			TrilinearWeights(g, foot, 1, w);
+			for (const auto& e : w) {
+				const V3 y = g.CellCentre(int(e.first % std::size_t(g.n[0])), int((e.first/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+					int(e.first/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
+				double dy = 0;
+				for (int a = 0; a < 3; ++a) dy += (y[a] - p[a])*c.normal[a];
+				const std::int32_t s = sideOf(e.first);
+				if (tgt*dy > 0 && (s == 2 || s == -own)) second.dry.push_back(std::uint32_t(e.first));
 			}
+			std::sort(second.dry.begin() + std::ptrdiff_t(second.dryStart[k]), second.dry.end());
+			second.dry.erase(std::unique(second.dry.begin() + std::ptrdiff_t(second.dryStart[k]), second.dry.end()), second.dry.end());
 		}
-		n0 = n1;
-		for (std::size_t e = 0; e < n0; ++e) frontier[e] = next[e];
+		const SheetCrossing& c = sheetFaces_[secondRef_[k]];
+		const std::size_t cell = second.cells[k];
+		const V3 x = g.CellCentre(int(cell % std::size_t(g.n[0])), int((cell/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+			int(cell/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
+		const int target = own > 0 ? -1 : 1;
+		double reach = 0;
+		if (ExtensionRecipe(g, x, CrossingPoint(g, c), V3{{c.normal[0], c.normal[1], c.normal[2]}}, target, 1.5*h, -own, sideOf, second, reach)) {
+			second.valid[k] = 1;
+			second.reach[k] = reach;
+		}
 	}
-	return false;
+	second.start[nb] = std::uint32_t(second.term.size());
+	second.dryStart[nb] = std::uint32_t(second.dry.size());
+	barrier_.Build(g, faces, std::move(second));
 }
 
 void LiquidModel::ClearSheetVelocity(MacField& solid)
@@ -1423,6 +1624,8 @@ void LiquidModel::OpenUnwetted()
 	sheetUnwetted_.clear();
 	const Grid& g = setup_.grid;
 	const double h = g.h, tol = 1e-2*g.h;
+	std::vector<double> second;   // m7l: the free surface's position from the wet side's own level set
+	barrier_.second.Evaluate(phi, second, pool_.get());
 	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
 		const SheetCrossing& c = sheetFaces_[k];
 		if (!sheets[c.sheet].Coupled()) continue;
@@ -1433,13 +1636,12 @@ void LiquidModel::OpenUnwetted()
 		const double xR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*h;
 		--idx[c.axis];
 		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
-		const double pl = phi[L], pr = phi[R];
-		if ((pl < 0) == (pr < 0)) continue;
-		// The boundary values beside a sheet holding liquid on one side (PinSheetInterface) are
-		// contact: a cell beside several closed faces holds its least distance, which is not
-		// theta along the others (opened there, the bag of the results drained through them
-		// each step and the volume correction put back 1.4 times its volume per second).
-		if (!barrier_.fixed.empty() && (barrier_.fixed[L] || barrier_.fixed[R])) continue;
+		if ((phi[L] < 0) == (phi[R] < 0)) continue;
+		// m7l: the wet cell's own side's level set on both cells (the dry cell's second value), so the
+		// free surface lies where that side's liquid ends (m7g-m7k: the dry cell's own value, the other
+		// side's, and the cells beside a one-sided sheet, pinned, were contact).
+		const double pl = phi[L] < 0 ? phi[L] : Across(R, L, second), pr = phi[R] < 0 ? phi[R] : Across(L, R, second);
+		if ((pl < 0) == (pr < 0)) continue;   // the wet side's liquid reaches past the sheet: contact
 		// Only a free surface below the sheet (the dry cell above the wet one against gravity): liquid
 		// on a sheet, with the level set's zero short of the crossing by a fraction of a cell (thin
 		// films, where the cells beside the sheet hold the free surface's values), rests on it under
@@ -1586,7 +1788,11 @@ bool LiquidModel::ProjectCoupled(MacField& s, const PressureOptions& po, const s
 	}
 	SheetCoupling sheet(g, sheetFaces_, sheets, setup_.density, &sheetUnwetted_);
 	coupled.push_back(&sheet);
-	if (!Project(g, phi, fraction, &solidVelocity_, po, coupled, s, q_, valid, stats, pool, error)) return false;
+	std::vector<FaceTheta> surface;   // m7l
+	SheetFreeSurface(surface);
+	PressureOptions pt = po;
+	pt.faceTheta = &surface;
+	if (!Project(g, phi, fraction, &solidVelocity_, pt, coupled, s, q_, valid, stats, pool, error)) return false;
 	std::vector<std::uint8_t> active;
 	if (kinematic) ActiveCells(g, phi, fraction, active, pool);
 	impulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
@@ -1596,6 +1802,69 @@ bool LiquidModel::ProjectCoupled(MacField& s, const PressureOptions& po, const s
 	}
 	sheetImp = sheet.Impulse();
 	return true;
+}
+
+void LiquidModel::SheetFreeSurface(std::vector<FaceTheta>& out) const
+{
+	// m7l: a face a coupled sheet closes that is open in part (a free edge's partly covered face, or a
+	// face opened where the liquid ends short of the sheet, OpenUnwetted) between a wet cell W and a
+	// dry cell D of the sheet's other side: its free surface lies where W's own side's liquid ends
+	// along the segment (D's second value), at the crossing at most.  The two cells' own values are of
+	// two sides' level sets; m7f-m7k's pinned values put it at the crossing.
+	out.clear();
+	if (!CoupledSheets()) return;
+	const Grid& g = setup_.grid;
+	std::vector<double> second;
+	barrier_.second.Evaluate(phi, second, pool_.get());
+	for (const SheetCrossing& c : sheetFaces_) {
+		if (!sheets[c.sheet].Coupled() || !c.Barrier() || !(fraction[std::size_t(c.axis)][c.face] > 0)) continue;
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+		const double xR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*g.h;
+		--idx[c.axis];
+		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+		if ((phi[L] < 0) == (phi[R] < 0)) continue;
+		const bool wL = phi[L] < 0;
+		const std::size_t W = wL ? L : R, D = wL ? R : L;
+		const double reach = std::max(0.0, wL ? c.s - (xR - g.h) : xR - c.s);
+		const double q = Across(W, D, second);
+		const double t = q < 0 ? reach : std::min(reach, phi[W]/(phi[W] - q)*g.h);
+		out.push_back({c.axis, c.face, t/g.h});
+	}
+}
+
+void LiquidModel::SheetFaceTheta(std::vector<double>& theta) const
+{
+	// m7l: the liquid on a face a coupled sheet closes is the part of the segment between the two
+	// centres that each side's own level set fills on its side of the crossing (the other cell's
+	// second value: that side's level set across the sheet), clamped to [theta_min, 1] when either
+	// cell is wet.  m7e-m7k: the segment's fraction from the two cells' own values, which with a
+	// one-sided sheet's pinned values was the wet side's part.
+	const Grid& g = setup_.grid;
+	const double thetaMin = options_.pressure.thetaMin;
+	std::vector<double> second;
+	barrier_.second.Evaluate(phi, second, pool_.get());
+	theta.assign(sheetFaces_.size(), 0.0);
+	auto wet = [&](std::size_t own, std::size_t other, double reach) {
+		const double p = phi[own];
+		if (!(p < 0)) return 0.0;
+		const double q = Across(own, other, second);
+		return q < 0 ? reach : std::min(reach, p/(p - q)*g.h);
+	};
+	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
+		const SheetCrossing& c = sheetFaces_[k];
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+		const double xR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*g.h;
+		--idx[c.axis];
+		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+		if (phi[L] < 0 || phi[R] < 0)
+			theta[k] = std::min(1.0, std::max(thetaMin, (wet(L, R, std::max(0.0, c.s - (xR - g.h))) + wet(R, L, std::max(0.0, xR - c.s)))/g.h));
+	}
 }
 
 void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<SheetBlock>>& blocks, std::vector<std::vector<double>>& rhs) const
@@ -1617,24 +1886,17 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 	// times its speed (a 0.05 kg/m^2 flap's edge at 10 m/s in a 2 m/s surge, n_a = 0.16;
 	// docs/SIMULATION_M7G_RESULTS.md).  The two agree for an axis-aligned sheet.
 	const Grid& g = setup_.grid;
-	const double scale = setup_.density*g.h*g.h*g.h, thetaMin = options_.pressure.thetaMin;
+	const double scale = setup_.density*g.h*g.h*g.h;
 	blocks.assign(sheets.size(), {});
 	rhs.assign(sheets.size(), {});
 	for (std::size_t i = 0; i < sheets.size(); ++i) if (sheets[i].Coupled()) rhs[i].assign(3*sheets[i].dyn.Vertices(), 0.0);
+	std::vector<double> thetas;   // m7l
+	SheetFaceTheta(thetas);
 	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
 		const SheetCrossing& c = sheetFaces_[k];
 		const LiquidSheet& sh = sheets[c.sheet];
 		if (!sh.Coupled() || (!sheetUnwetted_.empty() && sheetUnwetted_[k] == 1)) continue;   // m7k: 2, in the contact's band (cover scaled)
-		const auto d = g.FaceDims(c.axis);
-		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
-			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
-		const double pr = phi[g.C(idx[0], idx[1], idx[2])];
-		--idx[c.axis];
-		const double pl = phi[g.C(idx[0], idx[1], idx[2])];
-		double theta = 0;
-		if (pl < 0 && pr < 0) theta = 1;
-		else if (pl < 0) theta = std::min(1.0, std::max(thetaMin, pl/(pl - pr)));
-		else if (pr < 0) theta = std::min(1.0, std::max(thetaMin, pr/(pr - pl)));
+		const double theta = thetas[k];
 		const double w = scale*theta*sheetSaved_[k]*c.cover;   // m7i: the closed part's liquid
 		if (!(w > 0)) continue;
 		double cv[3][3], cn[3][3];
@@ -1663,101 +1925,15 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 	}
 }
 
-std::size_t LiquidModel::PinSheetInterface(std::vector<std::uint8_t>* mask)
+double LiquidModel::Across(std::size_t own, std::size_t other, const std::vector<double>& second) const
 {
-	// m7f: where a coupled sheet holds liquid on one side only, the liquid's boundary is the
-	// sheet: the level set is the signed distance to it there, its zero at the sheet.  Across a
-	// closed face whose two cells differ in sign, each takes its distance to the crossed
-	// triangle's plane, |s - x_c| |n_a| (n the unit normal), negative on the wet side; a cell
-	// beside several such faces takes the least.  The faces between the cells set become
-	// boundary faces of the level set's stencils (LevelSetBarrier): the reinitialisation, the
-	// advection and the volume measure see the liquid end at the sheet.  The cells set are
-	// boundary values only and are left out of the volume correction (`mask`).
-	// A cell with a cell of the other sign within two steps across open faces has an
-	// interface of its own (where a free surface meets the sheet: the waterline of a sheet with
-	// liquid on both sides, where the free surface and the sheet can cross the same segment)
-	// and keeps its value, from which the free surface is interpolated (pinned there, a flap's
-	// waterline moved to the sheet every step and the flap's speed in still water doubled).
-	// m7e pinned the dry side only, after the volume correction, with stencils reading across
-	// the sheet; a pinned bag (3-D, 24 cells, 3 cm of water) lost 22% of its water to the
-	// correction in 2 s that way, and 40% with sided stencils and no pin (the small values the
-	// sheet left on the dry side spread into it and were counted as liquid).
-	const Grid& g = setup_.grid;
-	const double h = g.h;
-	std::vector<std::pair<std::size_t, double>> set;   // (cell, distance), negative distance: wet
-	for (const SheetCrossing& c : sheetFaces_) {
-		if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;   // m7i: a face mostly open is the liquid's
-		const auto d = g.FaceDims(c.axis);
-		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
-			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
-		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
-		const double xR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*h;
-		--idx[c.axis];
-		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
-		const bool wL = phi[L] < 0, wR = phi[R] < 0;
-		if (wL == wR) continue;
-		const double na = std::fabs(c.normal[c.axis]);
-		const double dL = std::max(1e-3*h, (c.s - (xR - h))*na), dR = std::max(1e-3*h, (xR - c.s)*na);
-		set.emplace_back(L, wL ? -dL : dL);
-		set.emplace_back(R, wR ? -dR : dR);
-	}
-	std::sort(set.begin(), set.end(), [](const std::pair<std::size_t, double>& p, const std::pair<std::size_t, double>& q) {
-		return p.first != q.first ? p.first < q.first : std::fabs(p.second) < std::fabs(q.second); });
-	std::size_t changed = 0;
-	if (mask) mask->assign(g.Cells(), 0);
-	std::vector<std::pair<std::size_t, double>> apply;
-	for (std::size_t k = 0; k < set.size(); ++k) {
-		if (k > 0 && set[k].first == set[k - 1].first) continue;   // the least distance (first after sorting)
-		const std::size_t c = set[k].first;
-		if (OwnInterface(c)) continue;
-		if (mask) (*mask)[c] = 1;
-		apply.emplace_back(c, set[k].second);
-	}
-	for (const auto& e : apply) if (phi[e.first] != e.second) { phi[e.first] = e.second; ++changed; }
-	BuildBarrier();   // the faces between the cells set are boundary faces now
-	return changed;
-}
-
-void LiquidModel::Redistance(std::size_t c)
-{
-	// m7f: the fast-marching update of one cell from its face neighbours on its own side (not
-	// across a coupled sheet's closed face): |phi| solves sum_k max(0, |phi| - a_k)^2 = h^2, a_k
-	// the least |phi| of the neighbours along axis k.  A cell with a neighbour of the other sign
-	// across an open face is beside the free surface and keeps its value.
-	const Grid& g = setup_.grid;
-	const double h = g.h;
-	const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
-		int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
-	const bool neg = phi[c] < 0;
-	double a[3];
-	int n = 0;
-	for (int k = 0; k < 3; ++k) {
-		if (g.n[k] == 1) continue;
-		double m = std::numeric_limits<double>::infinity();
-		for (int side = 0; side < 2; ++side) {
-			int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
-			f[k] += side;
-			nb[k] += side ? 1 : -1;
-			if (nb[k] < 0 || nb[k] >= g.n[k]) continue;
-			if (barrier_.Closed(k, g.F(k, f[0], f[1], f[2]))) continue;
-			const double p = phi[g.C(nb[0], nb[1], nb[2])];
-			if ((p < 0) != neg) return;
-			m = std::min(m, std::fabs(p));
-		}
-		if (std::isfinite(m)) a[n++] = m;
-	}
-	if (n == 0) return;
-	std::sort(a, a + n);
-	double v = a[0] + h;
-	if (n > 1 && v > a[1]) {
-		const double d = a[0] - a[1];
-		v = 0.5*(a[0] + a[1] + std::sqrt(std::max(0.0, 2*h*h - d*d)));
-		if (n > 2 && v > a[2]) {
-			const double s = a[0] + a[1] + a[2], q = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
-			v = (s + std::sqrt(std::max(0.0, s*s - 3*(q - h*h))))/3;
-		}
-	}
-	phi[c] = neg ? -v : v;
+	// m7l: own's side's level set at the cell `other` across a sheet: other's second value when other's
+	// side is the opposite of own's (and the value defined), else other's own value.
+	const LevelSetBarrier::Second& s = barrier_.second;
+	if (second.size() != s.cells.size()) return phi[other];
+	const std::ptrdiff_t a = s.Slot(own), b = s.Slot(other);
+	if (a < 0 || b < 0 || s.side[std::size_t(a)] == 0 || s.side[std::size_t(b)] != -s.side[std::size_t(a)] || !s.valid[std::size_t(b)]) return phi[other];
+	return second[std::size_t(b)];
 }
 
 std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vector<SheetCrossing>& facesBefore)
@@ -1772,42 +1948,62 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 	const Grid& g = setup_.grid;
 	std::vector<SweptCell> swept;
 	SweptSheetCells(facesBefore, swept);
+	{
+		// m7l: and every cell beside the sheet before and now whose side flipped (the sheet passed its
+		// centre), which the pairing of crossings along lattice lines misses where a line's crossings
+		// appear or vanish (a sagging sheet's sides, folds); its fallback value is its own.
+		const LevelSetBarrier::Second& now = barrier_.second;
+		std::vector<std::size_t> listed;
+		for (const SweptCell& c : swept) listed.push_back(c.cell);
+		std::sort(listed.begin(), listed.end());
+		const auto& before = sidesBefore_;
+		for (std::size_t k = 0; k < before.first.size(); ++k) {
+			const std::int32_t s0 = before.second[k];
+			if (s0 == 0) continue;
+			const std::ptrdiff_t j = now.Slot(before.first[k]);
+			if (j < 0 || now.side[std::size_t(j)] != -s0 || std::binary_search(listed.begin(), listed.end(), before.first[k])) continue;
+			SweptCell w;
+			w.cell = w.ref = before.first[k];
+			swept.push_back(w);
+		}
+		std::sort(swept.begin(), swept.end(), [](const SweptCell& p, const SweptCell& q) { return p.cell < q.cell; });
+	}
 	const std::vector<double> old = phi;
 	for (const SweptCell& c : swept) sweptCells_.push_back(c.cell);   // m7g (CountSheetCrossings)
+	// m7l: a swept cell takes its new side's level set extended to it along the normal of the sheet's
+	// new nearest crossing (ExtensionRecipe from 2 h beyond the plane on that side, which no cell the
+	// sheet swept in a step reaches), from the step's values; where that is refused, the new side's
+	// value beyond the old crossing (m7f: constant extension).  A cell's two values are its two
+	// sides' level sets, so the sweep is the exchange of its own value for the other side's.  m7f-m7k
+	// then pinned the cells beside the sheet's new position at its distance and re-distanced the cells
+	// it left from their own side.
+	std::vector<std::size_t> sweptSorted;
+	for (const SweptCell& c : swept) sweptSorted.push_back(c.cell);
+	std::sort(sweptSorted.begin(), sweptSorted.end());
+	const LevelSetBarrier::Second& labels = barrier_.second;
+	auto sideOf = [&](std::size_t cell) -> std::int32_t {
+		if (std::binary_search(sweptSorted.begin(), sweptSorted.end(), cell)) return 0;
+		const std::ptrdiff_t k = labels.Slot(cell);
+		return k < 0 ? 2 : labels.side[std::size_t(k)];
+	};
 	for (const SweptCell& c : swept) {
-		// m7f: the new side's value beyond the old crossing (constant extension, as the level
-		// set's stencils see across a closed face; a linear one carried the distance to the
-		// sheet that the other side's values hold onto the swept cells).
-		phi[c.cell] = old[c.ref];
-	}
-	// m7f: the boundary values at the sheet's new position (PinSheetInterface), then the cells
-	// the sheet left (beside its crossings before and not now, and swept cells not beside it
-	// now) re-distanced from their own side: their values were distances to where the sheet
-	// had been (left stale, the cells a sagging sheet uncovers keep values near zero inside the
-	// liquid; the effect on the bags of the results was below what they resolve).
-	PinSheetInterface();
-	{
-		auto beside = [&](const std::vector<SheetCrossing>& list, std::vector<std::size_t>& out) {
-			for (const SheetCrossing& c : list) {
-				if (!sheets[c.sheet].Coupled()) continue;
-				const auto d = g.FaceDims(c.axis);
-				int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
-					int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
-				out.push_back(g.C(idx[0], idx[1], idx[2]));
-				--idx[c.axis];
-				out.push_back(g.C(idx[0], idx[1], idx[2]));
+		double v = old[c.ref];
+		const std::ptrdiff_t k = labels.Slot(c.cell);
+		if (k >= 0 && labels.side[std::size_t(k)] != 0) {
+			const std::int32_t own = labels.side[std::size_t(k)];
+			const SheetCrossing& x = sheetFaces_[secondRef_[std::size_t(k)]];
+			const V3 centre = g.CellCentre(int(c.cell % std::size_t(g.n[0])), int((c.cell/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(c.cell/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
+			LevelSetBarrier::Second r;
+			r.start = {0};
+			double reach = 0;
+			if (ExtensionRecipe(g, centre, CrossingPoint(g, x), V3{{x.normal[0], x.normal[1], x.normal[2]}}, own > 0 ? 1 : -1, 2*g.h, own, sideOf, r, reach)) {
+				r.start.push_back(std::uint32_t(r.term.size()));
+				r.reach = {reach};
+				v = r.Value(0, old);
 			}
-			std::sort(out.begin(), out.end());
-			out.erase(std::unique(out.begin(), out.end()), out.end());
-		};
-		std::vector<std::size_t> before, now, stale;
-		beside(facesBefore, before);
-		beside(sheetFaces_, now);
-		for (std::size_t c : before) if (!std::binary_search(now.begin(), now.end(), c)) stale.push_back(c);
-		for (const SweptCell& c : swept) if (!std::binary_search(now.begin(), now.end(), c.cell)) stale.push_back(c.cell);
-		std::sort(stale.begin(), stale.end());
-		stale.erase(std::unique(stale.begin(), stale.end()), stale.end());
-		for (int pass = 0; pass < 2; ++pass) for (std::size_t c : stale) Redistance(c);
+		}
+		phi[c.cell] = v;
 	}
 	std::size_t removed = 0;
 	if (options_.particles) {
@@ -1960,6 +2156,11 @@ V3 LiquidModel::FluidMomentum() const
 {
 	V3 p{{0, 0, 0}};
 	const Grid& g = setup_.grid;
+	std::vector<FaceTheta> surface;   // m7l: the projection's free surface at the coupled sheets
+	SheetFreeSurface(surface);
+	PressureOptions po;
+	po.thetaMin = options_.pressure.thetaMin;
+	po.faceTheta = &surface;
 	for (int a = 0; a < 3; ++a) {
 		if (g.n[a] == 1) continue;
 		double s = 0;
@@ -1975,8 +2176,8 @@ V3 LiquidModel::FluidMomentum() const
 			const double pl = phi[g.C(lo[0], lo[1], lo[2])], pr = phi[g.C(i, j, k)];
 			double w = 0;
 			if (pl < 0 && pr < 0) w = A;
-			else if (pl < 0) w = A*std::min(1.0, std::max(options_.pressure.thetaMin, pl/(pl - pr)));
-			else if (pr < 0) w = A*std::min(1.0, std::max(options_.pressure.thetaMin, pr/(pr - pl)));
+			else if (pl < 0) w = A*GhostTheta(po, a, f, pl, pr);
+			else if (pr < 0) w = A*GhostTheta(po, a, f, pr, pl);
 			s += w*u.u[a][f];
 		}
 		p[std::size_t(a)] = s*setup_.density*g.h*g.h*g.h;
@@ -1988,6 +2189,11 @@ double LiquidModel::FluidMass(int axis) const
 {
 	const Grid& g = setup_.grid;
 	double s = 0;
+	std::vector<FaceTheta> surface;   // m7l: the projection's free surface at the coupled sheets
+	SheetFreeSurface(surface);
+	PressureOptions po;
+	po.thetaMin = options_.pressure.thetaMin;
+	po.faceTheta = &surface;
 	const auto d = g.FaceDims(axis);
 	for (int k = 0; k < d[2]; ++k) for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
 		const int idx[3] = {i, j, k};
@@ -1999,8 +2205,8 @@ double LiquidModel::FluidMass(int axis) const
 		--lo[axis];
 		const double pl = phi[g.C(lo[0], lo[1], lo[2])], pr = phi[g.C(i, j, k)];
 		if (pl < 0 && pr < 0) s += A;
-		else if (pl < 0) s += A*std::min(1.0, std::max(options_.pressure.thetaMin, pl/(pl - pr)));
-		else if (pr < 0) s += A*std::min(1.0, std::max(options_.pressure.thetaMin, pr/(pr - pl)));
+		else if (pl < 0) s += A*GhostTheta(po, axis, f, pl, pr);
+		else if (pr < 0) s += A*GhostTheta(po, axis, f, pr, pl);
 	}
 	return s*setup_.density*g.h*g.h*g.h;
 }
@@ -2114,10 +2320,16 @@ void LiquidModel::ClearSheets(const std::array<int,3>& d, const std::vector<doub
 	// by up to 0.045 h).  Each such vertex is moved towards the wet sample until it lies at least
 	// 0.1 h from the crossed triangle's plane on the wet side (along the edge: 0.1 h / |n_a|, at most
 	// 0.45 h, and never past the wet sample); the fans' centroids follow.  Output only.
+	// m7l: the vertex lies where the wet side's own level set ends along the edge (the dry cell's second
+	// value; at the sheet when that side's liquid reaches past it), at most up to that clearance: the
+	// surface of a layer on a sheet lines the sheet (m7i-m7k: from the two cells' own values, pinned at
+	// the sheet's distance on a one-sided sheet).
 	const Grid& g = setup_.grid;
 	const double h = g.h, clear = 0.1*h;
 	const std::size_t strides[3] = {1, std::size_t(d[0]), std::size_t(d[0])*std::size_t(d[1])};
 	bool moved = false;
+	std::vector<double> second;
+	barrier_.second.Evaluate(phi, second, pool_.get());
 	for (std::size_t v = 0; v < iso.edgeVertices; ++v) {
 		const std::size_t smp = std::size_t(iso.edges[v]/3);
 		const int a = int(iso.edges[v] % 3);
@@ -2135,9 +2347,15 @@ void LiquidModel::ClearSheets(const std::array<int,3>& d, const std::vector<doub
 		const double na = std::fabs(it->normal[a]);
 		const double reach = na > 0 ? std::min(0.45*h, clear/na) : 0.45*h;
 		const double lo = g.origin[std::size_t(a)] + (I[a] - 0.5)*h, hi = lo + h;   // the two samples' coordinates along a
+		const std::size_t lower = g.C(I[0] - 1, I[1] - 1, I[2] - 1), upper = lower + (a == 0 ? 1 : a == 1 ? std::size_t(g.n[0]) : std::size_t(g.n[0])*std::size_t(g.n[1]));
 		double x = iso.positions[3*v + std::size_t(a)];
-		if (f0 < 0) x = std::max(lo, std::min(x, it->s - reach));   // wet at the lower sample
-		else x = std::min(hi, std::max(x, it->s + reach));
+		if (f0 < 0) {   // wet at the lower sample
+			const double q = Across(lower, upper, second);
+			x = std::max(lo, std::min(q < 0 ? hi : lo + f0/(f0 - q)*h, it->s - reach));
+		} else {
+			const double q = Across(upper, lower, second);
+			x = std::min(hi, std::max(q < 0 ? lo : hi - f1/(f1 - q)*h, it->s + reach));
+		}
 		if (x != iso.positions[3*v + std::size_t(a)]) {
 			iso.positions[3*v + std::size_t(a)] = x;
 			iso.t[v] = (x - lo)/h;

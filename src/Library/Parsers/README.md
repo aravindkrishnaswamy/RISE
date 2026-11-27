@@ -422,9 +422,10 @@ is corotational, and the liquid refuses an implicit sheet without its elements. 
 other (spheres, boxes, cylinders; body options `restitution e`, `friction mu`, `contact on|off`; a `body_object` among
 other bodies needs `contact off`), and `connect drop.body_contact -> pool.body_contact` gives the liquid's own copies
 of the bodies rigid.bodies' planes and body-body contact inside the macro step.  M7i (docs/SIMULATION_M7I_RESULTS.md):
-liquid resting on an implicit sheet needs a layer at least 5 cells deep (4.8 cells measured within 3%; 2.4 cells loses
-8% in 2 s with the volume correction, 41% without); the faces at a sheet's free edge are split by the part the sheet
-covers; nothing to connect:
+liquid resting on an implicit sheet needs a layer about 2.5 cells deep, as on a rigid floor (M7l, the level set two-valued
+at the sheet, docs/SIMULATION_M7L_RESULTS.md: without the volume correction a held bowl's 1.3-cell rim sloshing loses 2.5%
+in 2 s and a sagging bag's 2.4 cells 4%, where M7i's 5-cell statement had 2.4 cells losing 41%); the faces at a sheet's
+free edge are split by the part the sheet covers; nothing to connect:
 
 ```text
 cloth_simulation { name cloth  frames 61  size_u 0.3  size_v 0.45  vertices_u 13  vertices_v 19

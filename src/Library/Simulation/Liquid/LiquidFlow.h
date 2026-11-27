@@ -103,9 +103,22 @@ public:
 	virtual void Finish(const std::vector<double>& q) = 0;
 };
 
+struct PressureOptions;
+//! m7l: the ghost-fluid fraction clamp(pw / (pw - pa), thetaMin, 1) of face f of axis a from its liquid
+//! cell (phi pw) to its air cell (pa), or the one options.faceTheta gives.
+double GhostTheta(const PressureOptions& options, int a, std::size_t f, double pw, double pa);
+
 //! The cells of the pressure system: liquid (phi < 0) with an open face.
 void ActiveCells(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	std::vector<std::uint8_t>& active, Pool* pool);
+
+//! m7l: a face's free-surface fraction given by its caller (LiquidModel: the open part of a face an
+//! implicitly coupled sheet closes, between cells of its two sides), from the face's liquid cell.
+struct FaceTheta {
+	int axis = 0;
+	std::size_t face = 0;
+	double theta = 0;
+};
 
 struct PressureOptions {
 	double tolerance = 1e-8;     // ||r||_inf <= tolerance ||b||_inf
@@ -128,6 +141,9 @@ struct PressureOptions {
 	const std::vector<double>* curvature = nullptr;
 	double jumpScale = 0;
 	bool interpolateCurvature = true;
+	//! m7l: faces (sorted by axis and face) whose free surface lies at the given theta from their
+	//! liquid cell instead of phi_L / (phi_L - phi_R) (still clamped to [thetaMin, 1]); null: none.
+	const std::vector<FaceTheta>* faceTheta = nullptr;
 };
 
 struct PressureStats {

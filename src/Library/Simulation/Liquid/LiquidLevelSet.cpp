@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace RISE { namespace Simulation { namespace Liquid {
 
@@ -107,7 +108,36 @@ double Weno5(double v1, double v2, double v3, double v4, double v5)
 void LevelSetBarrier::Clear()
 {
 	for (int a = 0; a < 3; ++a) { closed[std::size_t(a)].clear(); cells[std::size_t(a)].clear(); samples[std::size_t(a)].clear(); }
-	fixed.clear();
+	second = Second();
+	reads = false;
+}
+
+std::ptrdiff_t LevelSetBarrier::Second::Slot(std::size_t cell) const
+{
+	const auto it = std::lower_bound(cells.begin(), cells.end(), cell);
+	return it != cells.end() && *it == cell ? std::ptrdiff_t(it - cells.begin()) : -1;
+}
+
+double LevelSetBarrier::Second::Value(std::size_t k, const std::vector<double>& f) const
+{
+	double v = 0, s = 0;
+	for (std::uint32_t t = start[k]; t < start[k + 1]; ++t) { v += w0[t]*f[term[t]]; s += w1[t]*f[term[t]]; }
+	const double r = reach[k], po = v;
+	v += std::min(r, std::max(-r, -r*s));
+	if (k + 1 < dryStart.size() && dryStart[k + 1] > dryStart[k] && po >= 0) {
+		double least = std::numeric_limits<double>::infinity();
+		for (std::uint32_t t = dryStart[k]; t < dryStart[k + 1]; ++t) least = std::min(least, f[dry[t]]);
+		if (least >= dryLevel) v = std::max(v, least);
+	}
+	return v;
+}
+
+void LevelSetBarrier::Second::Evaluate(const std::vector<double>& f, std::vector<double>& out, Pool* pool) const
+{
+	out.assign(cells.size(), 0.0);
+	ForRows(pool, cells.size(), 1024, [&](std::size_t a, std::size_t b) {
+		for (std::size_t k = a; k < b; ++k) if (valid[k]) out[k] = Value(k, f);
+	});
 }
 
 int LevelSetBarrier::Reach(const Grid& g, const int idx[3], int axis, int offset) const
@@ -128,7 +158,20 @@ int LevelSetBarrier::Reach(const Grid& g, const int idx[3], int axis, int offset
 
 void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces)
 {
+	Build(g, faces, Second());
+}
+
+void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces, Second given)
+{
 	Clear();
+	second = std::move(given);
+	// m7l: a stencil from a cell of side s reads the second value of a cell across one closed face
+	// when that cell is of side -s and its second value is defined.
+	auto secondSlot = [&](std::size_t cell, std::int32_t own) -> std::ptrdiff_t {
+		if (own == 0 || second.Empty()) return -1;
+		const std::ptrdiff_t k = second.Slot(cell);
+		return k >= 0 && second.valid[std::size_t(k)] && second.side[std::size_t(k)] == -own ? k : -1;
+	};
 	for (int a = 0; a < 3; ++a) {
 		if (faces[std::size_t(a)].empty() || g.n[a] < 2) continue;
 		closed[std::size_t(a)].assign(g.Faces(a), 0);
@@ -159,6 +202,8 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 				int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
 			auto cellAt = [&](int t) { int q[3] = {idx[0], idx[1], idx[2]}; q[a] = t; return g.C(q[0], q[1], q[2]); };
 			auto faceKind = [&](int t0, int t1) { int q[3] = {idx[0], idx[1], idx[2]}; q[a] = std::max(t0, t1); return cl[g.F(a, q[0], q[1], q[2])]; };
+			std::int32_t own = 0;   // m7l: the stencil cell's side
+			if (!second.Empty()) { const std::ptrdiff_t k = second.Slot(c); if (k >= 0) own = second.side[std::size_t(k)]; }
 			for (int m = 0; m < 7; ++m) {
 				const int o = m - 3;
 				Sample& S = out[7*e + std::size_t(m)];
@@ -167,8 +212,17 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 				if (o == 0) continue;
 				const int dir = o > 0 ? 1 : -1;
 				bool done = false;
+				std::ptrdiff_t across = -1;   // m7l: past the closed face, the slot of the last cell reached
 				for (int step = 0; step < std::abs(o) && !done; ++step) {
 					const int nt = t + dir;
+					if (across >= 0) {
+						// m7l: on the other side, its cells' second values until the domain's edge, another
+						// closed face or a cell without one (then the last one reached: constant).
+						const std::ptrdiff_t k = nt < 0 || nt >= g.n[a] || faceKind(t, nt) != 0 ? -1 : secondSlot(cellAt(nt), own);
+						if (k < 0) done = true;
+						else { across = k; t = nt; }
+						continue;
+					}
 					if (nt < 0 || nt >= g.n[a]) {
 						// Beyond the domain: the level set's linear extension from the edge (constant when
 						// the edge's inner neighbour lies across a closed face).
@@ -178,16 +232,15 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 						if (inner >= 0 && inner < g.n[a] && faceKind(inner, t) != 1) { S.i2 = cellAt(inner); S.s = double(std::abs(idx[a] + o - t)); }
 						else S.i2 = S.i1;
 						done = true;
-					} else if (faceKind(t, nt) == 1) { S.i1 = S.i2 = cellAt(t); done = true; }
-					else if (faceKind(t, nt) == 2) {
-						// A boundary face: the cell across, then the line through it and the last cell
-						// on this side: f[t] + k (f[nt] - f[t]) for the k-th sample beyond t.
-						S.i1 = cellAt(t); S.i2 = cellAt(nt); S.s = -double(std::abs(idx[a] + o - t));
-						done = true;
+					} else if (faceKind(t, nt) != 0) {
+						const std::ptrdiff_t k = secondSlot(cellAt(nt), own);
+						if (k >= 0) { across = k; t = nt; }
+						else { S.i1 = S.i2 = cellAt(t); done = true; }
 					}
 					else t = nt;
 				}
-				if (!done) S.i1 = S.i2 = cellAt(t);
+				if (across >= 0) { S.i1 = S.i2 = std::size_t(across); S.s = 0; S.outside = false; S.second = true; reads = true; }
+				else if (!done) S.i1 = S.i2 = cellAt(t);
 			}
 		}
 	}
@@ -196,13 +249,15 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector<double>& f, int axis,
 	const std::array<Extension,3>& ext, Pool* pool,
 	const std::function<void(std::size_t row, const double* dm, const double* dp)>& emit,
-	const LevelSetBarrier* barrier)
+	const LevelSetBarrier* barrier, const std::vector<double>* second)
 {
 	const int n0 = d[0];
 	const double inv = 1/h;
 	const int na = d[axis];
 	const bool linear = ext[axis] == Extension::Linear && na > 1;
 	const bool patched = barrier && !barrier->cells[std::size_t(axis)].empty();
+	std::vector<double> own;   // m7l: the second values, when the caller did not evaluate them
+	if (patched && barrier->ReadsSecond() && !second) { barrier->second.Evaluate(f, own, pool); second = &own; }
 	ForRows(pool, Rows(d), RowGrain(n0), [&](std::size_t r0, std::size_t r1) {
 		std::vector<double> line(axis == 0 ? std::size_t(n0) + 6 : 0), ghost(axis == 0 ? 0 : 7*std::size_t(n0));
 		std::vector<double> dm(static_cast<std::size_t>(n0)), dp(static_cast<std::size_t>(n0));
@@ -248,7 +303,8 @@ void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector
 				for (auto it = std::lower_bound(cl.begin(), cl.end(), base); it != cl.end() && *it < base + std::size_t(n0); ++it) {
 					const LevelSetBarrier::Sample* S = &barrier->samples[std::size_t(axis)][7*std::size_t(it - cl.begin())];
 					double v[7];
-					for (int m = 0; m < 7; ++m) v[m] = !linear && S[m].outside ? f[S[m].i1] : f[S[m].i1] + S[m].s*(f[S[m].i1] - f[S[m].i2]);
+					for (int m = 0; m < 7; ++m)
+						v[m] = S[m].second ? (*second)[S[m].i1] : !linear && S[m].outside ? f[S[m].i1] : f[S[m].i1] + S[m].s*(f[S[m].i1] - f[S[m].i2]);
 					const double q0 = (v[1] - v[0])*inv, q1 = (v[2] - v[1])*inv, q2 = (v[3] - v[2])*inv;
 					const double q3 = (v[4] - v[3])*inv, q4 = (v[5] - v[4])*inv, q5 = (v[6] - v[5])*inv;
 					const std::size_t i = *it - base;
@@ -267,6 +323,8 @@ void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<
 {
 	rhs.assign(f.size(), 0.0);
 	const int n0 = d[0];
+	std::vector<double> second;   // m7l: evaluated once for the three axes
+	if (barrier && barrier->ReadsSecond()) barrier->second.Evaluate(f, second, pool);
 	for (int axis = 0; axis < 3; ++axis) {
 		if (d[axis] == 1) continue;   // thin axis: no variation
 		const std::vector<double>& s = *c[axis];
@@ -275,7 +333,7 @@ void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<
 				const double v = s[base + std::size_t(i)];
 				rhs[base + std::size_t(i)] -= v*(v > 0 ? dm[i] : dp[i]);
 			}
-		}, barrier);
+		}, barrier, barrier && barrier->ReadsSecond() ? &second : nullptr);
 	}
 }
 
@@ -388,15 +446,14 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 		// Frozen: the interface cells keep their values (the zero contour cannot move).
 		if (scheme == ReinitScheme::Frozen) dtau[c] = 0;
 	}
-	// m7f: boundary values beside a sheet (LevelSetBarrier::fixed) are kept.
-	if (barrier && !barrier->fixed.empty())
-		for (std::size_t c = 0; c < n; ++c) if (barrier->fixed[c]) dtau[c] = 0;
 	const std::array<Extension,3> ext{{wall, wall, wall}};
-	std::vector<double> g2(n), rhs(n), p1(n), p2(n);
+	std::vector<double> g2(n), rhs(n), p1(n), p2(n), second;
 	const bool subcell = scheme == ReinitScheme::Subcell, frozen = scheme == ReinitScheme::RussoSmereka || scheme == ReinitScheme::RussoSmerekaCentral;
+	const bool reads = barrier && barrier->ReadsSecond();
 	auto L = [&](const std::vector<double>& f) {
 		std::fill(g2.begin(), g2.end(), 0.0);
 		const int n0 = g.n[0];
+		if (reads) barrier->second.Evaluate(f, second, pool);   // m7l: the stage's second values
 		for (int axis = 0; axis < 3; ++axis) {
 			if (g.n[axis] == 1) continue;
 			OneSidedDerivatives(g.n, h, f, axis, ext, pool, [&](std::size_t base, const double* dm, const double* dp) {
@@ -412,7 +469,7 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 					g2[c] += sgn[c] > 0 ? std::max(Sq(std::max(a, 0.0)), Sq(std::min(b, 0.0)))
 						: std::max(Sq(std::min(a, 0.0)), Sq(std::max(b, 0.0)));
 				}
-			}, barrier);
+			}, barrier, reads ? &second : nullptr);
 		}
 		ForRows(pool, n, 4096, [&](std::size_t a, std::size_t b) {
 			for (std::size_t c = a; c < b; ++c) {
@@ -462,8 +519,9 @@ double LiquidVolume(const Grid& g, const std::vector<double>& phi, const std::ve
 }
 
 double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool,
-	const std::vector<std::uint8_t>* exclude)
+	const std::vector<std::uint8_t>* exclude, const LevelSetBarrier* barrier)
 {
+	if (barrier && barrier->Empty()) barrier = nullptr;
 	const double eps = 1.5*g.h, cell = g.h*g.h*g.h;
 	const std::size_t rows = Rows(g.n);
 	return cell*SumRows(pool, rows, RowGrain(g.n[0]), [&](std::size_t r0, std::size_t r1) {
@@ -475,7 +533,7 @@ double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::v
 				if (exclude && (*exclude)[c]) continue;
 				const double d = Delta(phi[c], eps);
 				if (d == 0) continue;
-				s += d*GradientNorm(g, phi, i, j, k)*(open ? (*open)[c] : 1.0);
+				s += d*GradientNorm(g, phi, i, j, k, barrier)*(open ? (*open)[c] : 1.0);
 			}
 		}
 		return s;
