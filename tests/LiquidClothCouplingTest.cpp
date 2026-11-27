@@ -1173,6 +1173,47 @@ struct CupRig {
 		return m.ProjectState(error);
 	}
 	std::vector<double> lastPhi;
+	//! m7i diagnostic (M7I_SURFACE): the extracted liquid surface (LiquidModel::Surface) against the sheet:
+	//! of the surface vertices over the sheet's footprint within 2 h of it (nearest triangle by the
+	//! distance along its normal, oriented up), those below it (on the dry side) and the deepest.
+	void SurfaceCheck() const {
+		using namespace Liquid;
+		MeshFrame fr;
+		std::string e;
+		if (!m.Surface(fr, e)) return;
+		const auto& l = m.sheets[0];
+		const double h = m.GridSpec().h;
+		std::size_t near = 0, below = 0, deep = 0, tenth = 0;
+		double worst = 0;
+		for (std::size_t v = 0; 3*v + 2 < fr.positions.size(); ++v) {
+			const double p[3] = {F(fr.positions[3*v]), F(fr.positions[3*v + 1]), F(fr.positions[3*v + 2])};
+			double best = 1e9;
+			for (std::size_t t = 0; t + 2 < l.triangles.size(); t += 3) {
+				const double* a = &l.x[3*std::size_t(l.triangles[t])];
+				const double* b = &l.x[3*std::size_t(l.triangles[t + 1])];
+				const double* c = &l.x[3*std::size_t(l.triangles[t + 2])];
+				double e1[3], e2[3], d[3], n[3];
+				for (int k = 0; k < 3; ++k) { e1[k] = b[k] - a[k]; e2[k] = c[k] - a[k]; d[k] = p[k] - a[k]; }
+				n[0] = e1[1]*e2[2] - e1[2]*e2[1]; n[1] = e1[2]*e2[0] - e1[0]*e2[2]; n[2] = e1[0]*e2[1] - e1[1]*e2[0];
+				const double nn = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+				if (!(nn > 0)) continue;
+				const double sgn = n[1] < 0 ? -1.0 : 1.0;
+				const double dist = sgn*(d[0]*n[0] + d[1]*n[1] + d[2]*n[2])/nn;
+				if (std::fabs(dist) >= std::fabs(best)) continue;
+				// Inside the triangle (projected along its normal).
+				const double d11 = e1[0]*e1[0] + e1[1]*e1[1] + e1[2]*e1[2], d12 = e1[0]*e2[0] + e1[1]*e2[1] + e1[2]*e2[2], d22 = e2[0]*e2[0] + e2[1]*e2[1] + e2[2]*e2[2];
+				const double p1 = d[0]*e1[0] + d[1]*e1[1] + d[2]*e1[2], p2 = d[0]*e2[0] + d[1]*e2[1] + d[2]*e2[2];
+				const double det = d11*d22 - d12*d12, u = (d22*p1 - d12*p2)/det, w = (d11*p2 - d12*p1)/det;
+				if (u < 0 || w < 0 || u + w > 1) continue;
+				best = dist;
+			}
+			if (!(std::fabs(best) < 2*h)) continue;
+			++near;
+			if (best < 0) { ++below; worst = std::min(worst, best); if (best < -0.1*h) ++tenth; if (best < -0.5*h) ++deep; }
+		}
+		std::printf("    surface: %zu vertices within 2 h over the sheet, %zu below it (%zu by > 0.1 h, %zu by > 0.5 h), deepest %.3g h\n",
+			near, below, tenth, deep, worst/h);
+	}
 	double DeepVolume() const {
 		const auto& g = m.GridSpec();
 		const double eps = 1.5*g.h, cell = g.h*g.h*g.h;
@@ -1336,6 +1377,7 @@ std::vector<CupSample> RunCup(const CupCase& c, double every, bool& ok, std::str
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6)
 			std::printf("  t %.3f sag %.4f m, max|v| %.3g; liquid above %.6g, below %.4g (%.2e of V0; beyond the sheet's cells %.2e, wet cells %.2e), elsewhere %.3g; smoothed %.6g; correction added %.3g (%.2e of V0)%s (%.0f s)\n",
 				s.t, s.sag, s.vmax, s.top, s.bottom, s.bottom/V0, s.beyond/V0, s.bottomWet/V0, s.other, s.smoothed, s.added, s.added/V0, s.breached ? " BREACHED" : "", Seconds() - w0);
+		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6 && std::getenv("M7I_SURFACE")) rig->SurfaceCheck();
 		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6 && std::getenv("M7G_DEEP")) {
 			std::size_t neg = 0, pos = 0;
 			double least = 0;
@@ -1395,7 +1437,7 @@ void LayerProbe(int argc, char** argv)
 	using namespace Liquid;
 	int cells = 24;
 	double L = 0.3, H = 0.3, d = 0.03, u0 = 0.1, T = 2;
-	bool volume = true;
+	bool volume = true, particles = true;
 	for (int i = 2; i + 1 < argc; i += 2) {
 		const std::string k = argv[i], v = argv[i + 1];
 		if (k == "cells") cells = std::atoi(v.c_str());
@@ -1403,6 +1445,7 @@ void LayerProbe(int argc, char** argv)
 		else if (k == "u0") u0 = std::atof(v.c_str());
 		else if (k == "T") T = std::atof(v.c_str());
 		else if (k == "volume") volume = std::atoi(v.c_str()) != 0;
+		else if (k == "particles") particles = std::atoi(v.c_str()) != 0;
 	}
 	const double h = L/cells;
 	LiquidSetup s;
@@ -1416,6 +1459,7 @@ void LayerProbe(int argc, char** argv)
 	s.initialVelocity = {{u0, 0, 0}};
 	SolverOptions so;
 	so.volumeCorrection = volume;
+	so.particles = particles;
 	LiquidModel m;
 	std::string e;
 	if (!m.Initialize(s, so, 8, e)) { std::printf("failed: %s\n", e.c_str()); return; }
@@ -1593,7 +1637,7 @@ void Exchange()
 	};
 	// The cloth's state served at a step's start, and the liquid's steps served to the cloth in that step: the
 	// cloth's momentum change from one step's start to the next is H m g plus those steps' impulses.
-	double worst = 0, last = NAN, lastI = NAN;
+	double worst = 0, last = NAN, lastI = NAN, residue = 0;
 	int checked = 0;
 	for (int k = 0; k < 6 && !g->Finished(); ++k) {
 		Check(g->StepMacro(e), "exchange step", e);
@@ -1607,11 +1651,23 @@ void Exchange()
 		FieldFrame f;
 		std::string why;
 		lastI = 0;
+		// m7i: the elements' gradients served with the state (binary32 per element) summed over the sheet: a free
+		// sheet's elastic forces sum to zero, so this is their rounding residue (the force the copy feels in total).
+		if (const auto el = g->ServedValue(4)) {
+			FieldFrame ef;
+			if (DecodeField(*el, budget, ef, why))
+				for (const auto& ch : ef.channels) if (ch.name == "gradient") {
+					double s[3] = {0, 0, 0};
+					for (std::size_t q = 0; q + 2 < ch.values.size(); q += 3) for (int a = 0; a < 3; ++a) s[a] += F(ch.values[q + std::size_t(a)]);
+					residue = std::max(residue, std::sqrt(s[0]*s[0] + s[1]*s[1] + s[2]*s[2])/(9.81*mass));
+				}
+		}
 		const auto steps = g->ServedValue(5);   // m7h: the connection after surface_elements
 		if (steps && DecodeField(*steps, budget, f, why))
 			for (const auto& ch : f.channels) if (ch.name == "impulse") for (std::size_t q = 1; q < ch.values.size(); q += 3) lastI += F(ch.values[q]);
 	}
-	std::printf("  %d macro steps: |cloth momentum change - (H m g + the liquid's impulses)| <= %.2e of H m g\n", checked, worst);
+	std::printf("  %d macro steps: |cloth momentum change - (H m g + the liquid's impulses)| <= %.2e of H m g; the served elements' gradients sum to %.2e of m g\n",
+		checked, worst, residue);
 	Check(checked >= 3 && worst < 1e-4, "the cloth's momentum changes by exactly the liquid's impulse and its weight");
 }
 
@@ -1792,6 +1848,51 @@ void Operator()
 	std::printf("  %zu unknowns, %zu sheet faces: max |A - A^T| / max |A| = %.1e, Cholesky %s (min pivot %.3e)\n", n, r.m.SheetFaces().size(),
 		asym/amax, pd ? "succeeds" : "FAILS", minPivot);
 	Check(asym/amax < 1e-13 && pd, "the coupled operator is symmetric positive definite");
+	// m7i: a free sheet (every edge free) in a 3-D tank: faces its edges cover in part.
+	FreeSheet f;
+	MakeFreeSheet(f, 10, 0.95, 0.46, 6, {{0.5, 0.48, 0.5}}, 20*Pi/180, 0.2);
+	Check(f.ok, "free sheet rig", f.error);
+	if (!f.ok) return;
+	auto& fs = f.model.sheets[0];
+	Check(fs.dyn.Prepare(1.0/240, fs.v, {}, fs.triangles, e), "prepare", e);
+	std::size_t part = 0, beside = 0;
+	for (const auto& c : f.model.SheetFaces()) { part += c.cover < 1; beside += !c.crossed; }
+	SheetCoupling fc(f.model.GridSpec(), f.model.SheetFaces(), f.model.sheets, 1000);
+	const auto& fg = f.model.GridSpec();
+	std::vector<IPressureCoupling*> fcs{&fc};
+	std::vector<double> fx(fg.Cells(), 0.0), fy;
+	ApplyPressureOperator(fg, f.model.phi, f.model.fraction, po, fcs, fx, fy, active, f.model.ThreadPool());
+	std::vector<std::size_t> fcells;
+	for (std::size_t k = 0; k < fg.Cells(); ++k) if (active[k]) fcells.push_back(k);
+	const std::size_t fn = fcells.size();
+	std::vector<double> B(fn*fn, 0.0);
+	for (std::size_t j = 0; j < fn; ++j) {
+		std::fill(fx.begin(), fx.end(), 0.0);
+		fx[fcells[j]] = 1;
+		ApplyPressureOperator(fg, f.model.phi, f.model.fraction, po, fcs, fx, fy, active, f.model.ThreadPool());
+		for (std::size_t i = 0; i < fn; ++i) B[i*fn + j] = fy[fcells[i]];
+	}
+	double basym = 0, bmax = 0;
+	for (std::size_t i = 0; i < fn; ++i) for (std::size_t j = 0; j < fn; ++j) {
+		basym = std::max(basym, std::fabs(B[i*fn + j] - B[j*fn + i]));
+		bmax = std::max(bmax, std::fabs(B[i*fn + j]));
+	}
+	bool bpd = true;
+	for (std::size_t j = 0; j < fn && bpd; ++j) {
+		double sum = B[j*fn + j];
+		for (std::size_t k = 0; k < j; ++k) sum -= B[j*fn + k]*B[j*fn + k];
+		if (!(sum > 0)) { bpd = false; break; }
+		const double dd = std::sqrt(sum);
+		B[j*fn + j] = dd;
+		for (std::size_t i = j + 1; i < fn; ++i) {
+			double t = B[i*fn + j];
+			for (std::size_t k = 0; k < j; ++k) t -= B[i*fn + k]*B[j*fn + k];
+			B[i*fn + j] = t/dd;
+		}
+	}
+	std::printf("  free sheet (m7i): %zu unknowns, %zu sheet faces (%zu partly covered, %zu beside its edges): max |A - A^T| / max |A| = %.1e, Cholesky %s\n",
+		fn, f.model.SheetFaces().size(), part, beside, basym/bmax, bpd ? "succeeds" : "FAILS");
+	Check(part > 0 && beside > 0 && basym/bmax < 1e-13 && bpd, "with free edges the coupled operator is symmetric positive definite");
 }
 
 // D: a free stiff plate spanning a 2-D tank under a uniform load p0 with a layer of

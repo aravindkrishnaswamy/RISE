@@ -168,11 +168,28 @@ struct SheetCrossing {
 	double velocity = 0;        // (v . n) n_a at the crossing
 	double normal[3] = {0, 0, 0};   // m7e: the triangle's unit normal
 	double s = 0;                   // m7e: the crossing's coordinate along the axis (world)
+	// m7i: the part of the face's square the sheet covers (implicitly coupled sheets with a free
+	// edge; 1 elsewhere).  A face c < 1 is split as a body's cut face: the fraction A (1 - c) stays
+	// open liquid, the part c moves with the sheet (its J and face mass scaled by c); the level
+	// set's barrier, the pin and the sided guards treat it as closed for c >= 1/2 only.
+	double cover = 1;
+	bool crossed = true;            // m7i: false for a face beside a free edge that the sheet does not cross (cover < 1)
+	bool Barrier() const { return cover >= 0.5; }
 };
 
 
 //! Every face the sheets close (sorted by axis and face index; one entry per face).
+//! m7i: for an implicitly coupled sheet (with its dynamics) that has a free edge (a boundary
+//! edge not pinned at both ends), each face whose square the projection of a free edge reaches
+//! gets its cover: the area of the sheet's projection along the face's axis inside the square
+//! (the triangles reached from the crossed one through shared vertices whose projection meets
+//! the square), over h^2, at most 1; 1 above 1 - 1e-9 and for every other face.  And it adds,
+//! for each lattice line a free edge's projection meets whose face holding the edge's nearest
+//! point is not crossed, that face (`crossed` false) with its cover, the edge's point as the
+//! crossing (weights, coordinate, velocity) and the edge's triangle's normal.
 void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool);
+//! m7i: sets the cover of `faces` (FindSheetCrossings calls it).
+void SheetCover(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& faces, Pool* pool);
 
 //! The level set beside the sheets after a step (`old`: before it): an air
 //! cell (old >= 0) beside a closed face whose level set fell keeps its old
@@ -194,7 +211,8 @@ std::size_t BlockSheetLeaks(const Grid& g, const std::vector<SheetCrossing>& fac
 
 //! Whether a point that moved from `from` to `to` (less than a cell along each
 //! axis) crossed the barrier: its cell changed and every axis-by-axis path of
-//! neighbouring cells between the two cells crosses a closed face (`faces`
+//! neighbouring cells between the two cells crosses a closed face (m7i: one
+//! with cover >= 1/2; `faces`
 //! sorted by axis and face, as FindSheetCrossings gives them).  Points outside
 //! the domain count as in the nearest cell.
 bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const V3& from, const V3& to);

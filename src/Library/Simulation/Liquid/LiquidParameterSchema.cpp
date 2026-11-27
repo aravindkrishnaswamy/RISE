@@ -329,7 +329,9 @@ ParameterSchema Build()
 		"<sheet_mechanics> and <sheet_stiffness>, and <sheet_load_steps> to its surface_load_steps, with `owned <liquid> <cloth>`; "
 		"docs/SIMULATION_M7E_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
 		"[orientation w x y z] [velocity vx vy vz] [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` a prescribed "
-		"rectangle (its frame's xy plane, normal +z)");
+		"rectangle (its frame's xy plane, normal +z).  Liquid resting on an implicit sheet needs a layer at least 5 cells "
+		"deep (measured: 4.8 cells holds within 3%; 2.4 cells loses 8% in 2 s with the volume correction and 41% without; "
+		"docs/SIMULATION_M7I_RESULTS.md)");
 	// Text, as rigid_simulation's body_object: the object's name is followed by options.
 	F("body_object", SchemaChunkField::Kind::Text, "A rigid body made from a scene object's closed mesh (m7d; world "
 		"space at t = 0, the body frame at its centroid and principal axes, mass properties from the mesh): `<object>` then the "

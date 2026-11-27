@@ -266,6 +266,8 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	sheets = setup.sheets;
 	sheetFaces_.clear();
 	sheetSaved_.clear();
+	sheetClosed_.clear();
+	for (auto& w : sheetWall_) w.clear();
 	for (auto& t : sheetTouched_) t.clear();
 	sheetStepImpulse.assign(sheets.size(), V3{{0, 0, 0}});
 	ResetSheetImpulses();
@@ -479,7 +481,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// m7d: faces a sheet closes carry its normal velocity as known values (the
 	// projection left them invalid), so both extrapolations and the transport
 	// see the sheet's motion there.
+	// m7i: a face mostly open (cover below 1/2) keeps the liquid's velocity the projection gave it.
 	for (const SheetCrossing& c : sheetFaces_) {
+		if (!c.Barrier()) continue;
 		u.u[c.axis][c.face] = c.velocity;
 		valid[c.axis][c.face] = 1;
 	}
@@ -542,6 +546,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	{
 		std::array<std::vector<double>,3> c;
 		CellVelocity(g, ui, c, pool);
+		if (stageHook) stageHook("guards");   // m7i diagnostic: the previous step's guards and the macro start, apart from the advection
 		AdvectLevelSet(g, phi, [&](double, std::array<std::vector<double>,3>& v) { v = c; }, 0.0, dt, pool, &barrier_);
 	}
 	if (stageHook) stageHook("advected");
@@ -1087,17 +1092,34 @@ void LiquidModel::RestoreSheetFaces()
 	for (std::size_t i = 0; i < sheetFaces_.size(); ++i) fraction[sheetFaces_[i].axis][sheetFaces_[i].face] = sheetSaved_[i];
 	sheetFaces_.clear();
 	sheetSaved_.clear();
+	sheetClosed_.clear();
+	for (auto& w : sheetWall_) w.clear();
 	barrier_.Clear();
 }
 
 void LiquidModel::CloseSheetFaces()
 {
 	FindSheetCrossings(setup_.grid, sheets, sheetFaces_, pool_.get());
+	// m7i: a face beside a free edge that a solid already cuts is left to the solid (its closed part
+	// moves with the solid).
+	sheetFaces_.erase(std::remove_if(sheetFaces_.begin(), sheetFaces_.end(), [&](const SheetCrossing& c) {
+		return !c.crossed && !(fraction[c.axis][c.face] == 1); }), sheetFaces_.end());
 	sheetSaved_.resize(sheetFaces_.size());
+	sheetClosed_.resize(sheetFaces_.size());
 	for (std::size_t i = 0; i < sheetFaces_.size(); ++i) {
-		double& f = fraction[sheetFaces_[i].axis][sheetFaces_[i].face];
+		SheetCrossing& c = sheetFaces_[i];
+		double& f = fraction[c.axis][c.face];
 		sheetSaved_[i] = f;
-		f = 0;
+		// m7i: a face a free edge covers in part keeps the open fraction A (1 - c) (a face already
+		// cut by a solid closes whole, as before).
+		if (c.cover < 1 && !(f == 1)) c.cover = 1;
+		f = c.cover < 1 ? f*(1 - c.cover) : 0.0;
+		sheetClosed_[i] = f;
+		if (f > 0 && c.Barrier()) {
+			std::vector<std::uint8_t>& w = sheetWall_[std::size_t(c.axis)];
+			if (w.empty()) w.assign(setup_.grid.Faces(c.axis), 0);
+			w[c.face] = 1;
+		}
 	}
 	BuildBarrier();
 }
@@ -1117,7 +1139,7 @@ void LiquidModel::BuildBarrier()
 	std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3> faces;
 	std::vector<std::uint8_t> fixed;   // the boundary faces' cells: kept by the reinitialisation
 	for (const SheetCrossing& c : sheetFaces_) {
-		if (!sheets[c.sheet].Coupled()) continue;
+		if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;   // m7i: a face mostly open is read across
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
@@ -1155,7 +1177,8 @@ bool LiquidModel::OwnInterface(std::size_t c0) const
 				f[a] += side;
 				nb[a] += side ? 1 : -1;
 				if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
-				if (!(fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
+				const std::size_t face = g.F(a, f[0], f[1], f[2]);
+				if (!(fraction[std::size_t(a)][face] > 0) || SheetWall(a, face)) continue;
 				const std::size_t q = g.C(nb[0], nb[1], nb[2]);
 				if ((phi[q] < 0) != neg) return true;
 				if (depth == 0 && n1 < 6) next[n1++] = q;
@@ -1222,7 +1245,7 @@ void LiquidModel::CountSheetCrossings(const std::vector<double>& phiStart, const
 	std::array<std::vector<std::uint8_t>,3> sheetFace;
 	for (const std::vector<SheetCrossing>* list : {&facesBefore, static_cast<const std::vector<SheetCrossing>*>(&sheetFaces_)})
 		for (const SheetCrossing& c : *list) {
-			if (!sheets[c.sheet].Coupled()) continue;
+			if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;   // m7i: a face mostly open feeds
 			if (sheetFace[std::size_t(c.axis)].empty()) sheetFace[std::size_t(c.axis)].assign(g.Faces(c.axis), 0);
 			sheetFace[std::size_t(c.axis)][c.face] = 1;
 		}
@@ -1239,7 +1262,7 @@ void LiquidModel::CountSheetCrossings(const std::vector<double>& phiStart, const
 			const std::size_t face = g.F(a, f[0], f[1], f[2]);
 			const bool closedBySheet = !sheetFace[std::size_t(a)].empty() && sheetFace[std::size_t(a)][face];
 			if (closedBySheet) across = true;
-			else if (fraction[std::size_t(a)][face] > 0) { fed = true; break; }
+			else if (fraction[std::size_t(a)][face] > 0 && !SheetWall(a, face)) { fed = true; break; }
 		}
 		if (fed) continue;
 		if (across) { ++sheetCrossedCells; sheetCrossedVolume += std::min(1.0, std::max(0.0, 0.5 - phi[c]/g.h))*cell; }
@@ -1382,7 +1405,7 @@ void LiquidModel::OpenUnwetted()
 void LiquidModel::CloseUnwetted()
 {
 	for (std::size_t k = 0; k < sheetUnwetted_.size(); ++k)
-		if (sheetUnwetted_[k]) fraction[std::size_t(sheetFaces_[k].axis)][sheetFaces_[k].face] = 0;
+		if (sheetUnwetted_[k]) fraction[std::size_t(sheetFaces_[k].axis)][sheetFaces_[k].face] = sheetClosed_[k];
 	sheetUnwetted_.clear();
 }
 
@@ -1539,7 +1562,7 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 		if (pl < 0 && pr < 0) theta = 1;
 		else if (pl < 0) theta = std::min(1.0, std::max(thetaMin, pl/(pl - pr)));
 		else if (pr < 0) theta = std::min(1.0, std::max(thetaMin, pr/(pr - pl)));
-		const double w = scale*theta*sheetSaved_[k];
+		const double w = scale*theta*sheetSaved_[k]*c.cover;   // m7i: the closed part's liquid
 		if (!(w > 0)) continue;
 		double cv[3][3], cn[3][3];
 		std::uint32_t v[3];
@@ -1590,7 +1613,7 @@ std::size_t LiquidModel::PinSheetInterface(std::vector<std::uint8_t>* mask)
 	const double h = g.h;
 	std::vector<std::pair<std::size_t, double>> set;   // (cell, distance), negative distance: wet
 	for (const SheetCrossing& c : sheetFaces_) {
-		if (!sheets[c.sheet].Coupled()) continue;
+		if (!sheets[c.sheet].Coupled() || !c.Barrier()) continue;   // m7i: a face mostly open is the liquid's
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
@@ -1950,6 +1973,7 @@ bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 	IsoSurface iso;
 	const V3 origin{{g.origin[0] - 0.5*g.h, g.origin[1] - 0.5*g.h, g.origin[2] - 0.5*g.h}};
 	MarchingCubes(d, f, origin, g.h, iso, pool);
+	if (CoupledSheets()) ClearSheets(d, f, iso);   // m7i
 	const std::size_t ne = iso.edgeVertices, nv = iso.positions.size()/3;
 	frame = MeshFrame();
 	frame.positionUnits = "m";
@@ -2005,6 +2029,55 @@ bool LiquidModel::Surface(MeshFrame& frame, std::string& error) const
 	if (nv == 0) { frame.velocityUnits.clear(); frame.normals.clear(); }   // an empty surface (no liquid) is a valid empty mesh
 	(void)error;
 	return true;
+}
+
+void LiquidModel::ClearSheets(const std::array<int,3>& d, const std::vector<double>& f, IsoSurface& iso) const
+{
+	// m7i: the surface's vertices on the sample edges a coupled sheet crosses lie at the sheet (the
+	// level set beside it is the distance to it) or past it, and the surface's facets, chords between
+	// them over a cell, cross the sheet's own facets, chords between its vertices: seen from the dry
+	// side the liquid's surface showed through the zero-thickness sheet in a fine speckle
+	// (docs/SIMULATION_M7I_RESULTS.md: a third of the surface vertices over a bag lay below the sheet,
+	// by up to 0.045 h).  Each such vertex is moved towards the wet sample until it lies at least
+	// 0.1 h from the crossed triangle's plane on the wet side (along the edge: 0.1 h / |n_a|, at most
+	// 0.45 h, and never past the wet sample); the fans' centroids follow.  Output only.
+	const Grid& g = setup_.grid;
+	const double h = g.h, clear = 0.1*h;
+	const std::size_t strides[3] = {1, std::size_t(d[0]), std::size_t(d[0])*std::size_t(d[1])};
+	bool moved = false;
+	for (std::size_t v = 0; v < iso.edgeVertices; ++v) {
+		const std::size_t smp = std::size_t(iso.edges[v]/3);
+		const int a = int(iso.edges[v] % 3);
+		const int I[3] = {int(smp % std::size_t(d[0])), int((smp/std::size_t(d[0])) % std::size_t(d[1])), int(smp/(std::size_t(d[0])*std::size_t(d[1])))};
+		// Samples I (cell I - 1) and I + e_a (cell I): interior cells only (not the ghost layer).
+		bool inside = true;
+		for (int m = 0; m < 3; ++m) inside = inside && I[m] >= 1 && I[m] <= g.n[m] - (m == a ? 1 : 0);
+		if (!inside) continue;
+		const std::size_t face = g.F(a, I[0] - (a == 0 ? 0 : 1), I[1] - (a == 1 ? 0 : 1), I[2] - (a == 2 ? 0 : 1));
+		const auto it = std::lower_bound(sheetFaces_.begin(), sheetFaces_.end(), SheetCrossing{a, face}, [](const SheetCrossing& p, const SheetCrossing& q) {
+			return p.axis != q.axis ? p.axis < q.axis : p.face < q.face; });
+		if (it == sheetFaces_.end() || it->axis != a || it->face != face || !it->Barrier() || !sheets[it->sheet].Coupled()) continue;
+		const double f0 = f[smp], f1 = f[smp + strides[a]];
+		if ((f0 < 0) == (f1 < 0)) continue;
+		const double na = std::fabs(it->normal[a]);
+		const double reach = na > 0 ? std::min(0.45*h, clear/na) : 0.45*h;
+		const double lo = g.origin[std::size_t(a)] + (I[a] - 0.5)*h, hi = lo + h;   // the two samples' coordinates along a
+		double x = iso.positions[3*v + std::size_t(a)];
+		if (f0 < 0) x = std::max(lo, std::min(x, it->s - reach));   // wet at the lower sample
+		else x = std::min(hi, std::max(x, it->s + reach));
+		if (x != iso.positions[3*v + std::size_t(a)]) {
+			iso.positions[3*v + std::size_t(a)] = x;
+			iso.t[v] = (x - lo)/h;
+			moved = true;
+		}
+	}
+	if (!moved) return;
+	for (std::size_t q = 0; q + 1 < iso.loopStart.size(); ++q) {
+		double x[3] = {0, 0, 0};
+		const std::uint32_t b = iso.loopStart[q], e = iso.loopStart[q + 1];
+		for (std::uint32_t m = b; m < e; ++m) for (int a = 0; a < 3; ++a) x[a] += iso.positions[3*std::size_t(iso.loopMembers[m]) + std::size_t(a)];
+		for (int a = 0; a < 3; ++a) iso.positions[3*(iso.edgeVertices + q) + std::size_t(a)] = x[a]/double(e - b);
+	}
 }
 
 bool LiquidModel::Fields(GridFrame& frame, std::string& error) const

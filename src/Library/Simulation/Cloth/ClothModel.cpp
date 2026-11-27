@@ -1129,6 +1129,17 @@ double ClothSystem::RotationLag() const
 void ClothSystem::BeginLinear()
 {
 	BeginLinearAt(x);
+	// m7i: the macro step continues from the binary32 state the partner received, about which its
+	// copy of the linear model is taken (the elements above are the ones offered, from the state
+	// before rounding; after the first macro step the offered state is already rounded, RoundState).
+	RoundState();
+	for (double& c : linearX0_) c = RoundF32(c);
+}
+
+void ClothSystem::RoundState()
+{
+	for (double& c : x) c = RoundF32(c);
+	for (double& c : v) c = RoundF32(c);
 }
 
 void ClothSystem::ExternalForce(const std::vector<double>& pos, const std::vector<double>& vel, std::vector<double>& f, bool ports) const

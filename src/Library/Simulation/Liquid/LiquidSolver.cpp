@@ -46,7 +46,12 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // m7h.1: implicitly coupled sheets use the cloth's corotational model inside the macro step
 // (cloth.shell's surface_elements, required with `response stiffness`; docs/SIMULATION_M7H_RESULTS.md);
 // bakes without them publish the frames of m7g.1.
-constexpr const char* SolverVersion = "m7h.1";
+// m7i.1: implicitly coupled sheets with a free edge (a boundary edge not pinned at both ends) split
+// the faces the edge covers in part (LiquidSheets.h SheetCrossing::cover); the corotational
+// rotations are fitted to binary32-rounded positions; the surface output keeps clear of coupled
+// sheets (LiquidModel::ClearSheets) (docs/SIMULATION_M7I_RESULTS.md); bakes without implicitly coupled
+// sheets publish the frames of m7h.1.
+constexpr const char* SolverVersion = "m7i.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";

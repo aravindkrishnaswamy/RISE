@@ -42,7 +42,10 @@ constexpr std::size_t CodecBudget = std::size_t(256) << 20;
 // m3a.5 (M7h): inside a macro step with a partner's steps (liquid.mac's implicit
 // sheets) the linear model is corotational (ClothModel.h BeginLinear), and
 // surface_elements is offered; every other run gives the frames of m3a.4.
-constexpr const char* SolverVersion = "m3a.5";
+// m3a.6 (M7i): with a partner's steps the cloth continues from the binary32 state it offers and
+// fits the corotational rotations to binary32-rounded positions (the partner's copy does the same);
+// every other run gives the frames of m3a.5.
+constexpr const char* SolverVersion = "m3a.6";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
@@ -1345,6 +1348,9 @@ bool ClothSolver::Publish(std::int64_t index, double time, IFrameSink& sink, IPo
 
 bool ClothSolver::OfferState(double time, IPortExchange& ports, std::string& error)
 {
+	// m7i: with a partner's linear copy (its steps taken) the cloth continues from the binary32
+	// state it offers, so the copy and the cloth start the next macro step from the same values.
+	if (system_.Linear()) system_.RoundState();
 	auto bytes = std::make_shared<Bytes>();
 	std::shared_ptr<const Bytes> fixed;
 	if (!Encode(*bytes, fixed, error)) return false;

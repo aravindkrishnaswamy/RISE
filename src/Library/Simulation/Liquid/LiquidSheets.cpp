@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 
 namespace RISE { namespace Simulation { namespace Liquid {
 
@@ -160,6 +161,7 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 	});
 	out.erase(std::unique(out.begin(), out.end(), [](const SheetCrossing& p, const SheetCrossing& q) {
 		return p.axis == q.axis && p.face == q.face; }), out.end());
+	SheetCover(g, sheets, out, pool);
 }
 
 namespace {
@@ -232,8 +234,9 @@ bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const
 		int f[3] = {c[0], c[1], c[2]};
 		if (step > 0) ++f[axis];
 		const std::size_t face = g.F(axis, f[0], f[1], f[2]);
-		return std::binary_search(faces.begin(), faces.end(), SheetCrossing{axis, face}, [](const SheetCrossing& p, const SheetCrossing& q) {
+		const auto it = std::lower_bound(faces.begin(), faces.end(), SheetCrossing{axis, face}, [](const SheetCrossing& p, const SheetCrossing& q) {
 			return p.axis != q.axis ? p.axis < q.axis : p.face < q.face; });
+		return it != faces.end() && it->axis == axis && it->face == face && it->Barrier();   // m7i: a face mostly open passes
 	};
 	// Every order of the axes that differ: a path is open if none of its steps is closed.
 	int axes[3], na = 0;
@@ -253,6 +256,309 @@ bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const
 		if (open) return false;
 	} while (std::next_permutation(axes, axes + na));
 	return true;
+}
+
+// ------------------------------------------------------------------ m7i: free-edge cover
+
+namespace {
+// The area of triangle p (2-D) inside the rectangle [x0, x1] x [y0, y1] (Sutherland-Hodgman).
+double ClippedArea(const double p[3][2], const double lo[2], const double hi[2])
+{
+	double a[12][2], b[12][2];
+	int na = 3;
+	for (int i = 0; i < 3; ++i) { a[i][0] = p[i][0]; a[i][1] = p[i][1]; }
+	for (int e = 0; e < 4 && na > 0; ++e) {
+		const int axis = e/2;
+		const bool lower = e % 2 == 0;
+		const double lim = lower ? lo[axis] : hi[axis];
+		int nb = 0;
+		for (int i = 0; i < na; ++i) {
+			const double* P = a[i];
+			const double* Q = a[(i + 1) % na];
+			const bool ip = lower ? P[axis] >= lim : P[axis] <= lim, iq = lower ? Q[axis] >= lim : Q[axis] <= lim;
+			if (ip) { b[nb][0] = P[0]; b[nb][1] = P[1]; ++nb; }
+			if (ip != iq) {
+				const double t = (lim - P[axis])/(Q[axis] - P[axis]);
+				b[nb][0] = P[0] + t*(Q[0] - P[0]);
+				b[nb][1] = P[1] + t*(Q[1] - P[1]);
+				b[nb][axis] = lim;
+				++nb;
+			}
+		}
+		na = nb;
+		for (int i = 0; i < na; ++i) { a[i][0] = b[i][0]; a[i][1] = b[i][1]; }
+	}
+	double area = 0;
+	for (int i = 0; i < na; ++i) area += a[i][0]*a[(i + 1) % na][1] - a[(i + 1) % na][0]*a[i][1];
+	return 0.5*std::fabs(area);
+}
+
+// Whether the segment p q (2-D) meets the closed rectangle [lo, hi] (Liang-Barsky).
+bool SegmentMeets(const double p[2], const double q[2], const double lo[2], const double hi[2])
+{
+	double t0 = 0, t1 = 1;
+	for (int m = 0; m < 2; ++m) {
+		const double d = q[m] - p[m];
+		if (d == 0) { if (p[m] < lo[m] || p[m] > hi[m]) return false; continue; }
+		double ta = (lo[m] - p[m])/d, tb = (hi[m] - p[m])/d;
+		if (ta > tb) std::swap(ta, tb);
+		t0 = std::max(t0, ta);
+		t1 = std::min(t1, tb);
+		if (t0 > t1) return false;
+	}
+	return true;
+}
+
+// Per sheet: its free edges (boundary edges not pinned at both ends) and the triangles at each vertex.
+struct FreeEdges {
+	std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+	std::vector<std::uint32_t> start, triangles;   // per vertex: [start[v], start[v + 1]) in triangles
+};
+
+void BuildFreeEdges(const LiquidSheet& sh, FreeEdges& f)
+{
+	std::vector<std::pair<std::uint32_t, std::uint32_t>> all;
+	all.reserve(sh.triangles.size());
+	for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
+		for (int a = 0; a < 3; ++a) {
+			const std::uint32_t p = sh.triangles[t + std::size_t(a)], q = sh.triangles[t + std::size_t((a + 1) % 3)];
+			all.emplace_back(std::min(p, q), std::max(p, q));
+		}
+	std::sort(all.begin(), all.end());
+	for (std::size_t k = 0; k < all.size();) {
+		std::size_t e = k + 1;
+		while (e < all.size() && all[e] == all[k]) ++e;
+		const auto& x = all[k];
+		const bool pinned = x.first < sh.dyn.fixed.size() && x.second < sh.dyn.fixed.size() && sh.dyn.fixed[x.first] && sh.dyn.fixed[x.second];
+		if (e - k == 1 && !pinned && x.first != x.second) f.edges.push_back(x);
+		k = e;
+	}
+	if (f.edges.empty()) return;
+	const std::size_t n = sh.Vertices();
+	f.start.assign(n + 1, 0);
+	for (std::uint32_t v : sh.triangles) ++f.start[std::size_t(v) + 1];
+	for (std::size_t v = 0; v < n; ++v) f.start[v + 1] += f.start[v];
+	f.triangles.assign(sh.triangles.size(), 0);
+	std::vector<std::uint32_t> at(f.start.begin(), f.start.end() - 1);
+	for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
+		for (int a = 0; a < 3; ++a) f.triangles[at[sh.triangles[t + std::size_t(a)]]++] = std::uint32_t(t/3);
+}
+} // namespace
+
+namespace {
+// The area of the sheet's projection along `axis` inside the face square [lo, hi] over h^2: the
+// triangles reached from `t0` through shared vertices whose projection meets the square.
+double PatchCover(const LiquidSheet& sh, const FreeEdges& f, int axis, std::uint32_t t0, const double lo[2], const double hi[2],
+	double area, std::vector<std::uint32_t>& queue, std::vector<std::uint32_t>& seen)
+{
+	constexpr std::size_t Limit = 512;
+	const int b = (axis + 1) % 3, e = (axis + 2) % 3;
+	queue.assign(1, t0);
+	seen.assign(1, t0);
+	double covered = 0;
+	for (std::size_t head = 0; head < queue.size() && queue.size() < Limit; ++head) {
+		const std::uint32_t t = queue[head];
+		double p[3][2];
+		double blo[2] = {1e300, 1e300}, bhi[2] = {-1e300, -1e300};
+		for (int m = 0; m < 3; ++m) {
+			const std::size_t v = sh.triangles[3*std::size_t(t) + std::size_t(m)];
+			p[m][0] = sh.x[3*v + std::size_t(b)];
+			p[m][1] = sh.x[3*v + std::size_t(e)];
+			for (int r = 0; r < 2; ++r) { blo[r] = std::min(blo[r], p[m][r]); bhi[r] = std::max(bhi[r], p[m][r]); }
+		}
+		if (blo[0] > hi[0] || bhi[0] < lo[0] || blo[1] > hi[1] || bhi[1] < lo[1]) continue;
+		covered += ClippedArea(p, lo, hi);
+		for (int m = 0; m < 3; ++m) {
+			const std::uint32_t v = sh.triangles[3*std::size_t(t) + std::size_t(m)];
+			for (std::uint32_t i = f.start[v]; i < f.start[std::size_t(v) + 1]; ++i) {
+				const std::uint32_t n = f.triangles[i];
+				if (std::find(seen.begin(), seen.end(), n) != seen.end()) continue;
+				seen.push_back(n);
+				queue.push_back(n);
+			}
+		}
+	}
+	const double c = covered/area;
+	return c >= 1 - 1e-9 ? 1.0 : std::max(0.0, c);
+}
+
+// FindSheetCrossings' unit normal of a triangle (projected onto the grid's plane in 2-D for an
+// implicit sheet); false when it has none.
+bool TriangleNormal(const Grid& g, const LiquidSheet& sh, std::uint32_t t, V3& n)
+{
+	const V3 p0 = At(sh.x, sh.triangles[3*std::size_t(t)]), p1 = At(sh.x, sh.triangles[3*std::size_t(t) + 1]), p2 = At(sh.x, sh.triangles[3*std::size_t(t) + 2]);
+	n = CrossP(Minus(p1, p0), Minus(p2, p0));
+	const double len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+	if (!(len > 0)) return false;
+	for (double& c : n) c /= len;
+	if (sh.implicit) {
+		bool thin = false;
+		for (int m = 0; m < 3; ++m) if (g.n[m] == 1 && n[std::size_t(m)] != 0) { n[std::size_t(m)] = 0; thin = true; }
+		if (thin) {
+			const double l2 = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+			if (!(l2 > 1e-6)) return false;
+			for (double& c : n) c /= l2;
+		}
+	}
+	return true;
+}
+} // namespace
+
+void SheetCover(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& faces, Pool* pool)
+{
+	std::vector<FreeEdges> free(sheets.size());
+	bool any = false;
+	for (std::size_t s = 0; s < sheets.size(); ++s)
+		if (sheets[s].Coupled() && !sheets[s].x.empty()) { BuildFreeEdges(sheets[s], free[s]); any = any || !free[s].edges.empty(); }
+	if (!any) return;
+	const double h = g.h, area = h*h;
+	auto square = [&](int a, const int idx[3], double lo[2], double hi[2]) {
+		const int b = (a + 1) % 3, e = (a + 2) % 3;
+		lo[0] = g.origin[std::size_t(b)] + idx[b]*h;
+		lo[1] = g.origin[std::size_t(e)] + idx[e]*h;
+		hi[0] = lo[0] + h;
+		hi[1] = lo[1] + h;
+	};
+	// The crossed faces whose square a free edge reaches.
+	constexpr std::size_t Grain = 256;
+	Cloth::ParallelFor(pool, Cloth::Chunks(faces.size(), Grain), [&](std::size_t ch) {
+		std::vector<std::uint32_t> queue, seen;
+		for (std::size_t k = ch*Grain; k < std::min(faces.size(), (ch + 1)*Grain); ++k) {
+			SheetCrossing& c = faces[k];
+			const FreeEdges& f = free[c.sheet];
+			if (f.edges.empty()) continue;
+			const LiquidSheet& sh = sheets[c.sheet];
+			const int a = c.axis, b = (a + 1) % 3, e = (a + 2) % 3;
+			const auto d = g.FaceDims(a);
+			const int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+				int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+			double lo[2], hi[2];
+			square(a, idx, lo, hi);
+			bool near = false;
+			for (const auto& x : f.edges) {
+				const double p[2] = {sh.x[3*std::size_t(x.first) + std::size_t(b)], sh.x[3*std::size_t(x.first) + std::size_t(e)]};
+				const double q[2] = {sh.x[3*std::size_t(x.second) + std::size_t(b)], sh.x[3*std::size_t(x.second) + std::size_t(e)]};
+				if (SegmentMeets(p, q, lo, hi)) { near = true; break; }
+			}
+			if (near) c.cover = PatchCover(sh, f, a, c.triangle, lo, hi, area, queue, seen);
+		}
+	});
+	// The faces beside a free edge whose cell-centre segment the sheet does not cross but whose
+	// square it covers in part: the face of each lattice line a free edge's projection meets that
+	// holds the edge's point nearest the line (the line's crossing, had the sheet reached it).
+	// Their cover (below 1/2 for a straight edge) keeps the load continuous as an edge passes a
+	// cell centre (from 0 to 1, where the crossing alone jumped from 0 to a whole face).
+	// A line the sheet crosses anywhere has its crossing: only lines it does not cross get one.
+	auto lineOf = [&](int a, std::size_t face) {
+		const auto d = g.FaceDims(a);
+		int idx[3] = {int(face % std::size_t(d[0])), int((face/std::size_t(d[0])) % std::size_t(d[1])), int(face/(std::size_t(d[0])*std::size_t(d[1])))};
+		idx[a] = 0;
+		return g.F(a, idx[0], idx[1], idx[2]);
+	};
+	std::vector<std::tuple<std::uint32_t, int, std::size_t>> lines;   // sheet, axis, line
+	for (const SheetCrossing& c : faces) if (!free[c.sheet].edges.empty()) lines.emplace_back(c.sheet, c.axis, lineOf(c.axis, c.face));
+	std::sort(lines.begin(), lines.end());
+	std::vector<SheetCrossing> extra;
+	std::vector<double> reach;   // per extra: the squared projected distance of its edge point from the line
+	std::vector<std::uint32_t> queue, seen;
+	for (std::size_t si = 0; si < sheets.size(); ++si) {
+		const FreeEdges& f = free[si];
+		const LiquidSheet& sh = sheets[si];
+		for (const auto& x : f.edges) {
+			// The edge's triangle (the one triangle holding both ends).
+			std::uint32_t t = 0;
+			bool found = false;
+			for (std::uint32_t i = f.start[x.first]; i < f.start[std::size_t(x.first) + 1] && !found; ++i) {
+				const std::uint32_t c = f.triangles[i];
+				for (int m = 0; m < 3; ++m) if (sh.triangles[3*std::size_t(c) + std::size_t(m)] == x.second) { t = c; found = true; }
+			}
+			V3 n;
+			if (!found || !TriangleNormal(g, sh, t, n)) continue;
+			const V3 P = At(sh.x, x.first), Q = At(sh.x, x.second);
+			for (int a = 0; a < 3; ++a) {
+				if (g.n[a] < 2) continue;
+				const int b = (a + 1) % 3, e = (a + 2) % 3;
+				auto cells = [&](int m, int& first, int& last) {
+					const double l = std::min(P[std::size_t(m)], Q[std::size_t(m)]), u = std::max(P[std::size_t(m)], Q[std::size_t(m)]);
+					first = std::max(0, int(std::floor((l - g.origin[std::size_t(m)])/h)));
+					last = std::min(g.n[m] - 1, int(std::floor((u - g.origin[std::size_t(m)])/h)));
+				};
+				int j0, j1, k0, k1;
+				cells(b, j0, j1);
+				cells(e, k0, k1);
+				const double p2[2] = {P[std::size_t(b)], P[std::size_t(e)]}, q2[2] = {Q[std::size_t(b)], Q[std::size_t(e)]};
+				for (int k = k0; k <= k1; ++k) for (int j = j0; j <= j1; ++j) {
+					int idx[3];
+					idx[a] = 0; idx[b] = j; idx[e] = k;
+					double lo[2], hi[2];
+					square(a, idx, lo, hi);
+					if (!SegmentMeets(p2, q2, lo, hi)) continue;
+					// The edge's point nearest the line (in the projection).
+					const double cx = 0.5*(lo[0] + hi[0]), cy = 0.5*(lo[1] + hi[1]);
+					const double dx = q2[0] - p2[0], dy = q2[1] - p2[1], len2 = dx*dx + dy*dy;
+					const double tt = len2 > 0 ? std::min(1.0, std::max(0.0, ((cx - p2[0])*dx + (cy - p2[1])*dy)/len2)) : 0.0;
+					const double sa = P[std::size_t(a)] + tt*(Q[std::size_t(a)] - P[std::size_t(a)]);
+					const int i = int(std::floor((sa - g.origin[std::size_t(a)])/h - 0.5));
+					if (i < 0 || i + 1 > g.n[a] - 1) continue;
+					idx[a] = i + 1;
+					SheetCrossing c;
+					c.axis = a;
+					c.face = g.F(a, idx[0], idx[1], idx[2]);
+					if (std::binary_search(lines.begin(), lines.end(), std::make_tuple(std::uint32_t(si), a, lineOf(a, c.face)))) continue;
+					c.cover = PatchCover(sh, f, a, t, lo, hi, area, queue, seen);
+					if (!(c.cover > 1e-6)) continue;
+					c.sheet = std::uint32_t(si);
+					c.triangle = t;
+					for (int m = 0; m < 3; ++m) {
+						const std::uint32_t v = sh.triangles[3*std::size_t(t) + std::size_t(m)];
+						c.w[m] = v == x.first ? 1 - tt : v == x.second ? tt : 0.0;
+					}
+					c.distance = std::fabs(sa - (g.origin[std::size_t(a)] + (i + 1)*h));
+					double vn = 0;
+					for (int m = 0; m < 3; ++m) {
+						const V3 vm = At(sh.v, sh.triangles[3*std::size_t(t) + std::size_t(m)]);
+						for (int r = 0; r < 3; ++r) vn += c.w[m]*vm[std::size_t(r)]*n[std::size_t(r)];
+					}
+					c.velocity = vn*n[std::size_t(a)];
+					for (int m = 0; m < 3; ++m) c.normal[m] = n[std::size_t(m)];
+					c.s = sa;
+					c.crossed = false;
+					const double ex = p2[0] + tt*dx - cx, ey = p2[1] + tt*dy - cy;
+					extra.push_back(c);
+					reach.push_back(ex*ex + ey*ey);
+				}
+			}
+		}
+	}
+	if (extra.empty()) return;
+	// One face per line: the edge point nearest the line (several edges reach a line their projection runs along).
+	{
+		std::vector<std::size_t> order(extra.size());
+		for (std::size_t k = 0; k < order.size(); ++k) order[k] = k;
+		auto key = [&](std::size_t k) { return std::make_tuple(extra[k].sheet, extra[k].axis, lineOf(extra[k].axis, extra[k].face)); };
+		std::sort(order.begin(), order.end(), [&](std::size_t p, std::size_t q) {
+			const auto kp = key(p), kq = key(q);
+			if (kp != kq) return kp < kq;
+			if (reach[p] != reach[q]) return reach[p] < reach[q];
+			if (extra[p].face != extra[q].face) return extra[p].face < extra[q].face;
+			return extra[p].triangle < extra[q].triangle;
+		});
+		std::vector<SheetCrossing> kept;
+		for (std::size_t k = 0; k < order.size(); ++k)
+			if (k == 0 || key(order[k]) != key(order[k - 1])) kept.push_back(extra[order[k]]);
+		extra.swap(kept);
+	}
+	faces.insert(faces.end(), extra.begin(), extra.end());
+	std::sort(faces.begin(), faces.end(), [](const SheetCrossing& p, const SheetCrossing& q) {
+		if (p.axis != q.axis) return p.axis < q.axis;
+		if (p.face != q.face) return p.face < q.face;
+		if (p.crossed != q.crossed) return p.crossed;
+		if (p.distance != q.distance) return p.distance < q.distance;
+		if (p.sheet != q.sheet) return p.sheet < q.sheet;
+		return p.triangle < q.triangle;
+	});
+	faces.erase(std::unique(faces.begin(), faces.end(), [](const SheetCrossing& p, const SheetCrossing& q) {
+		return p.axis == q.axis && p.face == q.face; }), faces.end());
 }
 
 // ------------------------------------------------------------------ m7e: implicit coupling
@@ -480,7 +786,7 @@ void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
 		f.sheet = c.sheet;
 		for (int m = 0; m < 3; ++m) {
 			f.v[m] = sh.triangles[3*std::size_t(c.triangle) + std::size_t(m)];
-			for (int k = 0; k < 3; ++k) f.c[m][k] = c.w[m]*c.normal[c.axis]*c.normal[k];
+			for (int k = 0; k < 3; ++k) f.c[m][k] = c.w[m]*c.normal[c.axis]*c.normal[k]*c.cover;   // m7i: the closed part c
 		}
 		faces_.push_back(f);
 	}

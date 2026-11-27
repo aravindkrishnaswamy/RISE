@@ -903,10 +903,21 @@ bool CorotatedElements::BuildFrames(const std::vector<std::uint32_t>& triangles)
 
 void CorotatedElements::Rotate(const std::vector<double>& x0, const std::vector<double>& p, ParallelPool* pool)
 {
+	// m7i: the rotations are fitted to the positions rounded to binary32 (the precision of the
+	// state the cloth and its partner exchange), so that the two copies, which start a macro step
+	// from the same binary32 state and differ within it by the rounding of the exchanged impulses
+	// (far below a binary32 step), take the same rotations.  Taken from their own double values,
+	// the rotations fed those differences back as an explicit geometric stiffness: at a light free
+	// edge in a dam break the cloth's own steps, driven by the partner's impulses alone (without the
+	// liquid's mass on its faces), grew them fourfold per step, to 7 m/s in a macro step
+	// (docs/SIMULATION_M7I_RESULTS.md).
+	std::vector<double> x0r(x0.size()), pr(p.size());
+	for (std::size_t k = 0; k < x0.size(); ++k) x0r[k] = static_cast<double>(static_cast<float>(x0[k]));
+	for (std::size_t k = 0; k < p.size(); ++k) pr[k] = static_cast<double>(static_cast<float>(p[k]));
 	constexpr std::size_t span = 256;
 	ParallelFor(pool, Chunks(elements.size(), span), [&](std::size_t chunk) {
 		for (std::size_t e = chunk*span; e < std::min(elements.size(), (chunk + 1)*span); ++e) {
-			const M3x3 r = Fit(elements[e], x0, p);
+			const M3x3 r = Fit(elements[e], x0r, pr);
 			std::copy(r.begin(), r.end(), rotation.begin() + std::ptrdiff_t(9*e));
 		}
 	});

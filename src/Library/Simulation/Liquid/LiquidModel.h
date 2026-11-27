@@ -140,6 +140,8 @@ struct StepStats {
 	double extrapolate = 0, levelSet = 0, particles = 0, momentum = 0, project = 0, bodies = 0, viscosity = 0;
 };
 
+struct IsoSurface;
+
 class LiquidModel {
 public:
 	bool Initialize(const LiquidSetup& setup, const SolverOptions& options, unsigned threads, std::string& error);
@@ -272,6 +274,8 @@ private:
 	//! m7c: the implicit viscous step on `s` with the bodies' wall velocities `w`
 	//! (`impulse` receives each body's viscous impulse).
 	bool Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error);
+	//! m7i: the surface's vertices where a coupled sheet holds the liquid moved clear of it (Surface).
+	void ClearSheets(const std::array<int,3>& d, const std::vector<double>& f, IsoSurface& iso) const;
 	//! The velocity the outputs sample: u with its invalid faces extrapolated
 	//! as for the interface (the field the next step moves the surface with).
 	MacField OutputVelocity() const;
@@ -332,6 +336,9 @@ private:
 	void CountSheetCrossings(const std::vector<double>& phiStart, const std::vector<SheetCrossing>& facesBefore);   // m7g: per crossing (sheetFaces_ order), 1 while opened (empty: none)
 	std::vector<SheetCrossing> sheetFaces_;
 	std::vector<double> sheetSaved_;
+	std::vector<double> sheetClosed_;   // m7i: the fractions the closing set (A (1 - c), or 0)
+	std::array<std::vector<std::uint8_t>,3> sheetWall_;   // m7i: faces left partly open that are barriers (cover >= 1/2; empty: none)
+	bool SheetWall(int axis, std::size_t face) const { return !sheetWall_[std::size_t(axis)].empty() && sheetWall_[std::size_t(axis)][face]; }
 	LevelSetBarrier barrier_;   // m7f: the coupled sheets' closed faces as walls of the level set
 	MacField sheetSolid_;
 	std::array<std::vector<std::size_t>,3> sheetTouched_;

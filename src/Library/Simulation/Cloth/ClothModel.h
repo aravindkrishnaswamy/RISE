@@ -344,6 +344,9 @@ public:
 	//! each step's start from the predicted positions x + h v; SetCorotated(false)
 	//! keeps m7e's rotation-blind model (for the measured contrast).
 	void BeginLinear();
+	//! m7i: rounds x and v to binary32 (the precision of the offered state; with a partner's copy of
+	//! the linear model, so that the cloth and the copy continue from the same values).
+	void RoundState();
 	void EndLinear() { linear_ = false; }
 	bool Linear() const { return linear_; }
 	const std::vector<double>& LinearOrigin() const { return linearX0_; }
