@@ -94,7 +94,7 @@ jobs:
           # OIDN and OpenPGL are not vendored (OIDN is built into extlib\oidn\install,
           # OpenPGL is expected at C:\Dev\openpgl-install) and the Android build
           # compiles without both, so build the library without them: drop the two
-          # ABI defines and the three import libraries.  The CLI also needs zlib and
+          # ABI defines, the three import libraries and the VerifyOidnInstall guard target.  The CLI also needs zlib and
           # libpng on the link line (the vcpkg MSBuild integration adds these
           # automatically, but it is switched off here).  This edits only the CI
           # workspace.
@@ -102,6 +102,10 @@ jobs:
             $t = Get-Content $f -Raw
             $t = $t -replace 'RISE_ENABLE_OIDN;', '' -replace 'RISE_ENABLE_OPENPGL;', ''
             $t = $t -replace 'OpenImageDenoise\.lib;OpenImageDenoise_core\.lib;openpgl\.lib;', ''
+            if ($f -like '*Library.vcxproj') {
+              # Guard target that fails the build when extlib\oidn\install is missing.
+              $t = [regex]::Replace($t, '(?s)<Target Name="VerifyOidnInstall".*?</Target>', '')
+            }
             if ($f -like '*RISE-CLI*') { $t = $t -replace 'RISE\.lib;', 'RISE.lib;libpng16.lib;zlib.lib;' }
             Set-Content -Path $f -Value $t -NoNewline -Encoding utf8
           }
@@ -160,7 +164,7 @@ jobs:
           $ws = $env:GITHUB_WORKSPACE + '\'
           $lines = @()
           foreach ($f in Get-ChildItem logs -Include *.errors.log, cl-tools.log, vcpkg-install.log -Recurse -ErrorAction SilentlyContinue) {
-            $lines += Get-Content $f.FullName -Encoding UTF8 | Where-Object { $_ -match '\b(fatal )?error\s+[A-Z]+\d+' -or $_ -match 'CMake Error|error:' }
+            $lines += Get-Content $f.FullName -Encoding UTF8 | Where-Object { $_ -match '\b(fatal )?error\s+[A-Z]+\d+' -or $_ -match ':\s*error\s*:' -or $_ -match 'CMake Error|error:' }
           }
           $norm = $lines | ForEach-Object {
             ($_ -replace '\s*\[[^\]]*\]\s*$', '').Replace($ws, '').Trim()

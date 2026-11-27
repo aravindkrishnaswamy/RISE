@@ -128,7 +128,13 @@ bool PNGReader::BeginRead( unsigned int& width, unsigned int& height )
 		png_set_palette_to_rgb( png_ptr );
 	}
 	if( bit_depth < 8 && color_type == PNG_COLOR_TYPE_GRAY ) {
+#if defined(PNG_LIBPNG_VER) && PNG_LIBPNG_VER < 10209
+		// The vendored libpng 1.2.8 (extlib/libpng, used by the Android build) predates the
+		// rename to png_set_expand_gray_1_2_4_to_8 (1.2.9); the tRNS expansion is done below.
+		png_set_gray_1_2_4_to_8( png_ptr );
+#else
 		png_set_expand_gray_1_2_4_to_8( png_ptr );
+#endif
 	}
 	if( png_get_valid( png_ptr, info_ptr, PNG_INFO_tRNS ) ) {
 		png_set_tRNS_to_alpha( png_ptr );
