@@ -183,6 +183,25 @@ double HyLIoSReciprocalBoundary::PdfReflection( const SlabVector& wi, const Slab
 	return ( G1 * D ) / ( 4.0 * cosO );
 }
 
+double HyLIoSReciprocalBoundary::PdfReflectionBranch( const SlabVector& wi, const SlabVector& wo ) const noexcept
+{
+	if( IsSmooth() || wi.z * wo.z <= 0.0 ) {
+		return 0.0;
+	}
+	SlabVector h{};
+	if( !Normalize( { wi.x + wo.x, wi.y + wo.y, wi.z + wo.z }, h ) ) {
+		return 0.0;
+	}
+	if( h.z < 0.0 ) {
+		h = { -h.x, -h.y, -h.z };
+	}
+	const bool exteriorSide = ( wo.z > 0.0 );
+	const double etaI = exteriorSide ? etaExt_ : etaInt_;
+	const double etaT = exteriorSide ? etaInt_ : etaExt_;
+	const double F = FresnelDielectric( Dot( wo, h ), etaI, etaT );
+	return F * PdfReflection( wi, wo );
+}
+
 double HyLIoSReciprocalBoundary::EvalTransmission( const SlabVector& wi, const SlabVector& wo ) const noexcept
 {
 	if( IsSmooth() ) {
@@ -283,6 +302,32 @@ double HyLIoSReciprocalBoundary::PdfTransmission( const SlabVector& wi, const Sl
 	const double dv = EvalG1( wo ) * std::fabs( woDotH ) * EvalD( h ) / cosO;
 	const double jacobian = ( etaI * etaI * std::fabs( wiDotH ) ) / ( denom * denom );
 	return dv * jacobian;
+}
+
+double HyLIoSReciprocalBoundary::PdfTransmissionBranch( const SlabVector& wi, const SlabVector& wo ) const noexcept
+{
+	if( IsSmooth() || wi.z * wo.z >= 0.0 ) {
+		return 0.0;
+	}
+	const double etaI = ( wi.z > 0.0 ) ? etaExt_ : etaInt_;
+	const double etaO = ( wo.z > 0.0 ) ? etaExt_ : etaInt_;
+	if( std::fabs( etaI - etaO ) < 1e-12 ) {
+		return 0.0;
+	}
+	SlabVector hRaw{
+		-( etaI * wi.x + etaO * wo.x ),
+		-( etaI * wi.y + etaO * wo.y ),
+		-( etaI * wi.z + etaO * wo.z )
+	};
+	SlabVector h{};
+	if( !Normalize( hRaw, h ) ) {
+		return 0.0;
+	}
+	if( h.z < 0.0 ) {
+		h = { -h.x, -h.y, -h.z };
+	}
+	const double F = FresnelDielectric( std::fabs( Dot( wo, h ) ), etaO, etaI );
+	return ( 1.0 - F ) * PdfTransmission( wi, wo );
 }
 
 SlabVector HyLIoSReciprocalBoundary::SampleVNDF(

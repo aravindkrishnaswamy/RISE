@@ -26,6 +26,7 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Interfaces/IScene.h"
+#include "../Interfaces/ILightManager.h"
 #include "../Managers/ObjectManager.h"
 #include "ProgressiveFilm.h"
 
@@ -120,6 +121,16 @@ bool PathTracingSpectralRasterizer::ValidateSceneForRasterizer( const IScene& pS
 				"PathTracingSpectralRasterizer:: Refusing scene: HyLIoS material on object '%s' "
 				"does not cover the requested spectral range [%.2f, %.2f] nm.",
 				offender.c_str(), lambda_begin, lambda_end );
+			return false;
+		}
+		if( pObjMgr->SceneHasSmoothNonlocalHyLIoS( &offender ) &&
+			pScene.GetLights() && !pScene.GetLights()->getLights().empty() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"PathTracingSpectralRasterizer:: Refusing scene: smooth (boundary_roughness == 0) nonlocal "
+				"HyLIoS material on object '%s' cannot perform boundary-event NEE against delta lights "
+				"(use boundary_roughness > 0, area/environment lights, or baked_local mode).",
+				offender.c_str() );
 			return false;
 		}
 	}

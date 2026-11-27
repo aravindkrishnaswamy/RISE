@@ -29,6 +29,9 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "../src/Library/Materials/HyLIoS/HyLIoSSpatialGeometry.h"
+#include "../src/Library/Materials/HyLIoS/HyLIoSReciprocalBoundary.h"
+#include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
+#include "../src/Library/Rendering/HyperspectralRadiometricRasterizer.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/StandardShader.h"
 #include "../src/Library/Rendering/RayCaster.h"
@@ -303,12 +306,187 @@ void TestNonlocalMaterialCSTAndIterativePT()
 	safe_release( pJobI );
 }
 
+void TestNonlocalNEEAndSmoothBoundaryRefusal()
+{
+	TempDirGuard tmp( "nee_mis" );
+
+	// 1. Black-interior specimen (mu_a = 1e8 m^-1) to isolate first-surface `K_r` NEE
+	//    under a calibrated physical_directional_light.
+	const std::string blackSpec =
+		"{\"schema_version\":1,\"approximate\":true,\"composition_revision\":\"black-v1\","
+		"\"coverage_profile_id\":\"explicit-synthetic-approximation\","
+		"\"spectral_bundle_sha256\":\"black_b\",\"resolved_specimen_sha256\":\"black_s\","
+		"\"preset_id\":\"S3\",\"interpretation\":\"black interior\","
+		"\"units\":{\"length\":\"m\",\"coefficient\":\"m^-1\",\"wavelength\":\"nm\",\"mass_concentration\":\"kg/m^3\"},"
+		"\"wavelength_nm\":[450,550,650],\"surface_fold_aspect_ratio\":0.75,\"provenance\":{\"retained\":\"yes\"},"
+		"\"layers\":["
+		"{\"layer_id\":\"stratum_corneum\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_granulosum\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_spinosum\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_basale\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null},"
+		"{\"layer_id\":\"papillary_dermis\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null},"
+		"{\"layer_id\":\"reticular_dermis\",\"thickness_m\":0.001,\"host_absorption_m_inv\":[1e8,1e8,1e8],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[1e8,1e8,1e8]},\"particles\":null}"
+		"]}\n";
+	const std::filesystem::path blackPath = tmp.dir / "black.json";
+	{
+		std::ofstream ofs( blackPath, std::ios::binary );
+		ofs.write( blackSpec.data(), static_cast<std::streamsize>( blackSpec.size() ) );
+	}
+	const std::string blackPathStr = blackPath.string();
+
+	IJob* pJobI = 0;
+	RISE_CreateJob( &pJobI );
+	Job* pJob = dynamic_cast<Job*>( pJobI );
+	const double loc[3] = { 0, 0, 2 }, look[3] = { 0, 0, 0 }, up[3] = { 0, 1, 0 };
+	const double oriZero[3] = { 0, 0, 0 }, targetZero[2] = { 0, 0 };
+	pJob->SetFilm( 8, 8, 1.0 );
+	pJob->AddPinholeCamera( "cam", loc, look, up, 0.8, 0.0, 0.0, 0.0, oriZero, targetZero );
+	pJob->AddBoxGeometry( "slab", 20.0, 20.0, 0.2 );
+
+	HyLIoSSkinMaterialConfig blackCfg;
+	blackCfg.transportMode = "nonlocal";
+	blackCfg.boundaryMode = "rise_reciprocal_boundary_v1";
+	blackCfg.boundaryRoughness = 0.25;
+	blackCfg.spatialDomain = "planar_polygon";
+	blackCfg.domainHalfWidthMetres = 0.5;
+	blackCfg.exteriorIOR = 1.0;
+	blackCfg.specimenSourcePath = blackPathStr.c_str();
+	Check( pJob->AddHyLIoSSkinMaterial( "skin_black", blackCfg ), "Add black-interior nonlocal material" );
+	const double pos[3] = { 0, 0, -0.1 }, sca[3] = { 1, 1, 1 };
+	pJob->AddObject( "skin_obj", "slab", "skin_black", 0, 0, RadianceMapConfig(), pos, oriZero, sca, true, true );
+
+	const double wls[3] = { 450.0, 550.0, 650.0 };
+	const double irr[3] = { 20.0, 20.0, 20.0 };
+	const double dir[3] = { 0.0, 0.0, 1.0 }; // normal incidence
+	Check( pJob->AddPhysicalDirectionalLight( "sun", 3, wls, irr, "zero", 1.0, dir ),
+		"Add calibrated directional light for K_r NEE test" );
+
+	IScenePriv* pScene = pJob->GetScene();
+	pScene->GetObjects()->PrepareForRendering();
+	std::vector<IShaderOp*> emptyOps;
+	StandardShader* pDefShader = new StandardShader( emptyOps );
+	RayCaster* pCaster = new RayCaster( true, 8, *pDefShader, true );
+	pCaster->AttachScene( pScene );
+	PathTracingIntegrator* pIntegrator = new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
+
+	// Analytical K_r(wi=(0,0,1), wo=(0,0,1)) * E * cos(0)
+	const HyLIoSReciprocalBoundary refB( 0.25, 1.0, 1.45 );
+	const double expectedKrL = refB.EvalReflection( { 0, 0, 1 }, { 0, 0, 1 } ) * 20.0;
+	const Ray camRay( Point3( 0, 0, 2 ), Vector3( 0, 0, -1 ) );
+	{
+		RandomNumberGenerator rng( 123u );
+		IndependentSampler smp( rng );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		const Scalar measured = pIntegrator->IntegrateRayNM( rc, nullRasterizerState, camRay, 550.0, *pScene, *pCaster, smp, 0 );
+		Near( measured, expectedKrL, 1e-4 * expectedKrL,
+			"Black-interior first-surface K_r NEE matches analytic K_r * E" );
+	}
+
+	// 1b. Scattering skin under directional light: K_t conditional exit NEE adds strictly
+	//     positive subsurface radiance on top of K_r * E (continuation-only could never hit
+	//     a Dirac directional light!).
+	{
+		const std::string scatSpec =
+			"{\"schema_version\":1,\"approximate\":true,\"composition_revision\":\"scat-v1\","
+			"\"coverage_profile_id\":\"explicit-synthetic-approximation\","
+			"\"spectral_bundle_sha256\":\"scat_b\",\"resolved_specimen_sha256\":\"scat_s\","
+			"\"preset_id\":\"S3\",\"interpretation\":\"scattering interior\","
+			"\"units\":{\"length\":\"m\",\"coefficient\":\"m^-1\",\"wavelength\":\"nm\",\"mass_concentration\":\"kg/m^3\"},"
+			"\"wavelength_nm\":[450,550,650],\"surface_fold_aspect_ratio\":0.75,\"provenance\":{\"retained\":\"yes\"},"
+			"\"layers\":["
+			"{\"layer_id\":\"stratum_corneum\",\"thickness_m\":0.00002,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null},"
+			"{\"layer_id\":\"stratum_granulosum\",\"thickness_m\":0.00003,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null},"
+			"{\"layer_id\":\"stratum_spinosum\",\"thickness_m\":0.00005,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null},"
+			"{\"layer_id\":\"stratum_basale\",\"thickness_m\":0.00002,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null},"
+			"{\"layer_id\":\"papillary_dermis\",\"thickness_m\":0.0002,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.38,1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null},"
+			"{\"layer_id\":\"reticular_dermis\",\"thickness_m\":0.0015,\"host_absorption_m_inv\":[10,10,10],\"real_refractive_index\":[1.38,1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[10,10,10]},\"particles\":null}"
+			"]}\n";
+		const std::filesystem::path scatPath = tmp.dir / "scat.json";
+		{
+			std::ofstream ofs( scatPath, std::ios::binary );
+			ofs.write( scatSpec.data(), static_cast<std::streamsize>( scatSpec.size() ) );
+		}
+		const std::string scatPathStr = scatPath.string();
+
+		IJob* pScatJobI = 0;
+		RISE_CreateJob( &pScatJobI );
+		Job* pScatJob = dynamic_cast<Job*>( pScatJobI );
+		pScatJob->SetFilm( 8, 8, 1.0 );
+		pScatJob->AddPinholeCamera( "cam", loc, look, up, 0.8, 0.0, 0.0, 0.0, oriZero, targetZero );
+		pScatJob->AddBoxGeometry( "slab", 20.0, 20.0, 0.2 );
+		HyLIoSSkinMaterialConfig scatCfg = blackCfg;
+		scatCfg.specimenSourcePath = scatPathStr.c_str();
+		Check( pScatJob->AddHyLIoSSkinMaterial( "skin_scat", scatCfg ), "Add scattering nonlocal material" );
+		pScatJob->AddObject( "scat_obj", "slab", "skin_scat", 0, 0, RadianceMapConfig(), pos, oriZero, sca, true, true );
+		pScatJob->AddPhysicalDirectionalLight( "sun", 3, wls, irr, "zero", 1.0, dir );
+
+		IScenePriv* pScatScene = pScatJob->GetScene();
+		pScatScene->GetObjects()->PrepareForRendering();
+		RayCaster* pScatCaster = new RayCaster( true, 8, *pDefShader, true );
+		pScatCaster->AttachScene( pScatScene );
+
+		double sumScat = 0.0;
+		const int nS = 200;
+		for( int s = 0; s < nS; ++s ) {
+			RandomNumberGenerator rng( 4000u + static_cast<unsigned int>( s ) );
+			IndependentSampler smp( rng );
+			RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+			sumScat += pIntegrator->IntegrateRayNM( rc, nullRasterizerState, camRay, 550.0, *pScatScene, *pScatCaster, smp, 0 );
+		}
+		const double meanScat = sumScat / nS;
+		Check( meanScat > expectedKrL + 0.05,
+			"Conditional K_t exit NEE under directional light adds strictly positive subsurface radiance" );
+		safe_release( pScatCaster );
+		safe_release( pScatJobI );
+	}
+
+	// 2. Smooth-boundary (boundary_roughness == 0) + delta light preflight refusal
+	{
+		IJob* pSmoothJobI = 0;
+		RISE_CreateJob( &pSmoothJobI );
+		Job* pSmoothJob = dynamic_cast<Job*>( pSmoothJobI );
+		pSmoothJob->SetFilm( 4, 4, 1.0 );
+		pSmoothJob->AddPinholeCamera( "cam", loc, look, up, 0.8, 0.0, 0.0, 0.0, oriZero, targetZero );
+		pSmoothJob->AddBoxGeometry( "slab", 20.0, 20.0, 0.2 );
+		HyLIoSSkinMaterialConfig smoothCfg = blackCfg;
+		smoothCfg.boundaryRoughness = 0.0;
+		Check( pSmoothJob->AddHyLIoSSkinMaterial( "skin_smooth", smoothCfg ), "Add smooth nonlocal material" );
+		pSmoothJob->AddObject( "smooth_obj", "slab", "skin_smooth", 0, 0, RadianceMapConfig(), pos, oriZero, sca, true, true );
+		pSmoothJob->AddPhysicalDirectionalLight( "sun", 3, wls, irr, "zero", 1.0, dir );
+
+		IScenePriv* pSmoothScene = pSmoothJob->GetScene();
+		PathTracingSpectralRasterizer* pPTSpec = new PathTracingSpectralRasterizer(
+			pCaster, 450.0, 650.0, 32, 1, ManifoldSolverConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false, true );
+		Check( !pPTSpec->ValidateSceneForRasterizer( *pSmoothScene ),
+			"PathTracingSpectralRasterizer refuses smooth nonlocal boundary + delta light" );
+		safe_release( pPTSpec );
+
+		HyperspectralRadiometricConfig radCfg;
+		radCfg.wavelengthsNm = { 450.0, 550.0, 650.0 };
+		radCfg.samplesPerPixel = 4;
+		radCfg.outputPrefix = ( tmp.dir / "smooth_out" ).string();
+		HyperspectralRadiometricRasterizer* pRad = new HyperspectralRadiometricRasterizer( pCaster, radCfg );
+		std::vector<double> resolvedWls;
+		std::string err;
+		Check( !pRad->ValidateSceneAndConfig( *pSmoothScene, resolvedWls, err ) && !err.empty(),
+			"HyperspectralRadiometricRasterizer refuses smooth nonlocal boundary + delta light" );
+		safe_release( pRad );
+		safe_release( pSmoothJobI );
+	}
+
+	safe_release( pIntegrator );
+	safe_release( pCaster );
+	safe_release( pDefShader );
+	safe_release( pJobI );
+}
+
 } // namespace
 
 int main()
 {
 	TestSpatialDomains();
 	TestNonlocalMaterialCSTAndIterativePT();
+	TestNonlocalNEEAndSmoothBoundaryRefusal();
 
 	if( gFailures == 0 ) {
 		std::cout << "HyLIoSSpatialTest: ALL PASSED\n";

@@ -675,6 +675,10 @@ namespace RISE
 			//! hyperspectral skin material (directly or wrapped).
 			bool SceneHasHyLIoSMaterial( std::string* outFirstOffender = 0 ) const;
 
+			//! True iff any world-visible object carries a nonlocal HyLIoS material
+			//! with a smooth (alpha == 0) outer boundary.
+			bool SceneHasSmoothNonlocalHyLIoS( std::string* outFirstOffender = 0 ) const;
+
 			//! True iff every world-visible HyLIoS material in the scene covers
 			//! `[nmBegin, nmEnd]` (in nanometres).  Returns true when the scene has
 			//! no HyLIoS materials.

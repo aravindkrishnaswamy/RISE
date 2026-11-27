@@ -199,6 +199,16 @@ bool MixMaterial::IsHyperspectralSkin() const
 	return false;
 }
 
+bool MixMaterial::HasSmoothNonlocalBoundary() const
+{
+	for( size_t i = 0; i < children.size(); ++i ) {
+		if( children[i].pMaterial && children[i].pMaterial->HasSmoothNonlocalBoundary() ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool MixMaterial::CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const
 {
 	for( size_t i = 0; i < children.size(); ++i ) {

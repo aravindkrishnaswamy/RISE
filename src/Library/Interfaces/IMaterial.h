@@ -416,6 +416,11 @@ namespace RISE
         //! `PathDependence` flags.
         virtual bool IsHyperspectralSkin() const { return false; }
 
+        //! True iff this material (or any wrapped leaf) is a nonlocal HyLIoS skin
+        //! material with a smooth (alpha == 0) outer boundary, which cannot perform
+        //! conditional boundary-event NEE against delta lights.
+        virtual bool HasSmoothNonlocalBoundary() const { return false; }
+
         //! Optional shared visible RGB guide albedo override (e.g. HyLIoS
         //! D65-weighted white-normalized hemispherical reflectance) consumed
         //! identically by AOV guides, `MixMaterial`, and preview pipelines.

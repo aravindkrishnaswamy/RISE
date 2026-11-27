@@ -801,11 +801,43 @@ std::uint64_t HyLIoSSkinMaterial::DomainBoundaryLossCount() const noexcept
 	return pNonlocal ? pNonlocal->domainBoundaryLosses.load( std::memory_order_relaxed ) : 0ULL;
 }
 
+bool HyLIoSSkinMaterial::HasSmoothNonlocalBoundary() const
+{
+	return pNonlocal && pNonlocal->boundaryRoughness == 0.0;
+}
+
+bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
+	const Scalar nm,
+	double& outRoughness,
+	double& outEtaExt,
+	double& outEtaSC
+	) const noexcept
+{
+	if( !pNonlocal ) {
+		return false;
+	}
+	const double wavelength = static_cast<double>( nm );
+	if( !std::isfinite( wavelength ) ||
+		wavelength < summary.coveredFirstNm || wavelength > summary.coveredLastNm )
+	{
+		return false;
+	}
+	double muA0 = 0, muS0 = 0, etaSC = 1.4;
+	if( !pNonlocal->InterpolateLayerAtNM( 0, wavelength, muA0, muS0, etaSC ) ) {
+		return false;
+	}
+	outRoughness = pNonlocal->boundaryRoughness;
+	outEtaExt = pNonlocal->exteriorIOR;
+	outEtaSC = etaSC;
+	return true;
+}
+
 bool HyLIoSSkinMaterial::SampleNonlocalNM(
 	const RayIntersectionGeometric& ri,
 	const Scalar nm,
 	ISampler& sampler,
-	HyLIoSNonlocalSample& outSample
+	HyLIoSNonlocalSample& outSample,
+	const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter
 	) const
 {
 	outSample = HyLIoSNonlocalSample{};
@@ -968,6 +1000,70 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 				// arrival is `dir` with `dir.z < 0` (upward), so `woInt` pointing away into interior
 				// has `woInt = { -dir.x, -dir.y, dir.z }` with `woInt.z < 0`!
 				const SlabVector woInt{ -dir.x, -dir.y, dir.z };
+
+				// Check spatial domain containment BEFORE the R/T branch so we never
+				// evaluate exit NEE on a walk that exited the finite side walls.
+				auto mapToDomain = [&]( const SlabVector& localOutDir ) -> SpatialExitMapping {
+					if( pNonlocal->domainKind == SpatialDomainKind::PlanarPolygon ) {
+						const PlanarPolygonDomain dom = PlanarPolygonDomain::MakeRectangle(
+							pNonlocal->domainHalfWidthMetres, pNonlocal->domainHalfWidthMetres,
+							pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+						return dom.MapExit( entryFrame, 0.0, 0.0, xM, yM, localOutDir );
+					} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
+						const Point3 center = Point3Ops::mkPoint3(
+							ri.ptIntersection,
+							rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
+						const ConcentricSphereDomain dom(
+							center, pNonlocal->domainRadiusMetres,
+							pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+						return dom.MapExit( entryFrame, xM, yM, localOutDir );
+					} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
+						const Point3 axisOrigin = Point3Ops::mkPoint3(
+							ri.ptIntersection,
+							rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
+						const ConcentricCylinderDomain dom(
+							axisOrigin, rhFrame.B, pNonlocal->domainRadiusMetres,
+							pNonlocal->domainHalfWidthMetres, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+						return dom.MapExit( entryFrame, xM, yM, localOutDir );
+					}
+					IntrinsicLayerChart chart;
+					chart.uMin = 0.0; chart.uMax = 1.0;
+					chart.vMin = 0.0; chart.vMax = 1.0;
+					chart.metresPerU = 2.0 * pNonlocal->domainHalfWidthMetres;
+					chart.metresPerV = 2.0 * pNonlocal->domainHalfWidthMetres;
+					const IntrinsicLayerVolumeDomain dom(
+						chart, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+					return dom.MapExit( entryFrame, 0.5, 0.5, xM, yM, localOutDir );
+				};
+
+				const SpatialExitMapping probeMap = mapToDomain( { 0.0, 0.0, 1.0 } );
+				if( probeMap.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
+					pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+					outSample.escaped = false;
+					outSample.domainBoundaryLoss = true;
+					outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
+					return false;
+				}
+
+				// Yield conditional exit boundary encounter to caller for `K_t` NEE/MIS
+				// BEFORE sampling the Fresnel R/T branch.
+				if( onInteriorBoundaryEncounter && !boundary.IsSmooth() ) {
+					const SpatialExitMapping tanMap = mapToDomain( { 1.0, 0.0, 0.0 } );
+					const Vector3 exitT = Vector3Ops::Normalize( tanMap.worldDir );
+					const Vector3 exitB = Vector3Ops::Normalize( Vector3Ops::Cross( probeMap.worldNormal, exitT ) );
+					HyLIoSExitBoundaryEncounter enc;
+					enc.exitPos           = probeMap.worldPos;
+					enc.exitNormal        = probeMap.worldNormal;
+					enc.exitTangent       = exitT;
+					enc.exitBitangent     = exitB;
+					enc.interiorWoLocal   = woInt;
+					enc.interiorWeight    = weight;
+					enc.boundaryRoughness = pNonlocal->boundaryRoughness;
+					enc.etaExt            = pNonlocal->exteriorIOR;
+					enc.etaSC             = etaSC;
+					onInteriorBoundaryEncounter( enc );
+				}
+
 				const ReciprocalBoundarySample exitStep = boundary.SampleFull(
 					woInt,
 					static_cast<double>( sampler.Get1D() ),
@@ -984,41 +1080,7 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 					continue;
 				}
 
-				// Transmitted out to exterior (`exitStep.direction.z > 0`)!
-				// Map lateral displacement `(xM, yM)` through the configured finite spatial domain.
-				SpatialExitMapping mapped;
-				if( pNonlocal->domainKind == SpatialDomainKind::PlanarPolygon ) {
-					const PlanarPolygonDomain dom = PlanarPolygonDomain::MakeRectangle(
-						pNonlocal->domainHalfWidthMetres, pNonlocal->domainHalfWidthMetres,
-						pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-					mapped = dom.MapExit( entryFrame, 0.0, 0.0, xM, yM, exitStep.direction );
-				} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
-					const Point3 center = Point3Ops::mkPoint3(
-						ri.ptIntersection,
-						rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-					const ConcentricSphereDomain dom(
-						center, pNonlocal->domainRadiusMetres,
-						pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-					mapped = dom.MapExit( entryFrame, xM, yM, exitStep.direction );
-				} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
-					const Point3 axisOrigin = Point3Ops::mkPoint3(
-						ri.ptIntersection,
-						rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-					const ConcentricCylinderDomain dom(
-						axisOrigin, rhFrame.B, pNonlocal->domainRadiusMetres,
-						pNonlocal->domainHalfWidthMetres, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-					mapped = dom.MapExit( entryFrame, xM, yM, exitStep.direction );
-				} else {
-					IntrinsicLayerChart chart;
-					chart.uMin = 0.0; chart.uMax = 1.0;
-					chart.vMin = 0.0; chart.vMax = 1.0;
-					chart.metresPerU = 2.0 * pNonlocal->domainHalfWidthMetres;
-					chart.metresPerV = 2.0 * pNonlocal->domainHalfWidthMetres;
-					const IntrinsicLayerVolumeDomain dom(
-						chart, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-					mapped = dom.MapExit( entryFrame, 0.5, 0.5, xM, yM, exitStep.direction );
-				}
-
+				const SpatialExitMapping mapped = mapToDomain( exitStep.direction );
 				if( mapped.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
 					pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
 					outSample.escaped = false;

@@ -119,6 +119,13 @@ void TestSmoothBoundaryRefusalAndSamplingConsistency()
 		const double u4 = rng.CanonicalRandom();
 		const ReciprocalBoundarySample fs = rough.SampleFull( wo, ub, u3, u4 );
 		if( fs.valid ) {
+			if( fs.isReflection ) {
+				Near( fs.pdf, rough.PdfReflectionBranch( fs.direction, wo ), 1e-12,
+					"SampleFull reflection pdf == PdfReflectionBranch" );
+			} else {
+				Near( fs.pdf, rough.PdfTransmissionBranch( fs.direction, wo ), 1e-12,
+					"SampleFull transmission pdf == PdfTransmissionBranch" );
+			}
 			// Power-domain white furnace (undo radiance (etaO/etaI)^2 for transmission branch)
 			const double powerWeight = fs.isReflection ? fs.weight : ( fs.weight * ( 1.45 * 1.45 ) );
 			fullPowerMean += powerWeight;

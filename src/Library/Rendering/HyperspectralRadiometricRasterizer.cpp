@@ -294,6 +294,13 @@ bool HyperspectralRadiometricRasterizer::ValidateSceneAndConfig(
 			outError = buf;
 			return false;
 		}
+		if( pObjMgr->SceneHasSmoothNonlocalHyLIoS( &offender ) &&
+			pScene.GetLights() && !pScene.GetLights()->getLights().empty() )
+		{
+			outError = "hyperspectral_radiometric_rasterizer: smooth (boundary_roughness == 0) nonlocal HyLIoS material on object '" +
+				offender + "' cannot perform boundary-event NEE against delta lights";
+			return false;
+		}
 	}
 
 	// Physical spectral source preflight (unless explicitly overridden).

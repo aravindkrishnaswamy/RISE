@@ -16,8 +16,10 @@
 #include "../../Utilities/Reference.h"
 #include "HyLIoSLocalResponse.h"
 #include "HyLIoSLocalResponseAsset.h"
+#include "HyLIoSSlabTransport.h"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -183,6 +185,22 @@ namespace RISE
 			bool        hasVisibleGuide = false;
 		};
 
+		//! Interior outer-boundary encounter yielded by `SampleNonlocalNM`
+		//! before the Fresnel R/T branch, enabling conditional `K_t` NEE/MIS
+		//! without coupling `HyLIoSSkinMaterial` to `IScene` or `LightSampler`.
+		struct HyLIoSExitBoundaryEncounter
+		{
+			Point3  exitPos;
+			Vector3 exitNormal;
+			Vector3 exitTangent;
+			Vector3 exitBitangent;
+			RISE::HyLIoS::SlabVector interiorWoLocal{ 0, 0, -1 };
+			double  interiorWeight = 0.0;
+			double  boundaryRoughness = 0.0;
+			double  etaExt = 1.0;
+			double  etaSC = 1.4;
+		};
+
 		//! Result of one iterative nonlocal spatial skin transport step (P7).
 		struct HyLIoSNonlocalSample
 		{
@@ -240,17 +258,30 @@ namespace RISE
 			IEmitter* GetEmitter() const override { return 0; }
 
 			bool IsHyperspectralSkin() const override { return true; }
+			bool HasSmoothNonlocalBoundary() const override;
 			bool IsNonlocalSkin() const noexcept { return pNonlocal != nullptr; }
 			bool EvaluateVisibleGuideAlbedo( const RayIntersectionGeometric& geom, RISEPel& outAlbedo ) const override;
 			bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override;
 
+			//! Queries the active nonlocal boundary parameters at `nm` for
+			//! first-surface external reflection NEE (`K_r`).
+			bool GetNonlocalBoundaryParamsNM(
+				const Scalar nm,
+				double& outRoughness,
+				double& outEtaExt,
+				double& outEtaSC
+				) const noexcept;
+
 			//! Executes one bounded iterative nonlocal spatial skin step at `nm`
-			//! (no recursive CastRay).  Returns true iff a continuation ray escaped.
+			//! (no recursive CastRay).  Invokes `onInteriorBoundaryEncounter` at
+			//! each valid interior encounter with the outer boundary before the
+			//! Fresnel R/T branch.  Returns true iff a continuation ray escaped.
 			bool SampleNonlocalNM(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm,
 				ISampler& sampler,
-				HyLIoSNonlocalSample& outSample
+				HyLIoSNonlocalSample& outSample,
+				const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter = {}
 				) const;
 
 			//! Number of paths terminated at explicit absorbing lateral side walls

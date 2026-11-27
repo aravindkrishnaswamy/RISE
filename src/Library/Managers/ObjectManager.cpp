@@ -227,6 +227,23 @@ bool ObjectHasHyLIoSMaterialImpl( const IObject& object, std::unordered_set<cons
     }
     return false;
 }
+bool ObjectHasSmoothNonlocalHyLIoSImpl( const IObject& object, std::unordered_set<const CSGObject*>& visited )
+{
+    if( const IMaterial* mat = object.GetMaterial() ) {
+        if( mat->HasSmoothNonlocalBoundary() ) return true;
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>( &object ) ) {
+        if( visited.insert( csg ).second ) {
+            if( const IObjectPriv* a = csg->GetOperandA() ) {
+                if( ObjectHasSmoothNonlocalHyLIoSImpl( *a, visited ) ) return true;
+            }
+            if( const IObjectPriv* b = csg->GetOperandB() ) {
+                if( ObjectHasSmoothNonlocalHyLIoSImpl( *b, visited ) ) return true;
+            }
+        }
+    }
+    return false;
+}
 bool ObjectCoversHyLIoSWavelengthsImpl(
     const IObject& object,
     const Scalar nmBegin,
@@ -2999,6 +3016,22 @@ bool ObjectManager::SceneHasHyLIoSMaterial( std::string* outFirstOffender ) cons
 		const IObjectPriv* obj = item.second.first;
 		if( !obj || !obj->IsWorldVisible() ) continue;
 		if( ObjectHasHyLIoSMaterialImpl( *obj, visited ) ) {
+			if( outFirstOffender ) {
+				*outFirstOffender = item.first.c_str();
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ObjectManager::SceneHasSmoothNonlocalHyLIoS( std::string* outFirstOffender ) const
+{
+	std::unordered_set<const CSGObject*> visited;
+	for( const auto& item : items ) {
+		const IObjectPriv* obj = item.second.first;
+		if( !obj || !obj->IsWorldVisible() ) continue;
+		if( ObjectHasSmoothNonlocalHyLIoSImpl( *obj, visited ) ) {
 			if( outFirstOffender ) {
 				*outFirstOffender = item.first.c_str();
 			}

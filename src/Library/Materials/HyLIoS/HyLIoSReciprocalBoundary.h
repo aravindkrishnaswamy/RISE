@@ -67,6 +67,10 @@ public:
 	//! Solid-angle PDF of VNDF reflection sampling for wi.z > 0 given wo.z > 0.
 	double PdfReflection( const SlabVector& wi, const SlabVector& wo ) const noexcept;
 
+	//! Complete-event solid-angle PDF `q_B(event=R, wi | wo) = F(wo.h) * PdfReflection(wi, wo)`
+	//! matching `SampleFull`'s reflection branch for MIS with `K_r` NEE.
+	double PdfReflectionBranch( const SlabVector& wi, const SlabVector& wo ) const noexcept;
+
 	//! Conditional transmission BSDF K_t(wi, wo) [sr^-1] across the dielectric interface
 	//! for opposite-hemisphere directions (wi.z * wo.z < 0).
 	//! Radiance-transport convention: when light arrives from `wi` (medium etaI) and exits
@@ -77,6 +81,10 @@ public:
 
 	//! Solid-angle PDF of VNDF transmission sampling for `wi` given `wo` (opposite hemispheres).
 	double PdfTransmission( const SlabVector& wi, const SlabVector& wo ) const noexcept;
+
+	//! Complete-event solid-angle PDF `q_B(event=T, wi | wo) = (1 - F(wo.h)) * PdfTransmission(wi, wo)`
+	//! matching `SampleFull`'s transmission branch for MIS with `K_t` NEE.
+	double PdfTransmissionBranch( const SlabVector& wi, const SlabVector& wo ) const noexcept;
 
 	//! Samples a reflection direction given `wo` (same hemisphere as `wo`).
 	ReciprocalBoundarySample SampleReflection( const SlabVector& wo, double u1, double u2 ) const noexcept;
