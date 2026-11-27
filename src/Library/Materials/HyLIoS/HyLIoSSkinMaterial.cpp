@@ -762,7 +762,7 @@ namespace
 
 		static constexpr std::uint64_t kGuideSeed = 0x51AB601DE0000001ULL;
 		static constexpr std::uint64_t kHistoriesPerNode = 64ULL;
-		static constexpr std::uint64_t kMaxWorkPerHistory = 2048ULL;
+		static constexpr std::uint64_t kMaxWorkPerHistory = 32768ULL;
 
 		std::vector<double> refl( rt.wavelengthsNm.size(), 0.0 );
 		for( std::size_t k = 0; k < rt.wavelengthsNm.size(); ++k ) {
@@ -1066,10 +1066,11 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 	};
 
 	const std::uint64_t workCap = std::max<std::uint64_t>( 64, pNonlocal->maxSubsurfaceSteps * 8ULL );
+	const std::size_t advanceQuantum = ( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) ? 64u : 1u;
 	while( state.Termination() == ForwardTermination::None &&
 		   state.Counters().workUnits < workCap )
 	{
-		const ForwardAdvanceResult adv = kernel.Advance( state, kernelRng, 1 );
+		const ForwardAdvanceResult adv = kernel.Advance( state, kernelRng, advanceQuantum );
 
 		// Step-wise absorbing side-wall check after every single quantum!
 		const SlabVector posOracle = state.Position();

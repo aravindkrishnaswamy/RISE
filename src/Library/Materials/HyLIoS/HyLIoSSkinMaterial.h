@@ -79,7 +79,7 @@ namespace RISE
 		const char*   spatialDomain           = "planar_polygon";  ///< "planar_polygon" | "concentric_sphere" | "concentric_cylinder" | "intrinsic_layer"
 		double        domainHalfWidthMetres   = 0.05;              ///< Planar polygon half-width / cylinder half-length (m)
 		double        domainRadiusMetres      = 0.10;              ///< Concentric sphere/cylinder outer radius (m)
-		std::uint64_t maxSubsurfaceSteps      = 256;               ///< Bounded iterative subsurface step budget
+		std::uint64_t maxSubsurfaceSteps      = 4096;              ///< Bounded iterative subsurface step budget (workCap = 8 * maxSubsurfaceSteps)
 	};
 
 	namespace Implementation

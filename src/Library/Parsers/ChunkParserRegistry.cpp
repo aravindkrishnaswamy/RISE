@@ -3685,7 +3685,7 @@ namespace RISE
 					cfg.spatialDomain         = spatialDomain.c_str();
 					cfg.domainHalfWidthMetres = bag.GetDouble( "domain_half_width_m", 0.05 );
 					cfg.domainRadiusMetres    = bag.GetDouble( "domain_radius_m", 0.10 );
-					cfg.maxSubsurfaceSteps    = static_cast<std::uint64_t>( bag.GetUInt( "max_subsurface_steps", 256 ) );
+					cfg.maxSubsurfaceSteps    = static_cast<std::uint64_t>( bag.GetUInt( "max_subsurface_steps", 4096 ) );
 
 					const double maxFileMiB = bag.GetDouble( "max_file_mib", 256.0 );
 					const double maxResMiB  = bag.GetDouble( "max_resident_mib", 1024.0 );
@@ -3718,7 +3718,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "spatial_domain";         p.kind = ValueKind::Enum;     p.enumValues = {"planar_polygon", "concentric_sphere", "concentric_cylinder", "intrinsic_layer"}; p.description = "Finite spatial domain for nonlocal transport"; p.defaultValueHint = "planar_polygon"; }
 						{ auto& p = P(); p.name = "domain_half_width_m";    p.kind = ValueKind::Double;   p.description = "Planar footprint half-width or cylinder half-length in metres"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "domain_radius_m";        p.kind = ValueKind::Double;   p.description = "Concentric sphere/cylinder outer radius in metres"; p.defaultValueHint = "0.10"; }
-						{ auto& p = P(); p.name = "max_subsurface_steps";   p.kind = ValueKind::UInt;     p.description = "Bounded iterative step budget for nonlocal subsurface transport"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "max_subsurface_steps";   p.kind = ValueKind::UInt;     p.description = "Bounded iterative step budget for nonlocal subsurface transport"; p.defaultValueHint = "4096"; }
 						{ auto& p = P(); p.name = "boundary_revision";      p.kind = ValueKind::String;   p.description = "Explicit boundary revision tag"; p.defaultValueHint = "smooth_planar_dielectric_v1"; }
 						{ auto& p = P(); p.name = "placement_policy";       p.kind = ValueKind::String;   p.description = "Particle placement policy tag"; p.defaultValueHint = "null_collision_placement_v1"; }
 						{ auto& p = P(); p.name = "post_scatter_policy";    p.kind = ValueKind::String;   p.description = "Post-scatter particle policy tag"; p.defaultValueHint = "discard_after_scatter_v1"; }
