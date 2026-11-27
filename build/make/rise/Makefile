@@ -290,9 +290,10 @@ TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Simulation/Cloth/, 
 	ClothMaterial.o ClothLinearAlgebra.o ClothModel.o ClothParallel.o ClothContact.o ClothValidation.o ClothSolver.o)
 # HYLIOS compensated geometry, certified overlap and normalized surface laws require strict arithmetic.
 TEST_SAFE_FP32_OBJS += $(addprefix $(TESTOBJ_DIR)src/Library/Materials/HyLIoS/, \
-	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o HyLIoSSkinMaterial.o HyLIoSReciprocalBoundary.o HyLIoSSpatialGeometry.o HyperspectralRadiometricRasterizer.o)
-# Compensated beauty moments preserve binary64 error-free transforms.
-TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o
+	HyLIoSParticleGeometry.o HyLIoSParticleOverlap.o HyLIoSComplexLayout.o HyLIoSSurfaceBoundary.o HyLIoSLocalBake.o HyLIoSSkinMaterial.o HyLIoSReciprocalBoundary.o HyLIoSSpatialGeometry.o)
+# Compensated beauty moments and hyperspectral radiometric rasterizer preserve strict binary64 arithmetic.
+TEST_SAFE_FP32_OBJS += $(TESTOBJ_DIR)src/Library/Rendering/BeautyMoments.o \
+	$(TESTOBJ_DIR)src/Library/Rendering/HyperspectralRadiometricRasterizer.o
 TEST_SAFE_FP32_MM_OBJS = $(addprefix $(TESTOBJ_DIR)src/Library/Utilities/, \
 	FireProductionAdvectionMac.o FireProductionProjectionMac.o \
 	FireProductionForceMac.o)
