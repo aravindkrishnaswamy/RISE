@@ -42,6 +42,7 @@
 
 #include "SimulationHost.h"
 #include <atomic>
+#include <future>
 #include <map>
 
 namespace RISE { namespace Simulation {
@@ -60,6 +61,12 @@ constexpr double kPredictiveCouplingTolerance = 1e-6;
 bool RegisterCouplingEvidence(const std::string& kind, std::function<bool(Evidence&, std::string&)> compute,
 	std::string& error);
 bool CouplingEvidence(const std::string& kind, Evidence& evidence, std::string& error);
+//! Starts computing the coupling evidence of `kind` on another thread when it
+//! is registered and not computed yet (a scene plan calls it for each group's
+//! likely kind before configuring the members, so the two overlap); the
+//! returned future is ready when that is done (invalid when nothing started).
+//! CouplingEvidence waits for it.  The evidence is the same either way.
+std::future<void> PrefetchCouplingEvidence(const std::string& kind);
 
 class SimulationGroup final : public ISimulationGroupHost {
 public:

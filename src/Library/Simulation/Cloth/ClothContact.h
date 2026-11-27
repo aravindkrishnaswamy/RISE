@@ -54,8 +54,8 @@
 #define RISE_SIMULATION_CLOTH_CONTACT_H
 
 #include "ClothModel.h"
+#include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace RISE { namespace Simulation { namespace Cloth {
@@ -103,10 +103,32 @@ struct FrictionRecord {
 
 //! Uniform hash grid of primitive ids; a primitive covering more than 4096
 //! cells goes to `oversize` (visited by every query).
+//! Built in two passes (Add every primitive, then Finish): an open-addressed
+//! table of the occupied cells (linear probing), each holding a range of a flat
+//! id array filled by a counting sort, ids of a cell in the order they were
+//! added.  The storage is reused from one build to the next.
 struct HashGrid {
-	std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> cells;
+	struct Pending { std::int64_t lo[3], hi[3]; std::uint32_t id; };
+	std::vector<Pending> pending;
+	std::vector<std::uint64_t> keys;      // per slot: cell key, or Empty
+	std::vector<std::uint32_t> start;     // per slot: first id (after Finish), count while counting
+	std::vector<std::uint32_t> count;     // per slot
+	std::vector<std::uint32_t> ids;
 	std::vector<std::uint32_t> oversize;
-	void Clear() { cells.clear(); oversize.clear(); }
+	std::uint64_t mask = 0;
+	std::size_t touches = 0;              // cell visits of the pending boxes
+	static constexpr std::uint64_t Empty = ~std::uint64_t(0);
+	void Clear() { pending.clear(); oversize.clear(); ids.clear(); touches = 0; mask = 0; keys.clear(); }
+	//! Slot of a key, or -1.
+	std::int64_t Find(std::uint64_t key) const {
+		if (keys.empty()) return -1;
+		for (std::uint64_t s = Hash(key) & mask;; s = (s + 1) & mask) {
+			if (keys[s] == key) return static_cast<std::int64_t>(s);
+			if (keys[s] == Empty) return -1;
+		}
+	}
+	static std::uint64_t Hash(std::uint64_t key) { // splitmix64's finaliser
+		key ^= key >> 30; key *= 0xBF58476D1CE4E5B9ull; key ^= key >> 27; key *= 0x94D049BB133111EBull; return key ^ (key >> 31); }
 };
 
 //! One stage of the kinematic continuation (ClothSystem::KinematicStages): from

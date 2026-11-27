@@ -98,6 +98,28 @@ struct Evidence {
 // error <= finite tolerance, passed, valid digest); otherwise "preview".
 // Hosts write this label, not the requested one.
 std::string EffectiveFidelity(const Evidence& evidence);
+
+// Persistent plan-time evidence (docs/SIMULATION_PERFORMANCE.md A2).  A solver's
+// or a coupling's validation runs are deterministic functions of their
+// configuration and of the code; the store keeps their results across processes
+// so that `rise-sim status`, a bake and a scene load do not recompute them.
+// `space` names the producer (e.g. "cloth.shell", "coupling.cloth-rigid") and
+// `key` must hold everything the evidence depends on besides the code (solver
+// version, configuration).  An entry is also bound to EvidenceBuildIdentity()
+// (the linked image's identity: any rebuild with a code change gives another),
+// so a stale entry is never used after a code change.  Entries live in
+// `<simulation cache base>/evidence` (DefaultSimulationCacheDirectory's
+// parent), are written to a temporary file and renamed into place (safe under
+// concurrent processes), carry a SHA-256 of their contents, and the directory
+// is pruned to the most recently used entries; an entry that is missing,
+// unreadable, corrupt or for another key is ignored (the caller recomputes and
+// stores it again).  Values round-trip exactly (doubles as their bit patterns).
+// Off when the build identity is unknown or RISE_SIMULATION_EVIDENCE_STORE=off.
+bool LoadPersistedEvidence(const std::string& space, const RISECBOR64::Value& key, Evidence& evidence);
+void PersistEvidence(const std::string& space, const RISECBOR64::Value& key, const Evidence& evidence);
+//! Hex identity of the image this library is linked into (macOS: its Mach-O
+//! LC_UUID, which the linker derives from the image's contents), "" when unknown.
+const std::string& EvidenceBuildIdentity();
 // Digest for a case: SHA-256 of canonical CBOR of (id, configuration, error, tolerance, passed).
 std::string EvidenceDigest(const std::string& id, const RISECBOR64::Value& configuration,
 	double error, double tolerance, bool passed);

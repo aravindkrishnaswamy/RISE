@@ -601,7 +601,11 @@ bool ClothSystem::Initialize(const Sheet& sheet, const ModelConfig& config, std:
 	const std::size_t bu = BandedCholesky::Bandwidth(pattern_, uFast), bv = BandedCholesky::Bandwidth(pattern_, vFast);
 	order_ = bu <= bv ? uFast : vFast;
 	const double bw = static_cast<double>(std::min(bu, bv));
-	directCost_ = 3.0*static_cast<double>(n)*bw*bw;
+	directCost_ = 3.0*static_cast<double>(n)*bw*bw; // the direct/iterative choice keeps the band's cost
+	// m3a.8: the direct factorisation is an envelope Cholesky under reverse Cuthill-McKee (or this
+	// banded ordering when that is cheaper); pinned vertices are decoupled (MaskFixed).
+	factor_.Prepare(fixed_, {order_});
+	factorValid_ = false;
 	barrier_.reset();
 	if (config.contact == ContactModel::Barrier) {
 		barrier_ = std::make_shared<BarrierContact>();
@@ -820,7 +824,7 @@ bool ClothSystem::Solve(const BlockMatrix& a, const std::vector<double>& b, std:
 	const bool direct = options.solver == LinearSolver::Direct ||
 		(options.solver == LinearSolver::Auto && directCost_ <= (preferDirect ? 5e9 : 2e7));
 	if (direct) {
-		if (!(reuse && factorValid_)) factorValid_ = factor_.Factor(a, order_);
+		if (!(reuse && factorValid_)) factorValid_ = factor_.Factor(a);
 		if (factorValid_ && a.ExtensionBlocks() == 0) {
 			factor_.Solve(b, solution);
 			++stats.directSolves;

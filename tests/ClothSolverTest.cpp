@@ -189,9 +189,9 @@ void Description()
 	const double t0 = Seconds();
 	Check(solver->Configure(Map(Small()), inputs, d, error), "cloth configures", error);
 	const double first = Seconds() - t0;
-	Check(d.solverId == ClothSolverId && d.version == "m3a.7" && d.cache.outputs.size() == 1 &&
+	Check(d.solverId == ClothSolverId && d.version == "m3a.8" && d.cache.outputs.size() == 1 &&
 		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v2" && d.cache.count == 10,
-		"cloth describes one mesh.v2 output (version m3a.7)");
+		"cloth describes one mesh.v2 output (version m3a.8)");
 	const PortDeclaration* offer = nullptr; const PortDeclaration* accept = nullptr;
 	for (const auto& p : d.ports) {
 		if (p.name == "surface_state") offer = &p;

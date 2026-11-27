@@ -1,11 +1,20 @@
 #include "pch.h"
 #include "SimulationSolver.h"
+#include "SimulationProcess.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <cmath>
 #include <mutex>
 #include <cstring>
 #include <limits>
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#include <mach-o/loader.h>
+#endif
 
 namespace RISE { namespace Simulation {
 namespace {
@@ -52,6 +61,191 @@ std::string EvidenceDigest(const std::string& id,const V& configuration,double e
 		!RISECBOR64::Encode(V::ArrayValue({V::String("rise.simulation.evidence.v1"),V::String(id),configuration,
 			V::Float(error),V::Float(tolerance),V::Bool(passed)}),encoded,nullptr)) return std::string();
 	return RISECBOR64::SHA256Hex(encoded);
+}
+
+// ------------------------------------------------------------------ persistent evidence (A2)
+
+namespace {
+constexpr const char* EvidenceStoreFormat = "rise.simulation.evidence-store.v1";
+constexpr std::size_t EvidenceStoreEntries = 256;              // pruned to 3/4 of this
+constexpr std::uintmax_t EvidenceStoreBytes = 16u << 20;       // or of this many bytes
+constexpr std::uintmax_t EvidenceEntryBytes = 1u << 20;        // larger files are not read
+
+std::uint64_t DoubleBits(double d) { std::uint64_t b; std::memcpy(&b,&d,8); return b; }
+double BitsDouble(std::uint64_t b) { double d; std::memcpy(&d,&b,8); return d; }
+
+V EvidenceToValue(const Evidence& e)
+{
+	V::Values cases;
+	for (const auto& c : e.cases)
+		cases.push_back(V::ArrayValue({V::String(c.id),V::String(c.description),V::String(c.digest),
+			V::Unsigned(DoubleBits(c.error)),V::Unsigned(DoubleBits(c.tolerance)),V::Bool(c.passed)}));
+	V::Values conditions;
+	for (const auto& c : e.conditions) {
+		V::Values values;
+		for (const auto& v : c.second) values.push_back(V::String(v));
+		conditions.push_back(V::ArrayValue({V::String(c.first),V::ArrayValue(std::move(values))}));
+	}
+	return V::ArrayValue({V::String(e.fidelity),V::ArrayValue(std::move(cases)),V::ArrayValue(std::move(conditions)),
+		V::String(e.scope)});
+}
+
+bool EvidenceFromValue(const V& v,Evidence& e)
+{
+	auto text = [](const V& x) { return x.GetType()==V::Text; };
+	auto unsignedValue = [](const V& x) { return x.GetType()==V::UnsignedInteger; };
+	if (v.GetType()!=V::Array || v.GetArray().size()!=4) return false;
+	const auto& a = v.GetArray();
+	if (!text(a[0]) || a[1].GetType()!=V::Array || a[2].GetType()!=V::Array || !text(a[3])) return false;
+	Evidence out;
+	out.fidelity = a[0].GetText();
+	for (const V& c : a[1].GetArray()) {
+		if (c.GetType()!=V::Array || c.GetArray().size()!=6) return false;
+		const auto& f = c.GetArray();
+		if (!text(f[0]) || !text(f[1]) || !text(f[2]) || !unsignedValue(f[3]) || !unsignedValue(f[4]) ||
+			f[5].GetType()!=V::Boolean) return false;
+		EvidenceCase k;
+		k.id = f[0].GetText(); k.description = f[1].GetText(); k.digest = f[2].GetText();
+		k.error = BitsDouble(f[3].GetIntegerArgument()); k.tolerance = BitsDouble(f[4].GetIntegerArgument());
+		k.passed = f[5].GetBoolean();
+		out.cases.push_back(std::move(k));
+	}
+	for (const V& c : a[2].GetArray()) {
+		if (c.GetType()!=V::Array || c.GetArray().size()!=2 || !text(c.GetArray()[0]) || c.GetArray()[1].GetType()!=V::Array) return false;
+		std::vector<std::string> values;
+		for (const V& x : c.GetArray()[1].GetArray()) { if (!text(x)) return false; values.push_back(x.GetText()); }
+		out.conditions.push_back({c.GetArray()[0].GetText(),std::move(values)});
+	}
+	out.scope = a[3].GetText();
+	e = std::move(out);
+	return true;
+}
+
+bool EvidenceStoreOff()
+{
+	const char* s = std::getenv("RISE_SIMULATION_EVIDENCE_STORE");
+	return (s && std::string(s)=="off") || EvidenceBuildIdentity().empty();
+}
+
+// The entry's name: SHA-256 of (format, space, key, build).  False when the key cannot be encoded.
+bool EvidenceEntryName(const std::string& space,const V& key,Bytes& keyBytes,std::string& name)
+{
+	if (!RISECBOR64::Encode(key,keyBytes,nullptr)) return false;
+	Bytes head;
+	if (!RISECBOR64::Encode(V::ArrayValue({V::String(EvidenceStoreFormat),V::String(space),V::BytesValue(keyBytes),
+		V::String(EvidenceBuildIdentity())}),head,nullptr)) return false;
+	name = RISECBOR64::SHA256Hex(head);
+	return true;
+}
+
+std::filesystem::path EvidenceStoreDirectory()
+{
+	return DefaultSimulationCacheDirectory().parent_path() / "evidence";
+}
+}
+
+const std::string& EvidenceBuildIdentity()
+{
+	static const std::string identity = [] {
+		std::string id;
+#if defined(__APPLE__)
+		Dl_info info = {};
+		if (dladdr(reinterpret_cast<const void*>(&EvidenceBuildIdentity),&info)==0 || !info.dli_fbase) return id;
+		const auto* header = static_cast<const mach_header_64*>(info.dli_fbase);
+		if (header->magic!=MH_MAGIC_64) return id;
+		const auto* command = reinterpret_cast<const load_command*>(header + 1);
+		for (std::uint32_t k = 0; k < header->ncmds; ++k) {
+			if (command->cmd==LC_UUID) {
+				const auto* u = reinterpret_cast<const uuid_command*>(command);
+				static const char* hex = "0123456789abcdef";
+				for (unsigned char b : u->uuid) { id += hex[b >> 4]; id += hex[b & 15]; }
+				break;
+			}
+			command = reinterpret_cast<const load_command*>(reinterpret_cast<const char*>(command) + command->cmdsize);
+		}
+#endif
+		return id;
+	}();
+	return identity;
+}
+
+bool LoadPersistedEvidence(const std::string& space,const V& key,Evidence& evidence)
+{
+	if (EvidenceStoreOff()) return false;
+	Bytes keyBytes;
+	std::string name;
+	if (!EvidenceEntryName(space,key,keyBytes,name)) return false;
+	const std::filesystem::path path = EvidenceStoreDirectory() / (name + ".cbor");
+	std::error_code ec;
+	const std::uintmax_t size = std::filesystem::file_size(path,ec);
+	if (ec || size==0 || size > EvidenceEntryBytes) return false;
+	std::ifstream in(path,std::ios::binary);
+	Bytes bytes(static_cast<std::size_t>(size));
+	if (!in.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()))) return false;
+	V entry;
+	if (!RISECBOR64::DecodeCanonical(bytes,entry,nullptr) || entry.GetType()!=V::Array || entry.GetArray().size()!=6) return false;
+	const auto& f = entry.GetArray();
+	if (f[0].GetType()!=V::Text || f[0].GetText()!=EvidenceStoreFormat || f[1].GetType()!=V::Text || f[1].GetText()!=space ||
+		f[2].GetType()!=V::ByteString || f[2].GetBytes()!=keyBytes || f[3].GetType()!=V::Text ||
+		f[3].GetText()!=EvidenceBuildIdentity() || f[5].GetType()!=V::Text) return false;
+	Bytes body;
+	if (!RISECBOR64::Encode(f[4],body,nullptr) || RISECBOR64::SHA256Hex(body)!=f[5].GetText()) return false;
+	Evidence out;
+	if (!EvidenceFromValue(f[4],out)) return false;
+	evidence = std::move(out);
+	std::filesystem::last_write_time(path,std::filesystem::file_time_type::clock::now(),ec); // recently used
+	return true;
+}
+
+void PersistEvidence(const std::string& space,const V& key,const Evidence& evidence)
+{
+	if (EvidenceStoreOff()) return;
+	Bytes keyBytes, body, bytes;
+	std::string name, error;
+	if (!EvidenceEntryName(space,key,keyBytes,name)) return;
+	const V value = EvidenceToValue(evidence);
+	if (!RISECBOR64::Encode(value,body,nullptr)) return;
+	if (!RISECBOR64::Encode(V::ArrayValue({V::String(EvidenceStoreFormat),V::String(space),V::BytesValue(keyBytes),
+		V::String(EvidenceBuildIdentity()),value,V::String(RISECBOR64::SHA256Hex(body))}),bytes,nullptr)) return;
+	if (bytes.size() > EvidenceEntryBytes) return;
+	const std::filesystem::path directory = EvidenceStoreDirectory();
+	if (!CreatePrivateDirectories(directory,error)) return;
+	static std::atomic<std::uint64_t> counter{0};
+	const std::filesystem::path target = directory / (name + ".cbor");
+	const std::filesystem::path temporary = directory / (name + ".tmp." + std::to_string(CurrentProcessId()) + "." +
+		std::to_string(counter.fetch_add(1)));
+	{
+		std::ofstream out(temporary,std::ios::binary | std::ios::trunc);
+		out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+		if (!out.flush()) { out.close(); std::error_code ec; std::filesystem::remove(temporary,ec); return; }
+	}
+	std::error_code ec;
+	std::filesystem::rename(temporary,target,ec);   // atomic: readers see the old entry, the new one, or none
+	if (ec) { std::filesystem::remove(temporary,ec); return; }
+	// Bound the store: drop the least recently used entries (and stale temporaries) beyond the limits.
+	struct File { std::filesystem::file_time_type time; std::uintmax_t size; std::filesystem::path path; };
+	std::vector<File> files;
+	std::uintmax_t total = 0;
+	for (std::filesystem::directory_iterator it(directory,ec), end; !ec && it!=end; it.increment(ec)) {
+		std::error_code e2;
+		const auto size = it->file_size(e2);
+		const auto time = it->last_write_time(e2);
+		if (e2) continue;
+		files.push_back({time,size,it->path()});
+		total += size;
+	}
+	if (files.size() <= EvidenceStoreEntries && total <= EvidenceStoreBytes) return;
+	std::sort(files.begin(),files.end(),[](const File& a,const File& b) {
+		return a.time!=b.time ? a.time < b.time : a.path < b.path; });
+	std::size_t count = files.size();
+	for (const auto& f : files) {
+		if (count <= EvidenceStoreEntries*3/4 && total <= EvidenceStoreBytes*3/4) break;
+		if (f.path==target) continue;
+		std::error_code e3;
+		std::filesystem::remove(f.path,e3);
+		--count;
+		total -= f.size;
+	}
 }
 
 std::string ScopedEvidenceDigest(const std::string& caseDigest,const EvidenceConditions& conditions,

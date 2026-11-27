@@ -42,6 +42,8 @@ namespace RISE { namespace Simulation {
 
 //! Solver id of the cloth solver.
 constexpr const char* ClothSolverId = "cloth.shell";
+//! The solver version string it describes (SolverDescription::version).
+const char* ClothSolverVersion();
 
 //! Registers the cloth solver factory under "cloth.shell".  Idempotent.
 bool RegisterClothSolver(std::string& error);

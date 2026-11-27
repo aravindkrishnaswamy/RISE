@@ -78,6 +78,7 @@ bool BodyMesh(const V& rigid, const std::string& body, ClothRigidScenario& out, 
 		for (int a = 0; a < 3; ++a) out.moments[a] = e.Find("moments")->GetArray()[a].GetFloat();
 	}
 	out.body = body;
+	out.rigidVersion = d.version;
 	return true;
 }
 
@@ -233,6 +234,11 @@ bool ComputeEvidence(Evidence& e, std::string& error)
 	p.subIterations = 30;
 	p.convergenceTolerance = 1e-6;
 	p.aitken = true;
+	// A2: the result is a function of the scenario, the policy, both solvers' versions and the build.
+	const V storeKey = V::MapValue({{"kind", V::String(ClothRigidCouplingKind)}, {"problem", V::String("zero-g-spin-9")},
+		{"policy", V::String("implicit-gauss-seidel-1e-6-aitken-30")}, {"rigid", sc.rigid}, {"cloth", sc.cloth},
+		{"rigid_version", V::String(sc.rigidVersion)}, {"cloth_version", V::String(ClothSolverVersion())}});
+	if (LoadPersistedEvidence("coupling." + std::string(ClothRigidCouplingKind), storeKey, e)) return true;
 	SimulationGroup g;
 	if (!BuildClothRigidGroup(g, sc, p, error) || !g.Start(error) || !g.Run(error)) return Fail(error, "coupling evidence run: " + error);
 	ClothRigidTotals t0, t;
@@ -266,6 +272,7 @@ bool ComputeEvidence(Evidence& e, std::string& error)
 	e.scope = "the contact impulse and its moment crossing the port as the step's own barrier and friction impulse, the "
 		"collider following the body's fitted pose: momentum balance and no energy gain on a canonical zero-gravity "
 		"impact; it does not bound the trajectory error of a given coupled run";
+	PersistEvidence("coupling." + std::string(ClothRigidCouplingKind), storeKey, e);
 	return true;
 }
 }

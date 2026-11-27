@@ -49,7 +49,14 @@ constexpr std::size_t CodecBudget = std::size_t(256) << 20;
 // m3a.7 (M7j): with a partner's steps the corotational elements' blocks are balanced (exactly
 // invariant to an element's translation; the partner's copy does the same): a free sheet's elastic
 // forces sum to zero; every other run gives the frames of m3a.6.
-constexpr const char* SolverVersion = "m3a.7";
+// m3a.8: the direct factorisation (and the multigrid's coarsest level) is an envelope Cholesky under
+// reverse Cuthill-McKee with pins decoupled (ClothLinearAlgebra.h EnvelopeCholesky) instead of a band
+// in grid order: the same systems solved exactly, so every run that uses the direct solver or the
+// multigrid differs from m3a.7 in the last bits only.  The self-collision incline evidence
+// (self-stick, self-slide) starts with the upper layer aligned in plan after its settle, which
+// removed a neutral in-plane mode that let round-off choose the result; self-slide's tolerance is
+// re-derived by the same 1.25 x rule (4.8e-3 to 4.6e-3), self-stick's stays 1.6e-2.
+constexpr const char* SolverVersion = "m3a.8";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
@@ -561,14 +568,15 @@ const EvidenceSpec ContactSpecs[] = {
 // integrators with the default contact settings).  The stack's force balance
 // is exact up to the Newton tolerance; stick and slide are 1.25 x the largest
 // observed (the layered contact's discretisation, which falls under mesh
-// refinement); the fold must have no violation.
+// refinement; m3a.8: re-derived after the incline cases start aligned in plan,
+// which removed their dependence on round-off); the fold must have no violation.
 const EvidenceSpec SelfSpecs[] = {
 	{"self-stack-n6", "two layers on a plane: max |force / weight - 1| (plane: both, lower layer: the upper's); the gap within (0, dhat)",
 		{1e-8, 1e-8, 1e-8}},
 	{"self-stick", "a layer on a pinned layer tilted to half the self-friction angle: |creep speed - smoothed-friction law| / slip speed",
 		{1.6e-2, 1.6e-2, 1.6e-2}},
 	{"self-slide", "a layer on a pinned layer tilted 0.2 rad past the self-friction angle: relative acceleration error vs g (sin - mu cos)",
-		{4.8e-3, 4.8e-3, 4.8e-3}},
+		{4.6e-3, 4.6e-3, 4.6e-3}},
 	{"self-fold", "strip folded onto itself by moving pins, 1.2 s: steps whose straight path or end state violates an offset (cloth-cloth included)",
 		{0.5, 0.5, 0.5}},
 };
@@ -731,7 +739,17 @@ std::vector<EvidenceCase> Memoised(const EvidenceKey& k, bool contactPart)
 		const auto it = memo.find(digest);
 		if (it != memo.end()) return it->second;
 	}
-	std::vector<EvidenceCase> cases = RunEvidence(k, contactPart);
+	// A2: across processes, the store keyed by the same configuration (solver id and version included)
+	// and bound to the build; a loaded entry holds exactly the cases computed before.
+	const V storeKey = EvidenceConfiguration(k, contactPart ? "contact" : "all", 0);
+	Evidence stored;
+	std::vector<EvidenceCase> cases;
+	if (LoadPersistedEvidence(ClothSolverId, storeKey, stored)) cases = std::move(stored.cases);
+	else {
+		cases = RunEvidence(k, contactPart);
+		stored.cases = cases;
+		PersistEvidence(ClothSolverId, storeKey, stored);
+	}
 	std::lock_guard<std::mutex> hold(mutex);
 	memo[digest] = cases;
 	return cases;
@@ -1876,6 +1894,8 @@ bool ClothSolver::RestoreState(const SolverStateToken& token, std::string& error
 	return Apply(std::move(copy), error);
 }
 } // namespace
+
+const char* ClothSolverVersion() { return SolverVersion; }
 
 bool RegisterClothSolver(std::string& error)
 {

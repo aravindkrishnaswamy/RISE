@@ -243,6 +243,22 @@ bool CouplingEvidence(const std::string& kind, Evidence& evidence, std::string& 
 	return true;
 }
 
+std::future<void> PrefetchCouplingEvidence(const std::string& kind)
+{
+	bool pending = false;
+	{
+		auto& r = Registry();
+		std::lock_guard<std::mutex> hold(r.mutex);
+		for (const auto& e : r.entries) if (e->kind == kind) pending = !e->done;
+	}
+	if (!pending) return std::future<void>();
+	return std::async(std::launch::async, [kind]() {
+		Evidence ignored;
+		std::string error;
+		(void)CouplingEvidence(kind, ignored, error);   // memoised; a failure reaches the caller that needs it
+	});
+}
+
 // ------------------------------------------------------------------ members and links
 
 struct SimulationGroup::Member {

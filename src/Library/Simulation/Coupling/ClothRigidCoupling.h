@@ -31,6 +31,7 @@ struct ClothRigidScenario {
 	std::array<double,3> moments{{0, 0, 0}};
 	std::vector<double> clothMasses;     // lumped mass per cloth vertex
 	double duration = 0;
+	std::string rigidVersion;            // the rigid solver's version (the evidence store's key)
 };
 
 //! Zero gravity, no pins: a 0.3 m box (0.81 kg) moving up at 0.5 m/s and

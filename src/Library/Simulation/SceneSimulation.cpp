@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <future>
 #include <set>
 
 namespace RISE { namespace Simulation {
@@ -415,6 +416,26 @@ bool SceneSimulationGraph::Plan(const std::vector<SceneSimulationSpec>& specs, c
 	for (std::size_t i = 0; i < specs.size(); ++i) {
 		std::vector<std::string> path;
 		if (!visit(i, path)) return false;
+	}
+	// A1 (docs/SIMULATION_PERFORMANCE.md): the coupling evidence of each group's kind (the sorted
+	// adapters of its connections) is computed on another thread while the members are configured.
+	// The futures wait in their destructors, so nothing outlives the plan.
+	std::vector<std::future<void>> prefetch;
+	for (const auto& spec : specs) {
+		if (spec.keyword != kSimulationGroupKeyword) continue;
+		std::set<std::string> adapters;
+		bool known = true;
+		for (const auto& line : TextList(spec.parameters.Find("connect"))) {
+			PortConnection c;
+			std::string ignored;
+			if (!ParseConnect(line, c, ignored) || c.adapter.empty()) { known = false; break; }
+			adapters.insert(c.adapter);
+		}
+		if (!known || adapters.empty()) continue;
+		std::string kind;
+		for (const auto& a : adapters) kind += (kind.empty() ? "" : "+") + a;
+		std::future<void> f = PrefetchCouplingEvidence(kind);
+		if (f.valid()) prefetch.push_back(std::move(f));
 	}
 	std::map<std::string, std::string> keys;   // expected key by simulation
 	for (const std::size_t i : order) {

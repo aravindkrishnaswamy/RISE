@@ -337,20 +337,54 @@ bool ForCells(const HashGrid& grid, double cell, const Box& b, F&& f)
 	std::int64_t lo[3], hi[3];
 	if (!CellRange(b, cell, lo, hi)) return false;
 	for (std::uint32_t id : grid.oversize) f(id);
+	if (grid.keys.empty()) return true;
 	for (std::int64_t i = lo[0]; i <= hi[0]; ++i) for (std::int64_t j = lo[1]; j <= hi[1]; ++j) for (std::int64_t k = lo[2]; k <= hi[2]; ++k) {
-		const auto it = grid.cells.find(CellKey(i, j, k));
-		if (it == grid.cells.end()) continue;
-		for (std::uint32_t id : it->second) f(id);
+		const std::int64_t s = grid.Find(CellKey(i, j, k));
+		if (s < 0) continue;
+		const std::uint32_t* id = grid.ids.data() + grid.start[static_cast<std::size_t>(s)];
+		for (std::uint32_t n = grid.count[static_cast<std::size_t>(s)]; n > 0; --n, ++id) f(*id);
 	}
 	return true;
 }
 
+// Records a primitive for the next Finish (or puts it in the oversize list).
 void Insert(HashGrid& grid, double cell, const Box& b, std::uint32_t id)
 {
-	std::int64_t lo[3], hi[3];
-	if (!CellRange(b, cell, lo, hi)) { grid.oversize.push_back(id); return; }
-	for (std::int64_t i = lo[0]; i <= hi[0]; ++i) for (std::int64_t j = lo[1]; j <= hi[1]; ++j) for (std::int64_t k = lo[2]; k <= hi[2]; ++k)
-		grid.cells[CellKey(i, j, k)].push_back(id);
+	HashGrid::Pending e;
+	if (!CellRange(b, cell, e.lo, e.hi)) { grid.oversize.push_back(id); return; }
+	e.id = id;
+	grid.touches += static_cast<std::size_t>((e.hi[0] - e.lo[0] + 1)*(e.hi[1] - e.lo[1] + 1)*(e.hi[2] - e.lo[2] + 1));
+	grid.pending.push_back(e);
+}
+
+// Builds the table of the recorded primitives: every cell holds its ids in the order they were inserted.
+void Finish(HashGrid& grid)
+{
+	grid.ids.clear();
+	if (grid.pending.empty()) { grid.keys.clear(); grid.mask = 0; return; }
+	std::size_t capacity = 16;
+	while (capacity < 2*grid.touches) capacity *= 2;
+	grid.mask = capacity - 1;
+	grid.keys.assign(capacity, HashGrid::Empty);
+	grid.count.assign(capacity, 0);
+	auto slot = [&](std::uint64_t key) {
+		std::uint64_t s = HashGrid::Hash(key) & grid.mask;
+		while (grid.keys[s] != key && grid.keys[s] != HashGrid::Empty) s = (s + 1) & grid.mask;
+		grid.keys[s] = key;
+		return static_cast<std::size_t>(s);
+	};
+	auto cells = [&](auto&& f) {
+		for (const auto& e : grid.pending)
+			for (std::int64_t i = e.lo[0]; i <= e.hi[0]; ++i) for (std::int64_t j = e.lo[1]; j <= e.hi[1]; ++j)
+				for (std::int64_t k = e.lo[2]; k <= e.hi[2]; ++k) f(slot(CellKey(i, j, k)), e.id);
+	};
+	cells([&](std::size_t s, std::uint32_t) { ++grid.count[s]; });
+	grid.start.resize(capacity);
+	std::uint32_t total = 0;
+	for (std::size_t s = 0; s < capacity; ++s) { grid.start[s] = total; total += grid.count[s]; grid.count[s] = 0; }
+	grid.ids.resize(total);
+	cells([&](std::size_t s, std::uint32_t id) { grid.ids[grid.start[s] + grid.count[s]++] = id; });
+	grid.pending.clear();
 }
 
 // Conservative advancement of a point against a 1-Lipschitz signed distance.
@@ -684,6 +718,7 @@ void BarrierContact::PlaceGrid(ContactFrame& f) const
 		b.Grow(At(f.colliderX, static_cast<std::uint32_t>(i)));
 		Insert(f.gridVertices, f.cell, b, static_cast<std::uint32_t>(i));
 	}
+	Finish(f.gridTriangles); Finish(f.gridEdges); Finish(f.gridVertices);
 }
 
 void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx,
@@ -762,6 +797,7 @@ void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, c
 			for (int k = 0; k < 3; ++k) { ebox[6*e + k] = b.lo[k]; ebox[6*e + 3 + k] = b.hi[k]; }
 			Insert(ge, cell, b, e);
 		}
+		Finish(gt); Finish(ge);
 		for (std::uint32_t i = 0; i < vertices_; ++i) {
 			Box b;
 			point(i, b);

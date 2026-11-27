@@ -1164,6 +1164,13 @@ CaseResult RunSelfIncline(const CaseSettings& settings, const ContactSettings& c
 		if (!rest.Initialize(sheet, normal, error)) return Failed(error);
 		if (!rest.SolveStatic(settle, r.stats, error, 0.01, 10, false, 100)) return Failed(error);
 		system.x = rest.x;
+		// m3a.8: the frictionless settle leaves the upper layer's in-plane rigid motion neutral (only the
+		// walls, 12.5 um away, bound it), so round-off decided which corner it drifted into, and the
+		// measured creep or acceleration with it (stick 0.68e-2 .. 1.78e-2 under 1-ulp perturbations of
+		// the old solver; docs/SIMULATION_PERFORMANCE.md section 13.7).  The settle supplies the normal
+		// (contact) equilibrium only: the upper layer starts aligned in plan, as the case states.
+		for (std::uint32_t q = n*n; q < system.Vertices(); ++q)
+			for (int d : {0, 2}) system.x[3*static_cast<std::size_t>(q) + d] = sheet.initial[3*static_cast<std::size_t>(q) + d];
 		system.v.assign(system.x.size(), 0.0);
 	}
 	NewtonOptions newton = settings.newton;
