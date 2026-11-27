@@ -132,6 +132,7 @@ set_source_files_properties(
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleOverlap.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSComplexLayout.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSLocalBake.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSParticleGeometry.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )

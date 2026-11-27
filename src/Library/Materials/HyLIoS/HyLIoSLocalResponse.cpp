@@ -545,6 +545,19 @@ HyLIoSLocalResponse::Scaled HyLIoSLocalResponse::InterpolateScaled(Scaled lo, Sc
     return AddScaled(ComplementTimesScaled(primary,s.minority),TimesScaled(secondary,s.minority));
 }
 
+double HyLIoSLocalResponse::StoredContinuous(std::size_t node,std::size_t incident,std::size_t outgoing) const
+{
+    if(node>=wavelengths_.size()||incident>=storage_.incidentCells||outgoing>=storage_.outgoingCells)
+        throw std::out_of_range("HyLIoS stored continuous coefficient index");
+    return F(node,incident,outgoing);
+}
+double HyLIoSLocalResponse::StoredMirror(std::size_t node,std::size_t incident) const
+{
+    if(node>=wavelengths_.size()||incident>=storage_.incidentCells)
+        throw std::out_of_range("HyLIoS stored mirror coefficient index");
+    return mirror_[node*storage_.incidentCells+incident];
+}
+
 double HyLIoSLocalResponse::F(std::size_t l, std::size_t i, std::size_t j) const
 {
     return continuous_[(l*storage_.incidentCells+i)*storage_.outgoingCells+j];

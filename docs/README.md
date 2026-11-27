@@ -181,6 +181,7 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 - [HYLIOS_COUPLED_LINEAGE_PROOF.md](HYLIOS_COUPLED_LINEAGE_PROOF.md): coupled position/direction support proofs and their [implemented transition ledger](HYLIOS_COUPLED_LINEAGE_TRANSITIONS.md)
 - [HYLIOS_LOCAL_ASSET_V1.md](HYLIOS_LOCAL_ASSET_V1.md): bounded local-response asset framing, semantic identity, quantization and recovery contracts
 - [HYLIOS_EXPERIMENT_PREPARATION.md](HYLIOS_EXPERIMENT_PREPARATION.md): immutable exact-node resolution, shared history driving and locale-independent JSON
+- [HYLIOS_LOCAL_BAKE_V1.md](HYLIOS_LOCAL_BAKE_V1.md): bounded forward response baking, source provenance and statistical reports
 - [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md): refreshed HyLIoS hyperspectral skin
   implementation design, scientific validation gates, PT integration and spatial
   transport roadmap; [research notes](HYLIOS_RESEARCH_NOTES.md) record sources,

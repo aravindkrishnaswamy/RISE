@@ -144,3 +144,5 @@ HyLIoSCoupledAngularLineageTest	pool	3	Scheduling estimate; deterministic suppor
 HyLIoSResolvedExperimentTest	pool	2	Scheduling estimate; deterministic resolver and driver controls
 AgentJsonLocaleTest	pool	2	Scheduling estimate; locale isolated to standalone process
 AgentJsonLifetimeTest	pool	1	Scheduling estimate; process teardown controls
+HyLIoSLocalBakeTest	pool	2	Scheduling estimate; bounded synthetic bake and artifact controls
+HyLIoSLocalBakeAllocationTest	pool	2	Scheduling estimate; bounded synthetic bake and artifact controls

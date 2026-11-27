@@ -1,4 +1,5 @@
 #include "Agent/Json.h"
+#include "Materials/HyLIoS/HyLIoSLocalBake.h"
 #include "Materials/HyLIoS/HyLIoSForwardTransport.h"
 #include "Materials/HyLIoS/HyLIoSOptics.h"
 #include "Materials/HyLIoS/HyLIoSSurfaceBoundary.h"
@@ -30,6 +31,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <fcntl.h>
+#include <unistd.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -192,18 +197,11 @@ Options Parse(int argc, char **argv) {
     return o;
 }
 std::string Read(const std::string &path) {
-    std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
-    Require(input.good(), "cannot open specimen");
-    std::string bytes;
-    std::array<char, 8192> chunk{};
-    while (input) {
-        input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-        bytes.append(chunk.data(), static_cast<std::size_t>(input.gcount()));
-        Require(bytes.size() <= 64 * 1024 * 1024, "specimen exceeds 64MiB input budget");
-    }
-    Require(input.eof(), "specimen read failed");
-    return bytes;
+    ValidateExperimentUnicode(path);
+    const auto bytes=LocalAssetDetail::ReadRegularFile(path,64*1024*1024);
+    return std::string(bytes.begin(),bytes.end());
 }
+
 std::string Outcome(ForwardTermination t) {
     switch (t) {
     case ForwardTermination::ExternalReflection:
@@ -901,9 +899,94 @@ void AtomicWrite(const std::string &path, const std::string &bytes) {
     }
 #endif
 }
+
+std::string BakeExecutablePath(const char*
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)
+    argv0
+#endif
+) {
+#ifdef _WIN32
+    std::vector<wchar_t> buffer(32768);const DWORD n=GetModuleFileNameW(nullptr,buffer.data(),static_cast<DWORD>(buffer.size()));
+    Require(n>0&&n<buffer.size(),"cannot resolve executable path");return std::filesystem::path(std::wstring(buffer.data(),n)).u8string();
+#elif defined(__APPLE__)
+    std::uint32_t size=0;_NSGetExecutablePath(nullptr,&size);std::vector<char> buffer(size);
+    Require(_NSGetExecutablePath(buffer.data(),&size)==0,"cannot resolve executable path");return std::filesystem::absolute(std::filesystem::u8path(buffer.data())).u8string();
+#elif defined(__linux__)
+    return std::filesystem::read_symlink("/proc/self/exe").u8string();
+#else
+    return std::filesystem::absolute(std::filesystem::u8path(argv0)).u8string();
+#endif
+}
+LocalResponseGrid UniformBakeGrid(std::uint64_t nt,std::uint64_t np) {
+    Require(nt>0&&nt<=64&&np>0&&np<=64,"bake grid axes require 1..64 cells");
+    LocalResponseGrid grid;
+    for(std::uint64_t i=0;i<=nt;++i)grid.tEdges.push_back(static_cast<double>(i)/static_cast<double>(nt));
+    for(std::uint64_t i=0;i<=np;++i)grid.phiEdges.push_back(static_cast<double>(i)/static_cast<double>(np)*LocalResponseTwoPi);
+    return grid;
+}
+int BakeLocalMain(int argc,char** argv,const std::string& executable) {
+    if(argc==2&&std::string(argv[1])=="--help") {
+        std::cout<<"hylios_measure bake-local [measurement input/model options] --wavelengths-nm N[,N...]\n"
+            "  --histories N --max-transitions N --seed U64 --output FILE\n"
+            "  [--replicates N] [--guide-histories N] [--incident-t-cells N] [--incident-phi-cells N]\n"
+            "  [--outgoing-t-cells N] [--outgoing-phi-cells N] [--max-total-histories N] [--max-total-work N]\n"
+            "Bounded analog/no-RR local approximation, N>1 complex refusal at >=1400nm; full-model default measure remains available.\n";
+        return 0;
+    }
+    const std::set<std::string> extras{"--wavelengths-nm","--replicates","--guide-histories","--incident-t-cells","--incident-phi-cells","--outgoing-t-cells","--outgoing-phi-cells","--max-total-histories","--max-total-work","--max-source-bytes","--max-report-bytes"};
+    std::map<std::string,std::string> bake;
+    std::vector<std::string> base{"hylios_measure"};bool singleWavelength=false;
+    for(int i=1;i<argc;++i){const std::string key=argv[i];Require(i+1<argc,"missing value for "+key);const std::string value=argv[++i];
+        if(extras.count(key))Require(bake.emplace(key,value).second,"duplicate CLI option: "+key);
+        else {base.push_back(key);base.push_back(value);if(key=="--wavelength-nm")singleWavelength=true;}
+    }
+    LocalBakeConfig config;
+    if(bake.count("--wavelengths-nm")) {
+        Require(!singleWavelength,"use either --wavelength-nm or --wavelengths-nm");
+        const std::string text=bake.at("--wavelengths-nm");std::size_t start=0;
+        while(true){const auto end=text.find(',',start);const auto token=text.substr(start,end==std::string::npos?end:end-start);
+            config.wavelengthsNm.push_back(Real(token,"wavelength node",0,true));if(end==std::string::npos)break;start=end+1;}
+        base.push_back("--wavelength-nm");base.push_back(text.substr(0,text.find(',')));
+    }
+    std::vector<char*> args;for(auto& value:base)args.push_back(value.data());
+    const auto options=Parse(static_cast<int>(args.size()),args.data());
+    Require(options.estimator=="analog"&&options.roulette==0,"bake-local requires analog absorption and no roulette");
+    Require(options.incidentPolar==0&&options.incidentAzimuth==0,"bake-local uses the complete independent incident grid; fixed launch flags unsupported");
+    if(config.wavelengthsNm.empty())config.wavelengthsNm={options.wavelength};
+    config.seed=options.seed;config.historiesPerCellPerReplicate=options.histories;config.maximumWorkPerHistory=options.maxTransitions;
+    config.boundary=options.boundary=="smooth"?ExperimentBoundary::Smooth:ExperimentBoundary::HyLIoS2015;
+    config.placement=options.placement=="fixed"?ForwardPlacementPolicy::FixedEventDiagnosticV1:ForwardPlacementPolicy::NullCollisionPlacementV1;
+    config.postScatter=options.postScatter=="discard"?ForwardPostScatterPolicy::DiscardAfterScatterV1:ForwardPostScatterPolicy::DiagnosticRetainParticleV1;
+    config.explicitComplexPackV1=options.complexLayout=="explicit-pack-v1";config.exteriorIOR=options.exteriorIOR;
+    config.fiberRadiusMetres=options.fiberRadius;config.fiberFraction=options.fiberFraction;config.fiberRelativeIOR=options.fiberEta;
+    auto count=[&](const char* key,std::uint64_t fallback){return bake.count(key)?Integer(bake.at(key),key,std::numeric_limits<std::uint64_t>::max()):fallback;};
+    config.replicates=count("--replicates",2);config.normalGuideHistoriesPerReplicate=count("--guide-histories",options.histories);
+    config.maximumSourceArtifactBytes=count("--max-source-bytes",config.maximumSourceArtifactBytes);config.maximumReportBytes=count("--max-report-bytes",config.maximumReportBytes);
+    config.maximumTotalHistories=count("--max-total-histories",config.maximumTotalHistories);config.maximumTotalWork=count("--max-total-work",config.maximumTotalWork);
+    config.incident=UniformBakeGrid(count("--incident-t-cells",2),count("--incident-phi-cells",4));
+    config.outgoing=UniformBakeGrid(count("--outgoing-t-cells",2),count("--outgoing-phi-cells",4));
+    config.buildArtifactPath=executable;
+    std::signal(SIGINT,Signal);std::signal(SIGTERM,Signal);
+    LocalBakeExecution execution;execution.hooks.isCancelled=[](void*){return interrupted!=0;};
+    std::cerr<<"bake-local: signal handlers ready\n"<<std::flush;
+    try {
+        const auto result=BakeLocalResponse(Read(options.specimen),config,execution);
+        Require(!interrupted,"bake cancelled before publication");
+        PublishLocalBake(options.output,result,config.limits,[]{Require(!interrupted,"bake cancelled at asset publication");});
+        std::cout<<"Wrote bounded local approximation for "<<result.completedHistories<<" histories, bulk work "<<result.bulkWork<<", surface work "<<result.surfaceWork<<" to "<<options.output<<'\n';
+    } catch(const LocalBakeFailure& failure) {
+        std::cerr<<failure.what()<<"; history_index="<<failure.historyIndex<<" completed="<<failure.completedHistories
+            <<" bulk_work="<<failure.bulkWork<<" surface_work="<<failure.surfaceWork<<" outcome="<<Outcome(failure.termination)<<'\n';return interrupted?130:1;
+    } catch(const std::exception& failure) {
+        if(interrupted){std::cerr<<"bake-local cancelled: "<<failure.what()<<'\n';return 130;}throw;
+    }
+    return 0;
+}
+
 } // namespace
 int main(int argc, char **argv) {
     try {
+        if(argc>=2&&std::string(argv[1])=="bake-local")return BakeLocalMain(argc-1,argv+1,BakeExecutablePath(argv[0]));
         if (argc == 2 && std::string(argv[1]) == "--help") {
             Usage();
             return 0;

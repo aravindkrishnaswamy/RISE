@@ -110,6 +110,10 @@ public:
     static LocalResponseDirection ToDirection(LocalResponsePoint);
     static LocalResponsePoint FromDirection(LocalResponseDirection);
 
+    // Read-only nodal inspection for artifact/count consistency validation.
+    // These are stored coefficients, without interpolation or proposal sampling.
+    double StoredContinuous(std::size_t node,std::size_t incident,std::size_t outgoing) const;
+    double StoredMirror(std::size_t node,std::size_t incident) const;
     const LocalResponseStorage& Storage() const noexcept { return storage_; }
     std::size_t IncidentCell(LocalResponsePoint p) const;
     std::size_t OutgoingCell(LocalResponsePoint p) const;

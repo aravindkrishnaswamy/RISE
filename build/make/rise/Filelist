@@ -242,6 +242,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponse.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponseAsset.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardExperiment.cpp			\

@@ -37,7 +37,7 @@ struct LocalAssetProductionIdentity {
     std::uint64_t seed = 0, historiesPerCellPerReplicate = 0;
     std::uint64_t replicates = 0, normalGuideHistoriesPerReplicate = 0;
     std::uint64_t maximumWorkPerHistory = 0;
-    // Declared producer records: actual executable/source/build identity,
+    // Declared producer-selected build/provenance records (no execution attestation),
     // and replicate/bin/atom/row uncertainty plus convergence evidence.
     // Canonical nonempty maps; the codec does not certify MC uncertainty.
     LocalAssetRecord build, statistics;
@@ -111,6 +111,26 @@ void SaveLocalResponseAsset(const std::string& path, const LocalAssetDefinition&
     const LocalAssetLimits& limits = {});
 
 namespace LocalAssetDetail {
+// Encoded-record profile gate without generic Value construction: 1..4096 bytes, nonempty map,
+// depth <=8 and <=8192 tokens. Canonical/NFC checks follow in the decoder;
+// callers must admit MetadataDecoderBytesBound before that allocating step.
+// Successful scans allocate nothing; rejection may allocate bounded error text.
+void ValidateRecordSyntax(const LocalAssetRecord&);
+// Shared conservative generic-Value logical storage factor used by the codec.
+std::uint64_t MetadataDecoderBytesBound(std::uint64_t encodedBytes);
+
+// Shared descriptor-based input boundary: open nonblocking on POSIX, fstat
+// the opened object, refuse nonregular inputs, bound extent before allocation,
+// then read/hash that same descriptor and require exact end. The observation
+// callback is a per-call race/truncation test seam after open/fstat, before I/O.
+struct RegularFileDigest { std::uint64_t bytes; std::string sha256; };
+LocalAssetRecord ReadRegularFile(const std::string&,std::uint64_t maximumBytes,
+    const std::function<void()>& beforeRead = {});
+RegularFileDigest HashRegularFile(const std::string&,std::uint64_t maximumBytes,
+    const std::function<void()>& beforeRead = {});
+// Exactly the codec's positive_float32_downward_le_v1 conversion.
+double QuantizeCoefficient(double);
+double ForwardEncodingErrorBound(double maximumCoefficientError,const HyLIoSLocalResponse&);
 // Private per-call test seam at the real atomic helper's pre-publication
 // boundary. Throwing refuses publication and preserves the prior destination.
 void SaveObserved(const std::string&, const LocalAssetDefinition&, const LocalAssetLimits&,

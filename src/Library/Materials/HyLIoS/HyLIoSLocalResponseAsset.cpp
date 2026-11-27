@@ -83,6 +83,7 @@ class RegularInput final {
 public:
     explicit RegularInput(const std::string& path)
     {
+        if(path.empty()||path.size()>32768||path.find('\0')!=std::string::npos)Fail("input pathname bound/NUL contract");
 #ifdef _WIN32
         const int fd=_wopen(std::filesystem::u8path(path).wstring().c_str(),_O_RDONLY|_O_BINARY|_O_NOINHERIT);
         if(fd<0) Fail("cannot open file: "+path);
@@ -115,6 +116,22 @@ public:
 private:
     std::FILE* file_=nullptr;
     std::uint64_t size_=0;
+};
+
+class RegularInputBuffer final : public std::streambuf {
+public:
+    explicit RegularInputBuffer(RegularInput& input):source(input),remaining(input.SizeBytes()){}
+    bool Complete()const{return remaining==0&&gptr()==egptr();}
+protected:
+    int_type underflow() override {
+        if(gptr()!=egptr())return traits_type::to_int_type(*gptr());
+        if(remaining==0)return traits_type::eof();
+        const auto count=static_cast<std::size_t>(std::min<std::uint64_t>(remaining,buffer.size()));
+        source.Read(reinterpret_cast<unsigned char*>(buffer.data()),count);remaining-=count;
+        setg(buffer.data(),buffer.data(),buffer.data()+count);return traits_type::to_int_type(*gptr());
+    }
+private:
+    RegularInput& source;std::uint64_t remaining;std::array<char,8192> buffer{};
 };
 
 struct Scan {
@@ -178,7 +195,7 @@ double Number(const V& value,const char* key)
 }
 void Record(const Bytes& bytes,const char* field)
 {
-    if(bytes.empty() || bytes.size()>MaxRecordBytes) Fail(std::string("record byte bound: ")+field);
+    LocalAssetDetail::ValidateRecordSyntax(bytes);
     V v=Decode(bytes);
     if(v.GetType()!=V::Map || v.GetMap().empty()) Fail(std::string("record must be nonempty map: ")+field);
 }
@@ -308,7 +325,7 @@ std::uint64_t Preflight(const Dimensions& d,std::uint64_t metadata,const LocalAs
     // 2 complete numeric cores plus decoded definition/guide, two wire buffers,
     // grid/node doubles, control blocks and fixed I/O/hash scratch allowance.
     // The numeric core's own logical-array accounting includes its CDF tables.
-    auto peak=Add(Mul(metadata,4096),Mul(file,2));
+    auto peak=Add(LocalAssetDetail::MetadataDecoderBytesBound(metadata),Mul(file,2));
     peak=Add(peak,Mul(d.core.storageBytes,2));
     peak=Add(peak,Mul(d.coefficients,8));
     std::uint64_t axes=0; for(auto n:d.counts) axes=Add(axes,n);
@@ -360,6 +377,18 @@ std::uint32_t DownBits(double x)
         (static_cast<std::uint32_t>(mantissa>>29)&0x7fffffu);
 }
 double DecodeFloat(const unsigned char* p) { return PhysicalBits(Get32(p)); }
+double EncodingRowBound(double maximumCoefficientError,const HyLIoSLocalResponse& core)
+{
+    if(maximumCoefficientError==0)return 0;
+    const double infinity=std::numeric_limits<double>::infinity();double areaSumUpper=0;
+    for(std::size_t j=0;j<core.Storage().outgoingCells;++j) {
+        const double areaUpper=std::nextafter(core.OutgoingCellArea(j),infinity);
+        areaSumUpper=std::nextafter(areaSumUpper+areaUpper,infinity);
+    }
+    const double factor=std::nextafter(areaSumUpper+1,infinity);
+    const double product=maximumCoefficientError*factor;
+    return std::nextafter(product,infinity);
+}
 V Metadata(const LocalAssetDefinition& d,const LocalAssetEncodingError& e)
 {
     return V::MapValue({{"format",V::String(Format)}, {"semantic",Semantic(d.semantic)},
@@ -410,17 +439,7 @@ Bytes MakeFile(const LocalAssetDefinition& input,const LocalAssetLimits& limits)
     // bounds that exact represented area. Upward successors after every add
     // retain the bound even when a tiny positive term vanishes in the sum.
     // Finally add the mirror coefficient and bound multiplication upward.
-    if(error.maximumCoefficientAbsoluteError>0) {
-        const double infinity=std::numeric_limits<double>::infinity();
-        double areaSumUpper=0;
-        for(std::size_t j=0;j<d.core.outgoingCells;++j) {
-            const double areaUpper=std::nextafter(sourceCore->OutgoingCellArea(j),infinity);
-            areaSumUpper=std::nextafter(areaSumUpper+areaUpper,infinity);
-        }
-        const double factor=std::nextafter(areaSumUpper+1,infinity);
-        const double product=error.maximumCoefficientAbsoluteError*factor;
-        error.maximumForwardRowAbsoluteError=std::nextafter(product,infinity);
-    }
+    error.maximumForwardRowAbsoluteError=EncodingRowBound(error.maximumCoefficientAbsoluteError,*sourceCore);
     HyLIoSLocalResponse::Create(quantized.response,limits.response);
     Bytes metadata=Encode(Metadata(quantized,error));
     Preflight(d,metadata.size(),limits);
@@ -436,6 +455,39 @@ Bytes MakeFile(const LocalAssetDefinition& input,const LocalAssetLimits& limits)
     Digest(file); return file;
 }
 } // namespace
+
+namespace LocalAssetDetail {
+void ValidateRecordSyntax(const LocalAssetRecord& bytes) {
+    if(bytes.empty()||bytes.size()>MaxRecordBytes)Fail("metadata record byte bound");
+    if((bytes.front()>>5)!=5)Fail("metadata record must be nonempty map");
+    // Parse the root count independently of canonicality so no generic Value
+    // allocation is needed even for a nonminimal encoding of the empty map.
+    const unsigned ai=bytes.front()&31;std::uint64_t count=ai;
+    if(ai>=24) {
+        const unsigned width=ai==24?1:ai==25?2:ai==26?4:ai==27?8:0;
+        if(!width||width>bytes.size()-1)Fail("metadata root token truncation");
+        count=0;for(unsigned n=0;n<width;++n)count=(count<<8)|bytes[n+1];
+    }
+    if(!count)Fail("metadata record must be nonempty map");
+    Scan scan{bytes.data(),bytes.size()};scan.Value(0);
+    if(scan.at!=bytes.size())Fail("metadata trailing bytes");
+}
+std::uint64_t MetadataDecoderBytesBound(std::uint64_t bytes){return Mul(bytes,4096);}
+LocalAssetRecord ReadRegularFile(const std::string& path,std::uint64_t maximumBytes,const std::function<void()>& beforeRead) {
+    RegularInput input(path);if(input.SizeBytes()>maximumBytes)Fail("regular input exceeds explicit byte budget");
+    if(beforeRead)beforeRead();
+    Bytes bytes(Size(input.SizeBytes()));input.Read(bytes.data(),bytes.size());input.RequireEnd();return bytes;
+}
+RegularFileDigest HashRegularFile(const std::string& path,std::uint64_t maximumBytes,const std::function<void()>& beforeRead) {
+    RegularInput input(path);if(input.SizeBytes()>maximumBytes)Fail("regular input exceeds explicit byte budget");
+    if(beforeRead)beforeRead();
+    RegularInputBuffer buffer(input);std::istream stream(&buffer);std::string hash;
+    if(!RISECBOR64::SHA256StreamHex(stream,hash)||!buffer.Complete())Fail("regular input hash read failed");
+    input.RequireEnd();return {input.SizeBytes(),hash};
+}
+double QuantizeCoefficient(double value){return PhysicalBits(DownBits(value));}
+double ForwardEncodingErrorBound(double error,const HyLIoSLocalResponse& core){return EncodingRowBound(error,core);}
+}
 
 std::shared_ptr<const HyLIoSLocalResponseAsset> LoadLocalResponseAsset(const std::string& path,
     const LocalAssetSemanticIdentity& expected,const LocalAssetLimits& limits)

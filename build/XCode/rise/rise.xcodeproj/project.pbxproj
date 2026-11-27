@@ -13,24 +13,28 @@
 		C0F1C0000000000000000003 /* HyLIoSParticleOverlap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		906A66F26F6F1C2A6C901C4E /* HyLIoSComplexLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		BE7AC360C739338E8B366BB5 /* HyLIoSSurfaceBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		98EA62CC961859B228CD31BF /* HyLIoSLocalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000010 /* HyLIoSSlabTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000004 /* HyLIoSForwardTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1C0000000000000000004 /* HyLIoSParticleOverlap.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */; };
 		C8E7DDF99061B742251BA60A /* HyLIoSComplexLayout.h in Headers */ = {isa = PBXBuildFile; fileRef = 794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */; };
 		22AC100CA02C6701F288746B /* HyLIoSSurfaceBoundary.h in Headers */ = {isa = PBXBuildFile; fileRef = ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */; };
+		F662EE95B60FAF0F2A6ACF21 /* HyLIoSLocalBake.h in Headers */ = {isa = PBXBuildFile; fileRef = 756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */; };
 		C0F1A0000000000000000011 /* HyLIoSSlabTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */; };
 		C0F1D0000000000000000005 /* HyLIoSForwardTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */; };
 		C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1C0000000000000000005 /* HyLIoSParticleOverlap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		80B5F53D90795A5748EB106B /* HyLIoSComplexLayout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		65637009BFD0B2B8CF31383B /* HyLIoSSurfaceBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		3C563FDECC88AFB18A55C5AF /* HyLIoSLocalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
 		C0F1C0000000000000000006 /* HyLIoSParticleOverlap.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */; };
 		0967E8C81624C1627CDF82EF /* HyLIoSComplexLayout.h in Sources */ = {isa = PBXBuildFile; fileRef = 794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */; };
 		DB2ED9D25745427CEB8318DA /* HyLIoSSurfaceBoundary.h in Sources */ = {isa = PBXBuildFile; fileRef = ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */; };
+		47B4690D75164AE654EEA90C /* HyLIoSLocalBake.h in Sources */ = {isa = PBXBuildFile; fileRef = 756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */; };
 		C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
 		C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
 		C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
@@ -2406,12 +2410,14 @@
 		C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSParticleOverlap.cpp; sourceTree = "<group>"; };
 		17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSComplexLayout.cpp; sourceTree = "<group>"; };
 		CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSSurfaceBoundary.cpp; sourceTree = "<group>"; };
+		9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSLocalBake.cpp; sourceTree = "<group>"; };
 		C0F1A000000000000000000E /* HyLIoSSlabTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSlabTransport.h; sourceTree = "<group>"; };
 		C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSForwardTransport.h; sourceTree = "<group>"; };
 		C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleGeometry.h; sourceTree = "<group>"; };
 		C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleOverlap.h; sourceTree = "<group>"; };
 		794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSComplexLayout.h; sourceTree = "<group>"; };
 		ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSurfaceBoundary.h; sourceTree = "<group>"; };
+		756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSLocalBake.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000007 /* HyLIoSOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOptics.cpp; sourceTree = "<group>"; };
 		C0F1A0000000000000000008 /* HyLIoSOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOptics.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOpticalData.cpp; sourceTree = "<group>"; };
@@ -4346,12 +4352,14 @@
 				C0F1C0000000000000000002 /* HyLIoSParticleOverlap.h */,
 				794A663B660DFDCF7538AE16 /* HyLIoSComplexLayout.h */,
 				ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */,
+				756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */,
 				C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */,
 				C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */,
 				C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */,
 				C0F1C0000000000000000001 /* HyLIoSParticleOverlap.cpp */,
 				17DF0F365D9ACC342DD1AE4B /* HyLIoSComplexLayout.cpp */,
 				CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */,
+				9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */,
 				C0F1A0000000000000000008 /* HyLIoSOptics.h */,
 				C0F1A0000000000000000007 /* HyLIoSOptics.cpp */,
 				C0F1A0000000000000000002 /* HyLIoSOpticalData.h */,
@@ -5732,6 +5740,7 @@
 				C0F1C0000000000000000004 /* HyLIoSParticleOverlap.h in Headers */,
 				C8E7DDF99061B742251BA60A /* HyLIoSComplexLayout.h in Headers */,
 				22AC100CA02C6701F288746B /* HyLIoSSurfaceBoundary.h in Headers */,
+				F662EE95B60FAF0F2A6ACF21 /* HyLIoSLocalBake.h in Headers */,
 				C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */,
 				C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */,
 				F27F0B3F069C42910069C9E5 /* BioSpecSkinSPF.h in Headers */,
@@ -6541,6 +6550,7 @@
 				C0F1C0000000000000000003 /* HyLIoSParticleOverlap.cpp in Sources */,
 				906A66F26F6F1C2A6C901C4E /* HyLIoSComplexLayout.cpp in Sources */,
 				BE7AC360C739338E8B366BB5 /* HyLIoSSurfaceBoundary.cpp in Sources */,
+				98EA62CC961859B228CD31BF /* HyLIoSLocalBake.cpp in Sources */,
 				C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */,
 				C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */,
 				F27F0B3E069C42910069C9E5 /* BioSpecSkinSPF.cpp in Sources */,
@@ -7232,12 +7242,14 @@
 				C0F1C0000000000000000005 /* HyLIoSParticleOverlap.cpp in Sources */,
 				80B5F53D90795A5748EB106B /* HyLIoSComplexLayout.cpp in Sources */,
 				65637009BFD0B2B8CF31383B /* HyLIoSSurfaceBoundary.cpp in Sources */,
+				3C563FDECC88AFB18A55C5AF /* HyLIoSLocalBake.cpp in Sources */,
 				C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */,
 				C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */,
 				C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */,
 				C0F1C0000000000000000006 /* HyLIoSParticleOverlap.h in Sources */,
 				0967E8C81624C1627CDF82EF /* HyLIoSComplexLayout.h in Sources */,
 				DB2ED9D25745427CEB8318DA /* HyLIoSSurfaceBoundary.h in Sources */,
+				47B4690D75164AE654EEA90C /* HyLIoSLocalBake.h in Sources */,
 				C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */,
 				C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */,
 				C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */,
