@@ -49,6 +49,7 @@
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include "../Materials/FabricPresets.h"   // fabric_material: the `fabric` enum's preset table (multi-slot seeding)
 #include "../Materials/HyLIoS/HyLIoSSkinMaterial.h" // HyLIoSSkinMaterialConfig for `hylios_skin_material`
+#include "../Rendering/HyperspectralRadiometricRasterizer.h" // HyperspectralRadiometricConfig
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -13899,6 +13900,70 @@ namespace RISE
 				}
 			};
 
+			struct HyperspectralRadiometricRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					HyperspectralRadiometricConfig cfg;
+					cfg.lambdaBegin           = bag.GetDouble( "lambda_begin", 400.0 );
+					cfg.lambdaEnd             = bag.GetDouble( "lambda_end", 700.0 );
+					cfg.lambdaStep            = bag.GetDouble( "lambda_step", 10.0 );
+					cfg.samplesPerPixel       = static_cast<std::uint64_t>( bag.GetUInt( "samples_per_pixel", 16 ) );
+					cfg.seed                  = static_cast<std::uint64_t>( bag.GetUInt( "seed", 1 ) );
+					cfg.outputPrefix          = bag.GetString( "output_prefix", "" );
+					cfg.checkpointPrefix      = bag.GetString( "checkpoint_prefix", "" );
+					cfg.allowRGBUpliftSources = bag.GetBool( "allow_rgb_uplift_sources", false );
+					cfg.oidnDenoise           = bag.GetBool( "oidn_denoise", false );
+					cfg.toneMap               = bag.GetBool( "tone_map", false );
+					cfg.pixelFilterName       = bag.GetString( "pixel_filter", "box" );
+					cfg.stabilityConfig.directClamp   = Scalar( bag.GetDouble( "direct_clamp", 0.0 ) );
+					cfg.stabilityConfig.indirectClamp = Scalar( bag.GetDouble( "indirect_clamp", 0.0 ) );
+					cfg.stabilityConfig.filterGlossy  = Scalar( bag.GetDouble( "filter_glossy", 0.0 ) );
+
+					const std::vector<std::string>& wlList = bag.GetRepeatable( "wavelength_nm" );
+					if( !wlList.empty() ) {
+						cfg.wavelengthsNm.reserve( wlList.size() );
+						for( const std::string& tok : wlList ) {
+							char* endPtr = nullptr;
+							const double val = std::strtod( tok.c_str(), &endPtr );
+							if( !endPtr || endPtr == tok.c_str() || !std::isfinite( val ) || val <= 0.0 ) {
+								SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: invalid wavelength_nm value" );
+								return false;
+							}
+							cfg.wavelengthsNm.push_back( val );
+						}
+					}
+
+					return pJob.SetHyperspectralRadiometricRasterizer( cfg );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hyperspectral_radiometric_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Dedicated raw radiometric fixed-wavelength hyperspectral rasterizer (P6b).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "wavelength_nm";            p.kind = ValueKind::String;   p.repeatable = true; p.description = "Explicit fixed wavelength node in nm (repeatable)"; }
+						{ auto& p = P(); p.name = "lambda_begin";             p.kind = ValueKind::Double;   p.description = "Sweep start wavelength in nm"; p.defaultValueHint = "400.0"; }
+						{ auto& p = P(); p.name = "lambda_end";               p.kind = ValueKind::Double;   p.description = "Sweep end wavelength in nm"; p.defaultValueHint = "700.0"; }
+						{ auto& p = P(); p.name = "lambda_step";              p.kind = ValueKind::Double;   p.description = "Sweep step in nm"; p.defaultValueHint = "10.0"; }
+						{ auto& p = P(); p.name = "samples_per_pixel";        p.kind = ValueKind::UInt;     p.description = "Fixed samples per pixel per wavelength"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "seed";                     p.kind = ValueKind::UInt;     p.description = "Deterministic sweep seed"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "output_prefix";            p.kind = ValueKind::Filename; p.description = "Output prefix for EXR bands and JSON manifest"; }
+						{ auto& p = P(); p.name = "checkpoint_prefix";        p.kind = ValueKind::Filename; p.description = "Optional checkpoint prefix for save/resume"; }
+						{ auto& p = P(); p.name = "allow_rgb_uplift_sources"; p.kind = ValueKind::Bool;     p.description = "Allow RGB-uplifted lights (default FALSE: strict physical sources)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";             p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "tone_map";                 p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "pixel_filter";             p.kind = ValueKind::String;   p.description = "Nonnegative pixel filter (box/triangle/gaussian)"; p.defaultValueHint = "box"; }
+						{ auto& p = P(); p.name = "direct_clamp";             p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "indirect_clamp";           p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "filter_glossy";            p.kind = ValueKind::Double;   p.description = "Must be 0 in raw radiometric mode"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -15220,6 +15285,7 @@ namespace RISE
 		add( "vcm_spectral_rasterizer",               std::make_unique<VCMSpectralRasterizerAsciiChunkParser>() );
 		add( "pathtracing_pel_rasterizer",            std::make_unique<PathTracingPelRasterizerAsciiChunkParser>() );
 		add( "pathtracing_spectral_rasterizer",       std::make_unique<PathTracingSpectralRasterizerAsciiChunkParser>() );
+		add( "hyperspectral_radiometric_rasterizer",  std::make_unique<HyperspectralRadiometricRasterizerAsciiChunkParser>() );
 		add( "auto_rasterizer",                       std::make_unique<AutoRasterizerAsciiChunkParser>() );
 		add( "auto_spectral_rasterizer",              std::make_unique<AutoSpectralRasterizerAsciiChunkParser>() );
 		add( "mlt_rasterizer",                        std::make_unique<MLTRasterizerAsciiChunkParser>() );

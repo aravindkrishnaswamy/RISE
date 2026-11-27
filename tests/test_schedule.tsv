@@ -148,3 +148,5 @@ HyLIoSLocalBakeTest	pool	2	Scheduling estimate; bounded synthetic bake and artif
 HyLIoSLocalBakeAllocationTest	pool	2	Scheduling estimate; bounded synthetic bake and artifact controls
 HyLIoSIntegrationTest	pool	5	Scheduling estimate; HyLIoS P5 material integration, CST, and capability guards
 HyLIoSSpectralTest	pool	5	Scheduling estimate; HyLIoS P5 NM vs HWSS per-lane spectral transport
+HyLIoSSourceAndFilmTest	pool	5	Scheduling estimate; P6b radiometric preflight and calibrated spectral radiance
+HyperspectralOutputTest	pool	5	Scheduling estimate; P6b EXR output, JSON manifest, checkpoint resume, CST chunk

@@ -3017,6 +3017,11 @@ namespace RISE
 			const ProgressiveConfig& progressiveConfig
 			);
 
+		//! Installs a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer.
+		bool SetHyperspectralRadiometricRasterizer(
+			const HyperspectralRadiometricConfig& config
+			);
+
 		bool SetPathTracingSpectralRasterizer(
 			const unsigned int numPixelSamples,
 			const char* shader,

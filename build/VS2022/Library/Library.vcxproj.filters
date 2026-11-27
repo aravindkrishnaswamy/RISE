@@ -1606,6 +1606,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricFilm.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
@@ -3921,6 +3924,9 @@
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.h">
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.h">

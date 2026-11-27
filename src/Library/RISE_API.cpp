@@ -9714,6 +9714,7 @@ namespace RISE
 #include "Rendering/VCMSpectralRasterizer.h"
 #include "Rendering/PathTracingPelRasterizer.h"
 #include "Rendering/PathTracingSpectralRasterizer.h"
+#include "Rendering/HyperspectralRadiometricRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
 #include "Rendering/AutoRasterizer.h"
@@ -10237,6 +10238,20 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto spectral rasterizer" );
+		return true;
+	}
+
+	bool RISE_API_CreateHyperspectralRadiometricRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const HyperspectralRadiometricConfig& config
+								)
+	{
+		if( !ppi || !caster ) {
+			return false;
+		}
+		*ppi = new HyperspectralRadiometricRasterizer( caster, config );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Hyperspectral radiometric rasterizer" );
 		return true;
 	}
 

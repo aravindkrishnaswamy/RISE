@@ -377,6 +377,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/ThreadLocalSplatBuffer.cpp"
     "${RISE_LIB}/Rendering/FilteredFilm.cpp"
     "${RISE_LIB}/Rendering/RadiometricFilm.cpp"
+    "${RISE_LIB}/Rendering/HyperspectralRadiometricRasterizer.cpp"
     "${RISE_LIB}/Rendering/RadiometricCheckpoint.cpp"
     "${RISE_LIB}/Rendering/AdaptiveTileSizer.cpp"
     "${RISE_LIB}/Rendering/PreviewScheduler.cpp"

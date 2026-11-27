@@ -423,6 +423,7 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/ThreadLocalSplatBuffer.cpp						\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
 	$(PATHLIBRARY)Rendering/RadiometricFilm.cpp	\
+	$(PATHLIBRARY)Rendering/HyperspectralRadiometricRasterizer.cpp	\
 	$(PATHLIBRARY)Rendering/RadiometricCheckpoint.cpp	\
 	$(PATHLIBRARY)Rendering/AdaptiveTileSizer.cpp							\
 	$(PATHLIBRARY)Rendering/PreviewScheduler.cpp							\

@@ -422,6 +422,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricFilm.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\FrameStoreColorSpace.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\TargetFormat.cpp" />
@@ -1441,6 +1444,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\SpectralSourceDomain.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricFilm.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricPublication.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricExactResolve.h" />

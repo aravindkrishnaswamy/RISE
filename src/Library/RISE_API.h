@@ -3733,6 +3733,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								);
 
 
+	struct HyperspectralRadiometricConfig;
+
+	//! Creates a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer (P6b).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyperspectralRadiometricRasterizer(
+								IRasterizer** ppi,									///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,									///< [in] The ray caster to use
+								const HyperspectralRadiometricConfig& config		///< [in] Versioned radiometric sweep config
+								);
+
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingSpectralRasterizer(

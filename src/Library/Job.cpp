@@ -76,6 +76,7 @@
 #include "Rendering/FileRasterizerOutput.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/HyperspectralRadiometricRasterizer.h"
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Rendering/BlockRasterizeSequence.h"
 #include "Rendering/AdaptiveTileSizer.h"
@@ -13882,6 +13883,42 @@ bool Job::SetPathTracingSpectralRasterizer(
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
 	return RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
+}
+
+bool Job::SetHyperspectralRadiometricRasterizer(
+	const HyperspectralRadiometricConfig& config
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( "default" );
+	if( !pShader ) {
+		std::vector<IShaderOp*> emptyOps;
+		RISE_API_CreateStandardShader( &pShader, emptyOps );
+	} else {
+		pShader->addref();
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, true, kDefaultPathTracingMaxDepth, *pShader, true );
+	safe_release( pShader );
+	if( !pCaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: failed to create ray caster" );
+		return false;
+	}
+
+	IRasterizer* pRaster = 0;
+	const bool created = RISE_API_CreateHyperspectralRadiometricRasterizer( &pRaster, pCaster, config );
+	safe_release( pCaster );
+	if( !created || !pRaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: creation failed" );
+		return false;
+	}
+
+	RasterizerParams snap;
+	snap.numPixelSamples = static_cast<unsigned int>( std::min<std::uint64_t>( config.samplesPerPixel, 0xffffffffULL ) );
+	snap.oidnDenoise     = config.oidnDenoise;
+	snap.stability       = config.stabilityConfig;
+	snap.sms             = config.smsConfig;
+	return RegisterAndActivateRasterizer( "hyperspectral_radiometric_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTRasterizer(

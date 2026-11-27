@@ -55,6 +55,7 @@ namespace RISE
 	class IMedium;
 	class IGeometry;
 	struct HyLIoSSkinMaterialConfig;
+	struct HyperspectralRadiometricConfig;
 
 	//! One entry in a parallel-decode batch passed to
 	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
@@ -5061,6 +5062,11 @@ namespace RISE
 		//! Adds a HyLIoS hyperspectral skin material (`hylios_skin_material`).
 		//! NB: appended at the IJob tail (append-only ABI convention).
 		virtual bool AddHyLIoSSkinMaterial(const char*, const HyLIoSSkinMaterialConfig&) { return false; }
+
+		//! Installs a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer
+		//! (`hyperspectral_radiometric_rasterizer`).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetHyperspectralRadiometricRasterizer(const HyperspectralRadiometricConfig&) { return false; }
 
 	};
 
