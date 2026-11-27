@@ -63,7 +63,10 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // extended across the sheet along its normal for the other side's stencils; LiquidLevelSet.h
 // LevelSetBarrier::Second), in place of m7f's boundary values at a one-sided sheet's distance
 // (docs/SIMULATION_M7L_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7k.1.
-constexpr const char* SolverVersion = "m7l.1";
+// m7m.1: viscosity with prescribed and implicitly coupled sheets (no-slip walls of the viscous solve, each
+// wetted side on its own; a coupled sheet's velocities unknowns of it, its viscous impulse in its steps'
+// impulses; docs/SIMULATION_M7M_RESULTS.md); bakes without viscous sheets publish the frames of m7l.1.
+constexpr const char* SolverVersion = "m7m.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -1259,7 +1262,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		for (std::size_t j = 0; j < i; ++j)
 			if (setup.bodies[i].name == setup.bodies[j].name) return Fail(error, "body names must be unique: " + setup.bodies[i].name);
 	{
-		// m7d: sheet names and port names unique; no viscosity (the viscous solve does not see sheets).
+		// m7d: sheet names and port names unique.
 		std::vector<std::string> portNames{FieldsPort, StatePort, MassPort, LoadPort, ContactPort};
 		for (std::size_t i = 0; i < setup.sheets.size(); ++i) {
 			for (std::size_t j = 0; j < i; ++j)
@@ -1272,9 +1275,14 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 				portNames.push_back(*n);
 			}
 		}
-		if (!setup.sheets.empty() && setup.viscosity > 0)
-			return Fail(error, "sheets with viscosity are not supported (m7d, m7e: the viscous solve does not see a sheet, so viscous stress would "
-				"cross it and no viscous traction would be returned; leave viscosity at 0 with sheets)");
+		// m7m: viscosity with prescribed and implicitly coupled sheets (no-slip walls of the viscous solve; a coupled
+		// sheet's velocities are unknowns of it, its viscous impulse in its steps' impulses).  A staggered or one-way
+		// port sheet's load is its pressure only, so its viscous traction could not be returned.
+		if (setup.viscosity > 0)
+			for (const LiquidSheet& sh : setup.sheets)
+				if (sh.motion == LiquidSheet::Motion::Port && !sh.implicit)
+					return Fail(error, "viscosity with a staggered or one-way port sheet is not supported (m7m: its load carries the pressure only, "
+						"so the viscous traction could not reach the cloth; use `coupling implicit`, or leave viscosity at 0)");
 	}
 	candidate.effectiveParameters = V::MapValue(p.out);
 	setup_ = setup;
@@ -1569,6 +1577,12 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 				"implicit, and the impulse on each vertex is returned as a force held over the macro step; this too is preview and not "
 				"certified: the linearisation is about the macro step's start, the partner's own nonlinear step then differs from the "
 				"liquid's linearised copy, and the accuracy cases of docs/SIMULATION_M7E_RESULTS.md are not in this evidence.";
+		if (setup.viscosity > 0)
+			candidate.evidence.scope += " M7m: with viscosity the sheets are no-slip walls of the viscous solve on each wetted side "
+				"(a difference that crosses a sheet is one-sided, the sheet's velocity at the crossing; no strain couples the liquid "
+				"across it); an implicitly coupled sheet's vertex velocities are unknowns of that solve with its step matrix as their "
+				"mass, so its viscous traction is implicit and returned in its steps' impulses; preview and not certified (the "
+				"comparison with a rigid floor in docs/SIMULATION_M7M_RESULTS.md is not in this evidence).";
 		candidate.evidence.fidelity = "preview";
 		if (caps.fidelityLimit.empty())
 			caps.fidelityLimit = implicitSheets_ ?
@@ -2029,13 +2043,14 @@ void LiquidSolver::SheetRotationDiagnostic(double span)
 
 std::string LiquidSolver::SheetRotationDetail() const
 {
-	char buffer[400];
+	char buffer[600];
 	// m7g: the through-sheet measure (LiquidModel.h sheetCrossedCells): cells that would have
 	// turned wet across a sheet's closed face (held by the guard) and cells that turned wet with no
 	// wet neighbour at all, totals of this run.
 	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch %s up to %.2g%%%s, cells wet across a sheet %llu (%.3g m^3, held), "
 		"wet without a wet neighbour %llu", corotatedSheets_ ? "per step (corotational)" : "per macro step", 100*sheetRotationStretch_,
-		sheetRotationStretch_ > 0.01 ? (corotatedSheets_ ? " (warning: above 1%, elements turn faster than the step predicts; shorten the macro step)" :
+		sheetRotationStretch_ > 0.01 ? (corotatedSheets_ ? " (warning: above 1%, elements turn faster than the step predicts: shorten the macro step; a light free edge at a "
+			"waterline is a stated limit, docs/SIMULATION_M7M_RESULTS.md, Known limits: heavier cloth, pinned edges or a finer grid)" :
 			" (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)") : "",
 		static_cast<unsigned long long>(model_.sheetCrossedCells), model_.sheetCrossedVolume, static_cast<unsigned long long>(model_.sheetUnfedCells));
 	std::string out = buffer;
@@ -2043,9 +2058,10 @@ std::string LiquidSolver::SheetRotationDetail() const
 		// m7j: the linearisation's own error (LiquidSheets.h SheetDynamics::linearisationError): the strain one more
 		// step with the rotations refitted at the step's end would move into the sheet (the rotation estimate above
 		// bounds it only for an element that turned rigidly).
-		char b2[200];
+		char b2[400];
 		std::snprintf(b2, sizeof b2, ", linearisation correction per step up to %.2g%%%s", 100*sheetCorrection_,
-			sheetCorrection_ > 0.01 ? " (warning: above 1%, the corotational step is inaccurate where the sheet is kicked)" : "");
+			sheetCorrection_ > 0.01 ? " (warning: above 1%, the corotational step is inaccurate where the sheet is kicked, as a light free edge at a waterline "
+			"is: a stated limit, docs/SIMULATION_M7M_RESULTS.md, Known limits: heavier cloth, pinned edges or a finer grid)" : "");
 		out += b2;
 	}
 	// m7h: the barrier's watertightness (sheets pinned all round only).

@@ -25,7 +25,7 @@ std::size_t Index(const std::array<int,3>& d, int i, int j, int k)
 std::size_t RowsOf(const std::array<int,3>& d) { return std::size_t(d[1])*std::size_t(d[2]); }
 
 enum Kind : std::uint8_t { Inactive = 0, Unknown = 1, Solid = 2, Wall = 3 };
-constexpr int OwnerStatic = -1, OwnerWall = -2, OwnerNone = -3;
+constexpr int OwnerStatic = -1, OwnerWall = -2, OwnerNone = -3, OwnerSheet = -4;
 
 // One term of a one-sided difference: an unknown face or a boundary value.
 struct Term {
@@ -36,6 +36,8 @@ struct Term {
 	int owner = OwnerNone;
 	int body = -1;         // a coupled body: the value is its rigid velocity at `at`, unknown
 	V3 at{{0, 0, 0}};
+	int sheet = -1;        // m7m: a sheet: the value is its velocity at the point sp
+	ViscousSheetPoint sp;
 };
 // d(rigid velocity component c at r from the centre)/d(V, Omega).
 void RigidGradient(int c, const V3& r, double g[6])
@@ -93,6 +95,12 @@ public:
 			}
 			wb_ = wstar_;
 		}
+		if (input.sheets) {
+			for (const ViscousSheet& sh : *input.sheets) {
+				anySheetCoupled_ = anySheetCoupled_ || sh.coupled;
+				xs_.push_back(sh.coupled ? sh.v : std::vector<double>());
+			}
+		}
 		for (int a = 0; a < 3; ++a) {
 			const auto d = g.FaceDims(a);
 			faceStride_[a] = {{1, std::size_t(d[0]), std::size_t(d[0])*std::size_t(d[1])}};
@@ -125,25 +133,7 @@ public:
 		const double h = g_.h;
 		auto centre = [&](const int q[3]) { return g_.FaceCentre(comp, q[0], q[1], q[2]); };
 		auto owner = [&](std::size_t f) { return in_.owner ? int((*in_.owner)[comp][f]) : OwnerStatic; };
-		auto constTerm = [&](std::size_t f, int k, double coef, const int q[3]) {
-			Term t;
-			t.f = f;
-			t.coef = coef;
-			t.at = centre(q);
-			if (k == Inactive) { t.value = ustar_.u[comp][f]; t.owner = OwnerNone; }
-			else if (k == Wall) { t.value = 0; t.owner = OwnerWall; }
-			else {
-				t.value = in_.solid ? in_.solid->u[comp][f] : 0.0;
-				t.owner = owner(f);
-				if (Coupled(t.owner)) t.body = t.owner;
-			}
-			return t;
-		};
-		auto sampleTerm = [&](std::size_t f, double coef, const int q[3]) {
-			const int k = kind[comp][f];
-			if (k == Unknown) { Term t; t.f = f; t.coef = coef; t.unknown = true; return t; }
-			return constTerm(f, k, coef, q);
-		};
+		auto sampleTerm = [&](std::size_t f, double coef, const int q[3]) { return Sample(comp, f, coef, q); };
 		if (!inLo || !inHi) {
 			// A tangential difference across a domain wall: zero at the wall, h/2 away.
 			const int* q = inLo ? lo : hi;
@@ -167,6 +157,24 @@ public:
 			// No slip at the solid crossing between a liquid face and a solid one.
 			const std::size_t fo = sl ? fh : fl, fs = sl ? fl : fh;
 			const int* qo = sl ? hi : lo;
+			if (const ViscousSheetFace* sf = SheetFaceAt(comp, fs)) {
+				// m7m: a face a sheet closes: no slip at the crossing along the face's own axis (the
+				// ghost-fluid fraction to it, up to 1.5: the crossing lies between the two cell
+				// centres), at the face's centre along the other axes.
+				double theta = 1;
+				if (dir == comp) theta = Clamp(std::fabs(sf->s - centre(qo)[comp])/h, o_.thetaMin, 1.5);
+				const double c = 1/(theta*h);
+				p.t[0] = sampleTerm(fo, sl ? c : -c, qo);
+				Term w;
+				w.coef = sl ? -c : c;
+				w.owner = OwnerSheet;
+				w.sheet = int(sf->p.sheet);
+				w.sp = sf->p;
+				w.at = centre(qo);
+				w.at[dir] += (sl ? -1.0 : 1.0)*theta*h;
+				p.t[1] = w;
+				return p;
+			}
 			const double po = phis_[comp][fo], ps = phis_[comp][fs];
 			const double theta = Clamp(po > ps ? po/(po - ps) : 1.0, o_.thetaMin, 1.0);
 			const double c = 1/(theta*h);
@@ -198,6 +206,173 @@ public:
 		return p;
 	}
 
+	// A sample of component comp at face f (q its index triple): an unknown or a boundary value.
+	Term Sample(int comp, std::size_t f, double coef, const int q[3]) const
+	{
+		Term t;
+		t.f = f;
+		t.coef = coef;
+		const int k = kind[comp][f];
+		if (k == Unknown) { t.unknown = true; return t; }
+		t.at = g_.FaceCentre(comp, q[0], q[1], q[2]);
+		if (k == Inactive) { t.value = ustar_.u[comp][f]; t.owner = OwnerNone; }
+		else if (k == Wall) { t.value = 0; t.owner = OwnerWall; }
+		else if (const ViscousSheetFace* sf = SheetFaceAt(comp, f)) {
+			t.owner = OwnerSheet;
+			t.sheet = int(sf->p.sheet);
+			t.sp = sf->p;
+		} else {
+			t.value = in_.solid ? in_.solid->u[comp][f] : 0.0;
+			t.owner = in_.owner ? int((*in_.owner)[comp][f]) : OwnerStatic;
+			if (Coupled(t.owner)) t.body = t.owner;
+		}
+		return t;
+	}
+	// m7m: the face of comp at f closed by a sheet (null: none).
+	const ViscousSheetFace* SheetFaceAt(int comp, std::size_t f) const
+	{
+		const auto& v = sheetFaceIdx_[comp];
+		if (v.empty()) return nullptr;
+		const auto it = std::lower_bound(v.begin(), v.end(), std::make_pair(f, std::uint32_t(0)));
+		if (it == v.end() || it->first != f) return nullptr;
+		return &(*in_.sheetFaces)[it->second];
+	}
+	// m7m: a difference a sheet cuts, one-sided: side -1 the low face's (low face to the crossing),
+	// +1 the high face's.
+	Pair DiffCut(const ViscousSheetCut& k, int side) const
+	{
+		Pair p;
+		p.n = 2;
+		const int comp = k.comp, dir = k.dir;
+		int lo[3] = {k.hi[0], k.hi[1], k.hi[2]};
+		--lo[dir];
+		const std::size_t fl = g_.F(comp, lo[0], lo[1], lo[2]), fh = g_.F(comp, k.hi[0], k.hi[1], k.hi[2]);
+		Term s;
+		s.owner = OwnerSheet;
+		s.sheet = int(k.p.sheet);
+		s.sp = k.p;
+		s.at = g_.FaceCentre(comp, lo[0], lo[1], lo[2]);
+		s.at[dir] += k.t*g_.h;
+		if (side < 0) {
+			const double c = 1/(std::max(o_.thetaMin, k.t)*g_.h);
+			p.t[0] = Sample(comp, fl, -c, lo);
+			s.coef = c;
+			p.t[1] = s;
+		} else {
+			const double c = 1/(std::max(o_.thetaMin, 1 - k.t)*g_.h);
+			s.coef = -c;
+			p.t[0] = s;
+			p.t[1] = Sample(comp, fh, c, k.hi);
+		}
+		return p;
+	}
+	// m7m: an edge whose differences a sheet cuts: per side of the sheet (copy 0 the side holding the
+	// edge's point, 1 the other) the strain of that side's one-sided differences and of an uncut
+	// difference on its side (an uncut difference on the other side is dropped: at a wall the
+	// derivative of the normal velocity along it is the wall's own), weighted by the side's part of
+	// the edge's control volume.
+	struct CutEdge {
+		std::size_t id = 0;
+		int c = 0, e[3] = {0, 0, 0};
+		int k1 = -1, k2 = -1;    // the cuts of d1 (component (c+1)%3 along (c+2)%3) and d2
+		int side0 = 1;           // the sheet side of copy 0
+		double w[2] = {0, 0};
+		double strain1 = 0;      // copy 1's strain (copy 0's in ee)
+	};
+	void EdgeCopy(const CutEdge& r, int k, Pair& d1, Pair& d2) const
+	{
+		const int c = r.c, a = (c + 1) % 3, b = (c + 2) % 3;
+		const int sigma = k == 0 ? r.side0 : -r.side0;
+		auto version = [&](int cut, int comp, int dir, Pair& d) {
+			d = Pair();
+			if (cut >= 0) {
+				const ViscousSheetCut& x = (*in_.sheetCuts)[std::size_t(cut)];
+				d = DiffCut(x, sigma == x.loSide ? -1 : 1);
+			} else if (sigma == r.side0) {
+				int lo[3] = {r.e[0], r.e[1], r.e[2]};
+				--lo[dir];
+				d = Diff(comp, dir, lo);
+			}
+		};
+		version(r.k1, a, b, d1);
+		version(r.k2, b, a, d2);
+	}
+	const CutEdge* CutAt(int c, std::size_t id) const
+	{
+		const auto& v = cutEdges_[c];
+		const auto it = std::lower_bound(v.begin(), v.end(), id, [](const CutEdge& x, std::size_t i) { return x.id < i; });
+		return it != v.end() && it->id == id ? &*it : nullptr;
+	}
+	bool Cut(int c, std::size_t id) const { return !cutFlag_[c].empty() && cutFlag_[c][id]; }
+	// m7m: a sheet's velocity at the term's point: free vertices of a coupled sheet from the
+	// iterate xs_ (unknowns), the others given (constants).
+	double SheetValue(const Term& t, int comp, bool unknowns, bool constants) const
+	{
+		const ViscousSheet& sh = (*in_.sheets)[std::size_t(t.sheet)];
+		double v = 0;
+		for (int m = 0; m < 3; ++m) {
+			const double w = t.sp.w[m];
+			if (w == 0) continue;
+			const std::size_t q = t.sp.v[m];
+			const bool free = sh.coupled && (sh.fixed.empty() || !sh.fixed[q]);
+			if (free) { if (unknowns) v += w*xs_[std::size_t(t.sheet)][3*q + std::size_t(comp)]; }
+			else if (constants) v += w*sh.v[3*q + std::size_t(comp)];
+		}
+		return v;
+	}
+	bool SheetFree(std::size_t i, std::size_t q) const
+	{
+		const ViscousSheet& sh = (*in_.sheets)[i];
+		return sh.coupled && (sh.fixed.empty() || !sh.fixed[q]);
+	}
+	std::size_t SheetCount() const { return in_.sheets ? in_.sheets->size() : 0; }
+	bool AnySheetCoupled() const { return anySheetCoupled_; }
+	std::vector<std::vector<double>>& XS() { return xs_; }
+	// m7m: the strains with a sheet's term (type 0 cell (axis, cell), 1 edge (set, id), 2 a cut edge's copy (set, record, copy)).
+	struct SheetStrain { int type, axis; std::size_t id; int idx[3]; int copy; };
+	std::vector<SheetStrain> sheetStrains_;
+	template <class F>
+	void ForSheetStrains(F&& f) const
+	{
+		// f(pair, component, weight per coefficient times strain, weight per squared coefficient, strain)
+		for (const SheetStrain& s : sheetStrains_) {
+			if (s.type == 0) {
+				f(Diff(s.axis, s.axis, s.idx), s.axis, wc_[s.id], wc_[s.id], ec[s.axis].empty() ? 0.0 : ec[s.axis][s.id]);
+				continue;
+			}
+			const int c = s.axis, a = (c + 1) % 3, b = (c + 2) % 3;
+			Pair d1, d2;
+			double w, strain;
+			if (s.type == 1) { EdgePairs(c, s.idx, d1, d2); w = we_[c][s.id]; strain = ee[c].empty() ? 0.0 : ee[c][s.id]; }
+			else {
+				const CutEdge& r = cutEdges_[c][s.id];
+				EdgeCopy(r, s.copy, d1, d2);
+				w = r.w[s.copy];
+				strain = s.copy == 0 ? (ee[c].empty() ? 0.0 : ee[c][r.id]) : r.strain1;
+			}
+			f(d1, a, w, 0.5*w, strain);
+			f(d2, b, w, 0.5*w, strain);
+		}
+	}
+	// out[sheet][3 q + comp] = sum over the strains of S d eps/dV eps (squares: S (d eps/dV)^2), free vertices of coupled sheets.
+	void GatherSheets(std::vector<std::vector<double>>& out, bool squares) const
+	{
+		out.resize(SheetCount());
+		for (std::size_t i = 0; i < SheetCount(); ++i) out[i].assign((*in_.sheets)[i].coupled ? (*in_.sheets)[i].v.size() : 0, 0.0);
+		ForSheetStrains([&](const Pair& p, int comp, double w, double w2, double strain) {
+			for (int m = 0; m < p.n; ++m) {
+				const Term& t = p.t[m];
+				if (t.sheet < 0 || !(*in_.sheets)[std::size_t(t.sheet)].coupled) continue;
+				for (int v = 0; v < 3; ++v) {
+					const std::size_t q = t.sp.v[v];
+					if (t.sp.w[v] == 0 || !SheetFree(std::size_t(t.sheet), q)) continue;
+					const double cf = t.coef*t.sp.w[v];
+					out[std::size_t(t.sheet)][3*q + std::size_t(comp)] += squares ? w2*cf*cf : w*cf*strain;
+				}
+			}
+		});
+	}
+
 	bool Coupled(int owner) const
 	{
 		return owner >= 0 && in_.bodies && std::size_t(owner) < in_.bodies->size() && (*in_.bodies)[std::size_t(owner)].coupled;
@@ -225,6 +400,7 @@ public:
 		for (int m = 0; m < p.n; ++m) {
 			const Term& t = p.t[m];
 			if (t.unknown) { if (unknowns) s += t.coef*x[comp][t.f]; }
+			else if (t.sheet >= 0) s += t.coef*SheetValue(t, comp, unknowns, constants);
 			else if (t.body >= 0) s += t.coef*BodyValue(t, comp, unknowns, constants);
 			else if (constants) s += t.coef*t.value;
 		}
@@ -337,7 +513,7 @@ public:
 					const int j = int(r % std::size_t(d[1])), k = int(r/std::size_t(d[1]));
 					for (int i = 0; i < d[0]; ++i) {
 						const std::size_t id = Index(d, i, j, k);
-						if (!(we_[c][id] > 0)) continue;
+						if (!(we_[c][id] > 0) || Cut(c, id)) continue;
 						const int e[3] = {i, j, k};
 						if (e[a] > 0 && e[a] < n[a] && e[b] > 0 && e[b] < n[b]) {
 							// Interior edge: the four samples are faces; fast path when all are unknowns.
@@ -354,6 +530,17 @@ public:
 					}
 				}
 			});
+			// m7m: the edges a sheet cuts, a strain per side.
+			for (CutEdge& r : cutEdges_[c])
+				for (int copy = 0; copy < 2; ++copy) {
+					double v = 0;
+					if (r.w[copy] > 0) {
+						Pair d1, d2;
+						EdgeCopy(r, copy, d1, d2);
+						v = 0.5*(Eval(d1, x, a, unknowns, constants) + Eval(d2, x, b, unknowns, constants));
+					}
+					if (copy == 0) ee[c][r.id] = v; else r.strain1 = v;
+				}
 		}
 	}
 
@@ -395,6 +582,19 @@ public:
 								int e[3] = {idx[0], idx[1], idx[2]};
 								e[b] += 1 - side;   // f is the low sample of the edge at node idx[b] + 1, the high one at idx[b]
 								const std::size_t id = Index(ed_[c], e[0], e[1], e[2]);
+								if (Cut(c, id)) {
+									// m7m: per side of the sheet.
+									const CutEdge* rp = CutAt(c, id);
+									for (int copy = 0; copy < 2; ++copy) {
+										const double wk = rp->w[copy];
+										if (!(wk > 0)) continue;
+										Pair d1, d2;
+										EdgeCopy(*rp, copy, d1, d2);
+										const double cf = 0.5*CoefOf(a == (c + 1) % 3 ? d1 : d2, f);
+										s += squares ? 2*wk*cf*cf : 2*wk*cf*(copy == 0 ? ee[c][id] : rp->strain1);
+									}
+									continue;
+								}
 								const double w = we_[c][id];
 								if (!(w > 0)) continue;
 								int lo[3] = {e[0], e[1], e[2]};
@@ -441,7 +641,7 @@ public:
 		auto add = [&](std::vector<std::array<double,6>>& acc, const Pair& p, int comp, double weightedStrain) {
 			for (int m = 0; m < p.n; ++m) {
 				const Term& t = p.t[m];
-				if (t.unknown || t.owner == OwnerNone || t.body >= 0) continue;
+				if (t.unknown || t.owner == OwnerNone || t.body >= 0 || t.sheet >= 0) continue;
 				const double F = k*weightedStrain*t.coef;    // impulse on the liquid along comp
 				if (t.owner >= 0 && std::size_t(t.owner) < bodies) {
 					std::array<double,6>& s = acc[std::size_t(t.owner)];
@@ -486,7 +686,7 @@ public:
 					const int j = int(r % std::size_t(d[1])), kk = int(r/std::size_t(d[1]));
 					for (int i = 0; i < d[0]; ++i) {
 						const std::size_t id = Index(d, i, j, kk);
-						if (!(we_[c][id] > 0) || ee[c][id] == 0) continue;
+						if (!(we_[c][id] > 0) || ee[c][id] == 0 || Cut(c, id)) continue;
 						const int e[3] = {i, j, kk};
 						Pair d1, d2;
 						EdgePairs(c, e, d1, d2);
@@ -497,13 +697,39 @@ public:
 				}
 			});
 			for (const auto& pc : part) for (std::size_t s = 0; s < slots; ++s) for (int m = 0; m < 6; ++m) total[s][std::size_t(m)] += pc[s][std::size_t(m)];
+			// m7m: the edges a sheet cuts, per side.
+			for (const CutEdge& r : cutEdges_[c])
+				for (int copy = 0; copy < 2; ++copy) {
+					const double strain = copy == 0 ? ee[c][r.id] : r.strain1;
+					if (!(r.w[copy] > 0) || strain == 0) continue;
+					Pair d1, d2;
+					EdgeCopy(r, copy, d1, d2);
+					add(total, d1, a, r.w[copy]*strain);
+					add(total, d2, b, r.w[copy]*strain);
+				}
 		}
+		// m7m: the reaction on given sheet velocities (a coupled sheet's free vertices: S' (V - V*)).
+		sheetReaction.assign(SheetCount(), {});
+		for (std::size_t i = 0; i < SheetCount(); ++i) sheetReaction[i].assign((*in_.sheets)[i].v.size(), 0.0);
+		ForSheetStrains([&](const Pair& p, int comp, double w, double, double strain) {
+			for (int m = 0; m < p.n; ++m) {
+				const Term& t = p.t[m];
+				if (t.sheet < 0) continue;
+				const double F = k*w*strain*t.coef;   // on the liquid along comp
+				for (int v = 0; v < 3; ++v) {
+					const std::size_t q = t.sp.v[v];
+					if (t.sp.w[v] == 0 || SheetFree(std::size_t(t.sheet), q)) continue;
+					sheetReaction[std::size_t(t.sheet)][3*q + std::size_t(comp)] -= F*t.sp.w[v];
+				}
+			}
+		});
 		onBodies.assign(bodies, Impulse6{{0, 0, 0, 0, 0, 0}});
 		for (std::size_t i = 0; i < bodies; ++i) for (int m = 0; m < 6; ++m) onBodies[i][std::size_t(m)] = -total[i][std::size_t(m)];
 		walls = {{total[bodies][0], total[bodies][1], total[bodies][2]}};
 	}
 
 	double Scale() const { return scale_; }
+	std::vector<std::vector<double>> sheetReaction;   // m7m: Attribute's reaction on given sheet velocities (N s)
 
 private:
 	void Build()
@@ -544,6 +770,16 @@ private:
 					}
 				}
 			});
+		}
+		// m7m: the faces sheets close are no-slip walls at the crossing.
+		if (in_.sheetFaces) {
+			for (std::size_t k = 0; k < in_.sheetFaces->size(); ++k) {
+				const ViscousSheetFace& sf = (*in_.sheetFaces)[k];
+				if (n[sf.axis] == 1 || kind[sf.axis][sf.face] == Wall) continue;
+				kind[sf.axis][sf.face] = Solid;
+				sheetFaceIdx_[sf.axis].emplace_back(sf.face, std::uint32_t(k));
+			}
+			for (auto& v : sheetFaceIdx_) std::sort(v.begin(), v.end());
 		}
 		// 2. Control-volume weights: liquid fraction outside the solids (2 samples per resolved axis).
 		// S^d samples of clamp(1/2 - phi / h_s) clamp(1/2 + phi_s / h_s), h_s = h / S (S per
@@ -623,6 +859,7 @@ private:
 				}
 			});
 		}
+		SheetWeights();
 		// 3. Unknowns: candidates with kinetic weight or in a weighted strain; masses.
 		std::array<std::vector<double>,3> sq;
 		Gather(sq, true);
@@ -658,6 +895,7 @@ private:
 			diag[a].assign(g.Faces(a), 1.0);
 			for (std::size_t f = 0; f < diag[a].size(); ++f) if (kind[a][f] == Unknown) diag[a][f] = mass[a][f] + scale_*sq[a][f];
 		}
+		SheetStrainList();
 		// 4. Coupled bodies: the strains that reach them, and their diagonal.
 		if (anyCoupled_) {
 			for (int a = 0; a < 3; ++a) {
@@ -675,7 +913,7 @@ private:
 				const auto& d = ed_[c];
 				for (int k = 0; k < d[2]; ++k) for (int j = 0; j < d[1]; ++j) for (int i = 0; i < d[0]; ++i) {
 					const std::size_t id = Index(d, i, j, k);
-					if (!(we_[c][id] > 0)) continue;
+					if (!(we_[c][id] > 0) || Cut(c, id)) continue;   // m7m: not the edges a sheet cuts (a body within a cell of a sheet)
 					const int e[3] = {i, j, k};
 					Pair d1, d2;
 					EdgePairs(c, e, d1, d2);
@@ -692,6 +930,196 @@ private:
 				if (bm[q] > 0) bodyDiag[q] = bm[q] + scale_*bsq[q];
 			}
 		}
+	}
+	// m7m: the weights beside the sheets.  A cell beside a face a sheet closes: its liquid fraction
+	// with its own level set (a neighbour across one of its closed faces takes the cell's value) on its
+	// side of the crossings of its closed faces (the samples beyond a crossing's coordinate excluded);
+	// a cut edge's copies: the side's part of the cut difference's segment times the liquid fraction
+	// of the mean level set of the edge's four cells on that side (by the crossed triangle's plane).
+	void SheetWeights()
+	{
+		const Grid& g = g_;
+		const auto& n = g.n;
+		const std::vector<double>* nodes = in_.solidNodes;
+		bool any = false;
+		for (const auto& v : sheetFaceIdx_) any = any || !v.empty();
+		if (any) {
+			std::vector<std::size_t> cells;
+			for (int a = 0; a < 3; ++a)
+				for (const auto& e : sheetFaceIdx_[a]) {
+					const auto D = g.FaceDims(a);
+					int idx[3] = {int(e.first % std::size_t(D[0])), int((e.first/std::size_t(D[0])) % std::size_t(D[1])), int(e.first/(std::size_t(D[0])*std::size_t(D[1])))};
+					if (idx[a] < n[a]) cells.push_back(g.C(idx[0], idx[1], idx[2]));
+					--idx[a];
+					if (idx[a] >= 0) cells.push_back(g.C(idx[0], idx[1], idx[2]));
+				}
+			std::sort(cells.begin(), cells.end());
+			cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+			const int S = std::max(1, o_.cvSamples);
+			const double hs = g.h/S;
+			const int Sa[3] = {n[0] > 1 ? S : 1, n[1] > 1 ? S : 1, n[2] > 1 ? S : 1};
+			for (std::size_t home : cells) {
+				if (phi_[home] > 1.8*g.h) continue;
+				const int ci[3] = {int(home % std::size_t(n[0])), int((home/std::size_t(n[0])) % std::size_t(n[1])), int(home/(std::size_t(n[0])*std::size_t(n[1])))};
+				bool sLo[3] = {false, false, false}, sHi[3] = {false, false, false};
+				double pLo[3] = {0, 0, 0}, pHi[3] = {0, 0, 0};
+				for (int a = 0; a < 3; ++a) {
+					if (n[a] == 1) continue;
+					int q[3] = {ci[0], ci[1], ci[2]};
+					if (const ViscousSheetFace* sf = SheetFaceAt(a, g.F(a, q[0], q[1], q[2]))) { sLo[a] = true; pLo[a] = sf->s; }
+					++q[a];
+					if (const ViscousSheetFace* sf = SheetFaceAt(a, g.F(a, q[0], q[1], q[2]))) { sHi[a] = true; pHi[a] = sf->s; }
+				}
+				const V3 centre = g.CellCentre(ci[0], ci[1], ci[2]);
+				double sum = 0;
+				int count = 0;
+				for (int c3 = 0; c3 < Sa[2]; ++c3) for (int b3 = 0; b3 < Sa[1]; ++b3) for (int a3 = 0; a3 < Sa[0]; ++a3) {
+					const int q[3] = {a3, b3, c3};
+					V3 x = centre;
+					bool outside = false;
+					for (int a = 0; a < 3; ++a) {
+						if (n[a] == 1) continue;
+						x[a] += ((q[a] + 0.5)/S - 0.5)*g.h;
+						if (x[a] < g.origin[a] || x[a] > g.origin[a] + n[a]*g.h) outside = true;
+						if ((sHi[a] && x[a] > pHi[a]) || (sLo[a] && x[a] < pLo[a])) outside = true;
+					}
+					++count;
+					if (outside) continue;
+					int i0[3];
+					double w[3];
+					for (int a = 0; a < 3; ++a) {
+						if (n[a] == 1) { i0[a] = 0; w[a] = 0; continue; }
+						const double sa = (x[a] - g.origin[a])/g.h - 0.5;
+						i0[a] = std::min(std::max(int(std::floor(sa)), 0), n[a] - 2);
+						w[a] = Clamp(sa - i0[a], 0.0, 1.0);
+					}
+					double val = 0;
+					for (int m = 0; m < 8; ++m) {
+						int c8[3];
+						double wt = 1;
+						bool across = false;
+						for (int a = 0; a < 3; ++a) {
+							const int bit = (m >> a) & 1;
+							wt *= bit ? w[a] : 1 - w[a];
+							c8[a] = std::min(i0[a] + bit, n[a] - 1);
+							if ((c8[a] < ci[a] && sLo[a]) || (c8[a] > ci[a] && sHi[a])) across = true;
+						}
+						if (wt == 0) continue;
+						val += wt*(across ? phi_[home] : phi_[g.C(c8[0], c8[1], c8[2])]);
+					}
+					const double liquid = Clamp(0.5 - val/hs, 0.0, 1.0);
+					if (liquid == 0) continue;
+					const double open = nodes ? Clamp(0.5 + NodeSample(g, *nodes, x)/hs, 0.0, 1.0) : 1.0;
+					sum += liquid*open;
+				}
+				wc_[home] = sum/count;
+			}
+		}
+		if (!in_.sheetCuts || in_.sheetCuts->empty()) return;
+		const auto& cuts = *in_.sheetCuts;
+		for (std::size_t k = 0; k < cuts.size(); ++k) {
+			const ViscousSheetCut& x = cuts[k];
+			const int c = 3 - x.comp - x.dir;
+			if (!edges_[c]) continue;
+			CutEdge r;
+			r.c = c;
+			for (int q = 0; q < 3; ++q) r.e[q] = x.hi[q];
+			r.id = Index(ed_[c], r.e[0], r.e[1], r.e[2]);
+			(x.comp == (c + 1) % 3 ? r.k1 : r.k2) = int(k);
+			cutEdges_[c].push_back(r);
+		}
+		for (int c = 0; c < 3; ++c) {
+			auto& v = cutEdges_[c];
+			if (v.empty()) continue;
+			std::stable_sort(v.begin(), v.end(), [](const CutEdge& p, const CutEdge& q) { return p.id < q.id; });
+			std::size_t out = 0;
+			for (std::size_t i = 0; i < v.size(); ++i) {
+				if (out > 0 && v[out - 1].id == v[i].id) {
+					if (v[i].k1 >= 0) v[out - 1].k1 = v[i].k1;
+					if (v[i].k2 >= 0) v[out - 1].k2 = v[i].k2;
+				} else v[out++] = v[i];
+			}
+			v.resize(out);
+			const int a = (c + 1) % 3, b = (c + 2) % 3;
+			const auto& d = ed_[c];
+			cutFlag_[c].assign(std::size_t(d[0])*std::size_t(d[1])*std::size_t(d[2]), 0);
+			for (CutEdge& r : v) {
+				cutFlag_[c][r.id] = 1;
+				const ViscousSheetCut& K = cuts[std::size_t(r.k1 >= 0 ? r.k1 : r.k2)];
+				r.side0 = K.t > 0.5 ? K.loSide : -K.loSide;
+				const bool wallA = r.e[a] == 0 || r.e[a] == n[a], wallB = r.e[b] == 0 || r.e[b] == n[b];
+				if (!o_.noSlip && (wallA || wallB)) continue;
+				if (o_.openTop && ((a == 1 && r.e[a] == n[1]) || (b == 1 && r.e[b] == n[1]))) continue;
+				int lo[3] = {K.hi[0], K.hi[1], K.hi[2]};
+				--lo[K.dir];
+				V3 p = g.FaceCentre(K.comp, lo[0], lo[1], lo[2]);
+				p[K.dir] += K.t*g.h;
+				double sum[2] = {0, 0};
+				int cnt[2] = {0, 0};
+				for (int m = 0; m < 4; ++m) {
+					int q[3] = {r.e[0], r.e[1], r.e[2]};
+					q[a] += (m & 1) - 1;
+					q[b] += ((m >> 1) & 1) - 1;
+					if (q[a] < 0 || q[a] >= n[a] || q[b] < 0 || q[b] >= n[b]) continue;
+					const V3 xc = g.CellCentre(q[0], q[1], q[2]);
+					double dn = 0;
+					for (int t = 0; t < 3; ++t) dn += (xc[t] - p[t])*K.normal[t];
+					const int side = dn >= 0 ? 1 : -1;
+					const int slot = side == r.side0 ? 0 : 1;
+					sum[slot] += phi_[g.C(q[0], q[1], q[2])];
+					++cnt[slot];
+				}
+				for (int copy = 0; copy < 2; ++copy) {
+					if (!cnt[copy]) continue;
+					const int sigma = copy == 0 ? r.side0 : -r.side0;
+					const double share = sigma == K.loSide ? K.t : 1 - K.t;
+					r.w[copy] = share*Clamp(0.5 - sum[copy]/cnt[copy]/g.h, 0.0, 1.0);
+				}
+				we_[c][r.id] = r.w[0];
+			}
+		}
+	}
+	// m7m: the strains with a sheet's term (ForSheetStrains).
+	void SheetStrainList()
+	{
+		const Grid& g = g_;
+		const auto& n = g.n;
+		for (int a = 0; a < 3; ++a)
+			for (const auto& fe : sheetFaceIdx_[a]) {
+				const auto D = g.FaceDims(a);
+				const int idx[3] = {int(fe.first % std::size_t(D[0])), int((fe.first/std::size_t(D[0])) % std::size_t(D[1])), int(fe.first/(std::size_t(D[0])*std::size_t(D[1])))};
+				for (int side = 0; side < 2; ++side) {
+					int ci[3] = {idx[0], idx[1], idx[2]};
+					ci[a] -= side;
+					if (ci[a] < 0 || ci[a] >= n[a]) continue;
+					const std::size_t cc = g.C(ci[0], ci[1], ci[2]);
+					if (wc_[cc] > 0) sheetStrains_.push_back({0, a, cc, {ci[0], ci[1], ci[2]}, 0});
+				}
+				for (int b = 0; b < 3; ++b) {
+					if (b == a || n[b] == 1) continue;
+					const int c = 3 - a - b;
+					if (!edges_[c]) continue;
+					for (int side = 0; side < 2; ++side) {
+						int e[3] = {idx[0], idx[1], idx[2]};
+						e[b] += 1 - side;
+						const std::size_t id = Index(ed_[c], e[0], e[1], e[2]);
+						if (Cut(c, id) || !(we_[c][id] > 0)) continue;
+						sheetStrains_.push_back({1, c, id, {e[0], e[1], e[2]}, 0});
+					}
+				}
+			}
+		for (int c = 0; c < 3; ++c)
+			for (std::size_t i = 0; i < cutEdges_[c].size(); ++i)
+				for (int copy = 0; copy < 2; ++copy)
+					if (cutEdges_[c][i].w[copy] > 0)
+						sheetStrains_.push_back({2, c, i, {cutEdges_[c][i].e[0], cutEdges_[c][i].e[1], cutEdges_[c][i].e[2]}, copy});
+		std::sort(sheetStrains_.begin(), sheetStrains_.end(), [](const SheetStrain& p, const SheetStrain& q) {
+			if (p.type != q.type) return p.type < q.type;
+			if (p.axis != q.axis) return p.axis < q.axis;
+			if (p.id != q.id) return p.id < q.id;
+			return p.copy < q.copy; });
+		sheetStrains_.erase(std::unique(sheetStrains_.begin(), sheetStrains_.end(), [](const SheetStrain& p, const SheetStrain& q) {
+			return p.type == q.type && p.axis == q.axis && p.id == q.id && p.copy == q.copy; }), sheetStrains_.end());
 	}
 public:
 	std::vector<double> bodyDiag;
@@ -720,6 +1148,12 @@ private:
 	std::array<std::array<int,3>,3> ed_;
 	std::array<std::vector<double>,3> phis_, we_;
 	std::vector<double> wc_;
+	// m7m: sheets.
+	std::array<std::vector<std::pair<std::size_t, std::uint32_t>>,3> sheetFaceIdx_;   // per axis (face, sheetFaces index), sorted
+	std::array<std::vector<CutEdge>,3> cutEdges_;      // per edge set, sorted by edge
+	std::array<std::vector<std::uint8_t>,3> cutFlag_;  // per edge set: 1 for an edge a sheet cuts (empty: none)
+	std::vector<std::vector<double>> xs_;              // coupled sheets' velocity iterates
+	bool anySheetCoupled_ = false;
 };
 
 double DotFaces(Pool* pool, const std::array<std::vector<double>,3>& x, const std::array<std::vector<double>,3>& y)
@@ -745,13 +1179,19 @@ double MaxFaces(Pool* pool, const std::array<std::vector<double>,3>& x)
 
 bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array<std::vector<double>,3>& fraction,
 	const ViscosityInput& input, const ViscosityOptions& options, double dt, double density, MacField& u,
-	std::vector<Impulse6>& bodyImpulse, V3& wallImpulse, ViscosityStats& stats, Pool* pool, std::string& error)
+	std::vector<Impulse6>& bodyImpulse, V3& wallImpulse, ViscosityStats& stats, Pool* pool, std::string& error,
+	std::vector<std::vector<double>>* sheetImpulse)
 {
 	const double start = Now();
 	stats = ViscosityStats();
 	const std::size_t nb = input.bodies ? input.bodies->size() : 0;
+	const std::size_t ns = input.sheets ? input.sheets->size() : 0;
 	bodyImpulse.assign(nb, Impulse6{{0, 0, 0, 0, 0, 0}});
 	wallImpulse = {{0, 0, 0}};
+	if (sheetImpulse) {
+		sheetImpulse->assign(ns, {});
+		for (std::size_t i = 0; i < ns; ++i) (*sheetImpulse)[i].assign((*input.sheets)[i].v.size(), 0.0);
+	}
 	if (!(options.kinematic > 0) || !(dt > 0)) { stats.converged = true; return true; }
 	const MacField ustar = u;
 	// Grids below 32k cells run on the caller: a CG iteration has some twenty
@@ -761,35 +1201,96 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 	stats.build = Now() - start;
 	stats.unknowns = s.unknowns;
 	if (s.unknowns == 0) { stats.converged = true; return true; }
-	// The unknowns: the faces, and the free degrees of freedom of coupled bodies
-	// (6 per body; the others stay zero).
+	// The unknowns: the faces, the free degrees of freedom of coupled bodies
+	// (6 per body; the others stay zero) and (m7m) the free vertex velocities of
+	// coupled sheets (3 per vertex after the bodies' 6 nb, sheet by sheet).
 	const std::size_t nq = 6*nb;
+	std::vector<std::size_t> sheetStart(ns + 1, nq);
+	for (std::size_t i = 0; i < ns; ++i) sheetStart[i + 1] = sheetStart[i] + ((*input.sheets)[i].coupled ? (*input.sheets)[i].v.size() : 0);
+	const std::size_t nx = sheetStart[ns];
+	const double unit = density*g.h*g.h*g.h;
+	auto sheetFree = [&](std::size_t q) {   // q >= nq
+		std::size_t i = 0;
+		while (q >= sheetStart[i + 1]) ++i;
+		return s.SheetFree(i, (q - sheetStart[i])/3);
+	};
+	std::vector<std::uint8_t> freeX(nx, 0);
+	for (std::size_t q = 0; q < nq; ++q) freeX[q] = s.FreeDof(q);
+	for (std::size_t q = nq; q < nx; ++q) freeX[q] = sheetFree(q);
+	auto toSheets = [&](const std::vector<double>& xb) {
+		for (std::size_t i = 0; i < ns; ++i)
+			if ((*input.sheets)[i].coupled) s.XS()[i].assign(xb.begin() + std::ptrdiff_t(sheetStart[i]), xb.begin() + std::ptrdiff_t(sheetStart[i + 1]));
+	};
+	// y = S' x / (rho h^3) on the coupled sheets' rows.
+	auto sheetMass = [&](const std::vector<double>& xb, std::vector<double>& yb) {
+		for (std::size_t i = 0; i < ns; ++i) {
+			const ViscousSheet& sh = (*input.sheets)[i];
+			if (!sh.coupled) continue;
+			std::vector<double> xi(xb.begin() + std::ptrdiff_t(sheetStart[i]), xb.begin() + std::ptrdiff_t(sheetStart[i + 1])), yi;
+			for (std::size_t q = 0; q < xi.size(); ++q) if (!freeX[sheetStart[i] + q]) xi[q] = 0;
+			sh.applyMass(xi, yi);
+			for (std::size_t q = 0; q < yi.size(); ++q) yb[sheetStart[i] + q] = freeX[sheetStart[i] + q] ? yi[q]/unit : 0.0;
+		}
+	};
 	const std::vector<double>& wstar = s.WStar();
 	auto apply = [&](const std::array<std::vector<double>,3>& x, const std::vector<double>& xb,
 		std::array<std::vector<double>,3>& y, std::vector<double>& yb) {
-		if (s.AnyCoupled()) s.WB() = xb;
+		if (s.AnyCoupled()) s.WB().assign(xb.begin(), xb.begin() + std::ptrdiff_t(nq));
+		if (s.AnySheetCoupled()) toSheets(xb);
 		s.Apply(x, y);
-		yb.assign(nq, 0.0);
-		if (!s.AnyCoupled()) return;
-		std::vector<double> gb, mb;
-		s.GatherBodies(gb, false);
-		s.BodyMass(xb, mb, density);
-		for (std::size_t q = 0; q < nq; ++q) yb[q] = s.FreeDof(q) ? mb[q] + s.Scale()*gb[q] : 0.0;
+		yb.assign(nx, 0.0);
+		if (s.AnyCoupled()) {
+			std::vector<double> gb, mb;
+			s.GatherBodies(gb, false);
+			std::vector<double> w(xb.begin(), xb.begin() + std::ptrdiff_t(nq));
+			s.BodyMass(w, mb, density);
+			for (std::size_t q = 0; q < nq; ++q) yb[q] = s.FreeDof(q) ? mb[q] + s.Scale()*gb[q] : 0.0;
+		}
+		if (s.AnySheetCoupled()) {
+			std::vector<std::vector<double>> gs;
+			s.GatherSheets(gs, false);
+			sheetMass(xb, yb);
+			for (std::size_t i = 0; i < ns; ++i)
+				for (std::size_t q = 0; q < gs[i].size(); ++q) if (freeX[sheetStart[i] + q]) yb[sheetStart[i] + q] += s.Scale()*gs[i][q];
+		}
 	};
 	auto dot = [&](const std::array<std::vector<double>,3>& x, const std::vector<double>& xb,
 		const std::array<std::vector<double>,3>& y, const std::vector<double>& yb) {
 		double d = DotFaces(pool, x, y);
-		for (std::size_t q = 0; q < nq; ++q) d += xb[q]*yb[q];
+		for (std::size_t q = 0; q < nx; ++q) d += xb[q]*yb[q];
 		return d;
 	};
 	auto norm = [&](const std::array<std::vector<double>,3>& x, const std::vector<double>& xb) {
 		double m = MaxFaces(pool, x);
-		for (std::size_t q = 0; q < nq; ++q) m = std::max(m, std::fabs(xb[q]));
+		for (std::size_t q = 0; q < nx; ++q) m = std::max(m, std::fabs(xb[q]));
 		return m;
 	};
-	// b = M u* - 2 dt nu G^T S g0 (and M w* - 2 dt nu G_w^T S g0 for the bodies).
+	// m7m: the coupled sheets' preconditioner, (S' + rho h^3 2 dt nu diag(G_V^T S G_V))^-1 (the factorised
+	// step matrix with the strains' diagonal); the bodies' and the faces' Jacobi.
+	if (s.AnySheetCoupled()) {
+		std::vector<std::vector<double>> sq;
+		s.GatherSheets(sq, true);
+		for (std::size_t i = 0; i < ns; ++i) {
+			const ViscousSheet& sh = (*input.sheets)[i];
+			if (!sh.coupled) continue;
+			std::vector<double> d(sq[i].size(), 0.0);
+			for (std::size_t q = 0; q < d.size(); ++q) d[q] = unit*s.Scale()*sq[i][q];
+			if (!sh.prepare(d, error)) return false;
+		}
+	}
+	auto precondition = [&](const std::vector<double>& rb, std::vector<double>& zb) {
+		for (std::size_t q = 0; q < nq; ++q) zb[q] = s.FreeDof(q) ? rb[q]/s.bodyDiag[q] : 0.0;
+		for (std::size_t i = 0; i < ns; ++i) {
+			const ViscousSheet& sh = (*input.sheets)[i];
+			if (!sh.coupled) continue;
+			std::vector<double> ri(rb.begin() + std::ptrdiff_t(sheetStart[i]), rb.begin() + std::ptrdiff_t(sheetStart[i + 1])), zi;
+			sh.precondition(ri, zi);
+			for (std::size_t q = 0; q < zi.size(); ++q) zb[sheetStart[i] + q] = freeX[sheetStart[i] + q] ? unit*zi[q] : 0.0;
+		}
+	};
+	// b = M u* - 2 dt nu G^T S g0 (and M w* - 2 dt nu G_w^T S g0 for the bodies, S' V* - ... for the sheets).
 	std::array<std::vector<double>,3> b, x, r, z, p, Ap;
-	std::vector<double> bb(nq, 0.0), xb(nq, 0.0), rb(nq, 0.0), zb(nq, 0.0), pb(nq, 0.0), Apb(nq, 0.0);
+	std::vector<double> bb(nx, 0.0), xb(nx, 0.0), rb(nx, 0.0), zb(nx, 0.0), pb(nx, 0.0), Apb(nx, 0.0);
 	s.Strains(ustar.u, false, true);
 	s.Gather(b, false);
 	if (s.AnyCoupled()) {
@@ -797,6 +1298,25 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 		s.GatherBodies(gb, false);
 		s.BodyMass(wstar, mb, density);
 		for (std::size_t q = 0; q < nq; ++q) if (s.FreeDof(q)) { bb[q] = mb[q] - s.Scale()*gb[q]; xb[q] = wstar[q]; }
+	}
+	std::vector<double> vstar(nx, 0.0);
+	if (s.AnySheetCoupled()) {
+		std::vector<std::vector<double>> gs;
+		s.GatherSheets(gs, false);
+		for (std::size_t i = 0; i < ns; ++i) {
+			const ViscousSheet& sh = (*input.sheets)[i];
+			if (!sh.coupled) continue;
+			for (std::size_t q = 0; q < sh.v.size(); ++q) vstar[sheetStart[i] + q] = sh.v[q];
+		}
+		std::vector<double> mv(nx, 0.0);
+		sheetMass(vstar, mv);
+		for (std::size_t i = 0; i < ns; ++i)
+			for (std::size_t q = 0; q < gs[i].size(); ++q) {
+				const std::size_t k = sheetStart[i] + q;
+				if (!freeX[k]) continue;
+				bb[k] = mv[k] - s.Scale()*gs[i][q];
+				xb[k] = vstar[k];
+			}
 	}
 	for (int a = 0; a < 3; ++a) {
 		x[a].assign(g.Faces(a), 0.0);
@@ -815,7 +1335,8 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 			for (std::size_t f = 0; f < r[a].size(); ++f) if (s.kind[a][f] == 1) { r[a][f] = b[a][f] - Ap[a][f]; z[a][f] = r[a][f]/s.diag[a][f]; }
 			p[a] = z[a];
 		}
-		for (std::size_t q = 0; q < nq; ++q) if (s.FreeDof(q)) { rb[q] = bb[q] - Apb[q]; zb[q] = rb[q]/s.bodyDiag[q]; }
+		for (std::size_t q = 0; q < nx; ++q) if (freeX[q]) rb[q] = bb[q] - Apb[q];
+		precondition(rb, zb);
 		pb = zb;
 		double rz = dot(r, rb, z, zb);
 		const double target = options.tolerance*bnorm;
@@ -833,7 +1354,7 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 					for (std::size_t f = f0; f < f1; ++f) { xa[f] += alpha*pa[f]; ra[f] -= alpha*Apa[f]; }
 				});
 			}
-			for (std::size_t q = 0; q < nq; ++q) { xb[q] += alpha*pb[q]; rb[q] -= alpha*Apb[q]; }
+			for (std::size_t q = 0; q < nx; ++q) { xb[q] += alpha*pb[q]; rb[q] -= alpha*Apb[q]; }
 			++it;
 			rnorm = norm(r, rb);
 			if (rnorm <= target) break;
@@ -844,7 +1365,7 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 					for (std::size_t f = f0; f < f1; ++f) za[f] = kd[f] == 1 ? ra[f]/da[f] : 0.0;
 				});
 			}
-			for (std::size_t q = 0; q < nq; ++q) zb[q] = s.FreeDof(q) ? rb[q]/s.bodyDiag[q] : 0.0;
+			precondition(rb, zb);
 			const double rzNew = dot(r, rb, z, zb);
 			const double beta = rzNew/rz;
 			rz = rzNew;
@@ -855,7 +1376,7 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 					for (std::size_t f = f0; f < f1; ++f) pa[f] = za[f] + beta*pa[f];
 				});
 			}
-			for (std::size_t q = 0; q < nq; ++q) pb[q] = zb[q] + beta*pb[q];
+			for (std::size_t q = 0; q < nx; ++q) pb[q] = zb[q] + beta*pb[q];
 		}
 		stats.iterations = it;
 		stats.residual = rnorm/bnorm;
@@ -869,7 +1390,8 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 	for (int a = 0; a < 3; ++a)
 		for (std::size_t f = 0; f < u.u[a].size(); ++f) if (s.kind[a][f] == 1) u.u[a][f] = x[a][f];
 	// Forces: the strains of the solution with the boundary values.
-	if (s.AnyCoupled()) s.WB() = xb;
+	if (s.AnyCoupled()) s.WB().assign(xb.begin(), xb.begin() + std::ptrdiff_t(nq));
+	if (s.AnySheetCoupled()) toSheets(xb);
 	s.Strains(x, true, true);
 	s.Attribute(nb, bodyImpulse, wallImpulse, density);
 	if (s.AnyCoupled()) {
@@ -877,10 +1399,21 @@ bool ViscousStep(const Grid& g, const std::vector<double>& phi, const std::array
 		std::vector<double> dw(nq, 0.0), mdw;
 		for (std::size_t q = 0; q < nq; ++q) if (s.FreeDof(q)) dw[q] = xb[q] - wstar[q];
 		s.BodyMass(dw, mdw, density);
-		const double unit = density*g.h*g.h*g.h;
 		for (std::size_t i = 0; i < nb; ++i) {
 			if (!(*input.bodies)[i].coupled) continue;
 			for (int k = 0; k < 6; ++k) bodyImpulse[i][std::size_t(k)] = mdw[6*i + std::size_t(k)]*unit;
+		}
+	}
+	if (sheetImpulse) {
+		// m7m: a coupled sheet's impulse S' (V - V*) on its free vertices; the reaction on the others.
+		std::vector<double> dv(nx, 0.0), mdv(nx, 0.0);
+		for (std::size_t q = nq; q < nx; ++q) if (freeX[q]) dv[q] = xb[q] - vstar[q];
+		if (s.AnySheetCoupled()) sheetMass(dv, mdv);
+		for (std::size_t i = 0; i < ns; ++i) {
+			std::vector<double>& out = (*sheetImpulse)[i];
+			for (std::size_t q = 0; q < out.size(); ++q) out[q] = s.sheetReaction[i][q];
+			if (!(*input.sheets)[i].coupled) continue;
+			for (std::size_t q = 0; q < out.size(); ++q) if (freeX[sheetStart[i] + q]) out[q] = mdv[sheetStart[i] + q]*unit;
 		}
 	}
 	stats.seconds = Now() - start;

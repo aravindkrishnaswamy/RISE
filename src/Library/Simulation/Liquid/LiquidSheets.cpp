@@ -59,7 +59,7 @@ double LiquidSheet::SpeedBound() const
 	return std::sqrt(s);
 }
 
-void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool)
+void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool, bool cover)
 {
 	out.clear();
 	std::vector<std::pair<std::uint32_t, std::uint32_t>> work;   // (sheet, triangle)
@@ -161,7 +161,7 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 	});
 	out.erase(std::unique(out.begin(), out.end(), [](const SheetCrossing& p, const SheetCrossing& q) {
 		return p.axis == q.axis && p.face == q.face; }), out.end());
-	SheetCover(g, sheets, out, pool);
+	if (cover) SheetCover(g, sheets, out, pool);
 }
 
 namespace {

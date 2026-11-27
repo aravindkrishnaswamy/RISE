@@ -449,6 +449,15 @@ simulation_group
 }
 ```
 
+M7m (docs/SIMULATION_M7M_RESULTS.md): `viscosity` works with prescribed and implicit sheets: the sheet is a no-slip
+wall of the viscous solve on each wetted side (no viscous stress crosses it), and an implicit cloth's vertex velocities
+are solved with the viscous step, so the liquid's drag reaches the cloth through `surface_load_steps` (nothing more
+to connect).  A staggered or one-way port sheet with viscosity is refused (its load is the pressure only).  Sample:
+`scenes/Tests/Simulation/liquid_honey_cloth.RISEscene` (honey poured onto a pinned cloth).  Stated limits (the
+results' Known limits): a layer resting on a sheet needs about 2.5 cells; very light cloth (below about 0.1 kg/m^2)
+with a free edge at a waterline on a coarse grid is kicked at the edge, which the progress detail flags as a rotation
+stretch or linearisation correction above 1%: use heavier cloth, pin the edge, or refine the grid.
+
 ## Coupling (M6)
 
 docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and

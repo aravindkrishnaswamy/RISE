@@ -380,7 +380,14 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	sheetStepImpulse.assign(sheets.size(), V3{{0, 0, 0}});
 	ResetSheetImpulses();
 	if (!sheets.empty()) {
-		if (setup.viscosity > 0) { error = "sheets with viscosity are not supported (m7d: the viscous solve does not see them)"; return false; }
+		// m7m: viscosity with prescribed and implicitly coupled sheets (a staggered or one-way sheet's load is
+		// its pressure only: no viscous traction could reach its partner).
+		if (setup.viscosity > 0)
+			for (const LiquidSheet& sh : sheets)
+				if (sh.motion == LiquidSheet::Motion::Port && !sh.implicit) {
+					error = "viscosity with a staggered or one-way port sheet is not supported (its load carries the pressure only; couple it implicitly)";
+					return false;
+				}
 		for (LiquidSheet& sh : sheets) if (sh.motion == LiquidSheet::Motion::Prescribed) sh.PrescribedAt(0);
 		sheetSolid_.Resize(g);
 		CloseSheetFaces();
@@ -505,7 +512,59 @@ PressureOptions LiquidModel::WithJump(PressureOptions po, double dt, double weig
 	return po;
 }
 
-bool LiquidModel::Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error)
+void LiquidModel::SheetViscousGeometry(std::vector<ViscousSheetFace>& faces, std::vector<ViscousSheetCut>& cuts) const
+{
+	// m7m: the viscous solve's no-slip walls at the sheets: the faces they close (barriers), and the
+	// differences of each component along the other axes whose segment crosses a sheet, found as the
+	// closed faces of the grid shifted by half a cell along the component (its cells are that
+	// component's faces).
+	faces.clear();
+	cuts.clear();
+	const Grid& g = setup_.grid;
+	auto point = [&](const SheetCrossing& c) {
+		ViscousSheetPoint p;
+		p.sheet = c.sheet;
+		for (int m = 0; m < 3; ++m) { p.v[m] = sheets[c.sheet].triangles[3*std::size_t(c.triangle) + std::size_t(m)]; p.w[m] = c.w[m]; }
+		return p;
+	};
+	for (const SheetCrossing& c : sheetFaces_) {
+		if (!c.Barrier()) continue;
+		ViscousSheetFace f;
+		f.axis = c.axis;
+		f.face = c.face;
+		f.s = c.s;
+		f.p = point(c);
+		faces.push_back(f);
+	}
+	for (int b = 0; b < 3; ++b) {
+		if (g.n[b] == 1) continue;
+		Grid gb = g;
+		gb.origin[std::size_t(b)] -= 0.5*g.h;
+		gb.n[std::size_t(b)] += 1;
+		std::vector<SheetCrossing> out;
+		FindSheetCrossings(gb, sheets, out, pool_.get(), false);
+		for (const SheetCrossing& c : out) {
+			if (c.axis == b || !c.crossed) continue;
+			const auto d = gb.FaceDims(c.axis);
+			const int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+				int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+			if (idx[b] == 0 || idx[b] == g.n[b]) continue;   // the domain walls
+			ViscousSheetCut k;
+			k.comp = b;
+			k.dir = c.axis;
+			for (int q = 0; q < 3; ++q) k.hi[q] = idx[q];
+			const double lo = g.origin[std::size_t(c.axis)] + (idx[c.axis] - 0.5)*g.h;
+			k.t = std::min(1.0, std::max(0.0, (c.s - lo)/g.h));
+			k.loSide = c.normal[c.axis] > 0 ? -1 : 1;
+			for (int q = 0; q < 3; ++q) k.normal[q] = c.normal[q];
+			k.p = point(c);
+			cuts.push_back(k);
+		}
+	}
+}
+
+bool LiquidModel::Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vector<Vec6>& impulse, StepStats& stats, std::string& error,
+	const std::vector<double>* qp, std::vector<std::vector<double>>* vStar, const std::vector<std::vector<SheetBlock>>* faceMass)
 {
 	const Grid& g = setup_.grid;
 	Pool* pool = pool_.get();
@@ -543,8 +602,77 @@ bool LiquidModel::Viscous(MacField& s, double dt, std::vector<Vec6>& w, std::vec
 		}
 		in.bodies = &twists;
 	}
+	// m7m: sheets: no-slip walls; a coupled sheet's free vertex velocities are unknowns of the solve with its
+	// step matrix S' (with the face liquid: the projection's) as their mass, about V* plus the counterpart
+	// of the previous pressure (rho h^3 J q_prev, as a body's), so that only the viscous impulse moves it.
+	std::vector<ViscousSheet> vsheets;
+	std::vector<ViscousSheetFace> vfaces;
+	std::vector<ViscousSheetCut> vcuts;
+	std::vector<SheetDynamics> pre(sheets.size());
+	std::vector<std::vector<double>> sheetVisc;
+	if (!sheets.empty()) {
+		SheetViscousGeometry(vfaces, vcuts);
+		in.sheets = &vsheets;
+		in.sheetFaces = &vfaces;
+		in.sheetCuts = &vcuts;
+		std::vector<std::vector<double>> J;
+		if (qp && vStar && CoupledSheets()) {
+			SheetCoupling c(g, sheetFaces_, sheets, setup_.density, &sheetUnwetted_);
+			std::vector<std::uint8_t> active;
+			ActiveCells(g, phi, fraction, active, pool);
+			c.Begin(active);
+			c.Measure(*qp, J);
+		}
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			ViscousSheet v;
+			const LiquidSheet& sh = sheets[i];
+			if (sh.Coupled() && vStar && i < vStar->size() && !(*vStar)[i].empty()) {
+				v.coupled = true;
+				v.fixed = sh.dyn.fixed;
+				v.v = (*vStar)[i];
+				if (i < J.size() && !J[i].empty()) {
+					std::vector<double> d;
+					sh.dyn.Solve(J[i], d);
+					for (std::size_t k = 0; k < d.size(); ++k) v.v[k] += d[k];
+				}
+				const SheetDynamics* dyn = &sh.dyn;
+				v.applyMass = [dyn](const std::vector<double>& x, std::vector<double>& y) {
+					dyn->matrix.Multiply(x, y);
+					for (std::size_t q = 0; q < dyn->fixed.size(); ++q) if (dyn->fixed[q]) y[3*q] = y[3*q + 1] = y[3*q + 2] = 0;
+				};
+				SheetDynamics* p = &pre[i];
+				const LiquidSheet* shp = &sh;
+				v.prepare = [p, shp, dt, faceMass, i](const std::vector<double>& diag, std::string& err) {
+					*p = shp->dyn;
+					std::vector<SheetBlock> blocks;
+					if (faceMass && i < faceMass->size()) blocks = (*faceMass)[i];
+					for (std::size_t q = 0; 3*q < diag.size(); ++q) {
+						SheetBlock e;
+						e.i = e.j = std::uint32_t(q);
+						e.b[0] = diag[3*q]; e.b[4] = diag[3*q + 1]; e.b[8] = diag[3*q + 2];
+						blocks.push_back(e);
+					}
+					return p->Prepare(dt, shp->v, blocks, shp->triangles, err);
+				};
+				v.precondition = [p](const std::vector<double>& r, std::vector<double>& z) { p->Solve(r, z); };
+			} else v.v = sh.v;
+			vsheets.push_back(std::move(v));
+		}
+	}
 	std::vector<Impulse6> onBodies;
-	if (!ViscousStep(g, phi, fraction, in, vo, dt, setup_.density, s, onBodies, viscousWallImpulse, stats.viscous, pool, error)) return false;
+	if (!ViscousStep(g, phi, fraction, in, vo, dt, setup_.density, s, onBodies, viscousWallImpulse, stats.viscous, pool, error,
+		sheets.empty() ? nullptr : &sheetVisc)) return false;
+	if (!sheets.empty()) {
+		// The coupled sheets' predicted velocities gain S'^-1 of their viscous impulse; the others' impulse is measured.
+		sheetViscousImpulse.assign(sheets.size(), {});
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			sheetViscousImpulse[i] = sheetVisc[i];
+			if (!vsheets[i].coupled) continue;
+			std::vector<double> d;
+			sheets[i].dyn.Solve(sheetVisc[i], d);
+			for (std::size_t k = 0; k < d.size(); ++k) (*vStar)[i][k] += d[k];
+		}
+	}
 	impulse.assign(bodies.size(), Vec6{{0, 0, 0, 0, 0, 0}});
 	bodyViscousImpulse = impulse;
 	// Coupled bodies were unknowns of the solve (their impulse M (w - w*)); the caller
@@ -830,8 +958,11 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// point.  Without viscosity the arithmetic is m7b's.
 	const std::vector<double> qPrev = viscous && lastDt_ > 0 ? q_ : std::vector<double>();
 	const double prevDt = lastDt_;
+	// m7m: the coupled sheets' face liquid (their step matrices' blocks F and right-hand sides) of the step.
+	std::vector<std::vector<SheetBlock>> sheetFaceMass;
+	std::vector<std::vector<double>> sheetFaceRhs;
 	auto viscousStep = [&](MacField& s, std::vector<Vec6>& w, double gravityWeight, const std::vector<double>* stagePart,
-		const std::vector<Vec6>* stageImpulse) -> bool {
+		const std::vector<Vec6>* stageImpulse, std::vector<std::vector<double>>* vStar) -> bool {
 		const double tv = Now();
 		std::vector<double> qp;
 		// The predictor's gradient carries the surface-tension jump of this stage's share
@@ -865,7 +996,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 				const Vec6 dw = c.InverseMass(I);
 				for (int m = 0; m < 6; ++m) wall[i][std::size_t(m)] += dw[std::size_t(m)];
 			}
-		if (!Viscous(s, dt, wall, viscousImpulse, stats, error)) return false;
+		if (!Viscous(s, dt, wall, viscousImpulse, stats, error, qp.empty() ? nullptr : &qp, vStar, &sheetFaceMass)) return false;
 		for (std::size_t i = 0; i < bodies.size(); ++i) {
 			if (!bodies[i].Coupled()) continue;
 			BodyCoupling c(g, geometry_.Faces()[i], bodies[i], setup_.density, true);
@@ -919,8 +1050,30 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// projection and before gravity's increment (a uniform field, which the
 	// hydrostatic pressure balances; diffused at a no-slip wall it would leave
 	// a splitting error there).
-	if (viscous && options_.momentumStages <= 1) { if (!viscousStep(s1, w1star, 1.0, nullptr, nullptr)) return false; }
-	else addGravity(s1, 1);
+	// m7e: the implicitly coupled sheets' predicted velocities: their linearised
+	// backward-Euler step with the liquid on the faces they close moving with
+	// them (LiquidSheets.h), from the stage's predicted face velocities.
+	auto predictSheets = [&](const MacField& s) -> bool {
+		SheetFaceMass(s, sheetFaceMass, sheetFaceRhs);
+		for (std::size_t i = 0; i < sheets.size(); ++i) {
+			if (!sheets[i].Coupled()) continue;
+			sheets[i].dyn.Rotate(dt, sheets[i].v);   // m7h: the corotational model's rotations for this step
+			if (!sheets[i].dyn.Prepare(dt, sheets[i].v, sheetFaceMass[i], sheets[i].triangles, error)) return false;
+			sheets[i].dyn.Predict(dt, sheets[i].v, sheetFaceRhs[i], v1star[i]);
+		}
+		return true;
+	};
+	const bool viscousFirst = viscous && options_.momentumStages <= 1;
+	if (viscousFirst) {
+		// m7m: the coupled sheets' prediction before the viscous solve (whose unknowns they are), from the
+		// stage's face velocities with gravity (the viscous solve leaves the faces they close unchanged).
+		if (coupledSheets) {
+			MacField sg = s1;
+			addGravity(sg, 1);
+			if (!predictSheets(sg)) return false;
+		}
+		if (!viscousStep(s1, w1star, 1.0, nullptr, nullptr, coupledSheets ? &v1star : nullptr)) return false;
+	} else addGravity(s1, 1);
 	t0 = Now();
 	stats.momentum += t0 - t1;
 	// The step's last projection leaves cut faces narrower than minTransportFraction invalid
@@ -928,18 +1081,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// first stage's keeps every updated face for the second stage.
 	PressureOptions po = WithJump(options_.momentumStages <= 1 ? FinalPressure() : options_.pressure, dt, 1.0);
 	if (coupledSheets) {
-		// m7e: the implicitly coupled sheets' predicted velocities: their linearised
-		// backward-Euler step with the liquid on the faces they close moving with
-		// them (LiquidSheets.h), from the stage's predicted face velocities.
-		std::vector<std::vector<SheetBlock>> faceMass;
-		std::vector<std::vector<double>> faceRhs;
-		SheetFaceMass(s1, faceMass, faceRhs);
-		for (std::size_t i = 0; i < sheets.size(); ++i) {
-			if (!sheets[i].Coupled()) continue;
-			sheets[i].dyn.Rotate(dt, sheets[i].v);   // m7h: the corotational model's rotations for this step
-			if (!sheets[i].dyn.Prepare(dt, sheets[i].v, faceMass[i], sheets[i].triangles, error)) return false;
-			sheets[i].dyn.Predict(dt, sheets[i].v, faceRhs[i], v1star[i]);
-		}
+		if (!viscousFirst && !predictSheets(s1)) return false;
 		if (!ProjectCoupled(s1, po, w1star, v1star, impulse1, sheetImp1, stats.pressure, error)) return false;
 	} else if (hasBodies) {
 		if (!ProjectBodies(s1, po, w1star, impulse1, stats.pressure, error)) return false;
@@ -991,7 +1133,8 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			// Heun: s2 holds q1 / 2 already (through s1); the midpoint scheme none.
 			std::vector<double> half;
 			if (weno) { half = q_; for (double& x : half) x *= 0.5; }
-			if (!viscousStep(s2, w2star, weno ? 0.5 : 1.0, weno ? &half : nullptr, weno && hasBodies ? &impulse1 : nullptr)) return false;
+			if (!viscousStep(s2, w2star, weno ? 0.5 : 1.0, weno ? &half : nullptr, weno && hasBodies ? &impulse1 : nullptr,
+				coupledSheets ? &v2star : nullptr)) return false;
 		} else addGravity(s2, weno ? 0.5 : 1.0);
 		t0 = Now();
 		stats.momentum += t0 - t1;
@@ -1483,6 +1626,15 @@ void LiquidModel::AccumulateSheetImpulse()
 		for (int m = 0; m < 3; ++m) acc[3*std::size_t(sh.triangles[3*std::size_t(c.triangle) + std::size_t(m)]) + std::size_t(c.axis)] += c.w[m]*imp;
 		sheetStepImpulse[c.sheet][std::size_t(c.axis)] += imp;
 	}
+	// m7m: the viscous impulse on sheets that are not coupled (a coupled sheet's is in its step's impulse).
+	if (setup_.viscosity > 0)
+		for (std::size_t i = 0; i < sheets.size() && i < sheetViscousImpulse.size(); ++i) {
+			if (sheets[i].Coupled() || sheetViscousImpulse[i].size() != sheetImpulse[i].size()) continue;
+			for (std::size_t k = 0; k < sheetViscousImpulse[i].size(); ++k) {
+				sheetImpulse[i][k] += sheetViscousImpulse[i][k];
+				sheetStepImpulse[i][k % 3] += sheetViscousImpulse[i][k];
+			}
+		}
 }
 
 void LiquidModel::CountSheetCrossings(const std::vector<double>& phiStart, const std::vector<SheetCrossing>& facesBefore)

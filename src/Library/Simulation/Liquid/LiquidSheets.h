@@ -194,7 +194,8 @@ struct SheetCrossing {
 //! for each lattice line a free edge's projection meets whose face holding the edge's nearest
 //! point is not crossed, that face (`crossed` false) with its cover, the edge's point as the
 //! crossing (weights, coordinate, velocity) and the edge's triangle's normal.
-void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool);
+//! m7m: `cover` false skips the covers (and the free edges' added faces): the crossings alone.
+void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& out, Pool* pool, bool cover = true);
 //! m7i: sets the cover of `faces` (FindSheetCrossings calls it).
 void SheetCover(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vector<SheetCrossing>& faces, Pool* pool);
 

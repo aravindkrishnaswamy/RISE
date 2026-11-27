@@ -205,7 +205,7 @@ void Description()
 	const double t0 = Seconds();
 	Check(s->Configure(V::MapValue(p), EmptySceneInputs(), d, error), "configure with a body", error);
 	std::printf("  configure with bodies (evidence) %.2f s; version %s\n", Seconds() - t0, d.version.c_str());
-	Check(d.version == "m7l.1", "version m7l.1");
+	Check(d.version == "m7m.1", "version m7m.1");
 	bool bodiesOut = false;
 	for (const auto& o : d.cache.outputs) if (o.name == "bodies" && o.type == TransformCodec) bodiesOut = true;
 	Check(bodiesOut, "the bodies output (transform.v1)");
