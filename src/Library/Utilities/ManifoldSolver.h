@@ -65,6 +65,13 @@
 #include <atomic>
 #include "../Intersection/RayIntersection.h"
 
+// <wingdi.h> (pulled in by <windows.h>) defines RGB(r,g,b) as a function-like
+// macro, which would mangle SMSQueryDomain::RGB.  Nothing in the library uses
+// the GDI macro; drop it where this name is declared and called.
+#ifdef RGB
+#undef RGB
+#endif
+
 namespace RISE
 {
 	class IScene;

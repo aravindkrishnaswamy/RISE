@@ -17,6 +17,7 @@
 #include "../Functions/Polynomial.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>

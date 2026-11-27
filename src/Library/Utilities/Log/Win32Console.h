@@ -102,7 +102,7 @@
 			void Print( const LogEvent& event );
 			void Flush();
 
-			static void* Win32Console::Win32Console_ExecuteCommandProc( void* );
+			static void* Win32Console_ExecuteCommandProc( void* );
 		};
 	} }
 
