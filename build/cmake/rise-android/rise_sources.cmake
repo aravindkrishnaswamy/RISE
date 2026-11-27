@@ -192,6 +192,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSLocalBake.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSSkinMaterial.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSReciprocalBoundary.cpp"
+    "${RISE_LIB}/Materials/HyLIoS/HyLIoSSpatialGeometry.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSLocalResponse.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSLocalResponseAsset.cpp"
     "${RISE_LIB}/Materials/HyLIoS/HyLIoSForwardExperiment.cpp"

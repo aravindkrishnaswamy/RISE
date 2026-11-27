@@ -71,6 +71,13 @@ namespace RISE
 		// to an independently constructed `RISE::HyLIoS::LocalAssetSemanticIdentity`.
 		const void* explicitSemanticIdentity = nullptr;
 		bool        useStandaloneAssetCodec  = false;
+
+		// P7 nonlocal spatial skin transport parameters (used when transportMode == "nonlocal").
+		double        boundaryRoughness       = 0.25;              ///< GGX alpha for rise_reciprocal_boundary_v1 (0 = smooth delta)
+		const char*   spatialDomain           = "planar_polygon";  ///< "planar_polygon" | "concentric_sphere" | "concentric_cylinder" | "intrinsic_layer"
+		double        domainHalfWidthMetres   = 0.05;              ///< Planar polygon half-width / cylinder half-length (m)
+		double        domainRadiusMetres      = 0.10;              ///< Concentric sphere/cylinder outer radius (m)
+		std::uint64_t maxSubsurfaceSteps      = 256;               ///< Bounded iterative subsurface step budget
 	};
 
 	namespace Implementation
@@ -176,7 +183,24 @@ namespace RISE
 			bool        hasVisibleGuide = false;
 		};
 
-		//! HyLIoS hyperspectral skin material (P5 local baked mode).
+		//! Result of one iterative nonlocal spatial skin transport step (P7).
+		struct HyLIoSNonlocalSample
+		{
+			bool   escaped = false;
+			bool   isExternalReflection = false;
+			bool   isDelta = false;
+			bool   domainBoundaryLoss = false;
+			Point3 exitPos;
+			Vector3 exitNormal;
+			Vector3 exitDir;
+			Scalar throughput = Scalar( 0 );
+			Scalar pdf = Scalar( 0 );
+			double lateralDisplacementMetres = 0.0;
+		};
+
+		struct HyLIoSNonlocalRuntime;
+
+		//! HyLIoS hyperspectral skin material (P5 local baked mode + P7 nonlocal spatial mode).
 		class HyLIoSSkinMaterial : public virtual IMaterial, public virtual Reference
 		{
 		protected:
@@ -185,6 +209,7 @@ namespace RISE
 			std::shared_ptr<const void> pCacheToken;
 			std::shared_ptr<const RISE::HyLIoS::HyLIoSLocalResponseAsset> pAsset;
 			std::shared_ptr<const RISE::HyLIoS::HyLIoSSupportedCameraProposal> pProposal;
+			std::shared_ptr<HyLIoSNonlocalRuntime> pNonlocal;
 			RISEPel guideRGB;
 			HyLIoSSkinMaterialSummary summary;
 
@@ -194,6 +219,7 @@ namespace RISE
 				std::shared_ptr<const void> cacheToken,
 				std::shared_ptr<const RISE::HyLIoS::HyLIoSLocalResponseAsset> asset,
 				std::shared_ptr<const RISE::HyLIoS::HyLIoSSupportedCameraProposal> proposal,
+				std::shared_ptr<HyLIoSNonlocalRuntime> nonlocal,
 				const RISEPel& guideRGB_,
 				const HyLIoSSkinMaterialSummary& summary_
 				);
@@ -201,9 +227,9 @@ namespace RISE
 		public:
 			//! Validates `config`, independently resolves semantic identity, loads
 			//! (or shares from the immutable render cache) the validated response
-			//! asset, prepares `HyLIoSSupportedCameraProposal`, and constructs the
-			//! material.  Returns nullptr and writes a diagnostic into `outError`
-			//! on any validation, coverage, budget, or I/O failure.
+			//! asset (baked_local) or prepares the nonlocal spatial runtime (nonlocal),
+			//! and constructs the material.  Returns nullptr and writes a diagnostic
+			//! into `outError` on any validation, coverage, budget, or I/O failure.
 			static HyLIoSSkinMaterial* Create(
 				const HyLIoSSkinMaterialConfig& config,
 				std::string* outError = nullptr
@@ -214,8 +240,22 @@ namespace RISE
 			IEmitter* GetEmitter() const override { return 0; }
 
 			bool IsHyperspectralSkin() const override { return true; }
+			bool IsNonlocalSkin() const noexcept { return pNonlocal != nullptr; }
 			bool EvaluateVisibleGuideAlbedo( const RayIntersectionGeometric& geom, RISEPel& outAlbedo ) const override;
 			bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override;
+
+			//! Executes one bounded iterative nonlocal spatial skin step at `nm`
+			//! (no recursive CastRay).  Returns true iff a continuation ray escaped.
+			bool SampleNonlocalNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				ISampler& sampler,
+				HyLIoSNonlocalSample& outSample
+				) const;
+
+			//! Number of paths terminated at explicit absorbing lateral side walls
+			//! (tracked separately from bulk absorption).
+			std::uint64_t DomainBoundaryLossCount() const noexcept;
 
 			const HyLIoSSkinMaterialSummary& GetSummary() const noexcept { return summary; }
 			const RISEPel& GetVisibleGuideRGB() const noexcept { return guideRGB; }

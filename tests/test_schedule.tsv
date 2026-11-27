@@ -150,3 +150,5 @@ HyLIoSIntegrationTest	pool	5	Scheduling estimate; HyLIoS P5 material integration
 HyLIoSSpectralTest	pool	5	Scheduling estimate; HyLIoS P5 NM vs HWSS per-lane spectral transport
 HyLIoSSourceAndFilmTest	pool	5	Scheduling estimate; P6b radiometric preflight and calibrated spectral radiance
 HyperspectralOutputTest	pool	5	Scheduling estimate; P6b EXR output, JSON manifest, checkpoint resume, CST chunk
+HyLIoSAdjointTest	pool	3	Scheduling estimate; P4/P7 reciprocal dielectric boundary reciprocity and sampling
+HyLIoSSpatialTest	pool	5	Scheduling estimate; P7 nonlocal spatial skin domains and iterative PT continuation

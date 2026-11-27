@@ -18,6 +18,7 @@
 #include "pch.h"
 #include "PathTracingIntegrator.h"
 #include "../Materials/RoughDielectricMaterial.h"
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "../Utilities/SobolSampler.h"
 #include <atomic>
 #include "../Rendering/LuminaryManager.h"
@@ -4402,6 +4403,57 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							}
 						}
 					}
+				}
+			}
+		}
+
+		// ============================================================
+		// P7 Nonlocal HyLIoS spatial skin transport (iterative, zero recursion)
+		// ============================================================
+		if constexpr ( Traits::is_nm )
+		{
+			if( ri.pMaterial && ri.pMaterial->IsHyperspectralSkin() &&
+				!EffectivePathTracingClayOverride( rc, mClayOverride ) )
+			{
+				const HyLIoSSkinMaterial* pHyLIoS = dynamic_cast<const HyLIoSSkinMaterial*>( ri.pMaterial );
+				if( pHyLIoS && pHyLIoS->IsNonlocalSkin() )
+				{
+					HyLIoSNonlocalSample nl;
+					if( !pHyLIoS->SampleNonlocalNM( ri.geometric, tag.nm, sampler, nl ) || !nl.escaped ) {
+						break;
+					}
+					if( !( nl.throughput > Scalar( 0 ) ) || !std::isfinite( static_cast<double>( nl.throughput ) ) ) {
+						break;
+					}
+
+					throughput = throughput * nl.throughput;
+					importance = importance * nl.throughput;
+
+					const Point3 nextOrigin = Point3Ops::mkPoint3(
+						nl.exitPos, nl.exitNormal * Scalar( 1e-4 ) );
+					currentRay.Set( nextOrigin, nl.exitDir );
+					depth = depth + 1;
+					bsdfPdf = nl.isDelta ? Scalar( 0 ) : nl.pdf;
+					bsdfMisPdf = bsdfPdf;
+					pNEESelfObject = ri.pObject;
+					bsdfTimesCos = Traits::zero();
+					considerEmission = true;
+					smsGuardedEmission = false;
+					rayType = nl.isExternalReflection
+						? IRayCaster::RAY_STATE::eRaySpecular
+						: IRayCaster::RAY_STATE::eRayDiffuse;
+					if( nl.isExternalReflection ) {
+						glossyBounces = glossyBounces + 1;
+					} else {
+						diffuseBounces = diffuseBounces + 1;
+					}
+					bPassedThroughSpecular = nl.isDelta;
+					bHadNonSpecularShading = false;
+					bSMSChainUncovered = false;
+					if( smsChain ) {
+						smsChain->Invalidate();
+					}
+					continue;
 				}
 			}
 		}

@@ -244,6 +244,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.cpp		\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSReciprocalBoundary.cpp	\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSpatialGeometry.cpp	\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponse.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponseAsset.cpp			\
 	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardExperiment.cpp			\

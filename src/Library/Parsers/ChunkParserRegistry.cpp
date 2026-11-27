@@ -3680,6 +3680,13 @@ namespace RISE
 					cfg.responseAssetPath    = responseAsset.empty() ? nullptr : responseAsset.c_str();
 					cfg.specimenSourcePath   = specimenSource.empty() ? nullptr : specimenSource.c_str();
 
+					const std::string spatialDomain = bag.GetString( "spatial_domain", "planar_polygon" );
+					cfg.boundaryRoughness     = bag.GetDouble( "boundary_roughness", 0.25 );
+					cfg.spatialDomain         = spatialDomain.c_str();
+					cfg.domainHalfWidthMetres = bag.GetDouble( "domain_half_width_m", 0.05 );
+					cfg.domainRadiusMetres    = bag.GetDouble( "domain_radius_m", 0.10 );
+					cfg.maxSubsurfaceSteps    = static_cast<std::uint64_t>( bag.GetUInt( "max_subsurface_steps", 256 ) );
+
 					const double maxFileMiB = bag.GetDouble( "max_file_mib", 256.0 );
 					const double maxResMiB  = bag.GetDouble( "max_resident_mib", 1024.0 );
 					const double aggResMiB  = bag.GetDouble( "aggregate_resident_mib", 2048.0 );
@@ -3706,7 +3713,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "model_revision";         p.kind = ValueKind::String;   p.description = "HyLIoS local bake model revision"; p.defaultValueHint = "hylios_local_bake_analog_projected_v2"; }
 						{ auto& p = P(); p.name = "data_revision";          p.kind = ValueKind::String;   p.description = "HyLIoS optical data revision"; p.defaultValueHint = "hylios_cleanroom_composition_v1"; }
 						{ auto& p = P(); p.name = "transport_mode";         p.kind = ValueKind::Enum;     p.enumValues = {"baked_local", "nonlocal", "diagnostic"}; p.description = "Transport mode (baked_local in P5)"; p.defaultValueHint = "baked_local"; }
-						{ auto& p = P(); p.name = "boundary_mode";          p.kind = ValueKind::Enum;     p.enumValues = {"smooth", "hylios2015"}; p.description = "Outer surface boundary model"; p.defaultValueHint = "smooth"; }
+						{ auto& p = P(); p.name = "boundary_mode";          p.kind = ValueKind::Enum;     p.enumValues = {"smooth", "hylios2015", "rise_reciprocal_boundary_v1"}; p.description = "Outer surface boundary model"; p.defaultValueHint = "smooth"; }
+						{ auto& p = P(); p.name = "boundary_roughness";     p.kind = ValueKind::Double;   p.description = "GGX roughness alpha for rise_reciprocal_boundary_v1 (0 = smooth)"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "spatial_domain";         p.kind = ValueKind::Enum;     p.enumValues = {"planar_polygon", "concentric_sphere", "concentric_cylinder", "intrinsic_layer"}; p.description = "Finite spatial domain for nonlocal transport"; p.defaultValueHint = "planar_polygon"; }
+						{ auto& p = P(); p.name = "domain_half_width_m";    p.kind = ValueKind::Double;   p.description = "Planar footprint half-width or cylinder half-length in metres"; p.defaultValueHint = "0.05"; }
+						{ auto& p = P(); p.name = "domain_radius_m";        p.kind = ValueKind::Double;   p.description = "Concentric sphere/cylinder outer radius in metres"; p.defaultValueHint = "0.10"; }
+						{ auto& p = P(); p.name = "max_subsurface_steps";   p.kind = ValueKind::UInt;     p.description = "Bounded iterative step budget for nonlocal subsurface transport"; p.defaultValueHint = "256"; }
 						{ auto& p = P(); p.name = "boundary_revision";      p.kind = ValueKind::String;   p.description = "Explicit boundary revision tag"; p.defaultValueHint = "smooth_planar_dielectric_v1"; }
 						{ auto& p = P(); p.name = "placement_policy";       p.kind = ValueKind::String;   p.description = "Particle placement policy tag"; p.defaultValueHint = "null_collision_placement_v1"; }
 						{ auto& p = P(); p.name = "post_scatter_policy";    p.kind = ValueKind::String;   p.description = "Post-scatter particle policy tag"; p.defaultValueHint = "discard_after_scatter_v1"; }

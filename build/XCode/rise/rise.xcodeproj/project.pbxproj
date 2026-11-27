@@ -15,6 +15,8 @@
 		BE7AC360C739338E8B366BB5 /* HyLIoSSurfaceBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		98EA62CC961859B228CD31BF /* HyLIoSLocalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		A1B2C3D40001000100000003 /* HyLIoSSkinMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40001000100000001 /* HyLIoSSkinMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A1B2C3D40003000100000003 /* HyLIoSReciprocalBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000100000001 /* HyLIoSReciprocalBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A1B2C3D40003000200000003 /* HyLIoSSpatialGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000200000001 /* HyLIoSSpatialGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000010 /* HyLIoSSlabTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000004 /* HyLIoSForwardTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000004 /* HyLIoSParticleGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
@@ -23,6 +25,8 @@
 		22AC100CA02C6701F288746B /* HyLIoSSurfaceBoundary.h in Headers */ = {isa = PBXBuildFile; fileRef = ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */; };
 		F662EE95B60FAF0F2A6ACF21 /* HyLIoSLocalBake.h in Headers */ = {isa = PBXBuildFile; fileRef = 756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */; };
 		A1B2C3D40001000100000004 /* HyLIoSSkinMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = A1B2C3D40001000100000002 /* HyLIoSSkinMaterial.h */; };
+		A1B2C3D40003000100000004 /* HyLIoSReciprocalBoundary.h in Headers */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000100000002 /* HyLIoSReciprocalBoundary.h */; };
+		A1B2C3D40003000200000004 /* HyLIoSSpatialGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000200000002 /* HyLIoSSpatialGeometry.h */; };
 		C0F1A0000000000000000011 /* HyLIoSSlabTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */; };
 		C0F1D0000000000000000005 /* HyLIoSForwardTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */; };
 		C0F1B0000000000000000005 /* HyLIoSParticleGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
@@ -31,6 +35,8 @@
 		65637009BFD0B2B8CF31383B /* HyLIoSSurfaceBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		3C563FDECC88AFB18A55C5AF /* HyLIoSLocalBake.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		A1B2C3D40001000100000005 /* HyLIoSSkinMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40001000100000001 /* HyLIoSSkinMaterial.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A1B2C3D40003000100000005 /* HyLIoSReciprocalBoundary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000100000001 /* HyLIoSReciprocalBoundary.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		A1B2C3D40003000200000005 /* HyLIoSSpatialGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000200000001 /* HyLIoSSpatialGeometry.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A000000000000000000E /* HyLIoSSlabTransport.h */; };
 		C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */; };
 		C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */; };
@@ -39,6 +45,8 @@
 		DB2ED9D25745427CEB8318DA /* HyLIoSSurfaceBoundary.h in Sources */ = {isa = PBXBuildFile; fileRef = ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */; };
 		47B4690D75164AE654EEA90C /* HyLIoSLocalBake.h in Sources */ = {isa = PBXBuildFile; fileRef = 756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */; };
 		A1B2C3D40001000100000006 /* HyLIoSSkinMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40001000100000002 /* HyLIoSSkinMaterial.h */; };
+		A1B2C3D40003000100000006 /* HyLIoSReciprocalBoundary.h in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000100000002 /* HyLIoSReciprocalBoundary.h */; };
+		A1B2C3D40003000200000006 /* HyLIoSSpatialGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40003000200000002 /* HyLIoSSpatialGeometry.h */; };
 		C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
 		C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000008 /* HyLIoSOptics.h */; };
 		C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0F1A0000000000000000007 /* HyLIoSOptics.cpp */; };
@@ -2420,6 +2428,8 @@
 		CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSSurfaceBoundary.cpp; sourceTree = "<group>"; };
 		9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSLocalBake.cpp; sourceTree = "<group>"; };
 		A1B2C3D40001000100000001 /* HyLIoSSkinMaterial.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSSkinMaterial.cpp; sourceTree = "<group>"; };
+		A1B2C3D40003000100000001 /* HyLIoSReciprocalBoundary.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSReciprocalBoundary.cpp; sourceTree = "<group>"; };
+		A1B2C3D40003000200000001 /* HyLIoSSpatialGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSSpatialGeometry.cpp; sourceTree = "<group>"; };
 		C0F1A000000000000000000E /* HyLIoSSlabTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSlabTransport.h; sourceTree = "<group>"; };
 		C0F1D0000000000000000002 /* HyLIoSForwardTransport.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSForwardTransport.h; sourceTree = "<group>"; };
 		C0F1B0000000000000000002 /* HyLIoSParticleGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSParticleGeometry.h; sourceTree = "<group>"; };
@@ -2428,6 +2438,8 @@
 		ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSurfaceBoundary.h; sourceTree = "<group>"; };
 		756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSLocalBake.h; sourceTree = "<group>"; };
 		A1B2C3D40001000100000002 /* HyLIoSSkinMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSkinMaterial.h; sourceTree = "<group>"; };
+		A1B2C3D40003000100000002 /* HyLIoSReciprocalBoundary.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSReciprocalBoundary.h; sourceTree = "<group>"; };
+		A1B2C3D40003000200000002 /* HyLIoSSpatialGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSSpatialGeometry.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000007 /* HyLIoSOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOptics.cpp; sourceTree = "<group>"; };
 		C0F1A0000000000000000008 /* HyLIoSOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HyLIoS/HyLIoSOptics.h; sourceTree = "<group>"; };
 		C0F1A0000000000000000001 /* HyLIoSOpticalData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HyLIoS/HyLIoSOpticalData.cpp; sourceTree = "<group>"; };
@@ -4366,6 +4378,8 @@
 				ED600FF052D3542F45A955EE /* HyLIoSSurfaceBoundary.h */,
 				756B8C6A1A2077C2B7FB87C5 /* HyLIoSLocalBake.h */,
 				A1B2C3D40001000100000002 /* HyLIoSSkinMaterial.h */,
+				A1B2C3D40003000100000002 /* HyLIoSReciprocalBoundary.h */,
+				A1B2C3D40003000200000002 /* HyLIoSSpatialGeometry.h */,
 				C0F1A000000000000000000D /* HyLIoSSlabTransport.cpp */,
 				C0F1D0000000000000000001 /* HyLIoSForwardTransport.cpp */,
 				C0F1B0000000000000000001 /* HyLIoSParticleGeometry.cpp */,
@@ -4374,6 +4388,8 @@
 				CA0B46EEF692EC3ABE3A3DCD /* HyLIoSSurfaceBoundary.cpp */,
 				9D9A3E748FADE6D86B356707 /* HyLIoSLocalBake.cpp */,
 				A1B2C3D40001000100000001 /* HyLIoSSkinMaterial.cpp */,
+				A1B2C3D40003000100000001 /* HyLIoSReciprocalBoundary.cpp */,
+				A1B2C3D40003000200000001 /* HyLIoSSpatialGeometry.cpp */,
 				C0F1A0000000000000000008 /* HyLIoSOptics.h */,
 				C0F1A0000000000000000007 /* HyLIoSOptics.cpp */,
 				C0F1A0000000000000000002 /* HyLIoSOpticalData.h */,
@@ -5759,6 +5775,8 @@
 				22AC100CA02C6701F288746B /* HyLIoSSurfaceBoundary.h in Headers */,
 				F662EE95B60FAF0F2A6ACF21 /* HyLIoSLocalBake.h in Headers */,
 				A1B2C3D40001000100000004 /* HyLIoSSkinMaterial.h in Headers */,
+				A1B2C3D40003000100000004 /* HyLIoSReciprocalBoundary.h in Headers */,
+				A1B2C3D40003000200000004 /* HyLIoSSpatialGeometry.h in Headers */,
 				C0F1A000000000000000000A /* HyLIoSOptics.h in Headers */,
 				C0F1A0000000000000000004 /* HyLIoSOpticalData.h in Headers */,
 				F27F0B3F069C42910069C9E5 /* BioSpecSkinSPF.h in Headers */,
@@ -6571,6 +6589,8 @@
 				BE7AC360C739338E8B366BB5 /* HyLIoSSurfaceBoundary.cpp in Sources */,
 				98EA62CC961859B228CD31BF /* HyLIoSLocalBake.cpp in Sources */,
 				A1B2C3D40001000100000003 /* HyLIoSSkinMaterial.cpp in Sources */,
+				A1B2C3D40003000100000003 /* HyLIoSReciprocalBoundary.cpp in Sources */,
+				A1B2C3D40003000200000003 /* HyLIoSSpatialGeometry.cpp in Sources */,
 				C0F1A0000000000000000009 /* HyLIoSOptics.cpp in Sources */,
 				C0F1A0000000000000000003 /* HyLIoSOpticalData.cpp in Sources */,
 				F27F0B3E069C42910069C9E5 /* BioSpecSkinSPF.cpp in Sources */,
@@ -7266,6 +7286,8 @@
 				65637009BFD0B2B8CF31383B /* HyLIoSSurfaceBoundary.cpp in Sources */,
 				3C563FDECC88AFB18A55C5AF /* HyLIoSLocalBake.cpp in Sources */,
 				A1B2C3D40001000100000005 /* HyLIoSSkinMaterial.cpp in Sources */,
+				A1B2C3D40003000100000005 /* HyLIoSReciprocalBoundary.cpp in Sources */,
+				A1B2C3D40003000200000005 /* HyLIoSSpatialGeometry.cpp in Sources */,
 				C0F1A0000000000000000012 /* HyLIoSSlabTransport.h in Sources */,
 				C0F1D0000000000000000006 /* HyLIoSForwardTransport.h in Sources */,
 				C0F1B0000000000000000006 /* HyLIoSParticleGeometry.h in Sources */,
@@ -7274,6 +7296,8 @@
 				DB2ED9D25745427CEB8318DA /* HyLIoSSurfaceBoundary.h in Sources */,
 				47B4690D75164AE654EEA90C /* HyLIoSLocalBake.h in Sources */,
 				A1B2C3D40001000100000006 /* HyLIoSSkinMaterial.h in Sources */,
+				A1B2C3D40003000100000006 /* HyLIoSReciprocalBoundary.h in Sources */,
+				A1B2C3D40003000200000006 /* HyLIoSSpatialGeometry.h in Sources */,
 				C0F1A000000000000000000B /* HyLIoSOptics.cpp in Sources */,
 				C0F1A000000000000000000C /* HyLIoSOptics.h in Sources */,
 				C0F1A0000000000000000005 /* HyLIoSOpticalData.cpp in Sources */,
