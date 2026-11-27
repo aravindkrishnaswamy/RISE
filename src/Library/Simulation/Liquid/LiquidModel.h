@@ -333,7 +333,8 @@ private:
 	//! between the wet cell's centre and the crossing) open for the step's projections; closed again by CloseUnwetted.
 	void OpenUnwetted();
 	void CloseUnwetted();
-	std::vector<std::uint8_t> sheetUnwetted_;
+	std::vector<std::uint8_t> sheetUnwetted_;   // m7k: 1 opened, 2 in the contact's band (cover scaled), else 0
+	std::vector<double> sheetCoverSaved_;      // m7k: the covers OpenUnwetted changed
 	std::vector<std::size_t> sweptCells_;        // m7g: the cells swept by coupled sheets in the current step
 	void CountSheetCrossings(const std::vector<double>& phiStart, const std::vector<SheetCrossing>& facesBefore);   // m7g: per crossing (sheetFaces_ order), 1 while opened (empty: none)
 	std::vector<SheetCrossing> sheetFaces_;

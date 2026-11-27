@@ -751,6 +751,15 @@ void SheetDynamics::ApplyS(double dt, const std::vector<double>& V, std::vector<
 		}
 }
 
+bool SheetDynamics::Replay(double dt, const std::vector<double>& v, const std::vector<double>& impulse, const std::vector<std::uint32_t>& triangles,
+	std::vector<double>& out, std::string& error)
+{
+	Rotate(dt, v);
+	if (!Prepare(dt, v, {}, triangles, error)) return false;
+	Predict(dt, v, impulse, out);
+	return true;
+}
+
 SheetCoupling::SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density,
 	const std::vector<std::uint8_t>* skip)
 	: g_(g), crossings_(faces), sheets_(sheets), skip_(skip && !skip->empty() ? skip : nullptr), scale_(density*g.h*g.h*g.h)
@@ -772,7 +781,7 @@ void SheetCoupling::Begin(const std::vector<std::uint8_t>& active)
 	for (std::size_t k = 0; k < crossings_.size(); ++k) {
 		const SheetCrossing& c = crossings_[k];
 		const LiquidSheet& sh = sheets_[c.sheet];
-		if (!sh.Coupled() || (skip_ && (*skip_)[k])) continue;
+		if (!sh.Coupled() || (skip_ && (*skip_)[k] == 1)) continue;   // m7k: 2, partly (cover scaled)
 		const auto d = g_.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};

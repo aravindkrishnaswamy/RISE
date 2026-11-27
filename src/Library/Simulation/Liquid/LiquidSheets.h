@@ -128,6 +128,12 @@ struct SheetDynamics {
 	void Predict(double dt, const std::vector<double>& v, const std::vector<double>& extra, std::vector<double>& out) const;
 	//! out = S V (the sheet's own step matrix, no face mass, pins unmasked).
 	void ApplyS(double dt, const std::vector<double>& V, std::vector<double>& out) const;
+	//! m7k: the partner's own step with the impulse `impulse` (3 per vertex, N s; as it receives
+	//! it, binary32): S V = Rhs + impulse at the rotations predicted from v, pins keeping their
+	//! velocity, without the face mass (cloth.shell's step in the partner's steps).  Changes the
+	//! rotations and the factorisation.
+	bool Replay(double dt, const std::vector<double>& v, const std::vector<double>& impulse, const std::vector<std::uint32_t>& triangles,
+		std::vector<double>& out, std::string& error);
 };
 
 struct LiquidSheet {
@@ -225,7 +231,8 @@ bool CrossesSheets(const Grid& g, const std::vector<SheetCrossing>& faces, const
 //! depend on the thread count.
 class SheetCoupling final : public IPressureCoupling {
 public:
-	//! `skip` (m7g; may be null): per crossing, 1 for a face left out (opened: the liquid does not reach the sheet there).
+	//! `skip` (m7g; may be null): per crossing, 1 for a face left out (opened: the liquid does not reach the sheet there);
+	//! m7k: 2 for a face in the contact's band (kept, its cover scaled; LiquidModel OpenUnwetted).
 	SheetCoupling(const Grid& g, const std::vector<SheetCrossing>& faces, const std::vector<LiquidSheet>& sheets, double density,
 		const std::vector<std::uint8_t>* skip = nullptr);
 	void Begin(const std::vector<std::uint8_t>& active) override;

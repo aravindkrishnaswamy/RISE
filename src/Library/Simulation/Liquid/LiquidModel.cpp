@@ -37,6 +37,42 @@ std::size_t Index(const std::array<int,3>& d, int i, int j, int k)
 
 constexpr std::uint32_t None = std::numeric_limits<std::uint32_t>::max();
 
+// m7j: the linearisation's own error in a corotated sheet's step ending at `end`: the elastic
+// gradient at `end` with the rotations fitted there less the one with the held rotations is the
+// force the held rotations left out; one more backward-Euler correction with the step's operator
+// moves the vertices by dx = -dt^2 (S + F)^-1 (g_fit - g_held), and its largest edge strain
+// (|(dx_b - dx_a) . e| / |e|^2, e = x_b - x_a, over the triangles' edges) is the strain the held
+// rotations put into the step.  The rotations are restored, nothing else changes.
+double LinearisationCorrection(SheetDynamics& d, const std::vector<std::uint32_t>& triangles, double dt, const std::vector<double>& end, Pool* pool)
+{
+	const std::size_t nv = d.Vertices();
+	std::vector<double> held, fit, kept = d.elements.rotation;
+	d.elements.Gradient(d.x0, end, held);
+	d.elements.Rotate(d.x0, end, pool);
+	d.elements.Gradient(d.x0, end, fit);
+	d.elements.rotation.swap(kept);
+	std::vector<double> r(3*nv), dv;
+	for (std::size_t k = 0; k < r.size(); ++k) r[k] = -dt*(fit[k] - held[k]);
+	d.Solve(r, dv);
+	double worst = 0;
+	for (std::size_t t = 0; t + 2 < triangles.size(); t += 3)
+		for (int e = 0; e < 3; ++e) {
+			const std::size_t a0 = triangles[t + std::size_t(e)], b0 = triangles[t + std::size_t((e + 1) % 3)];
+			double len = 0, dd = 0;   // |e|^2 and (dx_b - dx_a) . e: the edge's stretch, not its turn
+			for (int m = 0; m < 3; ++m) {
+				const double e0 = end[3*b0 + std::size_t(m)] - end[3*a0 + std::size_t(m)];
+				const double e1 = dt*(dv[3*b0 + std::size_t(m)] - dv[3*a0 + std::size_t(m)]);
+				len += e0*e0;
+				dd += e0*e1;
+			}
+			if (len > 0) worst = std::max(worst, std::fabs(dd)/len);
+		}
+	return worst;
+}
+
+// m7k: the band of the gap over which a coupled sheet's contact with a free surface fades (OpenUnwetted), cells.
+constexpr double kContactBand = 0.25;
+
 // Cube faces, corners counter-clockwise seen from outside (corner = x + 2y + 4z).
 const int FaceCorners[6][4] = {{0, 4, 6, 2}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 2, 3, 1}, {4, 5, 7, 6}};
 } // namespace
@@ -955,42 +991,29 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			for (std::size_t q = 0; q < sh.dyn.Vertices(); ++q)
 				if (!sh.dyn.fixed[q]) for (int a = 0; a < 3; ++a) sheetHistory[i][at + 3*q + std::size_t(a)] = sv[3*q + std::size_t(a)] - rhs[3*q + std::size_t(a)];
 			sheetStepImpulse[i] = total;
+			std::vector<double> end = sh.dyn.xe;   // the step's end (the diagnostics below)
+			for (std::size_t k = 0; k < end.size(); ++k) end[k] += dt*sheetNew[i][k];
+			if (sh.dyn.Corotated()) {
+				// m7k: the partner's own step (cloth.shell) takes this step's impulse in binary32, with its
+				// own state's rotations and without the face liquid; the copy's velocities are the ones
+				// that step gives (SheetDynamics::Replay), so the two stay equal to the rounding of their
+				// own arithmetic.  They differ from the step's by the binary32 rounding of the impulse.
+				// Kept at the step's own unrounded velocities (m7h-m7j), the copies parted by the rounding
+				// of each step's impulse, which the rotations fitted from the states fed back (M7i: up to
+				// 0.67 m/s within a macro step at a light free edge).
+				std::vector<double> step(sheetHistory[i].begin() + std::ptrdiff_t(at), sheetHistory[i].end());
+				for (double& x : step) x = static_cast<double>(static_cast<float>(x));
+				std::copy(step.begin(), step.end(), sheetHistory[i].begin() + std::ptrdiff_t(at));
+				// m7h: how far the elements turned beyond the step's predicted rotations (the corotational
+				// model's remaining rotation error) and m7j: the linearisation's own error in the step
+				// (LinearisationCorrection); diagnostics, never change results.  With the step's own
+				// operator (the face liquid's mass in it): before the replay.
+				sh.dyn.rotationLag = std::max(sh.dyn.rotationLag, sh.dyn.elements.Deviation(sh.dyn.x0, end, pool));
+				sh.dyn.linearisationError = std::max(sh.dyn.linearisationError, LinearisationCorrection(sh.dyn, sh.triangles, dt, end, pool));
+				if (!sh.dyn.Replay(dt, sh.v, step, sh.triangles, sheetNew[i], error)) return false;
+			}
 			sh.v = sheetNew[i];
 			for (std::size_t k = 0; k < sh.v.size(); ++k) sh.dyn.xe[k] += dt*sh.v[k];
-			// m7h: how far the elements turned beyond the step's predicted rotations (the
-			// corotational model's remaining rotation error; a diagnostic, never changes results).
-			if (sh.dyn.Corotated()) {
-				sh.dyn.rotationLag = std::max(sh.dyn.rotationLag, sh.dyn.elements.Deviation(sh.dyn.x0, sh.dyn.xe, pool));
-				// m7j: the linearisation's own error in the step: the elastic gradient at the step's end with the
-				// rotations fitted there less the one with the held rotations is the force the held rotations
-				// left out; one more backward-Euler correction with the step's operator moves the vertices by
-				// dx = -dt^2 (S + F)^-1 (g_fit - g_held), and its largest edge strain (|(dx_b - dx_a) . e| / |e|^2,
-				// e = x_b - x_a, over the triangles' edges) is the strain the held rotations put into the step.
-				// A diagnostic: the rotations are restored, nothing else changes.
-				const std::size_t nv = sh.dyn.Vertices();
-				std::vector<double> held, fit, kept = sh.dyn.elements.rotation;
-				sh.dyn.elements.Gradient(sh.dyn.x0, sh.dyn.xe, held);
-				sh.dyn.elements.Rotate(sh.dyn.x0, sh.dyn.xe, pool);
-				sh.dyn.elements.Gradient(sh.dyn.x0, sh.dyn.xe, fit);
-				sh.dyn.elements.rotation.swap(kept);
-				std::vector<double> r(3*nv), dv;
-				for (std::size_t k = 0; k < r.size(); ++k) r[k] = -dt*(fit[k] - held[k]);
-				sh.dyn.Solve(r, dv);
-				double worst = 0;
-				for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
-					for (int e = 0; e < 3; ++e) {
-						const std::size_t a0 = sh.triangles[t + std::size_t(e)], b0 = sh.triangles[t + std::size_t((e + 1) % 3)];
-						double len = 0, dd = 0;   // |e|^2 and (dx_b - dx_a) . e: the edge's stretch, not its turn
-						for (int m = 0; m < 3; ++m) {
-							const double e0 = sh.dyn.xe[3*b0 + std::size_t(m)] - sh.dyn.xe[3*a0 + std::size_t(m)];
-							const double e1 = dt*(dv[3*b0 + std::size_t(m)] - dv[3*a0 + std::size_t(m)]);
-							len += e0*e0;
-							dd += e0*e1;
-						}
-						if (len > 0) worst = std::max(worst, std::fabs(dd)/len);
-					}
-				sh.dyn.linearisationError = std::max(sh.dyn.linearisationError, worst);
-			}
 			// The geometry follows the linearised step's positions (it drifted with the step-start
 			// velocity); the next step's closing sweeps the difference (SweepSheetCells).
 			sh.x = sh.dyn.xe;
@@ -1426,17 +1449,36 @@ void LiquidModel::OpenUnwetted()
 		if (!(up < 0)) continue;
 		const double theta = pl < 0 ? pl/(pl - pr) : pr/(pr - pl);   // from the wet cell
 		const double reach = pl < 0 ? c.s - (xR - h) : xR - c.s;   // the wet cell's centre to the crossing
-		if (!(theta*h < reach - tol)) continue;
-		if (sheetUnwetted_.empty()) sheetUnwetted_.assign(sheetFaces_.size(), 0);
-		sheetUnwetted_[k] = 1;
-		fraction[std::size_t(c.axis)][c.face] = sheetSaved_[k];
+		// m7k: the contact fades over a band of the gap between the free surface and the crossing
+		// (kContactBand h beyond m7g's tolerance) instead of switching: in the band the face is split
+		// as a free edge's partly covered face is (LiquidSheets.h SheetCrossing::cover), the part r c
+		// closed and moving with the sheet (its J and face mass scaled by it), A (1 - r c) open, r
+		// falling linearly from 1 at the tolerance to 0 a band beyond it.  Switched (m7g-m7j), the
+		// liquid on a light free edge's faces came and went whole from one step to the next (0 to
+		// 3.6 g on a 34 mg vertex; docs/SIMULATION_M7J_RESULTS.md section 2.4).
+		const double gap = reach - theta*h, band = kContactBand*h;
+		if (!(gap > tol)) continue;
+		const double r = std::max(0.0, 1 - (gap - tol)/band);
+		if (sheetUnwetted_.empty()) { sheetUnwetted_.assign(sheetFaces_.size(), 0); sheetCoverSaved_.assign(sheetFaces_.size(), 0.0); }
+		sheetCoverSaved_[k] = c.cover;
+		if (r > 0) {
+			sheetUnwetted_[k] = 2;
+			sheetFaces_[k].cover = c.cover*r;
+			fraction[std::size_t(c.axis)][c.face] = sheetSaved_[k]*(1 - sheetFaces_[k].cover);
+		} else {
+			sheetUnwetted_[k] = 1;
+			fraction[std::size_t(c.axis)][c.face] = sheetSaved_[k];
+		}
 	}
 }
 
 void LiquidModel::CloseUnwetted()
 {
 	for (std::size_t k = 0; k < sheetUnwetted_.size(); ++k)
-		if (sheetUnwetted_[k]) fraction[std::size_t(sheetFaces_[k].axis)][sheetFaces_[k].face] = sheetClosed_[k];
+		if (sheetUnwetted_[k]) {
+			fraction[std::size_t(sheetFaces_[k].axis)][sheetFaces_[k].face] = sheetClosed_[k];
+			sheetFaces_[k].cover = sheetCoverSaved_[k];
+		}
 	sheetUnwetted_.clear();
 }
 
@@ -1582,7 +1624,7 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 	for (std::size_t k = 0; k < sheetFaces_.size(); ++k) {
 		const SheetCrossing& c = sheetFaces_[k];
 		const LiquidSheet& sh = sheets[c.sheet];
-		if (!sh.Coupled() || (!sheetUnwetted_.empty() && sheetUnwetted_[k])) continue;
+		if (!sh.Coupled() || (!sheetUnwetted_.empty() && sheetUnwetted_[k] == 1)) continue;   // m7k: 2, in the contact's band (cover scaled)
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};

@@ -65,6 +65,7 @@ struct FlapCase {
 	bool steps = true;         // connect the liquid's steps (the cloth takes them)
 	bool elements = true;      // m7h: connect the cloth's surface_elements (the corotational model)
 	bool dam = false;          // a dam-break column instead of still water
+	double jitter = 0;         // m7k: the dam's height raised by jitter x 0.1 mm (an ensemble of perturbed runs)
 	unsigned liquidThreads = 8, clothThreads = 4;
 	std::vector<std::string> order{"pool", "flap"};
 	bool jacobi = false;
@@ -95,7 +96,7 @@ std::unique_ptr<SimulationGroup> FlapGroupUnstarted(const FlapCase& c, std::stri
 	V::Members liquid{{"frames", V::Unsigned(frames)}, {"domain_min", Vec(0, 0, 0)}, {"domain_size", Vec(1, 0.6, 0.4)},
 		{"resolution", V::Unsigned(std::uint64_t(c.cells))}, {"threads", V::Unsigned(c.liquidThreads)}};
 	if (c.dam)
-		liquid.emplace_back("liquid", V::ArrayValue({V::MapValue({{"type", V::String("box")}, {"min", Vec(-1, -1, -1)}, {"max", Vec(0.3, 0.45, 2)}})}));
+		liquid.emplace_back("liquid", V::ArrayValue({V::MapValue({{"type", V::String("box")}, {"min", Vec(-1, -1, -1)}, {"max", Vec(0.3, 0.45 + 1e-4*c.jitter, 2)}})}));
 	else
 		liquid.emplace_back("liquid", V::ArrayValue({V::MapValue({{"type", V::String("box")}, {"min", Vec(-1, -1, -1)}, {"max", Vec(2, c.depth, 2)}})}));
 	V::Members sheet{{"name", V::String("flap")}, {"motion", V::String("port")}};
@@ -2409,6 +2410,7 @@ void Probe(int argc, char** argv)
 		else if (k == "relaxation") c.relaxation = std::atof(v.c_str());
 		else if (k == "T") c.T = std::atof(v.c_str());
 		else if (k == "dam") c.dam = v == "1";
+		else if (k == "jitter") c.jitter = std::atof(v.c_str());
 		else if (k == "verbose") verbose = v == "1";
 		else if (k == "wide") c.wide = v == "1";
 		else if (k == "tilt") c.tilt = std::atof(v.c_str())*Pi/180;

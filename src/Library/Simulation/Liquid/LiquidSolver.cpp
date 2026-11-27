@@ -55,7 +55,11 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // invariant to an element's translation, Cloth::CorotatedElements::Balance, as cloth.shell m3a.7
 // does), and the progress detail reports the corotational step's linearisation correction
 // (docs/SIMULATION_M7J_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7i.1.
-constexpr const char* SolverVersion = "m7j.1";
+// m7k.1: implicitly coupled sheets: a sheet's contact with a free surface below it fades over a
+// quarter cell of the gap (LiquidModel::OpenUnwetted) instead of switching, and the sheet's copy
+// takes the velocities the cloth's own step gives with the binary32 impulse (SheetDynamics::Replay)
+// (docs/SIMULATION_M7K_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7j.1.
+constexpr const char* SolverVersion = "m7k.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
