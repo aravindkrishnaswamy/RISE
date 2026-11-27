@@ -376,3 +376,36 @@ Record histories/second, median and tail event counts, particle rejection counts
 Release acceptance requires a source/data manifest; resolved ambiguity ledger; verified supported bands; quantitative model reports; raw spectral outputs; planar and curved spatial evidence; PT/NM/HWSS correctness; supported light types; explicit exclusions; build/test/review evidence; and user-facing documentation distinguishing reference, approximation and geometry extension.
 
 **Recommended first implementation increment:** P0 plus P1's units/coverage primitives and analytic fixtures. The first scientific milestone is a reproducible S3 reflectance experiment with uncertainty and complete provenance—not a portrait and not a new material factory alone.
+
+## 13. Implementation status and release evidence (2026-11-27)
+
+The branch `hyperspectral-skin` implements the complete P0–P8 HyLIoS pipeline plus the nonlocal NEE/MIS, P2 forward-kernel nonlocal runtime, and radiometric observable extensions:
+
+- **Local baked mode (`transport_mode baked_local`)**: `HyLIoSSkinMaterial` loads validated immutable `.hylios` response assets with full semantic-identity checking, memory-budget preflight, `HyLIoSSupportedCameraProposal` sampling, shared D65-weighted visible guide RGB (`EvaluateVisibleGuideAlbedo`), and HWSS per-lane NM delegation in `PathTracingIntegrator`.
+- **Nonlocal spatial mode (`transport_mode nonlocal`)**: Driven directly by P2 `HyLIoSForwardTransport` kernels (six-layer anatomy, Rayleigh fiber scattering, organelle geometry/overlap, weighted absorption + roulette) with `rise_reciprocal_boundary_v1` rough-dielectric microfacet boundary (`K_r` first-surface NEE/MIS, conditional interior `K_t` exit NEE/MIS, smooth-boundary + delta-light preflight refusal), step-wise finite lateral absorbing side walls across `PlanarPolygonDomain`, `ConcentricSphereDomain`, `ConcentricCylinderDomain`, and `IntrinsicLayerVolumeDomain`, and a deterministic cached 1D MC visible guide (no `response_asset` required).
+- **Raw radiometric hyperspectral output (`hyperspectral_radiometric_rasterizer`)**: Fixed-wavelength `IntegrateRayNM` sweeps into `RadiometricFilm` with `SpectralSourceDomain` proposal tables, `RadiometricCheckpoint` bit-exact save/resume, atomic single-channel FLOAT `L_lambda` EXR output (`WriteRadiometricEXR`), strict physical light/sky/environment preflight (refusing RGB-uplifted lights/environments, peak-normalized blackbodies, and out-of-band `SpectralColorPainter`/`HosekWilkieSpectralRadianceMap`), bias-control refusals (clamps, glossy filtering, OIDN, tone mapping, negative-lobe filters), and derived observables (`band_integrated`, `band_average`, `sensor_energy`, and SI `lambda / (h*c)` `sensor_photon` — never CIE Y normalized) with atomic JSON manifests.
+- **Integration & containment**: `ObjectManager::AuditedMaterialGraph` capability census routes HyLIoS scenes to PT (`AutoRasterizer`) and refuses BDPT/VCM/MLT without polluting `PathDependence`; nonlocal HyLIoS reports `HasSubsurfaceLeaf() == true` so spatially varying `MixMaterial` blends trigger `kVaryingSSSMix` containment; `IJob` tail-appended ABI + `IJobVtableManifest.txt`, `ChunkParserRegistry.cpp`, `Cst.cpp`, `MaterialIntrospection.cpp`, `AgentSession.cpp`, `docs/MATERIALS.md`, and all five library build projects are synchronized.
+
+### Verified builds, sanitizers, and test matrix (macOS ARM64)
+
+- `make -C build/make/rise -j8 all`: PASS (0 warnings).
+- Xcode `RISE-GUI` `Deployment` and `Opto` builds: PASS (0 compiler warnings).
+- Windows (`Library.vcxproj`, `Library.vcxproj.filters`, `build/cmake/rise-tests/CMakeLists.txt` with `/fp:strict` on strict-FP tests) and Android (`build/cmake/rise-android/rise_sources.cmake`): source/flag lists synchronized and verified by `SourceHygieneTest` (711/711); native Windows/Android binaries were not executed on this macOS host.
+- Notice & data hygiene: `python3 tools/test_third_party_notices.py` (37/37 OK), `python3 tools/check_hylios_sources.py --check` (OK).
+- Test suites: `SourceHygieneTest` (711/711), `SceneEditorSuggestionsTest`, `CstDeriveGoldenTest` (all corpus scenes covered, 0 drift, 0 uncovered), `RadiometricPrimitivesTest` (807/807), `HyLIoSForwardTransportTest` (244,668/244,668), `HyLIoSLocalResponseTest`, `HyLIoSIntegrationTest`, `HyLIoSSpectralTest`, `HyLIoSSourceAndFilmTest`, `HyperspectralOutputTest`, `HyLIoSAdjointTest`, and `HyLIoSSpatialTest` — all PASS.
+- ASan + UBSan: all 6 new integration/radiometric/adjoint/spatial tests (`HyLIoSIntegrationTest`, `HyLIoSSpectralTest`, `HyLIoSSourceAndFilmTest`, `HyperspectralOutputTest`, `HyLIoSAdjointTest`, `HyLIoSSpatialTest`) PASS with 0 errors.
+
+### Sequential CLI benchmarks (`render_thread_reserve_count 0`, Apple Silicon)
+
+| Scene | Resolution / Bands / SPP | Rasterization Time | Total Wall Time | Peak RSS |
+|---|---|---|---|---|
+| `scenes/Tests/Materials/HyLIoS/hylios_nonlocal_slab.RISEscene` | 256×256, spectral PT nonlocal (32 spp × 4 spectral) | 1.676 s | 2.26 s | 61.9 MB |
+| `scenes/FeatureBased/HyLIoS/hylios_radiometric_sweep.RISEscene` | 128×128, 3 fixed bands `[450, 550, 650]` nm, 16 spp/band | 131 ms (43.7 ms/band) | 0.16 s | 42.5 MB |
+
+### Explicit exclusions and scope boundaries
+
+- `BioSpecSkinMaterial` and `DonnerJensenSkinBSSRDFMaterial` are untouched.
+- BDPT, VCM, and MLT refuse scenes containing HyLIoS materials; use `pathtracing_spectral_rasterizer`, `pathtracing_pel_rasterizer`, or `hyperspectral_radiometric_rasterizer`.
+- Smooth (`boundary_roughness == 0`) nonlocal HyLIoS + delta lights is refused by preflight (use `boundary_roughness > 0`, area/environment lights, or `baked_local` mode).
+- `HosekWilkieSpectralRadianceMap` v1 is Preetham xyY-reconstructed over `[380, 780]` nm; out-of-band sweeps are refused in strict radiometric mode.
+- Spatially varying specimen/exterior parameter maps are not yet supported in the cached guide or baked-local asset keying and remain explicit future work.

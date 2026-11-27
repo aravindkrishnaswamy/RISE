@@ -33,6 +33,7 @@ scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene  b7fe4336f4e6493785d9df2
 scenes/FeatureBased/Hair/cottontail_dusk.RISEscene  f047e216fc347bbd39765598313975c52e4ff87608a9b4d95265bd1f3908a936  5988  82
 scenes/FeatureBased/Hair/dandelion_clock.RISEscene  4e756572ea083cf8aa0eec28bf5de833f07806afc086ff83358a34c61a9d63bf  4067  59
 scenes/FeatureBased/Hair/variety_gallery.RISEscene  d3038930c9fb2935c62aca735d88b792960fd41a621035411f2fb833477cea7c  9217  113
+scenes/FeatureBased/HyLIoS/hylios_radiometric_sweep.RISEscene  0a22090c64299cf98a242bf745dd4433ce35e01ab52fc88c5406e4b82bf56023  981  22
 scenes/FeatureBased/MLT/mlt_caustic_chain.RISEscene  66e51f5b64a7d8c7f91b4d5b2a8fd64c7f623f1acf437831bcb18e488b0e1ca5  2674  45
 scenes/FeatureBased/MLT/mlt_keyhole.RISEscene  30a343c004aaaaa0a6f832fe4ddffbe23d0d96fba99253b2e8288e7bcb88c342  3250  48
 scenes/FeatureBased/MLT/mlt_luminous_orb.RISEscene  ebbb9bb3f5bf41249f3dd2bb873344b3251218e9bdf809888fddddd9ef48bcc0  2479  44
@@ -261,6 +262,7 @@ scenes/Tests/Materials/Enamel/enamel_dome_dial.RISEscene  b4b7bd13373996159b8ae9
 scenes/Tests/Materials/Enamel/enamel_swatch_goldruby.RISEscene  67daa305bdc22c80ed26b87dfac7271c1c4917238fa29cdef66b25ed020783b9  1177  28
 scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  6cdf2234bca5dd8c033e24cfb6ec7a407e81aa55b263e9f91e1e3c8d3b66d171  2022  31
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  456971d71f37be52f9dc17d5619d0978eb065daa2f1f839e6ac65a6985d8a3c5  1810  28
+scenes/Tests/Materials/HyLIoS/hylios_nonlocal_slab.RISEscene  49a212f41710d4096e77736b957da759603232238df98870796bd31e2e492bcc  1246  26
 scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene  da170cf1b8819a2dbb70888a720ff1e5aea77673213725a06e3eb2e7ec93f3b4  1566  31
 scenes/Tests/Materials/authored_mesh_tangent.RISEscene  c807e270d309a88cf09063bef8f3164ce0456be13d32c71b1024edf4e31d8d6e  848  24
 scenes/Tests/Materials/coated_material.RISEscene  81186b82e3c54809748f6bcd500d16dc57d16fcf9c42775a50ebfe01260f022c  2181  37
