@@ -101,12 +101,12 @@ namespace RISE
 		//! uniformly over the burner-masked cells of layers 0..InertPlumeLayers-1, split by InertPlumeFraction (FDS
 		//! r263's time-mean heat release per layer, docs/data/fire_r271/inert_source_profile.json).
 		bool InertPlumeSelected();
-		//! M8d test-only switch (docs/SIMULATION_M8_RESULTS.md section 12.2): the pre-pilot burner-rim
-		//! ignition witness as a product mass fraction (CO2+H2O)/rho, from RISE_FIRE_RIM_PRODUCT_WITNESS,
-		//! which only the fire solver's test parameter rim_product_witness writes (keyed when given).
-		//! Zero when unset or empty: the historical witness, nextafter of the ambient product fraction,
-		//! is then used unchanged by the source build and the driver.
-		double RimProductWitnessOverride();
+		//! The pre-pilot burner-rim ignition witness (docs/SIMULATION_M8_RESULTS.md sections 12.2 and 13):
+		//! before the pilot is established a rim cell is reaction-eligible only once its product mass
+		//! fraction (CO2+H2O)/rho reaches this value (or exceeds the ambient fraction, whichever is
+		//! larger), so binary32 rounding residue (about 2e-11) cannot light the burner.  Used by the
+		//! source build and the driver; solver version 3.
+		constexpr double RimIgnitionProductWitness=1.0e-6;
 		const int InertPlumeLayers=27;
 		const double InertPlumeHeatW=26400.0;
 		double InertPlumeFraction(std::size_t layer);

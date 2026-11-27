@@ -121,13 +121,56 @@ bool CheckMissingRecords(std::string& error)
 	std::cout<<"Rejected a sealed predictive-labelled cache with missing source records\n";
 	return true;
 }
+
+// Solver version 3 (docs/SIMULATION_M8_RESULTS.md section 13): a cache written by fire.methane
+// versions 1 and 2 passes playback's version gate (it is stale for baking only, through the key);
+// any other version is refused there.  The fixture has no frame template, so an admitted version
+// stops at the physical-record check, after the gate.
+bool CheckSolverCacheVersions(std::string& error)
+{
+	const std::string versions[]={"1","2","3",Implementation::FireMethaneSolverVersion,"0","4"};
+	for(const std::string& v:versions){
+		const bool playable=v=="1"||v=="2"||v=="3";
+		if(Implementation::FireMethaneSolverCacheVersionPlayable(v)!=playable){
+			error="fire solver cache version "+v+" has the wrong playability";return false;
+		}
+		const auto directory=fs::temp_directory_path()/("rise_fire_solver_cache_version_"+v+"_"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		if(!fs::create_directory(directory)){error="could not allocate test directory";return false;}
+		struct Cleanup {
+			fs::path directory;
+			~Cleanup(){std::error_code ignored;fs::remove_all(directory,ignored);}
+		} cleanup{directory};
+		Simulation::CacheDescription description;
+		description.key=std::string(64,'1'); description.epoch=std::string(64,'2');
+		description.producer=Implementation::FireMethaneSolverId; description.producerVersion=v;
+		description.outputs={{"volume","grid.v1",{{"carbon","g/m3","float32"}}}};
+		description.fidelity="preview";
+		Simulation::CacheWriter writer;
+		if(!writer.Begin(directory,description,"",false,4*1024*1024,error) || !writer.Seal(error))
+			return false;
+		FireSequenceManifest fire;
+		std::string why;
+		if(fire.LoadPlaybackFile((directory/"manifest.cbor").string(),why) || fire.IsValid()){
+			error="fire playback accepted a solver cache without a frame template";return false;
+		}
+		const bool gated=why.find("unsupported fire solver cache version")!=std::string::npos;
+		if(gated==playable){
+			error="fire solver cache version "+v+(playable?" was refused by the version gate: ":
+				" passed the version gate: ")+why;
+			return false;
+		}
+	}
+	std::cout<<"Fire solver caches of versions 1, 2 and 3 pass playback's version gate; 0 and 4 are refused\n";
+	return true;
+}
 }
 
 int main(int argc,char** argv)
 {
 	std::string error;
 	try{
-		if(argc==1 && CheckMissingRecords(error)) return 0;
+		if(argc==1 && CheckMissingRecords(error) && CheckSolverCacheVersions(error)) return 0;
 		if(argc>=3 && CheckHistorical(argv[1],argv[2],argc-3,argv+3,error)) return 0;
 	} catch(const std::exception& e){error=e.what();}
 	std::cerr<<"FAIL: "<<(error.empty()?"expected [source-manifest new-cache-directory [ordinal ...]]":error)<<'\n';

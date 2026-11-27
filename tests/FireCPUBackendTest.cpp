@@ -9,10 +9,10 @@
 //                "cpu", experimental, its own cache key) and the refusals.
 //   --agreement N (FireCPUMetalAgreementTest runs N = 8; skipped where Metal is absent)
 //                Metal fast mode and CPU fast mode from the same start for N steps:
-//                step 1 to rounding, the burner-rim ignition event's two steps to its
-//                size, the steps after it to the decaying remainder, and one step from
+//                every step to accumulated binary32 rounding (solver version 3: no
+//                pre-pilot rim ignition from rounding residue), and one step from
 //                identical bytes (Metal's steps 2 and 5) to rounding
-//                (docs/SIMULATION_M8_RESULTS.md sections 10-12).
+//                (docs/SIMULATION_M8_RESULTS.md sections 10-13).
 //   --agreement-certified N, --agreement-fixed-vcycles N   the same in other modes.
 //   --cost TIER STEPS  timing only: CPU and Metal seconds per step at that tier.
 //   Diagnostics (results section 11): --splice-checkpoint SOURCE TARGET OUT,
@@ -126,8 +126,6 @@ V Parameters(double tier, bool cpu, bool fast, double endS)
 	if (fast) m.emplace_back("mode", V::String("fast"));
 	// Diagnostic: Metal fast mode with the certified fixed V-cycle count (agreement curve).
 	if (fast && std::getenv("RISE_M8B_FIXED_VCYCLES")) m.emplace_back("fast_fixed_vcycles", V::Bool(true));
-	// Diagnostic: the test-only rim-ignition witness (results section 12.2).
-	if (const char* w = std::getenv("RISE_M8D_RIM_WITNESS")) m.emplace_back("rim_product_witness", V::Float(std::atof(w)));
 	return V::MapValue(m);
 }
 
@@ -591,32 +589,23 @@ void CPUOnly(const fs::path& root)
 
 #endif
 
-// Metal fast mode against CPU fast mode (results sections 10.3 and 11).
-//  - Trajectories from the same start, compared after every step.  Step 1 agrees to
-//    binary32 rounding (both backends now take fast mode's early V-cycle stop).  From
-//    step 2 a few burner-rim cells can differ by ~0.015 K: before the pilot is
-//    established a rim cell becomes reaction-eligible when its CO2+H2O exceeds the
-//    ambient zero, and after step 1 those products are signed rounding residue
-//    (|rho_p| < 3e-11 kg/m3, no reaction anywhere), different on the two backends.
-//    So steps 2-5 are held to the size of one such ignition event, not to rounding:
-//    species and densities 2e-4 of the maximum gas density, temperature 3e-4 of its
-//    maximum, energy 1e-2 of max |E| (small near ambient), velocity 1e-2 of the
-//    maximum face speed (measured peaks 7.8e-5, 1.0e-4, 4.0e-3, 5.0e-3).
-//    M8d: the event is the first step above rounding (step 2 or 3, by the residue's
-//    signs); it and the next step are held to those bounds. From the second step after
-//    it the difference is what the event left, carried by two steps that agree to
-//    rounding from identical input (section 12.1): it may not grow (5 % slack) and is
-//    held to species 2e-5, temperature 3e-5, energy 7e-4, velocity 2e-4 (measured at
-//    that step 8.3e-6, 1.1e-5, 2.6e-4, 8.0e-5).
+// Metal fast mode against CPU fast mode (results sections 10.3, 11, 12 and 13).
+//  - Trajectories from the same start, compared after every step.  Until solver version 3 a
+//    burner-rim cell could become reaction-eligible before the pilot was established as soon as
+//    its CO2+H2O exceeded the ambient zero, and after step 1 those products are signed rounding
+//    residue (|rho_p| < 3e-11 kg/m3), different on the two backends, so the trajectories split at
+//    step 2 or 3 by up to 1e-4 of the temperature scale (the "rim-ignition event").  Version 3
+//    (section 13) asks for a product fraction of 1e-6 (FireCase::RimIgnitionProductWitness),
+//    which no residue reaches, so nothing ignites before the pilot does (about step 75) and the
+//    whole trajectory is held to accumulated binary32 rounding at every step: species 1e-6,
+//    temperature 3e-7, energy 3e-6, velocity 2e-5 of the field scale (measured maxima over 10 steps
+//    in section 13; the rounding grows slowly with the step).
 //  - One step from identical bytes: Metal's accepted step-2 and step-5 states restored on
-//    the CPU backend; each step must equal Metal's next step to rounding, the backends'
-//    own agreement with the noise-driven switch taken out (it reads identical inputs).
-//    Step 5 -> 6 is the step the CPU's record-range EOS bracket once moved (section 12.1).
+//    the CPU backend; each step must equal Metal's next step to rounding.  Step 5 -> 6 is the
+//    step the CPU's record-range EOS bracket once moved (section 12.1).
 constexpr int kAgreementSteps = 8;
-constexpr double kSpeciesTolerance = 2.0e-4, kTemperatureTolerance = 3.0e-4, kEnergyTolerance = 1.0e-2,
-	kVelocityTolerance = 1.0e-2;
-constexpr double kAfterSpeciesTolerance = 2.0e-5, kAfterTemperatureTolerance = 3.0e-5, kAfterEnergyTolerance = 7.0e-4,
-	kAfterVelocityTolerance = 2.0e-4, kAfterGrowth = 1.05;
+constexpr double kSpeciesTolerance = 1.0e-6, kTemperatureTolerance = 3.0e-7, kEnergyTolerance = 3.0e-6,
+	kVelocityTolerance = 2.0e-5;
 constexpr double kRoundingSpeciesTolerance = 1.0e-6, kRoundingTemperatureTolerance = 1.0e-7,
 	kRoundingEnergyTolerance = 1.0e-6, kRoundingVelocityTolerance = 1.0e-5;
 bool WithinRounding(const std::vector<double>& rel)
@@ -642,10 +631,8 @@ void Agreement(const fs::path& root, int steps, bool fast = true, const std::vec
 	const int cpu = SolverRun(root/"cpu", kTier, true, fast, kEnd, steps, -1, "-", env, c);
 	Check(metal == 0 && cpu == 0, "Metal fast mode and CPU fast mode run the coarse case", m + c);
 	if (metal != 0 || cpu != 0) return;
-	bool within = true, first = true, after = true;
-	int event = 0;   // the first step above rounding (the rim-ignition event), 0 if none
-	std::array<double, 4> previous{};   // species, T, E, velocity at the previous step
-	std::ostringstream curve, afterCurve;
+	bool within = true, first = true;
+	std::ostringstream curve;
 	for (int k = 1; k <= steps; ++k) {
 		const State a = Load(root/"metal"/("state_" + std::to_string(k) + ".txt"));
 		const State b = Load(root/"cpu"/("state_" + std::to_string(k) + ".txt"));
@@ -654,31 +641,17 @@ void Agreement(const fs::path& root, int steps, bool fast = true, const std::vec
 		double species = 0;
 		for (std::size_t i = 0; i < 8; ++i) species = std::max(species, rel[i]);
 		if (k == 1) first = a.ok && b.ok && a.time == b.time && WithinRounding(rel);
-		if (event == 0 && !WithinRounding(rel)) event = k;
 		const bool ok = a.ok && b.ok && a.time == b.time && species <= kSpeciesTolerance &&
 			rel[9] <= kTemperatureTolerance && rel[8] <= kEnergyTolerance && rel[10] <= kVelocityTolerance;
 		if (!ok || (k == 1 && !first)) curve << "step " << k << ": species " << species << " E " << rel[8] << " T "
 			<< rel[9] << " velocity " << rel[10] << "; ";
 		within = within && ok;
-		const std::array<double, 4> now{{species, rel[9], rel[8], rel[10]}};
-		if (event != 0 && k >= event + 2) {
-			const std::array<double, 4> bound{{kAfterSpeciesTolerance, kAfterTemperatureTolerance, kAfterEnergyTolerance,
-				kAfterVelocityTolerance}};
-			bool okAfter = true;
-			for (std::size_t i = 0; i < 4; ++i) okAfter = okAfter && now[i] <= bound[i] && now[i] <= kAfterGrowth*previous[i];
-			if (!okAfter) afterCurve << "step " << k << ": species " << species << " T " << rel[9] << " E " << rel[8]
-				<< " velocity " << rel[10] << "; ";
-			after = after && okAfter;
-		}
-		previous = now;
 	}
 	Check(first, "step 1 agrees to rounding: species 1e-6, temperature 1e-7, energy 1e-6, velocity 1e-5 of the "
 		"field scale", curve.str());
-	Check(within, "CPU and Metal fast mode agree after each of " + std::to_string(steps) + " steps within 2e-4 "
-		"(species), 3e-4 (temperature), 1e-2 (energy, velocity) of the field scale", curve.str());
-	std::cout << "rim-ignition event at step " << event << "\n";
-	Check(after, "from the second step after the rim-ignition event the difference does not grow and stays within "
-		"2e-5 (species), 3e-5 (temperature), 7e-4 (energy), 2e-4 (velocity) of the field scale", afterCurve.str());
+	Check(within, "CPU and Metal fast mode agree to accumulated rounding after each of " + std::to_string(steps) +
+		" steps (no pre-pilot rim ignition): species 1e-6, temperature 3e-7, energy 3e-6, velocity 2e-5 of the "
+		"field scale", curve.str());
 	if (!identical) return;
 	// The CPU backend from Metal's accepted step-k bytes, one step (k = 2 and 5).
 	for (const int k : {2, 5}) {

@@ -924,6 +924,8 @@ updated.
 
 ### 12.2 The pre-pilot rim-ignition witness: the fix for the re-baseline (approved; to be applied by another agent)
 
+*Applied in §13 (solver version 3); the test-only switch described below is removed there.*
+
 **Measured effect of the fix** (test-only switch, below; default unchanged).
 
 - *Agreement.* With the witness at 1e-6 on both backends (`RISE_M8D_RIM_WITNESS=1e-6 FireCPUBackendTest
@@ -1201,7 +1203,7 @@ is unchanged (pinned). Chunk keywords 191 and `RewireConnectionTest` unchanged.
 
 ### 12.8 Open items (supersede §11.10)
 
-1. The re-baseline (§12.2.4), by another agent.
+1. The re-baseline (§12.2.4), by another agent. **Done: §13** (solver version 3).
 2. A decorrelated statistics window of about 10 s (6–16 s; §12.5's extrapolation) to compare the centreline means
    and the puffing frequency of independent CPU and Metal trajectories.
 3. Fast mode's early V-cycle stop could decide differently on the two backends at a near tie of the validation band
@@ -1210,3 +1212,160 @@ is unchanged (pinned). Chunk keywords 191 and `RewireConnectionTest` unchanged.
    costs three flux-stage copies of memory.
 5. The Windows driver thread; Windows and Android remain uncompiled (§4).
 6. The Metal-only opt-ins on the CPU backend (§10.7 item 6).
+
+## 13. The fire re-baseline: rim-ignition witness 1e-6, solver version 3 (2026-11-26, late night)
+
+Owner-approved; executes the §12.2.4 checklist on `d85a0f742` (uncommitted working tree).
+
+**Outcome.**
+
+- **The fix is the solver's behaviour on both backends.** Before the pilot is established a burner-rim cell becomes
+  reaction-eligible only when its product mass fraction (CO₂+H₂O)/ρ reaches `FireCase::RimIgnitionProductWitness`
+  = 1e-6 (or exceeds the ambient fraction, whichever is larger), in the shared source build
+  (`FireProductionCanonicalSourceAuthority::Build`, used by both backends) and the driver
+  (`ProductionEstablishedFlameHolderEligible`). Metal shader sources are untouched (the decision is host-side).
+- **The test switch is removed** (`RimProductWitnessOverride`, `RISE_FIRE_RIM_PRODUCT_WITNESS`, parameter
+  `rim_product_witness`, `RISE_M8D_RIM_WITNESS`): no test needs the old behaviour, and one rule is simpler. An old
+  scene or parameter file that states `rim_product_witness` is now refused as an unknown parameter (it was never in
+  the scene schema). The old behaviour remains reproducible only from a build of `d85a0f742`.
+- **Solver version 2 → 3.** Every fire key changes; a version-2 cache reads as stale (`solver version changed`) and
+  rebakes, but still plays: `AttachSolverCache` accepts versions 1, 2 and 3
+  (`FireMethaneSolverCacheVersionPlayable`), checked by `FireCachePlaybackTest` and end to end below.
+- **CPU and Metal now agree to rounding through ignition**, including the real one at step 80 (0.135 s), which both
+  backends take at the same step with the same products to 7 significant digits.
+- **The visible change is small:** ignition about 0.12 s later; at 1.0 s products −0.5 %, heat release +1.8 %
+  (one frame; −1.0 % averaged over 0.5–1.0 s); a rendered campfire frame at 1.0 s differs from the version-2 frame
+  by little more than Monte Carlo noise.
+
+### 13.1 What changed
+
+| File | Change |
+|---|---|
+| `src/Library/Utilities/FireCase.{h,cpp}` | `constexpr double RimIgnitionProductWitness=1.0e-6`; `RimProductWitnessOverride` removed |
+| `src/Library/Utilities/FireProductionSource.cpp`, `src/Library/Simulation/Fire/FireRunDriver.cpp` | The witness is `max(RimIgnitionProductWitness, nextafter(ambient fraction))` (§12.2.4 items 1–2) |
+| `src/Library/Simulation/Fire/FireSolver.cpp` | Parameter `rim_product_witness`, its `known` entry, environment constant and effective-parameter member removed |
+| `src/Library/Utilities/FireSequence.h` | `FireMethaneSolverVersion` `"3"`; `FireMethaneSolverCacheVersionPlayable` (1, 2, 3) |
+| `src/Library/Utilities/FireSequenceCache.cpp` | `AttachSolverCache` uses it (versions 1 and 2 stay playable) |
+| `tests/fire_production_fp64/SourceManifest.h`, `tests/fire_production_trace/SourceManifest.h` | Regenerated (`generate_fire_production_fp64_mirror.py`, `generate_fire_production_roundoff_trace.py`): only the `FireCase` header and source digests change; both `--check`s pass |
+| `tests/SimulationSceneTest.cpp` | J: fire keys re-pinned (below) |
+| `tests/FireCPUBackendTest.cpp` | `FireCPUMetalAgreementTest`: the event logic replaced by one bound per step (below); `RISE_M8D_RIM_WITNESS` removed |
+| `tests/FireCachePlaybackTest.cpp` | New check: solver caches of versions 1, 2, 3 pass playback's version gate, 0 and 4 are refused |
+| `docs/SIMULATION_SOLVER_CONTRACT.md` | Appendix C row (version 3) |
+
+`tests/FireSolverTest.cpp` has no version pin (it compares bakes of the current build with each other), so it is
+unchanged. `src/Library/Parsers/README.md` and `docs/SIMULATION_GUI_STATUS.md` never mentioned the switch or quoted a
+fire key, so they are unchanged. No committed fire frame, cache, digest or reference image depends on the decision
+(§12.2.4 item 7; confirmed by the test run below): `FireSequenceTest`'s 88 digests, the calibration and qualification
+digests and `tests/data/simulation_golden_cache/` (no fire) pass unchanged.
+
+**Re-pinned keys** (`SimulationSceneTest` J, the bare windowed fire scene and the one with five options):
+`f005c0ac…df27` → `4a205582611b41442198b7e53158352c93981f099dbf2ffbf64b0e6703d2bc58`, `5b419d96…712f` →
+`1394dc8b95c2af91b6a9fe3dbbc73ca836b074869a51244da9725d87188b798d`; the other J checks (`backend metal` keys like the
+default, `backend cpu` differs) pass. The campfire scratch scene's key moved `417c6434…` → `4217e3bb…`.
+
+### 13.2 Default-on equals the measured switch
+
+The new default's Metal run (fast, tier 4, 600 steps, statistics every 5 steps) prints **exactly** the statistics of
+§12.2's run with the switch at 1e-6 (`/Volumes/SSD/claude-tmp/m8d-scratch/rim/sw.log`), and the build before the
+change (`d85a0f742`) prints exactly §12.2's default run (`def.log`): both diffs empty. So §12.2's measurements
+describe the shipped behaviour byte for byte.
+
+### 13.3 Agreement through ignition (tier 4, default settings)
+
+`FireCPUBackendTest --agreement 10` (fast mode), relative to the field scale as in §10.3:
+
+| Step | species | T | E | velocity |
+|---:|---:|---:|---:|---:|
+| 1 | 5.1e-8 | 4.5e-10 | 1.6e-9 | 6.2e-7 |
+| 2 | 1.0e-7 | 2.3e-9 | 8.0e-8 | 3.4e-6 |
+| 3 | 1.0e-7 | 2.8e-9 | 1.1e-7 | 4.4e-6 |
+| 5 | 1.5e-7 | 7.8e-9 | 1.3e-7 | 5.6e-6 |
+| 7 | 1.5e-7 | 8.0e-8 | 1.3e-6 | 7.6e-6 |
+| 9 | 1.5e-7 | 7.9e-8 | 1.0e-6 | 1.0e-5 |
+| 10 | 1.5e-7 | 7.3e-8 | 8.0e-7 | 8.6e-6 |
+| max 1–10 | 1.5e-7 | 8.0e-8 | 1.3e-6 | 1.0e-5 |
+
+(Before the fix step 3 was species 7.6e-5, T 1.0e-4, E 3.9e-3, velocity 3.6e-3.) `IDENTICAL_START` from Metal's
+step-2 and step-5 bytes: species 2.5e-8, T 5.5e-15 / 4.6e-14, E 1.6e-12 / 1.3e-11, velocity 6.8e-8 / 6.9e-8.
+Products stay at residue (1e-10 of the gas scale) on both backends.
+
+*Through the real ignition* (`--long-run-child 4 {0,1} 1 0.2 DIR 100 1 1`, every state dumped as binary32 and
+compared with the same metric; scratch `/Volumes/SSD/claude-tmp/rebase-scratch/runs/ign_*`): the maxima over steps
+1–100 are species 8.7e-7, T 4.6e-7, E 8.0e-7, velocity 1.5e-5, with no jump at ignition (steps 74–82: species
+7.6–8.4e-7, T 1.0–2.1e-7, E 2.5–3.2e-7, velocity 0.6–1.5e-5). Both backends hold the products at 3e-14–5e-14 kg
+through step 79 and both ignite at **step 80 (0.1349 s)** with 3.681481e-6 kg (Metal 3.68148052e-6, CPU
+3.68148075e-6); 9.4976e-5 kg on both at step 100. (Binary32 dumps quantize each value to one float ulp, so the T row
+reads 0 where the exact difference is below that.)
+
+*Certified mode* (`--agreement-certified 10`, a diagnostic, not a test): every step within the test's bounds except
+**step 3, energy 3.9e-6** (bound 3e-6; T 1.0e-7, species 1.0e-7, velocity 7.1e-6), back to 1.6e-7 at step 4 and
+≤ 1.4e-6 after (max T 9.0e-8, velocity 1.1e-5 over 10 steps). It is two burner cells, (15,17,0) and (19,17,0) (a
+mirror pair), whose sensible energy differs by 0.035 J/m³ (36 binary32 ulps at 9,085 J/m³; 3e-5 K) with no
+products anywhere; one step from identical bytes agrees to 3.3e-12 there, so it is a near-tie decision amplifying
+one-ulp input differences for one step, not ignition and not a carried error. Not investigated further.
+
+**The test, tightened** (§12.2.4 item 7). `FireCPUMetalAgreementTest` (8 steps, fast) now holds **every** step to
+species 1e-6, temperature 3e-7, energy 3e-6, velocity 2e-5 of the field scale (the event step and its 2e-4 / 3e-4 /
+1e-2 bounds, and the post-event growth rule, are gone); step 1 and the two identical starts stay at the rounding
+bounds (1e-6, 1e-7, 1e-6, 1e-5). Margins over the measured 8-step maxima: species 6.5×, temperature 3.7×, energy
+2.3×, velocity 2.5×. The bounds are 200–3,000 times tighter than the event bounds and 10–230 times tighter than the post-event ones.
+
+### 13.4 The visible change (Metal fast, tier 4; old = `d85a0f742` default, new = version 3)
+
+| t (s) | products old / new (kg) | Δ | frame heat release old / new (kW) | Δ | max T old / new (K) |
+|---:|---:|---:|---:|---:|---:|
+| 0.008 (step 5) | 6.9e-8 / 4.5e-14 | | 0 / 0 | | 313 / 313 |
+| 0.127 (step 75) | 6.5e-5 / 3.5e-14 | | 15.8 / 0 | | 617 / 583 |
+| 0.249 (step 150) | 4.515e-4 / 4.212e-4 | **−6.7 %** | 31.2 / 35.8 | +14.8 % | 1,260 / 1,281 |
+| 0.498 (step 300) | 1.245e-3 / 1.260e-3 | +1.3 % | 31.0 / 31.5 | +1.7 % | 1,773 / 1,813 |
+| 1.007 (step 600) | 2.990e-3 / 2.975e-3 | **−0.5 %** | 29.8 / 30.3 | +1.8 % | 1,962 / 1,953 |
+
+Frame heat release is the field of the last published frame (frames every 1/16 s), so it is a single noisy sample;
+averaged over the samples in 0.5–1.0 s it is 34.7 kW old and 34.4 kW new (−1.0 %). The first products above 1e-9 kg
+appear at step 5 (0.008 s) by default and at step 80 (0.135 s) with the fix. The 0.25 s heat-release difference is
+the delayed flame's start-up transient, not a level shift.
+
+**A rendered frame.** The committed `fire_campfire_scene` (tier 6, fast, window from 1.0 s) was baked to 1.0625 s
+with each build (`rise-sim bake`, 647 steps, 342 s each; scratch scene
+`/Volumes/SSD/claude-tmp/rebase-scratch/scene/rebaseline_campfire.RISEscene`, copied to `rendered/`) and the 1.0 s
+frame rendered (spectral path tracer, 64 spp, 960×540, a camera framing the burner; preview fidelity):
+`rendered/rebaseline_v2_oldrenderer.*` (version-2 cache, old renderer), `rendered/rebaseline_v2_newrenderer.*`
+(the same version-2 cache played by the version-3 build: it reports the cache **stale** and **plays it**),
+`rendered/rebaseline_v3.*` (version-3 cache), each with `_denoised`; the linear EXR is primary, the PNG is +7 EV.
+Differences (`ImageDiffTest`, sRGB PNG): version 2 vs version 3 RMSE 0.031 (denoised 0.014), against 0.029 (denoised
+0.0053) for the same version-2 cache rendered twice (Monte Carlo noise); mean channel values agree to 2e-4; peak
+linear luminance 0.0085 vs 0.0094. The difference is at the level of the render noise: a slightly different flame
+shape at 1.0 s, not a visibly different fire.
+
+Two things found on the way, not changed: (1) the committed `fire_campfire_scene` cannot load a baked cache: its
+`fire_medium` says `chem_model none` and binds no `reaction`/`velocity` channel, while a fire.methane cache carries
+the chem, reaction and velocity channels, and `AddFireMediumBound` refuses a mismatch silently (no log line); the
+scratch scene binds `channel_chem_ch/c2/co2`, `channel_reaction`, `channel_velocity` instead. (2) The CLI `render`
+command refuses a scene with a fire medium (`unsafe_progress_callback`), and the fire render admission needs a
+primary linear 32-bit EXR output; `renderanimation 0 0 1` works.
+
+### 13.5 Tests
+
+- Build (`all tests build-tool/rise_sim build-tool/simulation_cache_import`): warning-free. Mirrors: both `--check`s pass.
+- `FireSolverTest --extended` (`RISE_TEST_EXTENDED=1`) with the fix: **passed**, 57 checks (configuration 16 s, uninterrupted bake 79 s, stopped and resumed bake 84 s, capstone path 82 s, its legacy frames byte-identical to `rise-sim`'s). A first attempt failed one check ("resuming at the time-zero frame reproduces both frames") because another agent relinked `bin/tests/FireSolverTest` between the bake and the resume: every frame was byte-identical and only the legacy manifest's producer build id, binary digest and sequence id differed; the passing run used a copy of the same binary (`cmp`-identical to the build) so no relink could reach it.
+- `./run_all_tests.sh --tier fast --timeout 300 --filter
+  'Fire*,SimulationSceneTest,SimulationGoldenCacheTest,SceneEditorSuggestionsTest,SourceHygieneTest,CstDeriveGoldenTest'`:
+  17 of 19 passed on the first run; `FireSolverTest` failed its stop/resume byte-identity on the known relink race (frames identical, producer build id and dirty-tree digest changed mid-test) and `FireSequenceTest` failed 16 checks and then crashed because that run exported `RISE_SIMULATION_CACHE_DIR` under `/Volumes/SSD` (the importer refuses a cache whose ancestor other users can modify; the runner sets a private one itself). Rerun without that override: `FireSequenceTest` **passed** (117 s), `FireSolverTest` **passed** (211 s). So all 19 pass, including `FireCPUMetalAgreementTest` with the tightened bounds (33 s) and `FireCachePlaybackTest` with the new version check. `tests/test_schedule.tsv` unchanged (times within the recorded ones).
+
+### 13.6 Verified versus inferred
+
+| Claim | Basis |
+|---|---|
+| The default now equals §12.2's switch run, and the old build its default run | Both 600-step statistics logs identical line for line |
+| CPU and Metal agree to rounding through the pre-pilot steps and the real ignition | Run: 10-step agreement curve (fast), 100-step dumps of both backends (fast), same ignition step and products |
+| Certified mode: one transient 36-ulp step in two burner cells | Run and cell dump; cause (near-tie) inferred from the identical-start agreement, not isolated |
+| No committed baseline depends on the decision | Fire fast tier and the listed tests pass with only the key pins changed |
+| Version-2 caches stay playable | `FireCachePlaybackTest` version gate; a real version-2 cache rendered by the version-3 build (reported stale) |
+| The visible change is small | Tier-4 statistics (one run each, not an ensemble); one tier-6 frame against the render's own noise |
+| Builds warning-free | As above |
+
+### 13.7 Open items (supersede §12.8 item 1)
+
+1. The committed campfire scene's `fire_medium` channel bindings (§13.4, found here, not fixed).
+2. The certified-mode step-3 near-tie in two burner cells (§13.3), if bit-level certified agreement is wanted.
+3. §12.8 items 2–6 unchanged.

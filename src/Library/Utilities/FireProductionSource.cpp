@@ -319,11 +319,9 @@ namespace RISE
 					const std::vector<double>& ambientMassFraction=fuel.AmbientMassFractions();
 					const double ambientProductMassFraction=ambientMassFraction[MethaneCO2]+
 						ambientMassFraction[MethaneH2O];
-					// M8d test-only switch (default 0: the historical witness, byte for byte).
-					const double witnessOverride=FireCase::RimProductWitnessOverride();
-					const double productWitness=witnessOverride>0.0?std::max(witnessOverride,
-						std::nextafter(ambientProductMassFraction,std::numeric_limits<double>::infinity())):
-						std::nextafter(ambientProductMassFraction,std::numeric_limits<double>::infinity());
+					// Re-baseline (M8 results 12.2): a product fraction above binary32 residue, not the ambient zero.
+					const double productWitness=std::max(FireCase::RimIgnitionProductWitness,
+						std::nextafter(ambientProductMassFraction,std::numeric_limits<double>::infinity()));
 					for(std::size_t cell=0u;cell<cells;++cell){
 						if(request.sourceBoundaryContactMask[cell]==0u)continue;
 						const MethaneCellState& candidate=sourceBeginning[cell];

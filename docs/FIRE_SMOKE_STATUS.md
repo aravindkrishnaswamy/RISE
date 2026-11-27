@@ -4,6 +4,8 @@ Last updated 2026-11-18, after the r272 soot window finished and its movie look 
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
+**Fire solver version 3 (2026-11-26).** The pre-pilot burner-rim ignition witness is a product fraction of 1e-6 instead of the ambient zero, so binary32 rounding residue no longer lights the burner at step 2–3 (ignition at about 0.13 s; CPU and Metal agree to rounding through it). Every fire key changed (`SimulationSceneTest` J re-pinned); version-1 and -2 caches stay playable but read as stale. No fire digest, frame or reference image changed. [M8 results §13](SIMULATION_M8_RESULTS.md).
+
 [r267 r264 full window](FIRE_SMOKE_R264_FULL_WINDOW_R267.md):
 - **r264 ran cleanly.** Centered momentum, from zero to 25.09 s: no retries, 99.55% of the fuel burned, 5.45 s/step.
 - **The improvement is only partial.** Temperature fluctuation and meander rose. Spreading (0.074 against 0.10 at 3 m), core mass flux (−23% at 3 m) and θ_c (60 K against McCaffrey's 38–40 at 3 m) are still off.
