@@ -801,6 +801,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		SheetFaceMass(s1, faceMass, faceRhs);
 		for (std::size_t i = 0; i < sheets.size(); ++i) {
 			if (!sheets[i].Coupled()) continue;
+			sheets[i].dyn.Rotate(dt, sheets[i].v);   // m7h: the corotational model's rotations for this step
 			if (!sheets[i].dyn.Prepare(dt, sheets[i].v, faceMass[i], sheets[i].triangles, error)) return false;
 			sheets[i].dyn.Predict(dt, sheets[i].v, faceRhs[i], v1star[i]);
 		}
@@ -951,6 +952,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			sheetStepImpulse[i] = total;
 			sh.v = sheetNew[i];
 			for (std::size_t k = 0; k < sh.v.size(); ++k) sh.dyn.xe[k] += dt*sh.v[k];
+			// m7h: how far the elements turned beyond the step's predicted rotations (the
+			// corotational model's remaining rotation error; a diagnostic, never changes results).
+			if (sh.dyn.Corotated()) sh.dyn.rotationLag = std::max(sh.dyn.rotationLag, sh.dyn.elements.Deviation(sh.dyn.x0, sh.dyn.xe, pool));
 			// The geometry follows the linearised step's positions (it drifted with the step-start
 			// velocity); the next step's closing sweeps the difference (SweepSheetCells).
 			sh.x = sh.dyn.xe;
@@ -1107,6 +1111,9 @@ void LiquidModel::BuildBarrier()
 	barrier_.Clear();
 	if (!CoupledSheets()) return;
 	const Grid& g = setup_.grid;
+	// m7h: not before the level set exists (Initialize closes the sheets' faces first; a model given a
+	// coupled sheet's dynamics before Initialize read an empty phi here; the next geometry update builds it).
+	if (phi.size() != g.Cells()) return;
 	std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3> faces;
 	std::vector<std::uint8_t> fixed;   // the boundary faces' cells: kept by the reinitialisation
 	for (const SheetCrossing& c : sheetFaces_) {
@@ -1238,6 +1245,88 @@ void LiquidModel::CountSheetCrossings(const std::vector<double>& phiStart, const
 		if (across) { ++sheetCrossedCells; sheetCrossedVolume += std::min(1.0, std::max(0.0, 0.5 - phi[c]/g.h))*cell; }
 		else ++sheetUnfedCells;
 	}
+}
+
+long long LiquidModel::SheetBarrierHoles() const
+{
+	const Grid& g = setup_.grid;
+	std::array<std::vector<std::uint8_t>,3> closed;
+	for (const SheetCrossing& c : sheetFaces_) {
+		if (closed[std::size_t(c.axis)].empty()) closed[std::size_t(c.axis)].assign(g.Faces(c.axis), 0);
+		closed[std::size_t(c.axis)][c.face] = 1;
+	}
+	long long holes = -1;
+	for (std::size_t s = 0; s < sheets.size(); ++s) {
+		const LiquidSheet& sh = sheets[s];
+		if (!sh.Coupled()) continue;
+		// The boundary: edges of one triangle.  Every boundary vertex must be pinned.
+		std::map<std::pair<std::uint32_t, std::uint32_t>, int> edges;
+		for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
+			for (int a = 0; a < 3; ++a) {
+				const std::uint32_t p = sh.triangles[t + std::size_t(a)], q = sh.triangles[t + std::size_t((a + 1) % 3)];
+				++edges[{std::min(p, q), std::max(p, q)}];
+			}
+		std::vector<std::uint8_t> rim(sh.Vertices(), 0);
+		for (const auto& e : edges) if (e.second == 1) rim[e.first.first] = rim[e.first.second] = 1;
+		bool pinned = true;
+		for (std::size_t q = 0; q < rim.size(); ++q) if (rim[q] && !(q < sh.dyn.fixed.size() && sh.dyn.fixed[q])) pinned = false;
+		if (!pinned) continue;
+		if (holes < 0) holes = 0;
+		// Sides: the two cells of each closed face of an interior triangle (no rim vertex), front
+		// (+, along the triangle's normal) or back (-); a cell given both (a fold) is left out.  The
+		// fill may also pass through those cells' face neighbours (unlabelled): a gap in the closed
+		// faces lies between such cells.  Reaching a back cell without crossing a closed face is a
+		// path of open faces through the sheet.
+		std::map<std::size_t, int> side;   // 1 front, -1 back, 0 both, 2 a neighbour (no side)
+		for (const SheetCrossing& c : sheetFaces_) {
+			if (c.sheet != s) continue;
+			const std::uint32_t* v = &sh.triangles[3*std::size_t(c.triangle)];
+			if (rim[v[0]] || rim[v[1]] || rim[v[2]]) continue;
+			const auto d = g.FaceDims(c.axis);
+			int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+				int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+			const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+			--idx[c.axis];
+			const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+			const int sR = c.normal[c.axis] > 0 ? 1 : -1;
+			for (const auto& cs : {std::make_pair(R, sR), std::make_pair(L, -sR)}) {
+				auto it = side.find(cs.first);
+				if (it == side.end() || it->second == 2) side[cs.first] = cs.second;
+				else if (it->second != cs.second) it->second = 0;
+			}
+			for (int q = 0; q < 12; ++q) {
+				int nb[3] = {idx[0], idx[1], idx[2]};
+				if (q >= 6) ++nb[c.axis];   // around the plus cell
+				nb[(q % 6)/2] += q % 2 ? 1 : -1;
+				bool inside = true;
+				for (int m = 0; m < 3; ++m) inside = inside && nb[m] >= 0 && nb[m] < g.n[m];
+				if (inside) side.emplace(g.C(nb[0], nb[1], nb[2]), 2);
+			}
+		}
+		// Flood fill from the front cells through open faces, among those cells only.
+		std::vector<std::size_t> queue;
+		std::map<std::size_t, std::uint8_t> seen;
+		for (const auto& e : side) if (e.second == 1) { queue.push_back(e.first); seen[e.first] = 1; }
+		for (std::size_t head = 0; head < queue.size(); ++head) {
+			const std::size_t c = queue[head];
+			const int i = int(c % std::size_t(g.n[0])), j = int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])), k = int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])));
+			for (int a = 0; a < 3; ++a) for (int dir = 0; dir < 2; ++dir) {
+				int f[3] = {i, j, k}, nb[3] = {i, j, k};
+				f[a] += dir;
+				nb[a] += dir ? 1 : -1;
+				if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
+				const std::size_t face = g.F(a, f[0], f[1], f[2]);
+				if ((!closed[std::size_t(a)].empty() && closed[std::size_t(a)][face]) || !(fraction[std::size_t(a)][face] > 0)) continue;
+				const std::size_t n = g.C(nb[0], nb[1], nb[2]);
+				const auto it = side.find(n);
+				if (it == side.end() || it->second == 0 || seen.count(n)) continue;
+				seen[n] = 1;
+				if (it->second == -1) ++holes;
+				queue.push_back(n);
+			}
+		}
+	}
+	return holes;
 }
 
 void LiquidModel::OpenUnwetted()
@@ -1733,6 +1822,7 @@ void LiquidModel::ResetSheetDynamics()
 		if (!sheets[i].Coupled()) continue;
 		sheets[i].dyn.x0 = sheets[i].x;
 		sheets[i].dyn.xe = sheets[i].x;
+		sheets[i].dyn.ResetElements();   // m7h
 
 		v[i] = sheets[i].v;
 	}

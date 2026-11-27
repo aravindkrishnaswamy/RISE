@@ -189,9 +189,9 @@ void Description()
 	const double t0 = Seconds();
 	Check(solver->Configure(Map(Small()), inputs, d, error), "cloth configures", error);
 	const double first = Seconds() - t0;
-	Check(d.solverId == ClothSolverId && d.version == "m3a.4" && d.cache.outputs.size() == 1 &&
+	Check(d.solverId == ClothSolverId && d.version == "m3a.5" && d.cache.outputs.size() == 1 &&
 		d.cache.outputs[0].name == "surface" && d.cache.outputs[0].type == "mesh.v2" && d.cache.count == 10,
-		"cloth describes one mesh.v2 output (version m3a.4)");
+		"cloth describes one mesh.v2 output (version m3a.5)");
 	const PortDeclaration* offer = nullptr; const PortDeclaration* accept = nullptr;
 	for (const auto& p : d.ports) {
 		if (p.name == "surface_state") offer = &p;
@@ -199,8 +199,9 @@ void Description()
 	}
 	std::vector<std::uint32_t> indices;
 	// M7e: surface_load gained a per-vertex force channel, and the cloth offers its
-	// mechanics and stiffness and accepts a partner's steps (five ports).
-	Check(d.ports.size() == 5 && offer && accept && offer->offers && offer->output == "surface" &&
+	// mechanics and stiffness and accepts a partner's steps (five ports); M7h: and its
+	// corotational model's elements (six).
+	Check(d.ports.size() == 6 && offer && accept && offer->offers && offer->output == "surface" &&
 		offer->codec == "mesh.v2" && !accept->offers && accept->codec == "field.v1" && accept->units == "Pa" &&
 		accept->channels.size() == 3 && accept->channels[0].name == "force" && accept->channels[0].units == "N" &&
 		accept->channels[1].name == "pressure" && accept->channels[2].components == 3 &&

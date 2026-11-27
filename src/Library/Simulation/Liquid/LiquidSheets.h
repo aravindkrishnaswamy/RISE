@@ -87,7 +87,16 @@ struct SheetDynamics {
 	Cloth::BlockMatrix stiffness;      // K (3x3 blocks, symmetric pattern)
 	std::string stiffnessDomain;       // the accepted pattern's index-space digest
 	bool useStiffness = true;          // false: S = M (1 + dt alpha), f0 explicit (the measured contrast)
+	// m7h: the corotational model (cloth's surface_elements; empty: m7e's K about x0).  With it,
+	// K is sum R_e K_e R_e^T at the step's rotations and the elastic force is the model's,
+	// -sum R_e (g_e + K_e (R_e^T xe - x0)), in place of -(g0 + K (xe - x0)); `force` keeps the
+	// force at x0 (so the non-elastic part is force + sum g_e).
+	Cloth::CorotatedElements elements;
+	std::string elementsDomain;        // the accepted elements' index-space digest
+	std::vector<double> origin;        // sum g_e (3 per vertex): the model's elastic gradient at x0
+	double rotationLag = 0;            // the largest rotation lag of a step (rad; LiquidModel)
 	// Not state: rebuilt every step.
+	Cloth::BlockMatrix rotated;        // m7h: sum R_e K_e R_e^T at the step's rotations
 	Cloth::BlockMatrix matrix;         // S plus the step's face mass, pins masked
 	Cloth::BandedCholesky factor;
 	std::vector<std::uint32_t> order;
@@ -95,6 +104,17 @@ struct SheetDynamics {
 	bool Active() const { return !mass.empty(); }
 	std::size_t Vertices() const { return mass.size(); }
 	bool WithStiffness() const { return useStiffness && stiffness.Blocks() == mass.size(); }
+	//! m7h: the corotational model is in use.
+	bool Corotated() const { return WithStiffness() && !elements.Empty(); }
+	//! The step's stiffness: sum R_e K_e R_e^T (corotated) or K.
+	const Cloth::BlockMatrix& Stiffness() const { return Corotated() ? rotated : stiffness; }
+	//! m7h: the elements' rotations for a step of length dt from the predicted positions
+	//! xe + dt v (as cloth.shell sets its own from x + h v), and the step's stiffness.
+	//! Before Prepare; nothing without the corotational model.
+	void Rotate(double dt, const std::vector<double>& v);
+	//! m7h: with `elements` filled (accepted or restored) and x0 set: rotations the identity,
+	//! `origin` and the stiffness at x0.
+	void ResetElements();
 	//! Factors S + F for dt, F the blocks `extra` (the face mass), the pattern the
 	//! stiffness's and the triangles' pairs.  `v`: the current velocities (the pins').
 	bool Prepare(double dt, const std::vector<double>& v, const std::vector<SheetBlock>& extra,
@@ -117,6 +137,7 @@ struct LiquidSheet {
 	};
 	Motion motion = Motion::Prescribed;
 	std::vector<std::uint32_t> triangles;   // fixed topology
+	std::vector<std::uint8_t> open;         // m7h, validation only (empty in the solver): per triangle, 1 for one that closes no face (a hole in the barrier)
 	std::vector<double> x, v;               // world positions (m) and velocities (m/s), 3 per vertex
 	// Prescribed: vertices in the sheet's frame and the frame's motion.
 	std::vector<double> local;
@@ -127,6 +148,7 @@ struct LiquidSheet {
 	// m7e: implicit coupling (its partner's mechanics and stiffness through two more ports).
 	bool implicit = false;
 	std::string mechanicsPort, stiffnessPort, stepsPort;
+	std::string elementsPort;               // m7h: cloth's surface_elements (the corotational model)
 	SheetDynamics dyn;
 	bool Coupled() const { return implicit && dyn.Active(); }
 	std::size_t Vertices() const { return x.size()/3; }

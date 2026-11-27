@@ -43,7 +43,10 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // m7g.1: implicitly coupled sheets: the face liquid moves with the sheet along its normal, a free
 // surface below a sheet is not loaded on it, and the reinitialisation's wall ghosts are constant
 // (docs/SIMULATION_M7G_RESULTS.md); bakes without them publish the frames of m7f.1.
-constexpr const char* SolverVersion = "m7g.1";
+// m7h.1: implicitly coupled sheets use the cloth's corotational model inside the macro step
+// (cloth.shell's surface_elements, required with `response stiffness`; docs/SIMULATION_M7H_RESULTS.md);
+// bakes without them publish the frames of m7g.1.
+constexpr const char* SolverVersion = "m7h.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -56,6 +59,10 @@ constexpr const char* FieldsPort = "fields";
 constexpr const char* BodiesOutput = "bodies";
 constexpr const char* StatePort = "body_state";
 constexpr const char* MassPort = "body_mass_properties";
+// m7h: rigid.bodies' contact planes and body contact parameters (field.v1, constant): when it is
+// connected, the liquid's own copies of the bodies stop at those planes with their restitution and
+// friction and at each other (Rigid::ResolvePairs), instead of at the domain walls with fixed settings.
+constexpr const char* ContactPort = "body_contact";
 constexpr const char* LoadPort = "body_load";
 constexpr std::size_t InteractiveCells = 32768;   // 32^3: interactive below this size
 
@@ -467,12 +474,13 @@ bool ParseSheet(const V& item, LiquidSheet& sh, double& relaxation, V& effective
 			sh.mechanicsPort = r.Text("mechanics_port", "sheet_mechanics");
 			sh.stiffnessPort = r.Text("stiffness_port", "sheet_stiffness");
 			sh.stepsPort = r.Text("steps_port", "sheet_load_steps");
+			sh.elementsPort = r.Text("elements_port", "sheet_elements");   // m7h
 			sh.dyn.useStiffness = r.Text("response", "stiffness", {"stiffness", "lumped"}) == "stiffness";
-			const std::string names[5] = {sh.port, sh.loadPort, sh.mechanicsPort, sh.stiffnessPort, sh.stepsPort};
-			for (int a = 0; a < 5; ++a) for (int b = a + 1; b < 5; ++b)
+			const std::string names[6] = {sh.port, sh.loadPort, sh.mechanicsPort, sh.stiffnessPort, sh.stepsPort, sh.elementsPort};
+			for (int a = 0; a < 6; ++a) for (int b = a + 1; b < 6; ++b)
 				if (names[a] == names[b]) return r.Bad("a sheet's port names must differ");
 		} else {
-			for (const char* key : {"mechanics_port", "stiffness_port", "steps_port", "response"})
+			for (const char* key : {"mechanics_port", "stiffness_port", "steps_port", "elements_port", "response"})
 				if (r.Has(key)) return r.Bad(std::string(key) + " is for coupling implicit");
 			relaxation = r.Real("relaxation", 1.0);
 			if (!(relaxation > 0 && relaxation <= 1)) return r.Bad("relaxation must be in (0, 1]");
@@ -1049,6 +1057,13 @@ private:
 	double macroStart_ = 0;
 	std::vector<std::string> portNames_;
 	std::uint64_t contacts_ = 0;
+	// m7h: rigid.bodies' contact (body_contact): its planes and, per model body, (contact, restitution, friction).
+	bool contactPort_ = false;
+	std::vector<Rigid::Plane> contactPlanes_;
+	std::vector<std::array<double,3>> contactBodies_;
+	bool AcceptContact(IPortExchange* ports, std::string& error);
+	void PackContact(V::Members& m) const;
+	bool UnpackContact(const V& v, std::string& error);
 	std::uint64_t pressureIterations_ = 0, pressureSteps_ = 0;   // M7g: this process's PCG iterations (progress detail; not state)
 	// M7d: port sheets (a mesh surface accepted at each exchange's start, the
 	// pressure load offered at its end; one exchange per macro step, or per
@@ -1067,6 +1082,8 @@ private:
 	// over the run (from the accepted vertex velocities: the rate of each triangle edge's turning)
 	// is reported in the progress detail, with a warning above 1% (a diagnostic, not state).
 	double sheetRotationStretch_ = 0;
+	bool corotatedSheets_ = false;   // m7h: the estimate is the corotational model's (per step)
+	long long sheetHoles_ = -1;      // m7h: the barrier's watertightness check (LiquidModel::SheetBarrierHoles), largest over the run
 	void SheetRotationDiagnostic(double span);
 	std::string SheetRotationDetail() const;
 	std::vector<double> sheetRelaxation_;
@@ -1225,13 +1242,13 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			if (setup.bodies[i].name == setup.bodies[j].name) return Fail(error, "body names must be unique: " + setup.bodies[i].name);
 	{
 		// m7d: sheet names and port names unique; no viscosity (the viscous solve does not see sheets).
-		std::vector<std::string> portNames{FieldsPort, StatePort, MassPort, LoadPort};
+		std::vector<std::string> portNames{FieldsPort, StatePort, MassPort, LoadPort, ContactPort};
 		for (std::size_t i = 0; i < setup.sheets.size(); ++i) {
 			for (std::size_t j = 0; j < i; ++j)
 				if (setup.sheets[i].name == setup.sheets[j].name) return Fail(error, "sheet names must be unique: " + setup.sheets[i].name);
 			if (setup.sheets[i].motion != LiquidSheet::Motion::Port) continue;
 			for (const std::string* n : {&setup.sheets[i].port, &setup.sheets[i].loadPort, &setup.sheets[i].mechanicsPort, &setup.sheets[i].stiffnessPort,
-				&setup.sheets[i].stepsPort}) {
+				&setup.sheets[i].stepsPort, &setup.sheets[i].elementsPort}) {
 				if (n->empty()) continue;   // m7e: the implicit ports (empty for staggered sheets)
 				if (std::find(portNames.begin(), portNames.end(), *n) != portNames.end()) return Fail(error, "sheet port names must be unique: " + *n);
 				portNames.push_back(*n);
@@ -1304,6 +1321,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, ""});
 		candidate.ports.push_back({LoadPort, "body load", "N", "field.v1", true, "",
 			{{"force", "force", "N", 3}, {"point", "position", "m", 3}, {"torque", "torque", "N m", 3}}, ""});
+		// m7h (optional): rigid.bodies' contact planes and bodies.
+		candidate.ports.push_back({ContactPort, "body contact", "1", "field.v1", false, "",
+			{{"contact", "flag", "1", 1}, {"friction", "friction", "1", 1}, {"kind", "index", "1", 1}, {"normal", "normal", "1", 3},
+			 {"point", "position", "m", 3}, {"restitution", "restitution", "1", 1}}, ""});
 	}
 	// M7d: sheets that follow a mesh surface (cloth's surface_state) and return the pressure load
 	// (declared as cloth's ports are, so a direct connection needs no adapter).
@@ -1325,9 +1346,14 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			 {"force", "force", "N", 3}, {"mass", "mass", "kg", 1}}, ""};
 		PortDeclaration stiff{sh.stiffnessPort, "surface stiffness", "N/m", "field.v1", false, "",
 			{{"column", "index", "1", 1}, {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, ""};
-		mech.startOfStep = stiff.startOfStep = true;
+		// m7h: the corotational model's elements (cloth's surface_elements).
+		PortDeclaration elems{sh.elementsPort, "surface elements", "N/m", "field.v1", false, "",
+			{{"column", "index", "1", 1}, {"element", "index", "1", 1}, {"gradient", "force", "N", 3}, {"kind", "index", "1", 1},
+			 {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, ""};
+		mech.startOfStep = stiff.startOfStep = elems.startOfStep = true;
 		candidate.ports.push_back(mech);
 		candidate.ports.push_back(stiff);
+		candidate.ports.push_back(elems);
 		candidate.ports.push_back({sh.stepsPort, "surface load steps", "N s", "field.v1", true, "",
 			{{"impulse", "impulse", "N s", 3}, {"segment", "index", "1", 1}}, ""});
 	}
@@ -1341,11 +1367,12 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	caps.modes = {"bake"};
 	caps.backend = "cpu";
 	// M7b: the coupled pressure solve is the implicit exchange for port bodies.
-	if (implicitPorts_) caps.ownedImplicitPorts = {LoadPort, MassPort, StatePort};
+	if (implicitPorts_) caps.ownedImplicitPorts = {LoadPort, MassPort, StatePort, ContactPort};
 	// M7e: and for implicit sheets (their surface, mechanics, stiffness and load).
 	for (const LiquidSheet& sh : setup.sheets)
 		if (sh.implicit)
-			for (const std::string* n : {&sh.port, &sh.mechanicsPort, &sh.stiffnessPort, &sh.loadPort, &sh.stepsPort}) caps.ownedImplicitPorts.push_back(*n);
+			for (const std::string* n : {&sh.port, &sh.mechanicsPort, &sh.stiffnessPort, &sh.loadPort, &sh.stepsPort, &sh.elementsPort})
+				caps.ownedImplicitPorts.push_back(*n);
 	std::sort(caps.ownedImplicitPorts.begin(), caps.ownedImplicitPorts.end());
 	// Measured (docs/SIMULATION_M7A_RESULTS.md section 8): peak RSS 356 bytes per cell at
 	// 128^3 (a dam break; 565 at 64^3 with the fixed part), particles about 140 bytes
@@ -1648,6 +1675,97 @@ bool LiquidSolver::AcceptBodies(IPortExchange* ports, std::string& error)
 		for (int a = 0; a < 3; ++a) b.state.pi[std::size_t(a)] = b.state.moments[std::size_t(a)]*wb[std::size_t(a)];
 	}
 	model_.UpdateBodyGeometry(true);
+	return AcceptContact(ports, error);
+}
+
+// m7h: body_contact (field.v1 from rigid.bodies m6.2, constant): its planes (kind 0: point, normal,
+// restitution, friction) then its bodies in body_state's order (kind 1: contact flag, restitution,
+// friction).  Unbound: the m7b wall stop (the domain walls, restitution 0, friction 0.3, no pairs).
+bool LiquidSolver::AcceptContact(IPortExchange* ports, std::string& error)
+{
+	std::shared_ptr<const Bytes> bytes;
+	std::string why;
+	const PortStatus st = ports->Accept(ContactPort, s_.t, bytes, why);
+	if (st == PortStatus::Unbound) { contactPort_ = false; return true; }
+	if (st != PortStatus::Ready || !bytes) return Fail(error, std::string(ContactPort) + " is connected but has no value" + (why.empty() ? "" : ": " + why));
+	FieldFrame f;
+	if (!DecodeField(*bytes, CodecBudget, f, error)) return Fail(error, std::string(ContactPort) + ": " + error);
+	const FieldChannel *on = nullptr, *mu = nullptr, *kind = nullptr, *normal = nullptr, *point = nullptr, *e = nullptr;
+	for (const auto& c : f.channels) {
+		if (c.name == "contact" && c.components == 1) on = &c;
+		else if (c.name == "friction" && c.components == 1) mu = &c;
+		else if (c.name == "kind" && c.components == 1) kind = &c;
+		else if (c.name == "normal" && c.components == 3) normal = &c;
+		else if (c.name == "point" && c.components == 3) point = &c;
+		else if (c.name == "restitution" && c.components == 1) e = &c;
+	}
+	if (!on || !mu || !kind || !normal || !point || !e) return Fail(error, std::string(ContactPort) + " needs contact, friction, kind, normal, point and restitution");
+	std::vector<Rigid::Plane> planes;
+	std::vector<std::array<double,3>> bodies;
+	for (std::uint32_t k = 0; k < f.count; ++k) {
+		const double kd = FromF32(kind->values[k]);
+		if (kd == 0) {
+			if (!bodies.empty()) return Fail(error, std::string(ContactPort) + ": planes come before bodies");
+			Rigid::Plane p;
+			for (int a = 0; a < 3; ++a) {
+				p.point[std::size_t(a)] = FromF32(point->values[3*k + std::size_t(a)]);
+				p.normal[std::size_t(a)] = FromF32(normal->values[3*k + std::size_t(a)]);
+			}
+			const double l = Rigid::Norm(p.normal);
+			if (!(l > 0)) return Fail(error, std::string(ContactPort) + ": a plane needs a normal");
+			p.normal = Rigid::Mul(p.normal, 1/l);
+			p.restitution = FromF32(e->values[k]);
+			p.friction = FromF32(mu->values[k]);
+			planes.push_back(p);
+		} else if (kd == 1) bodies.push_back({{FromF32(on->values[k]), FromF32(e->values[k]), FromF32(mu->values[k])}});
+		else return Fail(error, std::string(ContactPort) + ": unknown kind");
+	}
+	if (bodies.size() != portNames_.size()) return Fail(error, std::string(ContactPort) + " is not over body_state's bodies");
+	contactPlanes_ = std::move(planes);
+	contactBodies_.assign(model_.bodies.size(), {{0, 0.5, 0.5}});
+	for (std::size_t i = 0; i < model_.bodies.size(); ++i) {
+		const auto it = std::find(portNames_.begin(), portNames_.end(), model_.bodies[i].name);
+		if (model_.bodies[i].motion == BodyMotion::Port && it != portNames_.end()) contactBodies_[i] = bodies[std::size_t(it - portNames_.begin())];
+	}
+	contactPort_ = true;
+	return true;
+}
+
+void LiquidSolver::PackContact(V::Members& m) const
+{
+	if (!contactPort_) return;
+	std::vector<double> planes, bodies;
+	for (const Rigid::Plane& p : contactPlanes_) {
+		planes.insert(planes.end(), p.point.begin(), p.point.end());
+		planes.insert(planes.end(), p.normal.begin(), p.normal.end());
+		planes.push_back(p.restitution);
+		planes.push_back(p.friction);
+	}
+	for (const auto& b : contactBodies_) bodies.insert(bodies.end(), b.begin(), b.end());
+	m.emplace_back("contactPlanes", V::BytesValue(DoublesBytes(planes)));
+	m.emplace_back("contactBodies", V::BytesValue(DoublesBytes(bodies)));
+}
+
+bool LiquidSolver::UnpackContact(const V& v, std::string& error)
+{
+	contactPort_ = false;
+	contactPlanes_.clear();
+	contactBodies_.clear();
+	const V* pv = v.Find("contactPlanes");
+	if (!pv) return true;
+	std::vector<double> planes, bodies;
+	if (pv->GetType() != V::ByteString || pv->GetBytes().size() % 64 != 0 ||
+		!BytesDoubles(pv, pv->GetBytes().size()/8, planes) || !BytesDoubles(v.Find("contactBodies"), 3*model_.bodies.size(), bodies))
+		return Fail(error, "invalid liquid checkpoint fields (body contact)");
+	for (std::size_t k = 0; k + 7 < planes.size(); k += 8) {
+		Rigid::Plane p;
+		for (int a = 0; a < 3; ++a) { p.point[std::size_t(a)] = planes[k + std::size_t(a)]; p.normal[std::size_t(a)] = planes[k + 3 + std::size_t(a)]; }
+		p.restitution = planes[k + 6];
+		p.friction = planes[k + 7];
+		contactPlanes_.push_back(p);
+	}
+	for (std::size_t i = 0; i < model_.bodies.size(); ++i) contactBodies_.push_back({{bodies[3*i], bodies[3*i + 1], bodies[3*i + 2]}});
+	contactPort_ = true;
 	return true;
 }
 
@@ -1706,6 +1824,11 @@ bool LiquidSolver::AcceptSheets(IPortExchange* ports, std::string& error)
 	model_.UpdateSheetGeometry(implicitSheets_);
 	model_.ResetSheetImpulses();
 	if (implicitSheets_) model_.ResetSheetDynamics();
+	if (implicitSheets_) {
+		// m7h: the watertightness check of the barrier of sheets pinned all round (a diagnostic).
+		const long long holes = model_.SheetBarrierHoles();
+		if (holes >= 0) sheetHoles_ = std::max(sheetHoles_, holes);
+	}
 	sheetSegments_.clear();
 	sheetSegment_ = 0;
 	return true;
@@ -1776,7 +1899,78 @@ bool LiquidSolver::AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, st
 			for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) t[3*c + r] = b[3*r + c];
 		}
 	}
-
+	if (!d.useStiffness) return true;
+	// m7h: the corotational model's elements (cloth.shell m3a.5's surface_elements): required with
+	// `response stiffness`, since the cloth integrates that model inside the macro step.
+	FieldFrame ef;
+	{
+		std::shared_ptr<const Bytes> bytes;
+		std::string why;
+		if (ports->Accept(sh.elementsPort, s_.t, bytes, why) != PortStatus::Ready || !bytes)
+			return Fail(error, "implicit sheet " + sh.name + " needs " + sh.elementsPort + ": connect the cloth's surface_elements to it "
+				"(cloth.shell m3a.5; the cloth's model inside the macro step is corotational, docs/SIMULATION_M7H_RESULTS.md)" +
+				(why.empty() ? std::string() : ": " + why));
+		if (!DecodeField(*bytes, InputBudget, ef, error)) return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + ": " + error);
+	}
+	const FieldChannel *ecol = channel(ef, "column", "1", 1), *eel = channel(ef, "element", "1", 1), *egr = channel(ef, "gradient", "N", 3),
+		*eki = channel(ef, "kind", "1", 1), *erow = channel(ef, "row", "1", 1), *est = channel(ef, "stiffness", "N/m", 9);
+	if (!ecol || !eel || !egr || !eki || !erow || !est)
+		return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + " needs column, element, gradient, kind, row and stiffness");
+	Cloth::CorotatedElements& el = d.elements;
+	const bool rebuild = ef.domain != d.elementsDomain;
+	// Items in element order, (a, b) with a <= b row by row: the diagonal items name the element's vertices.
+	std::size_t item = 0, count = 0;
+	while (item < ef.count) {
+		const double e = FromF32(eel->values[item]);
+		if (!(e == double(count)) ) return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + ": elements out of order");
+		std::size_t end = item;
+		while (end < ef.count && FromF32(eel->values[end]) == e) ++end;
+		std::uint32_t v[4] = {0, 0, 0, 0};
+		int nv = 0;
+		for (std::size_t k = item; k < end; ++k)
+			if (FromF32(erow->values[k]) == FromF32(ecol->values[k])) {
+				const double x = FromF32(erow->values[k]);
+				if (nv == 4 || !(x >= 0 && x < double(n)) || std::floor(x) != x) return Fail(error, "sheet " + sh.name + ": invalid element vertices");
+				v[nv++] = std::uint32_t(x);
+			}
+		const double kind = FromF32(eki->values[item]);
+		if (nv < 3 || end - item != std::size_t(nv*(nv + 1)/2) || !(kind == 0 || kind == 1 || kind == 2) || (kind == 1) != (nv == 4))
+			return Fail(error, "sheet " + sh.name + ": invalid element " + std::to_string(count));
+		if (rebuild) {
+			if (el.elements.size() <= count) el.elements.resize(count + 1);
+			Cloth::CorotatedElements::Element& x = el.elements[count];
+			x.kind = std::uint8_t(kind);
+			x.count = std::uint8_t(nv);
+			for (int a = 0; a < nv; ++a) x.v[a] = v[a];
+		}
+		item = end;
+		++count;
+	}
+	if (rebuild) {
+		el.elements.resize(count);
+		std::vector<Cloth::CorotatedElements::Element> keep = el.elements;
+		el.Resize(count);
+		el.elements = keep;
+		if (!el.BuildFrames(sh.triangles)) return Fail(error, "sheet " + sh.name + ": a rod element lies on no triangle edge");
+		d.elementsDomain = ef.domain;
+	} else if (count != el.Size()) return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + " changed its elements");
+	std::fill(el.stiffness.begin(), el.stiffness.end(), 0.0);
+	std::fill(el.gradient.begin(), el.gradient.end(), 0.0);
+	item = 0;
+	for (std::size_t e = 0; e < count; ++e) {
+		const Cloth::CorotatedElements::Element& x = el.elements[e];
+		auto local = [&](double g) { for (int a = 0; a < x.count; ++a) if (double(x.v[a]) == g) return a; return -1; };
+		for (int a = 0; a < x.count; ++a) for (int b = a; b < x.count; ++b, ++item) {
+			const int la = local(FromF32(erow->values[item])), lb = local(FromF32(ecol->values[item]));
+			if (la != a || lb != b) return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + ": blocks out of order");
+			for (int i = 0; i < 3; ++i) {
+				if (a == b) el.gradient[12*e + std::size_t(3*a + i)] = FromF32(egr->values[3*item + std::size_t(i)]);
+				for (int j = 0; j < 3; ++j)
+					el.stiffness[144*e + std::size_t((3*a + i)*12 + 3*b + j)] = FromF32(est->values[9*item + std::size_t(3*i + j)]);
+			}
+		}
+	}
+	el.Mirror();
 	return true;
 }
 
@@ -1784,6 +1978,14 @@ void LiquidSolver::SheetRotationDiagnostic(double span)
 {
 	for (const LiquidSheet& sh : model_.sheets) {
 		if (!sh.Coupled()) continue;
+		if (sh.dyn.Corotated()) {
+			// m7h: the corotational model turns each element with its predicted rotation; what is
+			// left is the angle by which an element turned beyond it in a step (LiquidModel), whose
+			// square over two bounds that step's spurious strain.
+			sheetRotationStretch_ = std::max(sheetRotationStretch_, 0.5*sh.dyn.rotationLag*sh.dyn.rotationLag);
+			corotatedSheets_ = true;
+			continue;
+		}
 		double rate = 0;
 		for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
 			for (int k = 0; k < 3; ++k) {
@@ -1811,11 +2013,15 @@ std::string LiquidSolver::SheetRotationDetail() const
 	// m7g: the through-sheet measure (LiquidModel.h sheetCrossedCells): cells that would have
 	// turned wet across a sheet's closed face (held by the guard) and cells that turned wet with no
 	// wet neighbour at all, totals of this run.
-	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch per macro step up to %.2g%%%s, cells wet across a sheet %llu (%.3g m^3, held), "
-		"wet without a wet neighbour %llu", 100*sheetRotationStretch_,
-		sheetRotationStretch_ > 0.01 ? " (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)" : "",
+	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch %s up to %.2g%%%s, cells wet across a sheet %llu (%.3g m^3, held), "
+		"wet without a wet neighbour %llu", corotatedSheets_ ? "per step (corotational)" : "per macro step", 100*sheetRotationStretch_,
+		sheetRotationStretch_ > 0.01 ? (corotatedSheets_ ? " (warning: above 1%, elements turn faster than the step predicts; shorten the macro step)" :
+			" (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)") : "",
 		static_cast<unsigned long long>(model_.sheetCrossedCells), model_.sheetCrossedVolume, static_cast<unsigned long long>(model_.sheetUnfedCells));
-	return buffer;
+	std::string out = buffer;
+	// m7h: the barrier's watertightness (sheets pinned all round only).
+	if (sheetHoles_ >= 0) out += ", barrier holes (flood fill through the pinned sheet) " + std::to_string(sheetHoles_);
+	return out;
 }
 
 // M7d: each port sheet's load over [sheetStart_, time]: the per-vertex pressure of
@@ -1884,7 +2090,9 @@ void LiquidSolver::WallContact(double dt)
 	// (rigid.bodies' plane contact), counted; not part of the validated model.
 	const Grid& g = model_.GridSpec();
 	std::vector<Rigid::Plane> planes;
-	for (int a = 0; a < 3; ++a) {
+	// m7h: with body_contact connected, rigid.bodies' own planes and parameters (and body-body contact below).
+	if (contactPort_) planes = contactPlanes_;
+	else for (int a = 0; a < 3; ++a) {
 		if (g.n[a] == 1) continue;
 		for (int side = 0; side < 2; ++side) {
 			if (a == 1 && side == 1 && setup_.openTop) continue;
@@ -1917,12 +2125,48 @@ void LiquidSolver::WallContact(double dt)
 			b.state.radius = b.shape.radius;
 		}
 		const Rigid::V3 v0 = b.state.v;
-		const int n = Rigid::ResolvePlanes(b.state, planes, setup_.gravity, dt);
+		const int n = planes.empty() ? 0 : Rigid::ResolvePlanes(b.state, planes, setup_.gravity, dt);
 		if (n) {
 			contacts_ += std::uint64_t(n);
 			for (int a = 0; a < 3; ++a) if (!b.free[std::size_t(a)]) b.state.v[std::size_t(a)] = v0[std::size_t(a)];
 			if (!b.free[3]) b.state.pi = {{0, 0, 0}};
 		}
+	}
+	if (!contactPort_) return;
+	// m7h: body-body contact between the liquid's copies of the coupled bodies, with rigid.bodies'
+	// parameters (the same sequential impulses as rigid.bodies' own, so the copy does not squeeze
+	// the liquid between two bodies within the macro step).
+	std::vector<Rigid::Body> states;
+	std::vector<Rigid::ContactShape> shapes;
+	std::vector<std::uint8_t> active;
+	std::size_t count = 0;
+	for (std::size_t i = 0; i < model_.bodies.size(); ++i) {
+		const LiquidBody& b = model_.bodies[i];
+		Rigid::ContactShape c;
+		if (b.Coupled() && i < contactBodies_.size() && contactBodies_[i][0] != 0 && b.shape.type != BodyShape::Type::Mesh) {
+			Rigid::Shape rs;
+			rs.type = b.shape.type == BodyShape::Type::Sphere ? Rigid::Shape::Type::Sphere :
+				b.shape.type == BodyShape::Type::Box ? Rigid::Shape::Type::Box : Rigid::Shape::Type::Cylinder;
+			rs.size = b.shape.size;
+			rs.radius = b.shape.radius;
+			rs.height = b.shape.height;
+			c = Rigid::MakeContactShape(rs, contactBodies_[i][1], contactBodies_[i][2]);
+			++count;
+		}
+		states.push_back(b.state);
+		shapes.push_back(c);
+		active.push_back(b.Coupled() ? 1 : 0);
+	}
+	if (count < 2 || !Rigid::PairsNear(states, shapes)) return;
+	std::vector<Rigid::V3> v0;
+	for (const Rigid::Body& b : states) v0.push_back(b.v);
+	contacts_ += std::uint64_t(Rigid::ResolvePairs(states, shapes, planes, setup_.gravity, dt, 16, &active));
+	for (std::size_t i = 0; i < model_.bodies.size(); ++i) {
+		LiquidBody& b = model_.bodies[i];
+		if (!active[i]) continue;
+		b.state = states[i];
+		for (int a = 0; a < 3; ++a) if (!b.free[std::size_t(a)]) b.state.v[std::size_t(a)] = v0[i][std::size_t(a)];
+		if (!b.free[3]) b.state.pi = {{0, 0, 0}};
 	}
 }
 
@@ -2104,6 +2348,7 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 		m.emplace_back("macroStart", V::Float(macroStart_));
 		m.emplace_back("portNames", V::ArrayValue(names));
 		m.emplace_back("contacts", V::Unsigned(contacts_));
+		PackContact(m);   // m7h (only when body_contact is connected)
 		if (setup_.viscosity > 0) {
 			// m7c: the last step's impulse on each body (the viscous solve predicts the body's
 			// wall velocity with it; only with viscosity, so m7b streams are unchanged).
@@ -2130,6 +2375,11 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 				e.emplace_back("blocks", V::Unsigned(UpperBlocks(sh.dyn.stiffness)));
 				e.emplace_back("stiffnessDomain", V::String(sh.dyn.stiffnessDomain));
 				e.emplace_back("history", V::Unsigned(model_.sheetHistory[i].size()));
+				if (!sh.dyn.elements.Empty()) {
+					// m7h: the corotational model's elements (absent: none).
+					e.emplace_back("elements", V::Unsigned(sh.dyn.elements.Size()));
+					e.emplace_back("elementsDomain", V::String(sh.dyn.elementsDomain));
+				}
 			}
 			list.push_back(V::MapValue(e));
 		}
@@ -2173,6 +2423,12 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 				values.insert(values.end(), K.Block(k), K.Block(k) + 9);
 			}
 		if (!w.Doubles(values, error) || !w.Doubles(model_.sheetHistory[i], error)) return false;
+		if (d.elements.Empty()) continue;
+		// m7h: the elements (kind, count, four vertices each), their stiffness and gradient.
+		for (const Cloth::CorotatedElements::Element& x : d.elements.elements)
+			for (std::uint64_t k : {std::uint64_t(x.kind), std::uint64_t(x.count), std::uint64_t(x.v[0]), std::uint64_t(x.v[1]), std::uint64_t(x.v[2]),
+				std::uint64_t(x.v[3])}) if (!w.U64(k, error)) return false;
+		if (!w.Doubles(d.elements.stiffness, error) || !w.Doubles(d.elements.gradient, error)) return false;
 	}
 	return true;
 }
@@ -2228,7 +2484,8 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 		}
 	} else if (v.Find("bodies")) return Fail(error, "the liquid checkpoint holds bodies the configuration does not have");
 	// M7d: sheets.
-	struct SheetSizes { std::uint64_t vertices = 0, triangles = 0, pressure = 0, dynamics = 0, blocks = 0, history = 0; std::string topology, stiffness; };
+	struct SheetSizes { std::uint64_t vertices = 0, triangles = 0, pressure = 0, dynamics = 0, blocks = 0, history = 0, elements = 0;
+		std::string topology, stiffness, elementsDomain; };
 	std::vector<SheetSizes> sheetSizes;
 	bool sheetOpen = false;
 	double sheetStart = 0;
@@ -2255,6 +2512,13 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 					return Fail(error, "invalid liquid checkpoint fields (implicit sheet dynamics)");
 				z.dynamics = dn->GetIntegerArgument(); z.blocks = bn->GetIntegerArgument(); z.stiffness = sd->GetText();
 				z.history = hn->GetIntegerArgument();
+				if (const V* en = e.Find("elements")) {
+					const V* ed = e.Find("elementsDomain");
+					if (en->GetType() != V::UnsignedInteger || en->GetIntegerArgument() > (std::uint64_t(1) << 26) || !ed || ed->GetType() != V::Text)
+						return Fail(error, "invalid liquid checkpoint fields (implicit sheet elements)");
+					z.elements = en->GetIntegerArgument();
+					z.elementsDomain = ed->GetText();
+				}
 			} else if (e.Find("dynamics")) return Fail(error, "the liquid checkpoint holds sheet dynamics the configuration does not have");
 			sheetSizes.push_back(z);
 		}
@@ -2346,6 +2610,30 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 			d.stiffnessDomain = z.stiffness;
 			d.matrix = Cloth::BlockMatrix();
 			if (!r.Doubles(history[i], std::size_t(z.history), error)) return false;
+			d.elements = Cloth::CorotatedElements();
+			d.elementsDomain.clear();
+			d.rotated = Cloth::BlockMatrix();
+			if (z.elements) {
+				// m7h.
+				const std::size_t ne = std::size_t(z.elements);
+				if (8*(6 + 156)*ne > r.Remaining()) return Fail(error, "liquid checkpoint stream is truncated");
+				d.elements.Resize(ne);
+				for (Cloth::CorotatedElements::Element& x : d.elements.elements) {
+					std::uint64_t k[6];
+					for (std::uint64_t& y : k) if (!r.U64(y, error)) return false;
+					if (k[0] > 2 || (k[1] != 3 && k[1] != 4) || (k[0] == 1) != (k[1] == 4)) return Fail(error, "invalid liquid checkpoint (sheet elements)");
+					x.kind = std::uint8_t(k[0]);
+					x.count = std::uint8_t(k[1]);
+					for (int a = 0; a < 4; ++a) {
+						if (k[2 + a] >= n) return Fail(error, "invalid liquid checkpoint (sheet elements)");
+						x.v[a] = std::uint32_t(k[2 + a]);
+					}
+				}
+				if (!r.Doubles(d.elements.stiffness, 144*ne, error) || !r.Doubles(d.elements.gradient, 12*ne, error)) return false;
+				if (!d.elements.BuildFrames(sh.triangles)) return Fail(error, "invalid liquid checkpoint (sheet element frames)");
+				d.elementsDomain = z.elementsDomain;
+				d.ResetElements();
+			}
 
 		}
 	}
@@ -2388,6 +2676,7 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	macroStart_ = macroStart;
 	portNames_ = std::move(portNames);
 	contacts_ = contacts;
+	if (!setup_.bodies.empty() && !UnpackContact(v, error)) return false;
 	s_ = seg;
 	started_ = true;
 	return true;

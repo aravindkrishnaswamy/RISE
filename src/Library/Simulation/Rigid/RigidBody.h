@@ -132,7 +132,62 @@ void DriftBody(Body& b, double h);
 //! One kick-drift-kick step (see the header comment).
 void StepBody(Body& b, const Load& load, const V3& gravity, double h);
 //! Plane contact after a step (preview).  Returns the number of impulses applied.
+//! m6.2: a body with support points takes all of its points below a plane in one
+//! set of sequential impulses (SolveContacts); a sphere keeps m6.1's lowest point.
 int ResolvePlanes(Body& b, const std::vector<Plane>& planes, const V3& gravity, double h);
+
+//! M7h: a contact point between body a and another body or a plane: the point
+//! (world), the unit normal along which a must move to separate, the depth (< 0).
+struct ContactPoint {
+	V3 point{{0, 0, 0}}, normal{{0, 0, 0}};
+	double depth = 0;
+};
+//! The passes of SolveContacts.
+constexpr int ContactPasses = 16;
+//! Sequential impulses with accumulated, clamped impulses over `points` between
+//! body a and body b (null: a static plane): Newton restitution e of each point's
+//! approach speed (0 below `resting`), Coulomb friction mu over two tangents.
+//! Equal and opposite at each point.  Returns the number of normal impulses.
+int SolveContacts(Body& a, Body* b, bool moveA, bool moveB, const std::vector<ContactPoint>& points, double e, double mu,
+	double resting, int passes);
+
+//! M7h: a body's geometry and parameters for body-body contact (preview;
+//! docs/SIMULATION_M7H_RESULTS.md section 5), in the body frame (the centre of
+//! mass at the origin; analytic shapes keep their authoring axes).
+struct ContactShape {
+	enum class Type { None, Box, Sphere, Cylinder };
+	Type type = Type::None;              // None: the body takes no body-body contact
+	V3 half{{0, 0, 0}};                  // box: half extents; sphere: radius in [0]; cylinder: radius in [0], half height in [2]
+	double bound = 0;                    // bounding radius about the centre of mass
+	double restitution = 0.5, friction = 0.5;
+	std::vector<double> points;          // sample points (body frame): box corners and edge midpoints, cylinder rims; none for a sphere
+};
+//! The contact geometry of a shape (box, sphere, cylinder; None for a mesh).
+//! The analytic shapes' body frame is their authoring frame (centroid at the
+//! origin, axes kept), so the geometry needs no transform.
+ContactShape MakeContactShape(const Shape& shape, double restitution, double friction);
+//! Signed distance from a body-frame point to the shape (negative inside) and
+//! the outward unit normal at the nearest surface point.  `hint` (body frame,
+//! may be null) breaks ties between faces at an edge or corner (the face most
+//! along it wins).
+double ShapeDistance(const ContactShape& s, const V3& p, V3& normal, const V3* hint = nullptr);
+//! Body-body contact after a step (preview): for every pair of bodies with
+//! shapes whose bounding spheres overlap, the penetrating points (one body's
+//! sample points, or a sphere's centre, inside the other's shape) take
+//! sequential impulses with Newton restitution min(e_a, e_b) (0 below a
+//! resting speed, as for planes) and Coulomb friction sqrt(mu_a mu_b), equal
+//! and opposite at each contact point (linear and angular momentum are
+//! exchanged exactly); then the two bodies move apart along the deepest
+//! point's normal in inverse proportion to their masses.  Pairs in index
+//! order, up to `iterations` sweeps, with the planes resolved again for the
+//! bodies a sweep moved; deterministic and stateless.  `active` (may be
+//! null): per body, whether it moves (a body that does not has infinite
+//! mass here).  Returns the number of impulses applied.
+int ResolvePairs(std::vector<Body>& bodies, const std::vector<ContactShape>& shapes, const std::vector<Plane>& planes,
+	const V3& gravity, double h, int iterations = 16, const std::vector<std::uint8_t>* active = nullptr);
+//! Whether any pair of bodies with shapes overlaps their bounding spheres (the cheap test that leaves
+//! runs without body-body contact unchanged).
+bool PairsNear(const std::vector<Body>& bodies, const std::vector<ContactShape>& shapes);
 
 } } }
 

@@ -10,6 +10,7 @@
 #include "ClothLinearAlgebra.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace RISE { namespace Simulation { namespace Cloth {
@@ -780,6 +781,214 @@ void BandedCholesky::Solve(const std::vector<double>& b, std::vector<double>& x)
 	x.assign(n_, 0.0);
 	for (std::uint32_t v = 0; v < position_.size(); ++v)
 		for (int c = 0; c < 3; ++c) x[3*static_cast<std::size_t>(v) + c] = y[3*static_cast<std::size_t>(position_[v]) + c];
+}
+
+// ------------------------------------------------------------------ M7h: corotated elements
+
+namespace {
+using M3x3 = std::array<double, 9>;
+double Det3(const M3x3& a)
+{
+	return a[0]*(a[4]*a[8] - a[5]*a[7]) - a[1]*(a[3]*a[8] - a[5]*a[6]) + a[2]*(a[3]*a[7] - a[4]*a[6]);
+}
+// The polar factor of a (det a > 0) by Higham's scaled Newton iteration; false if it does not converge.
+bool Polar3(const M3x3& a, M3x3& r)
+{
+	M3x3 x = a;
+	for (int it = 0; it < 60; ++it) {
+		const double det = Det3(x);
+		if (!(det > 0) || !std::isfinite(det)) return false;
+		// The inverse transpose: the cofactor matrix over the determinant.
+		M3x3 c;
+		c[0] = (x[4]*x[8] - x[5]*x[7])/det; c[1] = (x[5]*x[6] - x[3]*x[8])/det; c[2] = (x[3]*x[7] - x[4]*x[6])/det;
+		c[3] = (x[2]*x[7] - x[1]*x[8])/det; c[4] = (x[0]*x[8] - x[2]*x[6])/det; c[5] = (x[1]*x[6] - x[0]*x[7])/det;
+		c[6] = (x[1]*x[5] - x[2]*x[4])/det; c[7] = (x[2]*x[3] - x[0]*x[5])/det; c[8] = (x[0]*x[4] - x[1]*x[3])/det;
+		double nx = 0, nc = 0;
+		for (int k = 0; k < 9; ++k) { nx += x[k]*x[k]; nc += c[k]*c[k]; }
+		const double gamma = std::sqrt(std::sqrt(nc/nx));
+		double change = 0;
+		for (int k = 0; k < 9; ++k) {
+			const double y = 0.5*(gamma*x[k] + c[k]/gamma);
+			change += (y - x[k])*(y - x[k]);
+			x[k] = y;
+		}
+		if (change < 1e-28) { r = x; return true; }
+	}
+	return false;
+}
+// The fan normal sum_k (f_k - f_0) x (f_{k+1} - f_0) of a frame and its centroid.
+void Frame(const CorotatedElements::Element& e, const std::vector<double>& p, double centre[3], double normal[3])
+{
+	centre[0] = centre[1] = centre[2] = 0;
+	normal[0] = normal[1] = normal[2] = 0;
+	for (int k = 0; k < e.frames; ++k) for (int a = 0; a < 3; ++a) centre[a] += p[3*std::size_t(e.f[k]) + std::size_t(a)]/e.frames;
+	const double* o = &p[3*std::size_t(e.f[0])];
+	for (int k = 1; k + 1 < e.frames; ++k) {
+		const double* s = &p[3*std::size_t(e.f[k])];
+		const double* t = &p[3*std::size_t(e.f[k + 1])];
+		const double u[3] = {s[0] - o[0], s[1] - o[1], s[2] - o[2]}, w[3] = {t[0] - o[0], t[1] - o[1], t[2] - o[2]};
+		normal[0] += u[1]*w[2] - u[2]*w[1];
+		normal[1] += u[2]*w[0] - u[0]*w[2];
+		normal[2] += u[0]*w[1] - u[1]*w[0];
+	}
+}
+M3x3 Fit(const CorotatedElements::Element& e, const std::vector<double>& x0, const std::vector<double>& p)
+{
+	const M3x3 identity{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+	double c0[3], n0[3], c[3], n[3];
+	Frame(e, x0, c0, n0);
+	Frame(e, p, c, n);
+	const double l0 = std::sqrt(n0[0]*n0[0] + n0[1]*n0[1] + n0[2]*n0[2]), l = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+	if (!(l0 > 0) || !(l > 0)) return identity;
+	M3x3 a{{0, 0, 0, 0, 0, 0, 0, 0, 0}};
+	double s = 0;
+	for (int k = 0; k < e.frames; ++k) {
+		const double* q = &p[3*std::size_t(e.f[k])];
+		const double* q0 = &x0[3*std::size_t(e.f[k])];
+		const double d[3] = {q[0] - c[0], q[1] - c[1], q[2] - c[2]}, d0[3] = {q0[0] - c0[0], q0[1] - c0[1], q0[2] - c0[2]};
+		for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) a[std::size_t(3*i + j)] += d[i]*d0[j];
+		s += (d0[0]*d0[0] + d0[1]*d0[1] + d0[2]*d0[2])/e.frames;
+	}
+	for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) a[std::size_t(3*i + j)] += s*(n[i]/l)*(n0[j]/l0);
+	M3x3 r;
+	if (!(Det3(a) > 0) || !Polar3(a, r)) return identity;
+	return r;
+}
+} // namespace
+
+void CorotatedElements::Resize(std::size_t count)
+{
+	elements.assign(count, Element{});
+	stiffness.assign(144*count, 0.0);
+	gradient.assign(12*count, 0.0);
+	rotation.assign(9*count, 0.0);
+	for (std::size_t e = 0; e < count; ++e) rotation[9*e] = rotation[9*e + 4] = rotation[9*e + 8] = 1;
+}
+
+void CorotatedElements::Mirror()
+{
+	for (std::size_t e = 0; e < elements.size(); ++e) {
+		double* k = &stiffness[144*e];
+		for (int a = 0; a < elements[e].count; ++a) for (int b = a + 1; b < elements[e].count; ++b)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) k[(3*b + j)*12 + 3*a + i] = k[(3*a + i)*12 + 3*b + j];
+	}
+}
+
+bool CorotatedElements::BuildFrames(const std::vector<std::uint32_t>& triangles)
+{
+	for (Element& e : elements) {
+		if (e.kind == Hinge) {
+			e.frames = 4;
+			e.f[0] = e.v[0]; e.f[1] = e.v[2]; e.f[2] = e.v[1]; e.f[3] = e.v[3];
+		} else if (e.kind == Rod) {
+			std::size_t t = 0;
+			for (; t + 2 < triangles.size(); t += 3) {
+				int hits = 0;
+				for (int a = 0; a < 3; ++a) hits += triangles[t + std::size_t(a)] == e.v[0] || triangles[t + std::size_t(a)] == e.v[1];
+				if (hits == 2) break;
+			}
+			if (t + 2 >= triangles.size()) return false;
+			std::uint32_t w = triangles[t];
+			for (int a = 0; a < 3; ++a) if (triangles[t + std::size_t(a)] != e.v[0] && triangles[t + std::size_t(a)] != e.v[1]) w = triangles[t + std::size_t(a)];
+			e.frames = 4;
+			e.f[0] = e.v[0]; e.f[1] = e.v[1]; e.f[2] = e.v[2]; e.f[3] = w;
+			// The fan (v0, v1, v2) is degenerate on a straight rod; (v0, v2, w) gives the normal.
+		} else {
+			e.frames = 3;
+			for (int a = 0; a < 3; ++a) e.f[a] = e.v[a];
+		}
+	}
+	return true;
+}
+
+void CorotatedElements::Rotate(const std::vector<double>& x0, const std::vector<double>& p, ParallelPool* pool)
+{
+	constexpr std::size_t span = 256;
+	ParallelFor(pool, Chunks(elements.size(), span), [&](std::size_t chunk) {
+		for (std::size_t e = chunk*span; e < std::min(elements.size(), (chunk + 1)*span); ++e) {
+			const M3x3 r = Fit(elements[e], x0, p);
+			std::copy(r.begin(), r.end(), rotation.begin() + std::ptrdiff_t(9*e));
+		}
+	});
+}
+
+double CorotatedElements::Deviation(const std::vector<double>& x0, const std::vector<double>& p, ParallelPool* pool) const
+{
+	constexpr std::size_t span = 256;
+	std::vector<double> part(Chunks(elements.size(), span), 0.0);
+	ParallelFor(pool, part.size(), [&](std::size_t chunk) {
+		for (std::size_t e = chunk*span; e < std::min(elements.size(), (chunk + 1)*span); ++e) {
+			const M3x3 r = Fit(elements[e], x0, p);
+			const double* h = &rotation[9*e];
+			// trace(H^T R) = 1 + 2 cos(angle)
+			double tr = 0;
+			for (int k = 0; k < 9; ++k) tr += h[k]*r[std::size_t(k)];
+			part[chunk] = std::max(part[chunk], std::acos(std::max(-1.0, std::min(1.0, 0.5*(tr - 1)))));
+		}
+	});
+	double worst = 0;
+	for (double x : part) worst = std::max(worst, x);
+	return worst;
+}
+
+void CorotatedElements::Assemble(BlockMatrix& k) const
+{
+	k.Zero();
+	for (std::size_t e = 0; e < elements.size(); ++e) {
+		const Element& el = elements[e];
+		const double* r = &rotation[9*e];
+		const double* ke = &stiffness[144*e];
+		for (int a = 0; a < el.count; ++a) for (int b = 0; b < el.count; ++b) {
+			// B = R K_ab R^T
+			double t[9], blk[9];
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+				double s = 0;
+				for (int m = 0; m < 3; ++m) s += r[3*i + m]*ke[(3*a + m)*12 + 3*b + j];
+				t[3*i + j] = s;
+			}
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+				double s = 0;
+				for (int m = 0; m < 3; ++m) s += t[3*i + m]*r[3*j + m];
+				blk[3*i + j] = s;
+			}
+			k.Add(k.Slot(el.v[a], el.v[b]), blk);
+		}
+	}
+}
+
+double CorotatedElements::Gradient(const std::vector<double>& x0, const std::vector<double>& p, std::vector<double>& g) const
+{
+	g.assign(p.size(), 0.0);
+	double energy = 0;
+	for (std::size_t e = 0; e < elements.size(); ++e) {
+		const Element& el = elements[e];
+		const double* r = &rotation[9*e];
+		const double* ke = &stiffness[144*e];
+		const double* ge = &gradient[12*e];
+		const int n = 3*el.count;
+		double d[12], y[12];
+		for (int a = 0; a < el.count; ++a) {
+			const double* q = &p[3*std::size_t(el.v[a])];
+			const double* q0 = &x0[3*std::size_t(el.v[a])];
+			for (int i = 0; i < 3; ++i) d[3*a + i] = r[i]*q[0] + r[3 + i]*q[1] + r[6 + i]*q[2] - q0[i];
+		}
+		for (int i = 0; i < n; ++i) {
+			double s = 0;
+			for (int j = 0; j < n; ++j) s += ke[i*12 + j]*d[j];
+			energy += d[i]*(ge[i] + 0.5*s);
+			y[i] = ge[i] + s;
+		}
+		for (int a = 0; a < el.count; ++a)
+			for (int i = 0; i < 3; ++i)
+				g[3*std::size_t(el.v[a]) + std::size_t(i)] += r[3*i]*y[3*a] + r[3*i + 1]*y[3*a + 1] + r[3*i + 2]*y[3*a + 2];
+	}
+	return energy;
+}
+
+double CorotatedElements::Energy(const std::vector<double>& x0, const std::vector<double>& p) const
+{
+	std::vector<double> g;
+	return Gradient(x0, p, g);
 }
 
 } } }

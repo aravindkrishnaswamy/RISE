@@ -338,12 +338,25 @@ public:
 	//! Rayleigh damping uses K0: the dynamics a partner's linearised copy of the
 	//! cloth integrates (liquid.mac's implicit sheets), so the cloth and that copy
 	//! take the same steps.  Contact stays exact.
+	//! M7h: by default the model is corotational (CorotatedElements in
+	//! ClothLinearAlgebra.h): each element's g0 and K0 (rounded to binary32 as
+	//! surface_elements carries them) turn with the element's rotation, set at
+	//! each step's start from the predicted positions x + h v; SetCorotated(false)
+	//! keeps m7e's rotation-blind model (for the measured contrast).
 	void BeginLinear();
 	void EndLinear() { linear_ = false; }
 	bool Linear() const { return linear_; }
 	const std::vector<double>& LinearOrigin() const { return linearX0_; }
 	//! Restores the linear model about `x0` (a checkpoint taken inside it).
 	void BeginLinearAt(const std::vector<double>& x0);
+	void SetCorotated(bool corotated) { corotated_ = corotated; }
+	bool Corotated() const { return corotated_; }
+	//! M7h: the elements of the corotational model about `pos` (binary32 values,
+	//! frames built, rotations the identity): what surface_elements carries.
+	void LinearElements(const std::vector<double>& pos, CorotatedElements& out) const;
+	//! M7h: the largest angle (rad) between the last step's element rotations and
+	//! the rotations at the current x (0 outside the corotational model).
+	double RotationLag() const;
 	//! M6 (coupling): called after every accepted step (each part of a halved one)
 	//! with the contact frame of its final Newton solve, the new positions and the
 	//! step length (the cloth solver's collider_reaction port); never changes results.
@@ -439,6 +452,11 @@ private:
 	bool linear_ = false;
 	std::vector<double> linearX0_, linearG0_;
 	BlockMatrix linearK0_;
+	// M7h: the corotational model (the default) and its stiffness at the step's rotations.
+	bool corotated_ = true;
+	CorotatedElements elements_;
+	BlockMatrix rotatedK_;
+	const BlockMatrix& LinearStiffness() const { return corotated_ ? rotatedK_ : linearK0_; }
 	void PenaltyContact(const std::vector<double>& pos, std::vector<double>* gradient, BlockMatrix* hessian, double& energy) const;
 };
 

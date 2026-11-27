@@ -5,7 +5,9 @@ RISE ASCII SCENE 7
 #   Description:    Simulation M7b: rigid bodies in the liquid's pressure solve.  Three bodies are dropped   #
 #                   into a tank 0.8 x 0.6 x 0.5 m filled to 0.3 m: a sphere of density 300 kg/m^3 (floats   #
 #                   high), a cube of 700 (floats low) and a sphere of 2500 (sinks).  `rigid_simulation drop` #
-#                   integrates them and owns their contact with the tank (planes, preview);                 #
+#                   integrates them and owns their contact with the tank (planes, preview) and with each    #
+#                   other (M7h; `drop.body_contact` gives the liquid's own copies the same planes and       #
+#                   body-body contact inside the macro step);                                               #
 #                   `liquid_simulation pool` carries the same bodies as `motion port` and solves their six  #
 #                   degrees of freedom with the liquid in one pressure system.  `simulation_group tank`     #
 #                   makes the liquid the owner of the exchange (`owned pool drop`): per macro step it reads  #
@@ -146,6 +148,7 @@ simulation_group
 	members			drop
 	connect			drop.body_state -> pool.body_state
 	connect			drop.body_mass_properties -> pool.body_mass_properties
+	connect			drop.body_contact -> pool.body_contact
 	connect			pool.body_load -> drop.body_load
 	policy			staggered
 	order			gauss-seidel

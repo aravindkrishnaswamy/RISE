@@ -392,6 +392,158 @@ int main(int argc, char** argv)
 		Check(f.bodies.size() == 1 && Near(f.bodies[0].position[0], 1, 1e-6) && Near(f.bodies[0].position[1], 2, 1e-6) &&
 			Near(f.bodies[0].position[2], 3, 1e-6), "the body starts at the mesh's centroid");
 	}
+	// ---------------------------------------------------------------- H. body-body contact (m6.2, preview)
+	{
+		auto frames = [&](InProcessHost& host, std::int64_t n) {
+			std::vector<TransformFrame> out;
+			for (std::int64_t i = 0; i < n; ++i) {
+				std::shared_ptr<const Bytes> b;
+				TransformFrame f;
+				if (host.Snapshot()->Read(i, "bodies", budget, b, error) == FrameStatus::Ready && DecodeTransforms(*b, budget, f, error)) out.push_back(f);
+			}
+			return out;
+		};
+		auto sphere = [](const char* name, double r, double density, V3 x, V3 v, double e, double mu) {
+			return V::MapValue({{"name", V::String(name)}, {"shape", V::String("sphere")}, {"radius", V::Float(r)}, {"density", V::Float(density)},
+				{"position", Vec3(x[0], x[1], x[2])}, {"velocity", Vec3(v[0], v[1], v[2])}, {"restitution", V::Float(e)}, {"friction", V::Float(mu)}});
+		};
+		// H1: two spheres, elastic (e = 1, no friction), no gravity: head-on against the 1-D formulas, and oblique.
+		for (int oblique = 0; oblique < 2; ++oblique) {
+			const double ra = 0.1, rb = 0.07, rhoA = 800, rhoB = 2000;
+			const V3 va{{1.2, 0, 0}}, vb{{-0.6, 0, 0}};
+			const V params = Bodies({sphere("a", ra, rhoA, {{-0.4, 0, 0}}, va, 1, 0), sphere("b", rb, rhoB, {{0.4, oblique ? 0.09 : 0.0, 0}}, vb, 1, 0)},
+				{{"frames", V::Unsigned(31)}, {"gravity", Vec3(0, 0, 0)}});
+			InProcessHost host(Make());
+			Check(host.Configure(params, EmptySceneInputs(), error) && host.Start(error) && host.StepToIndex(1000, error), "two spheres", error);
+			const auto fs = frames(host, 31);
+			Check(fs.size() == 31, "31 frames");
+			if (fs.size() != 31) continue;
+			const double ma = rhoA*4.0/3*3.14159265358979323846*ra*ra*ra, mb = rhoB*4.0/3*3.14159265358979323846*rb*rb*rb;
+			auto momentum = [&](const TransformFrame& f, int k) { return ma*f.bodies[0].velocity[std::size_t(k)] + mb*f.bodies[1].velocity[std::size_t(k)]; };
+			auto energy = [&](const TransformFrame& f) {
+				double e = 0;
+				for (int k = 0; k < 3; ++k) e += 0.5*ma*f.bodies[0].velocity[std::size_t(k)]*f.bodies[0].velocity[std::size_t(k)] +
+					0.5*mb*f.bodies[1].velocity[std::size_t(k)]*f.bodies[1].velocity[std::size_t(k)];
+				return e;
+			};
+			double dp = 0;
+			for (int k = 0; k < 3; ++k) dp = std::max(dp, std::fabs(momentum(fs.back(), k) - momentum(fs.front(), k)));
+			const double p0 = ma*1.2, e0 = energy(fs.front()), de = std::fabs(energy(fs.back()) - e0)/e0;
+			double gap = 1e9;
+			for (const auto& f : fs) gap = std::min(gap, Norm(Sub(f.bodies[1].position, f.bodies[0].position)) - ra - rb);
+			std::cout << "  two spheres " << (oblique ? "oblique" : "head-on") << ": |dp| " << dp/p0 << " of p0, |dE| / E " << de
+				<< ", least gap " << gap << " m, after: va " << fs.back().bodies[0].velocity[0] << " vb " << fs.back().bodies[1].velocity[0] << "\n";
+			Check(dp < 1e-12*p0 && de < 1e-12, "an elastic sphere collision keeps momentum and energy", std::to_string(dp) + " " + std::to_string(de));
+			Check(fs.back().bodies[1].position[0] - fs.back().bodies[0].position[0] > ra + rb && gap > -0.02, "the spheres separate");
+			if (!oblique) {
+				const double ua = ((ma - mb)*va[0] + 2*mb*vb[0])/(ma + mb), ub = ((mb - ma)*vb[0] + 2*ma*va[0])/(ma + mb);
+				Check(Near(fs.back().bodies[0].velocity[0], ua, 1e-12) && Near(fs.back().bodies[1].velocity[0], ub, 1e-12),
+					"head-on: the 1-D elastic velocities", std::to_string(fs.back().bodies[0].velocity[0]) + " vs " + std::to_string(ua));
+			}
+		}
+		// H2: a stack of three boxes on a floor, at rest for 5 s: no drift, no jitter.
+		{
+			auto box = [](const char* name, double y) {
+				return V::MapValue({{"name", V::String(name)}, {"shape", V::String("box")}, {"size", Vec3(0.2, 0.2, 0.2)}, {"density", V::Float(500)},
+					{"position", Vec3(0, y, 0)}});
+			};
+			for (int nb = 1; nb <= 3; ++nb) {
+			V::Values list{box("b1", 0.1)};
+			if (nb > 1) list.push_back(box("b2", 0.3));
+			if (nb > 2) list.push_back(box("b3", 0.5));
+			const V params = Bodies(list, {{"frames", V::Unsigned(151)},
+				{"planes", V::ArrayValue({V::MapValue({{"point", Vec3(0, 0, 0)}, {"restitution", V::Float(0.5)}, {"friction", V::Float(0.5)}})})}});
+			InProcessHost host(Make());
+			Check(host.Configure(params, EmptySceneInputs(), error) && host.Start(error) && host.StepToIndex(1000, error), "box stack", error);
+			const auto fs = frames(host, 151);
+			// Over the whole run: drift and tilt; after the first second (settled): speeds and the height range.
+			double drift = 0, speed = 0, tilt = 0, sink = 0, lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+			for (std::size_t k = 0; k < fs.size(); ++k)
+				for (std::size_t i = 0; i < std::size_t(nb); ++i) {
+					const auto& b = fs[k].bodies[i];
+					drift = std::max(drift, std::sqrt(b.position[0]*b.position[0] + b.position[2]*b.position[2]));
+					tilt = std::max(tilt, 2*std::acos(std::min(1.0, std::fabs(b.orientation[0]))));
+					sink = std::max(sink, std::fabs(b.position[1] - (0.1 + 0.2*double(i))));
+					if (k < 30) continue;
+					speed = std::max(speed, Norm(b.velocity) + 0.1*Norm(b.angularVelocity));
+					lo[i] = std::min(lo[i], b.position[1]); hi[i] = std::max(hi[i], b.position[1]);
+				}
+			double range = 0;
+			for (int i = 0; i < nb; ++i) range = std::max(range, hi[i] - lo[i]);
+			std::cout << "  box stack of " << nb << ", 5 s: horizontal drift " << drift << " m, tilt " << tilt << " rad, height change " << sink
+				<< " m; after 1 s: largest speed " << speed << " m/s, height range " << range << " m\n";
+			Check(fs.size() == 151 && drift < 1e-5 && tilt < 1e-4 && sink < 1e-3 && speed < 1e-3 && range < 1e-4,
+				"a box stack rests without drift or jitter", std::to_string(drift) + " " + std::to_string(tilt) + " " + std::to_string(sink) + " " +
+				std::to_string(speed) + " " + std::to_string(range));
+			}
+		}
+		// H2b: a stack and a sphere dropped onto it: stop / restore and a twin equal the uninterrupted run.
+		{
+			auto box = [](const char* name, double y) {
+				return V::MapValue({{"name", V::String(name)}, {"shape", V::String("box")}, {"size", Vec3(0.2, 0.2, 0.2)}, {"density", V::Float(500)},
+					{"position", Vec3(0, y, 0)}});
+			};
+			const V params = Bodies({box("b1", 0.1), box("b2", 0.3), sphere("s", 0.06, 2000, {{0.05, 0.8, 0.02}}, {{0, 0, 0}}, 0.5, 0.5),
+				V::MapValue({{"name", V::String("c")}, {"shape", V::String("cylinder")}, {"radius", V::Float(0.05)}, {"height", V::Float(0.15)},
+					{"position", Vec3(-0.04, 1.1, 0)}, {"orientation", V::ArrayValue({V::Float(1), V::Float(0.3), V::Float(0), V::Float(0)})}})},
+				{{"frames", V::Unsigned(40)},
+				{"planes", V::ArrayValue({V::MapValue({{"point", Vec3(0, 0, 0)}, {"restitution", V::Float(0.5)}, {"friction", V::Float(0.5)}})})}});
+			InProcessHost ref(Make()), twin(Make()), a(Make()), b(Make());
+			Check(ref.Configure(params, EmptySceneInputs(), error) && ref.Start(error) && ref.StepToIndex(1000, error), "contact run", error);
+			Check(twin.Configure(params, EmptySceneInputs(), error) && twin.Start(error) && twin.StepToIndex(1000, error), "contact twin", error);
+			Check(a.Configure(params, EmptySceneInputs(), error) && a.Start(error) && a.StepToIndex(17, error), "contact partial", error);
+			InProcessHost::Checkpoint cp;
+			Check(a.SaveCheckpoint(cp, error) && b.Configure(params, EmptySceneInputs(), error) && b.RestoreCheckpoint(cp, error) &&
+				b.StepToIndex(1000, error), "contact restore", error);
+			auto merged = Digests(*a.Snapshot());
+			for (const auto& e : Digests(*b.Snapshot())) merged[e.first] = e.second;
+			const auto fs = frames(ref, 40);
+			// The deepest the sphere's surface goes into either box (bodies in name order: b1, b2, c, s).
+			Shape bs;
+			bs.size = {{0.2, 0.2, 0.2}};
+			const ContactShape cb = MakeContactShape(bs, 0.5, 0.5);
+			double least = 1e9;
+			for (const auto& f : fs)
+				for (int k = 0; k < 2; ++k) {
+					const auto& b = f.bodies[std::size_t(k)];
+					const Quat q{{b.orientation[0], b.orientation[1], b.orientation[2], b.orientation[3]}};
+					V3 n;
+					least = std::min(least, ShapeDistance(cb, ApplyT(QMatrix(q), Sub(f.bodies[3].position, b.position)), n) - 0.06);
+				}
+			std::cout << "  sphere and cylinder onto a stack: the sphere's least clearance to the boxes " << least << " m\n";
+			Check(Digests(*twin.Snapshot()) == Digests(*ref.Snapshot()) && merged == Digests(*ref.Snapshot()),
+				"with body-body contact: deterministic, and stop / restore equals the uninterrupted run");
+			Check(least > -0.005, "the sphere does not pass into the stack", std::to_string(least));
+		}
+		// H3: bounding spheres apart: the bytes are those without body-body contact (each body alone).
+		{
+			const V both = Bodies({sphere("a", 0.1, 800, {{-0.5, 1, 0}}, {{0.3, 0, 0}}, 0.5, 0.5), sphere("b", 0.1, 800, {{0.5, 1, 0}}, {{-0.3, 0, 0}}, 0.5, 0.5)},
+				{{"frames", V::Unsigned(10)}});
+			InProcessHost host(Make());
+			Check(host.Configure(both, EmptySceneInputs(), error) && host.Start(error) && host.StepToIndex(1000, error), "apart", error);
+			const auto fs = frames(host, 10);
+			double least = 1e9;
+			for (const auto& f : fs) least = std::min(least, Norm(Sub(f.bodies[1].position, f.bodies[0].position)));
+			Check(fs.size() == 10 && least > 0.2 && Near(fs.back().bodies[0].velocity[0], 0.3, 1e-15), "bodies that never meet are not touched by the contact");
+		}
+		// H4: a mesh body among others needs `contact false`.
+		SolverDescription d;
+		Shape cube;
+		cube.size = {{0.2, 0.2, 0.2}};
+		std::vector<double> cv;
+		std::vector<std::uint32_t> ct;
+		ShapeSurface(cube, cv, ct);
+		V::Values vs, ts;
+		for (double x : cv) vs.push_back(V::Float(x));
+		for (std::uint32_t k : ct) ts.push_back(V::Unsigned(k));
+		V::Members mesh{{"name", V::String("m")}, {"shape", V::String("mesh")}, {"vertices", V::ArrayValue(vs)}, {"triangles", V::ArrayValue(ts)},
+			{"position", Vec3(0, 2, 0)}};
+		Check(!Make()->Configure(Bodies({V::MapValue(mesh), sphere("s", 0.1, 800, {{0, 0, 0}}, {{0, 0, 0}}, 0.5, 0.5)}), EmptySceneInputs(), d, error) &&
+			error.find("contact false") != std::string::npos, "a mesh body among others without contact false is refused", error);
+		mesh.emplace_back("contact", V::Bool(false));
+		Check(Make()->Configure(Bodies({V::MapValue(mesh), sphere("s", 0.1, 800, {{0, 0, 0}}, {{0, 0, 0}}, 0.5, 0.5)}), EmptySceneInputs(), d, error),
+			"a mesh body with contact false configures", error);
+	}
 	// ---------------------------------------------------------------- G. refusals
 	{
 		SolverDescription d;

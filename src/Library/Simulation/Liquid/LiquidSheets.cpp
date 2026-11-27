@@ -64,7 +64,8 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 	std::vector<std::pair<std::uint32_t, std::uint32_t>> work;   // (sheet, triangle)
 	for (std::size_t s = 0; s < sheets.size(); ++s)
 		if (!sheets[s].x.empty())
-			for (std::uint32_t t = 0; 3*std::size_t(t) < sheets[s].triangles.size(); ++t) work.emplace_back(std::uint32_t(s), t);
+			for (std::uint32_t t = 0; 3*std::size_t(t) < sheets[s].triangles.size(); ++t)
+				if (sheets[s].open.empty() || !sheets[s].open[t]) work.emplace_back(std::uint32_t(s), t);
 	if (work.empty()) return;
 	constexpr std::size_t Grain = 256;
 	const std::size_t chunks = Cloth::Chunks(work.size(), Grain);
@@ -316,11 +317,12 @@ bool SheetDynamics::Prepare(double dt, const std::vector<double>& v, const std::
 	Cloth::BlockMatrix& s = matrix;
 	s.Zero();
 	const double ks = dt*dampingStiffness + dt*dt;
+	const Cloth::BlockMatrix& K = Stiffness();
 	if (withK)
 		for (std::uint32_t i = 0; i < n; ++i)
-			for (std::size_t k = stiffness.RowStart()[i]; k < stiffness.RowStart()[i + 1]; ++k) {
-				double* b = s.Block(s.Slot(i, stiffness.Column()[k]));
-				const double* kb = stiffness.Block(k);
+			for (std::size_t k = K.RowStart()[i]; k < K.RowStart()[i + 1]; ++k) {
+				double* b = s.Block(s.Slot(i, K.Column()[k]));
+				const double* kb = K.Block(k);
 				for (int r = 0; r < 9; ++r) b[r] += ks*kb[r];
 			}
 	for (std::uint32_t q = 0; q < n; ++q) {
@@ -373,12 +375,40 @@ void SheetDynamics::Solve(const std::vector<double>& r, std::vector<double>& out
 	for (std::size_t q = 0; q < fixed.size(); ++q) if (fixed[q]) out[3*q] = out[3*q + 1] = out[3*q + 2] = 0;
 }
 
+void SheetDynamics::Rotate(double dt, const std::vector<double>& v)
+{
+	if (!Corotated()) return;
+	std::vector<double> p(xe.size());
+	for (std::size_t k = 0; k < p.size(); ++k) p[k] = xe[k] + dt*v[k];
+	elements.Rotate(x0, p);
+	if (rotated.Blocks() != stiffness.Blocks()) rotated = stiffness;
+	elements.Assemble(rotated);
+}
+
+void SheetDynamics::ResetElements()
+{
+	if (elements.Empty()) { origin.clear(); return; }
+	for (std::size_t e = 0; e < elements.Size(); ++e) {
+		double* r = &elements.rotation[9*e];
+		for (int k = 0; k < 9; ++k) r[k] = k % 4 == 0 ? 1.0 : 0.0;
+	}
+	elements.Gradient(x0, x0, origin);
+	rotated = stiffness;
+	elements.Assemble(rotated);
+}
+
 void SheetDynamics::Rhs(double dt, const std::vector<double>& v, std::vector<double>& out) const
 {
 	const std::size_t n = mass.size();
 	std::vector<double> d(3*n), kd;
-	for (std::size_t k = 0; k < 3*n; ++k) d[k] = xe[k] - x0[k];
-	if (WithStiffness()) stiffness.Multiply(d, kd);
+	if (Corotated()) {
+		// m7h: the corotational model's elastic gradient at xe less its value at x0 (force holds -origin).
+		elements.Gradient(x0, xe, kd);
+		for (std::size_t k = 0; k < 3*n; ++k) kd[k] -= origin[k];
+	} else {
+		for (std::size_t k = 0; k < 3*n; ++k) d[k] = xe[k] - x0[k];
+		if (WithStiffness()) stiffness.Multiply(d, kd);
+	}
 	out.assign(3*n, 0.0);
 	for (std::size_t q = 0; q < n; ++q)
 		for (int a = 0; a < 3; ++a) {
@@ -405,7 +435,7 @@ void SheetDynamics::ApplyS(double dt, const std::vector<double>& V, std::vector<
 {
 	const std::size_t n = mass.size();
 	std::vector<double> kv;
-	if (WithStiffness()) stiffness.Multiply(V, kv);
+	if (WithStiffness()) Stiffness().Multiply(V, kv);
 	out.assign(3*n, 0.0);
 	const double ks = dt*dampingStiffness + dt*dt;
 	for (std::size_t q = 0; q < n; ++q)

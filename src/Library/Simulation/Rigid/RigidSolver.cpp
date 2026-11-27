@@ -28,13 +28,21 @@ using V = RISECBOR64::Value;
 using namespace Rigid;
 
 constexpr std::size_t CodecBudget = std::size_t(64) << 20;
-constexpr const char* SolverVersion = "m6.1";
+// m6.2 (M7h): body-body contact (ResolvePairs in RigidBody.h) and the contact_planes port; bakes in
+// which no two bodies' bounding spheres meet publish the frames of m6.1.
+constexpr const char* SolverVersion = "m6.2";
 constexpr const char* StateFormat = "rigid.bodies.state.v1";
 constexpr const char* StatePort = "body_state";
 constexpr const char* LoadPort = "body_load";
 // M7 prerequisites: each body's constant mass properties, for a partner that
 // solves the body's motion inside its own step (an owned implicit exchange).
 constexpr const char* MassPort = "body_mass_properties";
+// M7h: the contact planes and the bodies' contact parameters, for a partner that
+// moves its own copies of the bodies inside its step (liquid.mac): field.v1 over
+// the planes then the bodies (kind 0 plane: point, normal, restitution,
+// friction; kind 1 body, in body_state's order: contact flag, restitution,
+// friction).  Offered once, at the start time, with body_mass_properties.
+constexpr const char* ContactPort = "body_contact";
 constexpr const char* Output = "bodies";
 constexpr double Pi = 3.14159265358979323846;
 
@@ -179,6 +187,8 @@ bool UnpackDoubles(const V* value, std::size_t count, std::vector<double>& v, bo
 struct BodySpec {
 	Body initial;
 	Shape shape;
+	ContactShape contact;                   // M7h: body-body contact (None: a mesh, or `contact` false)
+	bool contactOff = false;                // M7h: `contact` false
 	std::vector<double> surface;            // body frame
 	std::vector<std::uint32_t> triangles;
 };
@@ -254,6 +264,17 @@ bool ParseBody(const V& item, const ISceneInputs& inputs, std::vector<std::strin
 	}
 	const V3 velocity = r.Vector<3>("velocity", {{0, 0, 0}});
 	const V3 omega = r.Vector<3>("angular_velocity", {{0, 0, 0}});
+	// M7h: body-body contact parameters (written back only when given: other bodies keep m6.1's
+	// effective parameters).  Defaults are the planes' (restitution 0.5, friction 0.5).
+	const double restitution = r.Has("restitution") ? r.Real("restitution", 0.5) : 0.5;
+	const double friction = r.Has("friction") ? r.Real("friction", 0.5) : 0.5;
+	bool contact = true;
+	if (const V* c = r.Raw("contact")) {
+		if (c->GetType() != V::Boolean) return r.Bad("contact must be true or false");
+		contact = c->GetBoolean();
+		r.out.emplace_back("contact", V::Bool(contact));
+	}
+	if (!(restitution >= 0 && restitution <= 1) || !(friction >= 0)) return r.Bad("restitution must be in [0, 1] and friction nonnegative");
 	if (!r.Finish()) return false;
 	MassProperties mp;
 	if (!ShapeMass(s, 1.0, mp, error)) return Fail(error, "body " + name + ": " + error);
@@ -290,6 +311,9 @@ bool ParseBody(const V& item, const ISceneInputs& inputs, std::vector<std::strin
 	toBody(spec.surface);
 	ShapeSupportPoints(s, b.support);
 	toBody(b.support);
+	spec.contact = MakeContactShape(s, restitution, friction);
+	if (!contact) spec.contact.type = ContactShape::Type::None;
+	spec.contactOff = !contact;
 	effective = V::MapValue(r.out);
 	return true;
 }
@@ -519,12 +543,16 @@ private:
 	}
 	bool Encode(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const;
 	bool OfferMassProperties(IPortExchange* ports, std::string& error) const;   // M7 prerequisites
+	bool OfferContact(IPortExchange* ports, std::string& error) const;          // M7h
+	std::string contactDomain_;
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
 	void Substep(double h);
 
 	bool configured_ = false, started_ = false;
 	std::vector<BodySpec> specs_;
 	std::vector<Plane> planes_;
+	std::vector<ContactShape> shapes_;          // M7h: per body, its body-body contact geometry
+	bool pairs_ = false;                        // M7h: two or more bodies take body-body contact
 	V3 gravity_{{0, -9.81, 0}};
 	std::uint64_t count_ = 121, substeps_ = 8;
 	double interval_ = 1.0/30;
@@ -591,13 +619,30 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	if (!p.Finish()) return false;
 	if (!(rate > 0)) return Fail(error, "frame_rate must be positive");
 	candidate.effectiveParameters = V::MapValue(p.out);
+	// M7h: body-body contact for the analytic shapes.  A mesh body takes none: there is no
+	// mesh distance in this solver, so a mesh body among others is refused unless it says `contact false`.
+	std::size_t contactBodies = 0;
+	for (const BodySpec& b : sorted) if (b.contact.type != ContactShape::Type::None) ++contactBodies;
+	for (const BodySpec& b : sorted)
+		if (b.shape.type == Shape::Type::Mesh && sorted.size() > 1 && !b.contactOff) {
+			return Fail(error, "body " + b.initial.name + " is a mesh: body-body contact covers spheres, boxes and cylinders only (no mesh "
+				"distance in rigid.bodies); give the mesh body `contact false` (it then passes through the other bodies) or use an analytic shape");
+		}
 	specs_ = std::move(sorted);
 	planes_ = planes;
+	shapes_.clear();
+	for (const BodySpec& b : specs_) shapes_.push_back(b.contact);
+	pairs_ = contactBodies > 1;
 	gravity_ = gravity;
 	count_ = frames; substeps_ = substeps; interval_ = 1/rate;
 	std::vector<std::string> names;
 	for (const auto& s : specs_) names.push_back(s.initial.name);
 	domain_ = TransformBodyDomain(names);
+	{
+		Bytes encoded;
+		RISECBOR64::Encode(V::ArrayValue({V::String("rigid.body_contact.v1"), V::String(domain_), V::Unsigned(planes_.size())}), encoded, nullptr);
+		contactDomain_ = RISECBOR64::SHA256Hex(encoded);
+	}
 	configured_ = true;
 
 	candidate.solverId = RigidSolverId;
@@ -635,7 +680,11 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		// M7 prerequisites (additive): offered once, at the start time; constant.
 		{MassPort, "rigid body mass properties", "kg", "field.v1", true, "",
 			{{"center_of_mass", "position", "m", 3}, {"external_force", "force", "N", 3},
-			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, domain_}};
+			 {"inertia", "moment of inertia", "kg m^2", 9}, {"mass", "mass", "kg", 1}}, domain_},
+		// M7h (additive): offered once, at the start time; constant.
+		{ContactPort, "body contact", "1", "field.v1", true, "",
+			{{"contact", "flag", "1", 1}, {"friction", "friction", "1", 1}, {"kind", "index", "1", 1}, {"normal", "normal", "1", 3},
+			 {"point", "position", "m", 3}, {"restitution", "restitution", "1", 1}}, contactDomain_}};
 	auto& caps = candidate.capabilities;
 	caps.backends = {{"cpu", BackendStatus::Supported, true, "portable C++17, single-threaded; built and tested on macOS (with and without Metal), "
 		"Windows and Android builds not yet compiled"}};
@@ -645,16 +694,22 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 	caps.backend = "cpu";
 	caps.memoryEstimate = (std::uint64_t(1) << 20) + specs_.size()*4096;
 	caps.costEstimate = 1e-4*static_cast<double>(specs_.size())*static_cast<double>(substeps_)*rate;
-	const bool contact = !planes_.empty();
+	const bool contact = !planes_.empty() || pairs_;
 	candidate.evidence.fidelity = contact ? "preview" : "predictive";
 	caps.earnableFidelity = contact ? std::vector<std::string>{"preview"} : std::vector<std::string>{"preview", "predictive"};
-	if (contact) caps.fidelityLimit = "plane contact is an impulse model with restitution and Coulomb friction, not validated";
+	if (contact) caps.fidelityLimit = pairs_ ? "plane and body-body contact are impulse models with restitution and Coulomb friction, not validated" :
+		"plane contact is an impulse model with restitution and Coulomb friction, not validated";
 	{
 		std::vector<std::string> shapes;
 		for (const auto& s : specs_) shapes.push_back(ShapeName(s.shape.type));
 		std::sort(shapes.begin(), shapes.end());
 		shapes.erase(std::unique(shapes.begin(), shapes.end()), shapes.end());
-		candidate.evidence.conditions = {{"contact", {contact ? "plane-impulse" : "none"}},
+		std::vector<std::string> kinds;
+		if (!planes_.empty()) kinds.push_back("plane-impulse");
+		if (pairs_) kinds.push_back("body-impulse");
+		if (kinds.empty()) kinds.push_back("none");
+		std::sort(kinds.begin(), kinds.end());
+		candidate.evidence.conditions = {{"contact", kinds},
 			{"integrator", {"kick-drift-kick-splitting"}}, {"shape", shapes}};
 		candidate.evidence.scope = "Free rigid bodies (no joints, no body-body contact) integrated by kick-drift-kick with "
 			"the symplectic principal-axis splitting at the configured substep, under gravity and loads held over each "
@@ -663,7 +718,10 @@ bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			"and does not cover plane contact, joints or body-body contact.";
 	}
 	candidate.evidence.cases = ComputeEvidence(interval_/static_cast<double>(substeps_));
-	if (contact) candidate.notes.push_back("plane contact: sequential impulses with restitution and Coulomb friction (preview)");
+	if (!planes_.empty()) candidate.notes.push_back("plane contact: sequential impulses with restitution and Coulomb friction (preview)");
+	if (pairs_) candidate.notes.push_back("body-body contact (spheres, boxes, cylinders; m6.2): sequential impulses at sampled points (box corners and "
+		"edge midpoints, cylinder rims, sphere centres), restitution min(e_a, e_b), friction sqrt(mu_a mu_b) (preview; edge-edge contact between "
+		"the samples is not detected)");
 	d = std::move(candidate);
 	return true;
 }
@@ -701,7 +759,36 @@ bool RigidSolver::OfferMassProperties(IPortExchange* ports, std::string& error) 
 	f.channels = {com, external, inertia, mass};
 	auto bytes = std::make_shared<Bytes>();
 	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
-	return ports->Offer(MassPort, 0, bytes, error);
+	return ports->Offer(MassPort, 0, bytes, error) && OfferContact(ports, error);
+}
+
+bool RigidSolver::OfferContact(IPortExchange* ports, std::string& error) const
+{
+	FieldFrame f;
+	f.domain = contactDomain_;
+	f.count = static_cast<std::uint32_t>(planes_.size() + s_.bodies.size());
+	FieldChannel on{"contact", "1", 1, {}}, mu{"friction", "1", 1, {}}, kind{"kind", "1", 1, {}}, normal{"normal", "1", 3, {}},
+		point{"point", "m", 3, {}}, e{"restitution", "1", 1, {}};
+	const auto bits = [](double x) { const float v = static_cast<float>(x); std::uint32_t b; std::memcpy(&b, &v, 4); return b; };
+	for (const Plane& p : planes_) {
+		on.values.push_back(bits(1));
+		mu.values.push_back(bits(p.friction));
+		kind.values.push_back(bits(0));
+		for (int k = 0; k < 3; ++k) { normal.values.push_back(bits(p.normal[std::size_t(k)])); point.values.push_back(bits(p.point[std::size_t(k)])); }
+		e.values.push_back(bits(p.restitution));
+	}
+	for (std::size_t i = 0; i < s_.bodies.size(); ++i) {
+		const ContactShape& c = shapes_[i];
+		on.values.push_back(bits(c.type == ContactShape::Type::None ? 0 : 1));
+		mu.values.push_back(bits(c.friction));
+		kind.values.push_back(bits(1));
+		for (int k = 0; k < 3; ++k) { normal.values.push_back(bits(0)); point.values.push_back(bits(0)); }
+		e.values.push_back(bits(c.restitution));
+	}
+	f.channels = {on, mu, kind, normal, point, e};
+	auto bytes = std::make_shared<Bytes>();
+	if (!EncodeField(f, CodecBudget, *bytes, error)) return false;
+	return ports->Offer(ContactPort, 0, bytes, error);
 }
 
 bool RigidSolver::Encode(double time, std::shared_ptr<const Bytes>& payload, std::string& error) const
@@ -761,6 +848,8 @@ void RigidSolver::Substep(double h)
 		StepBody(s_.bodies[i], load, gravity_, h);
 		if (!planes_.empty()) ResolvePlanes(s_.bodies[i], planes_, gravity_, h);
 	}
+	// M7h: body-body contact (nothing happens, bit for bit, while no two bounding spheres overlap).
+	if (pairs_ && PairsNear(s_.bodies, shapes_)) ResolvePairs(s_.bodies, shapes_, planes_, gravity_, h);
 }
 
 bool RigidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPortExchange* ports, IProgress* progress,

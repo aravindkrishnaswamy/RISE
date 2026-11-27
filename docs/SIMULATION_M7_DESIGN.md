@@ -67,7 +67,14 @@ solids from scratch and gives no smooth surface); material-point and lattice met
   keeps no liquid-like values below the sheet); a light flap's fast motion came from the face liquid driving the
   sheet at 1/n_a times its tangential speed and from load across an air gap (both fixed); a through-sheet measure is
   reported. Thin layers on a sheet stay under-resolved below about 4.8 cells (sheet-specific, located, not fixed);
-  rigid contact inside liquid stays preview (no body–body contact).*
+  rigid contact inside liquid stays preview (no body–body contact).* *M7h (2026-11-26,
+  [results](SIMULATION_M7H_RESULTS.md); preview): the cloth's response inside a macro step is corotational (each
+  element's g0 and K0 turned with the element, SPD, shared by the cloth and the liquid's copy through
+  `surface_elements`): a sheet spinning at 10 rad/s with a 1/30 s macro step is stretched 8.5e-5 (m7g 5.4e-2, the
+  nonlinear model 8.4e-5), the catch demo's indicator is 0.54%; the wave's indicator still warns, from the free edge
+  (located, coverage design stated, not built). Thin layers on a sheet unchanged. `rigid.bodies` m6.2 has body–body
+  contact (spheres, boxes, cylinders), and the liquid takes its planes and parameters through `body_contact`; a
+  flood-fill watertightness check of pinned sheets is reported. Cut-cell velocity order assessed, not changed.*
 
 ## 3. Outputs
 
@@ -143,4 +150,4 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
    heavier than cloth (measured in §6 of the results); a stable two-way treatment is still the later step. Also in
    M7d: closed-mesh bodies, and the dam break at 256³.* *M7e (2026-11-26; [results](SIMULATION_M7E_RESULTS.md)): the
    implicit coupling of §2, stable for real cloth.* *M7f (2026-11-26; [results](SIMULATION_M7F_RESULTS.md)): sheets
-   that hold liquid on one side no longer leak; a cloth catches and holds a block of water in the demo.* *M7g (2026-11-26; [results](SIMULATION_M7G_RESULTS.md)): second round of sheet defects (§2).*
+   that hold liquid on one side no longer leak; a cloth catches and holds a block of water in the demo.* *M7g (2026-11-26; [results](SIMULATION_M7G_RESULTS.md)): second round of sheet defects (§2).* *M7h (2026-11-26; [results](SIMULATION_M7H_RESULTS.md)): corotational sheet coupling, body–body contact.*

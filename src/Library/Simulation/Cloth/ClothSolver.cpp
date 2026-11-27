@@ -39,7 +39,10 @@ constexpr std::size_t CodecBudget = std::size_t(256) << 20;
 // continuation for moving pins and colliders, cloth-cloth Hessian couplings,
 // `self_friction`); runs without contact, or with analytic shapes and static
 // pins only, give the same frames as m3a.3.
-constexpr const char* SolverVersion = "m3a.4";
+// m3a.5 (M7h): inside a macro step with a partner's steps (liquid.mac's implicit
+// sheets) the linear model is corotational (ClothModel.h BeginLinear), and
+// surface_elements is offered; every other run gives the frames of m3a.4.
+constexpr const char* SolverVersion = "m3a.5";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";
@@ -50,6 +53,14 @@ constexpr const char* StatePort = "surface_state";
 // surface_state (never changes results; nothing reads them unless connected).
 constexpr const char* MechanicsPort = "surface_mechanics";
 constexpr const char* StiffnessPort = "surface_stiffness";
+// M7h: the corotational model's elements about the offered state (field.v1 over
+// the (element, a, b) blocks with a <= b of each element's local Hessian, element
+// order membranes, hinges, rods: the element index, its kind (0 membrane, 1
+// hinge, 2 rod), the global vertices of a and b, the 3x3 block of K_e, and on the
+// diagonal items (a = b) the element's gradient at vertex a).  A partner's copy
+// of the cloth turns each element's response with the element (CorotatedElements
+// in ClothLinearAlgebra.h), as the cloth itself does inside the macro step.
+constexpr const char* ElementsPort = "surface_elements";
 // M7e: the partner's own steps over the held macro step (field.v1 over (step,
 // vertex) pairs, step-major: the impulse on each vertex in each step and the
 // step's segment ordinal within the macro step).  When it is offered the cloth
@@ -896,6 +907,7 @@ private:
 	std::vector<std::uint32_t> materialUV_;   // rest (u, v) per vertex, m, binary32
 	std::string topology_;                    // topology digest: the surface_load domain
 	std::string stiffnessDomain_;             // M7e: the surface_stiffness index space (the Hessian's upper blocks)
+	std::string elementsDomain_;              // M7h: the surface_elements index space (the elements' upper blocks)
 	std::vector<std::shared_ptr<const SceneTrack>> tracks_;
 	double t_ = 0, segStart_ = 0, segTarget_ = 0, heldFor_ = 0;
 	std::int64_t next_ = 0;
@@ -1043,6 +1055,18 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 		Bytes encoded;
 		RISECBOR64::Encode(V::ArrayValue({V::String("cloth.stiffness.v1"), V::String(topology_), V::ArrayValue(pairs)}), encoded, nullptr);
 		stiffnessDomain_ = RISECBOR64::SHA256Hex(encoded);
+		// M7h: the elements' blocks (element, kind, row, column) name surface_elements' index space.
+		CorotatedElements elems;
+		probe.LinearElements(built.initial, elems);
+		V::Values items;
+		for (std::size_t e = 0; e < elems.Size(); ++e) {
+			const CorotatedElements::Element& el = elems.elements[e];
+			for (int a = 0; a < el.count; ++a) for (int b = a; b < el.count; ++b)
+				items.push_back(V::ArrayValue({V::Unsigned(e), V::Unsigned(el.kind), V::Unsigned(el.v[a]), V::Unsigned(el.v[b])}));
+		}
+		Bytes encodedElements;
+		RISECBOR64::Encode(V::ArrayValue({V::String("cloth.elements.v1"), V::String(topology_), V::ArrayValue(items)}), encodedElements, nullptr);
+		elementsDomain_ = RISECBOR64::SHA256Hex(encodedElements);
 	}
 	staticReady_ = false;   // the static record is rebuilt for this configuration on first use
 	tracks_ = scene.tracks;
@@ -1079,6 +1103,9 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			 {"force", "force", "N", 3}, {"mass", "mass", "kg", 1}}, topology_},
 		{StiffnessPort, "surface stiffness", "N/m", "field.v1", true, "",
 			{{"column", "index", "1", 1}, {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, stiffnessDomain_},
+		{ElementsPort, "surface elements", "N/m", "field.v1", true, "",
+			{{"column", "index", "1", 1}, {"element", "index", "1", 1}, {"gradient", "force", "N", 3}, {"kind", "index", "1", 1},
+			 {"row", "index", "1", 1}, {"stiffness", "stiffness", "N/m", 9}}, elementsDomain_},
 		{StepsPort, "surface load steps", "N s", "field.v1", false, "",
 			{{"impulse", "impulse", "N s", 3}, {"segment", "index", "1", 1}}, ""}};
 	// M6: each port-driven collider accepts its surface; the reactions on all of them are offered.
@@ -1368,7 +1395,30 @@ bool ClothSolver::OfferMechanics(double time, IPortExchange& ports, std::string&
 	s.count = static_cast<std::uint32_t>(row.values.size());
 	s.channels = {col, row, st};
 	auto sb = std::make_shared<Bytes>();
-	return EncodeField(s, CodecBudget, *sb, error) && ports.Offer(StiffnessPort, time, std::move(sb), error);
+	if (!EncodeField(s, CodecBudget, *sb, error) || !ports.Offer(StiffnessPort, time, std::move(sb), error)) return false;
+	// M7h: the corotational model's elements at x (the values the cloth's own linear model takes).
+	CorotatedElements elems;
+	system_.LinearElements(system_.x, elems);
+	FieldFrame ef;
+	ef.domain = elementsDomain_;
+	FieldChannel ecol{"column", "1", 1, {}}, eel{"element", "1", 1, {}}, egr{"gradient", "N", 3, {}}, eki{"kind", "1", 1, {}},
+		erow{"row", "1", 1, {}}, est{"stiffness", "N/m", 9, {}};
+	for (std::size_t e = 0; e < elems.Size(); ++e) {
+		const CorotatedElements::Element& el = elems.elements[e];
+		const double* ke = &elems.stiffness[144*e];
+		for (int a = 0; a < el.count; ++a) for (int b = a; b < el.count; ++b) {
+			ecol.values.push_back(F32(double(el.v[b])));
+			eel.values.push_back(F32(double(e)));
+			eki.values.push_back(F32(double(el.kind)));
+			erow.values.push_back(F32(double(el.v[a])));
+			for (int i = 0; i < 3; ++i) egr.values.push_back(a == b ? F32(elems.gradient[12*e + std::size_t(3*a + i)]) : F32(0.0));
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) est.values.push_back(F32(ke[(3*a + i)*12 + 3*b + j]));
+		}
+	}
+	ef.count = static_cast<std::uint32_t>(erow.values.size());
+	ef.channels = {ecol, eel, egr, eki, erow, est};
+	auto eb = std::make_shared<Bytes>();
+	return EncodeField(ef, CodecBudget, *eb, error) && ports.Offer(ElementsPort, time, std::move(eb), error);
 }
 
 // surface_load: field.v1 over the sheet's vertices (domain: the sheet's

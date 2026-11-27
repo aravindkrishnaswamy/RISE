@@ -144,7 +144,7 @@ bool TranslateBodyObject(const std::string& text, V& body, std::string& error)
 
 // m7d: `sheet <name> port [port <accepted>] [load_port <offered>] [relaxation w]`
 // (a mesh surface through a port, e.g. a cloth's surface_state; m7e: `coupling
-// implicit` with `mechanics_port`, `stiffness_port`, `steps_port`, `response`) or `sheet <name>
+// implicit` with `mechanics_port`, `stiffness_port`, `steps_port`, `response`; m7h: `elements_port`) or `sheet <name>
 // rect sx sy [divisions nx ny] [at x y z] [orientation w x y z] [velocity vx vy vz]
 // [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` (a prescribed
 // rectangle in its frame's xy plane, normal +z).
@@ -160,11 +160,11 @@ bool TranslateSheet(const std::string& text, V& sheet, std::string& error)
 		m.emplace_back("motion", V::String("port"));
 		while (i < t.size()) {
 			double x = 0;
-			if ((t[i] == "port" || t[i] == "load_port" || t[i] == "mechanics_port" || t[i] == "stiffness_port" || t[i] == "steps_port" ||
+			if ((t[i] == "port" || t[i] == "load_port" || t[i] == "mechanics_port" || t[i] == "stiffness_port" || t[i] == "steps_port" || t[i] == "elements_port" ||
 				t[i] == "coupling" || t[i] == "response") && i + 1 < t.size()) { m.emplace_back(t[i], V::String(t[i + 1])); i += 2; }
 			else if (t[i] == "relaxation" && i + 1 < t.size() && Real(t[i + 1], x)) { m.emplace_back("relaxation", V::Float(x)); i += 2; }
 			else return Fail(error, where + ": unexpected `" + t[i] + "` (port <name> | load_port <name> | relaxation w | coupling implicit|staggered | "
-				"mechanics_port <name> | stiffness_port <name> | steps_port <name> | response stiffness|lumped)");
+				"mechanics_port <name> | stiffness_port <name> | steps_port <name> | elements_port <name> | response stiffness|lumped)");
 		}
 	} else if (t[1] == "rect" && Numbers(t, 2, 2, v)) {
 		m.emplace_back("size", v);

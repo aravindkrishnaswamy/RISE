@@ -48,13 +48,14 @@ bool Numbers(const std::vector<std::string>& t, std::size_t at, std::size_t n, V
 }
 
 // The options after a body's shape: mass m | density d | at x y z |
-// orientation w x y z | velocity vx vy vz | spin wx wy wz.
+// orientation w x y z | velocity vx vy vz | spin wx wy wz; m7h (body-body
+// contact): restitution e | friction mu | contact on|off.
 bool Options(const std::vector<std::string>& t, std::size_t i, bool scene, V::Members& m, const std::string& where, std::string& error)
 {
 	while (i < t.size()) {
 		const std::string& k = t[i];
 		V v;
-		if ((k == "mass" || k == "density") && i + 1 < t.size()) {
+		if ((k == "mass" || k == "density" || k == "restitution" || k == "friction") && i + 1 < t.size()) {
 			double x = 0;
 			if (!Real(t[i + 1], x)) return Fail(error, where + ": " + k + " takes a number");
 			m.emplace_back(k, V::Float(x));
@@ -63,8 +64,10 @@ bool Options(const std::vector<std::string>& t, std::size_t i, bool scene, V::Me
 		else if (k == "orientation" && !scene && Numbers(t, i + 1, 4, v)) { m.emplace_back("orientation", v); i += 5; }
 		else if (k == "velocity" && Numbers(t, i + 1, 3, v)) { m.emplace_back("velocity", v); i += 4; }
 		else if (k == "spin" && Numbers(t, i + 1, 3, v)) { m.emplace_back("angular_velocity", v); i += 4; }
+		else if (k == "contact" && i + 1 < t.size() && (t[i + 1] == "on" || t[i + 1] == "off")) { m.emplace_back("contact", V::Bool(t[i + 1] == "on")); i += 2; }
 		else return Fail(error, where + ": unexpected `" + k + "` (mass m | density d | at x y z | orientation w x y z | "
-			"velocity vx vy vz | spin wx wy wz" + (scene ? "; a scene-object body takes its pose from the object" : "") + ")");
+			"velocity vx vy vz | spin wx wy wz | restitution e | friction mu | contact on|off" +
+			(scene ? "; a scene-object body takes its pose from the object" : "") + ")");
 	}
 	return true;
 }
@@ -151,9 +154,11 @@ ParameterSchema Build()
 		f.name = name; f.kind = SchemaChunkField::Kind::Text; f.repeatable = true; f.doc = doc;
 	};
 	F("body", "A body: `<name> box sx sy sz | sphere r | cylinder r h` (metres, cylinder axis z) then any of `mass m` | "
-		"`density d` (kg/m^3, default 1000) | `at x y z` | `orientation w x y z` | `velocity vx vy vz` | `spin wx wy wz` (rad/s, world)");
+		"`density d` (kg/m^3, default 1000) | `at x y z` | `orientation w x y z` | `velocity vx vy vz` | `spin wx wy wz` (rad/s, world) | "
+		"`restitution e` | `friction mu` (body-body contact, defaults 0.5) | `contact on|off`");
 	F("body_object", "A body made from a scene object's geometry (closed mesh, world space at t = 0; the pose is its centroid "
-		"and principal axes): `<object> [mass m | density d] [velocity vx vy vz] [spin wx wy wz]`; the body is named after the object");
+		"and principal axes): `<object> [mass m | density d] [velocity vx vy vz] [spin wx wy wz] [contact off]`; the body is named after the "
+		"object (a mesh body takes no body-body contact: among other bodies it needs `contact off`)");
 	F("plane", "A static plane the bodies bounce on (impulse contact, preview): `px py pz nx ny nz [restitution e] [friction mu]`");
 	s.outputs = {{"bodies", "transform.v1", "Every body's position, orientation, velocity and angular velocity"}};
 	s.translate = Translate;

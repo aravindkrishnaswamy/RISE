@@ -63,6 +63,7 @@ struct FlapCase {
 	int substeps = 8;          // cloth steps per frame interval
 	std::string integrator = "bdf2";
 	bool steps = true;         // connect the liquid's steps (the cloth takes them)
+	bool elements = true;      // m7h: connect the cloth's surface_elements (the corotational model)
 	bool dam = false;          // a dam-break column instead of still water
 	unsigned liquidThreads = 8, clothThreads = 4;
 	std::vector<std::string> order{"pool", "flap"};
@@ -77,6 +78,7 @@ struct FlapResult {
 	std::vector<double> loads;   // per macro step: the flap's total x force (N)
 	std::vector<double> meanVy, meanY;   // per macro step: the cloth's mean vertical velocity and height at the step's start
 	double pcg = 0;              // mean PCG iterations per liquid step
+	double maxStrain = 0;        // m7h: the largest |edge length / first served length - 1| over the run (macro starts)
 };
 
 std::unique_ptr<SimulationGroup> FlapGroupUnstarted(const FlapCase& c, std::string& error);
@@ -138,6 +140,7 @@ std::unique_ptr<SimulationGroup> FlapGroupUnstarted(const FlapCase& c, std::stri
 	if (ok && c.coupling == "implicit")
 		ok = g->Connect({"flap", "surface_mechanics", "pool", "sheet_mechanics"}, error) &&
 			g->Connect({"flap", "surface_stiffness", "pool", "sheet_stiffness"}, error) &&
+			(!c.elements || g->Connect({"flap", "surface_elements", "pool", "sheet_elements"}, error)) &&
 			(!c.steps || g->Connect({"pool", "sheet_load_steps", "flap", "surface_load_steps"}, error));
 	ok = ok && g->Configure(p, EmptySceneInputs(), error);
 	if (!ok) g.reset();
@@ -152,6 +155,7 @@ FlapResult RunFlap(const FlapCase& c)
 	if (!g) return r;
 	// Connections 0 (state to the liquid) and 1 (load to the cloth).
 	std::string e;
+	std::vector<double> restEdges;
 	while (!g->Finished() && g->Time() < c.T - 1e-12) {
 		if (!g->StepMacro(e)) { r.blew = true; r.blewAt = r.steps + 1; r.error = e; break; }
 		++r.steps;
@@ -168,6 +172,23 @@ FlapResult RunFlap(const FlapCase& c)
 				const StaticPayloadResolver rs = [&](const std::string& dg, std::size_t bud, std::shared_ptr<const Bytes>& out, std::string& w) {
 					return snap->ReadStatic(dg, bud, out, w) == FrameStatus::Ready; };
 				if (DecodeMesh(*s, budget, rs, m, why)) {
+					// m7h: edge strain against the first served state (the unstretched placement).
+					if (restEdges.empty())
+						for (std::size_t t = 0; t + 2 < m.indices.size(); t += 3)
+							for (int k = 0; k < 3; ++k) {
+								const std::uint32_t a = m.indices[t + std::size_t(k)], b = m.indices[t + std::size_t((k + 1) % 3)];
+								double l = 0;
+								for (int d = 0; d < 3; ++d) { const double e = F(m.positions[3*b + std::uint32_t(d)]) - F(m.positions[3*a + std::uint32_t(d)]); l += e*e; }
+								restEdges.push_back(std::sqrt(l));
+							}
+					else
+						for (std::size_t t = 0, q = 0; t + 2 < m.indices.size(); t += 3)
+							for (int k = 0; k < 3; ++k, ++q) {
+								const std::uint32_t a = m.indices[t + std::size_t(k)], b = m.indices[t + std::size_t((k + 1) % 3)];
+								double l = 0;
+								for (int d = 0; d < 3; ++d) { const double e = F(m.positions[3*b + std::uint32_t(d)]) - F(m.positions[3*a + std::uint32_t(d)]); l += e*e; }
+								if (restEdges[q] > 0) r.maxStrain = std::max(r.maxStrain, std::fabs(std::sqrt(l)/restEdges[q] - 1));
+							}
 					double my = 0, mv = 0;
 					for (std::size_t k = 0; k + 2 < m.velocities.size(); k += 3) { mv += F(m.velocities[k + 1]); my += F(m.positions[k + 1]); }
 					r.meanVy.push_back(mv/double(m.velocities.size()/3));
@@ -501,6 +522,7 @@ MembraneRun RunMembrane(const MembraneCase& c)
 			g->Connect({"pool", "sheet_load", "membrane", "surface_load"}, e) &&
 			g->Connect({"membrane", "surface_mechanics", "pool", "sheet_mechanics"}, e) &&
 			g->Connect({"membrane", "surface_stiffness", "pool", "sheet_stiffness"}, e) &&
+			g->Connect({"membrane", "surface_elements", "pool", "sheet_elements"}, e) &&
 			g->Connect({"pool", "sheet_load_steps", "membrane", "surface_load_steps"}, e);
 	}
 	GroupPolicy p;
@@ -1435,7 +1457,8 @@ double MaxEdgeStrain(const Cloth::ClothSystem& cloth, std::uint32_t n)
 	return worst;
 }
 
-double RotatingSheet(double omega, double H, int substeps, bool linear, bool inPlaneAxis, double T)
+// model: 0 the cloth's nonlinear model, 1 m7e's linear model about the macro step's start, 2 m7h's corotational one.
+double RotatingSheet(double omega, double H, int substeps, int model, bool inPlaneAxis, double T)
 {
 	using namespace Cloth;
 	SheetSpec spec;
@@ -1451,6 +1474,8 @@ double RotatingSheet(double omega, double H, int substeps, bool linear, bool inP
 	ClothSystem cloth;
 	cloth.Initialize(sheet, cfg, e);
 	cloth.Reset(0);
+	cloth.SetCorotated(model == 2);
+	const bool linear = model != 0;
 	const std::uint32_t n = cloth.Vertices();
 	std::array<double,3> centre{{0, 0, 0}};
 	for (std::uint32_t q = 0; q < n; ++q) for (int k = 0; k < 3; ++k) centre[std::size_t(k)] += cloth.x[3*q + std::uint32_t(k)]/n;
@@ -1482,9 +1507,10 @@ void RotateProbe(int, char**)
 	for (int axis = 0; axis < 2; ++axis)
 		for (double H : {1.0/120, 1.0/30})
 			for (double omega : {1.0, 3.0, 10.0, 30.0}) {
-				const double lin = RotatingSheet(omega, H, 4, true, axis == 0, 0.5), non = RotatingSheet(omega, H, 4, false, axis == 0, 0.5);
-				std::printf("  %s omega %4.0f rad/s, H 1/%3.0f s (omega H %.3f): linear per macro step %.2e, nonlinear %.2e, (omega H)^2/2 %.2e\n",
-					axis == 0 ? "in-plane axis" : "normal axis  ", omega, 1/H, omega*H, lin, non, 0.5*omega*H*omega*H);
+				const double lin = RotatingSheet(omega, H, 4, 1, axis == 0, 0.5), non = RotatingSheet(omega, H, 4, 0, axis == 0, 0.5),
+					cor = RotatingSheet(omega, H, 4, 2, axis == 0, 0.5);
+				std::printf("  %s omega %4.0f rad/s, H 1/%3.0f s (omega H %.3f): linear per macro step %.2e, corotational %.2e, nonlinear %.2e, "
+					"(omega H)^2/2 %.2e\n", axis == 0 ? "in-plane axis" : "normal axis  ", omega, 1/H, omega*H, lin, cor, non, 0.5*omega*H*omega*H);
 			}
 }
 
@@ -1581,7 +1607,7 @@ void Exchange()
 		FieldFrame f;
 		std::string why;
 		lastI = 0;
-		const auto steps = g->ServedValue(4);
+		const auto steps = g->ServedValue(5);   // m7h: the connection after surface_elements
 		if (steps && DecodeField(*steps, budget, f, why))
 			for (const auto& ch : f.channels) if (ch.name == "impulse") for (std::size_t q = 1; q < ch.values.size(); q += 3) lastI += F(ch.values[q]);
 	}
@@ -1687,7 +1713,7 @@ void Refusals()
 	Check(!s->Configure(liquid(relaxed, 0), EmptySceneInputs(), d, e), "an implicit sheet refuses relaxation", e);
 	Check(!s->Configure(liquid(imp, 1e-3), EmptySceneInputs(), d, e) && e.find("viscosity") != std::string::npos, "sheets with viscosity are refused", e);
 	Check(s->Configure(liquid(imp, 0), EmptySceneInputs(), d, e) && s->Start(e), "an implicit sheet configures", e);
-	Check(d.evidence.fidelity == "preview" && d.capabilities.ownedImplicitPorts.size() == 5, "implicit sheets: preview, five owned ports");
+	Check(d.evidence.fidelity == "preview" && d.capabilities.ownedImplicitPorts.size() == 6, "implicit sheets: preview, six owned ports (m7h: the elements)");
 	class Null final : public IFrameSink {
 	public:
 		bool Publish(std::int64_t, const std::string&, double, std::shared_ptr<const Bytes>, const Bytes&, std::string&) override { return true; }
@@ -1702,6 +1728,13 @@ void Refusals()
 	const FlapResult fr = RunFlap(f);
 	std::printf("  surface_load_steps not connected: %s\n", fr.error.empty() ? "(ran)" : fr.error.c_str());
 	Check(!fr.ok && fr.error.find("surface_load_steps is not connected") != std::string::npos, "an implicit sheet without its steps connected is refused", fr.error);
+	// m7h: and the liquid refuses an implicit sheet whose elements (the cloth's corotational model) are not connected.
+	FlapCase fe;
+	fe.cells = 16; fe.T = 0.1; fe.elements = false;
+	const FlapResult er = RunFlap(fe);
+	std::printf("  surface_elements not connected: %s\n", er.error.empty() ? "(ran)" : er.error.c_str());
+	Check(!er.ok && er.error.find("sheet_elements") != std::string::npos && er.error.find("surface_elements") != std::string::npos,
+		"an implicit sheet without its elements connected is refused", er.error);
 }
 
 // A: the coupled pressure operator with a sheet is symmetric positive definite (dense, 2-D).
@@ -1854,14 +1887,46 @@ void Cup()
 	Check(!breached && beyond == 0 && wet == 0 && std::fabs(total/V0 - 1) < 0.01, "a pinned bag holds its liquid");
 }
 
-// L (m7f): the cloth's linear step within a macro step stretches a rotating sheet by (omega H)^2 / 2.
+// L (m7f): m7e's linear step within a macro step stretches a rotating sheet by (omega H)^2 / 2;
+// m7h: the corotational model does not (below 0.5%, against 5.6% for the linear one).
 void Rotation()
 {
 	std::printf("L: rotation within a macro step\n");
 	const double H = 1.0/30, omega = 10;
-	const double lin = RotatingSheet(omega, H, 4, true, true, 0.1), non = RotatingSheet(omega, H, 4, false, true, 0.1);
-	std::printf("  omega 10 rad/s, H 1/30 s: linear per macro step %.3e, nonlinear %.3e, (omega H)^2 / 2 %.3e\n", lin, non, 0.5*omega*H*omega*H);
+	const double lin = RotatingSheet(omega, H, 4, 1, true, 0.1), non = RotatingSheet(omega, H, 4, 0, true, 0.1);
+	const double cor = RotatingSheet(omega, H, 4, 2, true, 0.1), corN = RotatingSheet(omega, H, 4, 2, false, 0.1);
+	std::printf("  omega 10 rad/s, H 1/30 s: linear per macro step %.3e, corotational %.3e (normal axis %.3e), nonlinear %.3e, (omega H)^2 / 2 %.3e\n",
+		lin, cor, corN, non, 0.5*omega*H*omega*H);
 	Check(std::fabs(lin/(0.5*omega*H*omega*H) - 1) < 0.05 && non < 1e-3, "the linear step's stretch is (omega H)^2 / 2");
+	Check(cor < 5e-3 && corN < 5e-3, "the corotational step's stretch stays below 0.5%");
+}
+
+// M (m7h): the barrier's watertightness check (flood fill) on a sheet pinned all round: 0 holes;
+// with two triangles removed from its middle, the fill reaches the back side through the hole.
+void Watertight()
+{
+	std::printf("M: barrier watertightness (flood fill)\n");
+	long long result[2] = {-2, -2};
+	for (int hole = 0; hole < 2; ++hole) {
+		FreeSheet f;
+		MakeFreeSheet(f, 32, 0.9, 0.3, 8, {{0.5, 0.5, 0.5}}, 10*Pi/180, 0.2);
+		Check(f.ok, "sheet", f.error);
+		if (!f.ok) return;
+		Liquid::LiquidSheet& sh = f.model.sheets[0];
+		for (int j = 0; j <= 8; ++j) for (int i = 0; i <= 8; ++i)
+			if (i == 0 || j == 0 || i == 8 || j == 8) sh.dyn.fixed[std::size_t(i + 9*j)] = 1;
+		if (hole) {
+			// The two triangles of the quad at (4, 4).
+			const std::size_t q = 2*std::size_t(4 + 8*4);
+			// They close no face (the topology, and so the pinned rim, unchanged).
+			sh.open.assign(sh.triangles.size()/3, 0);
+			sh.open[q] = sh.open[q + 1] = 1;
+			f.model.UpdateSheetGeometry();
+		}
+		result[hole] = f.model.SheetBarrierHoles();
+	}
+	std::printf("  pinned all round: %lld holes; with a quad removed (3.75 cm, about a cell): %lld cells reached behind it\n", result[0], result[1]);
+	Check(result[0] == 0 && result[1] > 0, "the flood fill finds no hole in an intact pinned sheet and finds a removed quad");
 }
 
 void Probe(int argc, char** argv)
@@ -1887,9 +1952,9 @@ void Probe(int argc, char** argv)
 		else if (k == "steps") c.steps = v == "1";
 	}
 	const FlapResult r = RunFlap(c);
-	std::printf("density %g cells %d macro 1/%g %s %s: %s steps %d max |v| %.3g m/s (submerged %.3g) roughness %.3g (%.1f s) %s\n", c.density, c.cells,
+	std::printf("density %g cells %d macro 1/%g %s %s: %s steps %d max |v| %.3g m/s (submerged %.3g) roughness %.3g strain %.3g (%.1f s) %s\n", c.density, c.cells,
 		1/c.macro, c.coupling.c_str(), c.response.c_str(), r.ok ? "stable" : "BLEW UP", r.blew ? r.blewAt : r.steps, r.maxSpeed, r.maxWet, r.roughness,
-		r.seconds, r.error.c_str());
+		r.maxStrain, r.seconds, r.error.c_str());
 }
 }
 
@@ -1919,6 +1984,7 @@ int main(int argc, char** argv)
 	LargeSag();
 	Cup();
 	Rotation();
+	Watertight();
 	std::printf("LiquidClothCouplingTest: %.1f s\n", Seconds() - t0);
 	if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	std::printf("LiquidClothCouplingTest: all checks passed\n");

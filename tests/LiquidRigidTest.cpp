@@ -205,7 +205,7 @@ void Description()
 	const double t0 = Seconds();
 	Check(s->Configure(V::MapValue(p), EmptySceneInputs(), d, error), "configure with a body", error);
 	std::printf("  configure with bodies (evidence) %.2f s; version %s\n", Seconds() - t0, d.version.c_str());
-	Check(d.version == "m7g.1", "version m7g.1");
+	Check(d.version == "m7h.1", "version m7h.1");
 	bool bodiesOut = false;
 	for (const auto& o : d.cache.outputs) if (o.name == "bodies" && o.type == TransformCodec) bodiesOut = true;
 	Check(bodiesOut, "the bodies output (transform.v1)");
@@ -243,11 +243,12 @@ void Description()
 		q.emplace_back("bodies", V::ArrayValue({Cylinder("float", 32, FloatY(0.5), {{"motion", V::String("port")}})}));
 		SolverDescription x;
 		Check(s->Configure(V::MapValue(q), EmptySceneInputs(), x, error), "a port body configures", error);
-		Check(x.ports.size() == 3 && x.capabilities.ownedImplicitPorts == std::vector<std::string>{"body_load", "body_mass_properties", "body_state"},
-			"a port body declares body_state, body_mass_properties and body_load as owned implicit ports");
+		// m7h: and the optional body_contact (rigid.bodies' planes and contact parameters).
+		Check(x.ports.size() == 4 && x.capabilities.ownedImplicitPorts == std::vector<std::string>{"body_contact", "body_load", "body_mass_properties", "body_state"},
+			"a port body declares body_state, body_mass_properties, body_load and body_contact as owned implicit ports");
 		V::Members st = Tank(32, 4);
 		st.emplace_back("bodies", V::ArrayValue({Cylinder("float", 32, FloatY(0.5), {{"motion", V::String("port")}, {"coupling", V::String("staggered")}})}));
-		Check(s->Configure(V::MapValue(st), EmptySceneInputs(), x, error) && x.ports.size() == 3 && x.capabilities.ownedImplicitPorts.empty(),
+		Check(s->Configure(V::MapValue(st), EmptySceneInputs(), x, error) && x.ports.size() == 4 && x.capabilities.ownedImplicitPorts.empty(),
 			"a staggered port body declares no owned port");
 		// Outside a group a port body cannot run.
 		Check(s->Start(error), "start the staggered configuration", error);
@@ -628,12 +629,111 @@ void SettleProbe(int argc, char** argv)
 			"sum %.3f N (weight %.3f); %.1f s\n", n, rho, e, T, my/cnt - R, ymax - ymin, std::sqrt(sv/cnt), mF/cnt, 1000*Vs*g, mJ/cnt, (m - 1000*Vs)*g, mF/cnt + mJ/cnt, m*g, wall);
 }
 
+// ---------------------------------------------------------------- m7h: two bodies colliding under water
+// Tank 0.32 m, water to 0.28 m, two spheres (R = 0.035 m, 1500 kg/m^3) at mid depth moving towards
+// each other at 0.4 m/s each, rigid.bodies owned by the liquid (implicit) with a floor plane and,
+// with `contact`, rigid.bodies' body_contact connected (its planes and body-body contact for the
+// liquid's own copies too).  Measured: the least centre distance against 2R, the largest body speed,
+// and the momentum account along x per macro step: sum m dv - H sum F (F the liquid's offered
+// force): the impulse of everything else, which along x is the body-body contact alone (equal and
+// opposite: zero for the pair) and the floor's friction (the account is taken while both are
+// clear of the floor).
+struct CollideResult { bool ok = false; std::string error; double least = 1e9, speed = 0, residual = 0, impulse = 0, wall = 0; int steps = 0; };
+CollideResult Collide(bool contact, int n, double T)
+{
+	CollideResult out;
+	const double R = 0.035, L = 0.32, H = 1.0/30, Vs = 4.0/3.0*Pi*R*R*R, rho = 1500, m = rho*Vs;
+	const auto frames = std::uint64_t(std::llround(T*30)) + 1;
+	auto liquidBody = [&](const char* name, double x, double vx) {
+		return V::MapValue({{"name", V::String(name)}, {"shape", V::String("sphere")}, {"radius", V::Float(R)}, {"position", Vec(x, 0.15, 0.16)},
+			{"velocity", Vec(vx, 0, 0)}, {"motion", V::String("port")}, {"coupling", V::String("implicit")}});
+	};
+	auto rigidBody = [&](const char* name, double x, double vx) {
+		return V::MapValue({{"name", V::String(name)}, {"shape", V::String("sphere")}, {"radius", V::Float(R)}, {"mass", V::Float(m)},
+			{"position", Vec(x, 0.15, 0.16)}, {"velocity", Vec(vx, 0, 0)}, {"restitution", V::Float(0.5)}, {"friction", V::Float(0.3)}});
+	};
+	V::Members liquid{{"frames", V::Unsigned(frames)}, {"domain_min", Vec(0, 0, 0)}, {"domain_size", Vec(L, L, L)},
+		{"resolution", V::Unsigned(std::uint64_t(n))},
+		{"liquid", V::ArrayValue({V::MapValue({{"type", V::String("fill")}, {"height", V::Float(0.28)}})})},
+		{"bodies", V::ArrayValue({liquidBody("a", 0.1, 0.4), liquidBody("b", 0.22, -0.4)})}};
+	V::Members rigid{{"frames", V::Unsigned(frames)}, {"substeps", V::Unsigned(8)},
+		{"bodies", V::ArrayValue({rigidBody("a", 0.1, 0.4), rigidBody("b", 0.22, -0.4)})},
+		{"planes", V::ArrayValue({V::MapValue({{"point", Vec(0, 0, 0)}, {"normal", Vec(0, 1, 0)}, {"restitution", V::Float(0.3)}, {"friction", V::Float(0.3)}})})}};
+	GroupPolicy p;
+	p.order = ExchangeOrder::GaussSeidel;
+	p.memberOrder = {"pool", "drop"};
+	p.ownedExchanges = {{"pool", {"drop"}}};
+	SimulationGroup G;
+	std::string& error = out.error;
+	bool ok = G.AddMember("pool", Make(LiquidSolverId), V::MapValue(liquid), error) &&
+		G.AddMember("drop", Make(RigidSolverId), V::MapValue(rigid), error) &&
+		G.Connect({"drop", "body_state", "pool", "body_state"}, error) &&
+		G.Connect({"drop", "body_mass_properties", "pool", "body_mass_properties"}, error) &&
+		G.Connect({"pool", "body_load", "drop", "body_load"}, error) &&
+		(!contact || G.Connect({"drop", "body_contact", "pool", "body_contact"}, error)) && G.Configure(p, EmptySceneInputs(), error) && G.Start(error);
+	if (!ok) return out;
+	double lastV[2] = {0.4, -0.4};
+	G.SetStepObserver([&](double t, const SimulationGroup& gr) {
+		const auto s = gr.Snapshot("drop");
+		std::shared_ptr<const Bytes> bytes;
+		std::string w;
+		const auto index = static_cast<std::int64_t>(std::llround(t*30));
+		if (s->Read(index, "bodies", budget, bytes, w) != FrameStatus::Ready) return;
+		TransformFrame f;
+		if (!DecodeTransforms(*bytes, budget, f, w) || f.bodies.size() != 2) return;
+		double F[2] = {0, 0};
+		if (const auto load = gr.ServedValue(2)) {
+			FieldFrame lf;
+			if (DecodeField(*load, budget, lf, w)) for (const auto& c : lf.channels) if (c.name == "force") { F[0] = F32(c.values[0]); F[1] = F32(c.values[3]); }
+		}
+		const double d = Rigid::Norm(Rigid::Sub(f.bodies[1].position, f.bodies[0].position));
+		out.least = std::min(out.least, d);
+		for (int i = 0; i < 2; ++i) out.speed = std::max(out.speed, Rigid::Norm(f.bodies[std::size_t(i)].velocity));
+		// The x account: m (dv_a + dv_b) - H (F_a + F_b).
+		const double r = m*(f.bodies[0].velocity[0] - lastV[0] + f.bodies[1].velocity[0] - lastV[1]) - H*(F[0] + F[1]);
+		const double j = std::fabs(m*(f.bodies[0].velocity[0] - lastV[0]) - H*F[0]);
+		// Only while both are clear of the floor (its friction is the one other x impulse).
+		if (f.bodies[0].position[1] - R > 1e-3 && f.bodies[1].position[1] - R > 1e-3) {
+			out.residual = std::max(out.residual, std::fabs(r));
+			out.impulse = std::max(out.impulse, j);
+		}
+		lastV[0] = f.bodies[0].velocity[0]; lastV[1] = f.bodies[1].velocity[0];
+		++out.steps;
+	});
+	const double w0 = Seconds();
+	while (!G.Finished()) if (!G.StepMacro(error)) return out;
+	out.wall = Seconds() - w0;
+	out.ok = true;
+	return out;
+}
+
+void Collision()
+{
+	std::printf("m7h: two spheres colliding under water (24 cells, 0.6 s)\n");
+	const double R = 0.035;
+	const CollideResult with = Collide(true, 24, 0.6), without = Collide(false, 24, 0.6);
+	std::printf("  body_contact connected: %s, least centre distance %.4f m (2R %.3f), max speed %.3f m/s, x account residual %.2e N s "
+		"(largest body x impulse beyond the liquid's %.2e N s), %.1f s\n", with.ok ? "ran" : with.error.c_str(), with.least, 2*R, with.speed,
+		with.residual, with.impulse, with.wall);
+	std::printf("  not connected (m7g's wall stop): %s, least centre distance %.4f m, max speed %.3f m/s\n", without.ok ? "ran" : without.error.c_str(),
+		without.least, without.speed);
+	Check(with.ok && with.least > 2*R - 0.004 && with.speed < 1.0, "two submerged bodies collide without passing into each other, stably", with.error);
+	Check(with.ok && with.impulse > 1e-3 && with.residual < 1e-12, "the collision exchanges equal and opposite impulses (x account)",
+		std::to_string(with.residual));
+}
+
 int main(int argc, char** argv)
 {
 	std::string error;
 	Check(RegisterLiquidSolver(error), "register liquid.mac", error);
 	Check(RegisterRigidSolver(error), "register rigid.bodies", error);
 	if (argc > 1 && std::string(argv[1]) == "--settle") { SettleProbe(argc, argv); return 0; }
+	if (argc > 2 && std::string(argv[1]) == "--collide") {
+		const CollideResult c = Collide(std::string(argv[2]) == "1", argc > 3 ? std::atoi(argv[3]) : 40, argc > 4 ? std::atof(argv[4]) : 1.0);
+		std::printf("collide contact %s: %s least %.4f speed %.3f residual %.2e impulse %.2e steps %d (%.1f s)\n", argv[2], c.ok ? "ran" : c.error.c_str(),
+			c.least, c.speed, c.residual, c.impulse, c.steps, c.wall);
+		return 0;
+	}
 	const double t0 = Seconds();
 	OperatorCase(false);
 	OperatorCase(true);
@@ -641,6 +741,7 @@ int main(int argc, char** argv)
 	Determinism();
 	StopRestore();
 	Groups();
+	Collision();
 	std::printf("LiquidRigidTest: %.1f s\n", Seconds() - t0);
 	if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	std::printf("LiquidRigidTest: all checks passed\n");

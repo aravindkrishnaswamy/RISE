@@ -120,6 +120,7 @@ simulation_group
 	connect			cloth.surface_state -> pool.sheet_state
 	connect			cloth.surface_mechanics -> pool.sheet_mechanics
 	connect			cloth.surface_stiffness -> pool.sheet_stiffness
+	connect			cloth.surface_elements -> pool.sheet_elements
 	connect			pool.sheet_load -> cloth.surface_load
 	connect			pool.sheet_load_steps -> cloth.surface_load_steps
 	policy			staggered

@@ -287,6 +287,7 @@ fire_simulation                       # solver fire.methane (case + result-affec
     name            campfire
     tier            6
     mode            fast
+    backend         metal             # metal (default) | cpu: the experimental CPU backend; keyed only as cpu
     frame_origin_s  1.0               # state the window so the scene can key the fire before a bake
     end_time_s      3.0
 }
@@ -415,7 +416,12 @@ above, connect the cloth's `surface_mechanics` and `surface_stiffness` to `<m>` 
 (`owned pool cloth`, the liquid first).  The cloth then takes the liquid's steps.  A macro end within 1e-6 of a macro
 step of a frame time is snapped to it, so a macro step written a few digits short no longer leaves sliver steps; with
 the cloth first in Gauss–Seidel a staggered sheet still reads the cloth's state at the macro step's start.  Sample:
-`scenes/Tests/Simulation/liquid_cloth_wave.RISEscene`:
+`scenes/Tests/Simulation/liquid_cloth_wave.RISEscene`.  M7h (docs/SIMULATION_M7H_RESULTS.md): also connect
+`cloth.surface_elements -> pool.sheet_elements` (sheet option `elements_port`): inside the macro step the cloth's model
+is corotational, and the liquid refuses an implicit sheet without its elements.  Rigid bodies (M7h) collide with each
+other (spheres, boxes, cylinders; body options `restitution e`, `friction mu`, `contact on|off`; a `body_object` among
+other bodies needs `contact off`), and `connect drop.body_contact -> pool.body_contact` gives the liquid's own copies
+of the bodies rigid.bodies' planes and body-body contact inside the macro step:
 
 ```text
 cloth_simulation { name cloth  frames 61  size_u 0.3  size_v 0.45  vertices_u 13  vertices_v 19
@@ -450,8 +456,8 @@ rigid_simulation
 {
     name            drop
     frames          31
-    body_object     ball mass 0.1             # <object> [mass m|density d] [velocity ..] [spin ..]: geometry at t = 0
-    body            crate box 0.3 0.3 0.3 density 500 at 0 1 0 spin 0 2 0   # or box|sphere r|cylinder r h
+    body_object     ball mass 0.1 contact off # <object> [mass m|density d] [velocity ..] [spin ..] [contact off]: geometry at t = 0
+    body            crate box 0.3 0.3 0.3 density 500 at 0 1 0 spin 0 2 0   # or box|sphere r|cylinder r h; [restitution e] [friction mu]
     plane           0 0 0 0 1 0 restitution 0.5 friction 0.4               # impulse contact (preview)
 }
 cloth_simulation { ...  collider_port ball }  # the object's geometry as a collider moved by port collider_surface

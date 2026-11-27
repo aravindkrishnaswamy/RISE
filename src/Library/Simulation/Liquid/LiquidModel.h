@@ -176,6 +176,13 @@ public:
 	//! `sheetCrossed` those with such a neighbour across a sheet's closed face (liquid that would have passed
 	//! the sheet; volume: the cells' sharp fill clamp(1/2 - phi/h, 0, 1) h^3), `sheetUnfed` the others.
 	std::uint64_t sheetCrossedCells = 0, sheetUnfedCells = 0;
+	//! m7h: the watertightness check of the barrier of implicitly coupled sheets whose boundary is
+	//! pinned all round (a bag, the catch's cloth): a flood fill from the cells beside the sheet on
+	//! its front side, through open faces and only among the cells beside the sheet's closed faces
+	//! (the triangles away from the pinned rim), counts the cells beside it on its back side that
+	//! it reaches: a path of open faces through the sheet itself (0: the barrier is watertight).
+	//! Returns -1 when no sheet qualifies.  Diagnostic, never changes results.
+	long long SheetBarrierHoles() const;
 	double sheetCrossedVolume = 0;
 	double TargetVolume() const { return targetVolume_; }
 

@@ -185,6 +185,59 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, std::vector<double>& x,
 	double rtol, int maxIterations, LinearSolveStats& stats, GridMultigrid& multigrid);
 
+//! M7h: a corotational linear elastic model about a configuration x0, element by
+//! element (docs/SIMULATION_M7H_RESULTS.md section 1).  Each element e keeps its
+//! gradient g_e and projected Hessian K_e at x0 and a rotation R_e; with
+//! d_e = R_e^T p_e - x0_e (per vertex) its energy is g_e . d_e + d_e^T K_e d_e / 2,
+//! its gradient R_e (g_e + K_e d_e) and its Hessian R_e K_e R_e^T (symmetric,
+//! positive semidefinite as K_e is).  A rigid motion of an element changes
+//! neither its strain nor its stress, which the plain linear model about x0
+//! (sum K_e, rotation-blind) does not do: a sheet turning by theta in a macro
+//! step was stretched by theta^2 / 2.  The rotations are set by Rotate (held
+//! over a step: the energy stays quadratic in the step), from a fit of each
+//! element's frame vertices.  cloth.shell's linear model inside a macro step and
+//! liquid.mac's copy of it use this one implementation, so both take the same
+//! steps.  Every sum runs in element order on the caller: the result does not
+//! depend on a thread count.
+struct CorotatedElements {
+	enum Kind : std::uint8_t { Membrane = 0, Hinge = 1, Rod = 2 };
+	struct Element {
+		std::uint8_t kind = Membrane;
+		std::uint8_t count = 0;          // vertices: 3 (membrane, rod) or 4 (hinge)
+		std::uint32_t v[4] = {0, 0, 0, 0};
+		std::uint8_t frames = 0;         // frame vertices for the rotation's fit (3 or 4)
+		std::uint32_t f[4] = {0, 0, 0, 0};
+	};
+	std::vector<Element> elements;
+	std::vector<double> stiffness;       // 144 per element: K_e, row-major over the local dofs 3a + i, 12 wide
+	std::vector<double> gradient;        // 12 per element: g_e
+	std::vector<double> rotation;        // 9 per element (row-major): R_e
+	bool Empty() const { return elements.empty(); }
+	std::size_t Size() const { return elements.size(); }
+	//! Room for `count` elements (stiffness and gradient zero, rotations the identity).
+	void Resize(std::size_t count);
+	//! The blocks (b, a), b > a, of every K_e set to the transposes of (a, b): a
+	//! matrix carried by its upper blocks is the same on both sides of a port.
+	void Mirror();
+	//! The frame vertices: a membrane's own; a hinge's edge and wings in cyclic
+	//! order (x0, x2, x1, x3); a rod's three and the third vertex of the first of
+	//! `triangles` (3 per triangle) that holds its first edge.  False when a rod
+	//! has no such triangle.
+	bool BuildFrames(const std::vector<std::uint32_t>& triangles);
+	//! R_e from x0 to p: the polar factor of sum_k (p_k - pbar)(x0_k - x0bar)^T +
+	//! s n n0^T over the frame vertices (n, n0 the frames' unit normals, s their
+	//! mean squared radius at x0), the identity for a degenerate or inverted frame.
+	void Rotate(const std::vector<double>& x0, const std::vector<double>& p, ParallelPool* pool = nullptr);
+	//! The largest angle (rad) between the held rotations and those from x0 to p.
+	double Deviation(const std::vector<double>& x0, const std::vector<double>& p, ParallelPool* pool = nullptr) const;
+	//! k = sum R_e K_e R_e^T (zeroed first; k's pattern holds every element's vertex pairs).
+	void Assemble(BlockMatrix& k) const;
+	//! g (3 per vertex, zeroed first) = sum R_e (g_e + K_e d_e); returns the energy.
+	double Gradient(const std::vector<double>& x0, const std::vector<double>& p, std::vector<double>& g) const;
+	//! The model's energy at p (Gradient without the gradient).
+	double Energy(const std::vector<double>& x0, const std::vector<double>& p) const;
+};
+
 } } }
 
 #endif

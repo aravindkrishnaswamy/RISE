@@ -750,7 +750,14 @@ double ClothSystem::Evaluate(const Potential& p, const std::vector<double>& pos,
 	// Projected: keep the compression the inertia can absorb (clamp it in statics).
 	const double allowance = project ? 0.25*config_.material.density*p.inertia : std::numeric_limits<double>::infinity();
 	double energy = 0;
-	if (linear_) {
+	if (linear_ && corotated_) {
+		// M7h: the corotational model about x0 at the step's rotations, exact penalty contact.
+		std::vector<double> ge;
+		energy += elements_.Gradient(linearX0_, pos, ge);
+		if (gradient) for (std::size_t k = 0; k < dofs; ++k) (*gradient)[k] += ge[k];
+		if (hessian) hessian->AddScaled(rotatedK_, 1.0);
+		PenaltyContact(pos, gradient, hessian, energy);
+	} else if (linear_) {
 		// M7e: the quadratic model about x0 (BeginLinear), exact penalty contact.
 		std::vector<double> d(dofs), kd;
 		for (std::size_t k = 0; k < dofs; ++k) d[k] = pos[k] - linearX0_[k];
@@ -1065,7 +1072,58 @@ void ClothSystem::BeginLinearAt(const std::vector<double>& x0)
 			double* b = linearK0_.Block(k);
 			for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) b[3*r + c] = u[3*c + r];
 		}
+	// M7h: the corotational model's elements (rotations the identity until the first step).
+	LinearElements(x0, elements_);
+	rotatedK_ = pattern_;
+	elements_.Assemble(rotatedK_);
 	linear_ = true;
+}
+
+void ClothSystem::LinearElements(const std::vector<double>& pos, CorotatedElements& out) const
+{
+	const std::size_t nt = sheet_.triangles.size(), nh = sheet_.hinges.size(), nr = sheet_.rods.size();
+	out.Resize(nt + nh + nr);
+	auto put = [&](std::size_t e, CorotatedElements::Kind kind, int count, const std::uint32_t* v, const double* g, const double* h) {
+		CorotatedElements::Element& el = out.elements[e];
+		el.kind = kind;
+		el.count = static_cast<std::uint8_t>(count);
+		for (int a = 0; a < count; ++a) el.v[a] = v[a];
+		const int n = 3*count;
+		for (int i = 0; i < n; ++i) {
+			out.gradient[12*e + static_cast<std::size_t>(i)] = RoundF32(g[i]);
+			for (int j = 0; j < n; ++j) out.stiffness[144*e + static_cast<std::size_t>(12*i + j)] = RoundF32(h[n*i + j]);
+		}
+	};
+	double g[12], h[144];
+	for (std::size_t t = 0; t < nt; ++t) {
+		const Triangle& tri = sheet_.triangles[t];
+		const V3 xs[3] = {At(pos, tri.v[0]), At(pos, tri.v[1]), At(pos, tri.v[2])};
+		MembraneElement(tri, xs, c11_, c12_, c22_, c66_, g, h, 0.0);
+		put(t, CorotatedElements::Membrane, 3, tri.v, g, h);
+	}
+	for (std::size_t e = 0; e < nh; ++e) {
+		const Hinge& hg = sheet_.hinges[e];
+		const V3 xs[4] = {At(pos, hg.v[0]), At(pos, hg.v[1]), At(pos, hg.v[2]), At(pos, hg.v[3])};
+		HingeElement(xs, hg.stiffness*hingeScale_[e], g, h);
+		put(nt + e, CorotatedElements::Hinge, 4, hg.v, g, h);
+	}
+	for (std::size_t e = 0; e < nr; ++e) {
+		const Rod& rd = sheet_.rods[e];
+		const V3 xs[3] = {At(pos, rd.v[0]), At(pos, rd.v[1]), At(pos, rd.v[2])};
+		RodElement(xs, rd.stiffness*rodScale_[e], g, h);
+		put(nt + nh + e, CorotatedElements::Rod, 3, rd.v, g, h);
+	}
+	out.Mirror();
+	std::vector<std::uint32_t> tris;
+	tris.reserve(3*nt);
+	for (const Triangle& t : sheet_.triangles) tris.insert(tris.end(), {t.v[0], t.v[1], t.v[2]});
+	out.BuildFrames(tris);   // a structured sheet's rods always lie on a triangle's edge
+}
+
+double ClothSystem::RotationLag() const
+{
+	if (!linear_ || !corotated_) return 0;
+	return elements_.Deviation(linearX0_, x, pool_.get());
 }
 
 void ClothSystem::BeginLinear()
@@ -1171,12 +1229,20 @@ bool ClothSystem::StepOnce(double h, Scheme scheme, const NewtonOptions& options
 			guess[k] = scheme == Scheme::ImplicitMidpoint ? 0.5*(x[k] + target[k]) : target[k];
 		}
 	}
+	if (linear_ && corotated_) {
+		// M7h: the elements' rotations for this step, from the predicted positions x + h v
+		// (the partner's copy does the same from its own state).
+		std::vector<double> predicted(dofs);
+		for (std::size_t k = 0; k < dofs; ++k) predicted[k] = x[k] + h*v[k];
+		elements_.Rotate(linearX0_, predicted, pool_.get());
+		elements_.Assemble(rotatedK_);
+	}
 	const Material& m = config_.material;
 	p.useDamping = config_.damping && (m.dampingMass > 0 || m.dampingStiffness > 0);
 	if (p.useDamping) {
 		damping_.Zero();
 		if (m.dampingStiffness > 0) {
-			if (linear_) damping_.AddScaled(linearK0_, 1.0);   // M7e: K0, as the partner's copy
+			if (linear_) damping_.AddScaled(LinearStiffness(), 1.0);   // M7e: K0, as the partner's copy (m7h: at the step's rotations)
 			else ElementEnergies(x, nullptr, &damping_, false, 0.0);
 			BlockMatrix scaled = pattern_;
 			scaled.Zero();
