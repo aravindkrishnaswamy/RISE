@@ -17,10 +17,21 @@
 #include "pch.h"
 #include "HyperspectralRadiometricRasterizer.h"
 #include "RadiometricCheckpoint.h"
+#include "RadiometricPublication.h"
 #include "SpectralSourceDomain.h"
 #include "RayCaster.h"
+#include "RadianceMap.h"
+#include "HosekWilkieSpectralRadianceMap.h"
 #include "../RasterImages/RadiometricEXRWriter.h"
+#include "../RasterImages/EXRWriter.h"
+#include "../Painters/SpectralColorPainter.h"
+#include "../Painters/BlackBodyPainter.h"
+#include "../Painters/Function1DSpectralPainter.h"
 #include "../Shaders/PathTracingIntegrator.h"
+#ifndef NO_EXR_SUPPORT
+#include <ImfDoubleAttribute.h>
+#include <ImfStringAttribute.h>
+#endif
 #include "../Managers/ObjectManager.h"
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ICamera.h"
@@ -121,6 +132,151 @@ bool IsAllowedPixelFilter( const std::string& filterName )
 {
 	const std::string lower = ToLowerASCII( filterName );
 	return lower.empty() || lower == "box" || lower == "triangle" || lower == "gaussian";
+}
+
+bool IsSupportedObservable( const std::string& obs )
+{
+	const std::string lower = ToLowerASCII( obs );
+	return lower.empty() ||
+		lower == "radiance_density" ||
+		lower == "band_integrated" ||
+		lower == "band_average" ||
+		lower == "sensor_energy" ||
+		lower == "sensor_photon";
+}
+
+std::string CanonicalObservable( const std::string& obs )
+{
+	const std::string lower = ToLowerASCII( obs );
+	return lower.empty() ? std::string( "radiance_density" ) : lower;
+}
+
+std::string ObservableUnits( const std::string& canonicalObs )
+{
+	if( canonicalObs == "band_integrated" ) return "W m^-2 sr^-1";
+	if( canonicalObs == "band_average" )    return "W m^-2 sr^-1 nm^-1";
+	if( canonicalObs == "sensor_energy" )   return "W m^-2 sr^-1 (sensor-weighted)";
+	if( canonicalObs == "sensor_photon" )   return "photons s^-1 m^-2 sr^-1 (sensor-weighted)";
+	return "W m^-2 sr^-1 nm^-1";
+}
+
+double EvalSensorResponse(
+	const std::vector<std::pair<double, double>>& curve,
+	const double nm
+	)
+{
+	if( curve.empty() ) return 0.0;
+	if( nm <= curve.front().first ) return curve.front().second;
+	if( nm >= curve.back().first )  return curve.back().second;
+	auto it = std::lower_bound( curve.begin(), curve.end(), nm,
+		[]( const std::pair<double, double>& a, const double v ) { return a.first < v; } );
+	if( it == curve.begin() ) return it->second;
+	if( it == curve.end() )   return curve.back().second;
+	if( it->first == nm )     return it->second;
+	const auto prev = std::prev( it );
+	const double t = ( nm - prev->first ) / ( it->first - prev->first );
+	return ( 1.0 - t ) * prev->second + t * it->second;
+}
+
+bool WriteDerivedObservableEXR(
+	const std::string& path,
+	const std::uint32_t width,
+	const std::uint32_t height,
+	const double pixelAR,
+	const std::vector<double>& values,
+	const std::string& observableName,
+	const std::string& units,
+	const std::vector<double>& wavelengths,
+	const std::uint64_t spp,
+	const std::uint64_t seed,
+	const double hcJm,
+	std::string& error
+	)
+{
+#ifdef NO_EXR_SUPPORT
+	(void)path; (void)width; (void)height; (void)pixelAR; (void)values;
+	(void)observableName; (void)units; (void)wavelengths; (void)spp; (void)seed; (void)hcJm;
+	error = "derived radiometric EXR output unavailable: NO_EXR_SUPPORT";
+	return false;
+#else
+	error.clear();
+	if( width == 0 || height == 0 ||
+		width > static_cast<std::uint32_t>( std::numeric_limits<int>::max() ) ||
+		height > static_cast<std::uint32_t>( std::numeric_limits<int>::max() ) )
+	{
+		error = "derived observable dimensions outside valid OpenEXR integer range";
+		return false;
+	}
+	if( !std::isfinite( pixelAR ) || !( pixelAR > 0.0 ) ||
+		pixelAR > static_cast<double>( std::numeric_limits<float>::max() ) ||
+		static_cast<float>( pixelAR ) == 0.0f )
+	{
+		error = "derived observable pixel aspect ratio is not representable as positive OpenEXR FLOAT";
+		return false;
+	}
+	const std::size_t expected = static_cast<std::size_t>( width ) * static_cast<std::size_t>( height );
+	if( values.size() != expected ) {
+		error = "derived observable buffer size mismatch";
+		return false;
+	}
+	for( double v : values ) {
+		if( !std::isfinite( v ) || v < 0.0 || v > static_cast<double>( std::numeric_limits<float>::max() ) ) {
+			error = "derived observable value outside finite non-negative FLOAT range";
+			return false;
+		}
+		if( v > 0.0 && static_cast<float>( v ) == 0.0f ) {
+			error = "derived observable positive value underflows FLOAT output";
+			return false;
+		}
+	}
+	DiskFileWriteBuffer::WriteDiagnostics diagnostics;
+	const bool ok = DiskFileWriteBuffer::WriteAtomically( path, [&]( DiskFileWriteBuffer& file ) {
+		try {
+			OStreamWrapper stream( file, BufferPosition( file ) );
+			Imf::Header header( static_cast<int>( width ), static_cast<int>( height ) );
+			header.compression() = Imf::ZIP_COMPRESSION;
+			header.pixelAspectRatio() = static_cast<float>( pixelAR );
+			header.insert( "rise.pixel_aspect_ratio", Imf::DoubleAttribute( pixelAR ) );
+			header.channels().insert( "observable", Imf::Channel( Imf::FLOAT ) );
+			header.insert( "rise.radiometric_record", Imf::StringAttribute( "radiometric_derived_observable_v1" ) );
+			header.insert( "rise.observable", Imf::StringAttribute( observableName ) );
+			header.insert( "rise.units", Imf::StringAttribute( units ) );
+			header.insert( "rise.quadrature", Imf::StringAttribute( "composite_trapezoidal_v1" ) );
+			header.insert( "rise.sweep_first_nm", Imf::DoubleAttribute( wavelengths.front() ) );
+			header.insert( "rise.sweep_last_nm", Imf::DoubleAttribute( wavelengths.back() ) );
+			header.insert( "rise.sweep_nodes", Imf::StringAttribute( std::to_string( wavelengths.size() ) ) );
+			header.insert( "rise.target_samples", Imf::StringAttribute( std::to_string( spp ) ) );
+			header.insert( "rise.seed", Imf::StringAttribute( std::to_string( seed ) ) );
+			if( observableName == "sensor_photon" ) {
+				header.insert( "rise.photon_conversion_hc_J_m", Imf::DoubleAttribute( hcJm ) );
+			}
+			std::vector<float> row( width );
+			Imf::FrameBuffer fb;
+			fb.insert( "observable", Imf::Slice( Imf::FLOAT, reinterpret_cast<char*>( row.data() ), sizeof( float ), 0 ) );
+			Imf::OutputFile output( stream, header );
+			output.setFrameBuffer( fb );
+			for( std::uint32_t y = 0; y < height; ++y ) {
+				for( std::uint32_t x = 0; x < width; ++x ) {
+					row[x] = static_cast<float>( values[static_cast<std::size_t>( y ) * width + x] );
+				}
+				output.writePixels( 1 );
+			}
+			return !stream.Failed();
+		} catch( const std::exception& ex ) {
+			error = ex.what();
+			return false;
+		}
+	}, DiskFileWriteBuffer::StagingPolicy::Required, &diagnostics );
+	if( !ok ) {
+		if( error.empty() ) {
+			error = "derived observable EXR write failed: " + diagnostics.operation + ": " + diagnostics.error.message();
+		}
+		if( !diagnostics.recoveryPath.empty() ) {
+			error += "; completed output retained for recovery at '" + diagnostics.recoveryPath + "'";
+		}
+	}
+	return ok;
+#endif
 }
 
 bool BuildProvenanceCBOR(
@@ -276,6 +432,52 @@ bool HyperspectralRadiometricRasterizer::ValidateSceneAndConfig(
 		return false;
 	}
 
+	if( !IsSupportedObservable( config.outputObservable ) ) {
+		outError = "hyperspectral_radiometric_rasterizer: unsupported output_observable '" +
+			config.outputObservable + "' (allowed: radiance_density, band_integrated, band_average, sensor_energy, sensor_photon)";
+		return false;
+	}
+	const std::string obsMode = CanonicalObservable( config.outputObservable );
+	if( obsMode != "radiance_density" && outWavelengths.size() < 2 ) {
+		outError = "hyperspectral_radiometric_rasterizer: output_observable '" + obsMode +
+			"' requires at least 2 wavelength nodes for quadrature";
+		return false;
+	}
+	if( obsMode == "sensor_energy" || obsMode == "sensor_photon" ) {
+		if( config.sensorResponse.empty() ) {
+			outError = "hyperspectral_radiometric_rasterizer: output_observable '" + obsMode +
+				"' requires a non-empty sensor_response curve";
+			return false;
+		}
+		double prevNm = 0.0;
+		bool anyPositive = false;
+		for( const auto& pt : config.sensorResponse ) {
+			if( !std::isfinite( pt.first ) || pt.first <= prevNm ||
+				!std::isfinite( pt.second ) || pt.second < 0.0 )
+			{
+				outError = "hyperspectral_radiometric_rasterizer: sensor_response must have strictly increasing finite wavelengths > 0 and finite weights >= 0";
+				return false;
+			}
+			if( pt.second > 0.0 ) {
+				anyPositive = true;
+			}
+			prevNm = pt.first;
+		}
+		if( !anyPositive ) {
+			outError = "hyperspectral_radiometric_rasterizer: sensor_response must have at least one strictly positive weight";
+			return false;
+		}
+		if( config.sensorResponse.front().first > outWavelengths.front() ||
+			config.sensorResponse.back().first < outWavelengths.back() )
+		{
+			outError = "hyperspectral_radiometric_rasterizer: sensor_response does not cover the full sweep band";
+			return false;
+		}
+	} else if( !config.sensorResponse.empty() ) {
+		outError = "hyperspectral_radiometric_rasterizer: sensor_response is only valid with output_observable 'sensor_energy' or 'sensor_photon'";
+		return false;
+	}
+
 	const ICamera* pCamera = pScene.GetCamera();
 	const IFilm* pFilm = pScene.GetFilm();
 	if( !pCamera || !pFilm || pFilm->GetWidth() == 0 || pFilm->GetHeight() == 0 ) {
@@ -324,6 +526,53 @@ bool HyperspectralRadiometricRasterizer::ValidateSceneAndConfig(
 				}
 			}
 		}
+
+		// Strict environment / sky preflight: refuse RGB-uplifted environment maps
+		// and out-of-band visible-only physical sky models.
+		if( const IRadianceMap* pEnv = pScene.GetGlobalRadianceMap() ) {
+			if( dynamic_cast<const HosekWilkieSpectralRadianceMap*>( pEnv ) ) {
+				if( outWavelengths.front() < 380.0 || outWavelengths.back() > 780.0 ) {
+					char buf[256];
+					std::snprintf( buf, sizeof( buf ),
+						"hyperspectral_radiometric_rasterizer: Hosek-Wilkie spectral sky covers [380, 780] nm; "
+						"sweep band [%.2f, %.2f] nm extends outside supported sky range "
+						"(narrow the sweep or set allow_rgb_uplift_sources TRUE)",
+						outWavelengths.front(), outWavelengths.back() );
+					outError = buf;
+					return false;
+				}
+			} else if( const RadianceMap* pRadMap = dynamic_cast<const RadianceMap*>( pEnv ) ) {
+				const IPainter& envPainter = pRadMap->GetPainter();
+				if( const SpectralColorPainter* pSpec = dynamic_cast<const SpectralColorPainter*>( &envPainter ) ) {
+					const SpectralPacket& pkt = pSpec->GetSpectralPacket();
+					if( pkt.NumBins() == 0 ||
+						outWavelengths.front() < static_cast<double>( pkt.minLambda() ) ||
+						outWavelengths.back() > static_cast<double>( pkt.maxLambda() ) )
+					{
+						char buf[256];
+						std::snprintf( buf, sizeof( buf ),
+							"hyperspectral_radiometric_rasterizer: spectral_painter environment does not cover sweep band [%.2f, %.2f] nm",
+							outWavelengths.front(), outWavelengths.back() );
+						outError = buf;
+						return false;
+					}
+				} else if( const BlackBodyPainter* pBB = dynamic_cast<const BlackBodyPainter*>( &envPainter ) ) {
+					if( pBB->IsNormalized() ) {
+						outError = "hyperspectral_radiometric_rasterizer: peak-normalized blackbody_painter environment is refused in strict radiometric mode "
+							"(set normalize FALSE or allow_rgb_uplift_sources TRUE)";
+						return false;
+					}
+				} else if( dynamic_cast<const Function1DSpectralPainter*>( &envPainter ) == nullptr ) {
+					outError = "hyperspectral_radiometric_rasterizer: RGB-uplifted environment radiance map refused "
+						"(use spectral_painter, unnormalized blackbody_painter, hosek_wilkie_sky within [380, 780] nm, or set allow_rgb_uplift_sources TRUE)";
+					return false;
+				}
+			} else {
+				outError = "hyperspectral_radiometric_rasterizer: unrecognized environment radiance map refused in strict mode "
+					"(set allow_rgb_uplift_sources TRUE to override)";
+				return false;
+			}
+		}
 	}
 
 	return true;
@@ -365,6 +614,8 @@ void HyperspectralRadiometricRasterizer::RasterizeScene(
 	lastError.clear();
 	lastSnapshots.clear();
 	lastManifestPath.clear();
+	lastDerivedObservable.clear();
+	lastDerivedObservablePath.clear();
 
 	std::vector<double> wavelengths;
 	if( !ValidateSceneAndConfig( pScene, wavelengths, lastError ) ) {
@@ -594,6 +845,58 @@ void HyperspectralRadiometricRasterizer::RasterizeScene(
 		(void)totalPixels;
 	}
 
+	// Compute and publish derived observable (band_integrated / band_average /
+	// sensor_energy / sensor_photon) when requested.  Never CIE Y normalized.
+	const std::string obsMode = CanonicalObservable( config.outputObservable );
+	const std::string obsUnits = ObservableUnits( obsMode );
+	static constexpr double kPlanckH = 6.62607015e-34;     // J * s (exact SI)
+	static constexpr double kSpeedC  = 2.99792458e8;       // m / s (exact SI)
+	static constexpr double kHC_Jm   = kPlanckH * kSpeedC; // J * m
+
+	if( obsMode != "radiance_density" ) {
+		const std::size_t nPx = static_cast<std::size_t>( width ) * static_cast<std::size_t>( height );
+		const std::size_t nWl = wavelengths.size();
+		std::vector<double> nodeWeight( nWl, 1.0 );
+		for( std::size_t k = 0; k < nWl; ++k ) {
+			if( obsMode == "sensor_energy" ) {
+				nodeWeight[k] = EvalSensorResponse( config.sensorResponse, wavelengths[k] );
+			} else if( obsMode == "sensor_photon" ) {
+				const double lambdaMetres = wavelengths[k] * 1e-9;
+				nodeWeight[k] = ( lambdaMetres / kHC_Jm ) * EvalSensorResponse( config.sensorResponse, wavelengths[k] );
+			}
+		}
+		const double bandSpan = wavelengths.back() - wavelengths.front();
+		std::vector<double> derived( nPx, 0.0 );
+		for( std::size_t k = 0; k + 1 < nWl; ++k ) {
+			const double dLambda = wavelengths[k + 1] - wavelengths[k];
+			const double halfDl = 0.5 * dLambda;
+			const double w0 = nodeWeight[k];
+			const double w1 = nodeWeight[k + 1];
+			const auto& px0 = lastSnapshots[k].pixels;
+			const auto& px1 = lastSnapshots[k + 1].pixels;
+			for( std::size_t p = 0; p < nPx; ++p ) {
+				derived[p] += halfDl * ( px0[p].mean * w0 + px1[p].mean * w1 );
+			}
+		}
+		if( obsMode == "band_average" ) {
+			for( double& v : derived ) {
+				v /= bandSpan;
+			}
+		}
+
+		const std::string derivedExrPath = config.outputPrefix + "_" + obsMode + ".exr";
+		if( !WriteDerivedObservableEXR(
+				derivedExrPath, width, height, pixelAR, derived,
+				obsMode, obsUnits, wavelengths, config.samplesPerPixel, config.seed, kHC_Jm, lastError ) )
+		{
+			GlobalLog()->PrintEx( eLog_Error, "HyperspectralRadiometricRasterizer:: derived EXR write failed (%s): %s",
+				derivedExrPath.c_str(), lastError.c_str() );
+			return;
+		}
+		lastDerivedObservable = std::move( derived );
+		lastDerivedObservablePath = derivedExrPath;
+	}
+
 	// Emit atomic JSON sweep manifest.
 	{
 		using J = RISE::Agent::JsonValue;
@@ -607,7 +910,20 @@ void HyperspectralRadiometricRasterizer::RasterizeScene(
 		root.set( "seed", J::MakeNumber( static_cast<double>( config.seed ) ) );
 		root.set( "seed_algorithm", J::MakeString( kSeedAlgorithm ) );
 		root.set( "units", J::MakeString( "W m^-2 sr^-1 nm^-1" ) );
+		root.set( "output_observable", J::MakeString( obsMode ) );
 		root.set( "allow_rgb_uplift_sources", J::MakeBool( config.allowRGBUpliftSources ) );
+
+		if( obsMode != "radiance_density" ) {
+			J drv = J::MakeObject();
+			drv.set( "observable", J::MakeString( obsMode ) );
+			drv.set( "units", J::MakeString( obsUnits ) );
+			drv.set( "exr_path", J::MakeString( lastDerivedObservablePath ) );
+			drv.set( "quadrature", J::MakeString( "composite_trapezoidal_v1" ) );
+			if( obsMode == "sensor_photon" ) {
+				drv.set( "photon_conversion_hc_J_m", J::MakeNumber( kHC_Jm ) );
+			}
+			root.set( "derived_observable", drv );
+		}
 
 		J bands = J::MakeArray();
 		for( const ManifestEntry& e : manifestEntries ) {

@@ -13924,6 +13924,7 @@ namespace RISE
 					cfg.seed                  = static_cast<std::uint64_t>( bag.GetUInt( "seed", 1 ) );
 					cfg.outputPrefix          = bag.GetString( "output_prefix", "" );
 					cfg.checkpointPrefix      = bag.GetString( "checkpoint_prefix", "" );
+					cfg.outputObservable      = bag.GetString( "output_observable", "radiance_density" );
 					cfg.allowRGBUpliftSources = bag.GetBool( "allow_rgb_uplift_sources", false );
 					cfg.oidnDenoise           = bag.GetBool( "oidn_denoise", false );
 					cfg.toneMap               = bag.GetBool( "tone_map", false );
@@ -13946,6 +13947,27 @@ namespace RISE
 						}
 					}
 
+					const std::vector<std::string>& srList = bag.GetRepeatable( "sensor_response" );
+					if( !srList.empty() ) {
+						cfg.sensorResponse.reserve( srList.size() );
+						double prevNm = 0.0;
+						for( const std::string& tok : srList ) {
+							std::istringstream iss( tok );
+							iss.imbue( std::locale::classic() );
+							double nm = 0.0, wt = 0.0;
+							std::string extra;
+							if( !( iss >> nm >> wt ) || ( iss >> extra ) ||
+								!std::isfinite( nm ) || nm <= prevNm ||
+								!std::isfinite( wt ) || wt < 0.0 )
+							{
+								SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: invalid sensor_response entry (expected strictly increasing '<nm> <weight>')" );
+								return false;
+							}
+							prevNm = nm;
+							cfg.sensorResponse.emplace_back( nm, wt );
+						}
+					}
+
 					return pJob.SetHyperspectralRadiometricRasterizer( cfg );
 				}
 
@@ -13963,6 +13985,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "seed";                     p.kind = ValueKind::UInt;     p.description = "Deterministic sweep seed"; p.defaultValueHint = "1"; }
 						{ auto& p = P(); p.name = "output_prefix";            p.kind = ValueKind::Filename; p.description = "Output prefix for EXR bands and JSON manifest"; }
 						{ auto& p = P(); p.name = "checkpoint_prefix";        p.kind = ValueKind::Filename; p.description = "Optional checkpoint prefix for save/resume"; }
+						{ auto& p = P(); p.name = "output_observable";        p.kind = ValueKind::String;   p.description = "Output observable (radiance_density, band_integrated, band_average, sensor_energy, sensor_photon)"; p.defaultValueHint = "radiance_density"; }
+						{ auto& p = P(); p.name = "sensor_response";          p.kind = ValueKind::String;   p.repeatable = true; p.tupleKinds = { ValueKind::Double, ValueKind::Double }; p.description = "Tabulated sensor response '<nm> <weight>' (repeatable, for sensor_energy/sensor_photon)"; }
 						{ auto& p = P(); p.name = "allow_rgb_uplift_sources"; p.kind = ValueKind::Bool;     p.description = "Allow RGB-uplifted lights (default FALSE: strict physical sources)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";             p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "tone_map";                 p.kind = ValueKind::Bool;     p.description = "Must remain FALSE in raw radiometric mode"; p.defaultValueHint = "FALSE"; }

@@ -24,6 +24,7 @@
 #include "../Utilities/SMSConfig.h"
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace RISE
@@ -33,7 +34,7 @@ namespace RISE
 	//! Configuration for `hyperspectral_radiometric_rasterizer`.
 	struct HyperspectralRadiometricConfig
 	{
-		static constexpr std::uint32_t kCurrentVersion = 1u;
+		static constexpr std::uint32_t kCurrentVersion = 2u;
 
 		std::uint32_t structVersion = kCurrentVersion;
 		std::uint32_t structSize    = sizeof( HyperspectralRadiometricConfig );
@@ -69,6 +70,19 @@ namespace RISE
 		SMSConfig            smsConfig;
 		StabilityConfig      stabilityConfig;
 		Implementation::RadiometricLimits limits;
+
+		// Tail-appended v2 fields:
+		// Output observable mode:
+		//   "radiance_density" (default): per-wavelength L_lambda [W m^-2 sr^-1 nm^-1]
+		//   "band_integrated":  integral L_lambda dlambda [W m^-2 sr^-1]
+		//   "band_average":     (1 / delta_lambda) integral L_lambda dlambda [W m^-2 sr^-1 nm^-1]
+		//   "sensor_energy":    integral L_lambda * s(lambda) dlambda [W m^-2 sr^-1]
+		//   "sensor_photon":    integral L_lambda * (lambda / (h*c)) * s(lambda) dlambda [photons s^-1 m^-2 sr^-1]
+		std::string outputObservable = "radiance_density";
+
+		// Tabulated sensor spectral sensitivity (wavelength_nm, weight >= 0),
+		// required when outputObservable is "sensor_energy" or "sensor_photon".
+		std::vector<std::pair<double, double>> sensorResponse;
 	};
 
 	namespace Implementation
@@ -86,6 +100,8 @@ namespace RISE
 			mutable bool                              lastCompleted;
 			mutable std::vector<RadiometricSnapshot>  lastSnapshots;
 			mutable std::string                       lastManifestPath;
+			mutable std::vector<double>               lastDerivedObservable;
+			mutable std::string                       lastDerivedObservablePath;
 
 			virtual ~HyperspectralRadiometricRasterizer();
 
@@ -139,6 +155,8 @@ namespace RISE
 			const std::string& LastError() const noexcept { return lastError; }
 			const std::vector<RadiometricSnapshot>& LastSnapshots() const noexcept { return lastSnapshots; }
 			const std::string& LastManifestPath() const noexcept { return lastManifestPath; }
+			const std::vector<double>& LastDerivedObservable() const noexcept { return lastDerivedObservable; }
+			const std::string& LastDerivedObservablePath() const noexcept { return lastDerivedObservablePath; }
 			const HyperspectralRadiometricConfig& GetConfig() const noexcept { return config; }
 		};
 	}

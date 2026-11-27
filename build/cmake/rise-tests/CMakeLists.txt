@@ -353,7 +353,11 @@ foreach(test_src ${TEST_SOURCES})
 	   test_name STREQUAL "FireSequenceTest")
 		target_compile_options(${test_name} PRIVATE /fp:strict)
 	endif()
-	if(test_name STREQUAL "HyLIoSGeometrySumTest")
+	if(test_name STREQUAL "HyLIoSGeometrySumTest" OR
+	   test_name STREQUAL "HyLIoSAdjointTest" OR
+	   test_name STREQUAL "HyLIoSSourceAndFilmTest" OR
+	   test_name STREQUAL "HyperspectralOutputTest" OR
+	   test_name STREQUAL "RadiometricPrimitivesTest")
 		target_compile_options(${test_name} PRIVATE /fp:strict)
 	endif()
 	if(test_name STREQUAL "FireSequenceTest")
