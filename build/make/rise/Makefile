@@ -573,7 +573,7 @@ test : tests
 # re-optimize the derivation and silently move canonical case IDs.
 $(PATHLIBRARY)Utilities/FireCase.o : $(PATHLIBRARY)Utilities/FireCase.cpp
 	@echo "Compiling (no LTO): $<"
-	@$(CXX) $(filter-out -flto,$(CPPFLAGS)) $(filter-out -flto,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+	@$(CXX) $(filter-out -flto -flto=%,$(CPPFLAGS)) $(filter-out -flto -flto=%,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 # The Cycles noise, Voronoi, colour, math and vector ports reproduce Cycles'
 # scalar path as strict IEEE single precision; fast-math's contraction would
