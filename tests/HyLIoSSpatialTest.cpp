@@ -37,6 +37,9 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Rendering/RadianceMap.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Materials/MixMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Color/SampledWavelengths.h"
@@ -480,6 +483,133 @@ void TestNonlocalNEEAndSmoothBoundaryRefusal()
 	safe_release( pJobI );
 }
 
+void TestSlice2P2KernelGuideAndContainment()
+{
+	TempDirGuard tmp( "slice2_p2" );
+
+	// Specimen with individually dispersed melanosome organelles in stratum_basale
+	// (validates real P2 HyLIoSForwardTransport organelle stepping inside nonlocal mode).
+	const std::string orgSpec =
+		"{\"schema_version\":1,\"approximate\":true,\"composition_revision\":\"org-v1\","
+		"\"coverage_profile_id\":\"explicit-synthetic-approximation\","
+		"\"spectral_bundle_sha256\":\"org_b\",\"resolved_specimen_sha256\":\"org_s\","
+		"\"preset_id\":\"S3\",\"interpretation\":\"organelle P2 nonlocal test\","
+		"\"units\":{\"length\":\"m\",\"coefficient\":\"m^-1\",\"wavelength\":\"nm\",\"mass_concentration\":\"kg/m^3\"},"
+		"\"wavelength_nm\":[450,550,650],\"surface_fold_aspect_ratio\":0.75,\"provenance\":{\"retained\":\"yes\"},"
+		"\"layers\":["
+		"{\"layer_id\":\"stratum_corneum\",\"thickness_m\":0.00002,\"host_absorption_m_inv\":[40,20,10],\"real_refractive_index\":[1.45,1.45,1.45],\"constituent_absorption_m_inv\":{\"s\":[40,20,10]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_granulosum\",\"thickness_m\":0.00003,\"host_absorption_m_inv\":[60,30,12],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[60,30,12]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_spinosum\",\"thickness_m\":0.00005,\"host_absorption_m_inv\":[60,30,12],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[60,30,12]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_basale\",\"thickness_m\":0.00002,\"host_absorption_m_inv\":[80,40,15],\"real_refractive_index\":[1.4,1.4,1.4],\"constituent_absorption_m_inv\":{\"s\":[80,40,15]},"
+		"\"particles\":{\"enabled\":true,\"organization\":\"individually_dispersed_particles\",\"organelle_fraction\":0.05,\"semi_minor_m\":1.5e-7,\"semi_major_m\":3.0e-7,\"real_refractive_index\":1.7,\"interior_absorption_evaluated\":true,\"interior_absorption_m_inv\":[4.0e5,1.5e5,4.0e4]}},"
+		"{\"layer_id\":\"papillary_dermis\",\"thickness_m\":0.0002,\"host_absorption_m_inv\":[100,50,15],\"real_refractive_index\":[1.38,1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[100,50,15]},\"particles\":null},"
+		"{\"layer_id\":\"reticular_dermis\",\"thickness_m\":0.0015,\"host_absorption_m_inv\":[100,50,15],\"real_refractive_index\":[1.38,1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[100,50,15]},\"particles\":null}"
+		"]}\n";
+	const std::filesystem::path orgPath = tmp.dir / "org.json";
+	{
+		std::ofstream ofs( orgPath, std::ios::binary );
+		ofs.write( orgSpec.data(), static_cast<std::streamsize>( orgSpec.size() ) );
+	}
+	const std::string orgPathStr = orgPath.string();
+
+	// 1. Nonlocal mode rejects non-empty response_asset
+	{
+		HyLIoSSkinMaterialConfig badCfg;
+		badCfg.transportMode = "nonlocal";
+		badCfg.boundaryMode = "rise_reciprocal_boundary_v1";
+		badCfg.specimenSourcePath = orgPathStr.c_str();
+		badCfg.responseAssetPath = "should_be_rejected.hylios_local";
+		IMaterial* pBad = 0;
+		Check( !RISE_API_CreateHyLIoSSkinMaterial( &pBad, badCfg ) && pBad == 0,
+			"Nonlocal mode rejects non-empty response_asset" );
+	}
+
+	// 2. Cached 1D MC visible guide: deterministic, sensitive to exterior_ior, positive with organelles
+	HyLIoSSkinMaterialConfig cfgAir;
+	cfgAir.transportMode = "nonlocal";
+	cfgAir.boundaryMode = "rise_reciprocal_boundary_v1";
+	cfgAir.boundaryRoughness = 0.25;
+	cfgAir.spatialDomain = "planar_polygon";
+	cfgAir.domainHalfWidthMetres = 0.05;
+	cfgAir.exteriorIOR = 1.0;
+	cfgAir.specimenSourcePath = orgPathStr.c_str();
+
+	IMaterial* pMatAir1 = 0;
+	IMaterial* pMatAir2 = 0;
+	Check( RISE_API_CreateHyLIoSSkinMaterial( &pMatAir1, cfgAir ) && pMatAir1 != 0, "Create organelle nonlocal mat 1" );
+	Check( RISE_API_CreateHyLIoSSkinMaterial( &pMatAir2, cfgAir ) && pMatAir2 != 0, "Create organelle nonlocal mat 2" );
+	const HyLIoSSkinMaterial* pH1 = dynamic_cast<const HyLIoSSkinMaterial*>( pMatAir1 );
+	const HyLIoSSkinMaterial* pH2 = dynamic_cast<const HyLIoSSkinMaterial*>( pMatAir2 );
+	Check( pH1 && pH2, "Organelle materials cast to HyLIoSSkinMaterial" );
+	if( pH1 && pH2 ) {
+		const RISEPel g1 = pH1->GetVisibleGuideRGB();
+		const RISEPel g2 = pH2->GetVisibleGuideRGB();
+		Check( g1.r > 0.01 && g1.g > 0.01 && g1.b > 0.01, "Organelle 1D MC visible guide positive" );
+		Near( g1.r, g2.r, 1e-12, "Cached 1D MC visible guide deterministic R" );
+		Near( g1.g, g2.g, 1e-12, "Cached 1D MC visible guide deterministic G" );
+		Near( g1.b, g2.b, 1e-12, "Cached 1D MC visible guide deterministic B" );
+
+		// Change exterior_ior to water (1.333) -> must use distinct cache key & different guide
+		HyLIoSSkinMaterialConfig cfgWater = cfgAir;
+		cfgWater.exteriorIOR = 1.333;
+		IMaterial* pMatWater = 0;
+		Check( RISE_API_CreateHyLIoSSkinMaterial( &pMatWater, cfgWater ) && pMatWater != 0, "Create water-immersed nonlocal mat" );
+		const HyLIoSSkinMaterial* pHW = dynamic_cast<const HyLIoSSkinMaterial*>( pMatWater );
+		if( pHW ) {
+			const RISEPel gW = pHW->GetVisibleGuideRGB();
+			Check( std::fabs( gW.r - g1.r ) > 1e-5 || std::fabs( gW.b - g1.b ) > 1e-5,
+				"Changing exterior_ior produces distinct cached 1D MC visible guide" );
+		}
+		safe_release( pMatWater );
+
+		// 3. HasSubsurfaceLeaf() == true for nonlocal HyLIoS and spatially varying MixMaterial flags PathDependence
+		Check( pH1->HasSubsurfaceLeaf(), "Nonlocal HyLIoS reports HasSubsurfaceLeaf() == true" );
+		struct SpatialScalarWeight : public virtual IScalarPainter, public virtual Reference {
+			ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override {
+				const Scalar w = ( ri.ptIntersection.x > Scalar( 0 ) ) ? Scalar( 0.75 ) : Scalar( 0.25 );
+				return ScalarTriple( w, w, w );
+			}
+			bool IsPositionIndependent() const override { return false; }
+		};
+		UniformColorPainter* pWhite = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+		SpatialScalarWeight* pWeight = new SpatialScalarWeight();
+		LambertianMaterial* pLamb = new LambertianMaterial( *pWhite );
+		const IMaterial* children[2] = { pMatAir1, pLamb };
+		const IScalarPainter* weights[2] = { pWeight, pWeight };
+		const IRayIntersectionModifier* mods[2] = { 0, 0 };
+		MixMaterial* pMix = new MixMaterial( children, weights, mods, 2, 0 );
+		Check( pMix->GetPathDependence() != PathDependence::kNone,
+			"MixMaterial with spatially varying weight over nonlocal HyLIoS flags PathDependence" );
+		safe_release( pMix );
+		safe_release( pLamb );
+		safe_release( pWeight );
+		safe_release( pWhite );
+
+		// 4. Direct SampleNonlocalNM with organelle-bearing specimen produces finite returns
+		const Ray camRay( Point3( 0, 0, 2 ), Vector3( 0, 0, -1 ) );
+		RayIntersectionGeometric ri( camRay, nullRasterizerState );
+		ri.ptIntersection = Point3( 0, 0, 0 );
+		ri.vNormal = Vector3( 0, 0, 1 );
+		ri.vGeomNormal = Vector3( 0, 0, 1 );
+		ri.onb.CreateFromW( ri.vNormal );
+		RandomNumberGenerator rng( 2026u );
+		IndependentSampler smp( rng );
+		int escapedSubsurface = 0;
+		for( int s = 0; s < 200; ++s ) {
+			HyLIoSNonlocalSample nl;
+			if( pH1->SampleNonlocalNM( ri, 650.0, smp, nl ) && nl.escaped ) {
+				Check( std::isfinite( nl.throughput ) && nl.throughput > 0.0, "Organelle nonlocal throughput finite positive" );
+				if( !nl.isExternalReflection ) {
+					++escapedSubsurface;
+				}
+			}
+		}
+		Check( escapedSubsurface > 0, "Organelle-bearing P2 nonlocal walk produces subsurface returns" );
+	}
+	safe_release( pMatAir2 );
+	safe_release( pMatAir1 );
+}
+
 } // namespace
 
 int main()
@@ -487,6 +617,7 @@ int main()
 	TestSpatialDomains();
 	TestNonlocalMaterialCSTAndIterativePT();
 	TestNonlocalNEEAndSmoothBoundaryRefusal();
+	TestSlice2P2KernelGuideAndContainment();
 
 	if( gFailures == 0 ) {
 		std::cout << "HyLIoSSpatialTest: ALL PASSED\n";

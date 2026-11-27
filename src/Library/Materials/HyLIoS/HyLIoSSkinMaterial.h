@@ -259,6 +259,7 @@ namespace RISE
 
 			bool IsHyperspectralSkin() const override { return true; }
 			bool HasSmoothNonlocalBoundary() const override;
+			bool HasSubsurfaceLeaf() const override { return IsNonlocalSkin(); }
 			bool IsNonlocalSkin() const noexcept { return pNonlocal != nullptr; }
 			bool EvaluateVisibleGuideAlbedo( const RayIntersectionGeometric& geom, RISEPel& outAlbedo ) const override;
 			bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override;

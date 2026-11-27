@@ -15,6 +15,9 @@
 #include "HyLIoSSkinMaterial.h"
 #include "HyLIoSLocalBake.h"
 #include "HyLIoSResolvedExperiment.h"
+#include "HyLIoSForwardExperiment.h"
+#include "HyLIoSForwardTransport.h"
+#include "HyLIoSOptics.h"
 #include "HyLIoSReciprocalBoundary.h"
 #include "HyLIoSSpatialGeometry.h"
 #include "../../Agent/Json.h"
@@ -29,7 +32,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -560,19 +565,11 @@ Scalar HyLIoSLocalSPF::PdfNM(
 
 namespace RISE::Implementation
 {
-	struct HyLIoSNonlocalLayerTable
-	{
-		double thicknessMetres = 0.0;
-		std::vector<double> absorptionPerMetre;
-		std::vector<double> ior;
-		double scatteringScalePerMetre = 0.0;
-	};
-
 	struct HyLIoSNonlocalRuntime
 	{
 		std::vector<double> wavelengthsNm;
-		std::array<HyLIoSNonlocalLayerTable, 6> layers;
-		std::array<double, 7> layerPlanes{};
+		std::vector<std::shared_ptr<const HyLIoSForwardTransport>> kernels;
+		std::vector<double> scIORAtNode;
 		double totalThicknessMetres = 0.0;
 		double exteriorIOR = 1.0;
 		double boundaryRoughness = 0.25;
@@ -583,21 +580,11 @@ namespace RISE::Implementation
 		std::uint64_t maxSubsurfaceSteps = 256;
 		mutable std::atomic<std::uint64_t> domainBoundaryLosses{ 0 };
 
-		bool InterpolateLayerAtNM(
-			const int layerIdx,
-			const double nm,
-			double& outMuA,
-			double& outMuS,
-			double& outIOR
-			) const noexcept
+		bool InterpolateStratumCorneumIOR( const double nm, double& outEtaSC ) const noexcept
 		{
-			if( wavelengthsNm.empty() || layerIdx < 0 || layerIdx >= 6 ) {
+			if( !std::isfinite( nm ) || wavelengthsNm.empty() || nm < wavelengthsNm.front() || nm > wavelengthsNm.back() ) {
 				return false;
 			}
-			if( nm < wavelengthsNm.front() || nm > wavelengthsNm.back() ) {
-				return false;
-			}
-			const auto& L = layers[static_cast<std::size_t>( layerIdx )];
 			std::size_t lo = 0, hi = wavelengthsNm.size() - 1;
 			if( wavelengthsNm.size() > 1 ) {
 				auto it = std::lower_bound( wavelengthsNm.begin(), wavelengthsNm.end(), nm );
@@ -613,88 +600,138 @@ namespace RISE::Implementation
 			const double t = ( hi > lo )
 				? ( ( nm - wavelengthsNm[lo] ) / ( wavelengthsNm[hi] - wavelengthsNm[lo] ) )
 				: 0.0;
-			outMuA = ( 1.0 - t ) * L.absorptionPerMetre[lo] + t * L.absorptionPerMetre[hi];
-			outIOR = ( 1.0 - t ) * L.ior[lo] + t * L.ior[hi];
-			// Dermal collagen Rayleigh/Mie-like scattering scales smoothly with (550/nm)^1.5.
-			const double wlFactor = std::pow( 550.0 / nm, 1.5 );
-			outMuS = L.scatteringScalePerMetre * wlFactor;
-			return std::isfinite( outMuA ) && std::isfinite( outMuS ) && std::isfinite( outIOR ) && outIOR > 0.0;
+			outEtaSC = ( 1.0 - t ) * scIORAtNode[lo] + t * scIORAtNode[hi];
+			return std::isfinite( outEtaSC ) && outEtaSC > 0.0;
+		}
+
+		bool SelectKernelBracket(
+			const double nm,
+			std::size_t& outLo,
+			std::size_t& outHi,
+			double& outT
+			) const noexcept
+		{
+			if( !std::isfinite( nm ) || wavelengthsNm.empty() || nm < wavelengthsNm.front() || nm > wavelengthsNm.back() ) {
+				return false;
+			}
+			outLo = 0;
+			outHi = wavelengthsNm.size() - 1;
+			if( wavelengthsNm.size() > 1 ) {
+				auto it = std::lower_bound( wavelengthsNm.begin(), wavelengthsNm.end(), nm );
+				if( it == wavelengthsNm.begin() ) {
+					outLo = outHi = 0;
+				} else if( it == wavelengthsNm.end() ) {
+					outLo = outHi = wavelengthsNm.size() - 1;
+				} else {
+					outHi = static_cast<std::size_t>( it - wavelengthsNm.begin() );
+					outLo = ( wavelengthsNm[outHi] == nm ) ? outHi : ( outHi - 1 );
+				}
+			}
+			outT = ( outHi > outLo )
+				? ( ( nm - wavelengthsNm[outLo] ) / ( wavelengthsNm[outHi] - wavelengthsNm[outLo] ) )
+				: 0.0;
+			return true;
+		}
+
+		// Step-wise finite lateral side-wall check (workplan §7 item 1):
+		// prevents any walk from leaving the finite footprint and re-entering unnoticed.
+		bool IsInsideLateralBounds( const double xM, const double yM ) const noexcept
+		{
+			if( !std::isfinite( xM ) || !std::isfinite( yM ) ) {
+				return false;
+			}
+			if( domainKind == SpatialDomainKind::PlanarPolygon ||
+				domainKind == SpatialDomainKind::IntrinsicLayerVolume )
+			{
+				return std::fabs( xM ) <= domainHalfWidthMetres &&
+					std::fabs( yM ) <= domainHalfWidthMetres;
+			}
+			if( domainKind == SpatialDomainKind::ConcentricCylinder ) {
+				return std::fabs( yM ) <= domainHalfWidthMetres;
+			}
+			return true; // ConcentricSphere is closed laterally
 		}
 	};
 }
 
 namespace
 {
+	struct CachedNonlocalGuide
+	{
+		RISEPel guideRGB{ 0, 0, 0 };
+		bool hasGuide = false;
+	};
+
+	struct NonlocalGuideCacheState
+	{
+		std::mutex mutex;
+		std::unordered_map<std::string, CachedNonlocalGuide> entries;
+	};
+
+	NonlocalGuideCacheState& GlobalNonlocalGuideCache()
+	{
+		static NonlocalGuideCacheState state;
+		return state;
+	}
+
 	std::shared_ptr<HyLIoSNonlocalRuntime> BuildNonlocalRuntime(
 		const std::string& sourceBytes,
 		const HyLIoSSkinMaterialConfig& config,
-		const SpatialDomainKind domainKind
+		const SpatialDomainKind domainKind,
+		const ForwardPlacementPolicy placementPolicy,
+		const ForwardPostScatterPolicy postScatterPolicy
 		)
 	{
-		RISE::Agent::JsonValue root;
-		std::string err;
-		if( !RISE::Agent::JsonParse( sourceBytes, root, err ) || !root.isObject() ) {
-			throw std::runtime_error( "nonlocal specimen_source JSON parse error: " + err );
-		}
-		const RISE::Agent::JsonValue& wlArr = root.get( "wavelength_nm" );
-		const RISE::Agent::JsonValue& layerArr = root.get( "layers" );
-		if( !wlArr.isArray() || wlArr.size() == 0 || !layerArr.isArray() || layerArr.size() != 6 ) {
-			throw std::runtime_error( "nonlocal specimen_source requires non-empty wavelength_nm and 6 layers" );
+		const std::vector<double> wls = ExtractSpecimenWavelengths( sourceBytes );
+		if( wls.empty() ) {
+			throw std::runtime_error( "nonlocal specimen_source has no wavelength_nm nodes" );
 		}
 
 		auto rt = std::make_shared<HyLIoSNonlocalRuntime>();
-		rt->wavelengthsNm.reserve( wlArr.size() );
-		double prevNm = 0.0;
-		for( std::size_t i = 0; i < wlArr.size(); ++i ) {
-			const double nm = wlArr.at( i ).asNumber();
-			if( !std::isfinite( nm ) || nm <= prevNm ) {
-				throw std::runtime_error( "nonlocal specimen_source wavelength_nm must be strictly increasing" );
-			}
-			prevNm = nm;
-			rt->wavelengthsNm.push_back( nm );
-		}
+		rt->wavelengthsNm = wls;
+		rt->kernels.reserve( wls.size() );
+		rt->scIORAtNode.reserve( wls.size() );
 
-		rt->layerPlanes[0] = 0.0;
-		for( std::size_t li = 0; li < 6; ++li ) {
-			const RISE::Agent::JsonValue& L = layerArr.at( li );
-			const double th = L.get( "thickness_m" ).asNumber();
-			const RISE::Agent::JsonValue& absArr = L.get( "host_absorption_m_inv" );
-			const RISE::Agent::JsonValue& iorArr = L.get( "real_refractive_index" );
-			if( !std::isfinite( th ) || !( th > 0.0 ) ||
-				!absArr.isArray() || absArr.size() != rt->wavelengthsNm.size() ||
-				!iorArr.isArray() || iorArr.size() != rt->wavelengthsNm.size() )
-			{
-				throw std::runtime_error( "nonlocal specimen_source layer array length or thickness invalid" );
-			}
-			rt->layers[li].thicknessMetres = th;
-			rt->layers[li].absorptionPerMetre.resize( rt->wavelengthsNm.size() );
-			rt->layers[li].ior.resize( rt->wavelengthsNm.size() );
-			for( std::size_t k = 0; k < rt->wavelengthsNm.size(); ++k ) {
-				const double a = absArr.at( k ).asNumber();
-				const double n = iorArr.at( k ).asNumber();
-				if( !std::isfinite( a ) || a < 0.0 || !std::isfinite( n ) || !( n > 0.0 ) ) {
-					throw std::runtime_error( "nonlocal specimen_source contains invalid absorption or IOR" );
+		double totalThickness = 0.0;
+		for( std::size_t k = 0; k < wls.size(); ++k ) {
+			const double nm = wls[k];
+			ResolveExperimentConfig rCfg;
+			rCfg.wavelengthNm = nm;
+			rCfg.boundary = ExperimentBoundary::Smooth;
+			rCfg.explicitComplexPackV1 = config.explicitComplexPackV1;
+			const ResolvedExperiment resolved = ResolveExperiment( sourceBytes, rCfg );
+
+			if( k == 0 ) {
+				for( const auto& L : resolved.Layers() ) {
+					totalThickness += L.thicknessMetres;
 				}
-				rt->layers[li].absorptionPerMetre[k] = a;
-				rt->layers[li].ior[k] = n;
 			}
-			// Epidermal layers (0..3) carry moderate cell scattering; dermal layers (4..5)
-			// carry collagen fiber scattering scaled by authored fiberFraction.
-			rt->layers[li].scatteringScalePerMetre = ( li < 4 )
-				? 2000.0
-				: ( 12000.0 * std::max( 0.05, config.fiberFraction ) );
-			rt->layerPlanes[li + 1] = rt->layerPlanes[li] + th;
-		}
-		rt->totalThicknessMetres = rt->layerPlanes[6];
-		rt->exteriorIOR = config.exteriorIOR;
-		rt->boundaryRoughness = config.boundaryRoughness;
-		rt->physicalScale = config.physicalScale;
-		rt->domainKind = domainKind;
-		rt->domainHalfWidthMetres = config.domainHalfWidthMetres;
-		rt->domainRadiusMetres = config.domainRadiusMetres;
-		rt->maxSubsurfaceSteps = std::max<std::uint64_t>( 16, config.maxSubsurfaceSteps );
+			rt->scIORAtNode.push_back( resolved.Layers()[0].realIOR );
 
-		// Validate domain parameters upfront.
+			const double fiberRate = RayleighRate(
+				config.fiberRadiusMetres, nm * 1e-9,
+				config.fiberFraction, config.fiberRelativeIOR );
+
+			rt->kernels.emplace_back( std::make_shared<HyLIoSForwardTransport>(
+				resolved.Layers(),
+				nm,
+				config.exteriorIOR,
+				fiberRate,
+				AbsorptionEstimator::Weighted,
+				0.25,
+				placementPolicy,
+				postScatterPolicy ) );
+		}
+
+		rt->totalThicknessMetres  = totalThickness;
+		rt->exteriorIOR           = config.exteriorIOR;
+		rt->boundaryRoughness     = config.boundaryRoughness;
+		rt->physicalScale         = config.physicalScale;
+		rt->domainKind            = domainKind;
+		rt->domainHalfWidthMetres = config.domainHalfWidthMetres;
+		rt->domainRadiusMetres    = config.domainRadiusMetres;
+		rt->maxSubsurfaceSteps    = std::max<std::uint64_t>( 16, config.maxSubsurfaceSteps );
+
 		if( domainKind == SpatialDomainKind::ConcentricSphere ||
 			domainKind == SpatialDomainKind::ConcentricCylinder )
 		{
@@ -705,34 +742,108 @@ namespace
 		return rt;
 	}
 
-	// Deterministic preparation-time 1D slab visible reflectance guide (no response_asset needed).
-	bool ComputeNonlocalVisibleGuideRGB(
+	// Deterministic, cached preparation-time 1D Monte Carlo visible slab guide
+	// driven by the actual P2 `HyLIoSForwardTransport` kernel (no response_asset needed).
+	bool ComputeCachedNonlocalVisibleGuideRGB(
 		const HyLIoSNonlocalRuntime& rt,
+		const std::string& cacheKey,
 		RISEPel& outGuideRGB
 		)
 	{
+		{
+			NonlocalGuideCacheState& cache = GlobalNonlocalGuideCache();
+			std::lock_guard<std::mutex> lock( cache.mutex );
+			auto it = cache.entries.find( cacheKey );
+			if( it != cache.entries.end() ) {
+				outGuideRGB = it->second.guideRGB;
+				return it->second.hasGuide;
+			}
+		}
+
+		static constexpr std::uint64_t kGuideSeed = 0x51AB601DE0000001ULL;
+		static constexpr std::uint64_t kHistoriesPerNode = 64ULL;
+		static constexpr std::uint64_t kMaxWorkPerHistory = 2048ULL;
+
 		std::vector<double> refl( rt.wavelengthsNm.size(), 0.0 );
 		for( std::size_t k = 0; k < rt.wavelengthsNm.size(); ++k ) {
 			const double nm = rt.wavelengthsNm[k];
-			double muA0 = 0, muS0 = 0, etaSC = 1.4;
-			rt.InterpolateLayerAtNM( 0, nm, muA0, muS0, etaSC );
-			const double F0 = HyLIoSReciprocalBoundary::FresnelDielectric( 1.0, rt.exteriorIOR, etaSC );
-			// Two-way Kubelka-Munk / Eddington 1D slab reflectance across the 6 layers.
-			double totalTauAbs = 0.0;
-			double totalTauScat = 0.0;
-			for( int li = 0; li < 6; ++li ) {
-				double a = 0, s = 0, n = 1.4;
-				rt.InterpolateLayerAtNM( li, nm, a, s, n );
-				totalTauAbs  += a * rt.layers[static_cast<std::size_t>( li )].thicknessMetres;
-				totalTauScat += s * rt.layers[static_cast<std::size_t>( li )].thicknessMetres;
+			if( nm < 360.0 || nm > 830.0 ) {
+				continue;
 			}
-			const double omega = ( totalTauScat + totalTauAbs > 0.0 )
-				? ( totalTauScat / ( totalTauScat + totalTauAbs ) )
-				: 0.0;
-			const double rDiff = omega * ( 1.0 - std::exp( -( totalTauScat + totalTauAbs ) ) ) * std::exp( -0.5 * totalTauAbs );
-			refl[k] = std::clamp( F0 + ( 1.0 - F0 ) * ( 1.0 - F0 ) * rDiff, 0.0, 1.0 );
+			const HyLIoSForwardTransport& kernel = *rt.kernels[k];
+			const HyLIoSReciprocalBoundary boundary(
+				rt.boundaryRoughness, rt.exteriorIOR, rt.scIORAtNode[k] );
+
+			double sumReturned = 0.0;
+			for( std::uint64_t h = 0; h < kHistoriesPerNode; ++h ) {
+				ForwardExperimentRandom rng( kGuideSeed ^ ( static_cast<std::uint64_t>( k + 1 ) * 0x9e3779b97f4a7c15ULL ) ^ ( h * 0xbf58476d1ce4e5b9ULL ) );
+				// Normal-incidence exterior ray: woLocal = (0, 0, +1)
+				const ReciprocalBoundarySample entry = boundary.SampleFull(
+					{ 0.0, 0.0, 1.0 }, rng.Get1D(), rng.Get1D(), rng.Get1D() );
+				if( !entry.valid || !( entry.weight > 0.0 ) ) {
+					continue;
+				}
+				if( entry.isReflection ) {
+					sumReturned += entry.weight;
+					continue;
+				}
+				// Power-domain entry weight into slab: undo radiance (etaExt/etaSC)^2 for power return
+				const double etaRatioEntry = rt.scIORAtNode[k] / rt.exteriorIOR;
+				const double powerEntryWeight = entry.weight * ( etaRatioEntry * etaRatioEntry );
+
+				ForwardState state = kernel.Begin( { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 } );
+				const SlabBoundaryEncounter initEnc = state.PendingBoundary();
+				kernel.ResumeBoundary( state, initEnc.token, SlabBoundaryDecision{
+					BoundaryAction::Transmit,
+					SlabSide::Interior,
+					{ entry.direction.x, -entry.direction.y, -entry.direction.z },
+					powerEntryWeight,
+					SlabBoundaryAngularLaw::Unclassified
+				} );
+
+				while( state.Termination() == ForwardTermination::None &&
+					   state.Counters().workUnits < kMaxWorkPerHistory )
+				{
+					const ForwardAdvanceResult adv = kernel.Advance( state, rng, 32 );
+					if( adv.kind == ForwardAdvanceKind::OuterBoundaryEncounter ) {
+						const SlabBoundaryEncounter enc = state.PendingBoundary();
+						const SlabVector woInt{ -enc.incidentDirection.x, enc.incidentDirection.y, enc.incidentDirection.z };
+						const ReciprocalBoundarySample exitStep = boundary.SampleFull(
+							woInt, rng.Get1D(), rng.Get1D(), rng.Get1D() );
+						if( !exitStep.valid || !( exitStep.weight > 0.0 ) ) {
+							kernel.StopForBudget( state );
+							break;
+						}
+						if( exitStep.isReflection ) {
+							kernel.ResumeBoundary( state, enc.token, SlabBoundaryDecision{
+								BoundaryAction::Reflect,
+								SlabSide::Interior,
+								{ exitStep.direction.x, -exitStep.direction.y, -exitStep.direction.z },
+								exitStep.weight,
+								SlabBoundaryAngularLaw::Unclassified
+							} );
+						} else {
+							const double etaRatioExit = rt.exteriorIOR / rt.scIORAtNode[k];
+							const double powerExitWeight = exitStep.weight * ( etaRatioExit * etaRatioExit );
+							sumReturned += std::min( 1.0, enc.weight * powerExitWeight );
+							kernel.StopForBudget( state );
+							break;
+						}
+					} else if( adv.kind == ForwardAdvanceKind::Terminal ) {
+						break;
+					}
+				}
+			}
+			refl[k] = std::clamp( sumReturned / static_cast<double>( kHistoriesPerNode ), 0.0, 1.0 );
 		}
-		return ComputeHyLIoSVisibleGuideRGB( rt.wavelengthsNm, refl, outGuideRGB );
+
+		const bool hasGuide = ComputeHyLIoSVisibleGuideRGB( rt.wavelengthsNm, refl, outGuideRGB );
+		{
+			NonlocalGuideCacheState& cache = GlobalNonlocalGuideCache();
+			std::lock_guard<std::mutex> lock( cache.mutex );
+			cache.entries[cacheKey] = CachedNonlocalGuide{ outGuideRGB, hasGuide };
+		}
+		return hasGuide;
 	}
 }
 
@@ -822,8 +933,8 @@ bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
 	{
 		return false;
 	}
-	double muA0 = 0, muS0 = 0, etaSC = 1.4;
-	if( !pNonlocal->InterpolateLayerAtNM( 0, wavelength, muA0, muS0, etaSC ) ) {
+	double etaSC = 1.4;
+	if( !pNonlocal->InterpolateStratumCorneumIOR( wavelength, etaSC ) ) {
 		return false;
 	}
 	outRoughness = pNonlocal->boundaryRoughness;
@@ -845,9 +956,9 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		return false;
 	}
 	const double wavelength = static_cast<double>( nm );
-	if( !std::isfinite( wavelength ) ||
-		wavelength < summary.coveredFirstNm || wavelength > summary.coveredLastNm )
-	{
+	std::size_t wlLo = 0, wlHi = 0;
+	double wlT = 0.0;
+	if( !pNonlocal->SelectKernelBracket( wavelength, wlLo, wlHi, wlT ) ) {
 		return false;
 	}
 
@@ -866,10 +977,10 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		return false;
 	}
 
-	double muA0 = 0, muS0 = 0, etaSC = 1.4;
-	if( !pNonlocal->InterpolateLayerAtNM( 0, wavelength, muA0, muS0, etaSC ) ) {
-		return false;
-	}
+	// Unbiased stochastic wavelength-node selection between adjacent resolved nodes.
+	const std::size_t wlIdx = ( wlHi > wlLo && static_cast<double>( sampler.Get1D() ) < wlT ) ? wlHi : wlLo;
+	const HyLIoSForwardTransport& kernel = *pNonlocal->kernels[wlIdx];
+	const double etaSC = pNonlocal->scIORAtNode[wlIdx];
 
 	const HyLIoSReciprocalBoundary boundary(
 		pNonlocal->boundaryRoughness, pNonlocal->exteriorIOR, etaSC );
@@ -902,227 +1013,154 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		return true;
 	}
 
-	// Step 2: Bounded iterative 6-layer subsurface slab walk.
-	// Local slab coordinates: z_m in [0, totalThicknessMetres] increasing INWARD (-N).
-	double xM = 0.0, yM = 0.0, zM = 1e-9;
-	// Propagation direction inside slab: d.z > 0 goes DEEPER into skin (-N).
-	SlabVector dir{ entryStep.direction.x, entryStep.direction.y, -entryStep.direction.z };
-	double weight = entryStep.weight;
-	int layer = 0;
+	// Step 2: Drive the P2 `HyLIoSForwardTransport` kernel one quantum at a time,
+	// checking finite lateral side walls on EVERY step so no walk can leave and
+	// re-enter the footprint unnoticed (workplan §7 item 1).
+	const std::uint64_t seedLo = static_cast<std::uint64_t>(
+		std::clamp( static_cast<double>( sampler.Get1D() ), 0.0, 1.0 ) * 4294967295.0 );
+	const std::uint64_t seedHi = static_cast<std::uint64_t>(
+		std::clamp( static_cast<double>( sampler.Get1D() ), 0.0, 1.0 ) * 4294967295.0 );
+	ForwardExperimentRandom kernelRng( ( seedHi << 32 ) ^ seedLo ^ 0x9e3779b97f4a7c15ULL );
 
-	for( std::uint64_t step = 0; step < pNonlocal->maxSubsurfaceSteps; ++step ) {
-		double muA = 0, muS = 0, etaCur = 1.4;
-		if( !pNonlocal->InterpolateLayerAtNM( layer, wavelength, muA, muS, etaCur ) ) {
+	ForwardState state = kernel.Begin( { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 } );
+	const SlabBoundaryEncounter initEnc = state.PendingBoundary();
+	kernel.ResumeBoundary( state, initEnc.token, SlabBoundaryDecision{
+		BoundaryAction::Transmit,
+		SlabSide::Interior,
+		{ entryStep.direction.x, -entryStep.direction.y, -entryStep.direction.z },
+		entryStep.weight,
+		SlabBoundaryAngularLaw::Unclassified
+	} );
+
+	auto mapToDomain = [&]( const double xM, const double yM, const SlabVector& localOutDir ) -> SpatialExitMapping {
+		if( pNonlocal->domainKind == SpatialDomainKind::PlanarPolygon ) {
+			const PlanarPolygonDomain dom = PlanarPolygonDomain::MakeRectangle(
+				pNonlocal->domainHalfWidthMetres, pNonlocal->domainHalfWidthMetres,
+				pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+			return dom.MapExit( entryFrame, 0.0, 0.0, xM, yM, localOutDir );
+		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
+			const Point3 center = Point3Ops::mkPoint3(
+				ri.ptIntersection,
+				rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
+			const ConcentricSphereDomain dom(
+				center, pNonlocal->domainRadiusMetres,
+				pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+			return dom.MapExit( entryFrame, xM, yM, localOutDir );
+		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
+			const Point3 axisOrigin = Point3Ops::mkPoint3(
+				ri.ptIntersection,
+				rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
+			const ConcentricCylinderDomain dom(
+				axisOrigin, rhFrame.B, pNonlocal->domainRadiusMetres,
+				pNonlocal->domainHalfWidthMetres, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+			return dom.MapExit( entryFrame, xM, yM, localOutDir );
+		}
+		IntrinsicLayerChart chart;
+		chart.uMin = 0.0; chart.uMax = 1.0;
+		chart.vMin = 0.0; chart.vMax = 1.0;
+		chart.metresPerU = 2.0 * pNonlocal->domainHalfWidthMetres;
+		chart.metresPerV = 2.0 * pNonlocal->domainHalfWidthMetres;
+		const IntrinsicLayerVolumeDomain dom(
+			chart, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
+		return dom.MapExit( entryFrame, 0.5, 0.5, xM, yM, localOutDir );
+	};
+
+	const std::uint64_t workCap = std::max<std::uint64_t>( 64, pNonlocal->maxSubsurfaceSteps * 8ULL );
+	while( state.Termination() == ForwardTermination::None &&
+		   state.Counters().workUnits < workCap )
+	{
+		const ForwardAdvanceResult adv = kernel.Advance( state, kernelRng, 1 );
+
+		// Step-wise absorbing side-wall check after every single quantum!
+		const SlabVector posOracle = state.Position();
+		const double curXM = posOracle.x;
+		const double curYM = -posOracle.y;
+		if( !pNonlocal->IsInsideLateralBounds( curXM, curYM ) ) {
+			kernel.StopForBudget( state );
+			pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+			outSample.escaped = false;
+			outSample.domainBoundaryLoss = true;
+			outSample.lateralDisplacementMetres = std::hypot( curXM, curYM );
 			return false;
 		}
-		const double muT = muA + muS;
-		const double zTop = pNonlocal->layerPlanes[static_cast<std::size_t>( layer )];
-		const double zBot = pNonlocal->layerPlanes[static_cast<std::size_t>( layer + 1 )];
 
-		// Distance to nearest layer boundary along `dir.z`.
-		double distBoundary = 1e30;
-		bool hitsTop = false;
-		if( dir.z < -1e-12 ) {
-			distBoundary = ( zTop - zM ) / dir.z;
-			hitsTop = true;
-		} else if( dir.z > 1e-12 ) {
-			distBoundary = ( zBot - zM ) / dir.z;
-			hitsTop = false;
-		}
-		distBoundary = std::max( 0.0, distBoundary );
+		if( adv.kind == ForwardAdvanceKind::OuterBoundaryEncounter ) {
+			const SlabBoundaryEncounter enc = state.PendingBoundary();
+			const double xM = enc.position.x;
+			const double yM = -enc.position.y;
+			// Convert oracle upward arrival direction (z < 0) to boundary-frame inward `woInt` (z < 0).
+			const SlabVector woInt{ -enc.incidentDirection.x, enc.incidentDirection.y, enc.incidentDirection.z };
 
-		// Free-flight distance to scattering/absorption event.
-		const double uDist = std::clamp( static_cast<double>( sampler.Get1D() ), 1e-12, 1.0 - 1e-12 );
-		const double distScatter = ( muT > 1e-12 ) ? ( -std::log( uDist ) / muT ) : 1e30;
-
-		if( distScatter < distBoundary ) {
-			// Advance to interaction point inside current layer.
-			xM += dir.x * distScatter;
-			yM += dir.y * distScatter;
-			zM = std::clamp( zM + dir.z * distScatter, zTop, zBot );
-
-			const double albedo = ( muT > 0.0 ) ? ( muS / muT ) : 0.0;
-			weight *= albedo;
-			if( !( weight > 1e-8 ) ) {
+			const SpatialExitMapping probeMap = mapToDomain( xM, yM, { 0.0, 0.0, 1.0 } );
+			if( probeMap.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
+				kernel.StopForBudget( state );
+				pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+				outSample.escaped = false;
+				outSample.domainBoundaryLoss = true;
+				outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
 				return false;
 			}
-			// Russian roulette after 4 steps.
-			if( step >= 4 ) {
-				const double q = std::min( 0.95, std::max( 0.05, weight ) );
-				if( static_cast<double>( sampler.Get1D() ) >= q ) {
-					return false;
-				}
-				weight /= q;
+
+			// Yield conditional exit boundary encounter to caller for `K_t` NEE/MIS
+			// BEFORE sampling the Fresnel R/T branch.
+			if( onInteriorBoundaryEncounter && !boundary.IsSmooth() ) {
+				const SpatialExitMapping tanMap = mapToDomain( xM, yM, { 1.0, 0.0, 0.0 } );
+				const Vector3 exitT = Vector3Ops::Normalize( tanMap.worldDir );
+				const Vector3 exitB = Vector3Ops::Normalize( Vector3Ops::Cross( probeMap.worldNormal, exitT ) );
+				HyLIoSExitBoundaryEncounter exitEnc;
+				exitEnc.exitPos           = probeMap.worldPos;
+				exitEnc.exitNormal        = probeMap.worldNormal;
+				exitEnc.exitTangent       = exitT;
+				exitEnc.exitBitangent     = exitB;
+				exitEnc.interiorWoLocal   = woInt;
+				exitEnc.interiorWeight    = enc.weight;
+				exitEnc.boundaryRoughness = pNonlocal->boundaryRoughness;
+				exitEnc.etaExt            = pNonlocal->exteriorIOR;
+				exitEnc.etaSC             = etaSC;
+				onInteriorBoundaryEncounter( exitEnc );
 			}
 
-			// Isotropic / forward-peaked Henyey-Greenstein scatter (g = 0.75 for skin tissue).
-			const double g = 0.75;
-			const double uCos = static_cast<double>( sampler.Get1D() );
-			const double uPhi = static_cast<double>( sampler.Get1D() );
-			const double sqrTerm = ( 1.0 - g * g ) / ( 1.0 - g + 2.0 * g * uCos );
-			const double cosTheta = std::clamp( ( 1.0 + g * g - sqrTerm * sqrTerm ) / ( 2.0 * g ), -1.0, 1.0 );
-			const double sinTheta = std::sqrt( std::max( 0.0, 1.0 - cosTheta * cosTheta ) );
-			const double phi = 2.0 * 3.14159265358979323846 * uPhi;
+			const ReciprocalBoundarySample exitStep = boundary.SampleFull(
+				woInt, kernelRng.Get1D(), kernelRng.Get1D(), kernelRng.Get1D() );
+			if( !exitStep.valid || !( exitStep.weight > 0.0 ) ) {
+				kernel.StopForBudget( state );
+				return false;
+			}
+			if( exitStep.isReflection ) {
+				kernel.ResumeBoundary( state, enc.token, SlabBoundaryDecision{
+					BoundaryAction::Reflect,
+					SlabSide::Interior,
+					{ exitStep.direction.x, -exitStep.direction.y, -exitStep.direction.z },
+					exitStep.weight,
+					SlabBoundaryAngularLaw::Unclassified
+				} );
+				continue;
+			}
 
-			// Build local frame around `dir`.
-			const SlabVector up = ( std::fabs( dir.z ) < 0.9 ) ? SlabVector{ 0, 0, 1 } : SlabVector{ 1, 0, 0 };
-			const SlabVector uAxRaw{
-				up.y * dir.z - up.z * dir.y,
-				up.z * dir.x - up.x * dir.z,
-				up.x * dir.y - up.y * dir.x
-			};
-			const double uLen = std::sqrt( uAxRaw.x * uAxRaw.x + uAxRaw.y * uAxRaw.y + uAxRaw.z * uAxRaw.z );
-			const SlabVector uAx{ uAxRaw.x / uLen, uAxRaw.y / uLen, uAxRaw.z / uLen };
-			const SlabVector vAx{
-				dir.y * uAx.z - dir.z * uAx.y,
-				dir.z * uAx.x - dir.x * uAx.z,
-				dir.x * uAx.y - dir.y * uAx.x
-			};
-			const double cPhi = std::cos( phi );
-			const double sPhi = std::sin( phi );
-			dir = {
-				sinTheta * ( cPhi * uAx.x + sPhi * vAx.x ) + cosTheta * dir.x,
-				sinTheta * ( cPhi * uAx.y + sPhi * vAx.y ) + cosTheta * dir.y,
-				sinTheta * ( cPhi * uAx.z + sPhi * vAx.z ) + cosTheta * dir.z
-			};
-			const double dLen = std::sqrt( dir.x * dir.x + dir.y * dir.y + dir.z * dir.z );
-			if( !( dLen > 0.0 ) ) return false;
-			dir = { dir.x / dLen, dir.y / dLen, dir.z / dLen };
-		} else {
-			// Advance to layer boundary.
-			xM += dir.x * distBoundary;
-			yM += dir.y * distBoundary;
-			zM = hitsTop ? zTop : zBot;
-
-			if( hitsTop && layer == 0 ) {
-				// Reached outer stratum corneum boundary from inside!
-				// Incoming interior direction pointing AWAY from boundary (into -Z interior):
-				// arrival is `dir` with `dir.z < 0` (upward), so `woInt` pointing away into interior
-				// has `woInt = { -dir.x, -dir.y, dir.z }` with `woInt.z < 0`!
-				const SlabVector woInt{ -dir.x, -dir.y, dir.z };
-
-				// Check spatial domain containment BEFORE the R/T branch so we never
-				// evaluate exit NEE on a walk that exited the finite side walls.
-				auto mapToDomain = [&]( const SlabVector& localOutDir ) -> SpatialExitMapping {
-					if( pNonlocal->domainKind == SpatialDomainKind::PlanarPolygon ) {
-						const PlanarPolygonDomain dom = PlanarPolygonDomain::MakeRectangle(
-							pNonlocal->domainHalfWidthMetres, pNonlocal->domainHalfWidthMetres,
-							pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-						return dom.MapExit( entryFrame, 0.0, 0.0, xM, yM, localOutDir );
-					} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
-						const Point3 center = Point3Ops::mkPoint3(
-							ri.ptIntersection,
-							rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-						const ConcentricSphereDomain dom(
-							center, pNonlocal->domainRadiusMetres,
-							pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-						return dom.MapExit( entryFrame, xM, yM, localOutDir );
-					} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
-						const Point3 axisOrigin = Point3Ops::mkPoint3(
-							ri.ptIntersection,
-							rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-						const ConcentricCylinderDomain dom(
-							axisOrigin, rhFrame.B, pNonlocal->domainRadiusMetres,
-							pNonlocal->domainHalfWidthMetres, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-						return dom.MapExit( entryFrame, xM, yM, localOutDir );
-					}
-					IntrinsicLayerChart chart;
-					chart.uMin = 0.0; chart.uMax = 1.0;
-					chart.vMin = 0.0; chart.vMax = 1.0;
-					chart.metresPerU = 2.0 * pNonlocal->domainHalfWidthMetres;
-					chart.metresPerV = 2.0 * pNonlocal->domainHalfWidthMetres;
-					const IntrinsicLayerVolumeDomain dom(
-						chart, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-					return dom.MapExit( entryFrame, 0.5, 0.5, xM, yM, localOutDir );
-				};
-
-				const SpatialExitMapping probeMap = mapToDomain( { 0.0, 0.0, 1.0 } );
-				if( probeMap.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
-					pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
-					outSample.escaped = false;
-					outSample.domainBoundaryLoss = true;
-					outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
-					return false;
-				}
-
-				// Yield conditional exit boundary encounter to caller for `K_t` NEE/MIS
-				// BEFORE sampling the Fresnel R/T branch.
-				if( onInteriorBoundaryEncounter && !boundary.IsSmooth() ) {
-					const SpatialExitMapping tanMap = mapToDomain( { 1.0, 0.0, 0.0 } );
-					const Vector3 exitT = Vector3Ops::Normalize( tanMap.worldDir );
-					const Vector3 exitB = Vector3Ops::Normalize( Vector3Ops::Cross( probeMap.worldNormal, exitT ) );
-					HyLIoSExitBoundaryEncounter enc;
-					enc.exitPos           = probeMap.worldPos;
-					enc.exitNormal        = probeMap.worldNormal;
-					enc.exitTangent       = exitT;
-					enc.exitBitangent     = exitB;
-					enc.interiorWoLocal   = woInt;
-					enc.interiorWeight    = weight;
-					enc.boundaryRoughness = pNonlocal->boundaryRoughness;
-					enc.etaExt            = pNonlocal->exteriorIOR;
-					enc.etaSC             = etaSC;
-					onInteriorBoundaryEncounter( enc );
-				}
-
-				const ReciprocalBoundarySample exitStep = boundary.SampleFull(
-					woInt,
-					static_cast<double>( sampler.Get1D() ),
-					static_cast<double>( sampler.Get1D() ),
-					static_cast<double>( sampler.Get1D() ) );
-				if( !exitStep.valid || !( exitStep.weight > 0.0 ) ) {
-					return false;
-				}
-				if( exitStep.isReflection ) {
-					// Reflected back into stratum corneum (`exitStep.direction.z < 0`).
-					weight *= exitStep.weight;
-					dir = { exitStep.direction.x, exitStep.direction.y, -exitStep.direction.z };
-					zM = 1e-9;
-					continue;
-				}
-
-				const SpatialExitMapping mapped = mapToDomain( exitStep.direction );
-				if( mapped.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
-					pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
-					outSample.escaped = false;
-					outSample.domainBoundaryLoss = true;
-					outSample.lateralDisplacementMetres = mapped.lateralDisplacementMetres;
-					return false;
-				}
-
-				outSample.escaped = true;
-				outSample.isExternalReflection = false;
-				outSample.isDelta = exitStep.isDelta;
-				outSample.exitPos = mapped.worldPos;
-				outSample.exitNormal = mapped.worldNormal;
-				outSample.exitDir = mapped.worldDir;
-				outSample.throughput = Scalar( weight * exitStep.weight );
-				outSample.pdf = Scalar( exitStep.pdf );
+			const SpatialExitMapping mapped = mapToDomain( xM, yM, exitStep.direction );
+			kernel.StopForBudget( state );
+			if( mapped.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
+				pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+				outSample.escaped = false;
+				outSample.domainBoundaryLoss = true;
 				outSample.lateralDisplacementMetres = mapped.lateralDisplacementMetres;
-				return true;
-			} else if( !hitsTop && layer == 5 ) {
-				// Reached deep hypodermis boundary: absorbed.
 				return false;
-			} else {
-				// Internal layer interface between `layer` and `nextLayer`.
-				const int nextLayer = hitsTop ? ( layer - 1 ) : ( layer + 1 );
-				double nA = 0, nS = 0, etaNext = etaCur;
-				pNonlocal->InterpolateLayerAtNM( nextLayer, wavelength, nA, nS, etaNext );
-				const double cosI = std::fabs( dir.z );
-				const double F = HyLIoSReciprocalBoundary::FresnelDielectric( cosI, etaCur, etaNext );
-				if( static_cast<double>( sampler.Get1D() ) < F ) {
-					dir.z = -dir.z;
-				} else {
-					const double ratio = etaCur / etaNext;
-					const double sinT2 = ratio * ratio * std::max( 0.0, 1.0 - cosI * cosI );
-					if( sinT2 >= 1.0 ) {
-						dir.z = -dir.z;
-					} else {
-						const double cosT = std::sqrt( std::max( 0.0, 1.0 - sinT2 ) );
-						dir = { ratio * dir.x, ratio * dir.y, ( dir.z >= 0.0 ? cosT : -cosT ) };
-						layer = nextLayer;
-					}
-				}
 			}
+
+			outSample.escaped = true;
+			outSample.isExternalReflection = false;
+			outSample.isDelta = exitStep.isDelta;
+			outSample.exitPos = mapped.worldPos;
+			outSample.exitNormal = mapped.worldNormal;
+			outSample.exitDir = mapped.worldDir;
+			outSample.throughput = Scalar( enc.weight * exitStep.weight );
+			outSample.pdf = Scalar( exitStep.pdf );
+			outSample.lateralDisplacementMetres = mapped.lateralDisplacementMetres;
+			return true;
+		}
+
+		if( adv.kind == ForwardAdvanceKind::Terminal ) {
+			return false;
 		}
 	}
 
@@ -1183,8 +1221,30 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 	}
 
 	if( transport == "nonlocal" ) {
+		if( !assetPath.empty() ) {
+			FailCreate( outError, "nonlocal transport_mode rejects `response_asset` (only `baked_local` uses response_asset)" );
+			return nullptr;
+		}
 		if( specPath.empty() ) {
 			FailCreate( outError, "nonlocal transport_mode requires a non-empty `specimen_source` path" );
+			return nullptr;
+		}
+		ForwardPlacementPolicy nlPlacement = ForwardPlacementPolicy::NullCollisionPlacementV1;
+		if( placement == "null_collision_placement_v1" ) {
+			nlPlacement = ForwardPlacementPolicy::NullCollisionPlacementV1;
+		} else if( placement == "fixed_event_diagnostic_v1" ) {
+			nlPlacement = ForwardPlacementPolicy::FixedEventDiagnosticV1;
+		} else {
+			FailCreate( outError, "unsupported placement_policy `" + placement + "`" );
+			return nullptr;
+		}
+		ForwardPostScatterPolicy nlPostScatter = ForwardPostScatterPolicy::DiscardAfterScatterV1;
+		if( postScatter == "discard_after_scatter_v1" ) {
+			nlPostScatter = ForwardPostScatterPolicy::DiscardAfterScatterV1;
+		} else if( postScatter == "diagnostic_retain_particle_v1" ) {
+			nlPostScatter = ForwardPostScatterPolicy::DiagnosticRetainParticleV1;
+		} else {
+			FailCreate( outError, "unsupported post_scatter_policy `" + postScatter + "`" );
 			return nullptr;
 		}
 		const std::string domStr = config.spatialDomain ? config.spatialDomain : "planar_polygon";
@@ -1202,16 +1262,24 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 			return nullptr;
 		}
 		try {
-			// Validate boundary roughness upfront via HyLIoSReciprocalBoundary.
 			const HyLIoSReciprocalBoundary validateBoundary( config.boundaryRoughness, config.exteriorIOR, 1.4 );
 			(void)validateBoundary;
 
 			const LocalAssetRecord rawSpec = LocalAssetDetail::ReadRegularFile( specPath, std::uint64_t{64} * 1024 * 1024 );
 			const std::string sourceBytes( reinterpret_cast<const char*>( rawSpec.data() ), rawSpec.size() );
-			auto rt = BuildNonlocalRuntime( sourceBytes, config, domKind );
+			auto rt = BuildNonlocalRuntime( sourceBytes, config, domKind, nlPlacement, nlPostScatter );
+
+			const std::string specSHA = RISE::RISECBOR64::SHA256Hex( rawSpec );
+			std::ostringstream guideKey;
+			guideKey.imbue( std::locale::classic() );
+			guideKey << std::setprecision( 17 )
+			         << specSHA << "|" << config.exteriorIOR << "|" << config.boundaryRoughness
+			         << "|" << config.fiberRadiusMetres << "|" << config.fiberFraction
+			         << "|" << config.fiberRelativeIOR << "|" << placement << "|" << postScatter
+			         << "|" << ( config.explicitComplexPackV1 ? 1 : 0 );
 
 			RISEPel computedGuide( 0, 0, 0 );
-			const bool hasGuide = ComputeNonlocalVisibleGuideRGB( *rt, computedGuide );
+			const bool hasGuide = ComputeCachedNonlocalVisibleGuideRGB( *rt, guideKey.str(), computedGuide );
 
 			HyLIoSSkinMaterialSummary sum;
 			sum.modelRevision      = modelRev;
@@ -1223,7 +1291,7 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 			sum.postScatterPolicy  = postScatter;
 			sum.preset             = preset;
 			sum.specimenSourcePath = specPath;
-			sum.semanticSHA256     = RISE::RISECBOR64::SHA256Hex( rawSpec );
+			sum.semanticSHA256     = specSHA;
 			sum.exteriorIOR        = config.exteriorIOR;
 			sum.physicalScale      = config.physicalScale;
 			sum.coveredFirstNm     = rt->wavelengthsNm.front();
