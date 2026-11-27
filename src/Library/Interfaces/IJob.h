@@ -5084,6 +5084,17 @@ namespace RISE
 			return false;
 		}
 
+		//! TRUE when a render of the current scene admits a non-owning raw
+		//! `SetProgress` callback.  A scene with prepared time-varying media
+		//! (a fire medium) refuses one (`unsafe_progress_callback`, docs/
+		//! RENDER_PREPARATION_LIFECYCLE.md), so a command line caller that
+		//! only wants console progress leaves it uninstalled there.
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool RenderAdmitsRawProgress() const
+		{
+			return true;
+		}
+
 	};
 
 

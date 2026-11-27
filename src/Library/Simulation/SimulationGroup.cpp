@@ -755,7 +755,9 @@ bool SimulationGroup::WriteGroupManifests(std::string& error)
 		const CacheDescription& d = m->cached ? m->snapshot->Description() : m->description.cache;
 		ms.push_back(V::MapValue({{"name", V::String(m->name)}, {"kind", V::String(m->cached ? "cache" : "live")},
 			{"producer", V::String(d.producer)}, {"key", V::String(d.key)}, {"epoch", V::String(d.epoch)},
-			{"fidelity", V::String(d.fidelity)}}));
+			{"fidelity", V::String(d.fidelity)}, {"solver", V::String(m->cached ? std::string() : m->description.solverId)},
+			{"version", V::String(m->cached ? std::string() : m->description.version)},
+			{"parameters", m->cached ? V::MapValue({}) : m->description.effectiveParameters}}));
 	}
 	for (const auto& l : links_)
 		cs.push_back(V::MapValue({{"from", V::String(l->c.fromMember + "." + l->c.fromPort)},

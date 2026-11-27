@@ -556,8 +556,54 @@ bool SimulationBakeManager::StartJob_(Entry& e, std::string& error)
 	return true;
 }
 
+unsigned SimulationBakeManager::VerifyCachesLocked_(std::vector<BakeEvent>& events)
+{
+	// The newest job of each cache directory decides; a newer active job (a
+	// bake writing it) means the cache is being made, not gone.
+	std::map<fs::path, Entry*> latest;
+	for (auto& j : jobs_) latest[j.second->job.cacheDir] = j.second.get();
+	unsigned marked = 0;
+	for (auto& l : latest) {
+		Entry& e = *l.second;
+		const BakeJob& b = e.job;
+		if (b.cacheDir.empty() || b.cacheMissing) continue;
+		const bool hadCache = b.state == BakeJobState::Finished || (b.state == BakeJobState::Stopped && b.framesWritten > 0);
+		if (!hadCache) continue;
+		std::error_code ec;
+		const auto manifest = fs::symlink_status(b.cacheDir / "manifest.cbor", ec);
+		if (manifest.type() != fs::file_type::not_found) continue;
+		std::string ignored;
+		if (InspectCache(b.cacheDir, kManifestBudget, ignored) != CacheState::Missing) continue;   // a writer holds it, or it is odd: not ours to call
+		e.job.cacheMissing = true;
+		e.job.resumable = false;
+		e.job.lastError = "the simulation cache " + b.cacheDir.string() + " was deleted from disk; bake the simulation again";
+		e.job.detail = "cache deleted from disk";
+		Update_(e, events, /*framesLanded=*/true);   // consumers drop the frames they still show
+		++marked;
+	}
+	return marked;
+}
+
+unsigned SimulationBakeManager::VerifyCaches()
+{
+	std::vector<BakeEvent> events;
+	unsigned marked = 0;
+	{
+		Lock lock(mutex_);
+		marked = VerifyCachesLocked_(events);
+		lastVerify_ = std::chrono::steady_clock::now();
+	}
+	Dispatch_(events);
+	return marked;
+}
+
 void SimulationBakeManager::Tick_(Lock&, std::vector<BakeEvent>& events)
 {
+	// 0. Caches deleted behind our back (a stat per finished job, once a second).
+	if (std::chrono::steady_clock::now() - lastVerify_ >= std::chrono::seconds(1)) {
+		lastVerify_ = std::chrono::steady_clock::now();
+		VerifyCachesLocked_(events);
+	}
 	// 1. Live workers: exit, progress, stop requests.
 	for (auto& j : jobs_) {
 		Entry& e = *j.second;
@@ -723,6 +769,8 @@ bool SimulationBakeManager::Attach(const BakeSceneSnapshot& scene, std::string&)
 	{
 		Lock lock(mutex_);
 		if (AttachLocked_(scene, events)) EnsureMonitor_(lock);
+		VerifyCachesLocked_(events);
+		lastVerify_ = std::chrono::steady_clock::now();
 	}
 	wake_.notify_all();
 	Dispatch_(events);

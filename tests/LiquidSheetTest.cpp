@@ -386,7 +386,7 @@ void Solver()
 	bool condition = false;
 	for (const auto& c : d.evidence.conditions) if (c.first == "sheets") condition = c.second == std::vector<std::string>{"prescribed"};
 	Check(condition, "the sheets condition");
-	Check(d.version == "m7i.1", "version m7i.1", d.version);
+	Check(d.version == "m7j.1", "version m7j.1", d.version);
 	{
 		SolverDescription plain;
 		Check(s->Configure(V::MapValue(TankParams(24, 5)), EmptySceneInputs(), plain, error) && !plain.effectiveParameters.Find("sheets") &&

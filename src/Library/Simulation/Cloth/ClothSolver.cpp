@@ -45,7 +45,10 @@ constexpr std::size_t CodecBudget = std::size_t(256) << 20;
 // m3a.6 (M7i): with a partner's steps the cloth continues from the binary32 state it offers and
 // fits the corotational rotations to binary32-rounded positions (the partner's copy does the same);
 // every other run gives the frames of m3a.5.
-constexpr const char* SolverVersion = "m3a.6";
+// m3a.7 (M7j): with a partner's steps the corotational elements' blocks are balanced (exactly
+// invariant to an element's translation; the partner's copy does the same): a free sheet's elastic
+// forces sum to zero; every other run gives the frames of m3a.6.
+constexpr const char* SolverVersion = "m3a.7";
 constexpr const char* StateFormat = "cloth.shell.state.v2";
 constexpr const char* LoadPort = "surface_load";
 constexpr const char* StatePort = "surface_state";

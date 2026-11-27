@@ -10,6 +10,13 @@ RISE ASCII SCENE 7
 #                   (frame_origin_s, end_time_s) lets it do so before the first bake.                       #
 #                                                                                                           #
 #   Bake:           bin/tools/rise_sim bake <this scene> campfire   (Metal; hours at tier 8)                 #
+#   Channels:       a fire.methane cache carries carbon, temperature, reaction, velocity and the chem      #
+#                   channels, so `fire_medium` binds all of them (a medium that leaves one out, or says    #
+#                   `chem_model none` over a cache that has them, is refused with the channels named).    #
+#                   The camera looks along +y at the burner (the domain is z-up, centred near 1.06 1.06).  #
+#   Render:         after the bake, bin/rise: `load <this scene>` then `render` (the frame at the scene's   #
+#                   current time, the window start); a fire render needs its primary output to be a        #
+#                   linear 32-bit EXR, which this scene declares (docs/SIMULATION_M8_RESULTS.md §14).      #
 #   Unbaked:        the scene loads with an empty medium named `flame` and a warning; fidelity_mode         #
 #                   predictive would refuse to load instead.                                                #
 #                                                                                                           #
@@ -26,12 +33,20 @@ pathtracing_pel_rasterizer
 	samples			16
 }
 
+file_rasterizeroutput
+{
+	pattern			rendered/fire_campfire_scene
+	type			EXR
+	bpp				32
+	color_space		Rec709RGB_Linear
+}
+
 pinhole_camera
 {
-	location		0 0.6 2.4
-	lookat			0 0.5 0
-	up				0 1 0
-	fov				35.0
+	location		1.06 -2.6 0.7
+	lookat			1.06 1.06 0.7
+	up				0 0 1
+	fov				40.0
 }
 
 fire_simulation
@@ -50,7 +65,11 @@ fire_medium
 	source				campfire.volume
 	channel_carbon		carbon
 	channel_temperature	temperature
-	chem_model			none
+	channel_chem_ch		chem_CH
+	channel_chem_c2		chem_C2
+	channel_chem_co2	chem_CO2
+	channel_reaction	reaction
+	channel_velocity	velocity
 }
 
 global_medium

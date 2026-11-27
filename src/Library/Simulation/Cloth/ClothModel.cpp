@@ -1074,6 +1074,7 @@ void ClothSystem::BeginLinearAt(const std::vector<double>& x0)
 		}
 	// M7h: the corotational model's elements (rotations the identity until the first step).
 	LinearElements(x0, elements_);
+	elements_.Balance();   // m7j
 	rotatedK_ = pattern_;
 	elements_.Assemble(rotatedK_);
 	linear_ = true;

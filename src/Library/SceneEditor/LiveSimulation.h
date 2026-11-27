@@ -99,7 +99,26 @@ namespace RISE
 				const std::string& solverId, const std::vector<unsigned char>& parameters,
 				std::shared_ptr<const Simulation::ISceneInputs> inputs, const Simulation::MeshSourceOptions& options,
 				const std::string& fingerprint, std::string& error );
+			//! A live run of a scene simulation that publishes transforms (a
+			//! transform.v1 output, e.g. rigid.bodies) and has no mesh: it drives
+			//! the transform_source objects that follow its bodies
+			//! (Job::SetLiveTransformProvider).  `consumerName` (the first such
+			//! object) is the name the run is addressed by, as a mesh run is by its
+			//! geometry's.  Same configuration capture as CreateForSimulation.
+			static std::unique_ptr<LiveSimulation> CreateForTransformSimulation(
+				const std::string& simulation, const std::string& consumerName,
+				const std::string& solverId, const std::vector<unsigned char>& parameters,
+				std::shared_ptr<const Simulation::ISceneInputs> inputs,
+				const std::string& fingerprint, std::string& error );
 			~LiveSimulation();	//!< stops and joins the solver thread
+
+			//! True for a transform run (no mesh: Geometry() must not be called).
+			bool IsTransform() const { return m_transform; }
+			//! The run's current publication, following restarts; null once the
+			//! run is gone.  Thread-safe and cheap (a transform run only).
+			std::function<std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot>()> TransformProvider() const;
+			//! Scene time of the run's first frame (a transform run).
+			double FirstSceneTime() const;
 
 			//! The scene simulation this run plays (empty for an API attach).
 			const std::string& SimulationName() const { return m_simulation; }
@@ -138,6 +157,8 @@ namespace RISE
 			struct Feed;
 			struct Run;
 			LiveSimulation() = default;
+			static bool StartTransformRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
+				const std::filesystem::path* record, Run& run, std::string& error );
 			static bool StartRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
 				const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource* topology,
 				const std::filesystem::path* record, Run& run, std::string& error );
@@ -154,6 +175,10 @@ namespace RISE
 			// the configuration fingerprint.
 			std::string						m_simulation, m_fingerprint;
 			std::shared_ptr<const Simulation::ISceneInputs> m_inputs;
+			// A transform run: the publication a Job follows across restarts.
+			struct Hub;
+			bool							m_transform = false;
+			std::shared_ptr<Hub>			m_hub;
 		};
 
 		//! The playback clock, as PlaybackClock::GetStatus reports it.

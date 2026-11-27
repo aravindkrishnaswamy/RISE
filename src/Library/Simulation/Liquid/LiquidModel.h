@@ -263,6 +263,8 @@ public:
 	bool Points(PointsFrame& frame, std::string& error) const;
 
 	Pool* ThreadPool() const { return pool_.get(); }
+	//! m7j, diagnostics: the level set's barrier of the coupled sheets (LiquidLevelSet.h).
+	const LevelSetBarrier& Barrier() const { return barrier_; }
 	//! Diagnostics only (not state; empty in the solver): called with a stage's name inside Step.
 	std::function<void(const char*)> stageHook;
 private:

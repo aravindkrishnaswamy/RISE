@@ -1369,3 +1369,194 @@ primary linear 32-bit EXR output; `renderanimation 0 0 1` works.
 1. The committed campfire scene's `fire_medium` channel bindings (§13.4, found here, not fixed).
 2. The certified-mode step-3 near-tie in two burner cells (§13.3), if bit-level certified agreement is wanted.
 3. §12.8 items 2–6 unchanged.
+
+## 14. Fire loose ends: the committed campfire scene, CLI `render`, the certified step-3 outlier (2026-11-27)
+
+Starts from `895950cd7` (solver version 3). **No solver output byte changed**: no solver, shader, key or version file
+was touched, and every key pin and digest test passes unchanged (§14.5).
+
+**Outcome.**
+
+1. **A refused `fire_medium` is now loud, and the committed `fire_campfire_scene` plays a fire.methane cache.** The scene
+   was written in M4 (`5015c4d39`) for `fire_simulation`'s `volume` output, read by `fire_medium { source campfire.volume }`
+   and baked by `rise_sim bake`, so it is meant to play a fire.methane cache; it never did, because it said
+   `chem_model none` and bound neither `reaction` nor `velocity`. It binds the chem triplet, `channel_reaction` and
+   `channel_velocity` now, declares a linear 32-bit EXR output, and its camera frames the burner (it looked at nothing).
+   A fast-tier test bakes a tiny CPU cache from the committed scene text and loads it.
+2. **`render` works on a fire scene.** The refusal was a documented guard (`docs/RENDER_PREPARATION_LIFECYCLE.md`: a prepared
+   render refuses a raw `SetProgress` pointer), hit by an accident: `render` installed its console progress callback and
+   `renderanimation` did not. `render` now leaves it out when the scene has time-varying media and draws the frame at the
+   scene's current time. The remaining requirement (a primary linear 32-bit EXR output) is now stated in the refusal.
+3. **The certified step-3 outlier is binary32 rounding of the canonical temperature, identical on both backends; no
+   error, no gate changed.** Details in §14.3.
+4. **`--agreement-fixed-vcycles 10`**, run: every step passes except step 3 energy, the same event (§14.4).
+
+### 14.1 The committed campfire scene and the silent refusal
+
+`Job::AddFireMediumBound` returned `false` with no log line for every channel mismatch: the cache must carry exactly the
+channels the medium binds (`reaction`, `velocity` and the chem triplet when the cache has them; `chem_model none` only
+when it has none). A fire.methane cache carries `carbon, temperature, reaction, velocity, chem_CH, chem_C2, chem_CO2`,
+so the committed scene (`chem_model none`, no `reaction`, no `velocity`) was refused as soon as a cache existed.
+Unbaked it loaded (an empty medium), which is why `SimulationSceneTest` never saw it.
+
+**The message** (chunk, what is wrong, how to fix it, what the scene binds, what the cache carries; also stored in the
+CST derive diagnostic, so the editor shows it):
+
+```
+Job::AddFireMedium:: fire_medium `flame`: the cache carries channel `reaction`, which the medium does not bind; add
+`channel_reaction reaction` (the scene binds: channel_carbon carbon, channel_temperature temperature, chem_model none;
+the cache .../cache_r/manifest.cbor carries: carbon, temperature, reaction, velocity, chem_CH, chem_C2, chem_CO2)
+```
+
+Every other silent `return false` in that function (name/schema mismatch, chem form, bound channel the cache lacks,
+first-frame mapping, preparation) and in the parser's `Finalize` (chem form, `channel_condensed`, `fidelity_mode`) now
+says why and names the chunk. Checked by hand: the old form, and a scene that leaves out only `channel_velocity`.
+
+**The scene** (`scenes/Tests/Simulation/fire_campfire_scene.RISEscene`): `channel_chem_ch chem_CH`, `channel_chem_c2 chem_C2`,
+`channel_chem_co2 chem_CO2`, `channel_reaction reaction`, `channel_velocity velocity` instead of `chem_model none` (the
+scratch scene of §13.4 had the same); a `file_rasterizeroutput` (EXR, 32 bit, `Rec709RGB_Linear`); the camera of the §13.4
+render (z-up, at `1.06 -2.6 0.7` looking along +y at the burner; the old one looked at `0 0.5 0`, outside the domain).
+Window, tier and mode are unchanged, so its predicted key is unchanged.
+
+**The other committed fire scenes.** The five `scenes/Tests/Volumes/pt_fire_phase_*` scenes use
+`multichannel_heterogeneous_medium` with painters and `chem_model none` (no cache), and no other scene uses `fire_medium`:
+nothing else has this problem. `SimulationSceneTest`'s own fire scenes are unbaked (empty medium) by design.
+
+**The test** (`FireCPUBackendTest`, fast tier, `CommittedCampfireScene`; the CPU-only suite grows by about 15 s):
+the committed scene's text with only `frame_origin_s/end_time_s` replaced by a one-step CPU bake (`backend cpu`, a private
+`cache`) is baked by `rise_sim`, then (a) a child loads it and its `flame` must be a `MultichannelHeterogeneousMedium`
+(not the empty placeholder); (b) the CLI `render` draws it to a primary EXR; (c) the same scene with the old
+`chem_model none` bindings must fail to load with a log naming ``fire_medium `flame` ``, `chem_CH` and what the cache
+`carries:`. The bake is tier 6, one step (about 6 s).
+
+### 14.2 CLI `render` of a fire scene
+
+*Why it was refused.* `AsciiCommandParser::ParseRasterize` installed a stack `StdOutProgress` with `SetProgress`; a scene with
+time-varying media (`IScene::HasTimeVaryingMedia`) takes the prepared-render freeze, and `Job::PreparedProgressSafe` refuses
+any progress callback that is not a `PreparedRenderProgress` (`unsafe_progress_callback`), because the frozen render cannot
+call user code. That is the documented design. `ParseRasterizeAnimation` already avoids the callback ("Prepared time-varying
+media reject external progress callbacks"); `render` did not. So it was an omission in the command, not in the guard.
+
+*Change.* `IJob::RenderAdmitsRawProgress() const` (default true, a legal tail append: one line in
+`tests/IJobVtableManifest.txt`; `Job` returns false when the scene has time-varying media); `ParseRasterize` installs the
+callback only when it is true, so ordinary scenes print exactly what they printed. The guard is unchanged, and its message
+now says what to do. `RasterizeRegion` (`render l r t b`) goes the same way. The frame is drawn at the scene's current
+time, `animOptions.time_start`, the time `renderanimation 0 0 1` draws.
+
+*The EXR requirement.* A fire render records provenance in its primary output: with a PNG as the only output the refusal
+listed `output_provenance_unavailable` among seven reason codes; it now appends "a fire render records its provenance in
+its primary output, which must be a linear 32-bit EXR: make the scene's first file_rasterizeroutput `type EXR`, `bpp 32`,
+`color_space Rec709RGB_Linear`". Checked by hand: a one-step CPU cache of the committed scene, `load` then `render`:
+`Progressive:: All pixels complete`, EXR and denoised EXR written (`rendered/fire14_campfire.exr`, 960×540, 4 spp); the
+same scene with a PNG output prints the new message. Render results of existing scenes are unchanged (no scene without a
+fire medium takes the new branch; the unsafe-callback path was a refusal before).
+
+### 14.3 The certified step-3 outlier: a binary32 rounding flip, the same on both backends
+
+**Reproduced.** Certified mode, tier 4, 3 steps, each backend from the start: step 3 energy 3.9e-6 (bound 3e-6),
+temperature 1.0e-7, species 1.0e-7, velocity 7.1e-6; T differs by 3.12e-5 K at (15,17,0) and 3.06e-5 K at (19,17,0), and by
+at most 1.0e-6 K in every other cell (52 cells unequal). At step 2 the two backends differ by 5.96e-8 in the N₂ density of
+those two cells (one binary32 ulp) and by ≤ 4.2e-7 K in temperature everywhere.
+
+**Is it a backend error?** No. One step from **identical bytes** agrees whichever backend's step-2 bytes are used:
+Metal restored from the CPU's step 2 equals the CPU's own step 3 (energy 8.4e-10, temperature 6.3e-15, velocity 6.8e-8 of
+scale; the outlier cells differ by < 2e-12 K), and the CPU from Metal's step 2 equals Metal's step 3 (§13.3, 3.3e-12).
+The two step-3 results differ only because the two step-2 states differ by one ulp in those cells, and both backends map
+each input the same way. The Picard iteration counts, active-set and limiter flags (`RISE_FIRE_PICARD_TRACE`) are equal
+from either start (2, 2, 3; no cycles, no discontinuous class). So it is neither a CPU nor a Metal departure from the spec,
+and `RISE_FIRE_CPU_BISECT` (which compares the two owners on the same bytes) has nothing to find.
+
+**The cause.** The source build (`FireProductionCanonicalSourceAuthority::Build`, host code shared by both backends)
+inverts every cell's binary32 conservative tuple to a temperature and **rounds it to binary32**
+(`canonicalTemperatureK[cell]=static_cast<float>(invertedTemperatureK)`; spec: the canonical temperature is published in
+binary32). The rim cells are being heated by the pilot, whose energy increment is
+`(E(T_set) − E(T_begin))/V` with `T_begin` that rounded value, so a one-ulp change of `T_begin` (3.05e-5 K at 305 K) moves the
+increment by ρ·c_p·ulp = 1185 × 3.05e-5 = 0.036 J/m³: the observed 0.035 J/m³ (36 ulps of E = 9,085 J/m³). Measured with the
+new diagnostic `FireCPUBackendTest --canonical-temperature STATE_A STATE_B X Y Z` (the inversion over the case bounds, then
+the binary32 rounding):
+
+| Cell, step-2 states | canonical root, Metal's state | root, CPU's state | root difference | rounded to binary32 |
+|---|---:|---:|---:|---:|
+| (15,17,0) | 305.215103283 K | 305.215103006 K | −2.77e-7 K | **differ by one ulp (3.0518e-5 K)** (rounding midpoint 305.21510315 lies between them) |
+| (19,17,0) | 305.215103405 K | 305.215103128 K | −2.77e-7 K | **one ulp** (the midpoint lies between them again) |
+| (14,16,0) | 305.217372928 K | 305.217373347 K | +4.19e-7 K | same value (midpoint 1.2e-5 K away) |
+| (15,16,0) | 305.214963579 K | 305.214963579 K | 3.4e-13 K | same value |
+
+Of the roughly 44 cells whose roots differ at all, two (a mirror pair; their inputs are identical by symmetry) have a
+rounding midpoint inside the 2.8e-7 K interval between the two roots: a probability of about 2.8e-7/3.05e-5 = 1 % per
+differing cell. The metric then reads that one ulp of T (relative to 300 K) as 3.9e-6 of the field's largest |E|: the
+sensible energy is measured from 300 K, so at ΔT ≈ 7.9 K the rounding of T near 308 K is coarse by a factor
+T/ΔT ≈ 39 compared with E's own ulp. It is the *worst case for one flip*: ρ·c_p·ulp(T)/max|E| = 3.9e-6 at this stage; any
+single flip of a pilot-heated cell reaches it.
+
+**Why it heals at step 4 (1.6e-7).** The pilot step is `E_new = E_begin·(1 − 1/V) + E(T_set)/V` with `V = T_set/T_begin`
+≈ 1.0087, so a begin-state error is multiplied by 1 − 1/V ≈ 0.009 when the cell is heated again, and the next step's
+error is the 3.5e-8 plus ordinary rounding (1.6e-7 measured). This is the expected decay, not isolated separately.
+
+**Why fast mode (the gated test) does not show it.** Fast mode's step-3 energy is 1.1e-7: its step-2 bytes differ from
+the certified ones (the early V-cycle stop), so no cell's root happens to straddle a midpoint; a straddle is a 1 % event
+per differing cell and appears or not by chance. The gated test (8 steps, fast, bound 3e-6) sees ≤ 1.3e-6.
+
+**Decision.** Legitimate sensitivity: the spec's canonical binary32 temperature is a rounding decision on an input that
+differs by one ulp. Nothing was changed in either backend or in the spec; **no gate was loosened**. The certified and
+fixed-V-cycle curves are diagnostics (not in the schedule), and their step-3 energy exceeds the fast-mode bound 3e-6 by
+this rounding when a straddle occurs. If a bit-level certified bound is ever wanted, it must allow one binary32
+temperature ulp in a pilot-heated cell, `ρ·c_p·ulp(T)`, (about 4e-6 of max |E| at 300–512 K), rather than the fast-mode value.
+
+### 14.4 `--agreement-fixed-vcycles 10` (fast mode, certified V-cycle count; tier 4)
+
+| Step | species | E | T | velocity |
+|---:|---:|---:|---:|---:|
+| 1 | 1.0e-7 | 8.0e-8 | 6.9e-10 | 4.8e-7 |
+| 2 | 1.0e-7 | 8.0e-8 | 1.4e-9 | 3.1e-6 |
+| **3** | 1.0e-7 | **3.76e-6** | 9.9e-8 | 5.8e-6 |
+| 4 | 1.5e-7 | 1.6e-7 | 6.5e-9 | 8.3e-6 |
+| 5–10 | ≤ 1.5e-7 | ≤ 1.7e-6 (step 6), ≤ 1.5e-6 after | ≤ 9.6e-8 | ≤ 9.6e-6 |
+
+The test's per-step check **fails at step 3 only** (energy 3.76e-6 against 3e-6), the event of §14.3: in the three-step
+rerun the pair is (19,17,0): its two states' roots straddle the rounding midpoint (305.215103405 / 305.215103128 K, midpoint
+305.21510315 K), one ulp apart in `T_begin`, T differs by 3.06e-5 K there and by ≤ 1.3e-6 K elsewhere. (In this run the other
+cell of the pair happens to fall on one side for both states.) Step 1 passes (rounding bounds), and **one step from Metal's
+step-2 and step-5 bytes agrees to rounding**: step 3 energy 8.4e-10, T 6.3e-15, velocity 6.8e-8; step 6 energy 1.7e-9, T 4.6e-14,
+velocity 6.9e-8. So this diagnostic curve has the same single exceedance as the certified one, with the same cause, and it
+is not a gate; the fast-mode default curve, which is the gate, passes (below).
+
+### 14.5 What changed, tests, warnings
+
+| File | Change |
+|---|---|
+| `src/Library/Job.cpp` | `AddFireMediumBound`: every refusal logs the chunk, the reason, the bound channels and the cache's channels (and fills the derive-diagnostic sink); the fire-render refusal names the EXR requirement; `unsafe_progress_callback` says what to do; `Job::RenderAdmitsRawProgress` |
+| `src/Library/Parsers/ChunkParserRegistry.cpp` | `fire_medium` `Finalize`: chem form, `channel_condensed`, `fidelity_mode` refusals say why (fire lines only) |
+| `src/Library/Parsers/AsciiCommandParser.cpp` | `render` installs its console progress callback only where the scene admits one |
+| `src/Library/Interfaces/IJob.h`, `src/Library/Job.h`, `tests/IJobVtableManifest.txt` | `IJob::RenderAdmitsRawProgress() const` (tail append, default true) and its manifest line |
+| `scenes/Tests/Simulation/fire_campfire_scene.RISEscene` | channel bindings, EXR output, camera (§14.1) |
+| `tests/FireCPUBackendTest.cpp` | `CommittedCampfireScene` (bake, load, CLI render, old-binding refusal), child `--load-fire-scene-child`, `RunTool` takes a stdin file, diagnostic `--canonical-temperature` |
+
+No new source file (no build list changed), no Metal source, solver, key, version, mirror or digest file changed.
+Not touched: liquid, cloth, rigid, bake manager, Xcode. `tests/test_schedule.tsv` and the contract doc unchanged.
+
+*Tests.* Build (`all tests build-tool/rise_sim build-tool/simulation_cache_import`): warning-free (the first attempts hit
+other agents' transient edits to `Job.cpp` and `LiquidClothCouplingTest`; retried unchanged).
+`./run_all_tests.sh --tier fast --timeout 300 --filter 'Fire*,SimulationSceneTest,SceneEditorSuggestionsTest,SourceHygieneTest'`
+(17 tests): 15 passed on the first run, including `FireCPUBackendTest` with the new checks (50 s, the scheduled 50 s; the
+slot in `tests/test_schedule.tsv` is unchanged), `FireCPUMetalAgreementTest` (31 s), `FireSequenceTest`, `SimulationSceneTest`;
+`FireSolverTest` failed its stop/resume byte-identity (the known relink race: frames identical to the bake before it, only the
+producer build identity differs) and `SourceHygieneTest` failed the IJob manifest check because my new manifest line was
+spelled `()const{` where the normalised header form is `()const {`. After fixing the line, `FireSolverTest` (197 s) and
+`SourceHygieneTest` (711 passed, 0 failed) passed in a second run. So all 17 pass.
+
+### 14.6 Verified versus inferred
+
+| Claim | Basis |
+|---|---|
+| The committed scene now loads a fire.methane cache, and the old bindings are refused with the channels named | Fast-tier test (tier 6 CPU bake of the committed scene text); by hand |
+| `render` draws a fire scene (EXR) | Fast-tier test and by hand on a one-step cache; **not** run on a scene whose window starts at 1.0 s (hours to bake) |
+| The step-3 difference is a binary32 rounding flip common to both backends | Cross-restores from identical bytes (both directions), equal Picard counts, the straddled midpoint measured in the two cells of the certified run and the one of the fixed-cycle run |
+| The step-4 decay factor 0.009 | From the pilot formula and the measured 1.6e-7; not isolated by an experiment |
+| Fast mode avoids the event by chance of the rounding | Inferred from the 1 %-per-cell estimate and the fast run's 1.1e-7; not measured over other trajectories |
+| The fixed-V-cycle curve fails only at step 3 | One 10-step run, and a 3-step rerun that localised the cell |
+
+### 14.7 Open items (supersede §13.7)
+
+1. Nothing remains of §13.7 items 1 and 2. §12.8 items 2–6 are unchanged.
+2. A committed scene's `fire_medium` rendered from a real tier-6 bake with a window at 1.0 s was not run (hours of Metal).

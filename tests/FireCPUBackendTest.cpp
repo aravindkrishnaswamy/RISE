@@ -16,16 +16,23 @@
 //   --agreement-certified N, --agreement-fixed-vcycles N   the same in other modes.
 //   --cost TIER STEPS  timing only: CPU and Metal seconds per step at that tier.
 //   Diagnostics (results section 11): --splice-checkpoint SOURCE TARGET OUT,
+//   --canonical-temperature STATE_A STATE_B X Y Z (section 14: binary32 rounding of a cell's canonical temperature),
 //   --long-run-child ..., --hash-check.
 //
 // Every fire run is a child process: the fire library keeps process-wide state.
 #include "../src/Library/Simulation/SimulationHost.h"
+#include "../src/Library/Utilities/FireSimulationRecords.h"
 #include "../src/Library/Simulation/SimulationSolver.h"
 #include "../src/Library/Simulation/Fire/FireSolver.h"
 #include "../src/Library/Simulation/Fire/FireParameterSchema.h"
 #include "../src/Library/Simulation/SimulationCache.h"
 #include "../src/Library/Utilities/FireProductionCompute.h"
 #include "../src/Library/Utilities/FireProductionAdvection.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
+#include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Utilities/Reference.h"
 #if defined(RISE_ENABLE_OPENVDB)
 #include "../src/Library/Simulation/Fire/FireRun.h"
 #include "../src/Library/Simulation/Fire/FireRunCheckpoint.h"
@@ -52,6 +59,8 @@
 #include <unistd.h>
 extern char** environ;
 #endif
+
+namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
 
 namespace {
 using namespace RISE;
@@ -467,11 +476,45 @@ void SlicedHashMatchesSerial()
 		"zero bytes, 1/3/8 workers)");
 }
 
+// M8e (results section 14): load a scene and report whether its `flame` medium is the baked fire
+// (a MultichannelHeterogeneousMedium) or the empty placeholder an unbaked fire gives.  The load's
+// errors are captured so a refusal can be checked for naming the chunk and the channels.
+class CaptureLog : public virtual ILogPrinter, public virtual Implementation::Reference
+{
+public:
+	void Print(const LogEvent& event) override
+	{
+		if (event.eType == eLog_Error || event.eType == eLog_Warning || event.eType == eLog_Fatal)
+			text += std::string(event.szMessage) + "\n";
+	}
+	void Flush() override {}
+	std::string text;
+protected:
+	~CaptureLog() override {}
+};
+
+int LoadFireSceneChild(const char* scene)
+{
+	CaptureLog* capture = new CaptureLog();
+	GlobalLogPriv()->AddPrinter(capture);
+	capture->release();
+	IJobPriv* job = nullptr;
+	const bool created = RISE_CreateJobPriv(&job) && job;
+	const bool loaded = created && job->LoadAsciiSceneViaCst(scene);
+	const IMedium* medium = created ? job->GetMedium("flame") : nullptr;
+	std::string errors = capture->text;
+	for (char& c : errors) if (c == '\n') c = '|';
+	std::cout << "LOADED " << loaded << "\nFIRE " << (dynamic_cast<const MultichannelHeterogeneousMedium*>(medium) ? 1 : 0)
+		<< "\nERRORS " << errors << "\n";
+	std::cout.flush();
+	std::_Exit(0);
+}
+
 // M8d (results section 12.4): `backend cpu` chosen in a fire scene.  rise-sim bakes it on the
 // CPU backend (the launch receipt names the CPU step) under the scene's predicted key, and the
 // same completed parameters run through the in-process host with that key.
 int RunTool(const fs::path& tool, const std::vector<std::string>& args, const std::vector<std::string>& extra,
-	const fs::path& log)
+	const fs::path& log, const fs::path& input = {})
 {
 	std::vector<std::string> env;
 	for (char** e = environ; *e; ++e) { const std::string s = *e; if (s.rfind("RISE_FIRE_", 0) != 0) env.push_back(s); }
@@ -488,6 +531,7 @@ int RunTool(const fs::path& tool, const std::vector<std::string>& args, const st
 	if (child == 0) {
 		const int fd = ::open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 		if (fd >= 0) { ::dup2(fd, 1); ::dup2(fd, 2); }
+		if (!input.empty()) { const int in = ::open(input.c_str(), O_RDONLY); if (in >= 0) ::dup2(in, 0); }
 		::execve(a[0], a.data(), p.data());
 		::_exit(127);
 	}
@@ -495,6 +539,76 @@ int RunTool(const fs::path& tool, const std::vector<std::string>& args, const st
 	int status = 0;
 	while (::waitpid(child, &status, 0) < 0) if (errno != EINTR) return -1;
 	return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+}
+
+// M8e (results section 14): the committed `fire_campfire_scene` plays a fire.methane cache.  The scene's
+// fire_simulation window (hours at tier 6) is replaced by a tiny CPU bake; its fire_medium is untouched.
+// A baked cache is loaded by that medium (a fire medium, not the empty placeholder), and the old
+// `chem_model none` binding is refused with a message naming the chunk and the channels.
+void CommittedCampfireScene(const fs::path& root, const fs::path& tool, const std::vector<std::string>& trust)
+{
+	const fs::path dir = root/"committed";
+	fs::create_directories(dir);
+	const fs::path source = self.parent_path().parent_path().parent_path()/"scenes"/"Tests"/"Simulation"/"fire_campfire_scene.RISEscene";
+	std::string text = ReadText(source);
+	// Replace the fire_simulation's window (frame_origin_s, end_time_s) by a one-step bake on the CPU backend.
+	const auto replaceLine = [&text](const std::string& key, const std::string& with) {
+		const std::size_t at = text.find("\n\t" + key);
+		if (at == std::string::npos) return false;
+		const std::size_t end = text.find('\n', at + 1);
+		text.replace(at + 1, end - at, with);
+		return true;
+	};
+	// The scene's own EXR output pattern points into the repository's rendered/; the test renders into its scratch.
+	const bool patterned = text.empty() ? false : replaceLine("pattern", "\tpattern\t" + (dir/"frame").string() + "\n");
+	const bool windowed = patterned && !text.empty() && replaceLine("frame_origin_s", "\tcache\tcache_committed\n\tbackend\tcpu\n\tframe_origin_s\t0\n") &&
+		replaceLine("end_time_s", "\tend_time_s\t0.001\n");
+	Check(windowed, "the committed fire_campfire_scene is readable and states its window", source.string());
+	if (!windowed) return;
+	WriteBytes(dir/"campfire.RISEscene", Bytes(text.begin(), text.end()));
+	const int baked = RunTool(tool, {"bake", (dir/"campfire.RISEscene").string(), "campfire"}, trust, dir/"bake.log");
+	Check(baked == 0, "the committed campfire scene (window shortened, CPU backend) bakes a fire.methane cache", ReadText(dir/"bake.log"));
+	if (baked != 0) return;
+	const auto load = [&](const fs::path& scene, const std::string& tag) {
+		RunTool(self, {"--load-fire-scene-child", scene.string()}, trust, dir/(tag + ".log"));
+		return ReadText(dir/(tag + ".log"));
+	};
+	const std::string good = load(dir/"campfire.RISEscene", "load_good");
+	Check(Field(good, "LOADED") == "1" && Field(good, "FIRE") == "1",
+		"the committed campfire scene's fire_medium loads the baked fire.methane cache (a fire medium, not the empty one)", good);
+	// The CLI's plain `render` draws a fire scene at the scene's current time (it used to be refused
+	// because the command installed a raw progress callback, which a fire's prepared render refuses).
+	{
+		const fs::path commands = dir/"render_commands.txt";
+		const std::string script = "load " + (dir/"campfire.RISEscene").string() + "\nrender\nquit\n";
+		WriteBytes(commands, Bytes(script.begin(), script.end()));
+		const fs::path rise = self.parent_path().parent_path()/"rise";
+		const int drew = RunTool(rise, {}, trust, dir/"render.log", commands);
+		Check(drew == 0 && fs::exists(dir/"frame.exr") && ReadText(dir/"render.log").find("unsafe_progress_callback") == std::string::npos,
+			"the CLI `render` command draws the committed fire scene (a primary linear 32-bit EXR) from the baked cache", ReadText(dir/"render.log"));
+	}
+	// The old binding (`chem_model none`, no reaction/velocity) over the same cache is refused, loudly.
+	std::string old = ReadText(dir/"campfire.RISEscene");
+	std::string kept;
+	bool dropped = false;
+	for (std::size_t at = 0; at < old.size();) {
+		const std::size_t end = old.find('\n', at);
+		const std::string line = old.substr(at, end == std::string::npos ? std::string::npos : end - at + 1);
+		const bool binding = line.rfind("\tchannel_chem_", 0) == 0 || line.rfind("\tchannel_reaction", 0) == 0 ||
+			line.rfind("\tchannel_velocity", 0) == 0;
+		dropped = dropped || binding;
+		kept += binding ? (kept.find("\tchem_model\tnone") == std::string::npos ? "\tchem_model\tnone\n" : "") : line;
+		if (end == std::string::npos) break;
+		at = end + 1;
+	}
+	Check(dropped, "the committed scene binds the chem, reaction and velocity channels");
+	if (!dropped) return;
+	old = kept;
+	WriteBytes(dir/"old_binding.RISEscene", Bytes(old.begin(), old.end()));
+	const std::string refusedLog = load(dir/"old_binding.RISEscene", "load_old");
+	Check(Field(refusedLog, "LOADED") != "1" && Field(refusedLog, "ERRORS").find("fire_medium `flame`") != std::string::npos &&
+		Field(refusedLog, "ERRORS").find("chem_CH") != std::string::npos && Field(refusedLog, "ERRORS").find("carries:") != std::string::npos,
+		"a medium that says `chem_model none` (or leaves reaction/velocity out) over that cache is refused with the chunk and the channels named", refusedLog);
 }
 
 void SceneSelection(const fs::path& root)
@@ -525,6 +639,7 @@ void SceneSelection(const fs::path& root)
 		Field(in, "BACKEND") == "cpu" && Field(in, "FINISHED") == "1",
 		"the same scene parameters run on the CPU backend through the in-process host, under the scene's predicted key",
 		in + " status key " + shown);
+	CommittedCampfireScene(root, tool, trust);
 }
 
 void CPUOnly(const fs::path& root)
@@ -712,6 +827,40 @@ int InProcessSceneChild(const fs::path& dir)
 	std::_Exit(0);
 }
 
+#if defined(RISE_ENABLE_OPENVDB)
+// Diagnostic (results section 14, certified step 3): for one cell of two accepted states, the canonical
+// temperature the next step's source build computes from the binary32 tuple (the inversion over the case
+// bounds 300-2300 K, then rounded to binary32 as FireProductionCanonicalSourceAuthority::Build does), its
+// distance to the nearest binary32 rounding midpoint, and whether the two states round to the same value.
+int CanonicalTemperatureDiagnostic(const char* pathA, const char* pathB, int x, int y, int z)
+{
+	double root[2] = {0, 0};
+	float rounded[2] = {0, 0};
+	for (int k = 0; k < 2; ++k) {
+		FireRun::MethaneRunCheckpoint state;
+		std::string error;
+		if (!FireState(ReadAll(k ? pathB : pathA), fs::path(pathA).parent_path()/"canonical_temperature.tmp", state, error)) {
+			std::cout << "ERROR " << error << "\n"; return 1; }
+		const std::size_t index = static_cast<std::size_t>(x) + state.dimensions[0]*(static_cast<std::size_t>(y) +
+			state.dimensions[1]*static_cast<std::size_t>(z));
+		const auto q = FireSim::ToConservativeVector(state.states[index]);
+		double pressure = 0;
+		if (!FireSimulationMethaneRecord::PhysicalV1().InvertAcceptedConservativeStateByComponentOrder(q.value.data(), q.value.size(),
+				300.0, 2300.0, FireStateProducerPrecision::Binary32, root[k], pressure, &error)) {
+			std::cout << "ERROR " << error << "\n"; return 1; }
+		rounded[k] = static_cast<float>(root[k]);
+		const float up = std::nextafter(rounded[k], 1.0e9f), down = std::nextafter(rounded[k], 0.0f);
+		const double midUp = 0.5*(double(rounded[k]) + double(up)), midDown = 0.5*(double(rounded[k]) + double(down));
+		std::cout << std::setprecision(12) << "STATE " << k << " canonical_root_K " << root[k] << " binary32_K " << double(rounded[k])
+			<< " ulp_K " << double(up) - double(rounded[k]) << " distance_to_nearest_midpoint_K "
+			<< std::min(std::fabs(root[k] - midUp), std::fabs(root[k] - midDown)) << "\n";
+	}
+	std::cout << std::setprecision(12) << "ROOT_DIFFERENCE_K " << root[1] - root[0] << "\nROUNDED_DIFFERENCE_K "
+		<< double(rounded[1]) - double(rounded[0]) << "\n";
+	return 0;
+}
+#endif
+
 int ConfigureChildMain(bool cpu)
 {
 	std::string error;
@@ -772,6 +921,11 @@ int main(int argc, char** argv)
 	if (argc == 2 && std::strcmp(argv[1], "--refusal-child") == 0) return RefusalChildMain();
 #if defined(RISE_ENABLE_OPENVDB)
 	if (argc == 3 && std::strcmp(argv[1], "--in-process-scene-child") == 0) return InProcessSceneChild(argv[2]);
+	if (argc == 7 && std::strcmp(argv[1], "--canonical-temperature") == 0)
+		return CanonicalTemperatureDiagnostic(argv[2], argv[3], std::atoi(argv[4]), std::atoi(argv[5]), std::atoi(argv[6]));
+#if !defined(RISE_FIRE_CPU_AGREEMENT_ONLY)
+	if (argc == 3 && std::strcmp(argv[1], "--load-fire-scene-child") == 0) return LoadFireSceneChild(argv[2]);
+#endif
 #endif
 	if (argc == 5 && std::strcmp(argv[1], "--splice-checkpoint") == 0) return SpliceCheckpoint(argv[2], argv[3], argv[4]) ? 0 : 1;
 #if !defined(_WIN32) && defined(RISE_ENABLE_OPENVDB) && !defined(RISE_FIRE_CPU_AGREEMENT_ONLY)

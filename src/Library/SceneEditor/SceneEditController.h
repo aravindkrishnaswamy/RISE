@@ -7636,6 +7636,9 @@ namespace RISE
 		bool RebindParked_( Implementation::LiveSimulation& live,
 			std::unique_ptr<Simulation::MeshCacheSource>& source, double installTime,
 			bool force, std::string& error );
+		//! The transform twin of RebindParked_ (a live run with no mesh).
+		bool DriveTransformsParked_( Implementation::LiveSimulation& live, bool attach, double installTime,
+			bool force, std::string& error );
 		bool RestartLive_( const std::string& geometry, const std::vector<unsigned char>* parameters,
 			const std::string* record, std::string& error );
 		// M4: a scene simulation's live run, built off the scene locks from what

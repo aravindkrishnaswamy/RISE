@@ -95,6 +95,7 @@ struct SheetDynamics {
 	std::string elementsDomain;        // the accepted elements' index-space digest
 	std::vector<double> origin;        // sum g_e (3 per vertex): the model's elastic gradient at x0
 	double rotationLag = 0;            // the largest rotation lag of a step (rad; LiquidModel)
+	double linearisationError = 0;     // m7j: the largest edge strain of a step's first correction with the rotations refitted (LiquidModel)
 	// Not state: rebuilt every step.
 	Cloth::BlockMatrix rotated;        // m7h: sum R_e K_e R_e^T at the step's rotations
 	Cloth::BlockMatrix matrix;         // S plus the step's face mass, pins masked

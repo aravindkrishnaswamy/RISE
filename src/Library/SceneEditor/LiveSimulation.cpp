@@ -14,6 +14,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Simulation/SimulationHost.h"
 #include "../Simulation/SimulationTimeline.h"
+#include "../Simulation/SimulationTransform.h"
 #include "../Simulation/SimulationWorker.h"
 #include <algorithm>
 #include <cmath>
@@ -106,6 +107,7 @@ struct LiveSimulation::Run
 	std::unique_ptr<Simulation::MeshCacheSource>	monitor;	//!< timing queries (the clock thread)
 	std::unique_ptr<Simulation::MeshCacheSource>	bind;		//!< until bound into the geometry
 	std::string										lastError;
+	std::string										output;		//!< a transform run: the transform.v1 output it publishes
 
 	~Run()
 	{
@@ -121,6 +123,84 @@ struct LiveSimulation::Run
 		host.reset();	// joins the worker thread
 	}
 };
+
+//! A transform run's stable address for its publication: restarts swap the feed.
+struct LiveSimulation::Hub
+{
+	std::mutex					mutex;
+	std::shared_ptr<Feed>		feed;
+};
+
+bool LiveSimulation::StartTransformRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
+	const std::filesystem::path* record, Run& run, std::string& error )
+{
+	RISECBOR64::Value value;
+	if( !Simulation::ParseSolverParameters( parameters, kParameterBudget, value, error ) ) return false;
+	std::unique_ptr<Simulation::ISimulationSolver> solver = Simulation::CreateSolver( solverId, error );
+	if( !solver ) return false;
+	auto host = std::make_unique<Simulation::InProcessHost>( std::move( solver ) );
+	if( !host->Configure( value, run.sceneInputs ? *run.sceneInputs : static_cast<const Simulation::ISceneInputs&>( run.inputs ),
+		error ) ) return false;
+	if( !host->Description().capabilities.interactive )
+		return Fail( error, "solver `" + solverId + "` is not interactive; bake it with rise-sim instead" );
+	for( const auto& o : host->Description().cache.outputs )
+		if( o.type == Simulation::TransformCodec ) { run.output = o.name; break; }
+	if( run.output.empty() ) return Fail( error, "solver `" + solverId + "` publishes no transform.v1 output" );
+	if( record && !host->Record( *record, kRecordBudget, error ) ) return false;
+	if( !host->Start( error ) ) return false;
+	Simulation::AdvanceResult result;
+	if( !host->Step( Simulation::AdvanceRequest{}, result, error ) ) return false;
+	run.feed = std::make_shared<Feed>();
+	run.feed->host = host.get();
+	run.host = std::move( host );	// from here ~Run clears the feed before the host goes
+	run.parameters = parameters;
+	if( record ) run.record = *record;
+	return true;
+}
+
+std::unique_ptr<LiveSimulation> LiveSimulation::CreateForTransformSimulation( const std::string& simulation,
+	const std::string& consumerName, const std::string& solverId, const std::vector<unsigned char>& parameters,
+	std::shared_ptr<const Simulation::ISceneInputs> inputs, const std::string& fingerprint, std::string& error )
+{
+	std::unique_ptr<LiveSimulation> live( new LiveSimulation() );
+	live->m_name = consumerName;
+	live->m_solverId = solverId;
+	live->m_simulation = simulation;
+	live->m_fingerprint = fingerprint;
+	live->m_inputs = std::move( inputs );
+	live->m_transform = true;
+	std::unique_ptr<Run> run( new Run() );
+	run->sceneInputs = live->m_inputs;
+	if( !StartTransformRun( solverId, parameters, nullptr, *run, error ) ) return nullptr;
+	live->m_hub = std::make_shared<Hub>();
+	live->m_hub->feed = run->feed;
+	live->m_run = std::move( run );
+	return live;
+}
+
+std::function<std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot>()> LiveSimulation::TransformProvider() const
+{
+	const std::shared_ptr<Hub> hub = m_hub;
+	return [hub]() -> std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> {
+		if( !hub ) return nullptr;
+		std::shared_ptr<Feed> feed;
+		{
+			std::lock_guard<std::mutex> lock( hub->mutex );
+			feed = hub->feed;
+		}
+		if( !feed ) return nullptr;
+		std::lock_guard<std::mutex> lock( feed->mutex );
+		if( !feed->host ) return nullptr;
+		return feed->host->Snapshot();
+	};
+}
+
+double LiveSimulation::FirstSceneTime() const
+{
+	std::lock_guard<std::mutex> lock( m_mutex );
+	if( !m_run || !m_run->host ) return 0;
+	return m_run->host->Description().cache.startTime;
+}
 
 bool LiveSimulation::StartRun( const std::string& solverId, const std::vector<unsigned char>& parameters,
 	const Simulation::MeshSourceOptions& options, const Simulation::MeshCacheSource* topology,
@@ -282,7 +362,9 @@ bool LiveSimulation::PrepareRestart( const std::vector<unsigned char>* parameter
 	}
 	std::unique_ptr<Run> run( new Run() );
 	run->sceneInputs = m_inputs;
-	if( !StartRun( m_solverId, parameters ? *parameters : current, m_options,
+	if( m_transform ) {
+		if( !StartTransformRun( m_solverId, parameters ? *parameters : current, record, *run, error ) ) return false;
+	} else if( !StartRun( m_solverId, parameters ? *parameters : current, m_options,
 		m_geometry->HasSource() ? &m_geometry->Source() : nullptr, record, *run, error ) )
 		return false;
 	std::lock_guard<std::mutex> lock( m_mutex );
@@ -299,6 +381,10 @@ void LiveSimulation::CommitRestart()
 		retired = std::move( m_run );
 		m_run = std::move( m_pending );
 		++m_restarts;
+		if( m_hub ) {
+			std::lock_guard<std::mutex> hubLock( m_hub->mutex );
+			m_hub->feed = m_run->feed;
+		}
 	}
 	retired.reset();
 }
@@ -316,6 +402,18 @@ void LiveSimulation::AbortRestart()
 bool LiveSimulation::Latest( double& sceneTime, bool& finished ) const
 {
 	std::lock_guard<std::mutex> lock( m_mutex );
+	if( m_transform ) {
+		if( !m_run || !m_run->host ) return false;
+		const std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> snapshot = m_run->host->Snapshot();
+		if( !snapshot ) return false;
+		const Simulation::OutputSpan span = snapshot->Span( m_run->output );
+		Simulation::CacheEntry entry;
+		if( span.count == 0 || !snapshot->FindEntry( span.last, m_run->output, entry ) ) return false;
+		sceneTime = entry.time;
+		const Simulation::CacheDescription& d = snapshot->Description();
+		finished = span.last >= d.firstIndex + static_cast<std::int64_t>( d.count ) - 1 || !m_run->host->Busy();
+		return true;
+	}
 	if( !m_run || !m_run->monitor ) return false;
 	const Simulation::MeshCacheSource& monitor = *m_run->monitor;
 	std::int64_t latest = 0;
@@ -336,6 +434,32 @@ LiveSimulationStatus LiveSimulation::GetStatus() const
 	std::lock_guard<std::mutex> lock( m_mutex );
 	status.solverId = m_solverId;
 	status.restarts = m_restarts;
+	if( m_transform && m_run && m_run->host ) {
+		const Simulation::InProcessHost& host = *m_run->host;
+		const Simulation::SolverPosition position = host.Position();
+		const std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> snapshot = host.Snapshot();
+		status.playing = host.Busy();
+		status.finished = position.finished;
+		status.simulatedTime = position.time;
+		status.recording = !m_run->record.empty();
+		status.error = m_run->lastError;
+		status.failed = !status.error.empty();
+		if( snapshot ) {
+			const Simulation::CacheDescription& d = snapshot->Description();
+			status.cacheKey = d.key;
+			status.framesTotal = d.count;
+			status.firstSceneTime = d.startTime;
+			status.lastSceneTime = d.startTime + d.interval * static_cast<double>( d.count > 0 ? d.count - 1 : 0 );
+			const Simulation::OutputSpan span = snapshot->Span( m_run->output );
+			status.framesPublished = span.count;
+			Simulation::CacheEntry entry;
+			if( span.count > 0 && snapshot->FindEntry( span.last, m_run->output, entry ) ) {
+				status.latestFrame = span.last;
+				status.latestSceneTime = entry.time;
+			}
+		}
+		return status;
+	}
 	if( !m_run || !m_run->host || !m_run->monitor ) return status;
 	const Simulation::InProcessHost& host = *m_run->host;
 	const Simulation::MeshCacheSource& monitor = *m_run->monitor;

@@ -959,7 +959,38 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 			for (std::size_t k = 0; k < sh.v.size(); ++k) sh.dyn.xe[k] += dt*sh.v[k];
 			// m7h: how far the elements turned beyond the step's predicted rotations (the
 			// corotational model's remaining rotation error; a diagnostic, never changes results).
-			if (sh.dyn.Corotated()) sh.dyn.rotationLag = std::max(sh.dyn.rotationLag, sh.dyn.elements.Deviation(sh.dyn.x0, sh.dyn.xe, pool));
+			if (sh.dyn.Corotated()) {
+				sh.dyn.rotationLag = std::max(sh.dyn.rotationLag, sh.dyn.elements.Deviation(sh.dyn.x0, sh.dyn.xe, pool));
+				// m7j: the linearisation's own error in the step: the elastic gradient at the step's end with the
+				// rotations fitted there less the one with the held rotations is the force the held rotations
+				// left out; one more backward-Euler correction with the step's operator moves the vertices by
+				// dx = -dt^2 (S + F)^-1 (g_fit - g_held), and its largest edge strain (|(dx_b - dx_a) . e| / |e|^2,
+				// e = x_b - x_a, over the triangles' edges) is the strain the held rotations put into the step.
+				// A diagnostic: the rotations are restored, nothing else changes.
+				const std::size_t nv = sh.dyn.Vertices();
+				std::vector<double> held, fit, kept = sh.dyn.elements.rotation;
+				sh.dyn.elements.Gradient(sh.dyn.x0, sh.dyn.xe, held);
+				sh.dyn.elements.Rotate(sh.dyn.x0, sh.dyn.xe, pool);
+				sh.dyn.elements.Gradient(sh.dyn.x0, sh.dyn.xe, fit);
+				sh.dyn.elements.rotation.swap(kept);
+				std::vector<double> r(3*nv), dv;
+				for (std::size_t k = 0; k < r.size(); ++k) r[k] = -dt*(fit[k] - held[k]);
+				sh.dyn.Solve(r, dv);
+				double worst = 0;
+				for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
+					for (int e = 0; e < 3; ++e) {
+						const std::size_t a0 = sh.triangles[t + std::size_t(e)], b0 = sh.triangles[t + std::size_t((e + 1) % 3)];
+						double len = 0, dd = 0;   // |e|^2 and (dx_b - dx_a) . e: the edge's stretch, not its turn
+						for (int m = 0; m < 3; ++m) {
+							const double e0 = sh.dyn.xe[3*b0 + std::size_t(m)] - sh.dyn.xe[3*a0 + std::size_t(m)];
+							const double e1 = dt*(dv[3*b0 + std::size_t(m)] - dv[3*a0 + std::size_t(m)]);
+							len += e0*e0;
+							dd += e0*e1;
+						}
+						if (len > 0) worst = std::max(worst, std::fabs(dd)/len);
+					}
+				sh.dyn.linearisationError = std::max(sh.dyn.linearisationError, worst);
+			}
 			// The geometry follows the linearised step's positions (it drifted with the step-start
 			// velocity); the next step's closing sweeps the difference (SweepSheetCells).
 			sh.x = sh.dyn.xe;

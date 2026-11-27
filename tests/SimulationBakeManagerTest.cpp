@@ -26,6 +26,9 @@
 //   B  a rigid body follows its bake without reopening the scene: the object's transform
 //      keyframes are re-derived from the cache (RefreshSimulationFrames), replacing the old
 //      ones, and the scene is re-posed (a bake by the manager, a rebake as a new epoch)
+//   D  a cache deleted outside the manager: preparing a frame fails with the reason, the manager
+//      marks the job (cacheMissing, counter, frames generation), the status reads missing, the
+//      refresh unbinds the consumer
 #include "../src/Library/Simulation/SimulationBakeManager.h"
 #include "../src/Library/Simulation/SimulationProcess.h"
 #include "../src/Library/Simulation/SimulationWorker.h"
@@ -1187,6 +1190,104 @@ void TestRigidRefresh(const fs::path& root)
 	TrackJobs(SimulationBakeManager::Instance());
 }
 
+// ---------------------------------------------------------------- D
+
+// A cache deleted by something other than the manager (the user, a cleaner):
+// playback fails with a clear message at once, and the manager notices on its
+// own (a stat of the manifest, no verification): the job says so, the counter
+// and the frames generation move, the status reads missing, and the refresh
+// drops the frames the consumer still showed.
+void TestCacheDeleted(const fs::path& root)
+{
+	std::printf("D: a cache deleted outside the manager\n");
+	SimulationBakeManager::Instance().SetSettings(Settings(root));
+	const fs::path dir = PrivateDir(root, "deleted");
+	const fs::path path = dir/"gone.RISEscene";
+	WriteText(path, std::string(Header) + "film\n{\n\twidth 64\n\theight 36\n}\n\n" + Camera() +
+		Cloth("flag", 6, "") + Consumer("geo_flag", "flag.surface"));
+	IJobPriv* job = nullptr;
+	IRasterizer* rasterizer = nullptr;
+	IRayCaster* preview = nullptr;
+	IRayCaster* polish = nullptr;
+	if (!RISE_CreateJobPriv(&job) || !job || !job->LoadAsciiSceneViaCst(path.string().c_str()) ||
+		!Implementation::CreateInteractiveMaterialPreviewPipeline(&rasterizer, &preview, &polish)) {
+		Check(false, "a live controller over the scene");
+		if (job) job->release();
+		return;
+	}
+	SceneEditController* ctrl = new SceneEditController(*job, rasterizer);
+	ctrl->Start();
+	SimulationBakeManager& manager = SimulationBakeManager::Instance();
+	const std::string key = SimulationBakeManager::SceneKey(path);
+	auto* mesh = dynamic_cast<Implementation::SimulatedMeshGeometry*>(job->GetGeometries()->GetItem("geo_flag"));
+	char error[512] = {};
+	bool refreshed = false;
+	unsigned long long jobId = 0;
+	Check(RISE_API_SceneEditController_SimulationBake(ctrl, "flag", false, &jobId, error, sizeof error) && jobId != 0, "C API bake", error);
+	BakeJob done = WaitJob(manager, jobId, 40);
+	Check(done.state == BakeJobState::Finished && !done.cacheMissing, "the bake finishes with its cache", Describe(done));
+	Check(WaitFor([&] {
+		RISE_API_SceneEditController_RefreshSimulationFrames(ctrl, &refreshed, error, sizeof error);
+		return refreshed;
+	}, 10), "the baked frames bind", error);
+	Check(mesh && mesh->HasSource(), "the consumer shows the baked frames");
+	manager.VerifyCaches();   // (jobs of earlier sections whose scratch caches were removed are marked too)
+	{ BakeJob intact; Check(manager.LatestJob(key, "flag", intact) && !intact.cacheMissing, "an intact cache is not reported"); }
+	std::vector<SceneSimulationStatus> statuses;
+	std::string why;
+	Check(ctrl->GetSimulations(statuses, why) && statuses.size() == 1 && statuses[0].state == SceneSimulationState::Complete,
+		"the status is complete");
+	// Delete the cache directory behind the manager's back.
+	ctrl->Stop();
+	const std::uint64_t counter0 = manager.ChangeCounter(), generation0 = manager.FramesGeneration(key);
+	std::error_code removed;
+	fs::remove_all(dir/"caches"/"flag", removed);
+	Check(!removed && !fs::exists(dir/"caches"/"flag"), "the cache is deleted");
+	// Playback fails at once, with the reason, instead of serving what it had.
+	std::string playError;
+	Check(mesh && !mesh->PrepareAssetForRender(RenderTimeSupport{0.1, 0.1, 0.1}, playError, nullptr) &&
+		playError.find("deleted from disk") != std::string::npos && playError.find("bake the simulation again") != std::string::npos,
+		"preparing a frame fails with a clear message", playError);
+	Check(mesh && !mesh->PrepareAssetForRender(RenderTimeSupport{0.1, 0.1, 0.1}, playError, nullptr),
+		"and keeps failing (no memoised frame is served)");
+	// The manager notices without any bake event: on its own cadence (the monitor), or at once on request.
+	Check(WaitFor([&] { BakeJob j; return manager.LatestJob(key, "flag", j) && j.cacheMissing; }, 10), "the manager noticed the deletion by itself");
+	BakeJob j;
+	Check(manager.LatestJob(key, "flag", j) && j.cacheMissing && !j.resumable && j.state == BakeJobState::Finished &&
+		j.lastError.find("deleted from disk") != std::string::npos, "the job says the cache is gone", Describe(j));
+	Check(manager.ChangeCounter() > counter0 && manager.FramesGeneration(key) > generation0,
+		"the change counter and the frames generation moved");
+	const std::uint64_t counter1 = manager.ChangeCounter();
+	manager.VerifyCaches();
+	{ BakeJob again; Check(manager.LatestJob(key, "flag", again) && again.changeCounter == j.changeCounter, "noticed once: the job is not touched again"); }
+	(void)counter1;
+	statuses.clear();
+	Check(ctrl->GetSimulations(statuses, why) && statuses.size() == 1 && statuses[0].state == SceneSimulationState::Missing,
+		"the status reads missing", statuses.empty() ? why : SceneSimulationStateName(statuses[0].state));
+	// The refresh drops the frames and says why.
+	refreshed = false;
+	bool ok = true;
+	Check(WaitFor([&] {
+		ok = RISE_API_SceneEditController_RefreshSimulationFrames(ctrl, &refreshed, error, sizeof error);
+		return refreshed;
+	}, 10), "the refresh runs");
+	Check(!ok && std::string(error).find("deleted from disk") != std::string::npos, "and reports that the cache is gone", error);
+	Check(mesh && !mesh->HasSource() && mesh->Hidden(), "the consumer no longer shows stale frames");
+	// A new bake is a new job on the same directory: the deleted cache is not held against it.
+	Check(RISE_API_SceneEditController_SimulationBake(ctrl, "flag", false, &jobId, error, sizeof error) && jobId != 0, "bake again", error);
+	done = WaitJob(manager, jobId, 40);
+	Check(done.state == BakeJobState::Finished && !done.cacheMissing, "the new bake finishes", Describe(done));
+	manager.VerifyCaches();
+	{ BakeJob fresh; Check(manager.LatestJob(key, "flag", fresh) && fresh.id == jobId && !fresh.cacheMissing &&
+		fs::exists(dir/"caches"/"flag"/"manifest.cbor"), "and its cache is intact"); }
+	delete ctrl;
+	rasterizer->release();
+	preview->release();
+	polish->release();
+	job->release();
+	TrackJobs(manager);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1221,6 +1322,7 @@ int main(int argc, char** argv)
 	TestAgentVerbs(root);
 	TestControllerRefresh(root);
 	TestRigidRefresh(root);
+	TestCacheDeleted(root);
 	KillAll();
 	fs::remove_all(RISE::TestSupport::ScratchTestRoot("rise_bake_manager_"), ec);
 	std::printf("\n%d passed, %d failed (%.1f s)\n", passes, failures,

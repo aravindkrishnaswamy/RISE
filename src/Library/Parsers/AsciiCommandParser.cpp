@@ -645,8 +645,11 @@ bool AsciiCommandParser::ParseRasterize( const std::string* tokens, unsigned int
 	std::chrono::steady_clock::time_point tEnd;
 	bool bRet = true;
 	
-	StdOutProgress	progress( "Rasterizing Scene: " );	
-	pJob.SetProgress( &progress );
+	StdOutProgress	progress( "Rasterizing Scene: " );
+	// A scene with a fire (time-varying) medium refuses a raw progress callback, so it renders
+	// without console progress, like `renderanimation`; the still is the scene's current time.
+	if( pJob.RenderAdmitsRawProgress() ) pJob.SetProgress( &progress );
+	else pJob.SetProgress( 0 );
 	if( num_tokens >= 4 )
 	{
 

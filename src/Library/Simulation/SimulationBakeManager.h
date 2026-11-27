@@ -34,6 +34,7 @@
 #include "SceneSimulation.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -74,6 +75,7 @@ struct BakeJob {
 	bool interrupted = false;             // the worker ended without a clean stop (killed, crashed, machine restarted)
 	bool resumable = false;               // terminal with a partial cache of the current key: Resume continues it
 	bool stoppable = true;                // false for an adopted worker that records no pid (an older rise-sim)
+	bool cacheMissing = false;            // Finished or Stopped, but the cache was deleted from disk since (VerifyCaches); bake again
 	std::vector<std::uint64_t> dependsOn; // jobs that must finish first (upstream simulations)
 	std::string waitingFor;               // queued: why it has not started yet
 	double simulatedTime = 0, endTime = 0;// solver time; end = last output time
@@ -201,6 +203,15 @@ public:
 	//! caller: a listener may remove itself).
 	void RemoveListener(std::uint64_t id);
 
+	//! A cheap existence check (one stat of the manifest, nothing opened or
+	//! verified) of the cache each finished or stopped job last produced: one
+	//! something other than this manager deleted is marked `cacheMissing`
+	//! (not resumable, a lastError says so), the change counter and the
+	//! scene's frames generation move, so a document refreshes its status
+	//! ("missing") and drops the frames it still shows.  The monitor does this
+	//! about once a second, Attach (a panel refresh) at once.  Returns how many
+	//! jobs it marked.  Never touches a cache a job is writing.
+	unsigned VerifyCaches();
 	//! Runs one monitor pass now (tests; the monitor thread does this on its cadence).
 	void PollNow();
 	//! The key a scene path is filed under (canonical absolute).
@@ -222,6 +233,8 @@ private:
 	Entry& NewEntry_(const std::string& scene, const SceneSimulationStatus& s);
 	bool StopLocked_(Entry& e, bool kill, std::vector<BakeEvent>& events, std::string& error);
 	void Dispatch_(std::vector<BakeEvent>& events);
+	unsigned VerifyCachesLocked_(std::vector<BakeEvent>& events);
+	std::chrono::steady_clock::time_point lastVerify_{};
 	std::uint64_t MemoryBudget_() const;
 
 	mutable std::mutex mutex_;

@@ -3283,10 +3283,20 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	// parked on its own cv.wait (or blocked acquiring mMutex to
 	// transition rendering=true) — neither path can read scene
 	// state while we mutate.
+	// A live run of a transform producer (rigid.bodies) drives the objects that
+	// follow its bodies through keyframes derived from its publication; frames
+	// landed since the last scrub are folded in before the time is set.
+	bool liveTransformsChanged = false;
+	if( Job* liveJob = dynamic_cast<Job*>( &mJob ); liveJob && liveJob->HasLiveTransformSources() ) {
+		std::string transformError;
+		if( !liveJob->RefreshTransformSources( liveTransformsChanged, transformError ) )
+			GlobalLog()->PrintEx( eLog_Error, "SceneEditController::OnTimeScrub: live transform source: %s", transformError.c_str() );
+	}
 	SceneEdit edit;
 	edit.op = SceneEdit::SetSceneTime;
 	edit.s  = t;
 	const bool ok = mEditor.Apply( edit );
+	if( ok && liveTransformsChanged && mJob.GetScene() ) mJob.GetScene()->SetSceneTimeForPreview( mEditor.LastSceneTime() );
 	if( ok ) {
 		// Simulation M3c: install each simulated mesh's frame for this time
 		// here, under the park (no reader is running).  The pass's own
@@ -21378,6 +21388,7 @@ bool SceneEditController::RebindParked_( Implementation::LiveSimulation& live,
 	// Cancel, park, mutate, kick -- the time-scrub protocol.  `force` (teardown
 	// and detach) parks even behind an agent render and skips the check that
 	// the scene still holds the geometry: the baked cache goes back either way.
+	if( live.IsTransform() ) return DriveTransformsParked_( live, !force, installTime, force, error );
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( !force && ( mRenderOwnsScene.load( std::memory_order_acquire ) ||
 		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) )
@@ -21408,6 +21419,47 @@ bool SceneEditController::RebindParked_( Implementation::LiveSimulation& live,
 			GlobalLog()->PrintEx( eLog_Error, "SceneEditController: simulated mesh frame refused after rebinding `%s`: %s",
 				live.GeometryName().c_str(), installError.c_str() );
 	}
+	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
+	mEditPending.store( true, std::memory_order_release );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
+bool SceneEditController::DriveTransformsParked_( Implementation::LiveSimulation& live, const bool attach,
+	const double installTime, const bool force, std::string& error )
+{
+	// The transform twin of the mesh rebind: a live run of a transform producer
+	// (rigid.bodies) has no geometry to bind.  Attaching makes the Job derive
+	// the followers' keyframes from the run's publication (and again as frames
+	// land: OnTimeScrub); detaching, or force-ending a run, goes back to the
+	// cache on disk (or the authored pose).  Same park as the mesh rebind.
+	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
+	if( !force && ( mRenderOwnsScene.load( std::memory_order_acquire ) ||
+		mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) )
+		return LiveFail( error, "a production or agent render owns the scene" );
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	Job* job = dynamic_cast<Job*>( &mJob );
+	if( !job ) return LiveFail( error, "scene simulations need a RISE Job" );
+	job->SetLiveTransformProvider( live.SimulationName(), attach ? live.TransformProvider() : Job::LiveSnapshotProvider() );
+	bool changed = false;
+	std::string refreshError;
+	const bool refreshed = job->RefreshTransformSources( changed, refreshError );
+	if( std::isfinite( installTime ) && installTime != mEditor.LastSceneTime() ) {
+		// Move scene time with the frame in the same park (an attach cannot
+		// show past its latest frame; a restart starts over at its first).
+		SceneEdit edit;
+		edit.op = SceneEdit::SetSceneTime;
+		edit.s  = installTime;
+		if( mEditor.Apply( edit ) ) { InvalidateAllSceneCameraNamedPanesLocked_(); changed = false; }
+	}
+	const IScene* scene = mJob.GetScene();
+	if( changed && scene ) scene->SetSceneTimeForPreview( mEditor.LastSceneTime() );
+	if( !refreshed )
+		GlobalLog()->PrintEx( eLog_Error, "SceneEditController: transform source of `%s`: %s",
+			live.SimulationName().c_str(), refreshError.c_str() );
 	mPolishState.store( static_cast<int>( PolishState::None ), std::memory_order_release );
 	mEditPending.store( true, std::memory_order_release );
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
@@ -21483,6 +21535,7 @@ bool SceneEditController::PrepareSceneLive_( const std::string& simulation,
 	std::shared_ptr<const Simulation::ISceneInputs> inputs;
 	Simulation::MeshSourceOptions options;
 	Implementation::SimulatedMeshGeometry* mesh = nullptr;
+	bool transform = false;
 	{
 		std::lock_guard<std::mutex> lk( mMutex );
 		Job* job = dynamic_cast<Job*>( &mJob );
@@ -21511,7 +21564,15 @@ bool SceneEditController::PrepareSceneLive_( const std::string& simulation,
 			options = binding.options;
 			break;
 		}
-		if( !mesh ) return LiveFail( error, "no simulated_mesh_geometry binds `source " + simulation + ".<output>`" );
+		if( !mesh ) {
+			// A transform producer (rigid.bodies) has no mesh: its consumers are the objects that follow its bodies.
+			const std::vector<std::string> followers = job->TransformSourceObjectsOf( simulation );
+			if( followers.empty() )
+				return LiveFail( error, "no simulated_mesh_geometry binds `source " + simulation +
+					".<output>` and no object follows it with `transform_source`" );
+			geometryName = followers.front();
+			transform = true;
+		}
 		// Scene inputs.  One that shows another simulation's output needs that
 		// simulation's key, which planning the scene computes.
 		Simulation::SceneObjectInputProvider provider( *mJob.GetScene(),
@@ -21543,7 +21604,12 @@ bool SceneEditController::PrepareSceneLive_( const std::string& simulation,
 			identities += input + "=" + hash + ";";
 		}
 		fingerprint = RISECBOR64::SHA256Hex( parameters ) + "|" + identities;
-		mesh->addref();
+		if( mesh ) mesh->addref();
+	}
+	if( transform ) {
+		live = Implementation::LiveSimulation::CreateForTransformSimulation( simulation, geometryName, solverId, parameters,
+			inputs, fingerprint, error );
+		return live != nullptr;
 	}
 	live = Implementation::LiveSimulation::CreateForSimulation( simulation, geometryName, *mesh, solverId, parameters,
 		inputs, options, fingerprint, error );
@@ -21599,12 +21665,14 @@ bool SceneEditController::LiveSimulationResync( std::string& error )
 				[&]( const std::unique_ptr<Implementation::LiveSimulation>& l ) { return l->SimulationName() == simulation; } );
 			if( it == mLiveSims.end() ) continue;
 			Implementation::LiveSimulation& old = **it;
-			if( prepared && &old.Geometry() == &fresh->Geometry() && old.Fingerprint() == fresh->Fingerprint() ) continue;
+			const bool sameConsumer = prepared && old.IsTransform() == fresh->IsTransform() &&
+				( old.IsTransform() ? old.GeometryName() == fresh->GeometryName() : &old.Geometry() == &fresh->Geometry() );
+			if( sameConsumer && old.Fingerprint() == fresh->Fingerprint() ) continue;
 			old.Pause();
 			std::string ignored;
 			old.WaitIdle( ignored );
 			IGeometryManager* geometries = mJob.GetGeometries();
-			const bool orphaned = !geometries || geometries->GetItem( old.GeometryName().c_str() ) != &old.Geometry();
+			const bool orphaned = !old.IsTransform() && ( !geometries || geometries->GetItem( old.GeometryName().c_str() ) != &old.Geometry() );
 			if( !prepared ) {
 				// The simulation or its consumer is gone, or no longer configures: stop it.
 				if( !orphaned ) {
@@ -21618,9 +21686,10 @@ bool SceneEditController::LiveSimulationResync( std::string& error )
 				error = "live simulation `" + simulation + "` stopped: " + why;
 			} else {
 				std::unique_ptr<Simulation::MeshCacheSource> source = fresh->TakeBindSource();
-				first = Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
+				first = fresh->IsTransform() ? fresh->FirstSceneTime() :
+					Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
 				std::unique_ptr<Simulation::MeshCacheSource> original =
-					orphaned || &old.Geometry() != &fresh->Geometry() ? nullptr : old.TakeOriginalSource();
+					orphaned || !sameConsumer ? nullptr : old.TakeOriginalSource();
 				if( !RebindParked_( *fresh, source, first, false, why ) ) {
 					if( original ) old.KeepOriginalSource( std::move( original ) );
 					ok = false;
@@ -21696,7 +21765,7 @@ bool SceneEditController::RefreshSimulationFrames( bool& refreshed, std::string&
 	// Lock order: mLiveMutex -> mRenderAdmissionMutex -> mMutex (M3c).
 	std::unique_lock<std::mutex> liveLk( mLiveMutex );
 	std::set<const IGeometry*> live;
-	for( const auto& l : mLiveSims ) live.insert( &l->Geometry() );
+	for( const auto& l : mLiveSims ) if( !l->IsTransform() ) live.insert( &l->Geometry() );
 	std::unique_lock<std::recursive_mutex> admissionLk( mRenderAdmissionMutex );
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return true;
 	std::unique_lock<std::mutex> lk( mMutex );
@@ -21724,6 +21793,15 @@ bool SceneEditController::RefreshSimulationFrames( bool& refreshed, std::string&
 			const bool replaced = mesh->HasSource() && open &&
 				( disk.Description().epoch != mesh->Source().Description().epoch ||
 				  disk.Description().key != mesh->Source().Description().key );
+			if( mesh->HasSource() && !open && !mesh->Source().Live() &&
+				Simulation::InspectCache( binding.cacheDir, std::size_t( 64 ) << 20, why ) == Simulation::CacheState::Missing ) {
+				// The cache was deleted from disk: its frames are not shown any more.
+				std::unique_ptr<Simulation::MeshCacheSource> previous;
+				if( mesh->UnbindSource( previous, why ) )
+					problems += ( problems.empty() ? "" : "; " ) + n + ": the simulation cache " + binding.cacheDir.string() +
+						" was deleted from disk; bake `" + simulation + "` again";
+				continue;
+			}
 			if( mesh->HasSource() && !replaced ) continue;	// a partial cache is re-read by every Sample
 			std::unique_ptr<Simulation::MeshCacheSource> source;
 			if( open && Simulation::MeshCacheSource::Open( binding.cacheDir, binding.options, source, why ) ) {
@@ -21860,15 +21938,23 @@ bool SceneEditController::RestartLive_( const std::string& geometry, const std::
 	};
 	if( !live->PrepareRestart( parameters, record ? &recordPath : nullptr, error ) ) { resume(); return false; }
 	std::unique_ptr<Simulation::MeshCacheSource> source = live->TakeBindSource();
-	const double first = Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
+	const double first = live->IsTransform() ? live->FirstSceneTime() :
+		Simulation::MeshFrameSceneTime( *source, source->Description().firstIndex );
 	{
 		std::lock_guard<std::mutex> liveLk( mLiveMutex );
-		if( !RebindParked_( *live, source, first, false, error ) ) {
-			live->AbortRestart();
-			resume();
-			return false;
+		if( live->IsTransform() ) {
+			// No mesh to rebind: the followers read the run's publication, which
+			// the commit swaps in; derive their keys from the new run after it.
+			live->CommitRestart();
+			if( !RebindParked_( *live, source, first, false, error ) ) { resume(); return false; }
+		} else {
+			if( !RebindParked_( *live, source, first, false, error ) ) {
+				live->AbortRestart();
+				resume();
+				return false;
+			}
+			live->CommitRestart();	// the previous run's host goes (idle: joins at once)
 		}
-		live->CommitRestart();	// the previous run's host goes (idle: joins at once)
 	}
 	source.reset();
 	if( playing ) mPlayback->Seek( first );

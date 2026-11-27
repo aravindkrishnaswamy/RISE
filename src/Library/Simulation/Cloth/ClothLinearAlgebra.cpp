@@ -874,6 +874,37 @@ void CorotatedElements::Mirror()
 	}
 }
 
+void CorotatedElements::Balance()
+{
+	for (std::size_t e = 0; e < elements.size(); ++e) {
+		const int n = elements[e].count;
+		if (n < 2) continue;
+		double* g = &gradient[12*e];
+		for (int i = 0; i < 3; ++i) {
+			double m = 0;
+			for (int a = 0; a < n; ++a) m += g[3*a + i];
+			m /= n;
+			for (int a = 0; a < n; ++a) g[3*a + i] -= m;
+		}
+		double* k = &stiffness[144*e];
+		// r_a = mean_b K_ab (3 x 3), s = mean_a r_a; K'_ab = K_ab - r_a - r_b^T + s.
+		double r[4][9], s0[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+		for (int a = 0; a < n; ++a)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+				double m = 0;
+				for (int b = 0; b < n; ++b) m += k[(3*a + i)*12 + 3*b + j];
+				r[a][3*i + j] = m/n;
+			}
+		for (int q = 0; q < 9; ++q) { for (int a = 0; a < n; ++a) s0[q] += r[a][q]; s0[q] /= n; }
+		for (int q = 0; q < 9; ++q) if (q % 4 != 0) { const int i = q/3, j = q % 3; s0[3*i + j] = s0[3*j + i] = 0.5*(s0[3*i + j] + s0[3*j + i]); }
+		for (int a = 0; a < n; ++a) for (int b = a; b < n; ++b)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+				k[(3*a + i)*12 + 3*b + j] = k[(3*a + i)*12 + 3*b + j] - r[a][3*i + j] - r[b][3*j + i] + s0[3*i + j];
+		for (int a = 0; a < n; ++a) for (int b = a + 1; b < n; ++b)
+			for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) k[(3*b + j)*12 + 3*a + i] = k[(3*a + i)*12 + 3*b + j];
+	}
+}
+
 bool CorotatedElements::BuildFrames(const std::vector<std::uint32_t>& triangles)
 {
 	for (Element& e : elements) {

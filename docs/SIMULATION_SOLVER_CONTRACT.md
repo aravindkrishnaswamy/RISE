@@ -123,8 +123,9 @@ output is at `startTime + (count - 1) × interval`; this is the "end time" every
 - Stated limits of preview models are documented with the solver, not in the contract. One that authors meet:
   `liquid.mac`'s implicitly coupled sheets support liquid resting on a sheet only in a layer at least 5 cells deep
   (a 2.4-cell layer loses 8% of its volume in 2 s with the volume correction and 41% without;
-  [M7i results](SIMULATION_M7I_RESULTS.md) §3); the `liquid_simulation` chunk's `sheet` help says the same. Not a
-  contract change.
+  [M7i results](SIMULATION_M7I_RESULTS.md) §3; unchanged in m7j.1, where the loss is located in the level set's
+  treatment of a curved sheet in a layer within its stencils' reach, [M7j results](SIMULATION_M7J_RESULTS.md) §1);
+  the `liquid_simulation` chunk's `sheet` help says the same. Not a contract change.
 
 ## 7. Scene inputs
 

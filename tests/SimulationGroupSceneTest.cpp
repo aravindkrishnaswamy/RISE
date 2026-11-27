@@ -170,6 +170,13 @@ int main()
 		const auto st = Statuses(s);
 		Check(Find(st, "drop")->state == SceneSimulationState::Stale && Find(st, "sheet")->state == SceneSimulationState::Stale &&
 			Find(st, "tramp")->state == SceneSimulationState::Stale, "editing one member makes both members and the group stale");
+		// Each member says why: the edited one names its parameter, the other names the member that changed.
+		const std::string dropWhy = Find(st, "drop")->staleReason, sheetWhy = Find(st, "sheet")->staleReason,
+			trampWhy = Find(st, "tramp")->staleReason;
+		Check(dropWhy.find("parameters changed (") == 0 && dropWhy != "parameters changed ()", "the edited member names the parameters that changed", dropWhy);
+		Check(sheetWhy == "member drop: " + dropWhy, "the other member names the member that changed, and why", sheetWhy);
+		Check(trampWhy.find("drop: " + dropWhy) != std::string::npos && trampWhy.find("sheet: member drop") != std::string::npos,
+			"the group lists its stale members' reasons", trampWhy);
 		// Stop after two macro steps, then resume: equal to an uninterrupted bake.
 		std::string out;
 		Check(Worker({"bake", scene.string(), "tramp", "--stop-after-frames", "2"}, &out) == WorkerStopped, "stopped bake", out);
@@ -179,6 +186,34 @@ int main()
 		Check(resumed.size() == 7, "the resumed bake has every frame");
 		Check(Worker({"bake", scene.string(), "tramp", "--force"}, &out) == WorkerFinished, "uninterrupted rebake", out);
 		Check(resumed == DiskDigests(Default(scene, "sheet")), "stop / resume of a scene group bake equals the uninterrupted bake");
+	}
+	// ---------------------------------------------------------------- group member stale reasons (the cache is current for mass 0.08)
+	{
+		Scene s;
+		WriteText(scene, SceneText("0.08", Group));
+		Check(Load(scene, s), "scene for reasons");
+		Check(Find(Statuses(s), "drop")->state == SceneSimulationState::Complete, "the rebaked group is complete");
+		// Only the cloth's parameter: the rigid member blames it, the cloth names its own.
+		Scene c;
+		WriteText(scene, SceneText("0.08", Group, "\tsubsteps\t3\n"));
+		Check(Load(scene, c), "scene with a cloth edit");
+		auto st = Statuses(c);
+		Check(Find(st, "sheet")->staleReason.find("parameters changed (substeps") == 0, "the cloth names substeps", Find(st, "sheet")->staleReason);
+		Check(Find(st, "drop")->staleReason.find("member sheet: parameters changed (substeps") == 0, "the rigid member names the cloth's change",
+			Find(st, "drop")->staleReason);
+		// A change to the coupling only (the group's policy): neither member's parameters differ.
+		std::string text = SceneText("0.08", Group);
+		const std::size_t at = text.find("tolerance\t1e-6");
+		Check(at != std::string::npos, "the group text carries its tolerance");
+		text.replace(at, 14, "tolerance\t1e-5");
+		WriteText(scene, text);
+		Scene t;
+		Check(Load(scene, t), "scene with a coupling edit");
+		st = Statuses(t);
+		Check(Find(st, "drop")->state == SceneSimulationState::Stale && Find(st, "drop")->staleReason.find("coupling changed") == 0,
+			"a coupling edit is reported as such", Find(st, "drop")->staleReason);
+		Check(Find(st, "sheet")->staleReason.find("coupling changed") == 0, "for both members", Find(st, "sheet")->staleReason);
+		WriteText(scene, SceneText("0.08", Group));
 	}
 	// ---------------------------------------------------------------- port_source from a cache (the M4 gap)
 	{

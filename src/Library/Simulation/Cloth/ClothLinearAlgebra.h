@@ -219,6 +219,14 @@ struct CorotatedElements {
 	//! The blocks (b, a), b > a, of every K_e set to the transposes of (a, b): a
 	//! matrix carried by its upper blocks is the same on both sides of a port.
 	void Mirror();
+	//! m7j: makes each element's g_e and K_e exactly invariant to a translation of the element (their
+	//! binary32 rounding is not): g_a -= mean_b g_b, K <- P K P with P the projection that removes an
+	//! element's mean displacement (the upper blocks computed, the lower mirrored).  Without it the
+	//! rounded K_e times d_e (which holds the element's rigid motion about the world origin, not only
+	//! its strain) left a net elastic force on a free sheet: 2.4e-5 of its weight over a macro step
+	//! (LiquidClothCouplingTest F).  The partner's copy calls it on the same values (both models then
+	//! take the same steps); the ports carry the values before it.
+	void Balance();
 	//! The frame vertices: a membrane's own; a hinge's edge and wings in cyclic
 	//! order (x0, x2, x1, x3); a rod's three and the third vertex of the first of
 	//! `triangles` (3 per triangle) that holds its first edge.  False when a rod

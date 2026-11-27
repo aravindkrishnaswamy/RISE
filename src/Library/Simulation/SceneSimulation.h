@@ -72,14 +72,16 @@ struct SceneSimulationStatus {
 	double startTime = 0, interval = 0;    // the configuration's time support
 	std::string error;                     // why Failed (or a configuration problem)
 	//! M5: the simulated_mesh_geometry elements bound to it by `source` (by
-	//! name; a live run drives the first), filled in by Job::DescribeSimulations.
+	//! name; a live run drives the first), filled in by Job::DescribeSimulations;
+	//! for a transform producer (rigid.bodies) the objects that follow its bodies.
 	std::vector<std::string> meshConsumers;
 	//! M5c: why a Stale simulation is stale, from the cache's job record
 	//! against this configuration: "parameters changed (<members>)" naming the
 	//! effective-parameter members that differ (a moved or resized collider
 	//! shows as cloth's `colliders`), "scene input changed
 	//! (<inputs>)", "upstream out of date", "solver version changed",
-	//! "configuration changed" (no job record to compare), or the prediction
+	//! "configuration changed" (no job record to compare), for a group member
+	//! "member <other>: ..." or "coupling changed (...)", or the prediction
 	//! error when the key is unknown.  Empty unless state is Stale.
 	std::string staleReason;
 	//! M5c: estimated wall time of a whole bake from the start, seconds:

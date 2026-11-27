@@ -266,6 +266,19 @@ bool SimulatedMeshGeometry::PrepareAssetForRender( const RenderTimeSupport& supp
 		if( m_leases ) { error = "mutation_frozen"; return false; }
 	}
 	if( !m_source ) return true;	// unbound (M4): hidden, nothing to install
+	if( !m_source->Live() && !m_source->Root().empty() ) {
+		// A cache deleted from disk behind the app's back: fail with the reason
+		// rather than keep showing (or serving from the prepared-frame memo)
+		// frames that no longer exist.  One stat; the manifest is replaced
+		// atomically by a rebake, so it is never absent while a cache is written.
+		std::error_code ec;
+		const auto manifest = std::filesystem::symlink_status( m_source->Root() / "manifest.cbor", ec );
+		if( manifest.type() == std::filesystem::file_type::not_found ) {
+			m_preparedSnapshot.reset();
+			error = "the simulation cache " + m_source->Root().string() + " was deleted from disk; bake the simulation again";
+			return false;
+		}
+	}
 	std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> cheap = m_source->CheapSnapshot();
 	if( cheap && cheap == m_preparedSnapshot && support.nominal == m_preparedSupport.nominal &&
 		support.open == m_preparedSupport.open && support.close == m_preparedSupport.close ) return true;

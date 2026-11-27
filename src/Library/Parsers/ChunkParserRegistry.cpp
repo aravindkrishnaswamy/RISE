@@ -10404,12 +10404,24 @@ namespace RISE
 					const bool chemNone = bag.Has("chem_model") && bag.GetString("chem_model") == "none";
 					const bool allChem = bag.Has("channel_chem_ch") && bag.Has("channel_chem_c2") &&
 						bag.Has("channel_chem_co2");
-					if( chemNone == allChem || (allChem &&
-						(bag.GetString("channel_chem_ch") != "chem_CH" ||
+					const auto refuse = [&bag](const std::string& what) {
+						const std::string why = "fire_medium `" + bag.GetString("name") + "`: " + what;
+						GlobalLog()->PrintEasyError(why.c_str());
+						if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+						return false;
+					};
+					if( chemNone == allChem ) return refuse( chemNone ?
+						"`chem_model none` is given together with the chem channel bindings; give one or the other" :
+						"give either `chem_model none` or all of channel_chem_ch chem_CH, channel_chem_c2 chem_C2 and channel_chem_co2 chem_CO2 "
+						"(a fire.methane cache carries the chem channels)" );
+					if( allChem && (bag.GetString("channel_chem_ch") != "chem_CH" ||
 						 bag.GetString("channel_chem_c2") != "chem_C2" ||
-						 bag.GetString("channel_chem_co2") != "chem_CO2")) ) return false;
-					if( bag.Has("channel_condensed") && bag.GetString("channel_condensed") != "condensed" ) return false;
-					if( !pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) return false;
+						 bag.GetString("channel_chem_co2") != "chem_CO2") )
+						return refuse( "the chem channels must be named chem_CH, chem_C2 and chem_CO2" );
+					if( bag.Has("channel_condensed") && bag.GetString("channel_condensed") != "condensed" )
+						return refuse( "channel_condensed must be `condensed`" );
+					if( !pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) )
+						return refuse( "fidelity_mode `" + bag.GetString("fidelity_mode") + "` is not accepted" );
 					// M4: exactly one of `sequence_manifest <path>` and `source <simulation>.<output>`.
 					const bool hasManifest = bag.Has("sequence_manifest") && !bag.GetString("sequence_manifest").empty();
 					const bool hasSource = bag.Has("source") && !bag.GetString("source").empty();

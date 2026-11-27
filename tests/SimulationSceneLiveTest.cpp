@@ -26,6 +26,10 @@
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/SimulationCache.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "TestTempDir.h"
 
@@ -347,6 +351,95 @@ namespace
 	}
 }
 
+namespace
+{
+	// App-side loose ends (2026-11-27): live stepping of rigid.bodies drives the
+	// objects that follow its bodies (transform_source), as a live cloth drives its mesh.
+	void TestLiveRigid( const fs::path& scratch )
+	{
+		std::printf( "live rigid bodies drive their objects in the viewport\n" );
+		const fs::path dir = scratch / "rigid";
+		std::error_code ec;
+		fs::create_directories( dir, ec );
+		const std::string text = std::string( "RISE ASCII SCENE 7\n\nanimation_options\n{\n\ttime_start 0\n\ttime_end 1\n\tnum_frames 31\n}\n\n" )
+			+ "film\n{\n\twidth 64\n\theight 36\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 1.4 2.6\n\tlookat 0 0.55 0\n\tup 0 1 0\n\tfov 40\n}\n\n"
+			"rigid_simulation\n{\n\tname drop\n\tframes 31\n\tcache caches/drop\n\tbody_object ball mass 0.1\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.1\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tposition 0 0.5 0\n\ttransform_source drop.bodies[ball]\n}\n\n";
+		Viewport v( text, dir );
+		if( !v.ctrl ) { Check( false, "the rigid scene loads and the viewport starts" ); return; }
+		IObject* ball = const_cast<IObjectManager*>( v.job->GetScene()->GetObjects() )->GetItem( "ball" );
+		Check( ball != nullptr, "the body's object exists" );
+		if( !ball ) return;
+		// An edit re-derives the scene: look the object up each time.
+		const auto object = [&]() { return const_cast<IObjectManager*>( v.job->GetScene()->GetObjects() )->GetItem( "ball" ); };
+		const auto height = [&]() { return object()->GetFinalTransformMatrix()._31; };
+		const auto scrub = [&]( const double t ) {
+			return v.ctrl->OnTimeScrubBegin() && v.ctrl->OnTimeScrub( t ) && v.ctrl->OnTimeScrubEnd();
+		};
+		const auto live = [&]() {
+			LiveSimulationStatus s;
+			for( int i = 0; i < 2000 && !v.ctrl->GetLiveSimulationStatus( "ball", s ); ++i ) Sleep( 0.001 );
+			return s;
+		};
+		const auto statuses = v.Statuses();
+		Check( statuses.size() == 1 && statuses[0].interactive && statuses[0].meshConsumers.size() == 1 &&
+			statuses[0].meshConsumers[0] == "ball", "the rigid simulation is interactive and names the object that follows it" );
+		Check( scrub( 0.3 ) && std::fabs( height() - 0.5 ) < 1e-12, "with no cache and no live run the body is at its authored pose" );
+		std::string error;
+		Check( v.ctrl->LiveSimulationAttachSimulation( "drop", error ), "LiveSimulationAttachSimulation( drop )", error );
+		Check( v.ctrl->LiveSimulationCount() == 1, "one live run" );
+		std::string refusal;
+		Check( !v.ctrl->LiveSimulationAttachSimulation( "drop", refusal ), "a second attach is refused" );
+		LiveSimulationStatus s = live();
+		Check( s.framesPublished >= 1 && s.framesTotal == 31 && !s.failed, "the run published its first frame", s.error );
+		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play" );
+		Check( WaitFor( [&]{ return live().framesPublished >= 12; }, 60.0 ), "the live run publishes frames",
+			std::to_string( live().framesPublished ) );
+		v.ctrl->PlaybackPause();
+		s = live();
+		Check( !s.failed && s.latestFrame >= 11, "no failure", s.error );
+		// The viewport pose follows the live frames: free fall from rest, y = 0.5 - g t^2 / 2.
+		const double t = s.latestSceneTime;
+		Check( t > 0.3 && scrub( t ), "scrub to the latest published frame", std::to_string( t ) );
+		const double expected = 0.5 - 0.5 * 9.81 * t * t;
+		Check( height() < 0.5 - 0.05 && std::fabs( height() - expected ) < 0.02,
+			"the object is at the body's live pose (it fell as it should)", std::to_string( height() ) + " vs " + std::to_string( expected ) );
+		const Matrix4 m = object()->GetFinalTransformMatrix();
+		Check( std::fabs( m._30 ) < 1e-9 && std::fabs( m._32 ) < 1e-9, "and moved only along gravity" );
+		Check( scrub( 0.0 ) && std::fabs( height() - 0.5 ) < 1e-9, "the first frame is the authored pose" );
+		// Frames that landed after the last scrub are folded in at the next one.
+		const double before = live().latestSceneTime;
+		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play on" );
+		Check( WaitFor( [&]{ return live().finished && live().latestSceneTime > 0.9; }, 60.0 ), "the run finishes its 31 frames",
+			std::to_string( live().latestSceneTime ) + " from " + std::to_string( before ) );
+		v.ctrl->PlaybackPause();
+		const double later = live().latestSceneTime;
+		Check( scrub( later ) && std::fabs( height() - ( 0.5 - 0.5 * 9.81 * later * later ) ) < 0.03,
+			"a later frame moves the object further", std::to_string( height() ) );
+		// Reset: the run starts over, the pose with it.
+		Check( v.ctrl->LiveSimulationReset( "ball", error ), "reset", error );
+		Check( scrub( 0.0 ) && std::fabs( height() - 0.5 ) < 1e-9 && live().framesPublished <= 2, "reset: back at the first frame",
+			std::to_string( live().framesPublished ) );
+		// An edit that changes the configuration restarts the run (gravity off: the body stays put).
+		const SceneEditController::AgentCommitResult r =
+			v.ctrl->ApplyAgentParamEdit( String( "drop" ), String( "" ), String( "gravity" ), String( "0 0 0" ), nullptr );
+		Check( r.applied, "the gravity edit applies", std::string( r.message.c_str() ) );
+		Check( v.ctrl->LiveSimulationCount() == 1, "the live run survived the edit (restarted)" );
+		Check( v.ctrl->PlaybackPlay( 30.0, false ), "play the edited run" );
+		Check( WaitFor( [&]{ return live().latestSceneTime > 0.2; }, 60.0 ), "the edited run advances" );
+		v.ctrl->PlaybackPause();
+		Check( scrub( live().latestSceneTime ) && std::fabs( height() - 0.5 ) < 1e-6, "with no gravity the body stays where it was authored",
+			std::to_string( height() ) );
+		// Detach: no live run, no cache: the authored pose again.
+		Check( v.ctrl->LiveSimulationDetach( "ball", error ), "detach", error );
+		Check( v.ctrl->LiveSimulationCount() == 0 && scrub( 0.3 ) && std::fabs( height() - 0.5 ) < 1e-12,
+			"detached: the object is at its authored pose" );
+		Check( !v.job->GetScene()->GetAnimator()->AreThereAnyKeyframedObjects(), "and its live keyframes are gone" );
+	}
+}
+
 int main()
 {
 	std::setvbuf( stdout, nullptr, _IONBF, 0 );
@@ -363,6 +456,7 @@ int main()
 	TestLiveFromScene( scratch );
 	TestPropertiesCategory( scratch );
 	TestPlaybackRule( scratch );
+	TestLiveRigid( scratch );
 	fs::remove_all( RISE::TestSupport::ScratchTestRoot( "rise_simulation_scene_live_" ), ec );
 	std::printf( "\n%d passed, %d failed\n", passes, failures );
 	return failures ? 1 : 0;

@@ -505,6 +505,115 @@ bool SceneSimulationGraph::Plan(const std::vector<SceneSimulationSpec>& specs, c
 }
 
 namespace {
+// "parameters changed (<members>)" naming the top-level effective-parameter
+// members that differ (a collider shows as the solver's derived member, e.g.
+// cloth's `colliders`); "" when equal; "configuration changed" when they
+// cannot be compared.
+std::string ParameterChange(const V& baked, const V& now)
+{
+	std::string ignored;
+	Bytes a, b;
+	if (!RISECBOR64::Encode(baked, a, &ignored) || !RISECBOR64::Encode(now, b, &ignored)) return "configuration changed";
+	if (a == b) return std::string();
+	std::string names;
+	if (baked.GetType() == V::Map && now.GetType() == V::Map) {
+		std::set<std::string> keys;
+		for (const auto& m : baked.GetMap()) keys.insert(m.first);
+		for (const auto& m : now.GetMap()) keys.insert(m.first);
+		for (const auto& k : keys) {
+			const V* x = baked.Find(k);
+			const V* y = now.Find(k);
+			Bytes ex, ey;
+			if (x) RISECBOR64::Encode(*x, ex, &ignored);
+			if (y) RISECBOR64::Encode(*y, ey, &ignored);
+			if (!x || !y || ex != ey) names += (names.empty() ? "" : ", ") + k;
+		}
+	}
+	return names.empty() ? "parameters changed" : "parameters changed (" + names + ")";
+}
+
+// What a group's member recorded when the group baked (the manifest each
+// recorded member's directory holds, SimulationGroup::WriteGroupManifests).
+struct GroupMemberRecord {
+	std::string solver, version;
+	V parameters;
+	bool haveParameters = false;
+	std::string key;
+};
+struct GroupRecord {
+	std::string identity;
+	std::map<std::string, GroupMemberRecord> members;
+};
+bool ReadGroupRecord(const fs::path& directory, GroupRecord& record)
+{
+	Bytes bytes;
+	std::string error;
+	V v;
+	if (!ReadSidecarFile(directory, kGroupManifestName, std::size_t(16) << 20, bytes, error) ||
+		!RISECBOR64::DecodeCanonical(bytes, v, &error) || v.GetType() != V::Map) return false;
+	const V* identity = v.Find("identity");
+	const V* members = v.Find("members");
+	if (!identity || identity->GetType() != V::Text || !members || members->GetType() != V::Array) return false;
+	record.identity = identity->GetText();
+	for (const auto& m : members->GetArray()) {
+		const V* name = m.Find("name");
+		if (m.GetType() != V::Map || !name || name->GetType() != V::Text) continue;
+		GroupMemberRecord r;
+		if (const V* x = m.Find("solver")) if (x->GetType() == V::Text) r.solver = x->GetText();
+		if (const V* x = m.Find("version")) if (x->GetType() == V::Text) r.version = x->GetText();
+		if (const V* x = m.Find("key")) if (x->GetType() == V::Text) r.key = x->GetText();
+		if (const V* x = m.Find("parameters")) { r.parameters = *x; r.haveParameters = true; }
+		record.members[name->GetText()] = std::move(r);
+	}
+	return true;
+}
+
+// Why one member's own configuration differs from what the group baked: ""
+// when its solver, version and effective parameters are the same.
+std::string MemberOwnChange(const GroupMemberRecord& baked, const SceneSimulationPlan& plan)
+{
+	if (baked.solver != plan.description.solverId || baked.version != plan.description.version) return "solver version changed";
+	if (!baked.haveParameters) return "configuration changed";
+	return ParameterChange(baked.parameters, plan.description.effectiveParameters);
+}
+
+// The specific reason a member of a group is stale (the job record a single
+// simulation has does not exist for it): its own solver, version or
+// parameters; another member's; the coupling (connections, policy, adapters);
+// its scene inputs.  "configuration changed" when the cache predates the
+// record of parameters.
+std::string GroupMemberStaleReason(const SceneSimulationPlan& plan, const SceneSimulationSpec& group,
+	const std::vector<SceneSimulationPlan>& plans)
+{
+	GroupRecord record;
+	if (!ReadGroupRecord(plan.spec->cacheDir, record)) return "configuration changed";
+	const auto self = record.members.find(plan.spec->name);
+	if (self == record.members.end()) return "configuration changed";
+	if (self->second.solver.empty() && !self->second.haveParameters) return "configuration changed";   // baked before parameters were recorded
+	const std::string own = MemberOwnChange(self->second, plan);
+	if (!own.empty()) return own;
+	for (const auto& other : record.members) {
+		if (other.first == plan.spec->name) continue;
+		for (const auto& p : plans) {
+			if (!p.spec || p.spec->name != other.first || !p.configured) continue;
+			const std::string why = MemberOwnChange(other.second, p);
+			if (!why.empty() && why != "configuration changed") return "member " + other.first + ": " + why;
+		}
+	}
+	for (const auto& p : plans) {
+		if (p.spec != &group) continue;
+		if (p.configured && p.description.cache.key != record.identity) return "coupling changed (connections, policy or adapters)";
+	}
+	if (!plan.spec->sceneInputs.empty()) {
+		std::string names;
+		for (const auto& n : plan.spec->sceneInputs) names += (names.empty() ? "" : ", ") + n;
+		return "scene input changed (" + names + ")";
+	}
+	return "configuration changed";
+}
+} // namespace
+
+namespace {
 // M5c: why the cache's key differs from the configuration's, from the job
 // record the worker wrote beside the cache (solver, version, effective
 // parameters).  The key covers exactly those plus the scene inputs'
@@ -515,28 +624,8 @@ std::string StaleReason(const SceneSimulationSpec& spec, const SceneSimulationPl
 	V baked;
 	if (!ReadWorkerJobRecord(spec.cacheDir, solver, version, baked, key, ignored)) return "configuration changed";
 	if (solver != plan.description.solverId || version != plan.description.version) return "solver version changed";
-	Bytes a, b;
-	if (!RISECBOR64::Encode(baked, a, &ignored) || !RISECBOR64::Encode(plan.description.effectiveParameters, b, &ignored))
-		return "configuration changed";
-	if (a != b) {
-		// Name the top-level members that differ (a collider shows as the
-		// solver's derived member, e.g. cloth's `colliders`).
-		std::string names;
-		if (baked.GetType() == V::Map && plan.description.effectiveParameters.GetType() == V::Map) {
-			std::set<std::string> keys;
-			for (const auto& m : baked.GetMap()) keys.insert(m.first);
-			for (const auto& m : plan.description.effectiveParameters.GetMap()) keys.insert(m.first);
-			for (const auto& k : keys) {
-				const V* x = baked.Find(k);
-				const V* y = plan.description.effectiveParameters.Find(k);
-				Bytes ex, ey;
-				if (x) RISECBOR64::Encode(*x, ex, &ignored);
-				if (y) RISECBOR64::Encode(*y, ey, &ignored);
-				if (!x || !y || ex != ey) names += (names.empty() ? "" : ", ") + k;
-			}
-		}
-		return names.empty() ? "parameters changed" : "parameters changed (" + names + ")";
-	}
+	const std::string changed = ParameterChange(baked, plan.description.effectiveParameters);
+	if (!changed.empty()) return changed;
 	if (spec.sceneInputs.empty()) return "configuration changed";
 	std::string names;
 	for (const auto& n : spec.sceneInputs) names += (names.empty() ? "" : ", ") + n;
@@ -686,6 +775,14 @@ bool SceneSimulationGraph::Describe(const std::vector<SceneSimulationSpec>& spec
 		InspectSceneSimulation(plan, s);
 		ordered.push_back(std::move(s));
 	}
+	// A member of a simulation_group has no job record (the group baked it), so
+	// its reason comes from the group manifest beside its cache.
+	for (std::size_t i = 0; i < ordered.size(); ++i) {
+		if (ordered[i].state != SceneSimulationState::Stale || ordered[i].staleReason != "configuration changed") continue;
+		if (plans[i].spec->keyword == kSimulationGroupKeyword) continue;
+		const SceneSimulationSpec* group = SceneGroupOf(specs, plans[i].spec->name);
+		if (group) ordered[i].staleReason = GroupMemberStaleReason(plans[i], *group, plans);
+	}
 	// Propagation: plans are in dependency order, so each upstream is final.
 	for (std::size_t i = 0; i < ordered.size(); ++i) {
 		for (const auto& u : ordered[i].upstream) {
@@ -721,6 +818,14 @@ bool SceneSimulationGraph::Describe(const std::vector<SceneSimulationSpec>& spec
 					g.fidelityLimit = s.fidelityLimit;
 				}
 			}
+		if (stale) {
+			// The group's own reason: each stale member's, by name.
+			g.staleReason.clear();
+			for (const auto& m : g.upstream)
+				for (const auto& s : ordered)
+					if (s.name == m && s.state == SceneSimulationState::Stale)
+						g.staleReason += (g.staleReason.empty() ? "" : "; ") + m + ": " + s.staleReason;
+		}
 		g.state = all ? SceneSimulationState::Complete : failed ? SceneSimulationState::Failed : baking ? SceneSimulationState::Baking :
 			stale ? SceneSimulationState::Stale : any ? SceneSimulationState::Partial : SceneSimulationState::Missing;
 		g.upstreamOutOfDate = false;

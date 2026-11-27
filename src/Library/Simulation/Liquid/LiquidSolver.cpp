@@ -51,7 +51,11 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // rotations are fitted to binary32-rounded positions; the surface output keeps clear of coupled
 // sheets (LiquidModel::ClearSheets) (docs/SIMULATION_M7I_RESULTS.md); bakes without implicitly coupled
 // sheets publish the frames of m7h.1.
-constexpr const char* SolverVersion = "m7i.1";
+// m7j.1: implicitly coupled sheets: the corotational elements' blocks are balanced (exactly
+// invariant to an element's translation, Cloth::CorotatedElements::Balance, as cloth.shell m3a.7
+// does), and the progress detail reports the corotational step's linearisation correction
+// (docs/SIMULATION_M7J_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7i.1.
+constexpr const char* SolverVersion = "m7j.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -1087,6 +1091,7 @@ private:
 	// over the run (from the accepted vertex velocities: the rate of each triangle edge's turning)
 	// is reported in the progress detail, with a warning above 1% (a diagnostic, not state).
 	double sheetRotationStretch_ = 0;
+	double sheetCorrection_ = 0;   // m7j: the corotational linearisation's own strain error per step (LiquidSheets.h)
 	bool corotatedSheets_ = false;   // m7h: the estimate is the corotational model's (per step)
 	long long sheetHoles_ = -1;      // m7h: the barrier's watertightness check (LiquidModel::SheetBarrierHoles), largest over the run
 	void SheetRotationDiagnostic(double span);
@@ -1976,6 +1981,7 @@ bool LiquidSolver::AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, st
 		}
 	}
 	el.Mirror();
+	el.Balance();   // m7j: as the cloth does with the same values
 	return true;
 }
 
@@ -1988,6 +1994,7 @@ void LiquidSolver::SheetRotationDiagnostic(double span)
 			// left is the angle by which an element turned beyond it in a step (LiquidModel), whose
 			// square over two bounds that step's spurious strain.
 			sheetRotationStretch_ = std::max(sheetRotationStretch_, 0.5*sh.dyn.rotationLag*sh.dyn.rotationLag);
+			sheetCorrection_ = std::max(sheetCorrection_, sh.dyn.linearisationError);
 			corotatedSheets_ = true;
 			continue;
 		}
@@ -2024,6 +2031,15 @@ std::string LiquidSolver::SheetRotationDetail() const
 			" (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)") : "",
 		static_cast<unsigned long long>(model_.sheetCrossedCells), model_.sheetCrossedVolume, static_cast<unsigned long long>(model_.sheetUnfedCells));
 	std::string out = buffer;
+	if (corotatedSheets_) {
+		// m7j: the linearisation's own error (LiquidSheets.h SheetDynamics::linearisationError): the strain one more
+		// step with the rotations refitted at the step's end would move into the sheet (the rotation estimate above
+		// bounds it only for an element that turned rigidly).
+		char b2[200];
+		std::snprintf(b2, sizeof b2, ", linearisation correction per step up to %.2g%%%s", 100*sheetCorrection_,
+			sheetCorrection_ > 0.01 ? " (warning: above 1%, the corotational step is inaccurate where the sheet is kicked)" : "");
+		out += b2;
+	}
 	// m7h: the barrier's watertightness (sheets pinned all round only).
 	if (sheetHoles_ >= 0) out += ", barrier holes (flood fill through the pinned sheet) " + std::to_string(sheetHoles_);
 	return out;

@@ -445,6 +445,14 @@ namespace RISE
 		};
 		std::map<std::string, TransformSourceState>	transformSourceStates;	//!< by object name
 		bool DeriveTransformSourceKeys_( const char* object, TransformSourceState& state, std::string& error );
+		//! The snapshot a transform_source of `simulation` follows now: the live
+		//! run's current publication when one is attached
+		//! (SetLiveTransformProvider), else the cache on disk (null with
+		//! `error` when there is none).
+		std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> TransformSourceSnapshot_(
+			const std::string& simulation, const std::filesystem::path& cacheDir, std::string& error ) const;
+		std::map<std::string, std::function<std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot>()> >
+														liveTransformProviders;	//!< by simulation: a live run publishing transforms
 		std::vector<std::string>						simulationOrder;
 		struct SimulatedGeometryRecord
 		{
@@ -2381,6 +2389,19 @@ namespace RISE
 		//! stable.  False with `error` when a re-derive failed.
 		bool RefreshTransformSources( bool& changed, std::string& error );
 
+		//! A live in-process run of `simulation` (a transform.v1 producer, e.g.
+		//! rigid.bodies) drives the transform_source objects that follow it:
+		//! until cleared (an empty provider), their keys are derived from the
+		//! provider's current publication instead of the cache on disk, and
+		//! RefreshTransformSources re-derives them as frames land.  The
+		//! provider is called under the scene lock and must be cheap and
+		//! thread-safe.  Takes effect at the next RefreshTransformSources.
+		typedef std::function<std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot>()> LiveSnapshotProvider;
+		void SetLiveTransformProvider( const std::string& simulation, LiveSnapshotProvider provider );
+		bool HasLiveTransformSources() const { return !liveTransformProviders.empty(); }
+		//! The transform_source objects that follow `simulation` (declaration order is not kept: by name).
+		std::vector<std::string> TransformSourceObjectsOf( const std::string& simulation ) const;
+
 		//! M7 prerequisites: simulated_points_geometry (IJob::AddSimulatedPointsGeometry).
 		bool AddSimulatedPointsGeometry(
 			const char* name, const char* cache, const char* source, const char* output,
@@ -3859,6 +3880,9 @@ namespace RISE
 			IProgressCallback* expected,				///< [in] Swap only if the installed callback is exactly this (null = empty slot)
 			IProgressCallback* next						///< [in] The callback to install on a successful compare
 			);
+
+		//! IJob tail: FALSE when a render of this scene refuses a raw progress callback (fire media).
+		bool RenderAdmitsRawProgress() const;
 
 		//! Atomic capture-and-install (returns the prior) -- see the IJob.h tail doc.
 		//! (Same deliberate no-`override` convention as the two conditional ops above.)

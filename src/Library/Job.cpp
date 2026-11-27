@@ -1808,12 +1808,19 @@ void Job::EndPreparedRequest()
 	if( !m_activePreparedRequests ) m_preparedRequestCondition.notify_all();
 }
 
+bool Job::RenderAdmitsRawProgress() const
+{
+	return !pScene || !pScene->HasTimeVaryingMedia();
+}
+
 bool Job::PreparedProgressSafe() const
 {
 	const auto* progress = pGlobalProgress.load(std::memory_order_acquire);
 	if( !pScene || !pScene->HasTimeVaryingMedia() || !progress ||
 		dynamic_cast<const PreparedRenderProgress*>(progress) ) return true;
-	GlobalLog()->PrintEasyError("unsafe_progress_callback");
+	GlobalLog()->PrintEasyError("unsafe_progress_callback: this scene has a time-varying medium (a fire), whose render "
+		"holds the scene frozen and cannot call a raw progress callback; leave the progress callback unset "
+		"(the command line `render` and `renderanimation` do) or install a PreparedRenderProgress");
 	return false;
 }
 
@@ -10727,7 +10734,27 @@ bool Job::AddFireMediumBound(
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
 		return false;
 	}
+	// A refusal names the fire_medium chunk, what the scene binds and what the cache carries.
 	const auto bound = [](const char* value) { return value && value[0]; };
+	std::string offered;
+	for( const auto& channel : manifest->Channels() ) offered += (offered.empty() ? "" : ", ") + channel.name;
+	std::string requested;
+	const auto request = [&](const char* keyword,const char* value) {
+		if( bound(value) ) requested += (requested.empty() ? "" : ", ") + std::string(keyword) + " " + value;
+	};
+	request("channel_carbon",channelCarbon); request("channel_temperature",channelTemperature);
+	request("channel_condensed",channelCondensed); request("channel_reaction",channelReaction);
+	request("channel_chem_ch",channelChemCH); request("channel_chem_c2",channelChemC2);
+	request("channel_chem_co2",channelChemCO2); request("channel_velocity",channelVelocity);
+	if( chemModelNone ) requested += (requested.empty() ? "" : ", ") + std::string("chem_model none");
+	const auto refuse = [&](const std::string& why) {
+		const std::string message = std::string("fire_medium `") + name + "`: " + why +
+			" (the scene binds: " + (requested.empty() ? "nothing" : requested) +
+			"; the cache " + resolved + " carries: " + offered + ")";
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",message.c_str());
+		if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = message;
+		return false;
+	};
 	const auto exact = [&bound](const char* value,const char* expected) {
 		return !bound(value) || std::strcmp(value,expected)==0;
 	};
@@ -10735,25 +10762,39 @@ bool Job::AddFireMediumBound(
 		!exact(channelCarbon,"carbon") || !exact(channelTemperature,"temperature") ||
 		!exact(channelCondensed,"condensed") || !exact(channelReaction,"reaction") ||
 		!exact(channelChemCH,"chem_CH") || !exact(channelChemC2,"chem_C2") ||
-		!exact(channelChemCO2,"chem_CO2") || !exact(channelVelocity,"velocity") ) return false;
+		!exact(channelChemCO2,"chem_CO2") || !exact(channelVelocity,"velocity") )
+		return refuse("a channel binding differs from the version-1 manifest schema names "
+			"(carbon, temperature, condensed, reaction, chem_CH, chem_C2, chem_CO2, velocity); "
+			"channel_carbon and channel_temperature are required");
 	const bool boundChem=bound(channelChemCH)||bound(channelChemC2)||bound(channelChemCO2);
-	if( chemModelNone==boundChem || (boundChem && !(bound(channelChemCH)&&
-		bound(channelChemC2)&&bound(channelChemCO2))) ) return false;
+	if( chemModelNone==boundChem ) return refuse(chemModelNone ?
+		"`chem_model none` is declared together with chem channel bindings; give one or the other" :
+		"neither `chem_model none` nor the chem channel bindings are declared; give one or the other");
+	if( boundChem && !(bound(channelChemCH)&&bound(channelChemC2)&&bound(channelChemCO2)) )
+		return refuse("the chem channels are bound partially; channel_chem_ch, channel_chem_c2 and "
+			"channel_chem_co2 are given together");
 	const auto manifestHas=[&manifest](const char* name) {
 		for( const auto& channel : manifest->Channels() ) if( channel.name==name ) return true;
 		return false;
 	};
 	for( const char* selected : {channelCarbon,channelTemperature,channelCondensed,
 		channelReaction,channelChemCH,channelChemC2,channelChemCO2,channelVelocity} )
-		if( bound(selected) && !manifestHas(selected) ) return false;
+		if( bound(selected) && !manifestHas(selected) )
+			return refuse(std::string("the medium binds channel `") + selected + "`, which the cache does not carry");
 	for( const char* optional : {"condensed","reaction","velocity"} ) {
 		const bool selected = (std::strcmp(optional,"condensed")==0 && bound(channelCondensed)) ||
 			(std::strcmp(optional,"reaction")==0 && bound(channelReaction)) ||
 			(std::strcmp(optional,"velocity")==0 && bound(channelVelocity));
-		if( manifestHas(optional) != selected ) return false;
+		if( manifestHas(optional) != selected ) return refuse(selected ?
+			std::string("the medium binds channel `") + optional + "`, which the cache does not carry" :
+			std::string("the cache carries channel `") + optional + "`, which the medium does not bind; add `channel_" +
+			optional + " " + optional + "`");
 	}
 	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
-		manifestHas("chem_CO2") != boundChem ) return false;
+		manifestHas("chem_CO2") != boundChem ) return refuse(boundChem ?
+		"the medium binds the chem channels, which the cache does not carry; declare `chem_model none` instead" :
+		"the cache carries the chem channels, which the medium does not bind; replace `chem_model none` by "
+		"`channel_chem_ch chem_CH`, `channel_chem_c2 chem_C2` and `channel_chem_co2 chem_CO2`");
 	// Preview verifies each payload on demand. Explicit eager preflight is useful
 	// for offline audits; a preview setting cannot relax predictive admission.
 	const char* preflight = std::getenv("RISE_FIRE_SEQUENCE_PREFLIGHT");
@@ -10764,7 +10805,8 @@ bool Job::AddFireMediumBound(
 		return false;
 	}
 	Implementation::FireSequenceMappedTime initialTime;
-	if( !manifest->MapSceneTime(manifest->TimeMap().sceneTimeOrigin,initialTime,error) ) return false;
+	if( !manifest->MapSceneTime(manifest->TimeMap().sceneTimeOrigin,initialTime,error) )
+		return refuse("the cache's first scene time does not map to a frame: " + error);
 	Implementation::FireSequencePreparedFrame initialFrame;
 	if( !manifest->LoadFrame(initialTime.baseFrameIndex,initialFrame,error) ) {
 		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
@@ -10813,7 +10855,7 @@ bool Job::AddFireMediumBound(
 	for( const Implementation::FireSequenceChannelDescriptor& channel : manifest->Channels() )
 		if( channel.name == "carbon" ) carbon = &channel;
 	if( !carbon || carbon->dimensions[0] > UINT_MAX || carbon->dimensions[1] > UINT_MAX ||
-		carbon->dimensions[2] > UINT_MAX ) return false;
+		carbon->dimensions[2] > UINT_MAX ) return refuse("the carbon channel's lattice is missing or too large");
 	const double scale = manifest->SceneUnitMeters();
 	const std::array<double,3>& translation = manifest->SceneTranslation();
 	const Point3 minimum((carbon->coreFaceBoundsMeters[0]+translation[0])/scale,
@@ -10849,7 +10891,7 @@ bool Job::AddFireMediumBound(
 		!medium->BindSequencePreparationController(*controller,
 			RISECBOR64::SHA256Hex(installerBytes),error) ) {
 		medium->release();
-		return false;
+		return refuse("binding the sequence preparation controller failed: " + error);
 	}
 	RISECBOR64::Bytes initialBindingBytes;
 	if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
@@ -10857,14 +10899,15 @@ bool Job::AddFireMediumBound(
 		{"manager_name",RISECBOR64::Value::String(name)}
 	}),initialBindingBytes,&error) || !controller->SetActiveBindingIdentity(
 		RISECBOR64::SHA256Hex(initialBindingBytes),error) ) {
-		medium->release(); return false;
+		medium->release();
+		return refuse("setting the initial binding identity failed: " + error);
 	}
 	Implementation::FireSequenceRenderTimeSupport support{
 		manifest->TimeMap().sceneTimeOrigin,manifest->TimeMap().sceneTimeOrigin,
 		manifest->TimeMap().sceneTimeOrigin};
 	if( !controller->PrepareMediaForRender(support,false,error) ) {
 		medium->release();
-		return false;
+		return refuse("preparing the first frame for rendering failed: " + error);
 	}
 	mediaMap[name] = medium;
 	fireSequenceManifests[medium] = manifest;
@@ -11334,6 +11377,11 @@ bool Job::DescribeSimulations( std::vector<Simulation::SceneSimulationStatus>& s
 	for( Simulation::SceneSimulationStatus& status : statuses )
 		for( const auto& g : simulatedGeometries )
 			if( g.second.binding.simulation == status.name ) status.meshConsumers.push_back( g.first );
+	// A transform producer (rigid.bodies) has no mesh: the objects that follow
+	// its bodies are its consumers, and a live run is addressed by the first.
+	for( Simulation::SceneSimulationStatus& status : statuses )
+		if( status.meshConsumers.empty() )
+			for( const std::string& object : TransformSourceObjectsOf( status.name ) ) status.meshConsumers.push_back( object );
 	return true;
 }
 
@@ -11416,17 +11464,15 @@ namespace
 
 	//! Names a generation of a simulation's transform output: the cache's key
 	//! and epoch, how many frames of the output it holds, and whether it is
-	//! sealed.  Empty when there is no readable cache.  A bake that advances or
-	//! completes, a new epoch and a cleared cache each change it.
-	std::string TransformSourceStamp( const std::filesystem::path& cacheDir, const std::string& output )
+	//! sealed (a live publication also names its digest, which changes when the
+	//! run restarts).  Empty when there is no readable cache.  A bake that
+	//! advances or completes, a new epoch and a cleared cache each change it.
+	std::string TransformSourceStamp( const Simulation::IReadOnlyCacheSnapshot* snapshot, const std::string& output, const bool live )
 	{
-		Simulation::CacheSnapshot snapshot;
-		std::string error;
-		if( !Simulation::CacheSnapshot::Open( cacheDir, std::size_t( 256 ) << 20, snapshot, error ) ) return std::string();
-		std::size_t frames = 0;
-		for( const auto& e : snapshot.Entries() ) if( e.output == output ) ++frames;
-		return snapshot.Description().key + "|" + snapshot.Description().epoch + "|" + std::to_string( frames ) +
-			( snapshot.Complete() ? "|sealed" : "|partial" );
+		if( !snapshot ) return std::string();
+		const std::size_t frames = snapshot->Span( output ).count;
+		return snapshot->Description().key + "|" + snapshot->Description().epoch + "|" + std::to_string( frames ) +
+			( snapshot->Complete() ? "|sealed" : "|partial" ) + ( live ? "|live|" + snapshot->Digest() : std::string() );
 	}
 }
 
@@ -11486,12 +11532,42 @@ bool Job::SetObjectTransformSource( const char* object, const char* source )
 		state.authoredPosition = pv;
 		state.authoredOrientation = ov;
 	}
-	state.stamp = TransformSourceStamp( spec->second.cacheDir, state.output );
+	std::string snapshotError;
+	state.stamp = TransformSourceStamp( TransformSourceSnapshot_( state.simulation, spec->second.cacheDir, snapshotError ).get(),
+		state.output, liveTransformProviders.count( state.simulation ) != 0 );
 	std::string error;
 	if( !DeriveTransformSourceKeys_( object, state, error ) ) return fail( error );
 	transformSourceObjects.insert( object );
 	transformSourceStates[object] = state;
 	return true;
+}
+
+std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> Job::TransformSourceSnapshot_(
+	const std::string& simulation, const std::filesystem::path& cacheDir, std::string& error ) const
+{
+	const auto live = liveTransformProviders.find( simulation );
+	if( live != liveTransformProviders.end() && live->second ) {
+		std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> snapshot = live->second();
+		if( !snapshot ) error = "the live run of `" + simulation + "` has published nothing";
+		return snapshot;
+	}
+	auto disk = std::make_shared<Simulation::CacheSnapshot>();
+	if( !Simulation::CacheSnapshot::Open( cacheDir, std::size_t( 256 ) << 20, *disk, error ) ) return nullptr;
+	return disk;
+}
+
+void Job::SetLiveTransformProvider( const std::string& simulation, LiveSnapshotProvider provider )
+{
+	if( provider ) liveTransformProviders[simulation] = std::move( provider );
+	else liveTransformProviders.erase( simulation );
+}
+
+std::vector<std::string> Job::TransformSourceObjectsOf( const std::string& simulation ) const
+{
+	std::vector<std::string> objects;
+	for( const auto& entry : transformSourceStates )
+		if( entry.second.simulation == simulation ) objects.push_back( entry.first );
+	return objects;
 }
 
 bool Job::RefreshTransformSources( bool& changed, std::string& error )
@@ -11505,7 +11581,9 @@ bool Job::RefreshTransformSources( bool& changed, std::string& error )
 		const auto spec = simulationsMap.find( state.simulation );
 		IKeyframable* pObj = pObjectManager ? pObjectManager->GetItem( object.c_str() ) : 0;
 		if( spec == simulationsMap.end() || !pObj ) continue;
-		const std::string stamp = TransformSourceStamp( spec->second.cacheDir, state.output );
+		std::string snapshotError;
+		const std::string stamp = TransformSourceStamp( TransformSourceSnapshot_( state.simulation, spec->second.cacheDir, snapshotError ).get(),
+			state.output, liveTransformProviders.count( state.simulation ) != 0 );
 		if( stamp == state.stamp ) continue;
 		// Replace the keys: drop the old ones, put the body back at its authored
 		// pose (where it stays when the cache is gone), derive again from the cache.
@@ -11538,14 +11616,16 @@ bool Job::DeriveTransformSourceKeys_( const char* object, TransformSourceState& 
 	const std::string& body = state.body;
 	const auto spec = simulationsMap.find( simulation );
 	if( spec == simulationsMap.end() ) return failWith( std::string( "standard_object `" ) + object + "`: simulation `" + simulation + "` is gone" );
-	Simulation::CacheSnapshot snapshot;
 	std::string cacheError;
-	if( !Simulation::CacheSnapshot::Open( spec->second.cacheDir, std::size_t( 256 ) << 20, snapshot, cacheError ) ) {
+	const std::shared_ptr<const Simulation::IReadOnlyCacheSnapshot> held =
+		TransformSourceSnapshot_( simulation, spec->second.cacheDir, cacheError );
+	if( !held ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::SetObjectTransformSource:: `%s`: simulation `%s` has no cache yet (%s); "
 			"the object stays at its authored pose until it is baked (rise-sim bake <scene> %s)", object, simulation.c_str(),
 			spec->second.cacheDir.string().c_str(), simulation.c_str() );
 		return true;
 	}
+	const Simulation::IReadOnlyCacheSnapshot& snapshot = *held;
 	const auto& outs = snapshot.Description().outputs;
 	const auto o = std::find_if( outs.begin(), outs.end(), [&]( const Simulation::CacheOutput& x ) { return x.name == output; } );
 	if( o == outs.end() || o->type != Simulation::TransformCodec )
@@ -16329,8 +16409,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		}
 		GlobalLog()->PrintEx( eLog_Error,
 			"Job:: fire render rejected before workers launch (lookup support "
-			"[%g,%g] nm): %s", static_cast<double>(wavelengthMin),
-			static_cast<double>(wavelengthMax), joined.str().c_str() );
+			"[%g,%g] nm): %s%s", static_cast<double>(wavelengthMin),
+			static_cast<double>(wavelengthMax), joined.str().c_str(),
+			reasons.find("output_provenance_unavailable") != reasons.end() ?
+			"; a fire render records its provenance in its primary output, which must be a linear 32-bit EXR: "
+			"make the scene's first file_rasterizeroutput `type EXR`, `bpp 32`, `color_space Rec709RGB_Linear`" : "" );
 		return false;
 	}
 	if( publishMetadata ) {
