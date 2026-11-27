@@ -639,6 +639,8 @@ void MembraneModelProbe(const MembraneCase& c)
 		LiquidSheet& l = m.sheets[0];
 		cloth.x = l.dyn.Active() ? l.dyn.xe : l.x;
 		cloth.v = l.v;
+		if (std::getenv("M7F_ZFIX"))   // diagnostic: no drift of the strip across the 2-D slab
+			for (std::uint32_t q = 0; q < cloth.Vertices(); ++q) { cloth.x[3*q + 2] = q < std::uint32_t(c.vertices) ? hz : 0.0; cloth.v[3*q + 2] = 0; l.v[3*q + 2] = 0; }
 		l.x = cloth.x;
 		std::vector<double> f;
 		BlockMatrix K;
@@ -668,7 +670,42 @@ void MembraneModelProbe(const MembraneCase& c)
 	for (double t = 0; t < c.T - 1e-9; t += c.macro) {
 		if (!watch) {
 			const int sub = std::getenv("M7E_SUB") ? std::atoi(std::getenv("M7E_SUB")) : 1;
-			if (!m.Run(c.macro, c.macro/sub, nullptr, e)) { std::printf("failed: %s\n", e.c_str()); return; }
+			// M7F_FLOOD: after every step, whether the open faces connect the top row to a cell
+			// whose centre lies below the membrane (a leak path through the pressure solve).
+			auto flood = [&](double, const Liquid::StepStats&) {
+				std::vector<std::uint8_t> seen(g.Cells(), 0);
+				std::vector<std::size_t> stack;
+				for (int i = 0; i < g.n[0]; ++i) { const std::size_t k = g.C(i, g.n[1] - 1, 0); seen[k] = 1; stack.push_back(k); }
+				int below = 0;
+				while (!stack.empty()) {
+					const std::size_t k = stack.back(); stack.pop_back();
+					const int i = int(k % std::size_t(g.n[0])), j = int(k/std::size_t(g.n[0]));
+					if ((j + 0.5)*hz < membraneAt((i + 0.5)*hz) - 1e-9) ++below;
+					const int nb[4][3] = {{i - 1, j, 0}, {i + 1, j, 1}, {i, j - 1, 2}, {i, j + 1, 3}};
+					for (const auto& q : nb) {
+						if (q[0] < 0 || q[0] >= g.n[0] || q[1] < 0 || q[1] >= g.n[1]) continue;
+						const int a = q[2] < 2 ? 0 : 1;
+						const std::size_t f = a == 0 ? g.F(0, std::max(i, q[0]), j, 0) : g.F(1, i, std::max(j, q[1]), 0);
+						if (!(m.fraction[std::size_t(a)][f] > 0)) continue;
+						const std::size_t kk = g.C(q[0], q[1], 0);
+						if (!seen[kk]) { seen[kk] = 1; stack.push_back(kk); }
+					}
+				}
+				if (below) std::printf("    t %.4f: %d cells below the membrane reachable from the top\n", m.Time(), below);
+				if (below > 50 && std::getenv("M7F_FLOOD")[0] == '2') {
+					// Per column: the closed y faces and the sheet's two vertex rows there.
+					const auto& l = m.sheets[0];
+					for (int i = 0; i < g.n[0]; ++i) {
+						int closed = 0, first = -1;
+						for (int j = 1; j < g.n[1]; ++j) if (!(m.fraction[1][g.F(1, i, j, 0)] > 0)) { ++closed; if (first < 0) first = j; }
+						if (closed != 1) std::printf("      column %d: %d closed y faces (first %d), membrane %.5f\n", i, closed, first, membraneAt((i + 0.5)*hz));
+					}
+					for (int q = 0; q < c.vertices; ++q) std::printf("      v%d (%.4f %.5f %.4f) (%.4f %.5f %.4f)\n", q, l.x[3*q], l.x[3*q + 1], l.x[3*q + 2],
+						l.x[3*(q + c.vertices)], l.x[3*(q + c.vertices) + 1], l.x[3*(q + c.vertices) + 2]);
+					std::exit(0);
+				}
+			};
+			if (!m.Run(c.macro, c.macro/sub, std::getenv("M7F_FLOOD") ? std::function<void(double, const Liquid::StepStats&)>(flood) : nullptr, e)) { std::printf("failed: %s\n", e.c_str()); return; }
 			mids.push_back(m.sheets[0].x[3*std::size_t(c.vertices/2) + 1]);
 			times.push_back(m.Time());
 			if (std::getenv("M7E_PISTON")) {
@@ -986,6 +1023,349 @@ struct MembraneRig {
 	}
 };
 
+// ---------------------------------------------------------------- m7f: a pinned sheet holding liquid (3-D)
+
+// A square tank L x H x L, a sheet spanning it at height y0 (on a face plane), pinned along
+// the four walls, a layer d of liquid on it, air below: a watertight bag.  Liquid can reach
+// the space below only through the sheet.  The leak is measured topologically: the cells
+// reachable from the top row through open faces and those reachable from the bottom row are
+// two components while the barrier holds ("breached" if they meet); the liquid in each is the
+// sharp count clamp(1/2 - phi/h, 0, 1) h^3, independent of the volume correction (whose own
+// contribution is tallied separately).
+struct CupCase {
+	int cells = 40;            // across the tank
+	double L = 0.3, H = 0.3, y0 = 0.2, d = 0.03;
+	double sigma = 0.15;       // kg/m^2 (cotton-plain-weave's own)
+	double E = 0;              // > 0: stretch_warp = stretch_weft override (N/m)
+	int vertices = 21;
+	double T = 2, macro = 1.0/120;
+	bool volume = true, particles = true, damping = true, reinit = true;
+	unsigned threads = 8;
+};
+struct CupSample { double t = 0, top = 0, bottom = 0, bottomWet = 0, beyond = 0, other = 0, smoothed = 0, added = 0, sag = 0, vmax = 0; bool breached = false; };
+
+struct CupRig {
+	CupCase c;
+	Cloth::ClothSystem cloth;
+	Liquid::LiquidModel m;
+	double h = 0, y0 = 0, added = 0, lastStageVolume = -1;
+	std::map<std::string, double> stageSums;   // M7F_STAGES: per stage, the volume change it made (m^3); "advected" includes the step's end
+	std::size_t kept = 0;
+	std::string error;
+	bool Build(const CupCase& cc) {
+		using namespace Cloth;
+		c = cc;
+		h = c.L/c.cells;
+		y0 = h*std::round(c.y0/h);
+		SheetSpec spec;
+		spec.sizeU = c.L; spec.sizeV = c.L;
+		spec.verticesU = spec.verticesV = std::uint32_t(c.vertices);
+		spec.origin = {{0, y0, c.L}}; spec.axisU = {{1, 0, 0}}; spec.axisV = {{0, 0, -1}};
+		ModelConfig cfg;
+		FindMaterial("cotton-plain-weave", cfg.material);
+		cfg.material.density = c.sigma;
+		if (c.E > 0) cfg.material.stretchWarp = cfg.material.stretchWeft = c.E;
+		cfg.gravity = {{0, -9.81, 0}};
+		cfg.damping = c.damping;
+		Sheet sheet;
+		if (!BuildSheet(spec, cfg.material, sheet, error)) return false;
+		PinGroup rim;
+		const std::uint32_t n = std::uint32_t(c.vertices);
+		for (std::uint32_t j = 0; j < n; ++j) for (std::uint32_t i = 0; i < n; ++i)
+			if (i == 0 || j == 0 || i + 1 == n || j + 1 == n) rim.vertices.push_back(sheet.Index(i, j));
+		cfg.pins = {rim};
+		if (!cloth.Initialize(sheet, cfg, error)) return false;
+		cloth.Reset(0);
+		using namespace Liquid;
+		LiquidSetup s;
+		s.grid.n = {{c.cells, int(std::lround(c.H/h)), c.cells}};
+		s.grid.h = h;
+		Shape col;
+		col.type = Shape::Type::Box;
+		col.lo = {{-1, y0, -1}};
+		col.hi = {{2, y0 + c.d, 2}};
+		s.liquid.push_back(col);
+		LiquidSheet sh;
+		sh.name = "bag";
+		sh.motion = LiquidSheet::Motion::Port;
+		sh.implicit = true;
+		for (const auto& t : cloth.GetSheet().triangles) sh.triangles.insert(sh.triangles.end(), {t.v[0], t.v[1], t.v[2]});
+		sh.x = cloth.x; sh.v = cloth.v; sh.topology = "test";
+		s.sheets.push_back(sh);
+		SolverOptions so;
+		so.volumeCorrection = c.volume;
+		so.particles = c.particles;
+		if (!c.reinit) so.reinit = ReinitScheme::None;
+		if (!m.Initialize(s, so, c.threads, error)) return false;
+		if (std::getenv("M7F_STAGES")) {
+			// Per stage of the step: the change of the smoothed volume it made, summed over the run.
+			const double from = std::atof(std::getenv("M7F_STAGES"));
+			m.stageHook = [this, from](const char* stage) {
+				const double v = m.Volume();
+				if (lastStageVolume >= 0 && m.Time() >= from) stageSums[stage] += v - lastStageVolume;
+				lastStageVolume = v;
+			};
+		}
+		Relinearise(cfg.material, c.damping);
+		return m.ProjectState(error);
+	}
+	Cloth::Material material;
+	bool damped = false;
+	void Relinearise(const Cloth::Material& mat, bool damping) {
+		material = mat; damped = damping;
+		Relinearise();
+	}
+	void Relinearise() {
+		using namespace Liquid;
+		LiquidSheet& l = m.sheets[0];
+		cloth.x = l.dyn.Active() ? l.dyn.xe : l.x;
+		cloth.v = l.v;
+		l.x = cloth.x;
+		std::vector<double> f;
+		Cloth::BlockMatrix K;
+		cloth.Mechanics(f, K);
+		SheetDynamics& d = l.dyn;
+		d.mass = cloth.GetSheet().mass;
+		d.fixed.assign(d.mass.size(), 0);
+		for (std::uint32_t q = 0; q < cloth.Vertices(); ++q) d.fixed[q] = cloth.Fixed(q);
+		d.force = f;
+		d.stiffness = K;
+		d.dampingMass = damped ? material.dampingMass : 0.0;
+		d.dampingStiffness = damped ? material.dampingStiffness : 0.0;
+		m.UpdateSheetGeometry(true);
+		m.ResetSheetDynamics();
+	}
+	bool Macro() {
+		const auto after = [&](double, const Liquid::StepStats& st) {
+			// The volume the correction added in the step (phi += shift removes shift x area).
+			added -= st.volumeShift*Liquid::InterfaceArea(m.GridSpec(), m.phi, nullptr, m.ThreadPool());
+			kept += st.sheetCellsKept;
+			if (std::getenv("M7F_SHIFT")) std::printf("    step %.4f shift %.3g kept %zu removed %zu reinit %d\n", m.Time(), st.volumeShift, st.sheetCellsKept, st.sheetParticlesRemoved, int(st.reinitialised));
+		};
+		if (!m.Run(c.macro, c.macro, after, error)) return false;
+		Relinearise();
+		return true;
+	}
+	CupSample Sample() const {
+		const auto& g = m.GridSpec();
+		CupSample s;
+		s.t = m.Time();
+		s.added = added;
+		s.smoothed = m.Volume();
+		std::vector<std::uint8_t> mark(g.Cells(), 0);   // 1 top, 2 bottom, 3 both
+		for (int side = 0; side < 2; ++side) {
+			const std::uint8_t bit = std::uint8_t(side ? 2 : 1);
+			std::vector<std::size_t> stack;
+			const int j0 = side ? 0 : g.n[1] - 1;
+			for (int k = 0; k < g.n[2]; ++k) for (int i = 0; i < g.n[0]; ++i) { const std::size_t q = g.C(i, j0, k); mark[q] |= bit; stack.push_back(q); }
+			while (!stack.empty()) {
+				const std::size_t q = stack.back(); stack.pop_back();
+				const int idx[3] = {int(q % std::size_t(g.n[0])), int((q/std::size_t(g.n[0])) % std::size_t(g.n[1])), int(q/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+				for (int a = 0; a < 3; ++a) for (int dir = -1; dir <= 1; dir += 2) {
+					int nb[3] = {idx[0], idx[1], idx[2]};
+					nb[a] += dir;
+					if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
+					int f[3] = {idx[0], idx[1], idx[2]};
+					if (dir > 0) ++f[a];
+					if (!(m.fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
+					const std::size_t r = g.C(nb[0], nb[1], nb[2]);
+					if (!(mark[r] & bit)) { mark[r] |= bit; stack.push_back(r); }
+				}
+			}
+		}
+		const double cell = g.h*g.h*g.h;
+		// The cells beside the sheet's closed faces: on the dry side their part-full count is the
+		// half cell between the centre and the sheet that the liquid above fills.
+		std::vector<std::uint8_t> besideSheet(g.Cells(), 0);
+		for (const auto& x : m.SheetFaces()) {
+			const auto d = g.FaceDims(x.axis);
+			int idx[3] = {int(x.face % std::size_t(d[0])), int((x.face/std::size_t(d[0])) % std::size_t(d[1])), int(x.face/(std::size_t(d[0])*std::size_t(d[1])))};
+			besideSheet[g.C(idx[0], idx[1], idx[2])] = 1;
+			--idx[x.axis];
+			besideSheet[g.C(idx[0], idx[1], idx[2])] = 1;
+		}
+		if (std::getenv("M7F_DUMP") && m.Time() > std::atof(std::getenv("M7F_DUMP"))) {
+			int shown = 0;
+			for (std::size_t q = 0; q < g.Cells() && shown < 12; ++q) {
+				if (mark[q] != 2 || !(m.phi[q] < 0.5*g.h) || besideSheet[q]) continue;
+				const int i = int(q % std::size_t(g.n[0])), j = int((q/std::size_t(g.n[0])) % std::size_t(g.n[1])), k = int(q/(std::size_t(g.n[0])*std::size_t(g.n[1])));
+				std::printf("      dry cell (%d %d %d) phi %.3g h; column:", i, j, k, m.phi[q]/g.h);
+				for (int jj = std::max(0, j - 2); jj < std::min(g.n[1], j + 5); ++jj) {
+					const bool cl = jj > 0 && !(m.fraction[1][g.F(1, i, jj, k)] > 0);
+					std::printf(" %s%.2f", cl ? "|" : "", m.phi[g.C(i, jj, k)]/g.h);
+				}
+				std::printf("; x nbrs %.2f %.2f z nbrs %.2f %.2f\n", i > 0 ? m.phi[g.C(i - 1, j, k)]/g.h : 99.0, i + 1 < g.n[0] ? m.phi[g.C(i + 1, j, k)]/g.h : 99.0,
+					k > 0 ? m.phi[g.C(i, j, k - 1)]/g.h : 99.0, k + 1 < g.n[2] ? m.phi[g.C(i, j, k + 1)]/g.h : 99.0);
+				++shown;
+			}
+		}
+		for (std::size_t q = 0; q < g.Cells(); ++q) {
+			const double v = std::min(1.0, std::max(0.0, 0.5 - m.phi[q]/g.h))*cell;
+			if (mark[q] == 3) s.breached = true;
+			if (mark[q] == 1) s.top += v;
+			else if (mark[q] & 2) {
+				s.bottom += v;
+				if (m.phi[q] < 0) s.bottomWet += cell;
+				if (!besideSheet[q]) s.beyond += v;
+			} else s.other += v;
+		}
+		const auto& l = m.sheets[0];
+		const std::size_t mid = std::size_t(c.vertices/2)*std::size_t(c.vertices) + std::size_t(c.vertices/2);
+		s.sag = y0 - l.x[3*mid + 1];
+		if (std::getenv("M7F_SURFACE")) {
+			// The free surface (the topmost zero of phi) along columns at a quarter and the middle of the tank.
+			for (int q : {g.n[0]/4, g.n[0]/2}) {
+				double ys = -1;
+				for (int j = g.n[1] - 1; j > 0; --j) {
+					const double a = m.phi[g.C(q, j, g.n[2]/2)], b = m.phi[g.C(q, j - 1, g.n[2]/2)];
+					if (a >= 0 && b < 0) { ys = (j - 0.5 + a/(a - b))*g.h; break; }
+				}
+				std::printf("    column %d: free surface %.5f", q, ys);
+			}
+			std::printf("  (sheet mid %.5f)\n", l.x[3*mid + 1]);
+		}
+		for (std::size_t q = 0; q < l.Vertices(); ++q)
+			s.vmax = std::max(s.vmax, std::sqrt(l.v[3*q]*l.v[3*q] + l.v[3*q + 1]*l.v[3*q + 1] + l.v[3*q + 2]*l.v[3*q + 2]));
+		return s;
+	}
+};
+
+// Runs a cup; prints a line every `every` s.  Returns the samples (one per macro step).
+std::vector<CupSample> RunCup(const CupCase& c, double every, bool& ok, std::string& error)
+{
+	std::vector<CupSample> out;
+	auto rig = std::make_unique<CupRig>();
+	ok = rig->Build(c);
+	if (!ok) { error = rig->error; return out; }
+	out.push_back(rig->Sample());
+	const double V0 = out[0].top;
+	const double w0 = Seconds();
+	while (rig->m.Time() < c.T - 1e-9) {
+		if (!rig->Macro()) { ok = false; error = rig->error; return out; }
+		out.push_back(rig->Sample());
+		rig->lastStageVolume = rig->m.Volume();   // macro boundaries (the relinearisation's sweep) are not a stage
+		const CupSample& s = out.back();
+		if (every > 0 && std::fabs(s.t/every - std::round(s.t/every)) < 1e-6)
+			std::printf("  t %.3f sag %.4f m, max|v| %.3g; liquid above %.6g, below %.4g (%.2e of V0; beyond the sheet's cells %.2e, wet cells %.2e), elsewhere %.3g; smoothed %.6g; correction added %.3g (%.2e of V0)%s (%.0f s)\n",
+				s.t, s.sag, s.vmax, s.top, s.bottom, s.bottom/V0, s.beyond/V0, s.bottomWet/V0, s.other, s.smoothed, s.added, s.added/V0, s.breached ? " BREACHED" : "", Seconds() - w0);
+	}
+	for (const auto& e : rig->stageSums) std::printf("  stage %-14s %+.3e m^3 (%+.2e of V0)\n", e.first.c_str(), e.second, e.second/V0);
+	return out;
+}
+
+void CupProbe(int argc, char** argv)
+{
+	CupCase c;
+	double every = 0.25;
+	for (int i = 2; i + 1 < argc; i += 2) {
+		const std::string k = argv[i], v = argv[i + 1];
+		if (k == "cells") c.cells = std::atoi(v.c_str());
+		else if (k == "density") c.sigma = std::atof(v.c_str());
+		else if (k == "T") c.T = std::atof(v.c_str());
+		else if (k == "macro") c.macro = 1/std::atof(v.c_str());
+		else if (k == "E") c.E = std::atof(v.c_str());
+		else if (k == "vertices") c.vertices = std::atoi(v.c_str());
+		else if (k == "depth") c.d = std::atof(v.c_str());
+		else if (k == "volume") c.volume = std::atoi(v.c_str()) != 0;
+		else if (k == "particles") c.particles = std::atoi(v.c_str()) != 0;
+		else if (k == "damping") c.damping = std::atoi(v.c_str()) != 0;
+		else if (k == "reinit") c.reinit = std::atoi(v.c_str()) != 0;
+		else if (k == "every") every = std::atof(v.c_str());
+	}
+	bool ok = false;
+	std::string e;
+	const auto s = RunCup(c, every, ok, e);
+	if (!ok) { std::printf("failed: %s\n", e.c_str()); return; }
+	double worst = 0, worstBeyond = 0, worstWet = 0;
+	bool breached = false;
+	for (const CupSample& x : s) {
+		worst = std::max(worst, x.bottom); worstBeyond = std::max(worstBeyond, x.beyond); worstWet = std::max(worstWet, x.bottomWet);
+		breached = breached || x.breached;
+	}
+	const double V0 = s[0].top;
+	std::printf("cup cells %d sigma %g E %g depth %g macro 1/%g T %g: V0 %.6g m^3; below the sheet: max %.2e of V0 (beyond the sheet's cells %.2e, wet cells %.2e); "
+		"final: above %+.2e, above + below %+.2e, smoothed %+.2e of V0; correction added %+.2e of V0%s\n",
+		c.cells, c.sigma, c.E, c.d, 1/c.macro, c.T, V0, worst/V0, worstBeyond/V0, worstWet/V0, s.back().top/V0 - 1, (s.back().top + s.back().bottom)/V0 - 1,
+		s.back().smoothed/s[0].smoothed - 1, s.back().added/V0, breached ? ", BREACHED" : ", barrier intact");
+}
+
+// ---------------------------------------------------------------- m7f: rotation within a macro step
+
+// A free cotton sheet (0.3 m, 13 x 13, no gravity, no damping) spinning rigidly at omega about
+// an axis in its plane (flapping) or along its normal, integrated by backward Euler in
+// `substeps` steps per macro step H with the coupled step's linear model (BeginLinear at each
+// macro start, as cloth.shell does with its partner's steps) or with the cloth's own nonlinear
+// model.  The largest edge strain |l / l0 - 1| (rows and columns) over `T` against (omega H)^2 / 2,
+// the stretch of straight-line motion over the step (derived: a point at r moving tangentially
+// by omega r H ends at r sqrt(1 + (omega H)^2)).
+double MaxEdgeStrain(const Cloth::ClothSystem& cloth, std::uint32_t n)
+{
+	const Cloth::Sheet& s = cloth.GetSheet();
+	double worst = 0;
+	for (std::uint32_t j = 0; j < n; ++j) for (std::uint32_t i = 0; i < n; ++i)
+		for (int d = 0; d < 2; ++d) {
+			if ((d == 0 && i + 1 >= n) || (d == 1 && j + 1 >= n)) continue;
+			const std::uint32_t a = s.Index(i, j), b = d == 0 ? s.Index(i + 1, j) : s.Index(i, j + 1);
+			double l = 0;
+			for (int k = 0; k < 3; ++k) { const double e = cloth.x[3*b + std::uint32_t(k)] - cloth.x[3*a + std::uint32_t(k)]; l += e*e; }
+			worst = std::max(worst, std::fabs(std::sqrt(l)/(d == 0 ? s.hu : s.hv) - 1));
+		}
+	return worst;
+}
+
+double RotatingSheet(double omega, double H, int substeps, bool linear, bool inPlaneAxis, double T)
+{
+	using namespace Cloth;
+	SheetSpec spec;
+	spec.sizeU = spec.sizeV = 0.3;
+	spec.verticesU = spec.verticesV = 13;
+	ModelConfig cfg;
+	FindMaterial("cotton-plain-weave", cfg.material);
+	cfg.gravity = {{0, 0, 0}};
+	cfg.damping = false;
+	Sheet sheet;
+	std::string e;
+	BuildSheet(spec, cfg.material, sheet, e);
+	ClothSystem cloth;
+	cloth.Initialize(sheet, cfg, e);
+	cloth.Reset(0);
+	const std::uint32_t n = cloth.Vertices();
+	std::array<double,3> centre{{0, 0, 0}};
+	for (std::uint32_t q = 0; q < n; ++q) for (int k = 0; k < 3; ++k) centre[std::size_t(k)] += cloth.x[3*q + std::uint32_t(k)]/n;
+	// The sheet lies in the xz plane (axis_u x, axis_v -z): an in-plane axis is x, the normal y.
+	const std::array<double,3> w = inPlaneAxis ? std::array<double,3>{{omega, 0, 0}} : std::array<double,3>{{0, omega, 0}};
+	for (std::uint32_t q = 0; q < n; ++q) {
+		const double r[3] = {cloth.x[3*q] - centre[0], cloth.x[3*q + 1] - centre[1], cloth.x[3*q + 2] - centre[2]};
+		cloth.v[3*q] = w[1]*r[2] - w[2]*r[1];
+		cloth.v[3*q + 1] = w[2]*r[0] - w[0]*r[2];
+		cloth.v[3*q + 2] = w[0]*r[1] - w[1]*r[0];
+	}
+	NewtonOptions o;
+	double worst = 0;
+	for (double t = 0; t < T - 1e-9; t += H) {
+		if (linear) cloth.BeginLinear();
+		for (int k = 0; k < substeps; ++k) {
+			Cloth::StepStats st;
+			if (!cloth.Step(H/substeps, Scheme::BackwardEuler, o, st, e)) { std::printf("step failed: %s\n", e.c_str()); return NAN; }
+			worst = std::max(worst, MaxEdgeStrain(cloth, 13));
+		}
+		cloth.EndLinear();
+	}
+	return worst;
+}
+
+void RotateProbe(int, char**)
+{
+	std::printf("rotation within a macro step: max edge strain over 0.5 s (backward Euler, 4 steps per macro step)\n");
+	for (int axis = 0; axis < 2; ++axis)
+		for (double H : {1.0/120, 1.0/30})
+			for (double omega : {1.0, 3.0, 10.0, 30.0}) {
+				const double lin = RotatingSheet(omega, H, 4, true, axis == 0, 0.5), non = RotatingSheet(omega, H, 4, false, axis == 0, 0.5);
+				std::printf("  %s omega %4.0f rad/s, H 1/%3.0f s (omega H %.3f): linear per macro step %.2e, nonlinear %.2e, (omega H)^2/2 %.2e\n",
+					axis == 0 ? "in-plane axis" : "normal axis  ", omega, 1/H, omega*H, lin, non, 0.5*omega*H*omega*H);
+			}
+}
+
 double Frequency(const std::vector<double>& t, const std::vector<double>& y)
 {
 	double mean = 0;
@@ -1193,6 +1573,13 @@ void Refusals()
 	} sink;
 	AdvanceResult r;
 	Check(!s->Advance(AdvanceRequest{}, sink, nullptr, nullptr, r, e), "an implicit sheet refuses to run outside a group", e);
+	// m7f: the cloth refuses an implicit sheet's load without the sheet's steps connected (it
+	// would apply their mean over its own substeps: the unstable exchange of M7e section 2.1).
+	FlapCase f;
+	f.cells = 16; f.T = 0.1; f.steps = false;
+	const FlapResult fr = RunFlap(f);
+	std::printf("  surface_load_steps not connected: %s\n", fr.error.empty() ? "(ran)" : fr.error.c_str());
+	Check(!fr.ok && fr.error.find("surface_load_steps is not connected") != std::string::npos, "an implicit sheet without its steps connected is refused", fr.error);
 }
 
 // A: the coupled pressure operator with a sheet is symmetric positive definite (dense, 2-D).
@@ -1300,6 +1687,61 @@ void Membrane()
 	Check(std::fabs(w/ref - 1) < 0.066, "the membrane's frequency in liquid (6.6%: 1.25 x the error observed at 32 to 128 cells)");
 }
 
+// J (m7f): the membrane of E sagging 16.5 mm under a 5 cm layer with gravity (M7e's case (b) at
+// large sag, which leaked): the mean mid-span sag over [1.5, 3] s through the group against the
+// cloth alone under the analytic hydrostatic load.
+void LargeSag()
+{
+	std::printf("J: membrane at large sag\n");
+	MembraneCase c;
+	c.cells = 32; c.E = 2e4; c.ym = 0.046875; c.T = 3;
+	double ys = 0;
+	const auto ref = HydrostaticReference(c, ys);
+	const MembraneRun r = RunMembrane(c);
+	Check(r.ok, "membrane group", r.error);
+	if (!r.ok) return;
+	const std::size_t a = std::size_t(c.vertices/2), b = std::size_t((c.vertices - 1)/2);
+	const double refSag = c.ym - 0.5*(ref[a] + ref[b]);
+	double mean = 0;
+	int k = 0;
+	for (std::size_t j = 0; j < r.t.size(); ++j) if (r.t[j] >= 0.5*c.T) { mean += r.mid[j]; ++k; }
+	const double sag = c.ym - mean/std::max(1, k);
+	std::printf("  32 cells: sag %.5f m, reference %.5f m: error %.3g\n", sag, refSag, sag/refSag - 1);
+	Check(std::fabs(sag/refSag - 1) < 0.02, "the membrane's static sag under a layer that it holds (2%)");
+}
+
+// K (m7f): the pinned bag of --cup (24 cells, 6 cm of water, E 2e4 N/m) for 1 s: no liquid below
+// the sheet beyond the cells beside it, no wet cell below it, the two components apart, and the
+// liquid's sharp volume within 1% of the start (the correction holds the smoothed one).
+void Cup()
+{
+	std::printf("K: a pinned bag holding liquid\n");
+	CupCase c;
+	c.cells = 24; c.d = 0.06; c.E = 2e4; c.T = 1;
+	bool ok = false;
+	std::string e;
+	const auto s = RunCup(c, 0, ok, e);
+	Check(ok, "cup", e);
+	if (!ok) return;
+	double beyond = 0, wet = 0;
+	bool breached = false;
+	for (const CupSample& x : s) { beyond = std::max(beyond, x.beyond); wet = std::max(wet, x.bottomWet); breached = breached || x.breached; }
+	const double V0 = s[0].top, total = s.back().top + s.back().bottom;
+	std::printf("  sag %.4f m; below the sheet beyond its cells %.2e, wet cells below %.2e of V0; sharp volume %+.2e of V0%s\n", s.back().sag,
+		beyond/V0, wet/V0, total/V0 - 1, breached ? "; BREACHED" : "");
+	Check(!breached && beyond == 0 && wet == 0 && std::fabs(total/V0 - 1) < 0.01, "a pinned bag holds its liquid");
+}
+
+// L (m7f): the cloth's linear step within a macro step stretches a rotating sheet by (omega H)^2 / 2.
+void Rotation()
+{
+	std::printf("L: rotation within a macro step\n");
+	const double H = 1.0/30, omega = 10;
+	const double lin = RotatingSheet(omega, H, 4, true, true, 0.1), non = RotatingSheet(omega, H, 4, false, true, 0.1);
+	std::printf("  omega 10 rad/s, H 1/30 s: linear per macro step %.3e, nonlinear %.3e, (omega H)^2 / 2 %.3e\n", lin, non, 0.5*omega*H*omega*H);
+	Check(std::fabs(lin/(0.5*omega*H*omega*H) - 1) < 0.05 && non < 1e-3, "the linear step's stretch is (omega H)^2 / 2");
+}
+
 void Probe(int argc, char** argv)
 {
 	FlapCase c;
@@ -1339,6 +1781,8 @@ int main(int argc, char** argv)
 	if (argc > 1 && std::string(argv[1]) == "--plate") { PlateProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--copy") { CopyOnlyProbe(argc, argv); return 0; }
 	if (argc > 1 && std::string(argv[1]) == "--membrane") { MembraneProbe(argc, argv); return 0; }
+	if (argc > 1 && std::string(argv[1]) == "--cup") { CupProbe(argc, argv); return 0; }
+	if (argc > 1 && std::string(argv[1]) == "--rotate") { RotateProbe(argc, argv); return 0; }
 	const double t0 = Seconds();
 	Operator();
 	Stability();
@@ -1349,6 +1793,9 @@ int main(int argc, char** argv)
 	Determinism();
 	Guards();
 	Refusals();
+	LargeSag();
+	Cup();
+	Rotation();
 	std::printf("LiquidClothCouplingTest: %.1f s\n", Seconds() - t0);
 	if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	std::printf("LiquidClothCouplingTest: all checks passed\n");

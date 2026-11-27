@@ -82,6 +82,22 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 			const double len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
 			if (!(len > 0)) continue;
 			for (double& c : n) c /= len;
+			// m7f: in a grid one cell thick along an axis (2-D) the liquid has no gradient along
+			// it, so its force on the sheet has no component along it either: the normal is
+			// projected onto the grid's plane.  Without it a strip whose two vertex rows sagged
+			// unequally was pushed across the slab by the hydrostatic load (a tenth of it at a
+			// 0.1 rad twist, against a cloth's weight of a few pascals), left the cell-centre line
+			// and closed no face at all (docs/SIMULATION_M7F_RESULTS.md).  Only for sheets coupled
+			// implicitly (the bytes of other sheets are m7e.1's).
+			if (sh.implicit) {
+				bool thin = false;
+				for (int m = 0; m < 3; ++m) if (g.n[m] == 1 && n[std::size_t(m)] != 0) { n[std::size_t(m)] = 0; thin = true; }
+				if (thin) {
+					const double l2 = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+					if (!(l2 > 1e-6)) continue;   // the sheet lies in the grid's plane: it separates nothing there
+					for (double& c : n) c /= l2;
+				}
+			}
 			const V3 v0 = At(sh.v, i0), v1 = At(sh.v, i1), v2 = At(sh.v, i2);
 			for (int a = 0; a < 3; ++a) {
 				if (g.n[a] < 2) continue;   // no interior faces along a one-cell axis

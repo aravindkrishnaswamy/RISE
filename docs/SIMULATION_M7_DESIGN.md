@@ -49,7 +49,13 @@ solids from scratch and gives no smooth surface); material-point and lattice met
   a body's mass matrix, plus the liquid on the faces the sheet closes) and offers the impulse of each of its steps; the
   cloth takes those steps with the same linear model (an owned exchange). A scheme in which the cloth integrated on
   its own nonlinear model with the liquid's impulses diverged slowly for light cloth; this one is stable from 0.05 to
-  100 kg/m². One-sided sheets that sweep cell centres under gravity still leak.*
+  100 kg/m². One-sided sheets that sweep cell centres under gravity still leak.* *M7f (2026-11-26,
+  [results](SIMULATION_M7F_RESULTS.md); preview): the leak had two causes. In 2-D the test strip left the one-cell
+  slab (fixed: a 2-D grid's sheets push only in its plane). In 3-D the level set crossed the sheet and the volume
+  correction drained the wet side (fixed: the sheet's faces are walls or boundaries of the level set's stencils, and
+  the level set is the signed distance to a sheet holding liquid on one side, set before the volume is measured). A
+  pinned bag at 24–64 cells passes nothing through the sheet, and the membrane at large sag is within 0.8% of its
+  reference. Layers thinner than about four cells on a sheet are not handled.*
 
 ## 3. Outputs
 
@@ -122,4 +128,5 @@ bake is on the order of 7 hours; 128³ is about 16 times cheaper. A first protot
    the load returned as its `surface_load` once per macro step. The lagged exchange is stable only for sheets far
    heavier than cloth (measured in §6 of the results); a stable two-way treatment is still the later step. Also in
    M7d: closed-mesh bodies, and the dam break at 256³.* *M7e (2026-11-26; [results](SIMULATION_M7E_RESULTS.md)): the
-   implicit coupling of §2, stable for real cloth.*
+   implicit coupling of §2, stable for real cloth.* *M7f (2026-11-26; [results](SIMULATION_M7F_RESULTS.md)): sheets
+   that hold liquid on one side no longer leak; a cloth catches and holds a block of water in the demo.*

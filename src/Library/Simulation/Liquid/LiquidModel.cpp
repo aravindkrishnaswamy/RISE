@@ -538,8 +538,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	{
 		std::array<std::vector<double>,3> c;
 		CellVelocity(g, ui, c, pool);
-		AdvectLevelSet(g, phi, [&](double, std::array<std::vector<double>,3>& v) { v = c; }, 0.0, dt, pool);
+		AdvectLevelSet(g, phi, [&](double, std::array<std::vector<double>,3>& v) { v = c; }, 0.0, dt, pool, &barrier_);
 	}
+	if (stageHook) stageHook("advected");
 	t0 = Now();
 	stats.levelSet += t0 - t1;
 	t1 = t0;
@@ -579,7 +580,9 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 		MoveSheets(dt);
 		CloseSheetFaces();
 		if (coupledSheets) {
+			if (stageHook) stageHook("closed");
 			const std::pair<std::size_t, std::size_t> n = SweepSheetCells(facesBefore);
+			if (stageHook) stageHook("swept");
 			stats.sheetCellsKept += n.first;
 			stats.sheetParticlesRemoved += n.second;
 		}
@@ -598,8 +601,10 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	t0 = Now();
 	stats.particles += t0 - t1;
 	stats.reinitialised = options_.reinit != ReinitScheme::None &&
-		(options_.reinitThreshold <= 0 || GradientDeviation(g, phi, 3, pool) > options_.reinitThreshold);
-	if (stats.reinitialised) Reinitialize(g, phi, options_.reinit, options_.reinitIterations, options_.reinitCfl, pool);
+		(options_.reinitThreshold <= 0 || GradientDeviation(g, phi, 3, pool, &barrier_) > options_.reinitThreshold);
+	if (stageHook) stageHook("corrected");
+	if (stats.reinitialised) Reinitialize(g, phi, options_.reinit, options_.reinitIterations, options_.reinitCfl, pool, &barrier_);
+	if (stageHook) stageHook("reinitialised");
 	t1 = Now();
 	stats.levelSet += t1 - t0;
 	if (options_.particles) {
@@ -609,19 +614,56 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	}
 	t0 = Now();
 	stats.particles += t0 - t1;
-	if (options_.volumeCorrection) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool);
+	if (!coupledSheets) { if (options_.volumeCorrection) stats.volumeShift = CorrectVolume(g, phi, targetVolume_, open, pool); }
+	else {
+		// m7f: the level set beside a one-sided coupled sheet is its distance to the sheet
+		// (PinSheetInterface) before the volume is measured, and the correction moves the free
+		// surface only: the pinned cells are left out of its area and keep their values.  Pinned
+		// after a correction that had shifted them too (m7e's order), the cells beside the sheet
+		// returned what the shift had taken from them each step while the free surface kept its
+		// share: a pinned bag lost 12% of its water in 2 s at 24 cells.
+		std::vector<std::uint8_t> pinned;
+		if (stageHook) stageHook("particles");
+		stats.sheetCellsKept += PinSheetInterface(&pinned);
+		if (stageHook) stageHook("pinned");
+		if (options_.volumeCorrection) {
+			// The band of the sheet's zero: the cells set and their neighbours on the same side with
+			// no interface of their own (their values follow the boundary values: shifted, they
+			// were pulled back by the reinitialisation and the pin each step, and the measured
+			// volume crept up by a few per cent per second in a bag at rest).
+			std::vector<std::uint8_t> band = pinned;
+			for (std::size_t c = 0; c < pinned.size(); ++c) {
+				if (!pinned[c]) continue;
+				const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+					int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+				for (int a = 0; a < 3; ++a) for (int o = -1; o <= 1; o += 2) {
+					int q[3] = {idx[0], idx[1], idx[2]};
+					q[a] += o;
+					if (q[a] < 0 || q[a] >= g.n[a]) continue;
+					const std::size_t nb = g.C(q[0], q[1], q[2]);
+					if (!band[nb] && (phi[nb] < 0) == (phi[c] < 0) && !OwnInterface(nb)) band[nb] = 2;
+				}
+			}
+			pinned.swap(band);
+			const double v = Volume(), area = InterfaceArea(g, phi, open, pool, &pinned);
+			if (area > 0) {
+				const double shift = (v - targetVolume_)/area;
+				ForRows(pool, phi.size(), 4096, [&](std::size_t a, std::size_t b) { for (std::size_t c = a; c < b; ++c) if (!pinned[c]) phi[c] += shift; });
+				stats.volumeShift = shift;
+			}
+		}
+	}
 	// m7d: no cell beside a sheet fills across it (LiquidSheets.h BlockSheetLeaks).
 	if (!sheets.empty() && !coupledSheets) stats.sheetCellsKept = BlockSheetLeaks(g, sheetFaces_, fraction, phiStart, phi, pool);
 	if (coupledSheets) {
 		// m7e: beside a coupled sheet the creep rule would hold a dry cell's level set while the
 		// sheet approaches it (the false interface could not follow a membrane sagging inside a
-		// cell gap: its oscillation came out stiffer with every step taken); PinFalseInterface
+		// cell gap: its oscillation came out stiffer with every step taken); PinSheetInterface
 		// puts that zero at the sheet instead.  The rule elsewhere (cells that fill without a wet
 		// neighbour) stays.
 		std::vector<SheetCrossing> others;
 		for (const SheetCrossing& c : sheetFaces_) if (!sheets[c.sheet].Coupled()) others.push_back(c);
-		stats.sheetCellsKept = BlockSheetLeaks(g, others, fraction, phiStart, phi, pool);
-		stats.sheetCellsKept += PinFalseInterface();
+		stats.sheetCellsKept += BlockSheetLeaks(g, others, fraction, phiStart, phi, pool);
 	}
 	// m7c: the curvature of the new interface for the surface-tension jump.
 	if (setup_.surfaceTension > 0) Curvature(g, phi, kappa_, pool);
@@ -1030,6 +1072,7 @@ void LiquidModel::RestoreSheetFaces()
 	for (std::size_t i = 0; i < sheetFaces_.size(); ++i) fraction[sheetFaces_[i].axis][sheetFaces_[i].face] = sheetSaved_[i];
 	sheetFaces_.clear();
 	sheetSaved_.clear();
+	barrier_.Clear();
 }
 
 void LiquidModel::CloseSheetFaces()
@@ -1041,6 +1084,69 @@ void LiquidModel::CloseSheetFaces()
 		sheetSaved_[i] = f;
 		f = 0;
 	}
+	BuildBarrier();
+}
+
+void LiquidModel::BuildBarrier()
+{
+	// m7f: the faces of the implicitly coupled sheets are not read across by the level set's
+	// stencils (LiquidLevelSet.h LevelSetBarrier): boundary faces where the sheet holds liquid
+	// on one side (the two cells differ in sign and have no interface of their own, the cells
+	// PinSheetInterface sets), walls elsewhere.  Other sheets keep m7d's stencils and guards.
+	barrier_.Clear();
+	if (!CoupledSheets()) return;
+	const Grid& g = setup_.grid;
+	std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3> faces;
+	std::vector<std::uint8_t> fixed;   // the boundary faces' cells: kept by the reinitialisation
+	for (const SheetCrossing& c : sheetFaces_) {
+		if (!sheets[c.sheet].Coupled()) continue;
+		const auto d = g.FaceDims(c.axis);
+		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
+		--idx[c.axis];
+		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
+		const bool boundary = (phi[L] < 0) != (phi[R] < 0) && !OwnInterface(L) && !OwnInterface(R);
+		faces[std::size_t(c.axis)].emplace_back(c.face, std::uint8_t(boundary ? 2 : 1));
+		if (boundary) {
+			if (fixed.empty()) fixed.assign(g.Cells(), 0);
+			fixed[L] = fixed[R] = 1;
+		}
+	}
+	barrier_.Build(g, faces);
+	barrier_.fixed.swap(fixed);
+}
+
+bool LiquidModel::OwnInterface(std::size_t c0) const
+{
+	// m7f: whether a cell of the other sign lies within two steps across open faces (an interface
+	// on the cell's own side, near enough to be what its value measures).
+	const Grid& g = setup_.grid;
+	const bool neg = phi[c0] < 0;
+	std::size_t frontier[6] = {c0};
+	std::size_t n0 = 1;
+	for (int depth = 0; depth < 2; ++depth) {
+		std::size_t next[6];
+		std::size_t n1 = 0;
+		for (std::size_t e = 0; e < n0; ++e) {
+			const std::size_t c = frontier[e];
+			const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+			for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
+				int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
+				f[a] += side;
+				nb[a] += side ? 1 : -1;
+				if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
+				if (!(fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
+				const std::size_t q = g.C(nb[0], nb[1], nb[2]);
+				if ((phi[q] < 0) != neg) return true;
+				if (depth == 0 && n1 < 6) next[n1++] = q;
+			}
+		}
+		n0 = n1;
+		for (std::size_t e = 0; e < n0; ++e) frontier[e] = next[e];
+	}
+	return false;
 }
 
 void LiquidModel::ClearSheetVelocity(MacField& solid)
@@ -1252,57 +1358,109 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 	}
 }
 
-std::size_t LiquidModel::PinFalseInterface()
+std::size_t LiquidModel::PinSheetInterface(std::vector<std::uint8_t>* mask)
 {
-	// m7e: where a coupled sheet holds liquid on one side only, the level set's zero (the
-	// false interface) belongs at the sheet.  Across a closed face between L and R, R wet
-	// (phi_R < 0) and L notably drier (phi_L - phi_R > h / 2) with no clearly wet open
-	// neighbour of its own (phi < -h / 2), L is the dry side: its level set is the distance
-	// from its centre to the crossing (a cell beside several such faces takes the last).  Without it the level set crept across a
-	// moving sheet by fractions of a millimetre as the sheet passed cell centres, and the
-	// cells it wetted fed their neighbours (BlockSheetLeaks' rule) until the liquid was on
-	// both sides.
+	// m7f: where a coupled sheet holds liquid on one side only, the liquid's boundary is the
+	// sheet: the level set is the signed distance to it there, its zero at the sheet.  Across a
+	// closed face whose two cells differ in sign, each takes its distance to the crossed
+	// triangle's plane, |s - x_c| |n_a| (n the unit normal), negative on the wet side; a cell
+	// beside several such faces takes the least.  The faces between the cells set become
+	// boundary faces of the level set's stencils (LevelSetBarrier): the reinitialisation, the
+	// advection and the volume measure see the liquid end at the sheet.  The cells set are
+	// boundary values only and are left out of the volume correction (`mask`).
+	// A cell with a cell of the other sign within two steps across open faces has an
+	// interface of its own (where a free surface meets the sheet: the waterline of a sheet with
+	// liquid on both sides, where the free surface and the sheet can cross the same segment)
+	// and keeps its value, from which the free surface is interpolated (pinned there, a flap's
+	// waterline moved to the sheet every step and the flap's speed in still water doubled).
+	// m7e pinned the dry side only, after the volume correction, with stencils reading across
+	// the sheet; a pinned bag (3-D, 24 cells, 3 cm of water) lost 22% of its water to the
+	// correction in 2 s that way, and 40% with sided stencils and no pin (the small values the
+	// sheet left on the dry side spread into it and were counted as liquid).
 	const Grid& g = setup_.grid;
 	const double h = g.h;
-	auto clearlyFed = [&](std::size_t c) {
-		const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
-			int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
-		for (int a = 0; a < 3; ++a) for (int side = 0; side < 2; ++side) {
-			int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
-			f[a] += side;
-			nb[a] += side ? 1 : -1;
-			if (nb[a] < 0 || nb[a] >= g.n[a]) continue;
-			if (!(fraction[std::size_t(a)][g.F(a, f[0], f[1], f[2])] > 0)) continue;
-			if (phi[g.C(nb[0], nb[1], nb[2])] < -0.5*h) return true;
-		}
-		return false;
-	};
-	std::vector<std::pair<std::size_t, double>> set;
+	std::vector<std::pair<std::size_t, double>> set;   // (cell, distance), negative distance: wet
 	for (const SheetCrossing& c : sheetFaces_) {
 		if (!sheets[c.sheet].Coupled()) continue;
 		const auto d = g.FaceDims(c.axis);
 		int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 			int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
 		const std::size_t R = g.C(idx[0], idx[1], idx[2]);
-		const double yR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*h;
+		const double xR = g.origin[std::size_t(c.axis)] + (idx[c.axis] + 0.5)*h;
 		--idx[c.axis];
 		const std::size_t L = g.C(idx[0], idx[1], idx[2]);
-		const double dL = std::max(0.0, c.s - (yR - h)), dR = std::max(0.0, yR - c.s);
-		const double pL = phi[L], pR = phi[R];
-		if (pR < 0 && pL - pR > 0.5*h && !clearlyFed(L)) set.emplace_back(L, dL);
-		else if (pL < 0 && pR - pL > 0.5*h && !clearlyFed(R)) set.emplace_back(R, dR);
+		const bool wL = phi[L] < 0, wR = phi[R] < 0;
+		if (wL == wR) continue;
+		const double na = std::fabs(c.normal[c.axis]);
+		const double dL = std::max(1e-3*h, (c.s - (xR - h))*na), dR = std::max(1e-3*h, (xR - c.s)*na);
+		set.emplace_back(L, wL ? -dL : dL);
+		set.emplace_back(R, wR ? -dR : dR);
 	}
-	for (const auto& e : set) phi[e.first] = e.second;
-	return set.size();
+	std::sort(set.begin(), set.end(), [](const std::pair<std::size_t, double>& p, const std::pair<std::size_t, double>& q) {
+		return p.first != q.first ? p.first < q.first : std::fabs(p.second) < std::fabs(q.second); });
+	std::size_t changed = 0;
+	if (mask) mask->assign(g.Cells(), 0);
+	std::vector<std::pair<std::size_t, double>> apply;
+	for (std::size_t k = 0; k < set.size(); ++k) {
+		if (k > 0 && set[k].first == set[k - 1].first) continue;   // the least distance (first after sorting)
+		const std::size_t c = set[k].first;
+		if (OwnInterface(c)) continue;
+		if (mask) (*mask)[c] = 1;
+		apply.emplace_back(c, set[k].second);
+	}
+	for (const auto& e : apply) if (phi[e.first] != e.second) { phi[e.first] = e.second; ++changed; }
+	BuildBarrier();   // the faces between the cells set are boundary faces now
+	return changed;
+}
+
+void LiquidModel::Redistance(std::size_t c)
+{
+	// m7f: the fast-marching update of one cell from its face neighbours on its own side (not
+	// across a coupled sheet's closed face): |phi| solves sum_k max(0, |phi| - a_k)^2 = h^2, a_k
+	// the least |phi| of the neighbours along axis k.  A cell with a neighbour of the other sign
+	// across an open face is beside the free surface and keeps its value.
+	const Grid& g = setup_.grid;
+	const double h = g.h;
+	const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+		int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+	const bool neg = phi[c] < 0;
+	double a[3];
+	int n = 0;
+	for (int k = 0; k < 3; ++k) {
+		if (g.n[k] == 1) continue;
+		double m = std::numeric_limits<double>::infinity();
+		for (int side = 0; side < 2; ++side) {
+			int f[3] = {idx[0], idx[1], idx[2]}, nb[3] = {idx[0], idx[1], idx[2]};
+			f[k] += side;
+			nb[k] += side ? 1 : -1;
+			if (nb[k] < 0 || nb[k] >= g.n[k]) continue;
+			if (barrier_.Closed(k, g.F(k, f[0], f[1], f[2]))) continue;
+			const double p = phi[g.C(nb[0], nb[1], nb[2])];
+			if ((p < 0) != neg) return;
+			m = std::min(m, std::fabs(p));
+		}
+		if (std::isfinite(m)) a[n++] = m;
+	}
+	if (n == 0) return;
+	std::sort(a, a + n);
+	double v = a[0] + h;
+	if (n > 1 && v > a[1]) {
+		const double d = a[0] - a[1];
+		v = 0.5*(a[0] + a[1] + std::sqrt(std::max(0.0, 2*h*h - d*d)));
+		if (n > 2 && v > a[2]) {
+			const double s = a[0] + a[1] + a[2], q = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+			v = (s + std::sqrt(std::max(0.0, s*s - 3*(q - h*h))))/3;
+		}
+	}
+	phi[c] = neg ? -v : v;
 }
 
 std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vector<SheetCrossing>& facesBefore)
 {
 	// m7e: a cell whose centre a coupled sheet swept over changed sides.  Its level set is
-	// that of its new side (the cell beyond the sheet's old crossing) extended to it with unit
-	// slope towards the sheet, a dry side kept dry (at least the distance to the sheet) and a
-	// wet one wet, so the false interface where a sheet holds liquid on one side stays at the
-	// sheet; and the marker particles of every cell beside a coupled sheet's closed face,
+	// that of its new side (the cell beyond the sheet's old crossing) extended to it (m7f: as a
+	// constant; m7e extended a zero contour at the sheet with unit slope, which the sided level
+	// set no longer has); and the marker particles of every cell beside a coupled sheet's closed face,
 	// before or now, go (a particle the sheet moved over without its cell's centre changing
 	// sides is on the wrong side of it).  Left as they were, a membrane holding a layer
 	// leaked half of it within 0.4 s as it oscillated across cell centres.
@@ -1311,8 +1469,39 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 	SweptSheetCells(facesBefore, swept);
 	const std::vector<double> old = phi;
 	for (const SweptCell& c : swept) {
-		const double r = old[c.ref];
-		phi[c.cell] = r >= 0 ? std::max(c.distance, r - c.span) : std::min(-c.distance, r + c.span);
+		// m7f: the new side's value beyond the old crossing (constant extension, as the level
+		// set's stencils see across a closed face; a linear one carried the distance to the
+		// sheet that the other side's values hold onto the swept cells).
+		phi[c.cell] = old[c.ref];
+	}
+	// m7f: the boundary values at the sheet's new position (PinSheetInterface), then the cells
+	// the sheet left (beside its crossings before and not now, and swept cells not beside it
+	// now) re-distanced from their own side: their values were distances to where the sheet
+	// had been (left stale, the cells a sagging sheet uncovers keep values near zero inside the
+	// liquid; the effect on the bags of the results was below what they resolve).
+	PinSheetInterface();
+	{
+		auto beside = [&](const std::vector<SheetCrossing>& list, std::vector<std::size_t>& out) {
+			for (const SheetCrossing& c : list) {
+				if (!sheets[c.sheet].Coupled()) continue;
+				const auto d = g.FaceDims(c.axis);
+				int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
+					int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
+				out.push_back(g.C(idx[0], idx[1], idx[2]));
+				--idx[c.axis];
+				out.push_back(g.C(idx[0], idx[1], idx[2]));
+			}
+			std::sort(out.begin(), out.end());
+			out.erase(std::unique(out.begin(), out.end()), out.end());
+		};
+		std::vector<std::size_t> before, now, stale;
+		beside(facesBefore, before);
+		beside(sheetFaces_, now);
+		for (std::size_t c : before) if (!std::binary_search(now.begin(), now.end(), c)) stale.push_back(c);
+		for (const SweptCell& c : swept) if (!std::binary_search(now.begin(), now.end(), c.cell)) stale.push_back(c.cell);
+		std::sort(stale.begin(), stale.end());
+		stale.erase(std::unique(stale.begin(), stale.end()), stale.end());
+		for (int pass = 0; pass < 2; ++pass) for (std::size_t c : stale) Redistance(c);
 	}
 	std::size_t removed = 0;
 	if (options_.particles) {
@@ -1324,11 +1513,21 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 				const auto d = g.FaceDims(c.axis);
 				int idx[3] = {int(c.face % std::size_t(d[0])), int((c.face/std::size_t(d[0])) % std::size_t(d[1])),
 					int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
-				cells.push_back(g.C(idx[0], idx[1], idx[2]));
-				--idx[c.axis];
-				cells.push_back(g.C(idx[0], idx[1], idx[2]));
+				// m7f: the cells within two steps of the two (a particle's trilinear stencil reaches a
+				// diagonal neighbour, which may lie across the sheet, and its corrections near the
+				// sheet's boundary values fought them: a pinned bag at rest gained 12% of its volume
+				// per second that the correction then took from the free surface).
+				for (int side = 0; side < 2; ++side) {
+					if (side) --idx[c.axis];
+					for (int a = -2; a <= 2; ++a) for (int b = -2; b <= 2; ++b) for (int e = -2; e <= 2; ++e) {
+						if (std::abs(a) + std::abs(b) + std::abs(e) > 2) continue;
+						const int q[3] = {idx[0] + a, idx[1] + b, idx[2] + e};
+						if (q[0] >= 0 && q[0] < g.n[0] && q[1] >= 0 && q[1] < g.n[1] && q[2] >= 0 && q[2] < g.n[2]) cells.push_back(g.C(q[0], q[1], q[2]));
+					}
+				}
 			}
 		std::sort(cells.begin(), cells.end());
+		cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
 		auto& ps = particles.Particles();
 		std::size_t out = 0;
 		for (std::size_t i = 0; i < ps.size(); ++i) {

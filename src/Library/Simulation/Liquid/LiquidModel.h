@@ -36,8 +36,10 @@
 //  the sheet's linearised backward-Euler step with the pressure, the liquid
 //  on the faces it closes moving with it (SheetFaceMass); the sheet's new
 //  velocities and positions follow, each step's impulse on it is kept for
-//  its partner, and cells it swept change sides (SweepSheetCells,
-//  PinFalseInterface).
+//  its partner, and cells it swept change sides (SweepSheetCells).  m7f:
+//  the level set's stencils treat the faces such a sheet closes as walls
+//  (LiquidLevelSet.h LevelSetBarrier), and beside a sheet holding liquid on
+//  one side the level set is the signed distance to it (PinSheetInterface).
 //  With the interface advanced by the old velocity and the velocity by the
 //  new interface, the linearised free-surface coupling is the symplectic
 //  Euler scheme: no amplitude error, phase error O((omega dt)^2).
@@ -245,6 +247,8 @@ public:
 	bool Points(PointsFrame& frame, std::string& error) const;
 
 	Pool* ThreadPool() const { return pool_.get(); }
+	//! Diagnostics only (not state; empty in the solver): called with a stage's name inside Step.
+	std::function<void(const char*)> stageHook;
 private:
 	//! The pressure options of a step's last projection (and of Initialize).
 	PressureOptions FinalPressure() const;
@@ -273,8 +277,14 @@ private:
 	//! `before` and the current ones, paired in order along each lattice line), each with
 	//! the cell beyond the old crossing on its new side.
 	struct SweptCell { std::size_t cell = 0, ref = 0; double distance = 0, span = 0; };   // span: |ref - cell| (m)
-	//! m7e: the false interface of a one-sided coupled sheet at the sheet (cells changed).
-	std::size_t PinFalseInterface();
+	//! m7f: the level set beside a one-sided coupled sheet: the signed distance to it (cells changed).
+	std::size_t PinSheetInterface(std::vector<std::uint8_t>* mask = nullptr);   // mask: the cells set (0/1 per cell)
+	//! m7f: one cell's level set re-distanced from its own side's neighbours (fast marching's update).
+	void Redistance(std::size_t cell);
+	//! m7f: the level set's barrier from the coupled sheets' faces and the current level set.
+	void BuildBarrier();
+	//! m7f: whether a cell of the other sign lies within two steps across open faces.
+	bool OwnInterface(std::size_t cell) const;
 	//! m7e: applies the swept cells' sides (cells and particles changed, counts returned).
 	std::pair<std::size_t, std::size_t> SweepSheetCells(const std::vector<SheetCrossing>& before);
 	void SweptSheetCells(const std::vector<SheetCrossing>& before, std::vector<SweptCell>& swept) const;
@@ -301,6 +311,7 @@ private:
 	void AccumulateSheetImpulse();
 	std::vector<SheetCrossing> sheetFaces_;
 	std::vector<double> sheetSaved_;
+	LevelSetBarrier barrier_;   // m7f: the coupled sheets' closed faces as walls of the level set
 	MacField sheetSolid_;
 	std::array<std::vector<std::size_t>,3> sheetTouched_;
 	BodyGeometry geometry_;

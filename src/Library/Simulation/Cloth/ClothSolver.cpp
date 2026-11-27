@@ -867,6 +867,7 @@ private:
 	bool OfferMechanics(double time, IPortExchange& ports, std::string& error);   // M7e
 	bool AcceptSteps(IPortExchange* ports, double time, std::string& error);       // M7e
 	std::vector<double> stepImpulse_;          // M7e: the held partner steps (StepsPort)
+	bool stepsUnbound_ = false;                // M7f: StepsPort not connected (at the last accept)
 	std::vector<std::uint32_t> stepSegment_;
 	std::uint64_t stepCursor_ = 0, segmentOrdinal_ = 0;
 	bool AcceptLoads(double time, IPortExchange* ports, std::string& error);
@@ -1414,10 +1415,11 @@ bool ClothSolver::AcceptSteps(IPortExchange* ports, double time, std::string& er
 	stepImpulse_.clear();
 	stepSegment_.clear();
 	stepCursor_ = segmentOrdinal_ = 0;
+	stepsUnbound_ = false;
 	if (!ports) return true;
 	std::shared_ptr<const Bytes> bytes;
 	const auto status = ports->Accept(StepsPort, time, bytes, error);
-	if (status == PortStatus::Unbound || status == PortStatus::Unavailable) { error.clear(); return true; }
+	if (status == PortStatus::Unbound || status == PortStatus::Unavailable) { stepsUnbound_ = status == PortStatus::Unbound; error.clear(); return true; }
 	if (status != PortStatus::Ready) return false;
 	FieldFrame f;
 	if (!DecodeField(*bytes, CodecBudget, f, error)) return false;
@@ -1478,6 +1480,14 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 				if (!AcceptLoads(segStart_, ports, error)) return false;
 				if (!AcceptColliders(segStart_, macro ? request.macroEnd : segTarget_, ports, error)) return false;
 				if (!AcceptSteps(macro ? ports : nullptr, segStart_, error)) return false;   // M7e
+				// M7f: a `force` channel on surface_load is an implicitly coupled sheet's load (the
+				// liquid's step impulses over the macro step).  Without its steps the cloth would
+				// apply their mean over its own substeps, the exchange that diverges for light cloth
+				// (docs/SIMULATION_M7E_RESULTS.md section 2.1): refused.
+				if (macro && stepsUnbound_ && !system_.portForce.empty())
+					return Fail(error, std::string("surface_load carries an implicitly coupled sheet's force but ") + StepsPort +
+						" is not connected: connect the liquid's sheet load steps port (sheet_load_steps by default) to " + StepsPort +
+						" (without the steps the cloth would apply their mean over its own substeps, which diverges for light cloth)");
 				// M7e: with the partner's steps, the macro step's elasticity is the partner's linear model.
 				if (!stepSegment_.empty()) system_.BeginLinear();
 				else system_.EndLinear();

@@ -48,7 +48,8 @@ double Delta(double x, double eps)
 }
 
 // |grad phi| by central differences (one-sided at the ends; 0 along thin axes).
-double GradientNorm(const Grid& g, const std::vector<double>& phi, int i, int j, int k)
+// m7f: with a barrier, one-sided at a closed face too (0 between two).
+double GradientNorm(const Grid& g, const std::vector<double>& phi, int i, int j, int k, const LevelSetBarrier* barrier = nullptr)
 {
 	const int idx[3] = {i, j, k};
 	double s = 0;
@@ -56,7 +57,13 @@ double GradientNorm(const Grid& g, const std::vector<double>& phi, int i, int j,
 		if (g.n[a] == 1) continue;
 		int lo[3] = {i, j, k}, hi[3] = {i, j, k};
 		double span = 2;
-		if (idx[a] == 0) { ++hi[a]; span = 1; }
+		if (barrier && !barrier->closed[std::size_t(a)].empty()) {
+			lo[a] = barrier->Reach(g, idx, a, -1);
+			hi[a] = barrier->Reach(g, idx, a, 1);
+			span = hi[a] - lo[a];
+			if (span == 0) continue;
+		}
+		else if (idx[a] == 0) { ++hi[a]; span = 1; }
 		else if (idx[a] == g.n[a] - 1) { --lo[a]; span = 1; }
 		else { --lo[a]; ++hi[a]; }
 		s += Sq((phi[g.C(hi[0], hi[1], hi[2])] - phi[g.C(lo[0], lo[1], lo[2])])/(span*g.h));
@@ -97,14 +104,104 @@ double Weno5(double v1, double v2, double v3, double v4, double v5)
 	return (a1*p1 + a2*p2 + a3*p3)/(a1 + a2 + a3);
 }
 
+void LevelSetBarrier::Clear()
+{
+	for (int a = 0; a < 3; ++a) { closed[std::size_t(a)].clear(); cells[std::size_t(a)].clear(); samples[std::size_t(a)].clear(); }
+	fixed.clear();
+}
+
+int LevelSetBarrier::Reach(const Grid& g, const int idx[3], int axis, int offset) const
+{
+	const std::vector<std::uint8_t>& cl = closed[std::size_t(axis)];
+	int f[3] = {idx[0], idx[1], idx[2]};
+	int t = idx[axis];
+	const int dir = offset > 0 ? 1 : -1;
+	for (int step = 0; step < std::abs(offset); ++step) {
+		const int nt = t + dir;
+		if (nt < 0 || nt >= g.n[axis]) break;
+		f[axis] = std::max(t, nt);
+		if (!cl.empty() && cl[g.F(axis, f[0], f[1], f[2])] == 1) break;
+		t = nt;
+	}
+	return t;
+}
+
+void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces)
+{
+	Clear();
+	for (int a = 0; a < 3; ++a) {
+		if (faces[std::size_t(a)].empty() || g.n[a] < 2) continue;
+		closed[std::size_t(a)].assign(g.Faces(a), 0);
+		for (const auto& f : faces[std::size_t(a)]) closed[std::size_t(a)][f.first] = f.second;
+	}
+	for (int a = 0; a < 3; ++a) {
+		if (closed[std::size_t(a)].empty()) continue;
+		const auto d = g.FaceDims(a);
+		std::vector<std::size_t>& list = cells[std::size_t(a)];
+		for (const auto& fe : faces[std::size_t(a)]) {
+			const std::size_t f = fe.first;
+			int idx[3] = {int(f % std::size_t(d[0])), int((f/std::size_t(d[0])) % std::size_t(d[1])), int(f/(std::size_t(d[0])*std::size_t(d[1])))};
+			const int fa = idx[a];   // the face between cells fa - 1 and fa
+			for (int t = fa - 3; t <= fa + 2; ++t) {
+				if (t < 0 || t >= g.n[a]) continue;
+				idx[a] = t;
+				list.push_back(g.C(idx[0], idx[1], idx[2]));
+			}
+		}
+		std::sort(list.begin(), list.end());
+		list.erase(std::unique(list.begin(), list.end()), list.end());
+		std::vector<Sample>& out = samples[std::size_t(a)];
+		out.resize(7*list.size());
+		const std::vector<std::uint8_t>& cl = closed[std::size_t(a)];
+		for (std::size_t e = 0; e < list.size(); ++e) {
+			const std::size_t c = list[e];
+			const int idx[3] = {int(c % std::size_t(g.n[0])), int((c/std::size_t(g.n[0])) % std::size_t(g.n[1])),
+				int(c/(std::size_t(g.n[0])*std::size_t(g.n[1])))};
+			auto cellAt = [&](int t) { int q[3] = {idx[0], idx[1], idx[2]}; q[a] = t; return g.C(q[0], q[1], q[2]); };
+			auto faceKind = [&](int t0, int t1) { int q[3] = {idx[0], idx[1], idx[2]}; q[a] = std::max(t0, t1); return cl[g.F(a, q[0], q[1], q[2])]; };
+			for (int m = 0; m < 7; ++m) {
+				const int o = m - 3;
+				Sample& S = out[7*e + std::size_t(m)];
+				int t = idx[a];
+				S.i1 = S.i2 = c; S.s = 0;
+				if (o == 0) continue;
+				const int dir = o > 0 ? 1 : -1;
+				bool done = false;
+				for (int step = 0; step < std::abs(o) && !done; ++step) {
+					const int nt = t + dir;
+					if (nt < 0 || nt >= g.n[a]) {
+						// Beyond the domain: the level set's linear extension from the edge (constant when
+						// the edge's inner neighbour lies across a closed face).
+						const int inner = t - dir;
+						S.i1 = cellAt(t);
+						if (inner >= 0 && inner < g.n[a] && faceKind(inner, t) != 1) { S.i2 = cellAt(inner); S.s = double(std::abs(idx[a] + o - t)); }
+						else S.i2 = S.i1;
+						done = true;
+					} else if (faceKind(t, nt) == 1) { S.i1 = S.i2 = cellAt(t); done = true; }
+					else if (faceKind(t, nt) == 2) {
+						// A boundary face: the cell across, then the line through it and the last cell
+						// on this side: f[t] + k (f[nt] - f[t]) for the k-th sample beyond t.
+						S.i1 = cellAt(t); S.i2 = cellAt(nt); S.s = -double(std::abs(idx[a] + o - t));
+						done = true;
+					}
+					else t = nt;
+				}
+				if (!done) S.i1 = S.i2 = cellAt(t);
+			}
+		}
+	}
+}
+
 void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector<double>& f, int axis,
 	const std::array<Extension,3>& ext, Pool* pool,
-	const std::function<void(std::size_t row, const double* dm, const double* dp)>& emit)
+	const std::function<void(std::size_t row, const double* dm, const double* dp)>& emit,
+	const LevelSetBarrier* barrier)
 {
 	const int n0 = d[0];
 	const double inv = 1/h;
 	const int na = d[axis];
 	const bool linear = ext[axis] == Extension::Linear && na > 1;
+	const bool patched = barrier && !barrier->cells[std::size_t(axis)].empty();
 	ForRows(pool, Rows(d), RowGrain(n0), [&](std::size_t r0, std::size_t r1) {
 		std::vector<double> line(axis == 0 ? std::size_t(n0) + 6 : 0), ghost(axis == 0 ? 0 : 7*std::size_t(n0));
 		std::vector<double> dm(static_cast<std::size_t>(n0)), dp(static_cast<std::size_t>(n0));
@@ -144,6 +241,20 @@ void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector
 				dm[std::size_t(i)] = Weno5(q0, q1, q2, q3, q4);
 				dp[std::size_t(i)] = Weno5(q5, q4, q3, q2, q1);
 			}
+			if (patched) {
+				// m7f: the cells whose stencil reaches past a closed face, with their sided samples.
+				const std::vector<std::size_t>& cl = barrier->cells[std::size_t(axis)];
+				for (auto it = std::lower_bound(cl.begin(), cl.end(), base); it != cl.end() && *it < base + std::size_t(n0); ++it) {
+					const LevelSetBarrier::Sample* S = &barrier->samples[std::size_t(axis)][7*std::size_t(it - cl.begin())];
+					double v[7];
+					for (int m = 0; m < 7; ++m) v[m] = f[S[m].i1] + S[m].s*(f[S[m].i1] - f[S[m].i2]);
+					const double q0 = (v[1] - v[0])*inv, q1 = (v[2] - v[1])*inv, q2 = (v[3] - v[2])*inv;
+					const double q3 = (v[4] - v[3])*inv, q4 = (v[5] - v[4])*inv, q5 = (v[6] - v[5])*inv;
+					const std::size_t i = *it - base;
+					dm[i] = Weno5(q0, q1, q2, q3, q4);
+					dp[i] = Weno5(q5, q4, q3, q2, q1);
+				}
+			}
 			emit(base, dm.data(), dp.data());
 		}
 	});
@@ -151,7 +262,7 @@ void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector
 
 void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<double>& f,
 	const std::array<const std::vector<double>*,3>& c, const std::array<Extension,3>& ext,
-	std::vector<double>& rhs, Pool* pool)
+	std::vector<double>& rhs, Pool* pool, const LevelSetBarrier* barrier)
 {
 	rhs.assign(f.size(), 0.0);
 	const int n0 = d[0];
@@ -163,34 +274,38 @@ void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<
 				const double v = s[base + std::size_t(i)];
 				rhs[base + std::size_t(i)] -= v*(v > 0 ? dm[i] : dp[i]);
 			}
-		});
+		}, barrier);
 	}
 }
 
-void AdvectLevelSet(const Grid& g, std::vector<double>& phi, const CellVelocityAt& velocity, double t, double dt, Pool* pool)
+void AdvectLevelSet(const Grid& g, std::vector<double>& phi, const CellVelocityAt& velocity, double t, double dt, Pool* pool,
+	const LevelSetBarrier* barrier)
 {
+	if (barrier && barrier->Empty()) barrier = nullptr;
 	const std::array<Extension,3> ext{{Extension::Linear, Extension::Linear, Extension::Linear}};
 	std::array<std::vector<double>,3> c;
 	std::vector<double> rhs, p1(phi.size()), p2(phi.size());
 	const std::size_t n = phi.size();
 	const std::array<const std::vector<double>*,3> cp{{&c[0], &c[1], &c[2]}};
 	velocity(t, c);
-	UpwindAdvectionRhs(g.n, g.h, phi, cp, ext, rhs, pool);
+	UpwindAdvectionRhs(g.n, g.h, phi, cp, ext, rhs, pool, barrier);
 	ForRows(pool, n, 4096, [&](std::size_t a, std::size_t b) { for (std::size_t i = a; i < b; ++i) p1[i] = phi[i] + dt*rhs[i]; });
 	velocity(t + dt, c);
-	UpwindAdvectionRhs(g.n, g.h, p1, cp, ext, rhs, pool);
+	UpwindAdvectionRhs(g.n, g.h, p1, cp, ext, rhs, pool, barrier);
 	ForRows(pool, n, 4096, [&](std::size_t a, std::size_t b) {
 		for (std::size_t i = a; i < b; ++i) p2[i] = 0.75*phi[i] + 0.25*(p1[i] + dt*rhs[i]);
 	});
 	velocity(t + 0.5*dt, c);
-	UpwindAdvectionRhs(g.n, g.h, p2, cp, ext, rhs, pool);
+	UpwindAdvectionRhs(g.n, g.h, p2, cp, ext, rhs, pool, barrier);
 	ForRows(pool, n, 4096, [&](std::size_t a, std::size_t b) {
 		for (std::size_t i = a; i < b; ++i) phi[i] = phi[i]/3 + 2.0/3.0*(p2[i] + dt*rhs[i]);
 	});
 }
 
-void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool)
+void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool,
+	const LevelSetBarrier* barrier)
 {
+	if (barrier && barrier->Empty()) barrier = nullptr;
 	if (scheme == ReinitScheme::None || iterations <= 0) return;
 	const std::size_t n = phi.size();
 	const std::vector<double> phi0 = phi;
@@ -216,7 +331,9 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 			d.dm[a] = d.dp[a] = 0;
 			if (g.n[a] == 1) continue;
 			double fm = 0, fp = 0;
-			const bool hm = idx[a] > 0, hp = idx[a] < g.n[a] - 1;
+			// m7f: a neighbour across a closed face is absent.
+			const bool hm = barrier ? barrier->Reach(g, idx, a, -1) != idx[a] : idx[a] > 0;
+			const bool hp = barrier ? barrier->Reach(g, idx, a, 1) != idx[a] : idx[a] < g.n[a] - 1;
 			if (hm) { int q[3] = {i, j, k}; --q[a]; fm = phi0[g.C(q[0], q[1], q[2])]; }
 			if (hp) { int q[3] = {i, j, k}; ++q[a]; fp = phi0[g.C(q[0], q[1], q[2])]; }
 			const bool cm = hm && (fm < 0) != (p < 0), cp = hp && (fp < 0) != (p < 0);
@@ -226,7 +343,7 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 			// contain the cell pair; kept at least 1e-3 h from the centre.
 			auto at = [&](int o) {
 				int q[3] = {i, j, k};
-				q[a] = std::max(0, std::min(g.n[a] - 1, idx[a] + o));
+				q[a] = barrier ? barrier->Reach(g, idx, a, o) : std::max(0, std::min(g.n[a] - 1, idx[a] + o));
 				return phi0[g.C(q[0], q[1], q[2])];
 			};
 			auto crossingTo = [&](int dir) {
@@ -270,6 +387,9 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 		// Frozen: the interface cells keep their values (the zero contour cannot move).
 		if (scheme == ReinitScheme::Frozen) dtau[c] = 0;
 	}
+	// m7f: boundary values beside a sheet (LevelSetBarrier::fixed) are kept.
+	if (barrier && !barrier->fixed.empty())
+		for (std::size_t c = 0; c < n; ++c) if (barrier->fixed[c]) dtau[c] = 0;
 	const std::array<Extension,3> ext{{Extension::Linear, Extension::Linear, Extension::Linear}};
 	std::vector<double> g2(n), rhs(n), p1(n), p2(n);
 	const bool subcell = scheme == ReinitScheme::Subcell, frozen = scheme == ReinitScheme::RussoSmereka || scheme == ReinitScheme::RussoSmerekaCentral;
@@ -291,7 +411,7 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 					g2[c] += sgn[c] > 0 ? std::max(Sq(std::max(a, 0.0)), Sq(std::min(b, 0.0)))
 						: std::max(Sq(std::min(a, 0.0)), Sq(std::max(b, 0.0)));
 				}
-			});
+			}, barrier);
 		}
 		ForRows(pool, n, 4096, [&](std::size_t a, std::size_t b) {
 			for (std::size_t c = a; c < b; ++c) {
@@ -315,15 +435,16 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 	}
 }
 
-double GradientDeviation(const Grid& g, const std::vector<double>& phi, double band, Pool* pool)
+double GradientDeviation(const Grid& g, const std::vector<double>& phi, double band, Pool* pool, const LevelSetBarrier* barrier)
 {
+	if (barrier && barrier->Empty()) barrier = nullptr;
 	const std::size_t rows = Rows(g.n);
 	return MaxRows(pool, rows, RowGrain(g.n[0]), [&](std::size_t r0, std::size_t r1) {
 		double m = 0;
 		for (std::size_t r = r0; r < r1; ++r) {
 			const int j = int(r % std::size_t(g.n[1])), k = int(r/std::size_t(g.n[1]));
 			for (int i = 0; i < g.n[0]; ++i)
-				if (std::fabs(phi[g.C(i, j, k)]) < band*g.h) m = std::max(m, std::fabs(GradientNorm(g, phi, i, j, k) - 1));
+				if (std::fabs(phi[g.C(i, j, k)]) < band*g.h) m = std::max(m, std::fabs(GradientNorm(g, phi, i, j, k, barrier) - 1));
 		}
 		return m;
 	});
@@ -339,7 +460,8 @@ double LiquidVolume(const Grid& g, const std::vector<double>& phi, const std::ve
 	});
 }
 
-double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool)
+double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool,
+	const std::vector<std::uint8_t>* exclude)
 {
 	const double eps = 1.5*g.h, cell = g.h*g.h*g.h;
 	const std::size_t rows = Rows(g.n);
@@ -349,6 +471,7 @@ double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::v
 			const int j = int(r % std::size_t(g.n[1])), k = int(r/std::size_t(g.n[1]));
 			for (int i = 0; i < g.n[0]; ++i) {
 				const std::size_t c = g.C(i, j, k);
+				if (exclude && (*exclude)[c]) continue;
 				const double d = Delta(phi[c], eps);
 				if (d == 0) continue;
 				s += d*GradientNorm(g, phi, i, j, k)*(open ? (*open)[c] : 1.0);

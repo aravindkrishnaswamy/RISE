@@ -20,7 +20,9 @@ hydrostatic load) and a membrane's natural frequency under a layer (−5.2% agai
 
 What does **not** work: a light sheet that holds liquid on one side only and sweeps across cell centres under
 gravity (a membrane sagging centimetres under a water layer) lets the liquid through it; the load-path test passes
-only for deflections inside a cell (§5.3, §11). A zero-thickness sheet has no buoyancy, so cloth lying on the
+only for deflections inside a cell (§5.3, §11). *Update (M7f, [results](SIMULATION_M7F_RESULTS.md)): fixed. In
+2-D the cause was the test strip leaving the one-cell slab, so no face was closed; in 3-D it was the level set
+reading across the sheet and the volume correction.* A zero-thickness sheet has no buoyancy, so cloth lying on the
 surface sinks (§5.5).
 
 Bakes without implicit sheets publish frames byte-identical to m7d.1, staggered and one-way sheets included, and

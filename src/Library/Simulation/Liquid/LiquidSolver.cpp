@@ -37,7 +37,10 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // bodies; bakes without either publish the frames of m7c.1.
 // m7e.1: sheets coupled implicitly (the partner's linearised response in the
 // pressure solve, LiquidSheets.h); bakes without them publish the frames of m7d.1.
-constexpr const char* SolverVersion = "m7e.1";
+// m7f.1: implicitly coupled sheets are walls of the level set's stencils and its boundary
+// where they hold liquid on one side (docs/SIMULATION_M7F_RESULTS.md); bakes without them
+// publish the frames of m7e.1.
+constexpr const char* SolverVersion = "m7f.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
 constexpr const char* StateMagic = "RISELIQ1";
@@ -1054,6 +1057,14 @@ private:
 	std::vector<std::uint32_t> sheetSegments_;   // M7e: per step of the open exchange, its segment ordinal
 	std::uint32_t sheetSegment_ = 0;
 	double sheetStart_ = 0;
+	// M7f: within a macro step the partner cloth's elasticity is the linear model about the step's
+	// start, so a sheet rotating at omega is stretched by about (omega H)^2 / 2 per macro step H
+	// (straight-line motion; measured: LiquidClothCouplingTest --rotate).  The largest estimate
+	// over the run (from the accepted vertex velocities: the rate of each triangle edge's turning)
+	// is reported in the progress detail, with a warning above 1% (a diagnostic, not state).
+	double sheetRotationStretch_ = 0;
+	void SheetRotationDiagnostic(double span);
+	std::string SheetRotationDetail() const;
 	std::vector<double> sheetRelaxation_;
 	std::vector<std::vector<double>> sheetLastPressure_;
 };
@@ -1514,6 +1525,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			caps.fidelityLimit = implicitSheets_ ?
 				"sheets: a thin surface as a face-crossing moving boundary coupled implicitly through its partner's linearised response (preview, not certified)" :
 				"sheets: a thin surface as a face-crossing moving boundary with a lagged pressure load (preview, not certified)";
+		if (implicitSheets_)
+			candidate.notes.push_back("sheets: within a macro step H the partner's elasticity is linear about the step's start, so a sheet "
+				"turning at omega is stretched by about (omega H)^2 / 2 per step (0.35% at 10 rad/s and 1/120 s, 5.4% at 1/30 s); the "
+				"progress detail reports the largest estimate and warns above 1%");
 		candidate.notes.push_back(implicitSheets_ ?
 			"sheets: face-crossing moving boundaries (preview); an implicit sheet's partner must be in an owned exchange of this liquid "
 			"(`owned <liquid> <cloth>`, the liquid first)" :
@@ -1761,6 +1776,39 @@ bool LiquidSolver::AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, st
 	return true;
 }
 
+void LiquidSolver::SheetRotationDiagnostic(double span)
+{
+	for (const LiquidSheet& sh : model_.sheets) {
+		if (!sh.Coupled()) continue;
+		double rate = 0;
+		for (std::size_t t = 0; t + 2 < sh.triangles.size(); t += 3)
+			for (int k = 0; k < 3; ++k) {
+				const std::size_t a = sh.triangles[t + std::size_t(k)], b = sh.triangles[t + std::size_t((k + 1) % 3)];
+				double e[3], dv[3], ee = 0, ev = 0;
+				for (int m = 0; m < 3; ++m) {
+					e[m] = sh.x[3*b + std::size_t(m)] - sh.x[3*a + std::size_t(m)];
+					dv[m] = sh.v[3*b + std::size_t(m)] - sh.v[3*a + std::size_t(m)];
+					ee += e[m]*e[m];
+					ev += e[m]*dv[m];
+				}
+				if (!(ee > 0)) continue;
+				double perp = 0;
+				for (int m = 0; m < 3; ++m) { const double p = dv[m] - ev/ee*e[m]; perp += p*p; }
+				rate = std::max(rate, std::sqrt(perp/ee));
+			}
+		const double theta = rate*span;
+		sheetRotationStretch_ = std::max(sheetRotationStretch_, 0.5*theta*theta);
+	}
+}
+
+std::string LiquidSolver::SheetRotationDetail() const
+{
+	char buffer[160];
+	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch per macro step up to %.2g%%%s", 100*sheetRotationStretch_,
+		sheetRotationStretch_ > 0.01 ? " (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)" : "");
+	return buffer;
+}
+
 // M7d: each port sheet's load over [sheetStart_, time]: the per-vertex pressure of
 // the liquid's mean force (LiquidSheets.h SheetPressure), relaxed with the last
 // offered load when `relaxation` < 1, as cloth's surface_load (field.v1 over the
@@ -1944,6 +1992,7 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 		if (!AcceptSheets(ports, error)) return false;
 		sheetOpen_ = true;
 		sheetStart_ = s_.t;
+		if (implicitSheets_) SheetRotationDiagnostic(request.macroEnd - s_.t);   // M7f
 	}
 	auto closeSheets = [&]() {
 		if (!portSheets_ || !sheetOpen_ || (macro && s_.t != request.macroEnd)) return true;
@@ -1999,7 +2048,8 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 			// robustness sweep since m7a.2) in the progress detail, as cloth reports its solver counts.
 			if (progress && !progress->Report(s_.t, end, "steps " + std::to_string(model_.steps) + ", clamped faces " +
 				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps" +
-				(model_.bodies.empty() ? std::string() : ", body wall contacts " + std::to_string(contacts_))))
+				(model_.bodies.empty() ? std::string() : ", body wall contacts " + std::to_string(contacts_)) +
+				(implicitSheets_ ? SheetRotationDetail() : std::string())))
 				return Done(result, AdvanceResult::Status::Stopped);
 			const double tn = s_.segJ + 1 == s_.segN ? s_.segTarget :
 				s_.segStart + (s_.segTarget - s_.segStart)*static_cast<double>(s_.segJ + 1)/static_cast<double>(s_.segN);

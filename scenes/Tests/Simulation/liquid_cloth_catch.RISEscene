@@ -1,0 +1,205 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_cloth_catch.RISEscene                                                            #
+#   Description:    Simulation M7f: a cotton cloth catching a falling block of water (preview).  A cotton  #
+#                   square 0.4 x 0.4 m (17 x 17 vertices, 0.15 kg/m^2) is held flat 0.3 m above the floor  #
+#                   of a tank 0.6 x 0.5 x 0.6 m by its four edges (`pin boundary`); a block of water        #
+#                   0.2 x 0.12 x 0.2 m (4.8 L) is released 6 cm above its middle.  The cloth sags into a    #
+#                   bag and holds the water on one side: `liquid_simulation pool` carries it as `sheet      #
+#                   cloth port coupling implicit` (M7e), with the level set's stencils not reading across  #
+#                   the sheet and the liquid's boundary at the sheet (M7f).  Water that splashes over the   #
+#                   pinned rim falls to the floor.  docs/SIMULATION_M7F_RESULTS.md.                        #
+#                   The cloth renders from cloth.surface, the water from pool.surface.                     #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> catch       (one process; caches/pool, caches/cloth)#
+#   Render:         scripts/simulation_m7f_catch.sh  (a private copy under ~/.cache/rise-m7f; path tracing;#
+#                   frames to rendered/simulation_m7/)                                                      #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 1.6 s (49 frames); 64 cells along x (0.94 cm cells).  Positions are    #
+#                   metres, y up.  Label: preview (sheets are not certified).                               #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			wall
+	color			0.7 0.72 0.75
+}
+
+uniformcolor_painter
+{
+	name			red
+	color			0.75 0.12 0.08
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_wall
+	reflectance		wall
+}
+
+lambertian_material
+{
+	name			mat_cloth
+	reflectance		red
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.95 0.42 1.05
+	lookat			0.3 0.25 0.3
+	up				0 1 0
+	fov				38.0
+}
+
+cloth_simulation
+{
+	name			cloth
+	frames			49
+	size_u			0.4
+	size_v			0.4
+	vertices_u		17
+	vertices_v		17
+	origin			0.1 0.3 0.5
+	axis_u			1 0 0
+	axis_v			0 0 -1
+	material		cotton-plain-weave
+	pin				boundary
+}
+
+liquid_simulation
+{
+	name			pool
+	frames			49
+	domain_min		0 0 0
+	domain_size		0.6 0.5 0.6
+	resolution		64
+	liquid			box 0.2 0.36 0.2 0.4 0.48 0.4
+	sheet			cloth port coupling implicit
+}
+
+simulation_group
+{
+	name			catch
+	members			pool
+	members			cloth
+	connect			cloth.surface_state -> pool.sheet_state
+	connect			cloth.surface_mechanics -> pool.sheet_mechanics
+	connect			cloth.surface_stiffness -> pool.sheet_stiffness
+	connect			pool.sheet_load -> cloth.surface_load
+	connect			pool.sheet_load_steps -> cloth.surface_load_steps
+	policy			staggered
+	order			gauss-seidel
+	member_order	pool cloth
+	owned			pool cloth
+	macro_step		0.008333333333333333
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			pool.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+simulated_mesh_geometry
+{
+	name			geo_cloth
+	source			cloth.surface
+	double_sided	TRUE
+}
+
+standard_object
+{
+	name			cloth_object
+	geometry		geo_cloth
+	material		mat_cloth
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_back
+	pta				-2.0 -0.001 -0.002
+	ptb				-2.0  2.0   -0.002
+	ptc				 2.0  2.0   -0.002
+	ptd				 2.0 -0.001 -0.002
+}
+
+standard_object
+{
+	name			back_wall
+	geometry		geo_back
+	material		mat_wall
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}
