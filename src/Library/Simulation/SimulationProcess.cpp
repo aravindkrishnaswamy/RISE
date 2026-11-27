@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "SimulationProcess.h"
+#include "../Utilities/RISECBOR64.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -104,6 +105,40 @@ fs::path DefaultGpuLockPath()
 fs::path DefaultBakeStateDirectory()
 {
 	return PerUserRoot() / "bakes";
+}
+
+fs::path DefaultSimulationCacheDirectory()
+{
+	fs::path base;
+	if (const char* o = std::getenv("RISE_SIMULATION_CACHE_DIR")) if (*o && fs::path(o).is_absolute()) base = fs::path(o);
+	if (base.empty()) base = PerUserRoot();
+	if (!base.is_absolute()) {   // no home directory (Android): the system temporary directory
+		std::error_code ec;
+		const fs::path temp = fs::temp_directory_path(ec);
+		base = (ec ? fs::path("/tmp") : temp) / "RISE";
+	}
+	return base / "scene-caches";
+}
+
+fs::path DefaultSimulationCachePath(const fs::path& sceneFile, const std::string& name, std::string& error)
+{
+	if (name.empty() || name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos) {
+		error = "the simulation name `" + name + "` cannot name a default cache directory (use `cache` in the scene)";
+		return fs::path();
+	}
+	std::error_code ec;
+	fs::path absolute = fs::absolute(sceneFile, ec);
+	if (ec) { error = "cannot resolve the scene file path " + sceneFile.string(); return fs::path(); }
+	fs::path canonical = fs::weakly_canonical(absolute, ec);
+	if (ec) canonical = absolute.lexically_normal();
+	const std::string text = canonical.generic_string();
+	const std::string digest = RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(text.data()), text.size());
+	std::string stem = sceneFile.stem().string();
+	for (char& c : stem)
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) c = '_';
+	if (stem.size() > 48) stem.resize(48);
+	if (stem.empty() || stem == "." || stem == "..") stem = "scene";
+	return DefaultSimulationCacheDirectory() / (stem + "-" + digest.substr(0, 16)) / name;
 }
 
 std::string ReadLockFileContent(const fs::path& file)

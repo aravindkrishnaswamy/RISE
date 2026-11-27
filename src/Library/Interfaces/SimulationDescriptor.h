@@ -26,7 +26,7 @@ namespace RISE
 		//! The solver parameter map as canonical CBOR (empty for simulation_cache).
 		std::vector<unsigned char> parameters;
 		//! The cache directory as authored: absolute, `~/...`, or relative to
-		//! the scene file's directory.  Empty: `caches/<name>` beside the scene.
+		//! the scene file's directory.  Empty: the per-user default, `DefaultSimulationCachePath` (SimulationProcess.h).
 		std::string cache;
 		//! Scene elements (object names) the parameters read, in the order the
 		//! solver names them.

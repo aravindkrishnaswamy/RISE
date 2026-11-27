@@ -4,7 +4,7 @@
 # rigid.bodies' exchange in `simulation_group tank`) and render frames of
 # the water surface (dielectric, ior 1.33) and the bodies (transform_source)
 # with path tracing, CPU only, to rendered/simulation_m7/ (outside git).
-# The scene and its caches live in a private directory under ~/.cache/rise-m7b
+# The scene lives in a private directory under ~/.cache/rise-m7b
 # (the cache writer refuses directories others can modify).
 #   scripts/simulation_m7b_bodies.sh [resolution]   (default 64 cells along x)
 set -euo pipefail
@@ -23,8 +23,10 @@ $repo/bin/tools/rise_sim status $work/bodies.RISEscene
   print "film\n{\n\twidth\t640\n\theight\t400\n}\n"
   print "animation_options\n{\n\ttime_start\t0\n\ttime_end\t2\n\tnum_frames\t6\n}\n"
   print "file_rasterizeroutput\n{\n\tpattern\trendered/simulation_m7/bodies_$resolution\n\tmultiple\tTRUE\n\ttype\tPNG\n\tbpp\t8\n\tcolor_space\tsRGB\n}\n"
-} > $work/bodies_render.RISEscene
+} > $work/bodies.render.tmp
+# The render copy keeps the baked scene's path: the default cache directory is keyed by it.
+mv $work/bodies.render.tmp $work/bodies.RISEscene
 cd $repo
 export RISE_MEDIA_PATH="$repo/"
-printf "renderanimation\nquit\n" | ./bin/rise $work/bodies_render.RISEscene
+printf "renderanimation\nquit\n" | ./bin/rise $work/bodies.RISEscene
 ls -l $out

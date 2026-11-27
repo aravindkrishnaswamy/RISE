@@ -159,7 +159,7 @@ enum SimulationProbes {
         step("flag: consumer geo_flag", flag.consumerGeometry == "geo_flag")
         step("flag: 91 frames in the configuration", flag.framesTotal == 91)
         step("flag: 30 Hz time support from 0", abs(flag.interval - 1.0 / 30.0) < 1e-9 && flag.startTime == 0)
-        step("flag: cache beside the scene (caches/flag)", flag.cacheDirectory.hasSuffix("/caches/flag"))
+        step("flag: cache in the per-user default (…/scene-caches/<scene>-<hash>/flag)", flag.cacheDirectory.hasSuffix("/flag") && flag.cacheDirectory.contains("/scene-caches/"))
         step("flag: scene input pole", flag.inputs.contains("pole"))
         if let expect {
             step("flag: state \(expect) (got \(flag.state.label))", flag.state.label == expect)

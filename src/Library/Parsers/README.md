@@ -271,7 +271,7 @@ reports them; the editor runs an interactive one live (`LiveSimulationAttachSimu
 cloth_simulation                      # solver cloth.shell
 {
     name            flag              # unique; no `.` (consumers write `flag.surface`)
-    cache           caches/flag       # default caches/<name> beside the scene file; `~/` and absolute too
+    cache           caches/flag       # default: per-user cache folder, not beside the scene (see below); `~/`, absolute, scene-relative too
     mode            interactive       # every cloth.shell parameter by its solver name
     vertices_u      31
     frames          91
@@ -311,6 +311,11 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
   material or name).  `source` is a `Reference` to `{Simulation}`; the `.output` suffix names an output.
   Only a mesh output binds `simulated_mesh_geometry`, only a fire grid output binds `fire_medium`, only a
   `points.v1` output binds `simulated_points_geometry` (M7 prerequisites: particles as spheres).
+- **Default cache location.** A producer with no `cache` writes to the per-user cache folder:
+  `<base>/scene-caches/<scene-stem>-<16 hex of SHA-256 of the scene's canonical path>/<name>` (macOS base
+  `~/Library/Caches/RISE`; `RISE_SIMULATION_CACHE_DIR` replaces it), not beside the scene; one function
+  (`DefaultSimulationCachePath`, `Simulation/SimulationProcess.h`) serves every process.  An explicit
+  `cache` is unchanged.  A cache left at the old `caches/<name>` is reported once and never read.
 - **Declaration order.** A producer is declared before its consumers (the editor's insert tier puts it
   with geometry); scene inputs resolve after the derive, so a producer may name objects declared later.
 - **States** (`IJobPriv::DescribeSimulations`, C API `GetSimulation`): missing, baking, partial,

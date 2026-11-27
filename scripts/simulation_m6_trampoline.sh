@@ -19,8 +19,10 @@ $repo/bin/tools/rise_sim status $work/trampoline.RISEscene
   print "film\n{\n\twidth\t200\n\theight\t150\n}\n"
   print "animation_options\n{\n\ttime_start\t0\n\ttime_end\t1\n\tnum_frames\t4\n}\n"
   print "file_rasterizeroutput\n{\n\tpattern\trendered/simulation_m6/trampoline\n\tmultiple\tTRUE\n\ttype\tPNG\n\tbpp\t8\n}\n"
-} > $work/trampoline_render.RISEscene
+} > $work/trampoline.render.tmp
+# The render copy keeps the baked scene's path: the default cache directory is keyed by it.
+mv $work/trampoline.render.tmp $work/trampoline.RISEscene
 cd $repo
 export RISE_MEDIA_PATH="$repo/"
-printf "renderanimation\nquit\n" | ./bin/rise $work/trampoline_render.RISEscene
+printf "renderanimation\nquit\n" | ./bin/rise $work/trampoline.RISEscene
 ls -l $out

@@ -439,6 +439,7 @@ namespace RISE
 		};
 		std::map<std::string, SimulatedGeometryRecord>	simulatedGeometries;	// by geometry name
 		std::string									simulationSceneDirectory;
+		std::string									simulationSceneFile;	// set by LoadAsciiSceneViaCst: identity of the default cache directory
 		std::unique_ptr<Simulation::SceneSimulationGraph>	simulationGraph;
 		bool ResolveSimulationCache( const std::string& name, const std::string& authored,
 			std::filesystem::path& dir, std::string& error ) const;

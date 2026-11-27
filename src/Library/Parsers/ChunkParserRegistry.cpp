@@ -6720,9 +6720,10 @@ namespace RISE
 					  p.description = "Unique simulation name (no `.`); consumers bind `source <name>.<output>`"; }
 					{ auto& p = P(); p.name = "cache"; p.kind = ValueKind::String;
 					  p.description = "Cache directory: absolute, `~/...`, or relative to the scene file's directory.  "
-						"Default `caches/<name>` beside the scene.  The cache writer refuses directories other "
+						"Default: the per-user cache folder (macOS `~/Library/Caches/RISE/scene-caches/<scene>-<hash>/<name>`; "
+						"override the base with `RISE_SIMULATION_CACHE_DIR`), not beside the scene.  The cache writer refuses directories other "
 						"users can modify (docs/SIMULATION_SOLVER_CONTRACT.md, cache location policy)";
-					  p.defaultValueHint = "caches/<name>"; }
+					  p.defaultValueHint = "<user cache folder>/scene-caches/<scene>-<hash>/<name>"; }
 				}
 
 				inline ChunkDescriptor Build( const char* keyword, const Simulation::ParameterSchema& schema )

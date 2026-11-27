@@ -95,6 +95,7 @@ standard_object
 simulation_cache
 {
 	name			spray
+	cache			caches/spray
 }
 
 simulated_points_geometry

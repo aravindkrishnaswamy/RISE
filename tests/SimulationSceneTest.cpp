@@ -20,6 +20,7 @@
 #include "../src/Library/Simulation/SimulationHost.h"
 #include "../src/Library/Simulation/SceneSimulation.h"
 #include "../src/Library/Simulation/SceneInputs.h"
+#include "../src/Library/Simulation/SimulationProcess.h"
 #include "../src/Library/Simulation/SimulationParameterSchema.h"
 #include "../src/Library/Simulation/Cloth/ClothParameterSchema.h"
 #include "../src/Library/Simulation/Fire/FireParameterSchema.h"
@@ -27,6 +28,8 @@
 #include "../src/Library/Utilities/FireProductionCompute.h"
 #include "../src/Library/Geometry/SimulatedMeshGeometry.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Job.h"
 #include "../src/Library/Agent/SchemaGen.h"
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
@@ -40,6 +43,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <sstream>
 
 namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
@@ -65,6 +69,14 @@ int Worker(const std::vector<std::string>& args, std::string* output = nullptr)
 	const int code = WorkerMain(args, out, err);
 	if (output) *output = out.str() + err.str();
 	return code;
+}
+
+// The per-user default cache directory of simulation `name` of the scene file `scene`
+// (SimulationProcess.h): where a chunk without `cache` bakes.
+fs::path DefaultCache(const fs::path& scene, const std::string& name)
+{
+	std::string error;
+	return DefaultSimulationCachePath(scene, name, error);
 }
 
 void WriteText(const fs::path& path, const std::string& text)
@@ -239,8 +251,8 @@ void TestBakeEquivalence(const fs::path& root)
 		const auto all = Statuses(scene);
 		Check(all.size() == 1 && all[0].name == "flag" && all[0].state == SceneSimulationState::Missing &&
 			!all[0].expectedKey.empty() && all[0].framesTotal == 6 && all[0].interactive && all[0].backend == "cpu" &&
-			all[0].cacheDir == (dir/"caches"/"flag").lexically_normal(),
-			"describe: missing, keyed, 6 frames, default cache beside the scene",
+			all[0].cacheDir == DefaultCache(scenePath, "flag"),
+			"describe: missing, keyed, 6 frames, default cache in the per-user folder",
 			all.empty() ? "" : SceneSimulationStateName(all[0].state) + std::string(" ") + all[0].cacheDir.string());
 		auto* mesh = Mesh(scene, "geo_flag");
 		Check(mesh && !mesh->HasSource() && mesh->Hidden() && !mesh->TopologyBuilt(), "missing cache: the consumer is unbound and hidden");
@@ -256,11 +268,11 @@ void TestBakeEquivalence(const fs::path& root)
 	Check(Worker({"bake", "cloth.shell", (dir/"flag.json").string(), (dir/"plain").string()}, &log) == WorkerFinished,
 		"rise-sim bake cloth.shell <params>", log);
 	{
-		const auto a = Sealed(dir/"caches"/"flag"), b = Sealed(dir/"plain");
+		const auto a = Sealed(DefaultCache(scenePath, "flag")), b = Sealed(dir/"plain");
 		Check(a.size() > 6 && a == b, "scene bake equals the parametric bake byte for byte (manifest, frames, statics)");
 		CacheSnapshot sa, sb;
 		std::string error;
-		Check(CacheSnapshot::Open(dir/"caches"/"flag", budget, sa, error) && CacheSnapshot::Open(dir/"plain", budget, sb, error) &&
+		Check(CacheSnapshot::Open(DefaultCache(scenePath, "flag"), budget, sa, error) && CacheSnapshot::Open(dir/"plain", budget, sb, error) &&
 			sa.Description().key == sb.Description().key && sa.Description().epoch == sb.Description().epoch,
 			"same key and epoch", error);
 	}
@@ -279,7 +291,7 @@ void TestBakeEquivalence(const fs::path& root)
 	}
 	// Stale: another gravity; the old cache still loads and plays, marked.
 	const fs::path stalePath = dir/"flag_stale.RISEscene";
-	WriteText(stalePath, std::string(Header) + Camera() + Cloth("flag", "\tgravity\t0 -5 0\n\tcache\tcaches/flag\n") +
+	WriteText(stalePath, std::string(Header) + Camera() + Cloth("flag", "\tgravity\t0 -5 0\n\tcache\t" + DefaultCache(scenePath, "flag").string() + "\n") +
 		Consumer("geo_flag", "flag.surface"));
 	{
 		Scene scene;
@@ -306,7 +318,7 @@ void TestBakeEquivalence(const fs::path& root)
 		Check(mesh && mesh->HasSource(), "a partial cache binds");
 	}
 	Check(Worker({"resume", partialPath.string(), "flag"}, &log) == WorkerFinished, "rise-sim resume <scene> flag", log);
-	Check(Sealed(dir/"caches"/"partial") == Sealed(dir/"caches"/"flag"), "stop + resume from the scene equals the uninterrupted bake");
+	Check(Sealed(dir/"caches"/"partial") == Sealed(DefaultCache(scenePath, "flag")), "stop + resume from the scene equals the uninterrupted bake");
 	// Predictive consumer of a missing cache fails closed; of a preview cache too.
 	const fs::path predictivePath = dir/"flag_predictive.RISEscene";
 	WriteText(predictivePath, std::string(Header) + Camera() + Cloth("flag", "\tcache\tcaches/none\n") +
@@ -649,7 +661,7 @@ void TestEditsAndLegality(const fs::path& root)
 	Check(Worker({"bake", scenePath.string(), "flag"}, &log) == WorkerFinished, "bake for the edit test", log);
 	Scene scene;
 	Check(Load(scenePath, scene), "edit scene loads");
-	auto files = [&]() { return Sealed(dir/"caches"/"flag"); };
+	auto files = [&]() { return Sealed(DefaultCache(scenePath, "flag")); };
 	const auto before = files();
 	const int code = scene.job->ApplyCstParamEdit("flag", "", "substeps", 0, "5");
 	Check(code == 1 || code == 2, "ApplyCstParamEdit on a cloth_simulation applies", std::to_string(code));
@@ -673,7 +685,7 @@ void TestEditsAndLegality(const fs::path& root)
 	Check(refused("follow", Cloth("flag", "\tpin\tu0 follow pole\n")), "a pin following an undeclared object is refused");
 	Check(refused("unused", Ball() + Cloth("flag", "\tfollow_object\tball\n")), "an unused follow_object is refused");
 	// A separate `output` with the bare simulation name binds too.
-	WriteText(dir/"bare.RISEscene", std::string(Header) + Camera() + Cloth("flag", "\tcache\tcaches/flag\n") +
+	WriteText(dir/"bare.RISEscene", std::string(Header) + Camera() + Cloth("flag", "\tcache\t" + DefaultCache(scenePath, "flag").string() + "\n") +
 		"simulated_mesh_geometry\n{\n\tname\tg\n\tsource\tflag\n\toutput\tsurface\n}\n\nstandard_object\n{\n\tname\to\n\tgeometry\tg\n}\n\n");
 	Scene bare;
 	Check(Load(dir/"bare.RISEscene", bare) && Mesh(bare, "g") && Mesh(bare, "g")->HasSource(), "`source flag` + `output surface` binds");
@@ -931,6 +943,151 @@ void TestEstimates(const fs::path& root)
 	SceneSimulationStatus none;
 	Check(FormatSimulationEstimate(none).empty(), "nothing known: no estimate text");
 }
+
+// ---------------------------------------------------------------- the default cache location
+
+// Records the text of every log message while `On()`.
+class LogCapture : public virtual ILogPrinter, public virtual Implementation::Reference {
+public:
+	void Print(const LogEvent& event) override
+	{
+		std::lock_guard<std::mutex> hold(mutex_);
+		if (on_) text_ += std::string(event.szMessage) + "\n";
+	}
+	void Flush() override {}
+	void Begin() { std::lock_guard<std::mutex> hold(mutex_); on_ = true; text_.clear(); }
+	std::string End() { std::lock_guard<std::mutex> hold(mutex_); on_ = false; return text_; }
+protected:
+	~LogCapture() override {}
+private:
+	std::mutex mutex_;
+	bool on_ = false;
+	std::string text_;
+};
+
+void SetOverride(const char* value)
+{
+#ifndef _WIN32
+	if (value) ::setenv("RISE_SIMULATION_CACHE_DIR", value, 1); else ::unsetenv("RISE_SIMULATION_CACHE_DIR");
+#else
+	(void)value;
+#endif
+}
+
+void TestDefaultCache(const fs::path& root)
+{
+	std::printf("default cache location: per-user folder, one function for every process\n");
+	const fs::path dir = root/"default_cache";
+	fs::create_directories(dir);
+	const char* previous = std::getenv("RISE_SIMULATION_CACHE_DIR");
+	const std::string saved = previous ? previous : "";
+	const fs::path base = dir/"user-cache";
+	SetOverride(base.string().c_str());
+	// Resolution: stable, per scene, per name, under the override.
+	std::string error;
+	const fs::path sceneA = dir/"a"/"flag.RISEscene", sceneB = dir/"b"/"flag.RISEscene";
+	const fs::path a1 = DefaultSimulationCachePath(sceneA, "flag", error), a2 = DefaultSimulationCachePath(sceneA, "flag", error);
+	const fs::path b1 = DefaultSimulationCachePath(sceneB, "flag", error);
+	Check(!a1.empty() && a1 == a2, "the default is stable across calls", a1.string());
+	Check(a1 != b1 && a1.parent_path() != b1.parent_path(), "two scenes of the same file name get different directories");
+	Check(a1.filename() == "flag" && DefaultSimulationCachePath(sceneA, "other", error).parent_path() == a1.parent_path(),
+		"one directory per scene, one leaf per simulation");
+	const std::string scene = a1.parent_path().filename().string();
+	Check(scene.size() == std::string("flag-").size() + 16 && scene.compare(0, 5, "flag-") == 0 &&
+		scene.find_first_not_of("0123456789abcdef", 5) == std::string::npos, "<scene-stem>-<16 hex>", scene);
+	Check(a1.parent_path().parent_path() == DefaultSimulationCacheDirectory() && DefaultSimulationCacheDirectory() == base/"scene-caches",
+		"the override replaces the per-user base", DefaultSimulationCacheDirectory().string());
+	Check(DefaultSimulationCachePath(sceneA, "a/b", error).empty() && !error.empty(), "a simulation name with a separator cannot name a default");
+	SetOverride("relative/ignored");
+	Check(DefaultSimulationCacheDirectory().is_absolute() && DefaultSimulationCacheDirectory().filename() == "scene-caches" &&
+		DefaultSimulationCacheDirectory().string().find("relative/ignored") == std::string::npos, "a relative override is ignored");
+	SetOverride(nullptr);
+	Check(DefaultSimulationCacheDirectory().parent_path() == DefaultBakeStateDirectory().parent_path(),
+		"without the override the default sits beside the per-user bake state", DefaultSimulationCacheDirectory().string());
+	SetOverride(base.string().c_str());
+	// The location policy accepts the default with no trusted root.
+	ClearTrustedCacheRoots();
+	std::string why;
+	Check(CheckCacheLocation(a1, true, why), "the default location passes the cache location policy", why);
+	Check(fs::is_directory(a1), "and is created");
+	// The scene: the Job, the status the worker and the bake manager print, and a bake agree.
+	fs::create_directories(sceneA.parent_path());
+	WriteText(sceneA, std::string(Header) + Camera() + Cloth("flag", "") + Consumer("geo_flag", "flag.surface"));
+	{
+		Scene s;
+		Check(Load(sceneA, s), "the scene loads");
+		const auto all = Statuses(s);
+		Check(all.size() == 1 && all[0].cacheDir == a1, "the host resolves the default through the same function", all.empty() ? "" : all[0].cacheDir.string());
+	}
+	std::string log;
+	Check(Worker({"bake", sceneA.string(), "flag"}, &log) == WorkerFinished && log.find(a1.string()) != std::string::npos,
+		"rise-sim bakes into the default and says where", log);
+	CacheSnapshot snapshot;
+	Check(CacheSnapshot::Open(a1, budget, snapshot, error) && snapshot.Complete(), "the cache is at the default", error);
+	Check(Worker({"status", sceneA.string()}, &log) == WorkerFinished && log.find("flag: complete") != std::string::npos,
+		"a later process finds it again", log);
+	// The same scene reached by another spelling of its path finds the same cache; a copy elsewhere does not.
+	{
+		Scene viaDots;
+		Check(Load(dir/"a"/".."/"a"/"flag.RISEscene", viaDots), "the scene loads through a different spelling");
+		const auto all = Statuses(viaDots);
+		Check(all.size() == 1 && all[0].state == SceneSimulationState::Complete, "the same scene finds its cache again",
+			all.empty() ? "" : all[0].cacheDir.string());
+		fs::create_directories(sceneB.parent_path());
+		WriteText(sceneB, std::string(Header) + Camera() + Cloth("flag", "") + Consumer("geo_flag", "flag.surface"));
+		Scene other;
+		Check(Load(sceneB, other), "the second scene loads");
+		const auto st = Statuses(other);
+		Check(st.size() == 1 && st[0].state == SceneSimulationState::Missing && st[0].cacheDir == b1,
+			"a second scene with the same names does not share the cache");
+	}
+	// An explicit `cache` is unchanged: relative to the scene, nothing written to the default.
+	{
+		const fs::path explicitScene = dir/"c"/"flag.RISEscene";
+		fs::create_directories(explicitScene.parent_path());
+		WriteText(explicitScene, std::string(Header) + Camera() + Cloth("flag", "\tcache\tmine/flag\n") + Consumer("geo_flag", "flag.surface"));
+		Scene s;
+		Check(Load(explicitScene, s), "a scene with an explicit cache loads");
+		const auto all = Statuses(s);
+		Check(all.size() == 1 && all[0].cacheDir == (explicitScene.parent_path()/"mine"/"flag").lexically_normal(),
+			"an explicit relative `cache` stays relative to the scene", all.empty() ? "" : all[0].cacheDir.string());
+		Check(Worker({"bake", explicitScene.string(), "flag"}, &log) == WorkerFinished &&
+			fs::exists(explicitScene.parent_path()/"mine"/"flag"/"manifest.cbor") &&
+			!fs::exists(DefaultSimulationCachePath(explicitScene, "flag", error)), "an explicit cache bakes there and not at the default", log);
+		// The cache directory is not part of the key: the same configuration elsewhere has the same key.
+		CacheSnapshot one, two;
+		Check(CacheSnapshot::Open(explicitScene.parent_path()/"mine"/"flag", budget, one, error) && CacheSnapshot::Open(a1, budget, two, error) &&
+			one.Description().key == two.Description().key && Sealed(explicitScene.parent_path()/"mine"/"flag") == Sealed(a1),
+			"the location enters no key and no frame bytes", error);
+	}
+	// An old default cache is mentioned once, never read.
+	{
+		static LogCapture* capture = [] { auto* c = new LogCapture(); GlobalLogPriv()->AddPrinter(c); c->release(); return c; }();
+		const fs::path oldScene = dir/"d"/"flag.RISEscene";
+		fs::create_directories(oldScene.parent_path());
+		WriteText(oldScene, std::string(Header) + Camera() + Cloth("flag", "") + Consumer("geo_flag", "flag.surface"));
+		fs::create_directories(oldScene.parent_path()/"caches"/"flag");
+		WriteText(oldScene.parent_path()/"caches"/"flag"/"manifest.cbor", "not read");
+		capture->Begin();
+		{
+			Scene s;
+			Check(Load(oldScene, s), "a scene with a cache at the old default loads");
+			const auto all = Statuses(s);
+			Check(all.size() == 1 && all[0].state == SceneSimulationState::Missing, "the old cache is not read");
+		}
+		const std::string text = capture->End();
+		const auto pos = text.find("old default");
+		Check(pos != std::string::npos && text.find("old default", pos + 1) == std::string::npos,
+			"the old default is mentioned once", text);
+		Check(text.find((oldScene.parent_path()/"caches"/"flag").string()) != std::string::npos &&
+			text.find("`cache`") != std::string::npos, "naming where it is and how to reuse it", text);
+		// No old cache, no line; a populated new default, no line.
+		capture->Begin();
+		{ Scene s; Load(sceneA, s); }
+		Check(capture->End().find("old default") == std::string::npos, "no line when the new default holds the cache");
+	}
+	SetOverride(saved.empty() ? nullptr : saved.c_str());
+}
 } // namespace
 
 int main()
@@ -943,6 +1100,9 @@ int main()
 	std::error_code ec;
 	fs::create_directories(root, ec);
 	fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace, ec);
+	// Scenes without `cache` bake into the per-user default: keep every run out of the real one
+	// (run_all_tests.sh already points it at a per-test directory).
+	if (!std::getenv("RISE_SIMULATION_CACHE_DIR")) SetOverride((root/"user-cache").string().c_str());
 	TestSchemaDefaults();
 	TestBakeEquivalence(root);
 	TestKeySensitivity();
@@ -953,6 +1113,7 @@ int main()
 	TestSimulationCache(root);
 	TestEditorAndAgent(root, fs::current_path());
 	TestEstimates(root);
+	TestDefaultCache(root);
 	fs::remove_all(RISE::TestSupport::ScratchTestRoot("rise_simulation_scene_"), ec);
 	std::printf("\n%d passed, %d failed\n", passes, failures);
 	return failures ? 1 : 0;

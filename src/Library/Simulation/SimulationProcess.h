@@ -90,6 +90,26 @@ bool CreatePrivateDirectories(const std::filesystem::path& directory, std::strin
 std::filesystem::path DefaultGpuLockPath();
 std::filesystem::path DefaultBakeStateDirectory();
 
+//! The default simulation cache location (docs/SIMULATION_SOLVER_CONTRACT.md,
+//! "Cache location policy"): used when a scene's simulation chunk names no
+//! `cache`.  It is disposable application data in the per-user cache folder,
+//! next to the two directories above:
+//!   `<base>/simulation`, base as above, or `$RISE_SIMULATION_CACHE_DIR` (an
+//!   absolute path; relative values are ignored) when set -- for a machine
+//!   whose home volume is small.  Without a usable home directory (Android),
+//!   the system temporary directory.
+std::filesystem::path DefaultSimulationCacheDirectory();
+//! The cache directory of the simulation `name` of the scene file `sceneFile`:
+//!   `<DefaultSimulationCacheDirectory()>/<scene-stem>-<16 hex of SHA-256 of
+//!   the scene file's canonical absolute path>/<name>`
+//! Every process (the in-process host, `rise-sim`, the bake manager, the GUI,
+//! render-time playback) resolves the default through this function, so they
+//! agree.  Two scenes never share a directory; the same scene finds its
+//! cache again.  Empty (and `error` set) when `name` is not a single path
+//! component.
+std::filesystem::path DefaultSimulationCachePath(const std::filesystem::path& sceneFile, const std::string& name,
+	std::string& error);
+
 //! The solver's stated backend needs the machine's one GPU slot: stated,
 //! and not "cpu".  (Capabilities::backend, contract Appendix C.)
 bool IsGpuBackend(const std::string& backend);

@@ -353,6 +353,10 @@ int main()
 	const fs::path scratch = RISE::TestSupport::ScratchRunDir( "rise_simulation_scene_live_", "suite" );
 	std::error_code ec;
 	fs::create_directories( scratch, ec );
+#ifndef _WIN32
+	// Scenes without `cache` use the per-user default: never the real one (the harness sets this per test).
+	::setenv( "RISE_SIMULATION_CACHE_DIR", ( scratch / "user-cache" ).string().c_str(), 0 );
+#endif
 	std::printf( "SimulationSceneLiveTest (simulation M4)\n" );
 	std::string error;
 	Check( RegisterBuiltinSolvers( error ), "built-in solvers register", error );

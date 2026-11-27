@@ -11,6 +11,7 @@
 #include "../src/Library/Simulation/SimulationGroup.h"
 #include "../src/Library/Simulation/SimulationWorker.h"
 #include "../src/Library/Simulation/SceneSimulationWorker.h"
+#include "../src/Library/Simulation/SimulationProcess.h"
 #include "TestTempDir.h"
 
 #include <fstream>
@@ -71,6 +72,13 @@ std::map<std::pair<std::int64_t,std::string>,std::string> DiskDigests(const fs::
 	return Digests(s);
 }
 
+// Where a simulation without `cache` bakes (the per-user default, SimulationProcess.h).
+fs::path Default(const fs::path& scene, const std::string& name)
+{
+	std::string error;
+	return DefaultSimulationCachePath(scene, name, error);
+}
+
 std::string SceneText(const std::string& mass, const std::string& group, const std::string& sheetExtra = "")
 {
 	return "RISE ASCII SCENE 7\n"
@@ -96,6 +104,10 @@ int main()
 	std::error_code ec;
 	fs::create_directories(root, ec);
 	fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace, ec);
+#ifndef _WIN32
+	// Scenes without `cache` bake into the per-user default: not the real one (the harness sets it per test).
+	::setenv("RISE_SIMULATION_CACHE_DIR", (root/"user-cache").string().c_str(), 0);
+#endif
 	// ---------------------------------------------------------------- plan
 	const fs::path scene = root/"tramp.RISEscene";
 	WriteText(scene, SceneText("0.05", Group));
@@ -134,7 +146,7 @@ int main()
 		Check(Find(st, "tramp") && Find(st, "tramp")->state == SceneSimulationState::Complete, "the group is complete");
 		Check(Find(st, "sheet") && Find(st, "sheet")->state == SceneSimulationState::Complete && Find(st, "sheet")->expectedKey == sheetKey,
 			"members complete with their coupled keys");
-		Check(fs::exists(root/"caches"/"sheet"/kGroupManifestName) && fs::exists(root/"caches"/"drop"/kGroupManifestName),
+		Check(fs::exists(Default(scene, "sheet")/kGroupManifestName) && fs::exists(Default(scene, "drop")/kGroupManifestName),
 			"each member cache carries the group manifest");
 		// The same group, driven programmatically from the plans, in memory.
 		std::vector<SceneSimulationPlan> plans;
@@ -144,9 +156,9 @@ int main()
 		for (const auto& x : specs) if (x.name == "tramp") g = &x;
 		SimulationGroup group;
 		Check(g && BuildSceneGroup(*g, plans, group, error) && group.Start(error) && group.Run(error), "programmatic group", error);
-		Check(DiskDigests(root/"caches"/"sheet").size() == 7 && DiskDigests(root/"caches"/"drop").size() == 7, "seven frames each");
-		Check(Digests(*group.Snapshot("sheet")) == DiskDigests(root/"caches"/"sheet") &&
-			Digests(*group.Snapshot("drop")) == DiskDigests(root/"caches"/"drop"), "the scene bake equals the programmatic group byte for byte");
+		Check(DiskDigests(Default(scene, "sheet")).size() == 7 && DiskDigests(Default(scene, "drop")).size() == 7, "seven frames each");
+		Check(Digests(*group.Snapshot("sheet")) == DiskDigests(Default(scene, "sheet")) &&
+			Digests(*group.Snapshot("drop")) == DiskDigests(Default(scene, "drop")), "the scene bake equals the programmatic group byte for byte");
 		Check(Worker({"bake", scene.string(), "sheet"}, &out) == WorkerFinished && out.find("up to date") != std::string::npos,
 			"naming a member bakes (here: skips) its group", out);
 	}
@@ -161,12 +173,12 @@ int main()
 		// Stop after two macro steps, then resume: equal to an uninterrupted bake.
 		std::string out;
 		Check(Worker({"bake", scene.string(), "tramp", "--stop-after-frames", "2"}, &out) == WorkerStopped, "stopped bake", out);
-		Check(fs::exists(root/"caches"/"tramp"/"rise-sim.group.checkpoint"), "a group checkpoint");
+		Check(fs::exists(Default(scene, "tramp")/"rise-sim.group.checkpoint"), "a group checkpoint");
 		Check(Worker({"resume", scene.string(), "tramp"}, &out) == WorkerFinished, "resume the group", out);
-		const auto resumed = DiskDigests(root/"caches"/"sheet");
+		const auto resumed = DiskDigests(Default(scene, "sheet"));
 		Check(resumed.size() == 7, "the resumed bake has every frame");
 		Check(Worker({"bake", scene.string(), "tramp", "--force"}, &out) == WorkerFinished, "uninterrupted rebake", out);
-		Check(resumed == DiskDigests(root/"caches"/"sheet"), "stop / resume of a scene group bake equals the uninterrupted bake");
+		Check(resumed == DiskDigests(Default(scene, "sheet")), "stop / resume of a scene group bake equals the uninterrupted bake");
 	}
 	// ---------------------------------------------------------------- port_source from a cache (the M4 gap)
 	{

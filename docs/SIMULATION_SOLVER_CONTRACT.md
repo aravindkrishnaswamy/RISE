@@ -295,6 +295,22 @@ protection against whoever can write the root or its ancestors (for a 0775 exter
 they could still swap the first directory below the root. Trust a root only when everyone who can write it is
 trusted with the caches. Windows keeps its previous checks (no ancestor policy).
 
+*Default location.* A scene's simulation chunk that names no `cache` writes to the per-user cache folder, as
+disposable application data, not beside the scene: `<base>/scene-caches/<scene-stem>-<16 hex of SHA-256 of the scene
+file's canonical absolute path>/<name>`, where `<base>` is `~/Library/Caches/RISE` (macOS), `$XDG_CACHE_HOME` or
+`~/.cache` + `/rise` (Linux), `%LOCALAPPDATA%\RISE` (Windows), or the system temporary directory + `/RISE` when there is
+no home directory (Android). `RISE_SIMULATION_CACHE_DIR` (an absolute path; relative values are ignored) replaces
+`<base>` for a machine whose home volume is small; the policy above applies to it unchanged, so a shared or
+group-writable volume needs `RISE_SIMULATION_TRUSTED_ROOTS`. The per-user default needs no trusted root: its
+ancestors are owned by the user or root. Every process resolves the default through one function
+(`DefaultSimulationCachePath`, `SimulationProcess.h`), so the in-process host, `rise-sim` workers, the bake manager,
+the GUI and render-time playback agree, and two scenes with a simulation of the same name never share a directory.
+A Job with no scene file (built through the API) keeps `caches/<name>` relative to its scene directory, else the
+working directory. An explicit `cache` is unchanged (relative paths resolve against the scene's directory). The
+directory is not part of any cache key, manifest or frame bytes. Nothing is migrated or deleted: when the default
+holds no cache and `caches/<name>` beside the scene does, loading prints one informational line naming it; name it
+with `cache` (or move it) to reuse it, it is never read automatically.
+
 ## 15. Codecs
 
 | Type | Kind | Status | Spec |
@@ -407,3 +423,5 @@ Not working yet (each belongs to a later milestone):
 | 2026-11-26 | (M7e, solver side) `liquid.mac` `m7e.1`: port sheets take `coupling: implicit` (with `mechanics_port`, `stiffness_port`, `steps_port`, `response`), declared in `ownedImplicitPorts`; evidence condition `sheets` gains `port-implicit`; the sheet ports' load declares `force`; checkpoints hold an implicit sheet's linear model and step history. | Without implicit sheets every frame is byte-identical to `m7d.1` (staggered and one-way sheets included); the version (and so the key) changes. |
 | 2026-11-26 | (M8, host side, not part of the solver contract; [M8 results](SIMULATION_M8_RESULTS.md)) `RISE_SIMULATION_TRUSTED_ROOTS` is split on `;` on Windows (`:` elsewhere, unchanged). `BackendInfo::detail` of `cloth.shell`, `rigid.bodies`, `liquid.mac` and `fire.methane` states the platform evidence; statuses are unchanged (fire `cpu` stays `unsupported`). New committed fixture `tests/data/simulation_golden_cache/`. | No codec, manifest, checkpoint, key or version change; details are not keyed; caches written before M8 read unchanged and re-encode to the same bytes. |
 | 2026-11-26 | (M8 part A, solver side; [M8 results §10](SIMULATION_M8_RESULTS.md)) `fire.methane` gains the parameter `backend` (`"metal"`, the default, or `"cpu"`) and the coarse smoke tier 4; its `cpu` backend is `experimental` and available (unless a Metal-only operator option is set), and `Capabilities::backend` is `"cpu"` when it runs. The CPU backend's description is `deterministic` in both modes. No contract member added or changed; `backend` and tier 4 are not in the fire scene schema. | `"cpu"` enters the effective parameters and so the key; `"metal"` and an absent `backend` do not, so every existing fire key, cache, checkpoint and the solver version are unchanged. Metal output bytes are unchanged. |
+| 2026-11-26 | (Host side, not part of the solver contract) Default simulation cache location: a simulation that names no `cache` uses the per-user `<base>/scene-caches/<scene-stem>-<hash>/<name>` (`DefaultSimulationCacheDirectory`, `DefaultSimulationCachePath`; `RISE_SIMULATION_CACHE_DIR` overrides the base) instead of `caches/<name>` beside the scene. | Keys, epochs, payloads and manifests do not contain the directory; caches at explicit locations are found as before; an old default cache is not read (one informational line names it). |
+| 2026-11-26 | (M7f, solver side; [M7f results](SIMULATION_M7F_RESULTS.md)) `liquid.mac` `m7f.1`: implicitly coupled sheets are walls or boundaries of the level set's stencils, the level set is the signed distance to a sheet that holds liquid on one side, and a 2-D grid's sheets push only in its plane; the progress detail reports the sheet's rotation stretch per macro step. `cloth.shell` (`m3a.4`, unchanged otherwise) refuses a `surface_load` with the `force` channel while `surface_load_steps` is unbound. | Bakes without implicit sheets publish the frames of m7e.1 (content-addressed names compared); the version changes every liquid key. No member added or changed. |

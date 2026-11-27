@@ -50,6 +50,7 @@
 #include "Utilities/FiniteMath.h"
 #include "Utilities/RISECBOR64.h"
 #include "Utilities/FireSequence.h"
+#include "Simulation/SimulationProcess.h"
 #include "Simulation/SimulationTimeline.h"
 #include "Simulation/SimulationTransform.h"
 #include "Utilities/FireSimulationRecords.h"
@@ -11181,6 +11182,13 @@ bool Job::SetSimulationSceneDirectory( const char* directory )
 bool Job::ResolveSimulationCache( const std::string& name, const std::string& authored,
 	std::filesystem::path& dir, std::string& error ) const
 {
+	if( authored.empty() && !simulationSceneFile.empty() ) {
+		// The per-user default (SimulationProcess.h): one function for every process.
+		dir = Simulation::DefaultSimulationCachePath( std::filesystem::path( simulationSceneFile ), name, error );
+		return !dir.empty();
+	}
+	// An explicit `cache`, or a Job with no scene file (built through the API): `caches/<name>` beside the
+	// scene directory when one was set, else the working directory -- as before.
 	std::string path = authored.empty() ? std::string("caches/") + name : authored;
 	if( !ExpandHome( path ) ) { error = "`~/` cache path without a home directory"; return false; }
 	std::filesystem::path p( path );
@@ -11225,6 +11233,16 @@ bool Job::AddSimulation( const SimulationDescriptor& desc )
 	}
 	if( !ResolveSimulationCache( desc.name, desc.cache, spec.cacheDir, error ) )
 		return fail( desc.keyword + " `" + desc.name + "`: " + error );
+	if( desc.cache.empty() && !simulationSceneFile.empty() && !simulationSceneDirectory.empty() ) {
+		// A cache baked by an earlier version sits at the old default; say so once, never read it.
+		const std::filesystem::path old = std::filesystem::path( simulationSceneDirectory ) / "caches" / desc.name;
+		std::error_code ec;
+		if( !std::filesystem::exists( spec.cacheDir / "manifest.cbor", ec ) &&
+			std::filesystem::is_regular_file( old / "manifest.cbor", ec ) )
+			GlobalLog()->PrintEx( eLog_Info, "Job::AddSimulation:: %s `%s`: a cache exists at the old default %s but the default is now %s; "
+				"name it with `cache` in the scene (or move it) to reuse it", desc.keyword.c_str(), desc.name.c_str(),
+				old.lexically_normal().string().c_str(), spec.cacheDir.string().c_str() );
+	}
 	simulationOrder.push_back( desc.name );
 	simulationsMap[desc.name] = spec;
 	// D35: PRODUCED simulation (the table bypasses GenericManager).
@@ -17353,7 +17371,10 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	{
 		std::error_code ec;
 		const std::filesystem::path sceneFile = std::filesystem::absolute( filename, ec );
-		if( !ec ) SetSimulationSceneDirectory( sceneFile.parent_path().string().c_str() );
+		if( !ec ) {
+			SetSimulationSceneDirectory( sceneFile.parent_path().string().c_str() );
+			simulationSceneFile = sceneFile.lexically_normal().string();   // identity of the default cache directory
+		}
 	}
 	// DL-323 follow-through: THE real scene load -- the only DeriveToJob caller that warns about deprecated chunk types.
 	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
@@ -17407,6 +17428,7 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 	{
 		Job staging;
 		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+	staging.simulationSceneFile = simulationSceneFile;
 		std::vector<std::string> vdiags;
 		RISE::Cst::DeriveToJob( *pCstDocument, staging, &vdiags, nullptr, variantName ? variantName : "none" );
 		if( !vdiags.empty() ) {
@@ -17880,6 +17902,7 @@ int Job::DeriveEditedCstDocument_( RISE::Cst::Document&& d1in, RISE::Cst::NodeId
 		const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
 		Job staging;
 		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+	staging.simulationSceneFile = simulationSceneFile;
 		std::vector<std::string> gdiags;
 		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &gdiags, nullptr, activeVariant );
@@ -17934,6 +17957,7 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	{
 		Job staging;
 		staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+	staging.simulationSceneFile = simulationSceneFile;
 		std::vector<std::string> vdiags;
 		++mCstDryRunCount;
 		RISE::Cst::DeriveToJob( d1, staging, &vdiags, nullptr, activeVariant );
@@ -18971,6 +18995,7 @@ bool Job::DryRunCstDocument_( const RISE::Cst::Document& doc, std::string* outFi
 	const char* activeVariant = ( hasVar && vbuf[0] ) ? vbuf : "none";
 	Job staging;
 	staging.simulationSceneDirectory = simulationSceneDirectory;   // M4: same cache paths as the live Job
+	staging.simulationSceneFile = simulationSceneFile;
 	std::vector<std::string> vdiags;
 	++mCstDryRunCount;
 	RISE::Cst::DeriveToJob( doc, staging, &vdiags, nullptr, activeVariant );

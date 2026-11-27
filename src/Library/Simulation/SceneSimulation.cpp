@@ -81,8 +81,9 @@ bool ParseVia(const std::vector<std::string>& t, std::size_t i, PortConnection& 
 			}
 		} else if (t[i] == "time_offset") {
 			char* end = nullptr;
-			if (i + 1 >= t.size() || (std::strtod(t[i + 1].c_str(), &end), !end || *end != '\0'))
-				return Fail(error, where + ": `time_offset` takes seconds");
+			if (i + 1 >= t.size()) return Fail(error, where + ": `time_offset` takes seconds");
+			(void)std::strtod(t[i + 1].c_str(), &end);
+			if (!end || *end != '\0') return Fail(error, where + ": `time_offset` takes seconds");
 			i += 2;   // read by TimeOffsetOf
 		} else if (t[i] == "aux") {
 			std::string m, port;

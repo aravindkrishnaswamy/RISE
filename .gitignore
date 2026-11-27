@@ -67,8 +67,8 @@ __pycache__/
 # pre-Phase-3 worktrees.
 **/.gltf_cache/
 
-# Simulation M4: scene simulation caches (`cache` defaults to caches/<name> beside
-# the scene file).  Bulk outputs stay outside git.
+# Simulation M4: scene simulation caches named `caches/<name>` beside the scene file
+# (the default is now the per-user cache folder).  Bulk outputs stay outside git.
 scenes/**/caches/
 
 # CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out,

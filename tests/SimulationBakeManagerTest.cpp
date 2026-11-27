@@ -182,8 +182,10 @@ std::string Camera()
 std::string Cloth(const std::string& name, unsigned frames, const std::string& extra,
 	const std::string& origin = "-0.5 1 0.5")
 {
+	// The tests look for caches beside the scene: name them (the default is the per-user folder).
+	const std::string cache = extra.find("\tcache\t") == std::string::npos ? "\tcache\tcaches/" + name + "\n" : "";
 	return "cloth_simulation\n{\n\tname\t" + name + "\n\tvertices_u\t9\n\tvertices_v\t9\n\tframes\t" +
-		std::to_string(frames) + "\n\tsubsteps\t4\n\torigin\t" + origin + "\n\tpin\tu0v0\n\tpin\tu1v0\n" + extra + "}\n\n";
+		std::to_string(frames) + "\n\tsubsteps\t4\n\torigin\t" + origin + "\n\tpin\tu0v0\n\tpin\tu1v0\n" + cache + extra + "}\n\n";
 }
 
 std::string Consumer(const std::string& geometry, const std::string& source)
@@ -368,7 +370,7 @@ void TestGpuLock(const fs::path& root)
 		"--gpu-lock", lock.string(), "--checkpoint-seconds", "0"}), dir/"one.log", p1, error), "start worker one", error);
 	g_pids.insert(p1);
 	// Two waits on the lock, so they both start after one holds it.
-	Check(WaitFor([&] { WorkerStatus s; std::string e; return ReadWorkerStatus(c1, s, e) && s.state == "running"; }, 10),
+	Check(WaitFor([&] { WorkerStatus s; std::string e; return ReadWorkerStatus(c1, s, e) && s.state == "running"; }, 60),
 		"worker one runs (it holds the GPU lock)");
 	Check(SpawnDetachedProcess(WorkerArgs({"bake", FakeGpuSolver::Id, (dir/"params.json").string(), c2.string(),
 		"--gpu-lock", lock.string(), "--checkpoint-seconds", "0"}), dir/"two.log", p2, error), "start worker two", error);
@@ -377,9 +379,14 @@ void TestGpuLock(const fs::path& root)
 	g_pids.insert(p2);
 	g_pids.insert(p3);
 	WorkerStatus s2;
-	Check(WaitFor([&] { std::string e; return ReadWorkerStatus(c2, s2, e) && s2.state == "waiting-gpu"; }, 10) &&
+	Check(WaitFor([&] { std::string e; return ReadWorkerStatus(c2, s2, e) && s2.state == "waiting-gpu"; }, 60) &&
 		s2.detail.find("held by pid " + std::to_string(p1)) != std::string::npos,
 		"worker two waits for the GPU, naming the holder", s2.state + " / " + s2.detail);
+	// Worker three starts alongside two; adoption reads each cache once, so wait for three to reach waiting-gpu too
+	// (under load it can still be starting, "queued", when the manager looks).
+	WorkerStatus s3;
+	Check(WaitFor([&] { std::string e; return ReadWorkerStatus(c3, s3, e) && s3.state == "waiting-gpu"; }, 60),
+		"worker three waits for the GPU", s3.state + " / " + s3.detail);
 	// A second manager adopts the three bakes from their caches (as an app would at load).
 	SimulationBakeManager m(Settings(root));
 	BakeSceneSnapshot snap;
@@ -941,6 +948,10 @@ int main(int argc, char** argv)
 	RegisterTestSolvers();
 	const fs::path root = RISE::TestSupport::ScratchRunDir("rise_bake_manager_", "suite");
 	std::error_code ec;
+	// Never the real per-user simulation cache (the harness sets this per test).
+#ifndef _WIN32
+	::setenv("RISE_SIMULATION_CACHE_DIR", (root/"user-cache").string().c_str(), 0);
+#endif
 	fs::create_directories(root, ec);
 	fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace, ec);
 	struct Teardown { ~Teardown() { KillAll(); } } teardown;

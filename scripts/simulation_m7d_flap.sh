@@ -4,7 +4,7 @@
 # scenes/Tests/Simulation/liquid_cloth_flap.RISEscene, `simulation_group flume`) and render frames of
 # the water surface (dielectric, ior 1.33) and the flap (simulated_mesh_geometry)
 # with path tracing, CPU only, to rendered/simulation_m7/ (outside git).
-# The scene and its caches live in a private directory under ~/.cache/rise-m7d
+# The scene lives in a private directory under ~/.cache/rise-m7d
 # (the cache writer refuses directories others can modify).
 #   scripts/simulation_m7d_flap.sh [resolution]   (default 64 cells along x)
 set -euo pipefail
@@ -23,8 +23,10 @@ $repo/bin/tools/rise_sim status $work/flap.RISEscene
   print "film\n{\n\twidth\t640\n\theight\t400\n}\n"
   print "animation_options\n{\n\ttime_start\t0\n\ttime_end\t2\n\tnum_frames\t6\n}\n"
   print "file_rasterizeroutput\n{\n\tpattern\trendered/simulation_m7/flap_$resolution\n\tmultiple\tTRUE\n\ttype\tPNG\n\tbpp\t8\n\tcolor_space\tsRGB\n}\n"
-} > $work/flap_render.RISEscene
+} > $work/flap.render.tmp
+# The render copy keeps the baked scene's path: the default cache directory is keyed by it.
+mv $work/flap.render.tmp $work/flap.RISEscene
 cd $repo
 export RISE_MEDIA_PATH="$repo/"
-printf "renderanimation\nquit\n" | ./bin/rise $work/flap_render.RISEscene
+printf "renderanimation\nquit\n" | ./bin/rise $work/flap.RISEscene
 ls -l $out

@@ -24,8 +24,10 @@ $repo/bin/tools/rise_sim status $work/honey.RISEscene
   print "film\n{\n\twidth\t640\n\theight\t400\n}\n"
   print "animation_options\n{\n\ttime_start\t0\n\ttime_end\t2\n\tnum_frames\t6\n}\n"
   print "file_rasterizeroutput\n{\n\tpattern\trendered/simulation_m7/honey_$resolution\n\tmultiple\tTRUE\n\ttype\tPNG\n\tbpp\t8\n\tcolor_space\tsRGB\n}\n"
-} > $work/honey_render.RISEscene
+} > $work/honey.render.tmp
+# The render copy keeps the baked scene's path: the default cache directory is keyed by it.
+mv $work/honey.render.tmp $work/honey.RISEscene
 cd $repo
 export RISE_MEDIA_PATH="$repo/"
-printf "renderanimation\nquit\n" | ./bin/rise $work/honey_render.RISEscene
+printf "renderanimation\nquit\n" | ./bin/rise $work/honey.RISEscene
 ls -l $out

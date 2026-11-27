@@ -30,7 +30,7 @@ There are three sample scenes in `scenes/Tests/Simulation/`, with comments:
 cloth_simulation
 {
 	name			flag                 # unique, no `.`
-	cache			caches/flag          # default caches/<name> beside the scene file; `~/...` and absolute too
+	cache			caches/flag          # M4 default caches/<name> beside the scene; since 2026-11-26 the per-user cache folder (SOLVER_CONTRACT, cache location policy)
 	mode			interactive          # any cloth.shell parameter, by its solver name
 	vertices_u		31
 	vertices_v		31
