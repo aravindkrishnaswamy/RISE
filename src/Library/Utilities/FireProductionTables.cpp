@@ -2,6 +2,11 @@
 //
 //  FireProductionTables.cpp - record-derived fp32 production fire tables
 //
+//  Deterministically compiles NASA-9 species thermochemistry (adaptive
+//  dyadic subdivision with analytic derivative/quantization error bounds)
+//  and HITEMP CO2/H2O Planck-mean opacity (dyadic 2D grid refinement to
+//  <= 0.5% relative error) into fp32 tables plus CBOR/SHA-256 manifests.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -52,6 +57,10 @@ namespace RISE
 				std::isfinite(enthalpy)&&std::isfinite(cp)&&cp>0.0;
 		}
 
+		// --- NASA-9 thermochemistry adaptive subdivision (1D) ---
+
+		// Evaluates dimensionless Cp/R and conservative L_inf bounds on its
+		// first and second temperature derivatives over [minimumK, maximumK].
 		double CpOverRLocal( const double* a, double temperatureK )
 		{
 			return a[0]/(temperatureK*temperatureK)+a[1]/temperatureK+a[2]+
@@ -79,6 +88,9 @@ namespace RISE
 				12.0*std::fabs(a[6])*maximumK*maximumK;
 		}
 
+		// Recursively bisects [lowerK, upperK] until fp32 endpoint quantization
+		// plus linear interpolation remainder (M2 * h^2 / 8) fits within
+		// 0.25 * certifiedCpLower, then verifies the bound against the midpoint.
 		bool AppendThermoInterval( const FireSimulationMethaneRecord& record,
 			const FireThermochemistrySpecies& species, double lowerK, double upperK,
 			const FireThermochemistrySegment& segment, unsigned depth,
@@ -163,6 +175,8 @@ namespace RISE
 			return table.temperatureK.size()>=2u;
 		}
 
+		// --- HITEMP Planck-mean opacity refinement (2D) ---
+
 		std::vector<double> RefinedAxis( const std::vector<double>& source,
 			unsigned subdivisions )
 		{
@@ -199,6 +213,9 @@ namespace RISE
 			return result;
 		}
 
+		// Evaluates one uniform subdivision level on (T_gas, T_rad) and certifies
+		// worst-case relative bilinear error using bicubic second-derivative bounds
+		// and exact derivative enclosures for the cell lower bound.
 		bool BuildOpacityAtSubdivision( const FireSimulationGasOpacityRecord& record,
 			const FireGasOpacitySpecies& species, unsigned subdivisions,
 			FireProductionOpacityTable& table, bool& acceptable, std::string* error )
@@ -308,6 +325,8 @@ namespace RISE
 			return Fail(error,"production opacity table subdivision did not reach 0.5 percent");
 		}
 
+		// --- Canonical CBOR manifest encoding and table lookup helpers ---
+
 		RISECBOR64::Value ThermoManifestValue(
 			const FireProductionThermochemistryTable& table )
 		{
@@ -357,6 +376,8 @@ namespace RISE
 			return fraction>=0.0&&fraction<=1.0;
 		}
 	}
+
+	// --- Public table compilation and interpolation entry points ---
 
 	bool BuildFireProductionTablePackage(
 		const FireSimulationMethaneRecord& thermochemistry,

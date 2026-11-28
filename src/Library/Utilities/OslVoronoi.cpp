@@ -74,10 +74,7 @@ namespace RISE
 		namespace
 		{
 			//////////////////////////////////////////////////////////
-			// Integer helpers.  Cycles' PCG hashes and cell arithmetic
-			// use signed int and rely on wrap-around; here the
-			// arithmetic is unsigned, which wraps by definition, and
-			// the conversions back are exact bit copies.
+			// Wrapping unsigned integer helpers matching Cycles' PCG/cell math.
 			//////////////////////////////////////////////////////////
 
 			inline int32_t ToInt( const uint32_t u )
@@ -105,13 +102,8 @@ namespace RISE
 				return ToInt( ToUint( a ) + ToUint( b ) );
 			}
 
-			//! make_int{2,3,4} of a floored coordinate.  Cycles converts with an
-			//! (int) cast (2D, and 3D/4D on its scalar path) or sse2neon's
-			//! _mm_cvtps_epi32 (3D/4D on its SIMD path), both undefined outside
-			//! int range.  This is the saturation arm64 compiles the (int) cast
-			//! to; the SIMD conversion gives INT32_MIN instead (OslVoronoi.h).
-			//! NaN never reaches here (VoronoiTexture guards it) but reads 0, as
-			//! arm64's (int) cast would.
+			//! Floored coordinate to int32 cell id (saturates to [INT32_MIN,
+			//! INT32_MAX], NaN -> 0) to avoid UB on out-of-range float casts.
 			inline int32_t CellId( const float f )
 			{
 				if( !( f == f ) ) return 0;
@@ -580,10 +572,7 @@ namespace RISE
 					float perpendicularToEdge[N];
 					for( int c = 0; c < N; ++c ) perpendicularToEdge[c] = vectorToPoint[c] - vectorToClosest[c];
 					if( Dot<N>( perpendicularToEdge, perpendicularToEdge ) > 0.0001f ) {
-						// (vectorToClosest + vectorToPoint) / 2.0f and
-						// normalize(perpendicularToEdge) = v / len(v): a vector
-						// divided by a scalar, which Cycles' scalar path
-						// evaluates as a multiply by the reciprocal.
+						// Match Cycles' scalar vector/scalar division (reciprocal multiply).
 						const float halfInv = 1.0f / 2.0f;
 						float mid[N];
 						for( int c = 0; c < N; ++c ) mid[c] = ( vectorToClosest[c] + vectorToPoint[c] ) * halfInv;

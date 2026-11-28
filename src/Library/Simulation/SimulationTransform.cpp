@@ -1,3 +1,14 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationTransform.cpp - Binary codec and quaternion math for "transform.v1"
+//
+//  Wire layout: "RISETRFM" | u32 version(1) | text units | f64 time |
+//               u32 bodies | (text name, f64[3] pos, f64[4] quat, f64[3] vel, f64[3] angVel)*
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationTransform.h"
 #include "../Utilities/RISECBOR64.h"
@@ -53,6 +64,8 @@ void CheckText(const std::string& s, Budget scratch)
 	Require(RISE::RISECBOR64::IsUTF8NFC(s), "transform name or units text is not NFC UTF-8");
 }
 
+// Canonical hemisphere for (w, x, y, z) quaternions: first nonzero element > 0,
+// ensuring identical 3D rotations have a single canonical wire representation.
 bool CanonicalSign(const std::array<double,4>& q)
 {
 	if (q[0] != 0) return q[0] > 0;
@@ -60,6 +73,7 @@ bool CanonicalSign(const std::array<double,4>& q)
 	return false;
 }
 
+// Validates units, finite samples, sorted unique body names, and canonical unit quaternions.
 void CheckFrame(const TransformFrame& f, Budget& scratch)
 {
 	CheckText(f.lengthUnits, scratch);
@@ -80,6 +94,7 @@ void CheckFrame(const TransformFrame& f, Budget& scratch)
 	}
 }
 
+// Two-pass little-endian IEEE binary64 writer (null `data` sizes the payload).
 struct Sink {
 	Bytes* data;
 	std::size_t count = 0;
@@ -151,6 +166,9 @@ struct Source {
 };
 }
 
+// ------------------------------------------------------------------ codec & math
+
+// Encodes canonically into a temporary buffer and swaps `out` only on success.
 bool RISE::Simulation::EncodeTransforms(const TransformFrame& frame, std::size_t budget, Bytes& out, std::string& error)
 {
 	try {
@@ -171,6 +189,7 @@ bool RISE::Simulation::EncodeTransforms(const TransformFrame& frame, std::size_t
 	} catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+// Decodes and validates "transform.v1", bounding body count by payload size first.
 bool RISE::Simulation::DecodeTransforms(const Bytes& bytes, std::size_t budget, TransformFrame& out, std::string& error)
 {
 	try {
@@ -203,6 +222,7 @@ bool RISE::Simulation::DecodeTransforms(const Bytes& bytes, std::size_t budget, 
 	} catch (const std::exception& e) { error = e.what(); return false; }
 }
 
+// Normalizes a (w, x, y, z) quaternion and flips sign into the canonical hemisphere.
 bool RISE::Simulation::CanonicalQuaternion(std::array<double,4>& q)
 {
 	const double n = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
@@ -212,6 +232,7 @@ bool RISE::Simulation::CanonicalQuaternion(std::array<double,4>& q)
 	return true;
 }
 
+// Converts a unit (w, x, y, z) quaternion into a row-major 3x3 rotation matrix.
 std::array<double,9> RISE::Simulation::QuaternionMatrix(const std::array<double,4>& q)
 {
 	const double w = q[0], x = q[1], y = q[2], z = q[3];
@@ -242,6 +263,7 @@ std::array<double,4> RISE::Simulation::MatrixQuaternion(const std::array<double,
 	return q;
 }
 
+// SHA-256 domain digest over CBOR ["rise.simulation.bodies.v1", [names...]].
 std::string RISE::Simulation::TransformBodyDomain(const std::vector<std::string>& names)
 {
 	using V = RISE::RISECBOR64::Value;

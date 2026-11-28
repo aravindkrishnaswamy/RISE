@@ -5,7 +5,10 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: November 6, 2003
 //  Tabs: 4
-//  Comments:
+//  Comments: Vector2/Vector3 algebra. Note argument order of mkVector*(b, a)
+//    is (destination, origin) returning (b - a). Transform() uses RISE's
+//    row-vector linear convention ([v 0] * M, ignoring translation; callers
+//    transforming normals must pass the inverse-transpose matrix).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -21,6 +24,7 @@ namespace RISE
 {
 	namespace Vector2Ops
 	{
+		// Returns vector from `a` to `b` (b - a).
 		inline Vector2 mkVector2( const Point2& b, const Point2& a )
 		{
 			return Vector2( b.x-a.x, b.y-a.y );
@@ -50,7 +54,7 @@ namespace RISE
 			return Scalar( sqrt( SquaredModulus(v) ) );
 		}
 
-		// Normalize the input vector, return the magnitude
+		// Normalize in-place and return original magnitude (no-op if zero-length).
 		inline Scalar Normalize( Vector2& v )
 		{
 			Scalar		mag = Magnitude(v);
@@ -75,14 +79,14 @@ namespace RISE
 			return v;
 		}
 
-		// Returns a vector perpendicular to the given one
+		// Returns an unnormalized orthogonal vector (90 deg CW: (v.y, -v.x)).
 		inline Vector2 Perpendicular( const Vector2& v )
 		{
 			return Vector2( v.y, -v.x );
 		}
 
 			
-		// Matrix transform a vector
+		// Linear-only transform [v.x, v.y, 0] * m (ignores translation row).
 		inline Vector2 Transform( const Matrix3& m, const Vector2& v )
 		{
 			return Vector2(
@@ -148,6 +152,7 @@ namespace RISE
 
 	namespace Vector3Ops
 	{
+		// Returns vector from `a` to `b` (b - a).
 		inline Vector3 mkVector3( const Point3& b, const Point3& a )
 		{
 			return Vector3( b.x-a.x, b.y-a.y, b.z-a.z );
@@ -174,7 +179,8 @@ namespace RISE
 				return 2;
 		}
 
-		// Returns a vector perpendicular to this one
+		// Returns an unnormalized vector orthogonal to `v` by zeroing its
+		// smallest-magnitude component and swapping/negating the other two.
 		inline Vector3 Perpendicular( const Vector3& v )
 		{
 			int axis = IndexOfMinAbsComponent(v);
@@ -193,7 +199,7 @@ namespace RISE
 			return Scalar( a.x*b.x + a.y*b.y + a.z*b.z );
 		}
 
-		// Cross product
+		// Right-handed 3D cross product (a x b).
 		inline Vector3 Cross( const Vector3& a, const Vector3& b )
 		{
 			return Vector3( a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x );
@@ -211,7 +217,7 @@ namespace RISE
 			return Scalar( sqrt( SquaredModulus(v) ) );
 		}
 
-		// Normalize the input vector, return the magnitude
+		// Normalize in-place and return original magnitude (no-op if zero-length).
 		inline Scalar NormalizeMag( Vector3& v )
 		{
 			Scalar		mag = Magnitude(v);
@@ -237,7 +243,7 @@ namespace RISE
 			return v;
 		}
 
-		// Matrix transforms a vector
+		// Linear-only transform [v.x, v.y, v.z, 0] * m (ignores translation row).
 		inline Vector3 Transform( const Matrix4& m, const Vector3& v )
 		{
 			return Vector3(

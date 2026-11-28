@@ -1,42 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  HosekWilkieSkyModel.h - Analytic spectral sun-and-sky model for
-//    Landing 3 of the Physically Based Pipeline Plan.
+//  HosekWilkieSkyModel.h - Analytic spectral sun-and-sky model.
 //
-//    NAMING NOTE.  The plan-doc target was the Hosek & Wilkie 2012
-//    full-spectral model whose coefficient tables ship as supplemental
-//    data alongside their reference paper (CC-BY 3.0).  Vendoring the
-//    coefficient table requires fetching ~25KB of pre-computed data
-//    files (`ArHosekSkyModel*Coefficients.cpp`) we do not currently
-//    have at hand in this checkout.
-//
-//    v1 (this file): the Preetham 1999 "Practical Analytic Model for
-//    Daylight" formulation.  Same Perez 5-coefficient angular form
-//    Hosek-Wilkie generalises; coefficients are linear functions of
-//    turbidity given in Preetham 1999 Table 2 (and reproduced verbatim
-//    below — the values are facts and not copyrightable).  Output is
-//    chromaticity + luminance, which we recombine into a spectrum via
-//    a CIE D65 illuminant pre-multiplied by the chromaticity tint.
-//
-//    v1 LIMITATIONS vs the planned HW implementation:
-//      - Less accurate at low solar elevations; Preetham reddening at
-//        sunset over-saturates relative to HW Monte-Carlo reference.
-//      - Spectral output is RGB-derived (D65 illuminant scaled by
-//        chromaticity), not natively spectral.  Adequate for visible
-//        differentiation of sun/sky but not for fine-grained spectral
-//        verification against reference data.
-//
-//    v2 (future landing): swap the analytic core for the Hosek-Wilkie
-//    reference C code + its CC-BY 3.0 coefficient tables.  Public
-//    interface stays the same; only the per-sample radiance evaluation
-//    changes.  All scene files and runtime callers built against v1
-//    work unchanged.
-//
-//    Coefficient citations (Preetham 1999, "A Practical Analytic
-//    Model for Daylight", SIGGRAPH 99):
-//      Table 2: A_Y..E_Y, A_x..E_x, A_y..E_y as linear functions of T.
-//      Section 4.4: zenith chromaticities x_z(T, θ_s), y_z(T, θ_s).
-//      Section 4.4: zenith luminance Y_z(T, θ_s) in kcd/m².
+//  Currently implements the Preetham (1999) Perez 5-coefficient model
+//  (Table 2 linear turbidity fits, §4.4 zenith xyY) recombined with a
+//  D65 illuminant tint; public API is ready to swap in Hosek & Wilkie
+//  (2012) full-spectral tables without breaking callers.
+//  Known v1 limits: Preetham over-reddens at low solar elevation, and
+//  spectral output is RGB/D65-derived rather than natively spectral.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -84,21 +55,14 @@ namespace RISE
 		// the atmosphere (turbidity-dependent extinction).
 		Scalar SampleSolarRadiance( Scalar lambda_nm ) const;
 
-        // RGB convenience: evaluate analytic xyY and convert XYZ(D65)
-        // directly to the current linear Rec.709 RISEPel. Despite the
-        // historical method name, this does not integrate SampleRadiance.
-        // Queries have no directional quantization or shared mutable cache;
-        // value copies retain independent coefficients/scalars/vectors.
-        // Used by IRadianceMap::GetRadiance and its legacy painter proxy.
+        // Analytic xyY -> XYZ(D65) -> linear Rec.709 RISEPel (does not
+        // integrate SampleRadiance).  Stateless and thread-safe; used by
+        // IRadianceMap::GetRadiance and its legacy painter proxy.
 		RISEPel IntegrateRGB( const Vector3& dir ) const;
 
 	private:
-		// Preetham angular form:
-		//   F(θ, γ) = (1 + A·exp(B/cos θ)) · (1 + C·exp(D·γ) + E·cos²γ)
-		// where θ is the angle from zenith of the sample direction
-		// (so cos θ = dir.y) and γ is the angle between the sample
-		// direction and the sun.  Two such F's give the sample's
-		// chromaticity + luminance in xyY by ratio with the zenith F.
+		// Preetham-Perez form: F(theta, gamma) = (1 + A*exp(B/cos theta)) * (1 + C*exp(D*gamma) + E*cos^2 gamma),
+		// with cos theta = dir.y and gamma = angle between sample direction and sun.
 		struct PerezCoeffs { Scalar A, B, C, D, E; };
 
 		PerezCoeffs perez_Y;

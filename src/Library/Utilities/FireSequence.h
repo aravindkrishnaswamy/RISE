@@ -2,6 +2,12 @@
 //
 //  FireSequence.h - Canonical Phase-C fire sequence contract
 //
+//  Defines the sealed fire sequence manifest (FireSequenceManifest),
+//  scene-to-simulation time mapping, OpenVDB and native simulation-cache
+//  frame loading, deterministic OpenVDB UUID canonicalization, and
+//  transactional frame preparation with render leases
+//  (FireSequencePreparationController).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -44,6 +50,8 @@ namespace RISE
 			{ return version=="1" || version=="2" || version=="3" || version==FireMethaneSolverVersion; }
 		constexpr const char* FireMethaneFrameReceiptFormat = "rise.fire.methane.frame.v1";
 
+		//! Serializes the running renderer's canonical build identity (CBOR64)
+		//! and its SHA-256 hex digest.
 		bool CurrentRendererBuildIdentity(
 			RISECBOR64::Bytes& bytes,std::string& identity );
 		// OpenVDB writes a random archive UUID even when every grid byte is
@@ -53,6 +61,8 @@ namespace RISE
 			const std::string& path,
 			std::string& error );
 
+		//! Affine mapping t_sim = simulationTimeOrigin + sceneToSimulationScale *
+		//! (t_scene - sceneTimeOrigin) with uniform frame cadence frameStepSeconds (s).
 		struct FireSequenceTimeMap
 		{
 			double simulationTimeOrigin = 0.0;
@@ -62,6 +72,8 @@ namespace RISE
 			std::int64_t firstFrameIndex = 0;
 		};
 
+		//! Schema and world-space lattice metadata (meters, dimensions, voxel sizes,
+		//! core face bounds [minX,minY,minZ,maxX,maxY,maxZ], background) for one channel.
 		struct FireSequenceChannelDescriptor
 		{
 			std::string name;
@@ -75,6 +87,8 @@ namespace RISE
 			std::vector<double> background;
 		};
 
+		//! One contiguous frame entry: signed ordinal, safe relative VDB path,
+		//! and lowercase 64-hex whole-file SHA-256 digest.
 		struct FireSequenceFrameDescriptor
 		{
 			std::int64_t index = 0;
@@ -82,6 +96,8 @@ namespace RISE
 			std::string sha256;
 		};
 
+		//! Result of MapSceneTime(): resolved base frame, evaluation time (s),
+		//! advection offset from base frame (s), and whether "hold" clamped it.
 		struct FireSequenceMappedTime
 		{
 			std::int64_t baseFrameIndex = 0;
@@ -91,6 +107,8 @@ namespace RISE
 			bool held = false;
 		};
 
+		//! Dense double-precision renderer projection for one channel (linear index
+		//! x + nx*(y + ny*z); interleaved 3-tuples when vectorValues is true).
 		struct FireSequenceDenseChannel
 		{
 			std::string name;
@@ -101,6 +119,8 @@ namespace RISE
 			double maximum = 0.0;
 		};
 
+		//! Validated dense frame state ready for medium installation.
+		//! available is false only for unpopulated frames in an incomplete native cache.
 		struct FireSequencePreparedFrame
 		{
 			std::int64_t frameIndex = 0;
@@ -110,6 +130,10 @@ namespace RISE
 			std::string coverageDigest;
 		};
 
+		//! Validated fire sequence manifest supporting both sealed canonical CBOR64
+		//! envelopes (OpenVDB frames) and attached native Simulation::CacheSnapshot caches.
+		//! Enforces SHA-256 binding of all embedded records, case-record reproduction,
+		//! lattice/velocity-halo invariants, and predictive qualification preflight.
 		class FireSequenceManifest
 		{
 			bool valid_ = false;
@@ -157,10 +181,14 @@ namespace RISE
 				{{0.0,0.0}},{{0.0,0.0}},{{0.0,0.0}} }};
 
 		public:
+			//! Decodes and cryptographically validates a canonical {payload, sequence_id}
+			//! CBOR64 manifest envelope. Resets *this on failure.
 			bool LoadCanonicalEnvelope(
 				const RISECBOR64::Bytes& envelope,
 				const std::string& manifestDirectory,
 				std::string& error );
+			//! Opens either a sealed sequence manifest file (auto-importing frame 0 when a
+			//! resolver is registered) or a native cache manifest.cbor directory.
 			bool LoadPlaybackFile(const std::string& path, std::string& error);
 			//! A sequence envelope without frames ("frames", "frame_count",
 			//! "first_frame_index", "last_frame_index" absent), every other field
@@ -174,21 +202,33 @@ namespace RISE
 			bool LoadVDBFileGrid(const std::string& path, const std::string& sha256,
 				Simulation::GridFrame& grid, std::string& error) const;
 			bool IsNativeCache() const { return static_cast<bool>(native_); }
+			//! True when valid and (for native caches) all authored frames are sealed.
 			bool IsComplete() const;
+			//! Verifies predictive qualification and pins the complete native cache generation
+			//! digest against the original sealed VDB preimage; fails if unqualified or incomplete.
 			bool PreflightPredictive(std::string& error);
 			void ReleasePredictiveGeneration() { qualifiedGeneration_.clear(); }
+			//! Re-opens a native cache snapshot for frame `index`, verifying predictive generation
+			//! lock and triggering on-demand single-frame import if needed.
 			bool AcquirePlaybackSnapshot(std::int64_t index, FireSequenceManifest& snapshot,
 				std::string& error) const;
+			//! Returns the active cache snapshot digest when native, else SequenceId().
 			const std::string& CoverageDigest() const;
+			//! Reads one unimported OpenVDB frame directly into a native Simulation::GridFrame.
 			bool LoadSourceGrid(std::int64_t index, Simulation::GridFrame& grid, std::string& error) const;
+			//! Maps sceneTime (s) into simulation time and base frame index using endPolicy_
+			//! ("error" rejects outside [t0, end); "hold" clamps and sets mapped.held).
 			bool MapSceneTime(
 				double sceneTime,
 				FireSequenceMappedTime& mapped,
 				std::string& error ) const;
+			//! Loads and validates frameIndex into a dense renderer frame (from native cache
+			//! if attached, otherwise directly from OpenVDB).
 			bool LoadFrame(
 				std::int64_t frameIndex,
 				FireSequencePreparedFrame& frame,
 				std::string& error ) const;
+			//! Verifies every frame in the sequence can be decoded and satisfies channel invariants.
 			bool PreflightAllFrames( std::string& error ) const;
 
 			bool IsValid() const { return valid_; }
@@ -223,6 +263,8 @@ namespace RISE
 			}
 		};
 
+		//! Scene-time shutter interval (s) hashed into the prepared-input identity and
+		//! validated when velocity motion blur is active (requires open <= close).
 		struct FireSequenceRenderTimeSupport
 		{
 			double nominalSceneTime = 0.0;
@@ -272,6 +314,8 @@ namespace RISE
 		public:
 			explicit FireSequencePreparationController(
 				const FireSequenceManifest& manifest ) : manifest_(&manifest) {}
+			//! Binds the medium frame installer (must be called once before first prepare,
+			//! with a 64-hex SHA-256 installerIdentity; rejects while any RenderLease is active).
 			bool SetFrameInstaller(
 				const std::function<bool(const FireSequencePreparedFrame&)>& installer,
 				const std::string& installerIdentity,
@@ -281,10 +325,14 @@ namespace RISE
 			bool SetActiveBindingIdentity(
 				const std::string& bindingIdentity,
 				std::string& error );
+			//! Idempotently prepares the immutable frame for `support` (no-op if prepared-input
+			//! SHA-256 is unchanged). Fails with "mutation_frozen" if any RenderLease is active;
+			//! populates `rollback` when provided so callers can undo medium + generation state.
 			bool PrepareMediaForRender(
 				const FireSequenceRenderTimeSupport& support,
 				bool effectiveVelocityBlur,
 				std::string& error, std::function<void()>* rollback = nullptr );
+			//! Acquires an RAII lease pinning the current prepared frame/generation; fails if unprepared.
 			RenderLease AcquireRenderLease( std::string& error );
 			std::shared_ptr<const FireSequencePreparedFrame> PreparedFrame() const;
 			std::string PreparedInputId() const;

@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulatedPointsSource.cpp - Read-only points.v1 simulation cache
+//  source for render-time sampling (metres / m/s), shutter-interval
+//  velocity extrapolation, and predictive cache preflight.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 // M7 prerequisites: see SimulatedPointsSource.h.
 #include "pch.h"
 #include "SimulatedPointsSource.h"
@@ -46,6 +58,8 @@ const CacheOutput* FindOutput( const CacheDescription& d, const std::string& nam
 
 } // namespace
 
+// Validates options, opens and binds the points.v1 cache snapshot, runs full-cache
+// predictive preflight when requested, and verifies the initial bind frame.
 bool PointsCacheSource::Open( const std::filesystem::path& root, const PointsSourceOptions& options,
 	std::unique_ptr<PointsCacheSource>& out, std::string& error )
 {
@@ -128,6 +142,8 @@ FrameStatus PointsCacheSource::ReadFrame( const IReadOnlyCacheSnapshot& snapshot
 	return FrameStatus::Ready;
 }
 
+// Returns the pinned snapshot for complete/predictive caches, or reloads from
+// disk for live partial caches while verifying the cache binding has not changed.
 bool PointsCacheSource::CurrentSnapshot( std::shared_ptr<const IReadOnlyCacheSnapshot>& snapshot, std::string& error ) const
 {
 	if( bound_->Complete() || options_.predictive ) {
@@ -154,6 +170,8 @@ bool PointsCacheSource::MapTime( const double sceneTime, const double deltaScene
 		sceneTime, deltaScene, index, simOffset, held, error );
 }
 
+// Samples points at nominal and optional shutter open/close times, resolving
+// radii/colours, velocity extrapolation (cached or ID-differenced), and identity.
 bool PointsCacheSource::Sample( const double nominal, const double open, const double close, const bool motion,
 	PointsFrameSample& out, std::string& error ) const
 {
@@ -257,6 +275,7 @@ bool PointsCacheSource::Sample( const double nominal, const double open, const d
 	return true;
 }
 
+// Converts a cache frame index back to scene time through cache and source scales/offsets.
 double PointsFrameSceneTime( const PointsCacheSource& source, const std::int64_t index )
 {
 	const CacheDescription& d = source.Description();

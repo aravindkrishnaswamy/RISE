@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationHost.cpp - In-memory cache snapshots, InProcessHost, and adapters
+//
+//  Implements copy-on-write persistent-vector cache snapshots, epoch derivation,
+//  threaded Play/Pause/Step solver hosting with optional on-disk recording,
+//  checkpointing, and the automatic port-adapter registry.
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "SimulationHost.h"
 
@@ -71,12 +83,15 @@ AdapterRegistry& Adapters()
 }
 } // namespace
 
+// Chains cache key and parent manifest digest into a fresh epoch identifier.
 std::string DeriveEpoch(const std::string& key,const std::string& parentDigest)
 {
 	const std::string text=std::string("rise.simulation.epoch.v1")+'\0'+key+'\0'+parentDigest;
 	return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(text.data()),text.size());
 }
 
+// Validates ports/inputs/evidence, computes cache key + epoch + effective fidelity,
+// and populates `d.cache` with scoped evidence digests.
 bool PrepareCacheDescription(SolverDescription& d,const ISceneInputs& inputs,const std::string& parent,
 	std::string& error)
 {
@@ -130,6 +145,7 @@ std::size_t MemoryCacheSnapshot::LowerBound(std::int64_t index,const std::string
 	return low;
 }
 
+// Lazily flattens the persistent vector `items_` once per snapshot for O(1) iteration.
 const std::vector<CacheEntry>& MemoryCacheSnapshot::Entries() const
 {
 	std::call_once(materialised_,[this]{
@@ -197,6 +213,7 @@ FrameStatus MemoryCacheSnapshot::ReadStatic(const std::string& digest,std::size_
 	return FrameStatus::Unavailable;
 }
 
+// Starts a new copy-on-write snapshot chain seeded from (key, epoch).
 void MemoryPublisher::Reset(const CacheDescription& description)
 {
 	auto first=std::make_shared<MemoryCacheSnapshot>();
@@ -224,6 +241,8 @@ std::shared_ptr<MemoryCacheSnapshot> MemoryPublisher::Next(const char* event,con
 	return next;
 }
 
+// Verifies static payload references, extends the hash-chained generation, and
+// inserts/replaces the item in (index, output) order on a new immutable snapshot.
 bool MemoryPublisher::Publish(std::int64_t index,const std::string& output,double time,
 	std::shared_ptr<const Bytes> payload,const Bytes& receipt,std::string& error)
 {
@@ -301,6 +320,7 @@ bool MemoryPublisher::PublishStatic(const std::string& type,std::shared_ptr<cons
 	return true;
 }
 
+// Truncates frames >= `index` (e.g. after checkpoint restore) and recomputes spans.
 void MemoryPublisher::DiscardFrom(std::int64_t index)
 {
 	std::lock_guard<std::mutex> hold(mutex_);
@@ -334,6 +354,7 @@ std::shared_ptr<const MemoryCacheSnapshot> MemoryPublisher::Current() const
 
 // ---------------------------------------------------------------- in-process host
 
+// Tees solver frame/static publications to the on-disk CacheWriter first, then MemoryPublisher.
 class InProcessHost::Sink final : public IFrameSink {
 public:
 	explicit Sink(InProcessHost& host) : host_(host) {}
@@ -437,6 +458,8 @@ bool InProcessHost::Start(std::string& error)
 	return true;
 }
 
+// Serializes solver Advance under `stepMutex_` (releasing `mutex_` during execution),
+// absorbs stale sticky RequestStop signals, and seals `recorder_` upon completion.
 bool InProcessHost::StepLocked(const AdvanceRequest& request,AdvanceResult& result,bool worker,std::string& error)
 {
 	std::lock_guard<std::mutex> step(stepMutex_);
@@ -548,6 +571,7 @@ SolverPosition InProcessHost::Position() const
 	return position_;
 }
 
+// Background loop for Play(): unlocks `mutex_` while stepping so Pause()/Position() stay responsive.
 void InProcessHost::WorkerLoop()
 {
 	std::unique_lock<std::mutex> lock(mutex_);
@@ -575,6 +599,8 @@ void InProcessHost::WorkerLoop()
 	}
 }
 
+// Checkpoint save/restore require an idle host; restore verifies cache key and solver
+// position before discarding abandoned post-checkpoint frames from `publisher_`.
 bool InProcessHost::SaveCheckpoint(Checkpoint& checkpoint,std::string& error)
 {
 	if (Busy()) return Fail(error,"checkpoint while idle");
@@ -640,6 +666,7 @@ bool InProcessHost::RestoreCheckpointFrom(ICheckpointSource& source,const std::s
 
 // ---------------------------------------------------------------- port adapters
 
+// Registers an automatic (parameterless) port adapter queried by FindPortAdapter.
 bool RegisterPortAdapter(const std::string& id,std::shared_ptr<const IPortAdapter> adapter,std::string& error)
 {
 	if (id.empty() || !RISECBOR64::IsUTF8NFC(id) || !adapter) return Fail(error,"invalid port adapter id or adapter");

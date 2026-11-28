@@ -2,6 +2,11 @@
 //
 //  FireProductionForceUnsupported.cpp - honest non-Metal force seam
 //
+//  Fail-closed stub linked on platforms without Apple Metal in place of
+//  FireProductionForceMac.mm (and the Metal resident step/owner seams).
+//  All Metal force, projected-Heun owner, and resident-step entry points
+//  reset outputs and return false rather than silently invoking CPU code.
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////

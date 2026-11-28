@@ -73,6 +73,9 @@ namespace RISE
 		return "legacy_pre_r80_active_set";
 	}
 
+	// ------------------------------------------------------------------ frame values and state admission
+
+	// Serializes SolverFrameValues scalars, 3D field vectors, and probe/step histories.
 	bool WriteSolverFrameValues(CheckpointWriter& w,const SolverFrameValues& v)
 	{
 		if(!w.Pod(v.succeeded)||!w.String(v.structuredError)||!w.String(v.reductionMode))return false;
@@ -185,6 +188,7 @@ namespace RISE
 			ReadArithmeticVector(r,v.workerCountHistory,1000000u);
 	}
 
+	// Verifies positive step-history consistency and exact sum equality with simulationTimeS.
 	bool AcceptedCheckpointTimelineValid(const MethaneRunCheckpoint& checkpoint)
 	{
 		if(checkpoint.acceptedSteps==0u||
@@ -203,6 +207,7 @@ namespace RISE
 		return acceptedDurationS==checkpoint.simulationTimeS;
 	}
 
+	// Checks that all cells are binary64-admissible and reproduce stored temperatureK via EOS inversion.
 	bool Binary64CheckpointStateAdmissible(const MethaneRunCheckpoint& checkpoint)
 	{
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
@@ -254,6 +259,8 @@ namespace RISE
 		checkpoint.binary64CheckpointAuthority.digest_=storedDigest;return true;
 	}
 
+	// Packs checkpoint state into exact binary32 conservative/MAC arrays, verifies
+	// EOS temperature reconstruction, and computes the accepted-state payload digest.
 	bool BuildCheckpointAcceptedStatePayload(const MethaneRunCheckpoint& checkpoint,
 		FireProductionProjectionShape& shape,std::vector<float>& conservative,
 		std::array<std::vector<float>,3>& momentum,
@@ -342,6 +349,7 @@ namespace RISE
 			momentum,velocity,digest);
 	}
 
+	// Computes canonical little-endian SHA-256 over case, timeline, manifold observation, and fields.
 	bool CheckpointProductionBeginningSHA256(const MethaneRunCheckpoint& checkpoint,
 		std::string& digest)
 	{
@@ -447,6 +455,9 @@ namespace RISE
 	}
 
 
+	// ------------------------------------------------------------------ versioned checkpoint payload (v5..v13)
+
+	// Serializes schema prefix fields across checkpoint versions (base v5, migration v6, active-set v7-8).
 	bool WriteCheckpointSerializedPrefix(CheckpointWriter& writer,
 		const MethaneRunCheckpoint& checkpoint,const std::uint64_t version)
 	{
@@ -491,6 +502,8 @@ namespace RISE
 		return digest==0u?1u:digest;
 	}
 
+	// Validates timeline, precision/authority, and manifold lifecycle invariants, then
+	// writes the versioned checkpoint payload and v12+ state/checksum binding trailer.
 	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint,
 		const std::uint64_t version)
 	{
@@ -632,6 +645,9 @@ namespace RISE
 		return true;
 	}
 
+	// ------------------------------------------------------------------ durable sync and Merkle-sealed publication
+
+	// Flushes file contents (and parent directory on POSIX) to durable storage.
 	bool DurableSyncFileAndDirectory(const std::filesystem::path& path,std::string& error)
 	{
 #if defined(_WIN32)
@@ -752,6 +768,8 @@ namespace RISE
 		// prepared certificate as an explicit incomplete-publication marker.
 		if(published||unrenamed)std::filesystem::remove(prepared.string()+".payload-v2.json",cleanupError);
 	}
+	// Atomically publishes a staged payload and its .payload-v2.json Merkle certificate
+	// pair, enforcing immutability unless policy is MutableCurrentCheckpoint.
 	bool PublishPreparedPayload(const std::filesystem::path& prepared,
 		const std::filesystem::path& target,const std::string& caseRecordId,
 		const PayloadPublicationPolicy policy,std::string& error)
@@ -835,6 +853,10 @@ namespace RISE
 		return true;
 	}
 
+	// ------------------------------------------------------------------ checkpoint save and validated load
+
+	// Writes a 48-byte header ("RISEFIRECHKPT1", version, endian, length, FNV-1a)
+	// plus payload to a PID-scoped temp file, syncs, and atomically replaces target.
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
 		const std::uint64_t version)
@@ -929,6 +951,8 @@ namespace RISE
 		return true;
 	}
 
+	// Loads and validates a v5..v13 checkpoint: checks exact size, FNV-1a checksum,
+	// timeline/precision/authority invariants, manifold access, and optional v2 Merkle sidecar.
 	bool LoadMethaneRunCheckpoint(const std::filesystem::path& path,
 		MethaneRunCheckpoint& checkpoint,std::string& error)
 	{

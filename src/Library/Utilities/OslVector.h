@@ -1,56 +1,27 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  OslVector.h - Cycles' componentwise vec3 operations (min, max, abs,
-//    floor, fract, pow, clamp) and Vector Rotate node (Rodrigues
-//    axis-angle, X/Y/Z axis, and Euler XYZ with invert and center).
+//  OslVector.h - Ports of Blender Cycles' componentwise vec3 ops and
+//    Vector Rotate node (axis-angle, X/Y/Z axis, Euler XYZ).
 //
-//  A PORT, not new vector math.  It reproduces the CPU kernel of
-//  Blender's Cycles renderer -- intern/cycles/util/math_float3.h
-//  (min, max, fabs, floor, safe_pow, clamp, rotate_around_axis),
-//  intern/cycles/util/transform.h (euler_to_transform,
-//  transform_direction, transform_direction_transposed), and
-//  intern/cycles/kernel/svm/vector_rotate.h (svm_node_vector_rotate) --
-//  so that a Blender material translated into a RISE expression
-//  evaluates Vector Math componentwise ops and Vector Rotate the same
-//  way Cycles does.
+//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17):
+//    intern/cycles/util/math_float3.h, util/transform.h, and
+//    kernel/svm/vector_rotate.h.  Verified against
+//    tests/data/osl_vector_golden.inc by OslVectorTest.
 //
-//  Ported from Blender commit afc6d7a4 (5.2 alpha, 2026-03-17), as
-//  OslNoise.h, OslVoronoi.h, OslColor.h and OslMath.h are.  The golden
-//  values, tests/data/osl_vector_golden.inc, were dumped by
-//  tools/osl_golden/dump_vector_golden.sh, which runs Cycles' own
-//  float3 ops and svm_node_vector_rotate compiled three ways (SIMD with
-//  Blender's math flags, scalar with those flags, and strict IEEE);
-//  tests/OslVectorTest.cpp gates on the strict column.
+//  PRECISION.  Evaluates in strict IEEE 32-bit float in Cycles' scalar
+//  order of operations (no FMA, reassociation, or reciprocal math;
+//  OslVector.cpp is compiled with -fno-fast-math -ffp-contract=off or
+//  /fp:strict), double `Scalar` only at the interface.  Preserves
+//  Cycles' scalar reciprocal multiply (`axis * (1.0f / len)`), float4
+//  paired dot in `transform_direction`, and left-to-right float3 dot in
+//  `transform_direction_transposed`.  Libm calls (`sinf`, `cosf`, `powf`)
+//  may differ in the last bit across platforms (gated to 1e-6 off arm64).
 //
-//  PRECISION.  32-bit float in the exact scalar-path order of
-//  operations, strict IEEE (no FMA, no reassociation, no reciprocal
-//  substitution; OslVector.cpp is compiled that way by every build),
-//  double only at the interface.  In particular:
-//    * `axis / axis_length` multiplies by `1.0f / axis_length`
-//      (matching Cycles' scalar `operator/(float3, float)`).
-//    * `transform_direction` uses Cycles' scalar float4 dot pairing
-//      `(d.x*t.x.x + d.y*t.x.y) + (d.z*t.x.z + 0.0f*0.0f)`, whereas
-//      `transform_direction_transposed` uses float3 left-to-right dot
-//      `(d.x*tx + d.y*ty) + d.z*tz`.
-//    * Operations calling libm (`sinf`, `cosf`, `powf`) are bit-exact on
-//      Apple arm64 (where the golden table was dumped) and gated to 1e-6
-//      relative off Apple arm64.
-//    * Measured on Apple M1 Max (arm64, Apple clang 21) against all 186
-//      rows of tests/data/osl_vector_golden.inc: 186/186 bit-exact against
-//      the strict IEEE column (0 non-exact):
-//      - Componentwise ops (76 rows): 76/76 exact against all 3 builds.
-//      - VectorRotate (110 rows): vs Blender SIMD, 83 exact, 27 rounding
-//        (maxRel 2.384e-7); vs Blender scalar, 80 exact, 30 rounding
-//        (maxRel 5.635e-7), 0 sign0, 0 nonfin.
-//
-//  WHERE THE PORT DEPARTS FROM CYCLES.
-//    1. `VecPow` guards `safe_powf`'s float->int cast when `a < 0.0f`
-//       against NaN, +/-inf, or out-of-int32-range exponents (same guard
-//       as OslMath.h).
-//    2. Out-of-range `type` values in `VectorRotate` behave like
-//       Cycles' `default:` case (axis-angle around `axis`); the VM
-//       builtin validates `type` in `0..4` and `invert` in `0..1` at
-//       compile time, and maps non-finite output channels to 0.
+//  DEPARTURES.  (1) `VecPow` guards `safe_powf`'s float->int cast when
+//  `a < 0.0f` against NaN, +/-inf, or out-of-int32 exponents (same as
+//  OslMath.h).  (2) Out-of-range `type` in `VectorRotate` falls through
+//  to axis-angle (Cycles' default); VM builtins validate `type`/`invert`
+//  and map non-finite output channels to 0.
 //
 //  LICENCES.  RISE's own licence is BSD-style (LICENSE.TXT).  The ported
 //  code carries its sources' licences, reproduced here as they require:

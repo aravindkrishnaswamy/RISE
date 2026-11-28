@@ -1,11 +1,24 @@
-// r211: resident r78 evidence adapter. Included inside the fire run namespace by
-// FireRunDriver.h, after the canonical-record helpers. No solver math.
+//////////////////////////////////////////////////////////////////////
+//
+//  fire_resident_resume_v2.h - Resident r78 v2 resume-equivalence
+//  certificate reader and executed-overlap CSV verifier (r211).
+//
+//  Included inside namespace RISE::FireRun by FireRunDriver.h after
+//  canonical-record helpers. Contains no solver math.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 inline bool ResidentResumeSHA(const std::string& value)
 {
 	return value.size()==64u&&std::all_of(value.begin(),value.end(),[](char c){
 		return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
 }
 
+// Authenticated execution trace binding build/executable/CSV/log SHA-256 digests
+// with per-step bit-exact times, dts, Merkle payload roots, and kernel-set hashes.
 struct ResidentResumeTraceV2
 {
 	std::string build,executable,executablePath,csvPath,csvSHA,logPath,logSHA;
@@ -13,6 +26,8 @@ struct ResidentResumeTraceV2
 	std::vector<std::string> inputs,outputs,kernels;
 };
 
+// Decodes a v2 trace map, verifies on-disk binary/CSV/log digests (plus pinned
+// historical r214/r217 transcripts), checks log markers, and validates >=8 CSV rows.
 inline bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 	ResidentResumeTraceV2& trace,const std::uint64_t firstStep,
 	const std::uint64_t beginningTimeBits,const std::string& checkpointSHA,
@@ -170,6 +185,8 @@ inline bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 	return true;
 }
 
+// Parses fire-resume-equivalence-certificate-v2 and enforces distinct old/new
+// builds/executables with bit-identical times, dts, payload roots, and kernels.
 inline bool ParseResidentResumeCertificateV2(const RISECBOR64::Value& payload,
 	ResumeEquivalenceCertificate& certificate,std::string& error)
 {

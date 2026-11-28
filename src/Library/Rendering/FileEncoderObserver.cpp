@@ -1,8 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  FileEncoderObserver.cpp - Implementation.  Each callback writes
-//  a fresh artifact/sidecar transaction while preserving the legacy
-//  per-frame filename pattern from FileRasterizerOutput.
+//  FileEncoderObserver.cpp - Frame artifact encoding, fail-closed
+//    fire-output provenance transactions (CBOR sidecars + EXR
+//    riseFireProv_* attributes), EXR structural verification, and
+//    movie frame-sequence encoding descriptors.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -40,6 +44,11 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+//////////////////////////////////////////////////////////////////////
+// Filename Pattern & Movie Encoding Schema-v1 Descriptors
+//////////////////////////////////////////////////////////////////////
+
+// Formats "<pattern><suffix>.<ext>" (single) or zero-padded 4-digit frame suffix.
 std::string RISE::Implementation::BuildFrameArtifactFilename(
 	const std::string& pattern,
 	const std::string& suffix,
@@ -53,6 +62,8 @@ std::string RISE::Implementation::BuildFrameArtifactFilename(
 	return pattern+suffix+frameText+"."+extension;
 }
 
+// Populates the fixed schema-v1 encoding contract for HDR BT.2020/PQ movie
+// codecs (ProRes 4444, HEVC Main10) and the +6 EV ACES sRGB preview GIF.
 bool RISE::Implementation::DescribeFireFrameSequenceEncoding(
 	const FireFrameSequenceEncoding encoding,
 	const unsigned int framesPerSecond,
@@ -357,6 +368,8 @@ namespace
 		return escaped;
 	}
 
+	// Serializes Canonical CBOR Values as compact deterministic JSON (sorted map
+	// keys, hex ByteString, round-trip IEEE binary64) for EXR string attributes.
 	bool CanonicalJSON(
 		const RISECBOR64::Value& value,
 		std::string& json,
@@ -458,6 +471,8 @@ namespace
 		return "unknown";
 	}
 
+	// A fire primary artifact must be raw, lossless, linear FP32 EXR with an
+	// identity view transform and no denoising; all other outputs are derivatives.
 	bool IsPrimaryArtifact( const IFrameEncoder& encoder, const EncodeOpts& opts )
 	{
 		return encoder.FormatName() == "EXR" && opts.bpp >= 32u &&
@@ -514,6 +529,8 @@ namespace
 		return std::vector<std::string>(reasons.begin(),reasons.end());
 	}
 
+	// Validates authored encoder options against the closed output schema,
+	// rejecting display transforms on HDR formats and normalizing format-fixed bpp.
 	bool ResolveEffectiveEncoderOptions(
 		const IFrameEncoder& encoder,
 		const EncodeOpts& requested,
@@ -632,6 +649,9 @@ namespace
 		return true;
 	}
 
+	// Appends resolved output settings to resolvedRenderConfigCoreV1, hashes the
+	// canonical CBOR payload into provenance_id, encodes the sidecar envelope,
+	// and builds matching riseFireProv_* canonical-JSON EXR attributes.
 	bool BuildFireProvenance(
 		const FrameStore::Metadata& metadata,
 		const IFrameEncoder& encoder,
@@ -817,6 +837,9 @@ namespace
 		return true;
 	}
 
+	// Fail-closed schema-v1 validator for decoded fire provenance payloads:
+	// checks exact key sets, active media variants, SHA-256 bindings, EXR claims,
+	// and primary linkage when artifact_fidelity is "display_derivative".
 	bool ValidateFireProvenancePayload(
 		const RISECBOR64::Value& payload,
 		std::string& error )
@@ -1210,6 +1233,8 @@ namespace
 		return true;
 	}
 
+	// Builds a frame-sequence movie derivative provenance sidecar linking an
+	// encoded movie's SHA-256 to its contiguous sequence of per-frame primaries.
 	bool BuildFireFrameSequenceProvenance(
 		const FrameStoreOutput::Metadata& metadata,
 		const FireFrameSequenceEncoding encoding,
@@ -1506,6 +1531,8 @@ namespace
 		return true;
 	}
 
+	// Parses single-part scanline OpenEXR binary headers directly (without SDK
+	// leniency) to extract channel specs, windows, chromaticities, and fire attributes.
 	bool ReadEXRHeaderFacts(
 		const RISECBOR64::Bytes& encoded,
 		EXRHeaderFacts& facts,
@@ -1699,6 +1726,8 @@ namespace
 		return false;
 	}
 
+	// Verifies contiguous increasing-Y scanline chunk offset table and exact
+	// byte coverage from header end to EOF (no trailing or overlapping bytes).
 	bool ValidateEXRScanlineStructure(
 		const RISECBOR64::Bytes& encoded,
 		const EXRHeaderFacts& facts,
@@ -1840,6 +1869,8 @@ namespace
 		return true;
 	}
 
+	// Cross-checks parsed OpenEXR header facts (channels, compression, line order,
+	// chromaticities, windows, attributes) against the provenance payload's claims.
 	bool ValidateEXRHeaderAgainstPayload(
 		const EXRHeaderFacts& facts,
 		const RISECBOR64::Value& payload,
@@ -1984,6 +2015,13 @@ void RISE::Implementation::SetFileTransactionContentionHookForTests(
 	gFileTransactionContentionHook.store(hook,std::memory_order_release);
 }
 
+//////////////////////////////////////////////////////////////////////
+// EXR Provenance Stripping, Verification & Atomic File Transactions
+//////////////////////////////////////////////////////////////////////
+
+// Removes riseFireProv_* attributes from an OpenEXR byte stream, clears
+// LONG_NAMES_FLAG if no >31-byte names remain, and shifts chunk offsets by the
+// header size delta so artifact_sha256 hashes the exact unattributed EXR.
 bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 	const std::vector<unsigned char>& encoded,
 	std::vector<unsigned char>& stripped,
@@ -2066,6 +2104,8 @@ bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 	return true;
 }
 
+// End-to-end verifier binding canonical CBOR sidecar, payload SHA-256, EXR
+// header/chunk/pixel decode, stripped EXR SHA-256, and embedded riseFireProv_* attrs.
 bool RISE::Implementation::VerifyFireProvenanceEXR(
 	const std::vector<unsigned char>& encodedArtifact,
 	const std::vector<unsigned char>& encodedSidecar,
@@ -2124,6 +2164,8 @@ bool RISE::Implementation::VerifyFireProvenanceEXR(
 	return true;
 }
 
+// Validates a staged movie via the caller's decoder hook, ensures bytes did not
+// mutate during validation, and atomically swaps movie + .provenance.cbor with rollback.
 bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	const FrameStoreOutput::Metadata& metadata,
 	const FireFrameSequenceEncoding encoding,
@@ -2260,6 +2302,9 @@ bool RISE::Implementation::PublishUnprovenancedFileTransaction(
 	return true;
 }
 
+// Serialized artifact+sidecar publication: encodes base file, computes fire
+// provenance if active (two-pass embed+strip+verify for EXR), commits both files
+// via backup-and-swap, and records finalized primary linkage on the FrameStore.
 bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	FrameStore& store,
 	IFrameEncoder& encoder,
@@ -2408,6 +2453,10 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	}
 	return true;
 }
+
+//////////////////////////////////////////////////////////////////////
+// FileEncoderObserver
+//////////////////////////////////////////////////////////////////////
 
 FileEncoderObserver::FileEncoderObserver(
 	FrameStore*         store,

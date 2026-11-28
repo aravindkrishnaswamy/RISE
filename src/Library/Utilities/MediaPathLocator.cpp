@@ -5,7 +5,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 22, 2005
 //  Tabs: 4
-//  Comments:  
+//  Comments: Resolves relative media/asset paths against an ordered list
+//    of search roots (each normalized with a trailing separator).
+//    Not internally mutex-protected; configure paths before concurrent renders.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -30,6 +32,8 @@ MediaPathLocator::~MediaPathLocator()
 
 namespace
 {
+	// Normalizes a search directory to always end with a path separator
+	// so prefix concatenation and duplicate detection are consistent.
 	std::string SearchRoot( const char* path )
 	{
 		std::string root = path ? path : "";
@@ -74,6 +78,8 @@ void MediaPathLocator::ClearAllPaths( )
 	paths.clear();
 }
 
+// Checks `file` as-is first (CWD/absolute), then prefixes registered roots
+// in order; logs an error and returns `file` unchanged if no match exists.
 String MediaPathLocator::Find( const String& file )
 {
 	if( FileExists( file ) ) {

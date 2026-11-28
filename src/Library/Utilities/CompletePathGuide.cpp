@@ -1,7 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  CompletePathGuide.cpp - Experimental recorder for BDPT complete
-//  path statistics.
+//    path statistics.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -15,8 +19,10 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	// 4 bits per axis (0..15), clamped inside [boundsMin, boundsMax].
 	static const unsigned int kCompletePathGuideGridResolution = 16;
 
+	// Rec.709 luminance used as scalar path energy.
 	inline Scalar CompletePathEnergy( const RISEPel& contribution )
 	{
 		return contribution[0] * Scalar( 0.2126 ) +
@@ -90,6 +96,8 @@ uint64_t CompletePathGuide::MakeBucketKey(
 		lightZ = QuantizePositionComponent( pLightPosition->z, boundsMin.z, boundsMax.z );
 	}
 
+	// Bit layout (33 bits): [0..3] s, [4..7] t, [8] hitsEmitter,
+	// [9..20] eye (x,y,z) 4b each, [21..32] light (x,y,z) 4b each (0 if null).
 	uint64_t key = 0;
 	key |= (static_cast<uint64_t>( s ) & 0x0f);
 	key |= (static_cast<uint64_t>( t ) & 0x0f) << 4;
@@ -127,6 +135,8 @@ void CompletePathGuide::AddSample(
 	bool needsSplat
 	)
 {
+	// Unlocked fast reject before taking mutex; light-tracing splats (t==1)
+	// are excluded because they do not map to an eye-side connection bucket.
 	if( !collecting || needsSplat ) {
 		return;
 	}

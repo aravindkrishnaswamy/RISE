@@ -7,7 +7,11 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 20, 2002
 //  Tabs: 4
-//  Comments: 
+//  Comments: Straight (non-premultiplied) alpha Porter-Duff "over"
+//    compositing of cTop onto cBottom (alpha in [0, 1]).
+//    Caveat: in the partial-alpha branch, cDest.a is overwritten before
+//    reading cTop.a, so aliasing cDest == cTop (as PerformOperation does)
+//    uses the combined alpha when weighting cTop.base.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -58,6 +62,7 @@ namespace RISE
 			return ret;
 		}
 
+		// Composites `dest` (as top) over `src` (as bottom) in-place into `dest`.
 		bool PerformOperation( RISEColor& dest, const RISEColor& src ) const
 		{
 			// Just pass it off the static function

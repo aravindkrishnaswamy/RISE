@@ -1,8 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ClothContact.cpp - Barrier contact, CCD and friction for the cloth
-//  solver (formulas: ClothContact.h)
-//
+//  ClothContact.cpp - IPC C2 log-barrier contact, additive & exact
+//  cubic CCD, edge-edge mollifier, spatial hashing, and lagged
+//  smoothed-Coulomb friction for cloth.shell (formulas: ClothContact.h).
+//  Conventions: SI units; contact gap z = d - xi active on (0, dhat).
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -298,6 +300,9 @@ double Mollifier(const V3* xs, double eps, double* g, double* h)
 	return m;
 }
 
+// ------------------------------------------------------------------ spatial hash & CCD helpers
+
+// Packs 3 signed 21-bit cell coordinates into a 63-bit spatial hash key.
 inline std::uint64_t CellKey(std::int64_t i, std::int64_t j, std::int64_t k)
 {
 	const std::uint64_t m = (std::uint64_t(1) << 21) - 1;
@@ -457,6 +462,7 @@ int CubicRoots(const double* k, double* roots)
 
 // ------------------------------------------------------------------ public kernels
 
+// IPC C2-continuous clamped log barrier b(z) = -(z - dhat)^2 ln(z / dhat) on z in (0, dhat).
 double Barrier(double z, double dhat, double* first, double* second)
 {
 	if (!(z < dhat)) { if (first) *first = 0; if (second) *second = 0; return 0; }
@@ -482,6 +488,8 @@ double EdgeEdgeDistance2(const V3& a0, const V3& a1, const V3& b0, const V3& b1,
 	return piece.d2;
 }
 
+// Conservative advancement CCD (Li et al. 2021) for point-triangle (kind 0) or edge-edge (kind 1),
+// subtracting mean displacement to tighten the Lipschitz velocity bound lp.
 double AdditiveCCD(int kind, const V3* x, const V3* dx, double xi, double s)
 {
 	V3 p[4], xs[4];
@@ -508,6 +516,8 @@ double AdditiveCCD(int kind, const V3* x, const V3* dx, double xi, double s)
 	return t;
 }
 
+// Exact crossing test on [0, 1]: solves the coplanarity cubic (and its critical points for
+// grazing touches) and checks zero-distance contact at each root.
 bool CrossesDuringStep(int kind, const V3* x0, const V3* x1)
 {
 	V3 d[4];
@@ -555,6 +565,8 @@ bool CrossesDuringStep(int kind, const V3* x0, const V3* x1)
 
 // ------------------------------------------------------------------ BarrierContact
 
+// Validates barrier parameters, precomputes primitive area weights and rest squared edge lengths
+// (for edge-edge mollifiers), flattens mesh colliders, and enforces self-collision reach < h/2.
 bool BarrierContact::Initialize(const Sheet& sheet, const ModelConfig& config, std::string& error)
 {
 	*this = BarrierContact();
@@ -644,6 +656,8 @@ inline V3 ApplyPose(const double* rc, const V3& x)
 }
 }
 
+// Evaluates mesh collider positions and velocities at time t (finite-differenced from t0 when t0 < t)
+// and rebuilds the collider triangle, edge, and vertex spatial hash grids.
 void BarrierContact::Place(double t, ContactFrame& f, double t0) const
 {
 	f.time = t;
@@ -721,6 +735,8 @@ void BarrierContact::PlaceGrid(ContactFrame& f) const
 	Finish(f.gridTriangles); Finish(f.gridEdges); Finish(f.gridVertices);
 }
 
+// Broad-phase swept-AABB candidate culling (inflated by xi + activation + inflate) across
+// analytic shapes, collider meshes, and cloth self-collision pairs.
 void BarrierContact::Candidates(ContactFrame& f, const std::vector<double>& x, const std::vector<double>* dx,
 	double inflate) const
 {
@@ -920,6 +936,8 @@ void TangentBasis(const V3& n, double* t)
 }
 }
 
+// Snapshots active contact normals, orthonormal tangent bases, and barrier normal forces at the
+// start of a lagged-friction outer iteration so the friction potential stays convex within Newton.
 void BarrierContact::LagFriction(ContactFrame& f, const std::vector<double>& x, double scale, const std::vector<double>& xTilde) const
 {
 	f.friction.clear();
@@ -968,6 +986,8 @@ void BarrierContact::LagFriction(ContactFrame& f, const std::vector<double>& x, 
 	}
 }
 
+// Accumulates barrier (with edge-edge mollifier) and lagged smoothed-Coulomb friction energy,
+// gradients, and optional PSD-projected Hessian blocks; returns +inf on any penetration (z <= 0).
 double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>& x, std::vector<double>* gradient,
 	BlockMatrix* hessian, bool project, const std::vector<char>& fixed) const
 {
@@ -1099,6 +1119,8 @@ double BarrierContact::Evaluate(const ContactFrame& f, const std::vector<double>
 	return energy;
 }
 
+// Computes the largest feasible line-search step alpha in (0, 1] across all candidate pairs
+// via ShapeCCD and AdditiveCCD so no pair penetrates thickness xi.
 double BarrierContact::MaxStep(const ContactFrame& f, const std::vector<double>& x, const std::vector<double>& dx,
 	ContactStats* stats) const
 {
@@ -1181,6 +1203,7 @@ V3 BarrierContact::TotalForce(const ContactFrame& f, const std::vector<double>& 
 	return total;
 }
 
+// Post-step exact CCD certification verifying zero-thickness (xi = 0) non-penetration from x0 to x1.
 bool BarrierContact::IntersectionFree(ContactFrame& f, const std::vector<double>& x0, const std::vector<double>& x1,
 	std::string& detail, bool skipMoving, const ContactFrame* f1) const
 {
@@ -1242,6 +1265,7 @@ double BarrierContact::ColliderTravel(double t0, double t1, const std::vector<co
 	return travel;
 }
 
+// Assigns each cloth vertex within `radius` of a moving mesh collider to its nearest owning mesh.
 void BarrierContact::Owners(const ContactFrame& f, const std::vector<double>& x, double radius, std::vector<int>& owner) const
 {
 	owner.assign(vertices_, -1);
@@ -1299,6 +1323,7 @@ double Advancement(Gap&& gap, double L, double s)
 }
 }
 
+// Conservative-advancement step bound along curved kinematic/mesh motions over [stage.t0, stage.t1].
 double BarrierContact::KinematicStep(const ContactFrame& f, const std::vector<double>& x, const KinematicStage& stage,
 	ContactPair* blocking) const
 {

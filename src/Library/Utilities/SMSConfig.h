@@ -1,52 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  SMSConfig.h - Parser-facing configuration for Specular Manifold
-//    Sampling (SMS).
+//    Sampling (Zeltner et al. 2020).
 //
-//    SMS (Zeltner et al. 2020, "Specular Manifold Sampling for Rendering
-//    High-Frequency Caustics and Glints") seeds a Newton solver on a
-//    sequence of specular vertices to connect a shading point to a
-//    light through a specular chain that ordinary path/NEE sampling
-//    almost never hits.  It is a targeted integrator add-on, not a
-//    free upgrade: on scenes without the hard caustics or glints it
-//    is designed to resolve, SMS only adds cost and a second source
-//    of variance.
-//
-//    This struct bundles the SMS knobs the scene parser exposes for
-//    PT, BDPT, VCM and their spectral variants.  It is a narrow view
-//    of the richer `ManifoldSolverConfig` (see ManifoldSolver.h);
-//    Job.cpp translates between them at the boundary.
-//
-//    Default-constructed state is "SMS off".  Users opt in per-scene
-//    with `sms_enabled true`.  When enabled, the remaining defaults
-//    are a safe production preset:
-//      - `biased = true` — skip the Bernoulli unbiased PDF estimator.
-//        Biased mode is dramatically faster and the bias is usually
-//        invisible on production caustics.  `biased = false` is for
-//        convergence studies and ground-truth references.
-//      - `maxIterations = 20` — Newton iteration cap per solve.
-//        Converges well under 20 on well-conditioned chains; anything
-//        higher is usually a symptom of a seed on a bad basin, not a
-//        threshold worth raising.
-//      - `threshold = 1e-5` — Newton ||C|| convergence threshold.
-//        Tight enough that the reconstructed chain is visually
-//        indistinguishable from the true manifold; loose enough that
-//        typical smooth dielectrics converge in ~5 iterations.
-//      - `maxChainDepth = 30` — hard stop on specular vertex count.
-//        SMS work is exponential in chain length, so this is both a
-//        safety rail and a performance cap.
-//      - `bernoulliTrials = 100` — only used when `biased == false`.
-//        Unused otherwise; keep the default to make opt-in to
-//        unbiased mode predictable.
-//      - `multiTrials = 1` — independent Newton solves per eval.
-//        Value 1 reproduces the single-seed Snell-traced solve.
-//        Increase to uncover caustic paths on bumpy / displaced
-//        surfaces where seeds land in different basins of attraction.
-//      - `photonCount = 0` — photon-aided seeding off.  Setting > 0
-//        builds an SMSPhotonMap at scene-prep time whose photon
-//        landing points feed additional Newton seeds; enables SMS on
-//        caustics the deterministic Snell seed misses entirely, at
-//        the cost of a photon pass and per-query kd-tree lookups.
+//  Narrow scene-language view translated to ManifoldSolverConfig in
+//  Job.cpp for PT, BDPT, VCM and their spectral variants.  Off by
+//  default (`enabled = false`); when enabled via `sms_enabled true`,
+//  defaults to biased single-seed Snell mode (20 Newton iters,
+//  threshold 1e-5, maxChainDepth 30).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 22, 2026
@@ -63,33 +24,28 @@
 
 namespace RISE
 {
-	/// Parser-facing seeding-mode selector.  Mirrors
-	/// `Implementation::ManifoldSolverConfig::SeedingMode` so the
-	/// scene-language layer carries the same vocabulary as the solver.
-	/// Adding a new mode (e.g. PMS-only, Specular-Polynomials,
-	/// MPG-learned) extends this enum, and the parser's string→enum
-	/// table in `ChunkParserRegistry.cpp` maps the new value cleanly.
+	/// Parser-facing mirror of Implementation::ManifoldSolverConfig::SeedingMode.
 	enum class SMSSeedingMode {
-		Snell   = 0,   ///< Legacy: Snell-traced seed shading-point→light.
+		Snell   = 0,   ///< Legacy: Snell-traced seed shading-point->light.
 		Uniform = 1    ///< Mitsuba-faithful: uniform-area on each caustic caster.
 	};
 
 	struct SMSConfig
 	{
-		bool			enabled;			///< Master switch; default false (SMS off unless the scene opts in)
-		unsigned int	maxIterations;		///< Newton iteration limit per solve (default 20)
+		bool			enabled;			///< Master switch (default false; opt-in via `sms_enabled true`)
+		unsigned int	maxIterations;		///< Newton iteration cap per solve (default 20)
 		Scalar			threshold;			///< Newton ||C|| convergence threshold (default 1e-5)
-		unsigned int	maxChainDepth;		///< Maximum specular vertices in a chain (default 30)
-		bool			biased;				///< Skip Bernoulli unbiased PDF estimation (default true — biased mode, dramatically faster and usually visually identical on production caustics)
-		unsigned int	bernoulliTrials;	///< Max trials for unbiased PDF estimation (default 100, ignored when biased == true)
-		unsigned int	multiTrials;		///< Independent Newton solves per evaluation (Zeltner 2020); default 1 = single-solve Snell seed.  >1 uncovers separate basins on bumpy surfaces at proportional cost.
-		unsigned int	photonCount;		///< Photon-aided seed budget; default 0 = off.  >0 builds an SMSPhotonMap for seeds on caustics the deterministic seed misses.
-		unsigned int	maxPhotonSeedsPerShadingPoint;		///< Cap on photon seeds run through Newton at each shading point.  0 = unlimited.  Default 16 keeps per-pixel cost proportional to multiTrials rather than to kd-tree photon density (Weisstein 2024 PMS uses 8–32).
-		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
-		bool			useLevenbergMarquardt;	///< Levenberg-Marquardt damping in `ManifoldSolver::NewtonSolve` (default FALSE — opt-in).  Damps J's diagonal by `λ × mean(|J_ii|)` between iterations; λ shrinks on accepted line-search steps and grows on rejected ones.  Recovers ~5pp Newton-fail rate on heavy-displacement meshes vs pure Newton, at the cost of ~50-100% more solver work per shading point on those scenes — turn on only when you've confirmed the scene benefits.  Negligible cost on smooth geometry / scenes without SMS.  See `docs/SMS_LEVENBERG_MARQUARDT.md`.
-		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS.md`.
-		unsigned int	targetBounces;		///< Mitsuba `m_config.bounces` analogue: REQUIRED chain length.  When > 0, the seed-builder traces EXACTLY this many specular hits and rejects seeds that don't reach (or that overshoot) the target.  Default 0 = "no target": snell mode discovers chain length via the emitter-projection cap, uniform mode caps at `maxChainDepth` only.  Set to the natural caustic K for the scene (typically 2 for a glass shell or interior-light scene).  Active in BOTH snell and uniform modes.  Recommended for `sms_seeding "uniform"`, where without it seed-chain length is variable and produces wildly different topology than the natural caustic.
-		bool			extended;			///< Extended SMS (`sms_extended`, default false): forwards to `ManifoldSolverConfig::extendedMode` -- reference estimators (A for point/spot lights, B + PT ownership partition for area emitters, per-lane HWSS).  Ignores `biased`/`seedingMode`; inert on composite scenes.  See docs/SMS_EXTENDED_DESIGN.md "Using extended SMS".
+		unsigned int	maxChainDepth;		///< Hard cap on specular vertices in a chain (default 30)
+		bool			biased;				///< Skip Bernoulli unbiased PDF estimator (default true; false for unbiased reference)
+		unsigned int	bernoulliTrials;	///< Max Bernoulli trials when biased == false (default 100)
+		unsigned int	multiTrials;		///< Independent Newton solves per eval (default 1; >1 explores multiple basins on bumpy surfaces)
+		unsigned int	photonCount;		///< Photon-aided seed count (default 0 = off; >0 builds SMSPhotonMap)
+		unsigned int	maxPhotonSeedsPerShadingPoint;		///< Per-shading-point photon seed cap (0 = unlimited; default 16)
+		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5; default false, opt-in via `sms_two_stage`). See docs/SMS_TWO_STAGE_SOLVER.md.
+		bool			useLevenbergMarquardt;	///< LM diagonal damping in NewtonSolve (default false; opt-in for heavy-displacement meshes). See docs/SMS_LEVENBERG_MARQUARDT.md.
+		SMSSeedingMode	seedingMode;		///< Seeding strategy (default Snell; Uniform required for geometric Bernoulli 1/p). See docs/SMS.md.
+		unsigned int	targetBounces;		///< Required specular chain length (default 0 = unrestricted; recommended for Uniform seeding, e.g. 2 for a glass shell)
+		bool			extended;			///< Extended SMS (`sms_extended`, default false; ignores biased/seedingMode; inert on composite scenes). See docs/SMS_EXTENDED_DESIGN.md.
 
 		SMSConfig() :
 		  enabled( false ),

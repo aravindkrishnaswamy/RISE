@@ -1,30 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  PSSMLTSampler.cpp - Implementation of the Primary Sample Space
-//    MLT sampler.  See PSSMLTSampler.h for algorithm overview and
-//    references.
-//
-//  THOUGHT PROCESS:
-//    The core challenge is maintaining a bijection between random
-//    number sequences and paths.  BDPT consumes N random numbers
-//    to build a path; we store these as the primary sample vector X.
-//    To propose a new path, we mutate X and feed it back to BDPT.
-//
-//    Large steps (probability ~0.3) replace the entire vector with
-//    fresh randoms -- this prevents the chain from getting stuck
-//    in a local mode of the path space.
-//
-//    Small steps perturb each element by a small amount using
-//    Kelemen's exponential distribution.  The distribution is
-//    chosen so that the mutation is symmetric (satisfies detailed
-//    balance without a Jacobian correction), and concentrates
-//    most perturbations near the current value while allowing
-//    occasional larger jumps.
-//
-//    Lazy initialization means we never need to know in advance
-//    how many random numbers BDPT will consume.  If BDPT asks for
-//    sample index i and we only have i-1 elements, we simply
-//    append a fresh random value.
+//    MLT sampler.  See PSSMLTSampler.h for overview and invariants.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -88,19 +65,8 @@ PSSMLTSampler::~PSSMLTSampler()
 {
 }
 
-//////////////////////////////////////////////////////////////////////
-// Mutate - Apply exponential perturbation to a single sample value.
-//
-// The mutation distribution is log-uniform between s1 and s2:
-//   delta = s2 * exp(-logRatio * u),   u ~ Uniform[0,1)
-// This gives equal probability mass per decade of perturbation size,
-// producing a mix of tiny and moderate mutations.  The sign is
-// randomized, and the result is wrapped to [0,1).
-//
-// This mutation is symmetric: P(x->x') = P(x'->x), which means
-// the Metropolis-Hastings acceptance ratio simplifies to just
-// f(x')/f(x) -- no proposal ratio correction needed.
-//////////////////////////////////////////////////////////////////////
+// Symmetric Kelemen log-uniform perturbation in [s1, s2], wrapped to [0,1).
+// Symmetry (P(x->x') == P(x'->x)) keeps the MH proposal ratio equal to 1.
 
 Scalar PSSMLTSampler::Mutate( const Scalar value )
 {
@@ -136,51 +102,13 @@ Scalar PSSMLTSampler::Mutate( const Scalar value )
 	return result;
 }
 
-//////////////////////////////////////////////////////////////////////
-// Get1D - Return the next sample from the primary sample vector.
-//
-// Three cases:
-// 1. Index beyond current vector size: lazily append a fresh random
-//    value (this happens during the first evaluation of any path
-//    that consumes more samples than we've seen before).
-// 2. Large step: replace with a fresh random (backup the old value).
-// 3. Small step: apply exponential perturbation (backup the old value).
-//
-// In all cases, the touched lane is recorded in modifiedIndices so
-// that Reject() can efficiently roll back only the changed entries.
-//
-// STORAGE (DL-08 follow-up, 2026-09-17): two tiers -- see the class
-// comment above `X`/`XExtra` in PSSMLTSampler.h for the full design
-// rationale (why a single flat vector's lazy-grow loop is
-// catastrophic once a reserved stream sits far above the ordinary
-// ones, and why the two-tier split reproduces the pre-DL-08 base
-// commit's draws bit-for-bit for streamIndex < kLegacyNumStreams).
-//////////////////////////////////////////////////////////////////////
+// Lazily grows/mutates the next primary sample in two-tier storage (X / XExtra;
+// see PSSMLTSampler.h) and logs the lane in modifiedIndices for Reject().
 
 Scalar PSSMLTSampler::Get1D()
 {
-	// Runtime range check -- deliberately NOT a debug-only `assert`.
-	// `assert` compiles to nothing when NDEBUG is defined, and NDEBUG's
-	// definition is platform/config-specific: Config.OSX and
-	// Config.Linux (build/make/rise/) never define it, so an `assert`
-	// here would already run in EVERY mac/Linux configuration including
-	// Deployment/Opto; only VS2022's Release|x64 config
-	// (build/VS2022/Library/Library.vcxproj) defines NDEBUG, so an
-	// `assert` guard would silently vanish specifically -- and only --
-	// on Windows Release, the one configuration where a runaway
-	// streamIndex would otherwise go uncaught.  This check costs one
-	// branch per Get1D() call (negligible next to the
-	// RandomNumberGenerator draw and PrimarySample bookkeeping this
-	// function already does), so there is no performance reason to gate
-	// it on a build config at all -- it fires identically everywhere.
-	//
-	// Note this is now a SANITY bound, not a collision-avoidance
-	// requirement: with the two-tier storage below, no two distinct
-	// stream numbers can ever alias, at any magnitude, so this only
-	// exists to catch a programming error (a negative or absurdly large
-	// streamIndex, e.g. from an uninitialized or overflowed depth
-	// counter) loudly instead of silently building an unbounded
-	// `XExtra` entry.
+	// Unconditional runtime sanity bound (not debug-only assert, which vanishes
+	// under Windows Release NDEBUG) to catch runaway/uninitialized stream IDs.
 	if( streamIndex < 0 || (streamIndex >= kNumStreams && streamIndex != 3072) )
 	{
 		fprintf( stderr,
@@ -197,10 +125,7 @@ Scalar PSSMLTSampler::Get1D()
 
 	if( streamIndex < kLegacyNumStreams )
 	{
-		// Legacy tier: the ORIGINAL flat vector, row width pinned to
-		// kLegacyNumStreams (49) forever -- bit-identical to the
-		// pre-DL-08 base commit for any chain that never touches a
-		// stream >= kLegacyNumStreams.
+		// Legacy flat tier (row width fixed at kLegacyNumStreams = 49).
 		const unsigned int idx = streamIndex + kLegacyNumStreams * sampleIndex;
 
 		while( idx >= X.size() )
@@ -218,11 +143,7 @@ Scalar PSSMLTSampler::Get1D()
 	}
 	else
 	{
-		// Extra tier: one independently-grown vector per stream,
-		// found (or created) by FindOrCreateExtraStream()'s linear
-		// scan over XExtra.  Touching this stream for N samples costs
-		// exactly N PrimarySample slots -- no multiplicative blow-up,
-		// regardless of how large streamIndex is.
+		// Extra tier: independent vector per stream (O(drawn) memory).
 		std::vector<PrimarySample>& streamVec = FindOrCreateExtraStream( streamIndex );
 
 		while( sampleIndex >= streamVec.size() )
@@ -294,15 +215,7 @@ void PSSMLTSampler::StartStream( int stream )
 	sampleIndex = 0;
 }
 
-//////////////////////////////////////////////////////////////////////
-// StartIteration - Begin a new mutation proposal.
-//
-// Decides whether this will be a large or small step based on
-// largeStepProb.  Resets the consumption index so BDPT starts
-// reading from position 0 again.  Clears the modification
-// tracking list.
-//////////////////////////////////////////////////////////////////////
-
+// Begin a new proposal: pick large vs small step and reset stream/indices.
 void PSSMLTSampler::StartIteration()
 {
 	alphaIndex = 0;
@@ -312,15 +225,7 @@ void PSSMLTSampler::StartIteration()
 	modifiedIndices.clear();
 }
 
-//////////////////////////////////////////////////////////////////////
-// Accept - Commit the current proposal as the new Markov chain state.
-//
-// The proposed values are already stored in X[i].value; we simply
-// advance the iteration counter and, if this was a large step,
-// record it as the most recent large step (for lazy catch-up in
-// future small steps).
-//////////////////////////////////////////////////////////////////////
-
+// Commit current proposal and advance iteration counter.
 void PSSMLTSampler::Accept()
 {
 	if( isLargeStep ) {
@@ -330,15 +235,7 @@ void PSSMLTSampler::Accept()
 	modifiedIndices.clear();
 }
 
-//////////////////////////////////////////////////////////////////////
-// Reject - Revert all mutations made during the current proposal.
-//
-// Iterates through modifiedIndices and restores each sample's
-// value and lastModIteration from the backup.  This is O(k) where
-// k is the number of samples consumed by one BDPT evaluation,
-// typically 50-200.
-//////////////////////////////////////////////////////////////////////
-
+// Roll back modified lanes from backups in O(modified) time.
 void PSSMLTSampler::Reject()
 {
 	for( unsigned int i = 0; i < modifiedIndices.size(); i++ )

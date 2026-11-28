@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LiquidLevelSet.cpp - see LiquidLevelSet.h
-//
+//  LiquidLevelSet.cpp - HJ-WENO5 level-set advection, TVD-RK3
+//  reinitialization, curvature/volume tools, and Enright marker particles.
+//  Conventions: phi < 0 liquid, phi >= 0 air; cell-centred uniform grid h;
+//  thin axes (n[a] == 1) carry zero derivative.
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -92,6 +95,9 @@ bool InDomain(const Grid& g, const V3& x)
 }
 } // namespace
 
+// ------------------------------------------------------------------ WENO5 & barrier stencils
+
+// 5th-order Jiang-Shu HJ-WENO derivative reconstruction from 5 finite-difference slopes.
 double Weno5(double v1, double v2, double v3, double v4, double v5)
 {
 	const double s1 = 13.0/12.0*Sq(v1 - 2*v2 + v3) + 0.25*Sq(v1 - 4*v2 + 3*v3);
@@ -125,6 +131,8 @@ std::ptrdiff_t LevelSetBarrier::Second::Slot(std::size_t cell) const
 	return it != cells.end() && *it == cell ? std::ptrdiff_t(it - cells.begin()) : -1;
 }
 
+// Evaluates the extrapolated opposite-side phi value across a closed sheet face,
+// clamping normal reach and enforcing a dry-side floor when the opposite side is air.
 double LevelSetBarrier::Second::Value(std::size_t k, const std::vector<double>& f) const
 {
 	double v = 0, s = 0;
@@ -147,6 +155,7 @@ void LevelSetBarrier::Second::Evaluate(const std::vector<double>& f, std::vector
 	});
 }
 
+// Steps up to |offset| cells along `axis`, stopping at domain bounds or a closed barrier face.
 int LevelSetBarrier::Reach(const Grid& g, const int idx[3], int axis, int offset) const
 {
 	const std::vector<std::uint8_t>& cl = closed[std::size_t(axis)];
@@ -168,6 +177,8 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 	Build(g, faces, Second());
 }
 
+// Precomputes 7-point sided WENO stencils for all cells within 3 cells of any closed face,
+// substituting across-sheet `Second` values when defined instead of crossing the barrier.
 void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pair<std::size_t, std::uint8_t>>,3>& faces, Second given)
 {
 	Clear();
@@ -253,6 +264,8 @@ void LevelSetBarrier::Build(const Grid& g, const std::array<std::vector<std::pai
 	}
 }
 
+// Computes row-wise WENO5 one-sided derivatives (D^-, D^+) along `axis` with linear or
+// constant ghost extension and optional barrier-stencil overrides near closed faces.
 void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector<double>& f, int axis,
 	const std::array<Extension,3>& ext, Pool* pool,
 	const std::function<void(std::size_t row, const double* dm, const double* dp)>& emit,
@@ -324,6 +337,7 @@ void OneSidedDerivatives(const std::array<int,3>& d, double h, const std::vector
 	});
 }
 
+// Assembles upwind advection RHS (-u . grad phi) using D^- for v > 0 and D^+ for v <= 0.
 void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<double>& f,
 	const std::array<const std::vector<double>*,3>& c, const std::array<Extension,3>& ext,
 	std::vector<double>& rhs, Pool* pool, const LevelSetBarrier* barrier)
@@ -344,6 +358,7 @@ void UpwindAdvectionRhs(const std::array<int,3>& d, double h, const std::vector<
 	}
 }
 
+// Advances phi over dt with 3-stage SSP/TVD Runge-Kutta (Shu-Osher) over WENO5 upwinding.
 void AdvectLevelSet(const Grid& g, std::vector<double>& phi, const CellVelocityAt& velocity, double t, double dt, Pool* pool,
 	const LevelSetBarrier* barrier)
 {
@@ -368,6 +383,10 @@ void AdvectLevelSet(const Grid& g, std::vector<double>& phi, const CellVelocityA
 	});
 }
 
+// ------------------------------------------------------------------ reinitialization & geometry
+
+// Restores |grad phi| = 1 via TVD-RK3 pseudo-time integration of the Godunov upwind Eikonal
+// PDE; supports Sussman, Russo-Smereka, Min-Gibou subcell crossing fixes, and frozen cells.
 void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool,
 	const LevelSetBarrier* barrier, Extension wall)
 {
@@ -500,6 +519,7 @@ void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, 
 	}
 }
 
+// Maximum ||grad phi| - 1| inside the narrow band |phi| < band*h (reinitialization trigger).
 double GradientDeviation(const Grid& g, const std::vector<double>& phi, double band, Pool* pool, const LevelSetBarrier* barrier)
 {
 	if (barrier && barrier->Empty()) barrier = nullptr;
@@ -515,6 +535,7 @@ double GradientDeviation(const Grid& g, const std::vector<double>& phi, double b
 	});
 }
 
+// Liquid volume via smoothed Heaviside integral (eps = 1.5 h), weighted by open cell fractions.
 double LiquidVolume(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool)
 {
 	const double eps = 1.5*g.h, cell = g.h*g.h*g.h;
@@ -525,6 +546,7 @@ double LiquidVolume(const Grid& g, const std::vector<double>& phi, const std::ve
 	});
 }
 
+// Free-surface area via smoothed delta(phi) * |grad phi| integral over non-excluded open cells.
 double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::vector<double>* open, Pool* pool,
 	const std::vector<std::uint8_t>* exclude, const LevelSetBarrier* barrier)
 {
@@ -547,6 +569,7 @@ double InterfaceArea(const Grid& g, const std::vector<double>& phi, const std::v
 	});
 }
 
+// Global uniform level-set shift (V - target) / A to restore liquid volume conservation.
 double CorrectVolume(const Grid& g, std::vector<double>& phi, double target, const std::vector<double>* open, Pool* pool)
 {
 	const double v = LiquidVolume(g, phi, open, pool), area = InterfaceArea(g, phi, open, pool);
@@ -556,6 +579,7 @@ double CorrectVolume(const Grid& g, std::vector<double>& phi, double target, con
 	return shift;
 }
 
+// Mean curvature div(grad phi / |grad phi|) by central differences, clamped to (dims - 1) / h.
 void Curvature(const Grid& g, const std::vector<double>& phi, std::vector<double>& kappa, Pool* pool)
 {
 	const auto& n = g.n;
@@ -606,6 +630,7 @@ void Curvature(const Grid& g, const std::vector<double>& phi, std::vector<double
 
 // ------------------------------------------------------------------ marker particles
 
+// Deterministically seeds signed marker particles in [rmin*h, band*h] via damped normal projection.
 void MarkerParticles::SeedCells(const Grid& g, const std::vector<double>& phi, const std::vector<std::size_t>& cells,
 	const std::vector<int>& counts, std::uint64_t step, std::vector<Particle>& out) const
 {
@@ -657,6 +682,7 @@ void MarkerParticles::Seed(const Grid& g, const std::vector<double>& phi, const 
 	for (auto& p : seeded) { p.id = nextId_++; particles_.push_back(p); }
 }
 
+// Advects marker particles over dt using 3-stage TVD-RK3 with trilinear MAC velocity sampling.
 void MarkerParticles::Advect(const Grid& g, const std::function<const MacField&(double)>& velocityAt, double t, double dt, Pool* pool)
 {
 	const std::size_t n = particles_.size();
@@ -690,6 +716,8 @@ void MarkerParticles::Advect(const Grid& g, const std::function<const MacField&(
 	}
 }
 
+// Enright particle-level-set error correction: escaped particles splat sphere SDFs into
+// separate plus/minus buffers and each touched cell keeps the smaller-magnitude value.
 std::size_t MarkerParticles::Correct(const Grid& g, std::vector<double>& phi, Pool* pool) const
 {
 	const std::size_t n = particles_.size();
@@ -731,6 +759,7 @@ std::size_t MarkerParticles::Correct(const Grid& g, std::vector<double>& phi, Po
 	return count;
 }
 
+// Updates particle radii to |phi(x)| clamped to [rmin*h, rmax*h] and culls escaped/outside particles.
 void MarkerParticles::AdjustRadii(const Grid& g, const std::vector<double>& phi, Pool* pool)
 {
 	const std::size_t n = particles_.size();
@@ -750,6 +779,7 @@ void MarkerParticles::AdjustRadii(const Grid& g, const std::vector<double>& phi,
 	particles_.resize(w);
 }
 
+// Prunes far-band particles and replenishes narrow-band cells with fewer than perCell / 2 particles.
 void MarkerParticles::Reseed(const Grid& g, const std::vector<double>& phi, std::uint64_t step, Pool* pool)
 {
 	(void)pool;

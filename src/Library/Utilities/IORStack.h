@@ -2,55 +2,19 @@
 //
 //  IORStack.h - Optical-IOR and enclosure state for transport
 //
-//  The optical stack drives Snell/Fresnel/TIR decisions.  The enclosure
+//  The optical stack drives Snell/Fresnel/TIR decisions; the enclosure
 //  stack drives innermost-exclusive medium lookup.  Ordinary dielectric
-//  push/pop operations update both, so scenes without enclosure-only
-//  boundaries retain the historical unified-stack behavior exactly.
-//  Enclosure-only boundaries never enter the optical stack.
+//  push/pop updates both; enclosure-only boundaries never enter the
+//  optical stack.
 //
-//  Known limitation (object-pointer keying)
-//
-//    The object-pointer key works correctly for every natural scene
-//    topology — single closed watertight meshes, nested DIFFERENT-
-//    material volumes (glass sphere containing water sphere), two
-//    disjoint objects of the same material, and concentric same-
-//    material volumes.  See tests/IORStackTest.cpp for the
-//    exhaustive trace.
-//
-//    It is INCORRECT for the narrow case where:
-//      (a) a single conceptual volume is modeled as multiple
-//          IObject*s with the SAME material (the "slab-from-planes"
-//          pattern, where two refractor planes stand in for a glass
-//          slab of finite thickness), AND
-//      (b) the ray continues on to hit another refractor after
-//          traversing the slab.
-//
-//    In (a)+(b), the stack accumulates one entry per plane rather
-//    than collapsing to a single medium, and the next refractor
-//    reads the polluted top-of-stack as its outer IOR instead of
-//    air.  The single-slab case (a) alone works optically because
-//    Ni == Nt gives no refraction either way; the bug only surfaces
-//    when (b) adds a downstream refractor whose outer IOR comes
-//    from the stack.
-//
-//    Scene authors should avoid modeling a solid glass volume as
-//    an open collection of interface planes — use a closed mesh or
-//    a CSG object (CSGObject sets ri.pObject = the CSG wrapper, so
-//    the stack remains clean).  The companion fix in
-//    Optics::CalculateRefractedRay makes the SINGLE-SLAB version of
-//    this topology render correctly regardless of where the stack
-//    ends up (see sms_k1_botonly_ref test scene).
-//
-//    If this limitation needs to be lifted in the future, three
-//    approaches were evaluated — see git log and
-//    IORStackBehaviorTest.cpp:ScenarioE_SlabPollutionLeaksToNextRefractor
-//    for the details.  Briefly: (1) switch to IMaterial*-pointer
-//    keying (fixes slab case, breaks concentric same-material
-//    volumes), (2) derive entering/exiting from the geometric sign
-//    of dot(ray, normal) with stack fallback at grazing angles
-//    (most robust but touches every refractor SPF), or (3) add a
-//    scene-level medium_id tag to IMaterial (cleanest API but needs
-//    a parser change).
+//  Known limitation (IObject*-pointer keying):
+//    Works for closed watertight meshes, nested different-material
+//    volumes, and disjoint or concentric same-material volumes (see
+//    tests/IORStackTest.cpp).  Fails if a single volume is modeled as
+//    multiple distinct IObject*s of the same material ("slab-from-planes")
+//    and the ray hits another refractor downstream (each plane pushes an
+//    entry, polluting the outer IOR).  Use a closed mesh or CSG wrapper
+//    instead; single-slab cases are covered by Optics::CalculateRefractedRay.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 25, 2004
@@ -87,27 +51,12 @@ namespace RISE
 	class IORStack
 	{
 	public:
-		//! DL-622: the surface crossing an OPEN-SHEET entry was pushed at
-		//! (the material and the hit's geometric payload), so a consumer that
-		//! holds the walk's stack -- an HWSS companion lane
-		//! (`IORStackSeeding::ReindexStackForWavelength`), the SMS starting-
-		//! media capture and `RefreshLegacySeedFallbackNM` -- can re-evaluate
-		//! the sheet's index at another wavelength without re-probing for it.
-		//!
-		//! COST CONTRACT (DL-622 review): contexts are stored OUT OF LINE, as
-		//! a sparse copy-on-write list (see `MyIORStack::ctxs`), and only an
-		//! entry pushed WITH one has one.  The production pushers are the
-		//! open-sheet ones (`SeedFromPoint`'s confirmed sheets,
-		//! `ResolveOpenSheetCrossing`, `ManifoldSolver::SnellContinueChain` and
-		//! `SMSDomainReplay::BuildStack` on a sheet); an ordinary closed-medium
-		//! push carries none, and neither does the local replay in
-		//! `RefreshLegacySeedFallbackNM` (nothing reads it).  A scene without
-		//! open sheets copies exactly the stack it copied before DL-622 plus a
-		//! null pointer (`IORDATA` stays a 24-byte trivially copyable record).
-		//! A stack that does carry contexts copies the counted pointer, not the
-		//! contexts.  A consumer that needs a closed entry's index at
-		//! another wavelength probes the object
-		//! (`IORStackSeeding::ProbeObjectSurfaceHit`).
+		//! Open-sheet crossing payload (material + geometry) stored out-of-line
+		//! in sparse copy-on-write `MyIORStack::ctxs` so wavelength re-indexing
+		//! (`IORStackSeeding::ReindexStackForWavelength`, SMS, fallback refresh)
+		//! can re-evaluate sheet IOR without re-probing.  Closed-medium pushes
+		//! attach none (`IORDATA` stays trivially copyable; closed entries probe
+		//! via `ProbeObjectSurfaceHit`), and stack copies only bump the refcount.
 		struct EntryContext
 		{
 			const IMaterial* pMaterial;
@@ -207,14 +156,10 @@ namespace RISE
 			{}
 		};
 
-		//! The stack proper.  DL-631: inline small-buffer storage (`m_inline`,
-		//! capacity 4: environment + up to 3 enclosing media) keeps camera
-		//! rays, subpath roots, query stacks and typical dielectric/translucent
-		//! walks completely off the heap; stacks deeper than 4 spill to an
-		//! out-of-line `std::vector<IORDATA>*` via `RISE_IORSTACK_COLD` helpers
-		//! so hot callers inline only fixed-size array operations.  Every push
-		//! and erase still goes through `pushEntry` / `find_and_destroy`, keeping
-		//! `ContextList` indices in lockstep (DL-622).
+		//! Inline small-buffer stack (`kInlineCap = 4`: environment + 3 media)
+		//! avoiding heap allocation on typical paths; deeper stacks spill to
+		//! `m_heap` via `RISE_IORSTACK_COLD` helpers.  All mutations go through
+		//! `pushEntry` / `find_and_destroy` to keep `ContextList` indices aligned.
 		class MyIORStack
 		{
 		public:
@@ -222,12 +167,8 @@ namespace RISE
 			static const std::size_t kInlineCap = 4;
 			typedef std::pair<std::size_t, EntryContext> IndexedContext;
 
-			//! DL-622: the entries that carry an EntryContext, as (stack
-			//! index, context) pairs in increasing index order -- SPARSE (only
-			//! open-sheet entries carry one) and COPY-ON-WRITE: immutable once
-			//! built and shared between copies through an intrusive count, so
-			//! copying a stack that carries contexts costs one atomic
-			//! increment, never a copy of the contexts.
+			//! Sparse, copy-on-write `(stackIndex, EntryContext)` list sorted by
+			//! index; shared across copies via intrusive refcount.
 			struct ContextList
 			{
 				std::atomic<int> refs;
@@ -241,13 +182,9 @@ namespace RISE
 			std::size_t m_size;
 			std::vector<IORDATA>* m_heap;
 
-			//! Representation invariant:
-			//!  - `m_size <= kInlineCap`: live entries reside in `m_inline[0..m_size-1]`.
-			//!    `m_heap` is either null or an empty retained spare buffer so bouncing
-			//!    between depth 4 and depth 5 never thrashes `new`/`delete` or stays
-			//!    permanently stuck on the cold heap path.
-			//!  - `m_size > kInlineCap`: `m_heap != 0` and live entries reside in
-			//!    `(*m_heap)[0..m_size-1]` (`m_heap->size() == m_size`).
+			//! Invariant: when `m_size <= kInlineCap`, live entries are in
+			//! `m_inline[0..m_size-1]` (`m_heap` null or empty spare buffer);
+			//! otherwise `(*m_heap)[0..m_size-1]` holds all live entries.
 			inline IORDATA* entries() { return ( m_size > kInlineCap ) ? m_heap->data() : m_inline; }
 			inline const IORDATA* entries() const { return ( m_size > kInlineCap ) ? m_heap->data() : m_inline; }
 
@@ -310,12 +247,8 @@ namespace RISE
 
 		public:
 
-			//! Null for every stack with no context-carrying entry -- every
-			//! stack in a scene without open sheets.  On that path a copy, a
-			//! destruction, a push and an erase each test `m_size` and `ctxs`
-			//! and nothing else; everything that allocates, counts or re-indexes
-			//! lives in the out-of-line (RISE_IORSTACK_COLD) helpers, so the
-			//! inlined code a hot caller carries stays heap-free up to depth 4.
+			//! Null when no entry carries a context; all context management is
+			//! kept out-of-line (`RISE_IORSTACK_COLD`) to keep the hot path small.
 			ContextList* ctxs;
 
 			MyIORStack() : m_size( 0 ), m_heap( 0 ), ctxs( 0 ) {}
@@ -677,42 +610,23 @@ namespace RISE
 
 		MyIORStack iorstack;
 
-		//! Fire r40: medium-ENCLOSURE state, kept separate from the optical
-		//! stack above.  Null means "the enclosure stack equals the optical
-		//! stack's object keys, in order" -- the case for every scene without
-		//! enclosure-only boundaries (exact NullBoundaryMaterial objects), so
-		//! those scenes keep DL-631's heap-free hot path.  The first
-		//! `pushEnclosure()` materializes the full enclosure list (outermost
-		//! first) here; optical push/pop/insert keep it in lockstep while it
-		//! exists, and it is dropped again when the last enclosure-only entry
-		//! leaves.  Invariant: the optical object keys are an ordered
-		//! subsequence of the enclosure list.
+		//! Separate medium-enclosure list (outermost first).  Null means
+		//! identical to the optical stack's object keys (heap-free fast path).
+		//! Materialized on `pushEnclosure()`, kept in lockstep by optical ops,
+		//! and released when equal again.  Invariant: optical object keys are
+		//! an ordered subsequence of `*pEnclosure`.
 		std::vector<const IObject*>* pEnclosure;
 
-		//! The object the ray is about to shade (set by the hit that owns
-		//! this stack, read by containsCurrent()/push()/pop()).  Part of
-		//! the stack's observable state, so NOT `mutable` (DL-315): it used
-		//! to be, and RayCaster::CastRay wrote each hit's object into its
-		//! CALLER's `const IORStack&`, so after PT's SSS continuation hit
-		//! an enclosure, the caller's own vertex read `containsCurrent()`
-		//! for the enclosure and absorbed its surface reflection.  A caller
-		//! that needs a different current object works on its own copy.
+		//! Object about to be shaded (used by `containsCurrent`/`push`/`pop`).
+		//! Intentionally non-`mutable` so nested ray casts cannot clobber a
+		//! caller's `const IORStack&`; callers changing it must copy first.
 		const IObject* pCurrentObject;
 
-		//! DL-345: the index the crossing that PRODUCED this stack refracted
-		//! FROM, when that differs from the walk's own stack top; 0 (the
-		//! default) means "read the walk's `before.top()`".  Set only by a
-		//! transmissive SPF resolving an OPEN-SHEET crossing by its face
-		//! (IORStackSeeding::ResolveOpenSheetCrossing) on the stack it
-		//! allocates for the scattered ray -- the one case where the walk's
-		//! stack does not say which medium the ray left (a sheet reached
-		//! from behind without crossing it).  Read by RadianceEtaScale.
-		//! NOT copied by the copy constructor or copy assignment: it describes
-		//! one crossing, and the walk's next stack (a copy) must not carry
-		//! it into a later vertex's reflection copy.  Move construction and
-		//! move assignment DO transfer `crossingEtaFrom` (and zero it on the
-		//! moved-from source) because move transfers ownership of the same
-		//! scattered-ray stack instance.
+		//! Exterior IOR the crossing refracted FROM when different from
+		//! `before.top()` (0 = use `before.top()`).  Set by open-sheet crossing
+		//! resolution on the scattered stack and read by `RadianceEtaScale`.
+		//! Not copied by copy ctor/assignment; transferred (and zeroed on
+		//! source) by move ctor/assignment.
 		Scalar crossingEtaFrom;
 		const IScene* pProbeScene;
 
@@ -816,10 +730,7 @@ namespace RISE
 		}
 
 	public:
-		// Explicit to prevent implicit conversion from Scalar / integer
-		// literal when a function expects `const IORStack&`.  A bare `0`
-		// at such a call site used to construct IORStack(0), giving an
-		// environment IOR of 0 and causing Ni=0 refraction errors.
+		// Explicit to prevent bare `0` implicitly constructing IORStack(0).
 		explicit IORStack( const Scalar ior ) :
 		  pEnclosure( 0 ),
 		  pCurrentObject( 0 ),
@@ -1047,17 +958,9 @@ namespace RISE
 		}
 
 
-		// Checks if the current object is already in the IOR stack.
-		// Used as the authoritative "is the ray inside this object"
-		// signal rather than relying on the surface normal sign, which
-		// can be unreliable at grazing angles due to numerical precision.
-		//
-		// Known limitation: keys on the IObject* pointer, so a
-		// conceptual volume modeled as MULTIPLE distinct objects of
-		// the same material (slab-from-planes) is not recognized as a
-		// single volume.  See the file-header comment for the full
-		// scenario audit and tests/IORStackTest.cpp for a
-		// locked-in regression guard.
+		// Authoritative "is ray inside current object" test for refraction
+		// (more reliable than normal sign at grazing angles).  Keys on
+		// IObject* — see file header for the slab-from-planes limitation.
 		inline bool containsCurrent() const
 		{
 			if( !pCurrentObject ) {
@@ -1077,10 +980,8 @@ namespace RISE
 				: iorstack.containsObject( pCurrentObject );
 		}
 
-		// DL-09: re-record the IOR of the innermost enclosing medium (the
-		// top entry) as the walk moves through it.  Only meaningful for a
-		// medium whose `ior` varies with position (GradedIndexMedium.h);
-		// the root (environment) entry is never rewritten.
+		// Updates the innermost medium's IOR for graded-index media
+		// (GradedIndexMedium.h); never overwrites entry 0 (environment).
 		inline void SetTopIOR( const Scalar ior )
 		{
 			if( iorstack.size() > 1 ) {
@@ -1088,12 +989,9 @@ namespace RISE
 			}
 		}
 
-		// DL-335: indexed access to the entries BELOW the top, outermost
-		// first (entry 0 is the environment and is never rewritten).  Used
-		// only by GradedIndexMedium::Advance to re-record an ENCLOSING
-		// graded medium's index at the walk's current vertex while a nested
-		// object is innermost, so the nested object's exit refracts into
-		// n(exit point) on every walk (eye and light alike).
+		// Indexed access to stack entries, outermost first (entry 0 is the
+		// environment and never rewritten); used by GradedIndexMedium::Advance
+		// to keep enclosing graded-medium IORs current across nested exits.
 		inline std::size_t Depth() const { return iorstack.depth(); }
 		inline const IObject* ObjectAt( const std::size_t i ) const { return iorstack.objectAt( i ); }
 		inline Scalar IORAt( const std::size_t i ) const { return iorstack.iorAt( i ); }
@@ -1189,111 +1087,36 @@ namespace RISE
 		}
 	};
 
-	//! Basic-radiance scale for one interface crossing, RADIANCE mode only.
+	//! Basic-radiance scale `(eta_before / eta_after)^2` for one interface
+	//! crossing, RADIANCE mode only (`L / n^2` invariance; Veach 1997 §5.2).
+	//! Apply on camera-rooted walks (PT, BDPT/VCM/MLT eye subpaths, shader-op
+	//! chain, final gather); NEVER on importance/flux walks (light subpaths,
+	//! photon tracers, SMS photon seeds).  Excluded from `ScatteredRay::kray`
+	//! (`ISPF.h`) and applied here from the walk's before/after stacks.
 	//!
-	//! Radiance is NOT invariant across a smooth interface between media of
-	//! different refractive index -- L / n^2 is (the "basic radiance";
-	//! Preisendorfer 1965, Veach 1997 5.2, PBRT-v4 9.5.2).  A walk that
-	//! gathers RADIANCE (anything rooted at a camera: the PT / BDPT-eye /
-	//! VCM-eye / MLT-eye subpaths, the legacy shader-op chain, a final
-	//! gather) must therefore multiply its throughput by
-	//! (eta_before / eta_after)^2 every time the scattered ray's medium
-	//! changes.  A walk that carries IMPORTANCE or FLUX (a BDPT/VCM light
-	//! subpath, any photon tracer, an SMS photon seed, a detector-sphere
-	//! measurement rig) gets NO factor: that asymmetry IS the non-symmetry
-	//! of refractive scattering, and applying the factor on both sides
-	//! would cancel it back out.
+	//! Reads `after->CrossingEtaFrom()` (if > 0, set for open sheets) or
+	//! `before.top()`, and `after->top()`.  Edge cases:
+	//!  - Overlapping/slab-from-planes solids can desync `top()` from SPF locals.
+	//!  - Open sheets supply the actual refracted-from index via `CrossingEtaFrom()`.
+	//!  - Graded-index media (`docs/DEBT_LEDGER.md`): `GradedIndexMedium::Advance`
+	//!    applies the interior `(n_start/n_end)^2` factor and updates `before.top()`
+	//!    to the local exit index.  Both halves are coupled — never change one
+	//!    without the other (`RadianceEtaScaleGradedIndexTest`, `GradedIndexInteriorFactorTest`).
 	//!
-	//! `ScatteredRay::kray` / `krayNM` deliberately EXCLUDE this factor
-	//! (see the contract on those fields in ISPF.h) -- ~60 SPF
-	//! implementations would otherwise each need a TransportMode
-	//! parameter.  It is applied at the CONSUMER instead, from the two
-	//! stacks the consumer already holds.
-	//!
-	//! IMPORTANT: this reads ONLY `before.top()` and `after->top()` -- it
-	//! does not, and cannot, consult whatever IOR value the SPF itself
-	//! used for its own Fresnel/refraction calculation (a DielectricSPF's
-	//! `rIndex`, `exitIOR`, or similar locals).  For every topology this
-	//! file's header documents as CORRECT (single closed volumes, nested
-	//! different-material volumes, concentric same-material volumes,
-	//! disjoint same-material objects) with a spatially UNIFORM ior, the
-	//! two agree, because `top()` after the SPF's own `push`/`pop` IS the
-	//! medium it computed against.  Two known exceptions (review round 2,
-	//! 2026-09-12 added the second):
-	//!
-	//! - **Overlapping solids.**  Under this file's documented
-	//!   OVERLAPPING-SOLIDS pathology, they can silently disagree:
-	//!   `pop()`'s `find_and_destroy` can remove an entry that is NOT at
-	//!   the top (a slab-from-planes object hit downstream of another
-	//!   refractor), leaving `top()` reading a medium the SPF never
-	//!   actually refracted from or into. In that case this function can
-	//!   return exactly 1 -- or the wrong ratio -- for a real medium
-	//!   change DielectricSPF priced between two other indices.  Scenes
-	//!   that avoid that pathology (see the file header's guidance) are
-	//!   unaffected.
-	//! - **Open sheets -- DL-345.**  A provably open sheet is crossed by
-	//!   its FACE (front enters, back exits); reached from behind without
-	//!   having been crossed, the walk's `before.top()` is not the index
-	//!   the crossing refracted from, and the SPF records that index on
-	//!   the scattered stack (`CrossingEtaFrom`), which this function
-	//!   reads in place of `before.top()`.
-	//! - **Spatially varying `ior` -- DL-09, fixed 2026-09-28 by keeping
-	//!   `before.top()` CURRENT, not by changing this function.**  Read
-	//!   docs/DEBT_LEDGER.md before touching either.
-	//!   Basic radiance `L / n^2` is conserved ALONG a ray inside a graded
-	//!   medium as well as across an interface, so a camera(air) ->
-	//!   A(`n_A`) -> B(`n_B`) -> air trip is
-	//!   `(1/n_A)^2 * (n_A/n_B)^2 * (n_B/1)^2 = 1`.  Walks that support
-	//!   graded media (PT, BDPT eye AND light, and so VCM and MLT) now call
-	//!   `GradedIndexMedium::Advance` at every vertex inside a medium whose
-	//!   `ior` is a world-position field: it pays the interior-segment
-	//!   factor `(n_start/n_end)^2` and RE-RECORDS the stack top as the
-	//!   local index.  At the exit hit this function therefore reads the
-	//!   FRESH exit-point index as `before.top()` -- the "exit-read switch"
-	//!   -- and it cannot happen without the interior factor, or vice versa.
-	//!   Each half alone is one of the two failed rounds: substituting the
-	//!   fresh exit value without the interior factor nets `(n_B/n_A)^2`
-	//!   (2.25x brighter behind a passive 1.2 -> 1.8 slab, reverted
-	//!   2026-09-14); the interior factor with a stale exit read nets
-	//!   `(n_A/n_B)^2` (0.444).  `tests/RadianceEtaScaleGradedIndexTest.cpp`
-	//!   pins the through-slab net at 1 (it catches both half-fixes) and
-	//!   `tests/GradedIndexInteriorFactorTest.cpp` pins the interior gathers
-	//!   that never reach this exit read.  A walk that does NOT Advance (the
-	//!   legacy shader-op chain, the photon tracers, SMS chains) still sees
-	//!   the entry-time value here -- the pre-DL-09 accounting, which nets
-	//!   correctly on every completed through-trip (DL-292).
-	//!
-	//! @param before  the walk's current IOR stack at the scattering vertex
-	//! @param after   the scattered ray's stack, or NULL when the SPF left
-	//!                the stack unchanged (the common case: every non-
-	//!                transmissive lobe).  A reflection lobe from inside a
-	//!                dielectric allocates an unchanged COPY rather than
-	//!                leaving this null, which is why the test below
-	//!                compares the top IORs and does not just check for
-	//!                non-null.
-	//! @return        (eta_before / eta_after)^2 computed from
-	//!                `before.top()` and `after->top()` (see above for
-	//!                what that does and does not guarantee), or exactly
-	//!                1 when the two agree or the medium did not change.
+	//! @param before  walk's current IOR stack at the scattering vertex
+	//! @param after   scattered ray's stack, or NULL if unchanged (note: internal
+	//!                reflection may pass a copy with unchanged top IOR)
+	//! @return        `(eta_before / eta_after)^2`, or exact 1 when equal / invalid
 	inline Scalar RadianceEtaScale( const IORStack& before, const IORStack* after )
 	{
 		if( !after ) {
 			return Scalar( 1 );
 		}
-		// DL-345: an open-sheet crossing resolved by its face records the
-		// index it actually refracted from when the walk's stack says
-		// otherwise (see IORStack::crossingEtaFrom).
 		const Scalar etaBefore = after->CrossingEtaFrom() > Scalar( 0 )
 			? after->CrossingEtaFrom() : before.top();
 		const Scalar etaAfter  = after->top();
-		// Equal IORs -> exact 1 with no division, which keeps the
-		// overwhelmingly common reflection / same-index case bit-identical
-		// to the pre-2026-09 behaviour.  Non-positive IORs cannot arise
-		// from a well-formed stack (IORStack's ctor is explicit precisely
-		// to stop a bare `0` becoming an environment IOR of 0), but a
-		// scene can author `ior 0` on a dielectric, and a 0 here would
-		// otherwise produce an infinite or zero throughput rather than a
-		// dark-but-finite material.
+		// Exact 1 for equal IORs (avoids FP division on reflection/same-IOR)
+		// and guards against authored non-positive IORs producing Inf/0.
 		if( etaBefore == etaAfter || etaBefore <= Scalar( 0 ) || etaAfter <= Scalar( 0 ) ) {
 			return Scalar( 1 );
 		}

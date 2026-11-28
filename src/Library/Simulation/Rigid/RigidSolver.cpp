@@ -1,7 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  RigidSolver.cpp - "rigid.bodies" on the solver contract (simulation M6)
-//
+//  RigidSolver.cpp - "rigid.bodies" ISimulationSolver implementation:
+//  symplectic kick-drift-kick integration with principal-axis splitting,
+//  sequential-impulse plane & analytic body-body contact, port exchange,
+//  checkpoint/rollback, and canonical fidelity evidence.
+//  Conventions: SI units (m, kg, s, rad/s); quaternions (w, x, y, z).
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -63,6 +67,8 @@ template<std::size_t N> V Vec(const std::array<double,N>& a)
 	for (double x : a) out.push_back(V::Float(x));
 	return V::ArrayValue(out);
 }
+
+// ------------------------------------------------------------------ CBOR parsing & body setup
 
 // Strict map reader: unknown keys are refused; read keys are written back
 // with canonical types into `out`.
@@ -193,6 +199,8 @@ struct BodySpec {
 	std::vector<std::uint32_t> triangles;
 };
 
+// Parses a body entry (analytic shape or scene/inline mesh), computes mass properties,
+// aligns the body frame to centroid + principal axes, and builds surface/support/contact data.
 bool ParseBody(const V& item, const ISceneInputs& inputs, std::vector<std::string>& sceneNames, BodySpec& spec,
 	V& effective, std::string& error)
 {
@@ -529,6 +537,7 @@ const CaseSpec Cases[] = {
 	{"projectile", "spinning box under gravity, 1 s: max position error / range against the parabola", 1e-12},
 	{"pendulum", "physical pendulum on a stiff external spring, 0.5 rad: relative period error against the exact period", 1.6e-3}};
 
+// Evaluates and memoizes the four canonical rigid-body accuracy benchmarks at substep h.
 std::vector<EvidenceCase> ComputeEvidence(double h)
 {
 	static std::mutex mutex;
@@ -614,6 +623,8 @@ private:
 	std::atomic<bool> stop_{false};
 };
 
+// Validates parameters, canonically orders bodies by name, checks analytic-only pair contact
+// rules, builds physicalRecords and port schemas, and attaches substep-dependent evidence.
 bool RigidSolver::Configure(const V& parameters, const ISceneInputs& inputs, SolverDescription& d, std::string& error)
 {
 	configured_ = started_ = false;
@@ -894,6 +905,8 @@ bool RigidSolver::AcceptLoads(double time, IPortExchange* ports, std::string& er
 	return true;
 }
 
+// Advances each body by one kick-drift-kick substep under gravity + held loads, then resolves
+// plane contacts and (only when bounding spheres overlap) analytic body-body contacts.
 void RigidSolver::Substep(double h)
 {
 	for (std::size_t i = 0; i < s_.bodies.size(); ++i) {
@@ -905,6 +918,8 @@ void RigidSolver::Substep(double h)
 	if (pairs_ && PairsNear(s_.bodies, shapes_)) ResolvePairs(s_.bodies, shapes_, planes_, gravity_, h);
 }
 
+// Advances per frame or to request.macroEnd: publishes body_state (and one-shot mass/contact
+// metadata at t = 0), accepts body_load once per macro segment, and runs uniform substeps.
 bool RigidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPortExchange* ports, IProgress* progress,
 	AdvanceResult& result, std::string& error)
 {
@@ -965,6 +980,8 @@ bool RigidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 	}
 }
 
+// ------------------------------------------------------------------ checkpoint & rollback
+
 std::vector<double> PackBodies(const std::vector<Body>& bodies)
 {
 	std::vector<double> v;
@@ -988,6 +1005,7 @@ std::vector<double> PackLoads(const std::vector<Load>& loads)
 	return v;
 }
 
+// Serializes solver cursor, segment progress, body states (x, q, v, pi), and held loads to CBOR.
 bool RigidSolver::Checkpoint(Bytes& state, std::string& error)
 {
 	if (!started_) return Fail(error, "nothing to checkpoint");

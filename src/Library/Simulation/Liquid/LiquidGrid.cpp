@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LiquidGrid.cpp - see LiquidGrid.h
-//
+//  LiquidGrid.cpp - Staggered MAC grid sampling, analytic/mesh SDFs,
+//  cut-cell face/cell open fractions, and initial liquid rasterization.
+//  Conventions: uniform cell spacing h; cell centres at origin+(i+0.5)h;
+//  axis-a faces at origin+i*h along a; SDF < 0 inside solid/liquid.
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -151,6 +154,8 @@ void MeshNodes(const Grid& g, const Shape& s, double band, std::vector<double>& 
 }
 } // namespace
 
+// ------------------------------------------------------------------ MAC sampling & reductions
+
 double Dot(Pool* pool, const std::vector<double>& a, const std::vector<double>& b)
 {
 	const std::size_t n = a.size();
@@ -161,6 +166,7 @@ double Dot(Pool* pool, const std::vector<double>& a, const std::vector<double>& 
 	});
 }
 
+// Trilinear interpolation of a cell-centred field (half-cell offset on all axes).
 double SampleCells(const Grid& g, const std::vector<double>& f, const V3& x)
 {
 	V3 s;
@@ -168,6 +174,7 @@ double SampleCells(const Grid& g, const std::vector<double>& f, const V3& x)
 	return Trilinear(f, g.n, s);
 }
 
+// Trilinear interpolation of an axis-a MAC face field (node-aligned on a, centred on b, c).
 double SampleFace(const Grid& g, int a, const std::vector<double>& f, const V3& x)
 {
 	V3 s;
@@ -180,6 +187,7 @@ V3 SampleVelocity(const Grid& g, const MacField& u, const V3& x)
 	return {{SampleFace(g, 0, u.u[0], x), SampleFace(g, 1, u.u[1], x), SampleFace(g, 2, u.u[2], x)}};
 }
 
+// Averages opposite MAC faces to produce collocated cell-centred velocities.
 void CellVelocity(const Grid& g, const MacField& u, std::array<std::vector<double>,3>& c, Pool* pool)
 {
 	for (int a = 0; a < 3; ++a) c[a].resize(g.Cells());
@@ -197,6 +205,9 @@ void CellVelocity(const Grid& g, const MacField& u, std::array<std::vector<doubl
 	});
 }
 
+// ------------------------------------------------------------------ shapes & cut-cell fractions
+
+// Exact Euclidean signed distance (< 0 inside) for analytic shapes; `invert` flips interior/exterior.
 double Shape::Distance(const V3& x) const
 {
 	if (invert) {
@@ -231,6 +242,7 @@ double Shape::Distance(const V3& x) const
 	return 1e300;
 }
 
+// Evaluates the union (min) of solid shape SDFs at grid nodes, clamped to [-band, band].
 void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, std::vector<double>& nodes, Pool* pool)
 {
 	nodes.assign(g.Nodes(), band);
@@ -254,6 +266,7 @@ void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, st
 	}
 }
 
+// Exact area fraction where a linear triangle with vertex SDFs (a, b, c) is positive (open).
 double TrianglePositiveFraction(double a, double b, double c)
 {
 	const bool pa = a > 0, pb = b > 0, pc = c > 0;
@@ -270,6 +283,8 @@ double TrianglePositiveFraction(double a, double b, double c)
 	return 1 - n*n/((n - p1)*(n - p2));
 }
 
+// Computes cut-cell open face fraction in [0, 1] by subdividing the face quad into four
+// centre-fan triangles; domain walls are closed except an optional openTop boundary.
 double FaceFraction(const Grid& g, const std::vector<double>& nodes, int a, int i, int j, int k, bool openTop, int openAxis)
 {
 	const int b = (a + 1) % 3, c = (a + 2) % 3;
@@ -310,6 +325,7 @@ void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop
 	}
 }
 
+// Linear open-volume estimate of cell (i, j, k) from the mean of its 8 corner solid SDFs.
 double CellOpenFraction(const Grid& g, const std::vector<double>& nodes, int i, int j, int k)
 {
 	double s = 0;
@@ -328,6 +344,7 @@ void CellOpenFractions(const Grid& g, const std::vector<double>& nodes, std::vec
 	});
 }
 
+// Initializes cell-centred liquid level set phi as the union of initial liquid shapes.
 void LiquidCells(const Grid& g, const std::vector<Shape>& regions, std::vector<double>& phi, Pool* pool)
 {
 	phi.assign(g.Cells(), 1e300);

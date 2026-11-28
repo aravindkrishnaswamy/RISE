@@ -1,5 +1,16 @@
-// Allocation preflight for the float32/binary32-vector OpenVDB import profile.
-// This cursor only inspects an immutable byte preimage. It never inflates data.
+//////////////////////////////////////////////////////////////////////
+//
+//  SimulationVDBBounds.h - Zero-inflation allocation preflight for the
+//  float32/vec3f OpenVDB import profile (archive versions 223-225).
+//
+//  Inspects an immutable byte preimage and enforces a cumulative heap
+//  budget (default 4 GiB) without decompressing or inflating grid data.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
 #ifndef RISE_SIMULATION_VDB_BOUNDS_H
 #define RISE_SIMULATION_VDB_BOUNDS_H
 
@@ -17,6 +28,8 @@
 
 namespace RISE { namespace Simulation {
 
+// Streaming cursor that validates OpenVDB header, metadata, Blosc chunks,
+// 5-4-3 tree topology, and leaf buffers against a cumulative heap budget.
 class VDBArchiveBounds {
 public:
 	explicit VDBArchiveBounds(std::string_view input, std::uint64_t heapBudget = 4ull << 30)
@@ -79,6 +92,7 @@ private:
 		budget-=n;
 	}
 
+	// Validates Blosc chunk framing and uncompressed length without decompressing.
 	static void CheckBlosc(std::string_view chunk,std::size_t expected) {
 		Require(chunk.size()>=16,"Blosc header");
 		std::size_t validated=0;
@@ -102,6 +116,7 @@ private:
 		Require(cursor-start==size,"delayed-load metadata length");
 	}
 
+	// Validates archive or grid metadata entries, rejecting half-float storage and unknown types.
 	void Metadata() {
 		const auto count=Number(4);
 		Require(count<=1024,"metadata count");
@@ -147,6 +162,7 @@ private:
 		return count;
 	}
 
+	// Skips and validates raw or Blosc-compressed tile/leaf value buffers.
 	void Values(std::string_view mask) {
 		const auto code=Number(1);
 		Require(code<=6,"node mask encoding");
@@ -167,6 +183,7 @@ private:
 		if (compression&4) CheckBlosc(chunk,expected);
 	}
 
+	// Walks internal 5-4-3 tree levels (32768 -> 4096 -> 512-voxel leaf masks).
 	void Node(unsigned slots) {
 		// This covers the node table, temporary decoded values, masks and slop
 		// for the allocator; all nodes are charged cumulatively across grids.
@@ -196,6 +213,7 @@ private:
 		return key;
 	}
 
+	// Validates one float/vec3f grid: offsets, affine map, sorted root tiles/children, and leaf buffers.
 	void Grid() {
 		Charge(1u<<20);
 		Require(gridNames.insert(Name()).second,"duplicate grid identifier");

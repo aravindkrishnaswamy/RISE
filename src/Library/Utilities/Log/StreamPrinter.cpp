@@ -6,7 +6,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 14, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments: Mutex-serialized ILogPrinter sink targeting any std::ostream*.
+//    Deletes pStream in ~StreamPrinter() iff bFreeStream is true (pass false
+//    for non-owned streams like std::cout/std::cerr). Filters via (eTypes & event.eType).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

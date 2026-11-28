@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  HyLIoSSlabTransport.cpp - 6-layer planar optical slab transport
+//    (z = 0 top exterior boundary, +z inward across layers 0..5,
+//    cosine-diffuse bottom reflector at layer 5, resumable outer
+//    boundary tokens, and Analog or Weighted Beer-Lambert absorption).
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "HyLIoSSlabTransport.h"
 #include <algorithm>
@@ -54,6 +66,8 @@ const SlabBoundaryEncounter& SlabState::PendingBoundary() const {
     if (!pending_) throw std::logic_error("no pending slab boundary");
     return encounter_;
 }
+// Evaluates unpolarized smooth dielectric Fresnel reflectance and Snell's law
+// using exponent-scaled arithmetic to avoid overflow/subnormal artifacts.
 SmoothDielectricEvaluation EvaluateSlabSmoothDielectric(const SlabBoundaryEncounter& e) {
     Require((e.incidentSide==SlabSide::Exterior && e.incidentDirection.z>=0) ||
         (e.incidentSide==SlabSide::Interior && e.incidentDirection.z<=0), "dielectric incident side mismatch");
@@ -123,6 +137,8 @@ void HyLIoSSlabTransport::Encounter(SlabState& s, SlabSide side) const {
         side==SlabSide::Exterior ? layers_[0].realIOR : exteriorIOR_};
     s.pending_=true; ++s.counters_.boundaryEncounters;
 }
+// Applies the caller's reflection/transmission decision for the matching outer
+// boundary token, updating weight and terminating on exterior escape or zero weight.
 void HyLIoSSlabTransport::ResumeBoundary(SlabState& s, std::uint64_t token, const SlabBoundaryDecision& d) const {
     Require(s.owner_==this, "slab state belongs to a different kernel");
     Require(s.pending_ && s.termination_==SlabTermination::None && token==s.encounter_.token, "stale or mismatched slab boundary token");
@@ -144,6 +160,8 @@ void HyLIoSSlabTransport::ResumeBoundary(SlabState& s, std::uint64_t token, cons
         s.termination_=from==SlabSide::Exterior ? SlabTermination::ExternalReflection : SlabTermination::SubsurfaceReturn;
     } else s.layer_=0;
 }
+// Advances the ray by `distance` in the current layer, recording path lengths
+// and depositing Analog or Weighted Beer-Lambert absorption.
 bool HyLIoSSlabTransport::Flight(SlabState& s, double distance, bool absorptionEvent) const {
     const auto i=static_cast<std::size_t>(s.layer_);
     const SlabVector p={s.position_.x+distance*s.direction_.x,s.position_.y+distance*s.direction_.y,s.position_.z+distance*s.direction_.z};
@@ -177,6 +195,9 @@ bool HyLIoSSlabTransport::Roulette(SlabState& s, ISampler& sampler) const {
     if (u<probability) { s.weight_=rouletteTargetWeight_; return true; }
     ++s.counters_.rouletteKills; s.weight_=0; s.termination_=SlabTermination::RouletteKilled; return false;
 }
+// Steps slab transport up to `workQuantum` events: handles tangent rays, exact
+// plane intersections (no epsilon offsets), outer-boundary yields at z=0,
+// cosine-hemisphere bottom reflections at layer 5, and internal Fresnel interfaces.
 SlabAdvanceResult HyLIoSSlabTransport::Advance(SlabState& s, ISampler& sampler, std::size_t workQuantum) const {
     Require(s.owner_==this, "slab state belongs to a different kernel");
     Require(!sampler.HasFixedDimensionBudget(), "slab transport requires a variable-dimension ISampler");

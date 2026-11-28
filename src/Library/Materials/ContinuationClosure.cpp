@@ -1,7 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ContinuationClosure.cpp - Audited immutable surface closures for
-//  Phase-B volume-emission MIS.
+//    Phase-B volume-emission MIS (Lambertian, Oren-Nayar/EON, Isotropic
+//    Phong) in both RGB (Pel) and monochromatic (NM) domains.
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -42,6 +46,10 @@ namespace
 		return r_max(v[0],r_max(v[1],v[2]));
 	}
 
+	// Snapshot of surface normals and reflected vectors oriented toward the
+	// incoming ray. Keeps sampling, response evaluation, and geometric horizon
+	// checks consistent; IsotropicPhong flips its sampling normal by geometric
+	// normal while Lambertian/Oren-Nayar use the shading normal.
 	struct ClosureFrame
 	{
 		RayIntersectionGeometric ri;
@@ -154,6 +162,10 @@ namespace
 		return value*(1.0/divisor);
 	}
 
+	// Shared Pel/NM implementation of subset BRDF evaluation, mixture PDF,
+	// deterministic zero-throughput gating, Russian-roulette survival, and
+	// march/reach MIS densities (MarchPdf excludes zero-throughput directions;
+	// ReachPdf folds in SurvivalProbability).
 	template<class Value>
 	class ContinuationClosureBase
 	{
@@ -484,6 +496,12 @@ namespace
 	};
 }
 
+//////////////////////////////////////////////////////////////////////
+// Bounce Availability & Closure Factories
+//////////////////////////////////////////////////////////////////////
+
+// Computes lobe masks allowed for marching through an emitting volume
+// (per-lobe bounce caps) vs spawning a downstream surface vertex (total depth).
 ContinuationAvailability RISE::Implementation::ResolveContinuationAvailability(
 	const unsigned int closureMask,
 	const bool downstreamVertexAllowedByTotalDepth,
@@ -527,6 +545,8 @@ RISE::Implementation::ResolveMediumContinuationAvailability(
 		config.maxVolumeBounce);
 }
 
+// Fail-closed allowlist of materials whose BSDF/SPF laws match this closure
+// implementation exactly; luminaire wrappers delegate to their base material.
 bool RISE::Implementation::IsExactSupportedContinuationMaterial(
 	const IMaterial* material )
 {

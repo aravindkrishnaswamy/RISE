@@ -2,6 +2,10 @@
 //
 //  GaussLegendreQuadrature.h - Shared fixed-order Gauss-Legendre rules
 //
+//  Tabs: 4
+//  Comments: 21-point rule mapped to [0, 1] (exact for polynomials up
+//    to degree 2*21 - 1 = 41).
+//
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -23,6 +27,8 @@ namespace RISE
 		extern const Scalar Nodes[NodeCount];
 		extern const Scalar Weights[NodeCount];
 
+		// Integrates `function` over [begin, end] by linear remap from [0, 1]
+		// (end < begin yields a negated signed integral).
 		template<typename Function>
 		inline Scalar Integrate(
 			const Scalar begin,
@@ -38,6 +44,7 @@ namespace RISE
 			return extent * result;
 		}
 
+		// Integrates a spectral integrand over the visible band [380, 780] nm.
 		template<typename Function>
 		inline Scalar IntegrateVisibleBand( const Function& function )
 		{

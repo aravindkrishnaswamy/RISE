@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SimulatedPointsGeometry.cpp - M7 prerequisites, see SimulatedPointsGeometry.h
+//  SimulatedPointsGeometry.cpp - Sphere-per-particle IGeometry and
+//    ITimeVaryingAssetProvider backed by Simulation::PointsCacheSource,
+//    with SAH BVH, linear shutter motion blur, and render freeze leases.
 //
+//  Tabs: 4
 //  License Information: Please see the attached LICENSE.TXT file
 //
 //////////////////////////////////////////////////////////////////////
@@ -120,6 +123,8 @@ void SimulatedPointsGeometry::SetSampleClock( const Animator* clock )
 	m_clock = clock;
 }
 
+// Swaps prepared particle buffers into active state, updates total surface
+// area, rebuilds or creates the SAH BVH over motion-swept AABBs, and bumps revision.
 void SimulatedPointsGeometry::Install( State& next )
 {
 	// Blur state first: the BVH build reads the element boxes.
@@ -153,6 +158,8 @@ void SimulatedPointsGeometry::Install( State& next )
 	BumpShapeRevision();
 }
 
+// Refuses mutation while frozen for rendering; skips rebuild when both the
+// cache's CheapSnapshot and render time support are unchanged.
 bool SimulatedPointsGeometry::PrepareAssetForRender( const RenderTimeSupport& support, std::string& error,
 	std::function<void()>* rollback )
 {
@@ -180,6 +187,9 @@ bool SimulatedPointsGeometry::PrepareAssetForRender( const RenderTimeSupport& su
 	return true;
 }
 
+// Samples the points cache for `support`, applying predictive fail-closed /
+// Hide / Hold missing-frame policies, eliding blur for stationary particles,
+// and populating an optional state-swap rollback closure.
 bool SimulatedPointsGeometry::PrepareFrame( const RenderTimeSupport& support, std::string& error,
 	std::function<void()>* rollback )
 {
@@ -247,6 +257,8 @@ bool SimulatedPointsGeometry::PrepareFrame( const RenderTimeSupport& support, st
 	return true;
 }
 
+// Reference-counted render freeze lease; ReleaseAssetFreeze verifies that
+// m_generation did not advance while any lease was held.
 bool SimulatedPointsGeometry::AcquireAssetFreeze( std::string& )
 {
 	std::lock_guard<std::mutex> lock( m_freezeMutex );
@@ -263,6 +275,8 @@ bool SimulatedPointsGeometry::ReleaseAssetFreeze( std::string& error )
 	return true;
 }
 
+// Computes clamped [0, 1] shutter fraction from TLS per-ray sample time
+// (falling back to the animator's last evaluated time or frame nominal time).
 Scalar SimulatedPointsGeometry::ShutterFraction() const
 {
 	double t = m_nominal;

@@ -1,52 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  RasterizerDefaults.h - Single source of truth for the defaults
-//    used by every production rasterizer.
+//  RasterizerDefaults.h - Single source of truth for production
+//    rasterizer defaults.
 //
-//    Three independent code paths historically picked their own
-//    defaults for "what value should this parameter take when the
-//    user / scene file omits it?":
-//
-//      1. ChunkParserRegistry chunk parsers' `Finalize` fallback —
-//         `bag.GetUInt("samples", 32)` style.
-//      2. ChunkParserRegistry chunk parsers' `Describe` defaultValueHint
-//         strings — what the GUI panel labels the default as.
-//      3. Job::InstantiateRasterizerWithDefaults — the literals it
-//         passes when the GUI lazy-builds a rasterizer with no
-//         matching chunk in the scene file.
-//
-//    Plus the underlying `*Config` structs (PixelFilterConfig /
-//    SMSConfig / etc.) which have their own in-class member
-//    initializers that act as a fourth default surface for nested
-//    config knobs.
-//
-//    Drift between these surfaces produced visible bugs: BDPT-pel
-//    parser rendered at 32 spp with OIDN on, while clicking the
-//    same rasterizer in the GUI panel without a chunk gave 1 spp
-//    with OIDN off.  This header collapses surfaces 1-3 into one
-//    set of structs, while the *Config* structs remain canonical
-//    for nested-config defaults (consumed via default-construction).
-//
-//    Convention: every field on every *Defaults struct in this
-//    header is the canonical value.  Parsers reference it via
-//    `BDPTPelDefaults d; bag.GetUInt("samples", d.numPixelSamples)`,
-//    descriptors reference it via `to_hint(d.numPixelSamples)`, and
-//    Job's lazy-build branches default-construct the matching
-//    struct and read its fields directly.  Tests assert all three
-//    surfaces remain in agreement.
-//
-//    Interactive viewport preview (InteractivePelRasterizer) is a
-//    separate code path that overrides `numPixelSamples` to 1 for
-//    live-edit feedback — the production-quality default of 32 lets
-//    a "click Render with no chunk" produce a real image instead of
-//    one-sample noise.
-//
-//    Adding a new rasterizer: add a `*Defaults` struct here with
-//    its parameter values, then have the parser / Job branch read
-//    from it.  Adding a new parameter: add a field to the relevant
-//    *Defaults struct, surface it in the parser's Finalize +
-//    Describe, and the GUI panel + lazy-build path pick it up
-//    automatically.
+//  Shared by ChunkParserRegistry (`Finalize` fallbacks and `Describe`
+//  default hints) and `Job::InstantiateRasterizerWithDefaults` so all
+//  three surfaces stay in agreement.  Nested `*Config` structs
+//  (PixelFilterConfig, SMSConfig, etc.) remain canonical via their own
+//  default constructors.  Interactive viewport preview
+//  (InteractivePelRasterizer) separately overrides numPixelSamples = 1.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 5, 2026
@@ -68,20 +30,9 @@
 
 namespace RISE
 {
-	//
-	// Auto-rasterizer integrator selection (Phase-3 Candidate C: a
-	// PT-default auto-routed hybrid; see docs/AUTO_RASTERIZER_DESIGN.md).
-	// The `auto_rasterizer` chunk's `integrator` field carries one of
-	// these.  `Auto` means "let the dispatcher decide" — in Phase 1 that
-	// resolves to PT (Tier 0 author-hint only); Phases 2-4 add static
-	// analysis + a render-time probe behind the same `Auto` value.  PT /
-	// BDPT / VCM are explicit author pins that skip detection.
-	//
-	// This enum is the single vocabulary shared across the API boundary
-	// (RISE_API_CreateAutoRasterizer), the scene parser, IJob, and the
-	// AutoRasterizer wrapper — it lives here, next to the rasterizer
-	// defaults, so no layer has to redefine it.
-	//
+	// Auto-rasterizer integrator selector (docs/AUTO_RASTERIZER_DESIGN.md),
+	// shared across API, parser, IJob, and AutoRasterizer.  `Auto` lets the
+	// dispatcher choose; PT / BDPT / VCM pin the delegate explicitly.
 	enum class AutoIntegratorChoice
 	{
 		Auto = 0,   ///< Dispatcher decides (Phase 1 -> PT).
@@ -181,21 +132,9 @@ namespace RISE
 		}
 	}
 
-	//
-	// Common base — every production rasterizer accepts these.  The
-	// values here are the universal canonical defaults; per-rasterizer
-	// structs override individual fields where their behaviour
-	// genuinely differs (MLT overrides oidnDenoise, MLT overrides the
-	// depth caps, etc.).
-	//
-	// numPixelSamples = 32: production-ready default.  The interactive
-	//   viewport preview (InteractivePelRasterizer) is a separate code
-	//   path that uses 1.  See PixelBasedRasterizerHelper.cpp.
-	//
-	// oidnDenoise = true: matches modern denoise-by-default expectation.
-	//   MLT overrides to false because the splat-film accumulation
-	//   pattern is incompatible with OIDN.
-	//
+	// Universal production defaults (numPixelSamples = 32, oidnDenoise = true).
+	// Subclasses override where behaviour differs (e.g. PixelPel samples = 1,
+	// MLT oidnDenoise = false).  Interactive preview uses a separate 1-spp path.
 	struct BaseRasterizerDefaults
 	{
 		unsigned int   numPixelSamples = 32;
@@ -257,37 +196,19 @@ namespace RISE
 	};
 	struct VCMSpectralDefaults : VCMPelDefaults {};
 
-	//
-	// `auto_rasterizer` — the thin-shell integrator dispatcher.  It only
-	// surfaces the universally-meaningful params (the base set + the
-	// `integrator` pin); per-integrator specifics (BDPT depth, VCM merge
-	// radius, PT/SMS knobs) are NOT author-facing on this chunk in Phase
-	// 1 — the dispatcher builds the chosen delegate with the canonical
-	// per-integrator defaults above (BDPTPelDefaults / VCMPelDefaults /
-	// SMSConfig).  Param-population option (i) from the design doc §4.
-	//
+	// `auto_rasterizer` defaults (docs/AUTO_RASTERIZER_DESIGN.md); delegate
+	// specifics come from the per-integrator default structs above.
 	struct AutoRasterizerDefaults : BaseRasterizerDefaults
 	{
 		AutoIntegratorChoice integrator = AutoIntegratorChoice::Auto;
 
-		//! Tier-2 render-time probe (Phase 4).  OFF by default: the
-		//! probe is a final-render tool (the Phase-3 gate found it
-		//! cheap only at production spp >= ~256), and shipping it
-		//! opt-in keeps the cheap preview / lower-tier paths free of
-		//! the probe tax.  When TRUE, the probe still only fires once
-		//! the production sample count clears the activation-spp gate
-		//! (GlobalOptions `auto_probe_activation_spp`); below it the
-		//! dispatcher falls back to the Tier-1 static best-guess.
+		//! Opt-in render-time probe (default false; gated by GlobalOptions
+		//! `auto_probe_activation_spp` — falls back to static routing below it).
 		bool probeEnabled = false;
 	};
 
-	//
-	// MLT canonical — production values matching what scene authors
-	// have historically gotten when they omit these fields.  OIDN is
-	// off by default because the splat-film accumulation pattern is
-	// incompatible with the denoiser; users who want denoised MLT
-	// can opt in with `oidn_denoise true` per scene.
-	//
+	// MLT defaults: oidnDenoise is off because splat-film accumulation is
+	// incompatible with OIDN (scenes may opt in with `oidn_denoise true`).
 	struct MLTDefaults : BaseRasterizerDefaults
 	{
 		unsigned int   maxEyeDepth        = 10;

@@ -246,14 +246,8 @@ Transformable::~Transformable( )
 {
 }
 
-// DL-465 review P1: the authoritative-matrix metadata lives ON the instance
-// (m_finalMetadata), not in a process-wide registry.  Every keyframe
-// application reads it, and a time-indexed motion-blur pass applies
-// keyframes on every render thread for every pixel sample, each to its own
-// clone: a shared registry (even reader-locked; libc++'s shared_mutex takes
-// an internal mutex for readers too) serialised the pass, and a moving
-// matrix-authored clone wrote it under the exclusive lock every sample.
-// Per-instance data is touched only by the thread that owns the instance.
+// Authoritative-matrix metadata lives per-instance (not in a shared registry)
+// so concurrent motion-blur threads touch only their own clones without locking.
 bool Transformable::ReadFinalMetadata_( FinalMatrixMetadata& metadata ) const
 {
 	metadata = m_finalMetadata;
@@ -322,34 +316,19 @@ void Transformable::PopBottomTransStack( )
 
 void Transformable::ClearAllTransforms( )
 {
-	// Clears the LOCAL transform only.  m_mxParentWorld is deliberately NOT
-	// reset: a node's place in the scene graph is not one of its transforms,
-	// and Job::AddObject calls this on every re-apply -- resetting the parent
-	// here would silently un-parent every object an incremental edit touches
-	// until the next compose walk.
+	// Clears local transform only; m_mxParentWorld is preserved so incremental
+	// re-applies (Job::AddObject) don't un-parent the node.
 	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_transformstack.clear( );
 	m_mxPosition = Matrix4Ops::Identity();
 	m_mxOrientation = Matrix4Ops::Identity();
 	m_mxScale = Matrix4Ops::Identity();
 	m_mxStretch = Matrix4Ops::Identity();
-	// doc 89 slice C: the MIRROR is a local transform building block, so it goes
-	// too.  Job::AddObject calls this on every re-apply and then re-issues only
-	// the params the chunk still carries -- so a mirror left standing here would
-	// survive an edit that DELETED the `mirror` line, and the object would keep
-	// rendering reflected until a save + reload silently un-reflected it.  That is
-	// the same failure `parent` avoids by being re-issued unconditionally.
+	// Mirror is a local transform and must reset on re-apply.
 	m_mxMirror = Matrix4Ops::Identity();
 	m_mirrorAxis = -1;
 	ClearFinalMetadata_();
-	// Re-finalize rather than hand-assigning the two matrices: that also
-	// refreshes m_mxLocalTrans AND the subclass caches (Object's
-	// inverse-transpose / tangent sign / world-area Jacobian) through the
-	// virtual one-argument overload, so there is no window in which
-	// GetLocalTransformMatrix() or GetArea() still describes the PREVIOUS
-	// transform while GetFinalTransformMatrix() describes identity.  87 made
-	// the local matrix a first-class read (the CST transform commit uses it),
-	// so that window would be a live hazard rather than an academic one.
+	// Re-finalize to refresh m_mxLocalTrans and subclass caches (e.g. Object area/tangent sign).
 	FinalizeTransformations();
 }
 
@@ -521,19 +500,12 @@ void Transformable::ReplaceFinalStack_( const Matrix4& matrix )
 bool Transformable::SetMirrorAxis( int axis )
 {
 	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return false;
-	// REFUSED, not clamped: the axis comes from an authored `mirror x|y|z` token,
-	// and a value outside the set means the caller mis-decoded it.  Mapping it onto
-	// some axis would reflect the object about a plane nobody asked for, which is
-	// indistinguishable from a correct render of a different scene.
+	// Refuse (never clamp) out-of-range axes so bad tokens don't mirror silently.
 	if( axis < -1 || axis > 2 ) return false;
 	m_mirrorAxis = axis;
 	m_mxMirror = Matrix4Ops::Identity();
-	// A reflection is its OWN inverse and its determinant is -1.  Object::
-	// FinalizeTransformations reads that sign into m_tangentFrameSign (so an
-	// imported TANGENT.w flips and tangent-space normal maps stay right) and takes
-	// |det| for the world-area Jacobian (so a mirrored EMITTER keeps its true,
-	// positive area).  Both were already written for `scale -1 1 1`; this is the
-	// same negative-determinant transform arriving from a named param.
+	// Determinant -1: Object::FinalizeTransformations flips m_tangentFrameSign
+	// and takes |det| for world-area Jacobian (same path as negative scale).
 	if( axis == 0 )      m_mxMirror._00 = -1;
 	else if( axis == 1 ) m_mxMirror._11 = -1;
 	else if( axis == 2 ) m_mxMirror._22 = -1;
@@ -543,25 +515,15 @@ bool Transformable::SetMirrorAxis( int axis )
 void Transformable::FinalizeTransformations( )
 {
 	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
-	// Re-compose against the parent world transform this node was LAST given.
-	// Every pre-hierarchy caller (Job::AddObject, the editor's op apply, the
-	// animator's RegenerateData) reaches finalize through this overload and
-	// keeps a parented node correctly composed without knowing the graph
-	// exists.  A root's m_mxParentWorld is identity, so this is byte-identical
-	// to the historical implementation for an unparented node.
+	// Re-compose against the last parent world transform (identity for roots).
 	FinalizeTransformations( m_mxParentWorld );
 }
 
 void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
-	// ---- LOCAL: this node's own authored transform, no parent contribution.
-	// First apply the scale, orientation and position matrices
-	// doc 89 slice C appends the MIRROR at the RIGHT (innermost) end:
-	// `P * O * Stretch * Scale * M`.  Innermost is what makes `mirror` reflect the
-	// SHAPE in its own frame and then place the reflected shape by this node's own
-	// transform -- so `mirror x  position 3 0 0` puts a reflected copy at +3, where
-	// an outermost reflection would put the un-reflected shape at -3.
+	// Local transform: P * O * Stretch * Scale * M (mirror innermost so it
+	// reflects the shape in its own frame before positioning).
 	m_mxLocalTrans = m_mxPosition * m_mxOrientation * m_mxStretch * m_mxScale * m_mxMirror;
 
 	// Go through the transformation stack and multiply the transformations...
@@ -570,76 +532,20 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 		m_mxLocalTrans = (*i) * m_mxLocalTrans;
 	}
 
-	// ---- PARENT: stored by VALUE and re-supplied on every call, never pushed
-	// onto m_transformstack.  The stack has no self-clearing step, so a pushed
-	// parent matrix would compose a second time on the next re-apply and
-	// square in another factor without bound -- the 86 §3 bug class.  As an
-	// argument it is idempotent: this function always yields exactly
-	// `parentWorld * local`, however many times it runs.
+	// Store parentWorld by value (never push onto m_transformstack) so repeated
+	// finalize calls stay idempotent (`parentWorld * local`).
 	m_mxParentWorld = parentWorld;
 
-	// IS THE PARENT INVERTIBLE, well enough to express a world-space operation
-	// in this node's local frame?  FOUR formulations were tried and are wrong.
-	// The reasoning is recorded because each of them looks obviously right, and
-	// three of them were reached for in successive review rounds.
-	//
-	// (1) NOT an absolute residual epsilon on |P*P^-1 - I|.  The residual in an
-	// affine matrix's translation column grows like ||t||*eps, so a
-	// well-conditioned container at `position 1e7 0 0` with any rotation gets
-	// rejected while a tiny near-singular linear part sails through.
-	//
-	// (2) NOT the componentwise backward error |P*P^-1 - I| <= tol*|P|*|P^-1|,
-	// though that IS scale-invariant.  Backward error is small BY CONSTRUCTION
-	// for the computed inverse of a singular matrix: once the determinant
-	// underflows to ~1e-17 instead of exactly 0 -- which is what COMPOSITION
-	// does, a flattened grandparent's exact zero becoming a rounding residue
-	// two multiplies later -- the adjugate/det inverse has entries ~1e16, the
-	// bound becomes ~1e16, and an O(1) residual passes at any tolerance.
-	//
-	// (3) NOT the Hadamard ratio |det L| / (||c0|| ||c1|| ||c2||).  It measures
-	// COLUMN DEPENDENCE, not conditioning: it is invariant under per-axis
-	// scaling, the very operation that sends the condition number to infinity.
-	// `Rz(45) * diag(1e8, 1e-8, 1)` has ratio 1.000 and condition number 1e16.
-	//
-	// (4) NOT a condition number built from the adjugate inverse of the RAW
-	// linear part either.  For a RANK-1 matrix every 2x2 cofactor is zero in
-	// exact arithmetic, so det and every adjugate entry are rounding residue of
-	// the SAME order, their quotient is O(1), and the computed condition number
-	// comes out ~20 -- noise divided by noise.  Measured: 80% of composed
-	// rank-1 parents accepted.  Rank 2 was caught, rank 1 was not.
-	//
-	// What works is to NORMALISE the linear part first and then ask both
-	// questions of the normalised matrix, where every quantity is O(1) and an
-	// absolute tolerance is therefore meaningful:
-	//
-	//   a. IS THE COMPUTED INVERSE ACTUALLY AN INVERSE?  ||Lh*Lh^-1 - I||_F.
-	//      For any rank-deficient Lh this is O(1) (measured 4.5 to 8.6), and
-	//      for a healthy one it is ~1e-16.  This is the rank test, and it works
-	//      at rank 1 and rank 2 alike because it never divides two residues.
-	//   b. WILL CONJUGATION KEEP ENOUGH PRECISION?  ||Lh^-1||_F, which with
-	//      ||Lh||_F == 1 IS the Frobenius condition number.  1e9 keeps ~7 of
-	//      double's ~16 digits through `P^-1 * worldOp * P`.
-	//
-	// Normalising also removes the under/overflow edge the earlier forms had --
-	// but ONLY with a max-magnitude normaliser.  A Frobenius normaliser sums
-	// squares and so has an edge of its own at ~1e+-154; it did not remove the
-	// earlier forms' edge, it moved it, and a perfectly conditioned uniform
-	// `scale 1e-170` was still refused.  See the normaliser below.
-	//
-	// Verified by sweep against these exact formulas: 0/4000 composed rank-1
-	// accepted, 0/4000 rank-2, 4000/4000 healthy; the anisotropic 1e16 and
-	// 1e10 cases rejected, 1e6 accepted; reflection and shear accepted.
-	//
-	// The projective row must be (0,0,0,1): `matrix` takes 16 free doubles, so
-	// a projective parent is authorable, and for one of those the upper 3x3 is
-	// not the whole story.  Refused rather than guessed at.
-	// The inverse is built BELOW, from the same normalised quantities the test
-	// validates.  Matrix4Ops::Inverse is deliberately NOT used: it is the raw
-	// 4x4 adjugate/determinant, and that determinant under/overflows exactly
-	// where normalisation exists to stop it -- a uniform `scale 1e-120` gives
-	// det == 0.0 and Inverse then returns its INPUT, so the flag would say
-	// "invertible" while the stored matrix was P itself.  Validating one matrix
-	// and storing another is the shape of that bug; this stores what it checks.
+	// Validate parent invertibility on the max-entry-normalized 3x3 linear part
+	// Lh (requires projective row (0,0,0,1) and all finite entries including
+	// translation):
+	//   (a) Rank: ||Lh * Lh^-1 - I||_F <= 1e-6 (catches rank-1/2 matrices where
+	//       raw adjugate/det ratios yield O(1) noise).
+	//   (b) Conditioning: ||Lh^-1||_F <= 1e9 (~7 digits preserved through
+	//       P^-1 * worldOp * P).
+	// Builds m_mxParentWorldInv directly from the validated Lh^-1 / frob rather
+	// than Matrix4Ops::Inverse (avoiding raw 4x4 determinant under/overflow) and
+	// verifies finiteness after un-normalizing.
 	{
 		const Scalar* p = &m_mxParentWorld._00;
 		double L[9];
@@ -654,22 +560,12 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 				if( a2 > biggest ) biggest = a2;
 			}
 		}
-		// The TRANSLATION column too (_30.._32 = p[12..14]).  It is not part of
-		// the linear part and cannot make an affine map singular, but it IS fed
-		// into the stored inverse's own translation below, so a non-finite one
-		// would produce a NaN "inverse" behind a TRUE flag.  An earlier revision
-		// checked only the 3x3 and did exactly that.
+		// Check translation column finiteness too (feeds into stored inverse).
 		for( int k = 12; k < 15; ++k ) {
 			if( !IsFiniteDouble( static_cast<double>( p[k] ) ) ) finite = false;
 		}
-		// Normalise by the LARGEST MAGNITUDE ENTRY, not the Frobenius norm.
-		// Frobenius sums squares, so it overflows above ~1e154 and underflows
-		// below ~1e-154 -- it did not remove the earlier forms' under/overflow
-		// edge, it moved it, and a perfectly conditioned uniform `scale 1e-170`
-		// was still refused.  max|entry| is exact and cannot overflow, and it
-		// leaves ||Lh||_F in [1, 3], so `normInv` below is the Frobenius
-		// condition number to within a factor of 3 -- immaterial against a 1e9
-		// bound.
+		// Normalize by max|entry| (not Frobenius, which under/overflows near 1e+-154);
+		// ||Lh||_F stays in [1, 3], so normInv tracks Frobenius condition number within 3x.
 		const double frob = biggest;
 		const bool affine = ( p[3] == Scalar( 0 ) ) && ( p[7] == Scalar( 0 ) )
 		                 && ( p[11] == Scalar( 0 ) ) && ( p[15] == Scalar( 1 ) );
@@ -718,13 +614,7 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 				               && IsFiniteDouble( normInv )  && normInv  <= 1e9;      // (b) conditioning
 
 				if( wellConditioned ) {
-					// Un-normalise into the real inverse.  For an affine
-					// P = [ L | t ],  P^-1 = [ L^-1 | -L^-1 t ], and
-					// L^-1 = Lh^-1 / frob.  Every quantity here came out of the
-					// normalised computation that was just verified, so the
-					// stored matrix is exactly the one the flag vouches for --
-					// and it is immune to the determinant under/overflow that
-					// the raw 4x4 inverse suffers.
+					// Un-normalize P^-1 = [ L^-1 | -L^-1 t ] with L^-1 = Lh^-1 / frob.
 					Matrix4 pinv = Matrix4Ops::Identity();
 					Scalar* q = &pinv._00;
 					for( int c = 0; c < 3; ++c ) {
@@ -741,12 +631,7 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 						const double li2 = inv[2 * 3 + r] / frob;
 						q[12 + r] = static_cast<Scalar>( -( li0 * tx + li1 * ty + li2 * tz ) );
 					}
-					// The un-normalisation itself can overflow: L^-1 = Lh^-1/frob
-					// blows up for a tiny `frob`, and -L^-1 t multiplies that by
-					// the translation.  Both run AFTER the two tests above, so
-					// without this a TRUE flag could front a non-finite inverse
-					// -- exactly the "validate one thing, store another" shape
-					// this block already fixed once.  Check what is stored.
+					// Verify un-normalized entries did not overflow (tiny frob or huge t).
 					bool pinvFinite = true;
 					{
 						const Scalar* qq = &pinv._00;
@@ -762,9 +647,7 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 
 		m_bParentWorldInvertible = wellConditioned;
 		if( !wellConditioned ) {
-			// A garbage "inverse" is worse than none: WorldToLocal returns its
-			// input in this state, and its one caller is required to check the
-			// flag and refuse rather than compose with it.
+			// Clear to identity; callers must check m_bParentWorldInvertible before use.
 			m_mxParentWorldInv = Matrix4Ops::Identity();
 		}
 	}
@@ -831,11 +714,7 @@ TransformStateV2 Transformable::CaptureTransformStateV2( ) const
 	state.finalScaleBaseValid = metadata.scaleBaseValid;
 	state.stackEntries.assign( m_transformstack.begin(), m_transformstack.end() );
 	state.authoritativeStackIndex = metadata.authoritativeIndex;
-	// doc 89 slice C.  Carried by V2 only: TransformState (V1) is a frozen
-	// by-value struct with binary callers, so the mirror cannot go in it -- which
-	// is why RestoreTransformState leaves the mirror ALONE rather than resetting
-	// it.  Restoring a V1 snapshot onto a mirrored node keeps the mirror, matching
-	// V1's contract of restoring exactly what it captured.
+	// Mirror is carried in V2 only (V1 TransformState is ABI-frozen, so V1 restore leaves it untouched).
 	state.mirrorAxis = m_mirrorAxis;
 	return state;
 }

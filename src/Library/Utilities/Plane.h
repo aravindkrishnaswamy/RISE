@@ -1,11 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  Ray.h - Definition of a 3D plane class
+//  Plane.h - Definition of an oriented 3D plane (point-normal form)
 //
 //  Author: Russell O'Connor
 //  Date of Birth: May 17, 2004
 //  Tabs: 4
-//  Comments:  
+//  Comments: `normal` is unit-length when constructed via (p, n) or Set().
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -48,6 +48,8 @@ namespace RISE
 			normal = Vector3Ops::Normalize(n);
 		}
 
+		// Signed perpendicular distance from the plane: positive on the
+		// normal-facing half-space, assuming `normal` is unit-length.
 		Scalar		Distance( const Point3& p ) const {
 			return Vector3Ops::Dot(Vector3Ops::mkVector3(p,origin), normal);
 		}
@@ -61,6 +63,8 @@ namespace RISE
 			return *this;
 		}
 
+		// Oriented plane equality: normals match within epsilon (opposite
+		// normals are not equal) and b.origin lies within epsilon of plane a.
 		static inline bool AreEqual( const Plane& a, const Plane& b, const Scalar epsilon )
 		{
 			return Vector3Ops::AreEqual(a.normal, b.normal, epsilon) &&

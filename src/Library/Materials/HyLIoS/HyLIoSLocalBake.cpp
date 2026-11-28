@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  HyLIoSLocalBake.cpp - Strict-FP IEEE binary64 offline baker for
+//    HyLIoS local skin response assets (analog no-RR multi-replicate
+//    Monte Carlo, conservative downward rounding, and bound CBOR
+//    statistics + exact source artifact publication/verification).
+//
+//  Tabs: 4
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "HyLIoSLocalBake.h"
 #include "HyLIoSOptics.h"
@@ -51,6 +63,8 @@ V Series(const std::vector<double>& values) {
     if(constant)return Number(values.front());
     return V::BytesValue(packed);
 }
+// Deduplicates per-layer wavelength columns into a compact CBOR dictionary
+// (constant series collapse to a single float64; varying series pack LE f64).
 V ColumnDictionary(const std::array<std::vector<double>,6>& values,const std::array<bool,6>* active=nullptr) {
     V::Values columns,indices;std::vector<B> identities;
     for(std::size_t layer=0;layer<6;++layer) {
@@ -90,6 +104,9 @@ struct Prepared {
     LocalResponseDefinition blank;std::shared_ptr<const HyLIoSLocalResponse> geometry;
     LocalAssetSemanticIdentity semantic;U cells=0,outs=0,total=0,perNode=0,rows=0,reportBound=0;
 };
+// Pre-generation admission and setup: checks file/memory/report/axis budgets,
+// resolves all wavelength nodes (asserting invariant layer geometry across nm),
+// builds forward transport kernels, and assembles the 9 semantic identity records.
 Prepared Prepare(const std::string& bytes,const LocalBakeConfig& c,bool modelOnly=false){
     Require(c.maximumReportBytes<=64*1024*1024,"statistics report hard cap is 64MiB");
     Require(c.limits.maximumMetadataBytes>0&&c.limits.maximumMetadataBytes<=64*1024,"metadata profile hard cap is 64KiB");
@@ -242,6 +259,8 @@ Prepared Prepare(const std::string& bytes,const LocalBakeConfig& c,bool modelOnl
 }
 struct Row {std::vector<std::vector<U>> counts;std::vector<U> bulk,surface;};
 struct Stats {double mean=0,historySE=0,replicateSE=0,lower95=0,upper95=1;};
+// Computes pooled bin mean, Bernoulli history SE, independent replicate SE,
+// and diagnostic 95% Wilson score interval across replicate bin counts.
 Stats Statistics(const std::vector<U>& counts,U n){
     const U sum=std::accumulate(counts.begin(),counts.end(),U{0});const double mean=static_cast<double>(sum)/static_cast<double>(Mul(counts.size(),n));
     double variance=0;for(U x:counts){const double d=static_cast<double>(x)/static_cast<double>(n)-mean;variance+=d*d;}
@@ -427,6 +446,9 @@ void ClosedKeys(const V& record,std::initializer_list<const char*> keys) {
 U RecordUInt(const V& record,const char* key) {const auto* value=record.Find(key);Require(value&&value->GetType()==V::UnsignedInteger,std::string("invalid integer record field: ")+key);return value->GetIntegerArgument();}
 double RecordFloat(const V& record,const char* key) {const auto* value=record.Find(key);Require(value&&value->GetType()==V::Float64&&std::isfinite(value->GetFloat())&&value->GetFloat()>=0,std::string("invalid float record field: ")+key);return value->GetFloat();}
 void RecordLiteral(const V& record,const char* key,const char* literal) {const auto* value=record.Find(key);Require(value&&value->GetType()==V::Text&&value->GetText()==literal,std::string("record literal mismatch: ")+key);}
+// Streams and verifies the closed hylios_local_full_statistics_v2 CBOR report:
+// checks count conservation, exact downward-rounded asset/guide coefficients,
+// work totals, and consistency with the production statistics summary record.
 ReportSummary CheckReportBinding(const B& input,const SourceInfo& source,const LocalAssetProductionIdentity& production,U nodes,const ReportValues& values) {
     const U cells=values.geometry.Storage().incidentCells,outgoing=values.geometry.Storage().outgoingCells;
     const U reportEnvelope=Add(16384,Mul(Mul(nodes,Add(cells,1)),Add(4096,Mul(Add(production.replicates,1),Mul(Add(outgoing,3),128)))));
@@ -539,6 +561,8 @@ void PublishArtifact(const std::string& path,const B& bytes,const char* label) {
 
 }
 LocalBakeFailure::LocalBakeFailure(const std::string& why,U index,U completed,U bulk,U surface,ForwardTermination t):std::runtime_error("HyLIoS local bake refused: "+why),historyIndex(index),completedHistories(completed),bulkWork(bulk),surfaceWork(surface),termination(t){}
+// Coordinate transforms between right-handed response space and oracle
+// (+x, -y, -z) slab space, plus conservative downward-rounded estimators.
 namespace LocalBakeDetail {
 SlabVector Launch(LocalResponsePoint p){const auto w=HyLIoSLocalResponse::ToDirection(p);return {-w.x,w.y,w.z};}
 LocalResponsePoint Escaped(SlabVector d){return HyLIoSLocalResponse::FromDirection({d.x,-d.y,-d.z});}
@@ -561,6 +585,9 @@ LocalAssetSemanticIdentity PrepareLocalBakeSemantic(const std::string& bytes,con
     semantic.maximumReportBytes=64*1024*1024;semantic.limits.maximumMetadataBytes=64*1024;
     return Prepare(bytes,semantic,true).semantic;
 }
+// Executes deterministic SplitMix64-indexed analog histories across all
+// (wavelength, incident cell / exact-normal guide, replicate) rows, builds
+// downward-rounded coefficients and full statistics CBOR report, and checks passivity.
 LocalBakeResult BakeLocalResponse(const std::string& bytes,const LocalBakeConfig& c,const LocalBakeExecution& e){
     Require(std::fegetround()==FE_TONEAREST,"strict statistics profile requires round-to-nearest arithmetic");
     Require(e.historyChunkSize>0,"zero execution chunk size");auto p=Prepare(bytes,c);LocalBakeResult result;result.asset.response=std::move(p.blank);result.asset.semantic=p.semantic;result.sourceArtifact.assign(bytes.begin(),bytes.end());
@@ -627,6 +654,8 @@ LocalBakeResult BakeLocalResponse(const std::string& bytes,const LocalBakeConfig
     // Exact represented-area passivity is checked before float32 quantization.
     HyLIoSLocalResponse::Create(result.asset.response,c.limits.response);return result;
 }
+// Verifies semantic re-derivation and report bindings, then atomically publishes
+// the exact source JSON, full statistics CBOR report, and local response asset.
 void PublishLocalBake(const std::string& path,const LocalBakeResult& r,const LocalAssetLimits& limits,const std::function<void()>& beforePublication){
     Require(std::fegetround()==FE_TONEAREST,"strict statistics profile requires round-to-nearest arithmetic");
     ValidatePath(path);
@@ -660,6 +689,8 @@ void PublishLocalBake(const std::string& path,const LocalBakeResult& r,const Loc
     PublishArtifact(reportPath,r.report,"statistics report");
     LocalAssetDetail::SaveObserved(path,r.asset,limits,beforePublication);
 }
+// Loads a published local response asset, re-derives its semantic identity from
+// the bound source artifact, and validates all quantized entries against the report.
 std::shared_ptr<const HyLIoSLocalResponseAsset> LoadLocalBake(const std::string& path,const LocalAssetSemanticIdentity& expected,const LocalAssetLimits& limits) {
     Require(std::fegetround()==FE_TONEAREST,"strict statistics profile requires round-to-nearest arithmetic");
     ValidatePath(path);

@@ -1,12 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  Time.cpp - Implementation of the Timer class and time 
-//  functions   
+//  RTime.cpp - Implementation of the Timer class and time functions
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 15, 2001
 //  Tabs: 4
-//  Comments:
+//  Comments: GetMilliseconds() is a legacy 32-bit wall/tick counter
+//    (wraps ~49.7 days; POSIX gettimeofday is non-monotonic). Timer uses
+//    std::chrono::steady_clock (monotonic, truncated to 32-bit ms).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

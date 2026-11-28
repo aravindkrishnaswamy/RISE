@@ -5,7 +5,9 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: October 20, 2001
 //  Tabs: 4
-//  Comments: Much here is influenced by ggLibrary
+//  Comments: Much here is influenced by ggLibrary.
+//    Stores a 3D frame (U, V, W), normally right-handed (U x V = W;
+//    FlipV() intentionally flips chirality for mirrored instances).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -70,6 +72,7 @@ namespace RISE
 		inline Vector3	v() const { return V; };
 		inline Vector3	w() const { return W; };
 
+		// Negates both W and U (leaving V fixed) so handedness is preserved.
 		inline	void FlipW() { W = -W; U = -U; }
 
 		//! Negates V ONLY, leaving U and W untouched -- deliberately turns a
@@ -93,11 +96,14 @@ namespace RISE
 		//! base axis to remain correct.
 		inline	void FlipV() { V = -V; }
 
-		// Generates a transformation matrix for this ONB
+		// Transformation matrices using RISE's row-vector convention (v * M):
+		// BasisToCanonical puts U,V,W in rows (basis -> canonical);
+		// CanonicalToBasis puts U,V,W in columns (canonical -> basis).
 		Matrix4	GetBasisToCanonicalMatrix( ) const;
 		Matrix4	GetCanonicalToBasisMatrix( ) const;
 
-		// Transforms a vector from Canonical to this casis
+		// Transforms a vector expressed in this basis (U,V,W) into canonical/world space:
+		// returns v.x*U + v.y*V + v.z*W.
 		Vector3 Transform( const Vector3& v ) const;
 	};
 }

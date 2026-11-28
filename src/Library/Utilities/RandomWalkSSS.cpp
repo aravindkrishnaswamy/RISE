@@ -66,11 +66,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 		return result;
 	}
 
-	// DL-370: the walk's medium can change mid-walk -- a walk that reaches
-	// a face shared with a touching random-walk neighbour crosses into it
-	// (see the exit event below) -- so the coefficients, the phase
-	// asymmetry, the index and the object being walked are walk STATE,
-	// loaded here from the arguments and reloaded at every crossing.
+	// Active walk medium state (reloaded if the walk crosses into a touching RW neighbour).
 	const IObject* pCur = pObject;
 	const IMaterial* pCurMaterial = 0;	// 0 = the caller's (entry) material
 	RISEPel cur_sigma_a = sigma_a;
@@ -79,22 +75,13 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	Scalar curG = g;
 	Scalar curIOR = ior;
 
-	// Preserve the actual RGB proposal rates for both sampling and density
-	// evaluation. Physical extinction stays separate in each numerator.
+	// Preserve actual RGB proposal rates separately from physical extinction.
 	Scalar sigma_t_max = 0;
 	RISEPel proposalRates;
 	bool rgbUsesFallback = false;
 
-	// Scalar coefficients for the NM (single-wavelength) path.  NM callers
-	// pass the material's coefficients AT THE TRACED WAVELENGTH, broadcast
-	// to all three channels (IMaterial::GetRandomWalkSSSParamsNM; DL-374),
-	// and a broadcast triple is read exactly.  A non-broadcast triple is an
-	// RGB caller's colour; it is collapsed to its Rec. 709 luminance as a
-	// last resort, which makes the walk wavelength-independent (grey) --
-	// before DL-374 the material handed this path its RGB snapshot, so every
-	// spectral render of random-walk SSS was achromatic.  These define
-	// physical collision and survival transmittance. A fallback proposal may
-	// use another rate, which event weights must divide out.
+	// NM scalar extraction: wavelength-evaluated NM params are broadcast across
+	// RGB (read directly); non-broadcast RGB falls back to Rec. 709 luminance.
 	auto nmScalar = []( const RISEPel& c ) -> Scalar {
 		return ( c[0] == c[1] && c[1] == c[2] ) ? c[0]
 			: 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -130,22 +117,12 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const Vector3& surfNormal = ri.vNormal;
 	Vector3 dir = Vector3Ops::Normalize( ri.ray.Dir() );
 
-	// Ensure normal points outward (toward the incoming ray).  Side-of-
-	// surface decision uses the GEOMETRIC normal — entering vs exiting
-	// a real medium boundary is a topology question (PBRT 4e §9.5).
-	// Bump-perturbed shading normals can flip the cosIncoming sign and
-	// drive the wrong refract/TIR branch on bumpy SSS skin.
+	// Side-of-surface test uses vGeomNormal (topology, PBRT 4e §9.5) so bump
+	// normals cannot invert the refract/TIR branch.
 	const Scalar cosIncomingGeom = Vector3Ops::Dot( ri.vGeomNormal, -dir );
 	Vector3 outwardNormal = ( cosIncomingGeom > 0 ) ? surfNormal : -surfNormal;
 
-	// DL-49: the boundary is an interface between the medium the ray
-	// arrived through and this material -- NOT air and this material.
-	// `ri.ambientIOR` is that exterior index (stamped from the IOR stack
-	// by every integrator; 1.0 for a stackless record).  The exit below
-	// leaves into the SAME exterior: the walk stays inside the exterior's
-	// SSS bodies (one object, or touching ones -- DL-370), and the caller
-	// continues the exit ray with the unchanged IOR stack.  In air every
-	// call below is the pre-DL-49 call bit-for-bit.
+	// Exterior IOR from ri.ambientIOR (default 1.0); walk exits into the same medium.
 	const Scalar nExterior = BSSRDFSampling::ExteriorIOR( ri );
 
 	// Snell's law refraction: exterior (nExterior) -> medium (ior).
@@ -207,14 +184,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			exitRI = fallbackRI;
 		}
 
-        // Capture the effective physical endpoint before shading modification.
-        // This also covers the front-face fallback above. Internal Fresnel
-        // boundaries still define the opaque-domain proposal: no alpha draw
-        // occurs until this boundary is selected as the final exit below.
-        // Round 3 P1-4: on a MixMaterial on the originating body, compose mix
-        // coverage with the resolved SSS leaf's alpha and inherit its modifier.
-        // Slice 3 R1 A-P2-4: stamp signals & pCamera on exitRI before coverage
-        // and modifier evaluation.
+        // Stamp live signals/camera and evaluate physical exit coverage before
+        // modifiers; alpha is tested once at final exit (not on internal bounces).
+        // On the originating MixMaterial, compose mix + leaf alpha and inherit leaf modifier.
         exitRI.geometric.rast = ri.rast;
         exitRI.geometric.pCamera = ri.pCamera;
         exitRI.geometric.signals.pScene = ri.signals.pScene;
@@ -297,21 +269,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 				}
 			}
 
-			// Update throughput using mixture PDF formulation.
-			//
-			// The distance t was sampled from q[ch] * exp(-q[ch]*t),
-			// where q is the effective proposal rate after fallback.
-			// The mixture PDF over all channels (uniform 1/3 selection) is:
-			//   p(t) = (1/3) * sum_c q[c] * exp(-q[c] * t)
-			//
-			// The scatter contribution for channel c at distance t is:
-			//   f[c] = sigma_s[c] * exp(-sigma_t[c] * t)
-			//
-			// The IS weight: f[c] / p(t) = sigma_s[c] * Tr[c] / pdfMixture
-			//
-			// For isotropic media (all channels equal), this simplifies to:
-			//   sigma_s / sigma_t = albedo (per step)
-			//
+			// Mixture IS weight: sigma_s[c] * exp(-sigma_t[c]*t) / p(t), where
+			// p(t) = (1/3) * sum_k q[k] * exp(-q[k]*t) uses effective proposal rates q.
 			if( nm > 0 )
 			{
 				// Physical collision density divided by the sampled exponential
@@ -407,12 +366,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			Vector3 exitGeomNormal = exitRI.geometric.vGeomNormal;
 			const Vector3 rawNormal = exitNormal;
 
-			// Ensure exit normal points outward (away from interior).
-			// Side-of-surface decision uses the GEOMETRIC normal — the
-			// "is this hit's normal pointing inward or outward" test is
-			// a topology question (PBRT 4e §9.5 / §10.1.1).  Flip both
-			// shading and geometric in lock-step so downstream consumers
-			// see a consistent outward-facing pair.
+			// Ensure both exit normals point outward using geometric facing (PBRT 4e §9.5).
 			if( Vector3Ops::Dot( exitGeomNormal, dir ) < 0 ) {
 				exitNormal = -exitNormal;
 				exitGeomNormal = -exitGeomNormal;
@@ -421,62 +375,12 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			//
 			// 3e. Fresnel at exit boundary
 			//
-			// DL-370: an exit whose continuation would start INSIDE another
-			// random-walk body is not an exit to the exterior.  The caller
-			// starts the continuation (and NEE) at the exit point offset
-			// BSSRDF_RAY_EPSILON along the outward normal (`entryPoint`
-			// below).  When a touching neighbour's face coincides with this
-			// one -- or lies within that offset -- the offset point is
-			// inside the neighbour, the continuation meets the neighbour's
-			// far face from behind with a stack that never entered it, and
-			// the path dies there (the random-walk entry gate rejects a back
-			// face; the SSS SPF absorbs it): a closed room of touching
-			// conservative walls read 0.70 in a white furnace.  So the walk
-			// CROSSES: the interface between the two bodies is a dielectric
-			// boundary of relative index n_neighbour / n_current (none at
-			// all when they match), and a transmitted walk continues inside
-			// the neighbour with its coefficients until it leaves the
-			// assembly.
-			//
-			// CONTAINMENT of that offset point is asked of the scene
-			// (`IObjectManager::RandomWalkObjectContaining`), one candidate
-			// object at a time, and decided winding-independently wherever
-			// the candidate can sign a distance (an analytic solid, a
-			// certified-watertight mesh, a CSG composite), and otherwise by
-			// the parity of the candidate's own crossings along the outward
-			// normal AND its reverse (both odd), which does not read the
-			// winding either (see that interface's comment).  Asking each body ALONE is what
-			// makes the answer immune to coincident faces: a probe along the
-			// walk ray over the whole scene tied between the walker's own
-			// exit face and the neighbour's (both at the exit,
-			// indistinguishable by facing on a double-sided mesh), and a
-			// whole-scene ray from the offset point ties again wherever the
-			// neighbour's far face touches a third body (the corners of a
-			// closed room of touching walls).  The point is past the walker's
-			// own exit face, so a body coincident with that face on the
-			// WALKER's side (an inset part flush with the surface, a sheet
-			// lying on it) does not contain it and is never reported.  Only
-			// random-walk neighbours are crossed into; any other body the
-			// offset point lies inside (a diffusion body, an opaque surface)
-			// is met by the integrator's CONTACT LAUNCH after the walk
-			// returns (DL-408, BSSRDFSampling::FindExitContact, from
-			// `result.boundaryPoint`).  Residuals: shells of the
-			// walker's OWN object (the neighbour must be another object), a
-			// point between two disjoint open sheets of one object reads
-			// inside, the walk keeps the entry body's boundaryFilter / maxBounces /
-			// maxDepth, and the neighbour's alpha coverage (DL-214) is not
-			// consulted.
-			//
-			// COST: every exit event -- including the ones that then reflect
-			// at the boundary -- whose offset point lies in ANOTHER
-			// random-walk object's world bounding box pays the containment
-			// query (a closed-form signed distance for an analytic solid; a
-			// closest-point query plus a parity ray walk for a certified
-			// mesh; one ray per crossing each way for an uncertified one),
-			// touching or not.  An exit in no such box pays one
-			// box-tree walk.  Nothing draws from the sampler, so a walk that
-			// never meets a neighbour is unchanged bit for bit.  A record
-			// without a scene (a unit test's synthetic hit) skips it.
+			// Check if the outward offset point lies inside a touching
+			// random-walk neighbour (queried per-object to avoid coincident-
+			// face ties).  If so, refract/reflect across curIOR -> neighbour
+			// IOR and continue walking inside the neighbour; non-RW contacts
+			// are handled by BSSRDFSampling::FindExitContact after return.
+			// Draws no samples when no neighbour is met; skips if pScene is null.
 			const Point3 offsetPoint = Point3Ops::mkPoint3( exitPoint,
 				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			if( ri.signals.pScene )
@@ -567,23 +471,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// the (1-F) transmission factor, so no explicit Fresnel
 			// weight is applied here.
 
-			//
-			// 3f. Generate cosine-weighted direction from exit normal
-			//
-			// NOTE: This always produces a diffuse (cosine-weighted)
-			// exit direction, which is the standard approach for
-			// random-walk SSS following Chiang & Burley 2016.  The
-			// walk models MULTIPLE SCATTERING only — the ballistic /
-			// single-scatter / refractive-transmission lobe is NOT
-			// included here and should be modeled by a separate
-			// dielectric BSDF layer at the material level.
-			//
-			// When sigma_s is very small or zero, the walk still
-			// produces cosine-weighted exits (with Beer-Lambert
-			// attenuation), which is nonphysical for that regime.
-			// This is by design: low-scatter media should use a
-			// glass/dielectric material, not the SSS walk.
-			//
+			// 3f. Diffuse cosine-weighted exit direction (Chiang & Burley 2016
+			// multiple-scattering model; ballistic/dielectric transmission belongs
+			// in a separate BSDF layer).
 			OrthonormalBasis3D exitONB;
 			exitONB.CreateFromW( exitNormal );
 
@@ -610,17 +500,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, curIOR, nExterior );
 			const Scalar SwFactor = (c_norm > 1e-20) ? FtEntry / c_norm : FtEntry;
 
-			// IS weight for the cosine-sampled continuation direction.
-			//
-			// The true Sw is Ft / (c * PI).  The continuation direction
-			// is sampled from cosine-weighted PDF = cos(theta) / PI.
-			// In the rendering equation the IS weight is:
-			//
-			//   Sw * cos / PDF = [Ft / (c*PI)] * cos / [cos/PI]
-			//                  = Ft / c
-			//
-			// The PI in Sw and the PI in the cosine PDF cancel, leaving
-			// SwFactor = Ft / c as the correct IS weight per step.
+			// Continuation IS weight: Sw * cos / cosinePdf = (Ft / (c*PI)) * cos / (cos/PI) = Ft / c.
 			result.weight = throughput * SwFactor;
 			result.weightSpatial = throughput;
 
@@ -634,13 +514,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 				result.weightSpatialNM = tpScalar;
 			}
 
-			// Offset exit point along the surface normal so that
-			// shadow rays, connection rays, and the continuation
-			// ray all start above the originating surface.  Using
-			// the normal offset (rather than advancing along the
-			// ray direction) ensures clearance even for near-
-			// grazing directions, and keeps the ray origin
-			// consistent with the stored BDPT vertex position.
+			// Offset exit point along exitNormal so NEE, BDPT connections, and
+			// grazing continuation rays clear the surface consistently.
 			result.boundaryPoint = exitPoint;
 			result.entryPoint = Point3Ops::mkPoint3( exitPoint,
 				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
@@ -684,13 +559,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			result.scatteredRay = Ray( result.entryPoint, cosineDir );
 			result.cosinePdf = cosTheta * INV_PI;
 
-			// The random walk has no analytical area PDF for the exit
-			// point — it is implicitly encoded in the throughput weight.
-			// In BDPT the entry vertex is marked isDelta=true with
-			// isConnectible=false and pdfFwd=0.  This makes the MIS
-			// ratio chain pass through cleanly via remap0(0)/remap0(0)=1
-			// and prevents connection strategies from targeting a vertex
-			// whose spatial PDF is unknown.
+			// Random walk has no analytical area PDF (encoded in throughput);
+			// BDPT marks the entry vertex isDelta=true, isConnectible=false, pdfFwd=0.
 			result.pdfSurface = 0;
 			// DL-370: the body the walk left (the entry object unless it
 			// crossed into a touching neighbour) and its index.

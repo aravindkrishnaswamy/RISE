@@ -1,51 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ZSobolSampler.h - ISampler implementation for blue-noise
-//    screen-space error distribution using Morton-indexed Sobol
-//    sequences.
+//  ZSobolSampler.h - Morton-indexed Sobol' sampler for blue-noise
+//    screen-space error distribution (Ahmed & Wonka 2020; PBRT 4e §8.7).
 //
-//    Extends SobolSampler by computing the global Sobol sample
-//    index from the pixel's Morton code (Z-curve index) rather
-//    than using a simple per-pixel counter.  This ensures that
-//    spatially adjacent pixels (in Morton order) receive
-//    consecutive sub-sequences of the (0,2)-net, producing
-//    blue-noise error distribution across screen space.
-//
-//    At low sample counts (16-32 SPP), the error appears as
-//    high-frequency (blue) noise rather than white noise, which
-//    is both visually superior and produces better input for
-//    denoising (OIDN).  At high sample counts, convergence is
-//    equivalent to standard Owen-scrambled Sobol.
-//
-//    The caller must supply:
-//      sampleIndex       - sample within this pixel [0, SPP)
-//      mortonPixelIndex  - MortonCode::Morton2D(x, y)
-//      log2SPP           - MortonCode::Log2Int(RoundUpPow2(SPP))
-//      seed              - scramble seed (e.g., HashCombine(mortonIndex, 0))
-//
-//    The global Sobol index is computed as:
-//      (mortonPixelIndex << log2SPP) | sampleIndex
-//
-//    This encodes the pixel's spatial position in the high bits
-//    and the sample number in the low bits, so the (0,2)-net
-//    stratification property guarantees cross-pixel sample
-//    complementarity.
-//
-//  References:
-//    - Ahmed and Wonka, "Screen-Space Blue-Noise Diffusion of
-//      Monte Carlo Sampling Error via Hierarchical Ordering of
-//      Pixels", SIGGRAPH Asia 2020
-//    - Pharr, Jakob, Humphreys, "Physically Based Rendering" (4e),
-//      Section 8.7: ZSobolSampler
-//
-//  Limits:
-//    The global index must fit in uint32_t.  For a 2048x2048
-//    image (mortonIndex up to ~2^22) with 1024 SPP (log2SPP=10),
-//    the global index reaches 2^32 — at the limit.  If the
-//    shifted index would overflow, ComputeIndex falls back to
-//    returning sampleIndex directly (standard Sobol behavior),
-//    so rendering degrades gracefully to white-noise error
-//    distribution instead of silently aliasing pixels.
+//  Computes global Sobol index `(mortonPixelIndex << log2SPP) | sampleIndex`
+//  so adjacent pixels receive complementary (0,2)-net sub-sequences.
+//  Caller supplies sampleIndex in [0, SPP), mortonPixelIndex = Morton2D(x,y),
+//  log2SPP = Log2Int(RoundUpPow2(SPP)), and scramble seed.
+//  Falls back to plain sampleIndex if the shifted index overflows uint32_t.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 9, 2026
@@ -87,11 +49,8 @@ namespace RISE
 			}
 
 		private:
-			// Compute the Morton-remapped global Sobol index.
-			// If the result would overflow uint32_t (large images or
-			// high SPP), falls back to the plain sampleIndex so that
-			// rendering degrades gracefully to white-noise error
-			// distribution instead of silently aliasing pixels.
+			// Morton-remapped global Sobol index; falls back to sampleIndex
+			// on uint32_t overflow so pixels degrade to white noise rather than alias.
 			static inline uint32_t ComputeIndex(
 				uint32_t sampleIndex_,
 				uint32_t mortonPixelIndex_,

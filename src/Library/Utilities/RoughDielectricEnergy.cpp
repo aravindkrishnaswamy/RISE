@@ -1,3 +1,15 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  RoughDielectricEnergy.cpp - Lookup, exact piecewise-linear tail
+//    sampling, and SS/MS combination for Kulla-Conty rough dielectric
+//    energy compensation.
+//
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
 #include "pch.h"
 #include "RoughDielectricEnergy.h"
 #include "RoughDielectricEnergyData.h"
@@ -20,6 +32,8 @@ Scalar Integral(Scalar a,Scalar h,Scalar d0,Scalar d1) {
     // Integral of mu * piecewise-linear deficit, over [a,a+h].
     return h*(a*(d0+d1)/2+h*(d0+2*d1)/6);
 }
+// Adds two extended-exponent PositiveProducts by aligning to the larger exponent
+// so tiny grazing/near-unity-IOR densities do not underflow to zero.
 RD::PositiveProduct Sum(const RD::PositiveProduct& a,const RD::PositiveProduct& b) {
     if(a.mantissa==0) return b;
     if(b.mantissa==0) return a;
@@ -40,6 +54,8 @@ Model::Model(const Vector3& incident,Scalar alphaX,Scalar alphaY,Scalar relative
     const Scalar contrast=eta>=1 ? (eta-1)/(eta+1) : (1-eta)/(1+eta);
     const Interval r=Locate(maximum,RoughNodes),a=Locate(ratio,RatioNodes);
     Interval n=Locate(contrast,IndexNodes);
+    // IndexNodes are log2-spaced near zero; interpolate in log2 space there
+    // to preserve accuracy as eta -> 1.
     if(n.index>0 && IndexNodes[n.index+1]<=0.001)
         n.t=std::log2(contrast/IndexNodes[n.index])/std::log2(IndexNodes[n.index+1]/IndexNodes[n.index]);
     n.t=std::max(Scalar(0),std::min(Scalar(1),n.t));
@@ -67,6 +83,8 @@ Scalar Model::Node(int face,int phi,int cosine) const {
     for(int c=0;c<8;++c) result+=weights[c]*(Scalar(Data::Missing[(rows[c]+face)*RowSize+phi*CosCount+cosine])/65535);
     return result;
 }
+// Bilinear lookup of the directional deficit (1 - E) in folded first-quadrant
+// (phi in [0, pi/2], mu = |cos theta| in [0, 1]) coordinates.
 Scalar Model::Missing(const Vector3& direction,int face) const {
     Scalar x=std::abs(direction.x),y=std::abs(direction.y);
     if(swapAxes) std::swap(x,y);
@@ -81,6 +99,8 @@ Scalar Model::Missing(const Vector3& direction,int face) const {
     return a*(1-tp)+b*tp;
 }
 
+// Samples the multiple-scattering lobe proportional to (1 - E(wo)) * |wo.z|
+// by exact inversion of the bilinear/piecewise-linear LUT via 52-step bisection.
 Vector3 Model::DrawTail(int face,Scalar uPhi,Scalar uCos) const {
     Scalar values[PhiCount][CosCount],marginal[PhiCount]={};
     int scale=0;
@@ -133,6 +153,8 @@ Vector3 Model::DrawTail(int face,Scalar uPhi,Scalar uCos) const {
     return Vector3(x,y,face==side ? mu : -mu);
 }
 
+// Solid-angle PDF of the multiple-scattering tail:
+// p_tail(wo) = P(lobe) * Missing(wo, face) * |wo.z| / (pi * means[face]).
 RD::PositiveProduct Model::TailPdf(const Vector3& wo) const {
     const bool transmitted=wo.z<0;
     const int face=side^(transmitted?1:0);
@@ -146,6 +168,9 @@ RD::PositiveProduct Model::TailPdf(const Vector3& wo) const {
     return density;
 }
 
+// Combines single-scattering (ss) with the Kulla-Conty tail in extended-exponent
+// arithmetic so f, pdf, and MIS-consistent throughput weight stay well-scaled.
+// Radiance scaling (1/eta^2 on transmission) is applied last after mixing.
 RD::Evaluation Model::Combine(const Vector3& wo,RD::Evaluation ss,bool radiance) const {
     if(!ss.positiveDensity && proposal==0) return ss;
     RD::PositiveProduct ssPdf,ssF;
