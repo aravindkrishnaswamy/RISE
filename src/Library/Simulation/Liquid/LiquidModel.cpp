@@ -84,8 +84,11 @@ V3 CrossingPoint(const Grid& g, const SheetCrossing& c)
 }
 
 // m7l: the trilinear weights of the cell-centred sample at x (LiquidGrid.cpp Trilinear's clamping), added
-// to `out` (cell, weight) times `scale`.
-void TrilinearWeights(const Grid& g, const V3& x, double scale, std::vector<std::pair<std::size_t, double>>& out)
+// to `out` (cell, weight) times `scale`: at most 8 entries at out + n (n advanced).  (An array, not a
+// vector: these are built for every band cell of every sheet at every step; profiled, the allocations
+// were most of LiquidModel::CloseSheetFaces.)
+using Weight = std::pair<std::size_t, double>;
+void TrilinearWeights(const Grid& g, const V3& x, double scale, Weight* out, int& n)
 {
 	int i0[3];
 	double t[3];
@@ -101,7 +104,7 @@ void TrilinearWeights(const Grid& g, const V3& x, double scale, std::vector<std:
 		double w = scale;
 		int q[3];
 		for (int a = 0; a < 3; ++a) { w *= d[a] ? t[a] : 1 - t[a]; q[a] = std::min(i0[a] + d[a], g.n[a] - 1); }
-		if (w != 0) out.emplace_back(g.C(q[0], q[1], q[2]), w);
+		if (w != 0) out[n++] = Weight(g.C(q[0], q[1], q[2]), w);
 	}
 }
 
@@ -125,22 +128,34 @@ bool ExtensionRecipe(const Grid& g, const V3& x, const V3& p, const V3& n, int t
 	}
 	reach = offset - target*d;   // |x - x_o| along the normal
 	if (!(reach > 0)) return false;
-	std::vector<std::pair<std::size_t, double>> w0, w1;
-	TrilinearWeights(g, xo, 1, w0);
-	TrilinearWeights(g, x1, 1/h, w1);
-	TrilinearWeights(g, xo, -1/h, w1);
-	for (const auto* list : {&w0, &w1})
-		for (const auto& e : *list) {
-			const std::int32_t s = side(e.first);
-			if (s != 2 && s != targetLabel) return false;
-		}
-	std::map<std::size_t, std::pair<double, double>> terms;
-	for (const auto& e : w0) terms[e.first].first += e.second;
-	for (const auto& e : w1) terms[e.first].second += e.second;
-	for (const auto& e : terms) {
-		out.term.push_back(std::uint32_t(e.first));
-		out.w0.push_back(e.second.first);
-		out.w1.push_back(e.second.second);
+	Weight w0[8], w1[16];
+	int n0 = 0, n1 = 0;
+	TrilinearWeights(g, xo, 1, w0, n0);
+	TrilinearWeights(g, x1, 1/h, w1, n1);
+	TrilinearWeights(g, xo, -1/h, w1, n1);
+	for (int k = 0; k < n0; ++k) { const std::int32_t s = side(w0[k].first); if (s != 2 && s != targetLabel) return false; }
+	for (int k = 0; k < n1; ++k) { const std::int32_t s = side(w1[k].first); if (s != 2 && s != targetLabel) return false; }
+	// Merged by cell (each cell's sums in list order from zero, as a std::map of the pairs did), in cell order.
+	std::size_t cell[24];
+	double s0[24], s1[24];
+	int m = 0;
+	auto slot = [&](std::size_t c) {
+		for (int k = 0; k < m; ++k) if (cell[k] == c) return k;
+		cell[m] = c; s0[m] = 0.0; s1[m] = 0.0;
+		return m++;
+	};
+	for (int k = 0; k < n0; ++k) s0[slot(w0[k].first)] += w0[k].second;
+	for (int k = 0; k < n1; ++k) s1[slot(w1[k].first)] += w1[k].second;
+	int order[24];
+	for (int k = 0; k < m; ++k) {
+		int j = k;
+		for (; j > 0 && cell[order[j - 1]] > cell[k]; --j) order[j] = order[j - 1];
+		order[j] = k;
+	}
+	for (int k = 0; k < m; ++k) {
+		out.term.push_back(std::uint32_t(cell[order[k]]));
+		out.w0.push_back(s0[order[k]]);
+		out.w1.push_back(s1[order[k]]);
 	}
 	return true;
 }
@@ -1532,6 +1547,7 @@ void LiquidModel::BuildBarrier()
 		i = j;
 	}
 	const std::size_t nb = second.cells.size();
+	second.IndexSlots(g.Cells());
 	second.valid.assign(nb, 0);
 	second.reach.assign(nb, 0.0);
 	second.start.assign(nb + 1, 0);
@@ -1559,9 +1575,11 @@ void LiquidModel::BuildBarrier()
 			for (int a = 0; a < 3; ++a) dd += (x[a] - p[a])*c.normal[a];
 			V3 foot;
 			for (int a = 0; a < 3; ++a) foot[a] = x[a] - dd*c.normal[a] + tgt*0.25*h*c.normal[a];
-			std::vector<std::pair<std::size_t, double>> w;
-			TrilinearWeights(g, foot, 1, w);
-			for (const auto& e : w) {
+			Weight w[8];
+			int nw = 0;
+			TrilinearWeights(g, foot, 1, w, nw);
+			for (int q = 0; q < nw; ++q) {
+				const Weight& e = w[q];
 				const V3 y = g.CellCentre(int(e.first % std::size_t(g.n[0])), int((e.first/std::size_t(g.n[0])) % std::size_t(g.n[1])),
 					int(e.first/(std::size_t(g.n[0])*std::size_t(g.n[1]))));
 				double dy = 0;
@@ -2159,8 +2177,10 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 	}
 	std::size_t removed = 0;
 	if (options_.particles) {
-		std::vector<std::size_t> cells;
-		for (const SweptCell& c : swept) cells.push_back(c.cell);
+		// The cells whose particles go, as flags (a sorted list of them with duplicates was a few percent
+		// of a coupled step).
+		std::vector<std::uint8_t> drop(g.Cells(), 0);
+		for (const SweptCell& c : swept) drop[c.cell] = 1;
 		for (const std::vector<SheetCrossing>* list : {&facesBefore, static_cast<const std::vector<SheetCrossing>*>(&sheetFaces_)})
 			for (const SheetCrossing& c : *list) {
 				if (!sheets[c.sheet].Coupled()) continue;
@@ -2176,19 +2196,17 @@ std::pair<std::size_t, std::size_t> LiquidModel::SweepSheetCells(const std::vect
 					for (int a = -2; a <= 2; ++a) for (int b = -2; b <= 2; ++b) for (int e = -2; e <= 2; ++e) {
 						if (std::abs(a) + std::abs(b) + std::abs(e) > 2) continue;
 						const int q[3] = {idx[0] + a, idx[1] + b, idx[2] + e};
-						if (q[0] >= 0 && q[0] < g.n[0] && q[1] >= 0 && q[1] < g.n[1] && q[2] >= 0 && q[2] < g.n[2]) cells.push_back(g.C(q[0], q[1], q[2]));
+						if (q[0] >= 0 && q[0] < g.n[0] && q[1] >= 0 && q[1] < g.n[1] && q[2] >= 0 && q[2] < g.n[2]) drop[g.C(q[0], q[1], q[2])] = 1;
 					}
 				}
 			}
-		std::sort(cells.begin(), cells.end());
-		cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
 		auto& ps = particles.Particles();
 		std::size_t out = 0;
 		for (std::size_t i = 0; i < ps.size(); ++i) {
 			int idx[3];
 			for (int a = 0; a < 3; ++a)
 				idx[a] = std::min(g.n[a] - 1, std::max(0, int(std::floor((ps[i].x[std::size_t(a)] - g.origin[std::size_t(a)])/g.h))));
-			if (!std::binary_search(cells.begin(), cells.end(), g.C(idx[0], idx[1], idx[2]))) ps[out++] = ps[i];
+			if (!drop[g.C(idx[0], idx[1], idx[2])]) ps[out++] = ps[i];
 		}
 		removed = ps.size() - out;
 		ps.resize(out);

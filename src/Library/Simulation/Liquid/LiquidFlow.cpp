@@ -97,6 +97,9 @@ struct Level {
 	std::vector<double> top;                 // open fraction of the top boundary face (open top)
 	std::vector<double> b, x, r;
 	std::vector<int> lo, hi;                 // per row: the first and one past the last active cell
+	// Restriction from the next finer level to this one: per axis, the fine indices and weights of each
+	// coarse index (Multigrid::FineLists), built once by Coarsen.
+	std::vector<std::vector<std::pair<int,double>>> fineLists[3];
 	std::size_t Cells() const { return std::size_t(n[0])*std::size_t(n[1])*std::size_t(n[2]); }
 	void Ranges() {
 		const std::size_t rows = std::size_t(n[1])*std::size_t(n[2]);
@@ -224,16 +227,19 @@ public:
 		}
 	}
 
-	// b_C = scale * sum_f P(f, C) r_f.
+	// b_C = scale * sum_f P(f, C) r_f.  Each coarse cell reads its 8 to 27 fine cells: the pool and the
+	// rows per chunk follow the fine level's size (chunks of about 16384 fine cells); every coarse cell
+	// is written by one chunk with the same arithmetic, so the chunking cannot change a result.
 	void Restrict(const Level& F, Level& C) const
 	{
 		const bool co[3] = {C.n[0] != F.n[0], C.n[1] != F.n[1], C.n[2] != F.n[2]};
 		const int dims = int(co[0]) + int(co[1]) + int(co[2]);
 		const double scale = 1.0/std::pow(2.0, double(dims - 2));
-		std::vector<std::vector<std::pair<int,double>>> lists[3];
-		for (int a = 0; a < 3; ++a) FineLists(F.n[a], C.n[a], co[a], lists[a]);
+		const auto& lists = C.fineLists;
 		C.b.assign(C.Cells(), 0.0);
-		ForRows(PoolFor(C), RowsOf(C.n), RowGrain(C.n[0]), [&](std::size_t r0, std::size_t r1) {
+		const std::size_t rows = RowsOf(C.n);
+		const std::size_t grain = std::max<std::size_t>(1, rows*16384/std::max<std::size_t>(1, F.Cells()));
+		ForRows(PoolFor(F), rows, grain, [&](std::size_t r0, std::size_t r1) {
 			for (std::size_t r = r0; r < r1; ++r) {
 				const int J = int(r % std::size_t(C.n[1])), K = int(r/std::size_t(C.n[1]));
 				for (int I = C.lo[r]; I < C.hi[r]; ++I) {
@@ -377,6 +383,7 @@ public:
 			if (openTop && J == C.n[1] - 1 && C.active[cc]) C.diag[cc] += 2*C.top[cc];
 		}
 		C.Ranges();
+		for (int a = 0; a < 3; ++a) FineLists(F.n[a], C.n[a], co[a], C.fineLists[a]);
 		levels.push_back(std::move(C));
 	}
 };
@@ -480,19 +487,41 @@ void ExtrapolateVelocity(const Grid& g, MacField& u, FaceMask& valid, int layers
 			});
 			for (std::size_t e = 0; e < front.size(); ++e) { f[front[e]] = value[e]; known[front[e]] = 1; }
 			if (layer + 1 == layers) break;
-			// The next front: the unknown neighbours of the faces just filled (sorted, unique).
+			// The next front: the unknown neighbours of the faces just filled (sorted, unique).  The front
+			// is sorted, so the neighbours along each of the six directions are too: a six-way merge gives
+			// the sorted union (it was a sort of all of them, a few percent of a step).
 			std::vector<std::size_t> next;
 			next.reserve(2*front.size());
-			for (std::size_t c : front) {
-				int q[6][3], m = 0;
-				neighbours(c, q, m);
-				for (int e = 0; e < m; ++e) {
-					const std::size_t nb = Index(d, q[e][0], q[e][1], q[e][2]);
-					if (!known[nb]) next.push_back(nb);
+			{
+				const std::ptrdiff_t off[6] = {-1, 1, -std::ptrdiff_t(d[0]), std::ptrdiff_t(d[0]),
+					-std::ptrdiff_t(d[0])*std::ptrdiff_t(d[1]), std::ptrdiff_t(d[0])*std::ptrdiff_t(d[1])};
+				std::size_t pos[6] = {0, 0, 0, 0, 0, 0};
+				// The neighbour of front[p] along direction e, if it is inside and unknown.
+				auto candidate = [&](int e, std::size_t p, std::size_t& nb) {
+					const std::size_t c = front[p];
+					const int b = e >> 1;
+					const int i = b == 0 ? int(c % std::size_t(d[0])) : b == 1 ? int((c/std::size_t(d[0])) % std::size_t(d[1]))
+						: int(c/(std::size_t(d[0])*std::size_t(d[1])));
+					if ((e & 1) ? i + 1 >= d[b] : i == 0) return false;
+					nb = std::size_t(std::ptrdiff_t(c) + off[e]);
+					return !known[nb];
+				};
+				std::size_t head[6];
+				bool live[6];
+				auto advance = [&](int e) {
+					for (; pos[e] < front.size(); ++pos[e]) if (candidate(e, pos[e], head[e])) { live[e] = true; return; }
+					live[e] = false;
+				};
+				for (int e = 0; e < 6; ++e) advance(e);
+				for (;;) {
+					int best = -1;
+					for (int e = 0; e < 6; ++e) if (live[e] && (best < 0 || head[e] < head[best])) best = e;
+					if (best < 0) break;
+					if (next.empty() || next.back() != head[best]) next.push_back(head[best]);
+					++pos[best];
+					advance(best);
 				}
 			}
-			std::sort(next.begin(), next.end());
-			next.erase(std::unique(next.begin(), next.end()), next.end());
 			front.swap(next);
 		}
 		for (std::size_t c = 0; c < f.size(); ++c) if (!known[c]) f[c] = 0;

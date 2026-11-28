@@ -93,9 +93,14 @@ struct LevelSetBarrier {
 		std::vector<double> w0, w1, reach;
 		std::vector<std::uint32_t> dryStart, dry;
 		double dryLevel = 0;
+		//! Optional: the slot of every grid cell (-1: none), from IndexSlots; Slot reads it when
+		//! present (a binary search per lookup was most of a coupled sheet's barrier build).
+		std::vector<std::int32_t> slotOf;
 		bool Empty() const { return cells.empty(); }
 		//! The slot of a cell, or -1.
 		std::ptrdiff_t Slot(std::size_t cell) const;
+		//! Fills slotOf for a grid of `gridCells` cells (after `cells` is final).
+		void IndexSlots(std::size_t gridCells);
 		//! out[k] = the second value of slot k from f (0 where not valid).
 		void Evaluate(const std::vector<double>& f, std::vector<double>& out, Pool* pool) const;
 		//! One recipe's value from f.

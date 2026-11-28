@@ -1,4 +1,4 @@
-# Simulation performance: measurements and tuning opportunities (first half and the cloth part of the second half)
+# Simulation performance: measurements and tuning opportunities (first half; second half: cloth §13, liquid §14)
 
 2026-11-27. Branch `simulation-liquid` at `05eab7170` plus the working-tree changes listed in §8 (first half);
 the cloth part of the second half (at `052fc4338`, thin LTO) is §13. Plan:
@@ -207,6 +207,8 @@ every committed generation self-contained and the crash story simple; the cost i
 
 ## 5. Liquid solver (`src/Library/Simulation/Liquid/`): profile and proposals for the next round
 
+**Second half: §14** (re-profiled at m7m.1; L1 done with persistence, the restriction part of L2 and the sheets' barrier
+build done, all byte-identical; B4 measured and not adopted). The rest of this section is the first-half write-up.
 Not edited here. All samples are of the base binary; the stepping phases are taken from the sampled step thread
 with the plan-time evidence subtree removed. The windows are short (the bakes finish in 1 to 3 s of stepping at
 these sizes), so shares are good to a few percent.
@@ -274,8 +276,8 @@ order in the dot products, single-precision coarse levels. Each moves every fram
 
 | Rank | Opportunity | Where | Measured / expected gain | Risk | Status |
 |---:|---|---|---|---|---|
-| A1 | Plan-time evidence concurrency and memoisation (cloth, coupling, liquid) | `ClothSolver.cpp`, `ClothRigidCoupling.cpp`, Liquid | cloth contact evidence: trampoline status 3.66 to 2.36 s; liquid 1.3 to 1.7 s; coupling 1.9 s | low; cases are independent and deterministic | cloth done; coupling done (§13.3: computed beside the members' configuration); liquid proposed |
-| A2 | Persist plan-time evidence across processes (hash of the key, the solver version and the build) | the three evidence sites | removes up to 2.3 to 4.7 s per process | low: the entry is bound to the linked image's identity, so a code change can never reuse one | cloth and coupling done (§13.4: trampoline status 2.1 s to 0.04 s); liquid to adopt the same store |
+| A1 | Plan-time evidence concurrency and memoisation (cloth, coupling, liquid) | `ClothSolver.cpp`, `ClothRigidCoupling.cpp`, Liquid | cloth contact evidence: trampoline status 3.66 to 2.36 s; liquid 1.3 to 1.7 s; coupling 1.9 s | low; cases are independent and deterministic | cloth done; coupling done (§13.3: computed beside the members' configuration); liquid done (§14.2: concurrent cases, status 2.5 to 4.6 s to 1.5 to 2.3 s) |
+| A2 | Persist plan-time evidence across processes (hash of the key, the solver version and the build) | the three evidence sites | removes up to 2.3 to 4.7 s per process | low: the entry is bound to the linked image's identity, so a code change can never reuse one | cloth and coupling done (§13.4: trampoline status 2.1 s to 0.04 s); liquid done (§14.2: status 0.05 s warm) |
 | A3 | Hardware SHA-256 | `RISECBOR64.cpp` | 429 to 2,869 MB/s (6.7 times); frame verify 2.4 to 0.4 ms per MiB; every Append and Sample | low; checked against `shasum` on 20 sizes and incremental updates | done |
 | A4 | ASCII fast path of `IsUTF8NFC` (every manifest key and digest) | `RISECBOR64.cpp` | cache writer: 2000 x 4 KiB frames 7.7 to 2.1 s; last-frame Append 7.0 to 1.4 ms | low; 2.3 million strings agree with the full path | done |
 | A5 | Pool without syscalls (spin hint, bounded spin, wake only as many helpers as chunks) | `ClothParallel.cpp` | system time 37.9 to 2.2 s on a 16-thread liquid bake; wall neutral on a quiet machine and better on a loaded one | low; chunking and reduction order untouched | done |
@@ -296,7 +298,7 @@ order in the dot products, single-precision coarse levels. Each moves every fram
 | B1 | Fill-reducing ordering (reverse Cuthill-McKee or nested dissection) for the cloth `BandedCholesky` instead of the natural vertex order | Factor is 26 % (45 % after A7) of the trampoline | different elimination order: every solve differs in the last bits. **Done (§13.1, m3a.8)**: trampoline 26 % fewer instructions, 1.3 times faster as B1 alone; landed after the self-collision incline evidence was made well posed (§13.7) |
 | B2 | Cloth: reuse a factorization across Newton iterations (modified Newton) or a looser `cg_tolerance` / `tolerance` | fewer factorizations | different iterates |
 | B3 | Cloth: a coarser `PathBound` (fewer than 16 samples) or a looser safety factor in `KinematicStep` | the largest kinematic cost | different stage lengths, different contact sequence |
-| B4 | Liquid: looser pressure tolerance, fewer V-cycle sweeps, a two-level preconditioner, single-precision coarse levels | `Precondition` is 50 to 70 % of `Project` | different pressures |
+| B4 | Liquid: looser pressure tolerance, fewer V-cycle sweeps, a two-level preconditioner, single-precision coarse levels | `Precondition` is 50 to 70 % of `Project` | different pressures. **Fewer sweeps and two or three levels measured (§14.4): more iterations, no net gain (best 2 % of a step); not adopted** |
 | B5 | Liquid and cloth: reductions in a different order (tree sums, chunk size), threads in the order of completion | removes serial reductions | floating-point sums reorder |
 | B6 | Cache: a compressed or quantised frame codec (zstd, half floats) | less I/O, smaller caches | the frame bytes change by definition |
 | B7 | Fire: fewer or cheaper identities, no per-stage hashes in fast mode | about half of the CPU busy time (§7) | protocol change of the certified path; in fast mode the digests are not part of the output, but the pinned tests cover them |
@@ -648,3 +650,179 @@ to 1e-12 on a 1e-6 gate: round-off), mesh and bounce (0), self-stack (9e-14 to 2
 violations). The single-layer **stick** case is bistable too (BDF2: 3e-13 or 1.18e-6 depending on the variant, backward
 Euler 1.37e-7 throughout) but both branches are under its 1e-5 solver-tolerance gate by 8.5 times or more, so it was
 not changed. The 1-ulp-nudge and thread perturbations were applied only to the incline replica, not to these.
+
+## 14. Second half, liquid part (2026-11-27, at `d0256a0a4`, liquid.mac m7m.1, thin LTO)
+
+Everything in `src/Library/Simulation/Liquid/`. All A-class: **no liquid byte moved, liquid.mac stays m7m.1**; the
+B4 preconditioner was measured and not adopted (§14.4). Builds: a private copy of the tree (cloth sources frozen at
+the state of 15:30, cloth.shell m3a.8) built with `make LTO=thin`; `base` is `d0256a0a4`'s liquid in that copy, `a1`
+adds §14.2 (evidence), `a3` all of §14.2 and §14.3. The final check in the real checkout (default full LTO) is §14.6.
+Machine shared throughout: load average 5 to 30, noted per table. Scratch, drivers, samples and bakes:
+`/Volumes/SSD/claude-tmp/perf3-scratch/` (not in git).
+
+**Byte identity, every item.** Reduced bakes of all eight committed liquid scenes (dam break 10 frames, honey and
+water 6, rigid bodies 6, cloth flap staggered and one-way (the flap with `pool.sheet_load -> flap.surface_load`
+removed) 24 macro steps, wave 24, catch 24, honey cloth 24), each at the default threads (16) and at `threads 3`
+(scratch copies of the scenes): 16 bakes per binary, frame-name sets **and `manifest.cbor`** (which carries the
+evidence) compared per member with the `base` bakes. `a1`, `a2` and `a3` (each step of this section) are identical in
+all 16, with the evidence store off. With the store on, cold and warm, the `rise-sim status` text of seven scenes
+(which carries the cache keys and so the evidence digests) is identical to `base`'s, and dam-break bakes with a warm
+store have the same manifest as computed ones. Longer bakes (dam 46 frames, honey 12, rigid 12, wave, catch and honey
+cloth 36 macro steps) of `a1` against `a3` with a warm store: frame sets identical (§14.3 table).
+
+### 14.1 Profile (re-measured; `sample` of whole bakes, the step thread, plan-time evidence removed)
+
+Shares of `LiquidModel::Step` on the step thread; inclusive shares overlap. Before = `base`, after = `a3` (`a2` for
+the rows that §14.3's last change does not touch). Pool waits (the caller spinning or yielding for a straggler, load
+dependent) are counted inside the phase that dispatched.
+
+| Phase (function) | Dam break 48^3 (load 5 / 8) before / after | Rigid bodies 64^3 (load 24 / 6) | Catch 64^3 (load 14 / 24) | Wave 64^3 (load 10 / 7) | Honey cloth 40^3 (load 12 / 7) |
+|---|---|---|---|---|---|
+| Pressure `Project` (inside `ProjectBodies` / `ProjectCoupled`) | 33.3 / 34.6 % | 59.2 / 54.0 % | 18.7 / 21.7 % | 33.0 / 34.8 % | 10.3 / 11.0 % |
+| ... `Multigrid::Precondition` | 22.8 / 24.0 % | 45.1 / 39.8 % | 9.1 / 10.3 % | 23.7 / 24.1 % | 4.6 / 5.1 % |
+| ... ... `Restrict` | 4.4 / 4.8 % | **16.1 / 4.6 %** | 2.4 / 1.2 % | 5.0 / 2.1 % | 0.4 / 0.2 % |
+| Velocity advection `LimitedAdvectionStage` | 19.1 / 20.4 % | 8.2 / 9.8 % | 13.1 / 19.1 % | 10.5 / 11.4 % | 7.9 / 5.1 % |
+| Velocity extrapolation `ExtrapolateVelocity` | 20.4 / 16.3 % | 10.2 / 10.7 % | 16.4 / 18.6 % | 11.7 / 10.8 % | 7.7 / 5.3 % |
+| `std::sort` of cell indices (the extrapolation's next front; in sheet scenes also `SweepSheetCells`) | 5.7 / 0 % | 2.4 / 0 % | 7.4 / 0.2 % | 5.0 / 0 % | 2.3 / 0.1 % |
+| Level set `Reinitialize` (two calls) + `AdvectLevelSet` | 13.6 + 6.1 / 14.2 + 6.5 % | 4.0 + 2.8 / 5.1 + 3.2 % | 8.9 + 4.3 / 13.8 + 6.8 % | 7.9 + 3.4 / 8.4 + 4.3 % | 7.4 + 3.5 / 4.2 + 2.1 % |
+| Marker particles `Advect` | 6.8 / 6.8 % | 2.5 / 2.7 % | 1.3 / 3.2 % | 2.0 / 2.0 % | 0.7 / 0.2 % |
+| Bodies `BodyGeometry::Update` | | 8.5 / 9.6 % | | | |
+| Sheets `CloseSheetFaces` (barrier and two-valued level set build) | | | **19.6 / 5.4 %** | 15.5 / 14.0 % (`a2`) | 4.9 / 3.9 % (`a2`) |
+| Sheets `SweepSheetCells` | | | **8.8 / 1.1 %** | 6.4 / 0.9 % | 1.6 / 0.3 % |
+| Sheet solve: `SheetDynamics::Prepare` (`BandedCholesky::Factor`) + `BandedCholesky::Solve` | | | 4.7 + 1.9 / 5.5 + 2.2 % | 5.1 + 0.6 / 5.1 + 1.3 % | 2.4 + 4.1 / 2.7 + 5.6 % |
+| Viscosity `ViscousStep` | | | | | 54.1 / 64.4 % |
+
+What changed since §5.2: the two-valued level set at sheets (m7l) made `CloseSheetFaces` a fifth of a coupled step,
+almost all of it allocation (`std::vector` of trilinear weights per band cell, a `std::map` per recipe) and binary
+searches of the band's slot list; with sheets and viscosity (m7m) the honey cloth's step is two thirds viscous solve.
+The rigid-body scene's pressure solve was dominated by a serial restriction (below). The pool's own cost (`notify_one`,
+`steady_clock::now`, the job mutex: 6 % of `Precondition` in the rigid scene, about 15 % of `ViscousStep` in the honey
+cloth, contended `mutex::lock` 4 %) is in `Cloth/ClothParallel.cpp`, which this part does not own (§14.5).
+
+### 14.2 2a, plan-time evidence: concurrent cases and the persisted store (`LiquidSolver.cpp`)
+
+`ComputeEvidence`, `ComputeBodyEvidence` and `ComputePhysicsEvidence` now hand their cases (13, 8 and up to 8 runs)
+to `RunEvidenceJobs`: up to `threads` of them at once, each on its own single-threaded pool, longest first; each run
+writes only its own result variables and the error map, the case list and the digests are built afterwards exactly as
+before. Then `MemoisedEvidence`: the process memo, then `LoadPersistedEvidence("liquid.mac", key, e)`, else compute and
+`PersistEvidence`. The key (`EvidenceStoreKey`) holds the solver id, `SolverVersion`, which part (base, bodies,
+physics with its viscosity and capillary flags) and **every** `SolverOptions` field the runs can read
+(`EvidenceOptionsValue`: the numerics, the particle options, every `PressureOptions` scalar, the viscous and capillary
+numerics), a superset of the `NumericsValue` the digests bind; the store adds the build identity. The runs do not read
+the thread count (results are bitwise thread-independent, LiquidGrid.h), and the status text at 16 threads (cases on
+pools of 16) equals the new one (cases on pools of 1). No `SimulationSolver.{h,cpp}` change was needed.
+
+`rise-sim status`, wall seconds (load 5 to 12, two runs each; within 0.05 s of each other except honey 6.7 s once):
+
+| Scene | `base` (store off) | `a3`, store off | `a3`, store cold | `a3`, store warm |
+|---|---:|---:|---:|---:|
+| `liquid_dam_break` | 2.54 to 2.58 | 1.45 | 1.45 | **0.05** |
+| `liquid_honey_water` | 4.63 | 2.11 | 2.14 | **0.05** |
+| `liquid_rigid_bodies` | 4.00 to 4.04 | 2.08 | 2.08 | **0.05** |
+| `liquid_cloth_flap` | 2.66 | 1.57 | 1.58 | **0.05** |
+| `liquid_cloth_wave` | 2.66 | 1.56 | 1.57 | **0.05** |
+| `liquid_cloth_catch` | 2.68 to 2.79 | 1.58 to 1.60 | 1.62 | **0.06** |
+| `liquid_honey_cloth` | 3.86 to 3.90 | 2.26 | 2.26 | **0.05** |
+
+(The cold column includes the cloth evidence where there is a cloth member; with a warm store neither is computed.)
+The concurrent cases are bounded by the longest single-threaded runs (the 64-cell added-mass cylinder, the solid
+collapse); every bake, status and scene load of a liquid scene saves 1.1 to 2.5 s with the store off and all of it
+(2.5 to 4.6 s) with it warm.
+
+### 14.3 2b and 2c, the step (`LiquidFlow.cpp`, `LiquidModel.cpp`, `LiquidLevelSet.{h,cpp}`)
+
+- **`Multigrid::Restrict`** ran on the pool only when the *coarse* level had 32768 cells or more, in chunks of
+  16384 *coarse* cells: the restriction from the finest level of a 64-cell scene (coarse level 15,360 cells in the
+  rigid scene) ran on one thread and was 16 % of the rigid scene's step, a third of `Precondition`. It now follows the
+  fine level's size (pool from 32768 fine cells, chunks of about 16384 fine cells), and the per-axis prolongation
+  lists it rebuilt (`std::vector` of vectors) on every call are built once per level in `Coarsen`. Each coarse cell is
+  still written by one chunk with the same arithmetic. The other multigrid loops already ran serially below 32768
+  cells (`PoolFor`) with row chunks of 16384 cells, so no other dispatch policy was changed (§14.5).
+- **`ExtrapolateVelocity`**: the next front (the unknown neighbours of the faces just filled, sorted and unique) was
+  a `std::sort` of six times the front; the front is sorted, so the neighbours along each of the six directions are
+  too, and a six-way merge gives the same sorted set in one pass (2 to 6 % of a step).
+- **`CloseSheetFaces` / `BuildBarrier` / `ExtensionRecipe`**: the trilinear weights in fixed arrays instead of three
+  vectors per band cell, the recipe's merge by cell in a 24-entry array (each cell's sums in the same order from zero
+  as the `std::map` did) instead of a map, and a dense cell-to-slot index (`LevelSetBarrier::Second::IndexSlots`,
+  `slotOf`) behind `Second::Slot`, which every recipe, the barrier's stencil build and the sweep call per cell instead
+  of a binary search. Catch: `CloseSheetFaces` 19.6 % of the step to 5.4 % (602 to 202 samples in back-to-back
+  profiles of the same window).
+- **`SweepSheetCells`**: the cells whose marker particles go were a sorted list with duplicates (every sheet face,
+  two sides, 25 offsets) looked up by binary search per particle; now flags over the grid. Catch 8.8 % to 1.1 %.
+
+Bakes with a warm evidence store (`a1` = evidence change only, against `a3`; so only the step differs), two runs each,
+interleaved; wall / user CPU / instructions retired:
+
+| Scene (window) | `a1` | `a3` | Wall | Frames |
+|---|---|---|---:|---|
+| `liquid_dam_break` (46 frames, load 10) | 8.84 to 8.86 s / 40.0 s / 766 G | 8.38 to 8.41 s / 39.7 s / 763 G | -5 % | identical |
+| `liquid_honey_water` (12 frames, load 8) | 5.57 to 5.61 s / 12.0 s / 232 G | 5.49 s / 11.9 s / 231 G | -2 % | identical |
+| `liquid_rigid_bodies` (12 frames, load 10 to 14) | 13.81 to 14.15 s / 76.3 s / 1,379 G | 12.81 to 12.93 s / 82.1 s / 1,475 G | **-8 %** | identical |
+| `liquid_cloth_wave` (36 macro steps, load 11 to 12) | 5.75 to 5.84 s / 26.1 s / 471 G | 4.64 to 4.65 s / 25.2 s / 460 G | **-20 %** | identical |
+| `liquid_cloth_catch` (36 macro steps, load 11 to 22) | 13.21 s / 63.6 s / 1,075 G (a 27.4 s outlier at load 18) | 12.38 to 13.49 s / 56.7 s / 936 G | -6 to -13 % (instructions) | identical |
+| `liquid_honey_cloth` (36 macro steps, load 18 to 21) | 6.82 to 6.89 s / 41.6 s / 738 G | 5.96 to 6.24 s / 41.0 s / 732 G | **-11 %** | identical |
+
+The rigid scene's user CPU and instructions rise by 7 % while its wall falls: the restriction now wakes the pool's
+helpers, which spin between jobs. The whole-bake effect of §14.2 and §14.3 together (store off for `a3`, so the
+evidence is computed concurrently; the default-thread verification bakes, load 10 to 17): dam break 10 frames 5.60 to 3.43 s,
+honey and water 10.4 to 4.2 s, rigid bodies 8.1 to 5.3 s, flap 5.0 to 3.5 s, wave 6.2 to 4.2 s, catch 11.0 to 6.9 s,
+honey cloth 7.4 to 5.3 s; instructions 21 to 35 % lower (most of it the evidence: its pools no longer spin).
+
+### 14.4 B4, a cheaper pressure preconditioner: measured, not adopted (no byte change, no version bump)
+
+The approved family ("two-level, fewer sweeps", the tolerance unchanged) was measured with an instrumented build of
+`a2` (environment overrides of the level-0 and coarser smoothing counts, the coarsest level's sweeps, the number of
+levels and the coarsest size; a counter of PCG iterations and solve seconds over every `Project` of the bake; warm
+evidence store, so only the bake's solves are counted). Current: red-black Gauss-Seidel, 2 sweeps before and after each
+coarse correction on every level, the coarsest level (at most 512 cells) 30 symmetric sweep pairs, levels down to 512
+cells. Iterations / solves / solve seconds (the best of two runs) / share of the bake's wall:
+
+| Variant | Dam break 46 frames (load 9 to 15) | Rigid bodies 12 frames (load 10 to 13) | Catch 36 macro steps (load 11 to 16) | Wave 36 (load 12 to 13; later rows at 18 to 22) | Honey cloth 36 (load 23 to 31) |
+|---|---|---|---|---|---|
+| current (2 / 2 / 30) | 9,160 / 874 (10.5 per solve) / 2.18 s / 29 % | 4,807 / 402 (12.0) / 4.76 s / 45 % | 4,105 / 291 (14.1) / 1.81 s / 17 % | 2,832 / 242 (11.7) / 1.30 s / 27 % | 2,508 / 215 (11.7) / 0.55 s / 6 % |
+| 1 sweep on every level | 13,889 (16.2) / 2.71 s | 7,537 (18.7) / 5.78 s | 4,934 (17.0) / 1.73 s | 4,078 (16.9) / 1.43 s | 2,842 (13.2) / 0.48 s |
+| 1 sweep on level 0, 2 below | 13,324 (15.5) / 2.66 s | 7,012 (17.4) / 5.89 s | 5,147 (17.7) / 1.85 s | 3,782 (15.6) / 1.40 s | 2,883 (13.4) / 0.69 s |
+| coarsest 10 sweep pairs | 9,010 (10.5) / 2.03 s | 4,763 (11.8) / 4.71 s | 4,105 (14.1) / 1.71 s | 2,830 (11.7) / (1.99 s, load 18) | 2,508 (11.7) / 0.64 s |
+| 1 sweep, coarsest 10 | 13,592 (16.1) / 2.46 s | 7,406 (18.4) / 5.65 s | 4,931 (16.9) / 1.73 s | 4,059 (16.8) / (1.71 s) | 2,842 / 0.65 s |
+| 3 sweeps on every level | 7,519 (8.8) / 2.11 s | 4,001 (10.0) / 5.03 s | 4,020 (13.8) / 2.02 s | 2,410 (10.0) / (1.74 s) | 2,443 / 0.80 s |
+| two levels (fine + one coarse, 30 pairs there) | 8,258 (9.6) / 2.65 s | 5,001 (12.4) / **11.92 s** | | | |
+| three levels | 9,160 / 2.20 s | 4,579 / 4.87 s | | | |
+| levels down to 4096 cells | 8,258 / 2.65 s | 4,579 / 4.86 s | | | |
+
+Fewer sweeps raise the iteration count by 44 to 57 % (catch and honey cloth by 13 to 25 %) and cost more than they
+save on the dam break, the rigid bodies and the wave; truncating the hierarchy (two or three levels) leaves a large
+coarse problem that 30 sweep pairs do not solve, so the iterations do not fall and each one costs more (the rigid
+scene's solve 2.5 times slower). The best variant (the coarsest level with 10 instead of 30 sweep pairs) saves 1 to
+7 % of the solve time, 2 % of a step at most: far below the 15 % bar. **Not adopted**; the instrumented build was never
+in the working tree. Because nothing changed, the convergence, symmetry and validation questions of the brief do not
+arise: liquid.mac stays m7m.1, no pin changed, and the max-difference comparison was not needed. A real gain from the
+preconditioner would need a different smoother or coarse operator (e.g. an operator-dependent restriction for cut cells
+and bodies, which would also cut the 10 to 14 iterations per solve), outside the approved family.
+
+### 14.5 What remains (candidates, by measured share)
+
+| Candidate | Where | Measured share | Note |
+|---|---|---|---|
+| Sheet solve with `Cloth::EnvelopeCholesky` (task 4) | `LiquidSheets.cpp` `SheetDynamics::Prepare` (factor; its own `BandOrder`) and `Solve` / `Predict` (inside `ProjectCoupled` and the viscous solve) | catch 5.5 % factor + 2.2 % solve = 7.7 % of the step; wave 5.1 + 1.3 = 6.4 %; honey cloth 2.7 + 5.6 = 8.3 % | with the envelope factor 2.98 / 1.44 times cheaper (catch / wave mesh, §13.1) and the solve 2.5 times: about 5 % of a catch step, 2.4 % of a wave step; result-changing (other elimination order): a liquid version bump |
+| Viscous solve | `LiquidViscosity.cpp` `ViscousStep` (`System::Gather`, `Strains`, `Build`, `Dot`) | 64 % of the honey cloth step | matrix-free CG over many short `ForRows` passes on a 40-cell grid; the pool's own cost is about 15 % of it (below); fewer, fused passes per iteration would keep the bytes if each face's sums keep their order |
+| Pool overhead (not liquid's file) | `Cloth/ClothParallel.cpp` `For`: `steady_clock::now()` per job, `notify_one` per helper, the job mutex that waking workers contend | 6 % of `Precondition` (rigid), about 15 % of `ViscousStep` (honey cloth) | a per-job deadline only when the wait is long, and a lock-free job hand-off; bytes unchanged; for the cloth owner |
+| Advection | `LimitedAdvectionStage`, `UpwindAdvectionRhs`, `OneSidedDerivatives` | 10 to 20 % | §5.3 L4 still open |
+| Level set | `Reinitialize`, `AdvectLevelSet` | 7 to 20 % | §5.3 L4 (shares `OneSidedDerivatives`) |
+| Extrapolation, the first front and the layer values | `ExtrapolateVelocity` | 10 to 19 % after the merge | §5.3 L5 |
+| `ForRows` thresholds | `LiquidGrid.h` | pool waits 4 to 12 % of a step at load 6 to 24 | not changed: the effect could not be told from the load on a shared machine; any change keeps bytes (non-reduction loops only, reductions keep their chunking) |
+
+### 14.6 Tests, warnings, final check (this part)
+
+Real checkout, default full LTO: `mk.sh all tests build-tool/rise_sim build-tool/simulation_cache_import`,
+**warning-free** (not even the Homebrew linker notices this time). `./run_all_tests.sh --tier fast --timeout 300
+--filter '[!F]*,F[!i]*,Fi[!r]*,Fir[!e]*'`: **453 of 453 pass** (the liquid suites included, so every liquid validation
+gate and pin holds unchanged; no pin needed updating: the liquid tests pin no cloth version, and cloth m3a.8 was
+already in the tree). Definitive byte check: the full-LTO `rise_sim` of the real checkout against the thin-LTO `base`
+bakes of the private copy, all 16 reduced bakes (eight scenes, two thread counts, store off): frame sets and manifests
+identical; with a warm store (rigid, catch, honey cloth, honey and water) as well. The cloth sources of the private
+copy are byte-identical to the committed cloth.shell m3a.8 (`cc071c604`), so the coupled scenes compare like with like.
+
+Files changed: `src/Library/Simulation/Liquid/LiquidSolver.cpp` (§14.2), `LiquidFlow.cpp` (`Restrict`, the front
+merge), `LiquidModel.cpp` (`TrilinearWeights`, `ExtensionRecipe`, `BuildBarrier`, `SweepSheetCells`),
+`LiquidLevelSet.{h,cpp}` (`Second::slotOf`, `IndexSlots`), this document. No new source files, no test changes, no
+version change.

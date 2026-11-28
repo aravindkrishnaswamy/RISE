@@ -112,8 +112,15 @@ void LevelSetBarrier::Clear()
 	reads = false;
 }
 
+void LevelSetBarrier::Second::IndexSlots(std::size_t gridCells)
+{
+	slotOf.assign(gridCells, -1);
+	for (std::size_t k = 0; k < cells.size(); ++k) slotOf[cells[k]] = std::int32_t(k);
+}
+
 std::ptrdiff_t LevelSetBarrier::Second::Slot(std::size_t cell) const
 {
+	if (!slotOf.empty()) return cell < slotOf.size() ? std::ptrdiff_t(slotOf[cell]) : -1;
 	const auto it = std::lower_bound(cells.begin(), cells.end(), cell);
 	return it != cells.end() && *it == cell ? std::ptrdiff_t(it - cells.begin()) : -1;
 }

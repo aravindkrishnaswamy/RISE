@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <mutex>
@@ -609,6 +610,88 @@ V NumericsValue(const SolverOptions& o)
 		{"volume_correction", V::Bool(o.volumeCorrection)}, {"wave_cfl", V::Float(o.waveCfl)}});
 }
 
+// Every option the evidence runs read (docs/SIMULATION_PERFORMANCE.md section 5.1): the key of the
+// persisted evidence (LoadPersistedEvidence; the store binds the build identity as well, so a code
+// change never reuses an entry).  A superset of NumericsValue and PhysicsNumericsValue, which stay
+// what the case digests bind.
+V EvidenceOptionsValue(const SolverOptions& o)
+{
+	const PressureOptions& p = o.pressure;
+	const ParticleOptions& q = o.particle;
+	return V::MapValue({{"capillary_cfl", V::Float(o.capillaryCfl)}, {"cfl", V::Float(o.cfl)},
+		{"extrapolation_layers", V::Signed(std::int64_t(o.extrapolationLayers))},
+		{"interface_extrapolation_layers", V::Signed(std::int64_t(o.interfaceExtrapolationLayers))},
+		{"interpolate_curvature", V::Bool(o.interpolateCurvature)},
+		{"linear_extrapolation_layers", V::Signed(std::int64_t(o.linearExtrapolationLayers))},
+		{"min_face_fraction", V::Float(o.minFaceFraction)}, {"min_transport_fraction", V::Float(o.minTransportFraction)},
+		{"momentum", V::String(MomentumName(o.momentum))}, {"momentum_stages", V::Signed(std::int64_t(o.momentumStages))},
+		{"particle", V::MapValue({{"band", V::Float(q.band)}, {"per_cell", V::Signed(std::int64_t(q.perCell))},
+			{"reseed_interval", V::Signed(std::int64_t(q.reseedInterval))}, {"rmax", V::Float(q.rmax)}, {"rmin", V::Float(q.rmin)}})},
+		{"particles", V::Bool(o.particles)},
+		{"pressure", V::MapValue({{"curvature", V::Bool(p.curvature != nullptr)}, {"face_theta", V::Bool(p.faceTheta != nullptr)},
+			{"interpolate_curvature", V::Bool(p.interpolateCurvature)}, {"jump_scale", V::Float(p.jumpScale)},
+			{"max_iterations", V::Signed(std::int64_t(p.maxIterations))}, {"min_valid_fraction", V::Float(p.minValidFraction)},
+			{"open_top", V::Bool(p.openTop)}, {"smoothing", V::Signed(std::int64_t(p.smoothing))},
+			{"theta_min", V::Float(p.thetaMin)}, {"tolerance", V::Float(p.tolerance)}, {"warm_start", V::Bool(p.warmStart)}})},
+		{"reinit", V::String(ReinitName(o.reinit))}, {"reinit_cfl", V::Float(o.reinitCfl)},
+		{"reinit_iterations", V::Signed(std::int64_t(o.reinitIterations))}, {"reinit_threshold", V::Float(o.reinitThreshold)},
+		{"speed_limit", V::Float(o.speedLimit)}, {"viscosity_tolerance", V::Float(o.viscosityTolerance)},
+		{"viscous_cfl", V::Float(o.viscousCfl)}, {"viscous_samples", V::Signed(std::int64_t(o.viscousSamples))},
+		{"viscous_theta_min", V::Float(o.viscousThetaMin)}, {"volume_correction", V::Bool(o.volumeCorrection)},
+		{"wave_cfl", V::Float(o.waveCfl)}});
+}
+
+V EvidenceStoreKey(const char* part, const SolverOptions& o, bool viscosity = false, bool capillary = false)
+{
+	return V::MapValue({{"capillary", V::Bool(capillary)}, {"options", EvidenceOptionsValue(o)}, {"part", V::String(part)},
+		{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)}, {"viscosity", V::Bool(viscosity)}});
+}
+
+// The evidence runs are independent and each a deterministic function of its arguments, bitwise the
+// same for any number of threads (LiquidGrid.h), so they run at once: up to `threads` of them, each on
+// the caller's or a helper thread with a single-threaded pool of its own (the runs' grids are small
+// and their pools scale poorly).  Jobs are taken in list order (longest first where known) and write
+// only their own results; the callers combine them in the order of before.
+void RunEvidenceJobs(const std::vector<std::function<void(Pool*)>>& jobs, unsigned threads)
+{
+	std::atomic<std::size_t> next{0};
+	auto work = [&] {
+		Pool pool(1);
+		for (std::size_t j = next.fetch_add(1); j < jobs.size(); j = next.fetch_add(1)) jobs[j](&pool);
+	};
+	const std::size_t helpers = std::min<std::size_t>(std::max(1u, threads), jobs.size()) - 1;
+	std::vector<std::thread> pool;
+	for (std::size_t k = 0; k < helpers; ++k) pool.emplace_back(work);
+	work();
+	for (std::thread& t : pool) t.join();
+}
+
+// The process memo, then the persisted store, then `compute`.
+std::vector<EvidenceCase> MemoisedEvidence(std::mutex& mutex, std::map<std::string, std::vector<EvidenceCase>>& memo,
+	const V& storeKey, const std::function<std::vector<EvidenceCase>()>& compute)
+{
+	Bytes key;
+	std::string ignored;
+	RISECBOR64::Encode(storeKey, key, &ignored);
+	const std::string digest = RISECBOR64::SHA256Hex(key);
+	{
+		std::lock_guard<std::mutex> hold(mutex);
+		const auto it = memo.find(digest);
+		if (it != memo.end()) return it->second;
+	}
+	Evidence stored;
+	std::vector<EvidenceCase> cases;
+	if (LoadPersistedEvidence(LiquidSolverId, storeKey, stored)) cases = std::move(stored.cases);
+	else {
+		cases = compute();
+		stored.cases = cases;
+		PersistEvidence(LiquidSolverId, storeKey, stored);
+	}
+	std::lock_guard<std::mutex> hold(mutex);
+	memo[digest] = cases;
+	return cases;
+}
+
 struct CaseSpec { const char* id; const char* description; double tolerance; double withParticles = 0; };
 // Tolerances: 1.25 x the error observed with the default numerics at the
 // evidence resolution, rounded up (docs/SIMULATION_M7A_RESULTS.md section 5);
@@ -635,18 +718,7 @@ std::vector<EvidenceCase> ComputeEvidence(const SolverOptions& options, unsigned
 {
 	static std::mutex mutex;
 	static std::map<std::string, std::vector<EvidenceCase>> memo;
-	Bytes key;
-	std::string ignored;
-	RISECBOR64::Encode(NumericsValue(options), key, &ignored);
-	const std::string digest = RISECBOR64::SHA256Hex(key);
-	{
-		std::lock_guard<std::mutex> hold(mutex);
-		const auto it = memo.find(digest);
-		if (it != memo.end()) return it->second;
-	}
-	Pool pool(threads);
-	std::map<std::string, double> error;
-	{
+	return MemoisedEvidence(mutex, memo, EvidenceStoreKey("base", options), [&] {
 		TransportOptions t;
 		t.reinit = options.reinit;
 		t.reinitIterations = options.reinitIterations;
@@ -655,61 +727,70 @@ std::vector<EvidenceCase> ComputeEvidence(const SolverOptions& options, unsigned
 		t.particles = options.particles;
 		t.particle = options.particle;
 		t.cfl = options.cfl;
-		error["transport-zalesak-n50"] = RunZalesak(50, t, &pool).l1;
-		error["transport-vortex-n50"] = RunVortex(50, 2.0, t, &pool).l1;
-	}
-	{
-		const HydrostaticResult h = RunHydrostatic(32, false, 0.3, true, 0.3, 0.25, options, &pool);
+		const double kdFinite = 3*3.14159265358979323846/8;   // 3 cells of depth per 16 across: interface on faces at every level
+		TransportResult zalesak, vortex;
+		HydrostaticResult h;
+		WaveResult w16, w32, wDeep;
+		SloshResult s;
+		CollapseResult c16, c32;
+		SolidCollapseResult sc;
+		TaylorGreenResult t16, t32;
+		double volumeShift = 1.0;
+		std::vector<std::function<void(Pool*)>> jobs = {
+			[&](Pool* p) { sc = RunSolidCollapse(32, 0.35, {{0.8123, 0.1789, 0}}, options, p); },
+			[&](Pool* p) { if (options.volumeCorrection) volumeShift = RunVolumeConservation(32, 10, true, options, p).meanShift; },
+			[&](Pool* p) { c32 = RunColumnCollapse(32, 1.0, options, p); },
+			[&](Pool* p) { w32 = RunStandingWave(32, kdFinite, 0.01, 3, options, p); },
+			[&](Pool* p) { wDeep = RunStandingWave(32, 3.14159265358979323846, 0.01, 3, options, p); },
+			[&](Pool* p) { s = RunSloshing(20, 2, options, p); },
+			[&](Pool* p) { h = RunHydrostatic(32, false, 0.3, true, 0.3, 0.25, options, p); },
+			[&](Pool* p) { t32 = RunTaylorGreen(32, 2.0, options, p); },
+			[&](Pool* p) { zalesak = RunZalesak(50, t, p); },
+			[&](Pool* p) { vortex = RunVortex(50, 2.0, t, p); },
+			[&](Pool* p) { c16 = RunColumnCollapse(16, 1.0, options, p); },
+			[&](Pool* p) { w16 = RunStandingWave(16, kdFinite, 0.01, 3, options, p); },
+			[&](Pool* p) { t16 = RunTaylorGreen(16, 2.0, options, p); }};
+		RunEvidenceJobs(jobs, threads);
+		std::map<std::string, double> error;
+		error["transport-zalesak-n50"] = zalesak.l1;
+		error["transport-vortex-n50"] = vortex.l1;
 		error["hydrostatic-n32"] = h.maxVelocity;
 		error["hydrostatic-pressure-n32"] = h.pressureError;
-	}
-	const double kdFinite = 3*3.14159265358979323846/8;   // 3 cells of depth per 16 across: interface on faces at every level
-	{
-		const WaveResult w16 = RunStandingWave(16, kdFinite, 0.01, 3, options, &pool);
-		const WaveResult w32 = RunStandingWave(32, kdFinite, 0.01, 3, options, &pool);
-		error["wave-finite-n32"] = std::fabs(w32.frequencyError);
-		const double order = std::log(std::fabs(w16.frequencyError)/std::fabs(w32.frequencyError))/std::log(2.0);
-		error["order-wave"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
-		error["wave-deep-n32"] = std::fabs(RunStandingWave(32, 3.14159265358979323846, 0.01, 3, options, &pool).frequencyError);
-	}
-	{
-		const SloshResult s = RunSloshing(20, 2, options, &pool);
+		{
+			error["wave-finite-n32"] = std::fabs(w32.frequencyError);
+			const double order = std::log(std::fabs(w16.frequencyError)/std::fabs(w32.frequencyError))/std::log(2.0);
+			error["order-wave"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
+			error["wave-deep-n32"] = std::fabs(wDeep.frequencyError);
+		}
 		error["slosh-n20"] = std::max(std::fabs(s.error10), std::fabs(s.error01));
-	}
-	{
-		const CollapseResult c16 = RunColumnCollapse(16, 1.0, options, &pool), c32 = RunColumnCollapse(32, 1.0, options, &pool);
-		error["collapse-n32"] = c32.maxFar;
-		const double order = std::log(c16.maxFar/c32.maxFar)/std::log(2.0);
-		error["order-collapse"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
-	}
-	{
-		const SolidCollapseResult c = RunSolidCollapse(32, 0.35, {{0.8123, 0.1789, 0}}, options, &pool);
-		error["solid-collapse-n32"] = c.maxFar;
-		error["solid-pressure-n32"] = c.pressure;
-	}
-	{
-		const TaylorGreenResult t16 = RunTaylorGreen(16, 2.0, options, &pool), t32 = RunTaylorGreen(32, 2.0, options, &pool);
-		error["taylor-green-n32"] = t32.l2Error;
-		const double order = std::log(t16.l2Error/t32.l2Error)/std::log(2.0);
-		error["order-taylor-green"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
-	}
-	error["volume-correction-n32"] = options.volumeCorrection ? RunVolumeConservation(32, 10, true, options, &pool).meanShift : 1.0;
-	std::vector<EvidenceCase> cases;
-	for (const CaseSpec& spec : Cases) {
-		EvidenceCase c;
-		c.id = spec.id;
-		c.description = spec.description;
-		c.tolerance = options.particles && spec.withParticles > 0 ? spec.withParticles : spec.tolerance;
-		c.error = error[spec.id];
-		c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
-		const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
-			{"numerics", NumericsValue(options)}});
-		c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
-		cases.push_back(c);
-	}
-	std::lock_guard<std::mutex> hold(mutex);
-	memo[digest] = cases;
-	return cases;
+		{
+			error["collapse-n32"] = c32.maxFar;
+			const double order = std::log(c16.maxFar/c32.maxFar)/std::log(2.0);
+			error["order-collapse"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
+		}
+		error["solid-collapse-n32"] = sc.maxFar;
+		error["solid-pressure-n32"] = sc.pressure;
+		{
+			error["taylor-green-n32"] = t32.l2Error;
+			const double order = std::log(t16.l2Error/t32.l2Error)/std::log(2.0);
+			error["order-taylor-green"] = std::isfinite(order) ? std::max(0.0, 1.8 - order) : 1.0;
+		}
+		error["volume-correction-n32"] = volumeShift;
+		std::vector<EvidenceCase> cases;
+		for (const CaseSpec& spec : Cases) {
+			EvidenceCase c;
+			c.id = spec.id;
+			c.description = spec.description;
+			c.tolerance = options.particles && spec.withParticles > 0 ? spec.withParticles : spec.tolerance;
+			c.error = error[spec.id];
+			c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
+			const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
+				{"numerics", NumericsValue(options)}});
+			c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
+			cases.push_back(c);
+		}
+		return cases;
+	});
 }
 
 // M7b: the rigid-body cases (computed only when the configuration has bodies).
@@ -732,49 +813,47 @@ std::vector<EvidenceCase> ComputeBodyEvidence(const SolverOptions& options, unsi
 {
 	static std::mutex mutex;
 	static std::map<std::string, std::vector<EvidenceCase>> memo;
-	Bytes key;
-	std::string ignored;
-	RISECBOR64::Encode(NumericsValue(options), key, &ignored);
-	const std::string digest = RISECBOR64::SHA256Hex(key);
-	{
-		std::lock_guard<std::mutex> hold(mutex);
-		const auto it = memo.find(digest);
-		if (it != memo.end()) return it->second;
-	}
-	Pool pool(threads);
-	std::map<std::string, double> error;
-	error["added-mass-cylinder-n64"] = std::fabs(RunAddedMassImpulse(64, false, 0.15, 0.4, 0.37, options, &pool).error);
-	error["added-mass-sphere-n32"] = std::fabs(RunAddedMassImpulse(32, true, 0.15, 0.4, 0.37, options, &pool).error);
-	error["added-mass-oscillation-n32"] = std::fabs(RunAddedMassOscillation(32, 0.15, 0.4, 0.01, 2.0, 2, options, &pool).error);
-	error["archimedes-0.1-n32"] = std::fabs(RunFloatingStatics(32, true, 0.1, 0.37, options, &pool).offset);
-	error["archimedes-0.5-n32"] = std::fabs(RunFloatingStatics(32, true, 0.5, 0.37, options, &pool).offset);
-	error["archimedes-0.9-n32"] = std::fabs(RunFloatingStatics(32, true, 0.9, 0.37, options, &pool).offset);
-	{
-		const NeutralResult n = RunNeutralBody(32, false, 1.0, options, &pool);
+	return MemoisedEvidence(mutex, memo, EvidenceStoreKey("bodies", options), [&] {
+		AddedMassResult cylinder, sphere, oscillation;
+		FloatStatics a01, a05, a09;
+		NeutralResult n;
+		FloatDynamics f;
+		std::vector<std::function<void(Pool*)>> jobs = {
+			[&](Pool* p) { cylinder = RunAddedMassImpulse(64, false, 0.15, 0.4, 0.37, options, p); },
+			[&](Pool* p) { f = RunFloatingDynamics(32, false, 0.1, 0.1, 3.0, false, options, p); },
+			[&](Pool* p) { sphere = RunAddedMassImpulse(32, true, 0.15, 0.4, 0.37, options, p); },
+			[&](Pool* p) { a01 = RunFloatingStatics(32, true, 0.1, 0.37, options, p); },
+			[&](Pool* p) { a05 = RunFloatingStatics(32, true, 0.5, 0.37, options, p); },
+			[&](Pool* p) { a09 = RunFloatingStatics(32, true, 0.9, 0.37, options, p); },
+			[&](Pool* p) { oscillation = RunAddedMassOscillation(32, 0.15, 0.4, 0.01, 2.0, 2, options, p); },
+			[&](Pool* p) { n = RunNeutralBody(32, false, 1.0, options, p); }};
+		RunEvidenceJobs(jobs, threads);
+		std::map<std::string, double> error;
+		error["added-mass-cylinder-n64"] = std::fabs(cylinder.error);
+		error["added-mass-sphere-n32"] = std::fabs(sphere.error);
+		error["added-mass-oscillation-n32"] = std::fabs(oscillation.error);
+		error["archimedes-0.1-n32"] = std::fabs(a01.offset);
+		error["archimedes-0.5-n32"] = std::fabs(a05.offset);
+		error["archimedes-0.9-n32"] = std::fabs(a09.offset);
 		error["neutral-rest-n32"] = std::max(n.bodySpeed, n.liquidSpeed);
-	}
-	{
-		const FloatDynamics f = RunFloatingDynamics(32, false, 0.1, 0.1, 3.0, false, options, &pool);
 		error["light-float-n32"] = f.finite ? f.lateGrowth : 1e300;
 		error["momentum-audit-n32"] = f.finite ? f.totalAudit : 1e300;
 		error["body-impulse-n32"] = f.finite ? f.bodyAudit : 1e300;
-	}
-	std::vector<EvidenceCase> cases;
-	for (const CaseSpec& spec : BodyCases) {
-		EvidenceCase c;
-		c.id = spec.id;
-		c.description = spec.description;
-		c.tolerance = spec.tolerance;
-		c.error = error[spec.id];
-		c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
-		const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
-			{"numerics", NumericsValue(options)}, {"bodies", V::String("coupled pressure solve (m7b)")}});
-		c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
-		cases.push_back(c);
-	}
-	std::lock_guard<std::mutex> hold(mutex);
-	memo[digest] = cases;
-	return cases;
+		std::vector<EvidenceCase> cases;
+		for (const CaseSpec& spec : BodyCases) {
+			EvidenceCase c;
+			c.id = spec.id;
+			c.description = spec.description;
+			c.tolerance = spec.tolerance;
+			c.error = error[spec.id];
+			c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
+			const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
+				{"numerics", NumericsValue(options)}, {"bodies", V::String("coupled pressure solve (m7b)")}});
+			c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
+			cases.push_back(c);
+		}
+		return cases;
+	});
 }
 
 // M7c: the viscosity and surface-tension cases (computed only when the option is on).
@@ -806,53 +885,62 @@ std::vector<EvidenceCase> ComputePhysicsEvidence(const SolverOptions& options, u
 {
 	static std::mutex mutex;
 	static std::map<std::string, std::vector<EvidenceCase>> memo;
-	Bytes key;
-	std::string ignored;
-	RISECBOR64::Encode(V::MapValue({{"numerics", PhysicsNumericsValue(options)}, {"viscosity", V::Bool(viscosity)},
-		{"capillary", V::Bool(capillary)}}), key, &ignored);
-	const std::string digest = RISECBOR64::SHA256Hex(key);
-	{
-		std::lock_guard<std::mutex> hold(mutex);
-		const auto it = memo.find(digest);
-		if (it != memo.end()) return it->second;
-	}
-	Pool pool(threads);
-	std::map<std::string, double> error;
-	std::vector<const CaseSpec*> specs;
-	if (viscosity) {
-		error["viscous-taylor-green-n32"] = std::fabs(RunViscousTaylorGreen(32, 0.05, 2.0, options, &pool).amplitudeError);
-		error["viscous-wave-n32"] = std::fabs(RunViscousWave(32, 3.14159265358979323846, 0.01, 4, 1e-3, false, false, options, &pool).error);
-		const CouetteResult c = RunCouette(32, 0.15, 0.4, 0.1, 0.01, 6.0, 0.37, 0, options, &pool);
-		error["couette-torque-n32"] = std::fabs(c.torqueError);
-		error["couette-profile-n32"] = c.profileError;
-		error["cylinder-drag-n32"] = std::fabs(RunCylinderDrag(32, 0.15, 0.4, 0.01, 1.0, 0.3, 0.37, options, &pool).error);
-		error["rigid-rotation-n32"] = RunRotatingDisk(32, 0.01, 0, options, &pool).stepChange;
-		for (const CaseSpec& c2 : ViscousCases) specs.push_back(&c2);
-	}
-	if (capillary) {
-		const DropResult d = RunStaticDrop(32, false, 2, std::sqrt(0.5/12000), options, &pool);
-		error["laplace-pressure-n32"] = std::fabs(d.pressureError);
-		error["parasitic-n32"] = d.capillaryNumber;
-		error["capillary-wave-n32"] = std::fabs(RunCapillaryWave(32, 3.14159265358979323846, 0.01, 9.81/(4*3.14159265358979323846*3.14159265358979323846), 3, options, &pool).frequencyError);
-		error["oscillating-drop-n32"] = std::fabs(RunOscillatingDrop(32, false, 0.05, 2, 0, options, &pool).error);
-		for (const CaseSpec& c2 : CapillaryCases) specs.push_back(&c2);
-	}
-	std::vector<EvidenceCase> cases;
-	for (const CaseSpec* spec : specs) {
-		EvidenceCase c;
-		c.id = spec->id;
-		c.description = spec->description;
-		c.tolerance = spec->tolerance;
-		c.error = error[spec->id];
-		c.passed = std::isfinite(c.error) && c.error <= c.tolerance;
-		const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
-			{"numerics", PhysicsNumericsValue(options)}, {"physics", V::String("viscosity and surface tension (m7c)")}});
-		c.digest = EvidenceDigest(c.id, configuration, c.error, c.tolerance, c.passed);
-		cases.push_back(c);
-	}
-	std::lock_guard<std::mutex> hold(mutex);
-	memo[digest] = cases;
-	return cases;
+	return MemoisedEvidence(mutex, memo, EvidenceStoreKey("physics", options, viscosity, capillary), [&] {
+		ViscousTaylorGreenResult vtg;
+		ViscousWaveResult vw;
+		CouetteResult c;
+		DragResult drag;
+		RotationResult rot;
+		DropResult d;
+		WaveResult cw;
+		OscillationResult od;
+		std::vector<std::function<void(Pool*)>> jobs;
+		if (viscosity) {
+			jobs.push_back([&](Pool* p) { c = RunCouette(32, 0.15, 0.4, 0.1, 0.01, 6.0, 0.37, 0, options, p); });
+			jobs.push_back([&](Pool* p) { drag = RunCylinderDrag(32, 0.15, 0.4, 0.01, 1.0, 0.3, 0.37, options, p); });
+			jobs.push_back([&](Pool* p) { vw = RunViscousWave(32, 3.14159265358979323846, 0.01, 4, 1e-3, false, false, options, p); });
+			jobs.push_back([&](Pool* p) { vtg = RunViscousTaylorGreen(32, 0.05, 2.0, options, p); });
+			jobs.push_back([&](Pool* p) { rot = RunRotatingDisk(32, 0.01, 0, options, p); });
+		}
+		if (capillary) {
+			jobs.push_back([&](Pool* p) { d = RunStaticDrop(32, false, 2, std::sqrt(0.5/12000), options, p); });
+			jobs.push_back([&](Pool* p) { cw = RunCapillaryWave(32, 3.14159265358979323846, 0.01, 9.81/(4*3.14159265358979323846*3.14159265358979323846), 3, options, p); });
+			jobs.push_back([&](Pool* p) { od = RunOscillatingDrop(32, false, 0.05, 2, 0, options, p); });
+		}
+		RunEvidenceJobs(jobs, threads);
+		std::map<std::string, double> error;
+		std::vector<const CaseSpec*> specs;
+		if (viscosity) {
+			error["viscous-taylor-green-n32"] = std::fabs(vtg.amplitudeError);
+			error["viscous-wave-n32"] = std::fabs(vw.error);
+			error["couette-torque-n32"] = std::fabs(c.torqueError);
+			error["couette-profile-n32"] = c.profileError;
+			error["cylinder-drag-n32"] = std::fabs(drag.error);
+			error["rigid-rotation-n32"] = rot.stepChange;
+			for (const CaseSpec& c2 : ViscousCases) specs.push_back(&c2);
+		}
+		if (capillary) {
+			error["laplace-pressure-n32"] = std::fabs(d.pressureError);
+			error["parasitic-n32"] = d.capillaryNumber;
+			error["capillary-wave-n32"] = std::fabs(cw.frequencyError);
+			error["oscillating-drop-n32"] = std::fabs(od.error);
+			for (const CaseSpec& c2 : CapillaryCases) specs.push_back(&c2);
+		}
+		std::vector<EvidenceCase> cases;
+		for (const CaseSpec* spec : specs) {
+			EvidenceCase e;
+			e.id = spec->id;
+			e.description = spec->description;
+			e.tolerance = spec->tolerance;
+			e.error = error[spec->id];
+			e.passed = std::isfinite(e.error) && e.error <= e.tolerance;
+			const V configuration = V::MapValue({{"solver", V::String(LiquidSolverId)}, {"version", V::String(SolverVersion)},
+				{"numerics", PhysicsNumericsValue(options)}, {"physics", V::String("viscosity and surface tension (m7c)")}});
+			e.digest = EvidenceDigest(e.id, configuration, e.error, e.tolerance, e.passed);
+			cases.push_back(e);
+		}
+		return cases;
+	});
 }
 
 // ------------------------------------------------------------------ checkpoint streams
