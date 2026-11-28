@@ -103,6 +103,8 @@ Look pass (2026-11-16), `tools/fire/r272/r272_soot_look.RISEscene` and `render_l
   ratios). The derived frames are in `r272_soot/render_seq` with their own frame list and a manifest rebuilt by
   `FireSequenceTest --fire-production-manifest-rebuild`. The run's own frames and manifest are untouched. The exporter
   is not changed; the fraction is a look choice, not a measured value.
+  (2026-11-27: fire solver version 4 moved this rule into the exporter, `FireRunFrames.cpp`; see
+  [M8 results §15](SIMULATION_M8_RESULTS.md). `chem_from_reaction` is no longer needed for new bakes.)
 - **Scene.** Floor (reflectance 0.18), back wall 3 m behind the burner (0.45), one weak point light, camera 1.7 m from
   the burner axis at 0.6 m height, display exposure 7, ACES.
 - **Result.** Orange flame with a yellow base and a faint violet rim, in a dim room. Owner reviewed the test frames

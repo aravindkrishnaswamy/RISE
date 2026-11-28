@@ -447,28 +447,35 @@ namespace RISE
 			reaction->tree().setValueOn(openvdb::Coord(0,0,0),solver.reactionWPerM3);
 		}
 		if( includeChem ) {
-			float reactionMaximum=0.0f,temperatureMaximum=300.0f;
-			if(solverGrid) for(std::size_t cell=0u;cell<solver.reaction.size();++cell){
-				reactionMaximum=std::max(reactionMaximum,solver.reaction[cell]);
-				temperatureMaximum=std::max(temperatureMaximum,solver.temperature[cell]);
-			}
+			// Fire solver version 4 (docs/SIMULATION_M8_RESULTS.md section 15; the r272 look,
+			// docs/FIRE_SMOKE_SOOT_R272.md): the chemistry-light channels are still a
+			// SYNTHETIC_NON_PREDICTIVE preview, but they follow the local heat release only, at a
+			// fixed absolute scale: chem_CH = 3e-6 W/m3 of band power per W/m3 of reaction, C2 and
+			// CO2 at 50/120 and 8/120 of it (the r272 chem_from_reaction fractions).  The old
+			// max(reaction/reaction_max, (T-300)/(T_max-300)) weight lit the whole warm plume
+			// (the "blue column") and renormalised every frame.  The unit-render cold fixture keeps
+			// its uniform light.
+			const double chemFractionOfReaction[3]={3.0e-6,3.0e-6*50.0/120.0,3.0e-6*8.0/120.0};
 			if(solverGrid) for(std::size_t z=0;z<solver.dimensions[2];++z)
 				for(std::size_t y=0;y<solver.dimensions[1];++y)
 					for(std::size_t x=0;x<solver.dimensions[0];++x) {
 						const std::size_t index=(z*solver.dimensions[1]+y)*solver.dimensions[0]+x;
-						const float reactionWeight=reactionMaximum>0.0f?
-							std::clamp(solver.reaction[index]/reactionMaximum,0.0f,1.0f):0.0f;
-						const float thermalWeight=temperatureMaximum>300.0f?
-							std::clamp((solver.temperature[index]-300.0f)/
-								(temperatureMaximum-300.0f),0.0f,1.0f):0.0f;
-						const float previewSourceWeight=
-							syntheticColdChemistry?1.0f:
-							std::max(reactionWeight,thermalWeight);
 						const openvdb::Coord fixture(static_cast<int>(x),static_cast<int>(y),
 							static_cast<int>(z));
-						chemCH->tree().setValueOn(fixture,chemScale*120.0f*previewSourceWeight);
-						chemC2->tree().setValueOn(fixture,chemScale*50.0f*previewSourceWeight);
-						chemCO2->tree().setValueOn(fixture,chemScale*8.0f*previewSourceWeight);
+						if( syntheticColdChemistry ) {
+							chemCH->tree().setValueOn(fixture,chemScale*120.0f);
+							chemC2->tree().setValueOn(fixture,chemScale*50.0f);
+							chemCO2->tree().setValueOn(fixture,chemScale*8.0f);
+							continue;
+						}
+						const double reactionWPerM3=solver.reaction[index]>0.0f?
+							static_cast<double>(solver.reaction[index]):0.0;
+						chemCH->tree().setValueOn(fixture,
+							static_cast<float>(chemFractionOfReaction[0]*reactionWPerM3));
+						chemC2->tree().setValueOn(fixture,
+							static_cast<float>(chemFractionOfReaction[1]*reactionWPerM3));
+						chemCO2->tree().setValueOn(fixture,
+							static_cast<float>(chemFractionOfReaction[2]*reactionWPerM3));
 					}
 			else {
 				chemCH->tree().setValueOn(openvdb::Coord(0,0,0),chemScale*120.0f);

@@ -14,9 +14,11 @@ bytes than the make `rise_sim`"); this is the answer. Fire was first left out; �
    two lists of such sources are identical (42 sources; checked mechanically, §6).
 2. **Keep `-ffast-math -fno-finite-math-only` in make.** Dropping fast-math buys nothing measurable (run time within
    +-3%, renders statistically indistinguishable) and changes pinned bytes: 6 more fast-tier tests fail (§4.5).
-3. **Thin LTO is fast (5 s incremental against 160 s, run time -6% to +3%, §4.2) but it moves two pinned fire
-   digests, so the make default stays full LTO.** `make LTO=thin|full|off` and the linker cache are in `Config.OSX`
-   as an opt-in switch (§7). Under full LTO the whole fire tier passes (17 of 17, §7).
+3. **Thin LTO is fast (5 s incremental against 160 s, run time -6% to +3%, §4.2) and is the make default since
+   fire solver version 4 (§8).** It first moved two pinned fire digests, so the default stayed full LTO (§7); the
+   owner then approved compiling the fire-adjacent sources strict and re-pinning fire once (§8), after which fire's
+   bytes are the same under thin, full and no LTO. `make LTO=thin|full|off` and the linker cache are in `Config.OSX`;
+   switching modes needs `make clean`.
 4. **Xcode: global `-ffast-math` added to Development, Deployment and Default of all three targets** (Opto already
    had it), so the floating-point flags of every non-fire source are the same as make's; every fire source keeps
    exactly the effective flags it had (proved from `clang -###`, §6). Bakes are identical before and after.
@@ -198,7 +200,7 @@ under B.
 |---|---|---|
 | fast-math in make | **keep** `-ffast-math -fno-finite-math-only` | Removing it changes pinned bytes (6 fast-tier tests, more elsewhere) and gains nothing measurable: run time within noise, renders and bakes equivalent. Rule: keep pinned bytes unless the alternative is clearly better; it is not |
 | fast-math in Xcode | **add it** (same flags as make) | Floating-point flags identical in every build, so output cannot depend on which one built it, including for any future simulation source that lacks the per-file exception. Measured: bakes identical before and after; renders equivalent |
-| LTO in make | **full stays the default; `LTO=thin` is an opt-in switch** (§7) | Thin: 5 s against 160 s incremental, run time -6% to +3%, bakes and the non-fire fast tier identical, **but `FireProductionSolverTest` (r83 table package digest) and `FireSimulationSolverTest` (r80 cycling branch) fail**; no strict or no-LTO compile of the sources involved reproduces the pins (§7), and re-pinning is not allowed (fire version 3) |
+| LTO in make | ~~full stays the default; `LTO=thin` is an opt-in switch~~ (§7). **Superseded by §8: thin is the default** | Thin: 5 s against 160 s incremental, run time -6% to +3%, bakes and the non-fire fast tier identical, **but `FireProductionSolverTest` (r83 table package digest) and `FireSimulationSolverTest` (r80 cycling branch) fail**; no strict or no-LTO compile of the sources involved reproduces the pins (§7), and re-pinning was not allowed at fire version 3. The re-pin was approved later (fire version 4, §8) |
 | LTO in Xcode | keep thin (Deployment), none (Development), full (Opto) | already the fast setting; Opto remains the full-LTO shipping option |
 | Development carries the same FP flags | **yes, done**: `-ffast-math -fno-finite-math-only` plus the same per-file strict list | Nothing in `-O0` prevents it; bakes of the Development build equal make's (all scenes, §3). So bytes do not depend on the configuration |
 | `-funroll-loops`, `-mcpu` | leave | no measurable effect: instruction counts equal to 4 digits, cycles within noise. Native ties the binary to one M generation for nothing |
@@ -305,7 +307,7 @@ even with the make flags. So the app's fire table package digest differs from th
 (b) re-pin fire to strict IEEE (re-baseline fire version 4); (c) build fire in the app with the Opto configuration
 (full LTO, fast-math), which is the only Xcode configuration that could reproduce the pin, untested.
 
-### Final per-file flags
+### Per-file flags at fire solver version 3 (superseded by §8)
 
 | sources | make (`Config.OSX` + `Makefile`) | Xcode (all three targets, every configuration) |
 |---|---|---|
@@ -314,13 +316,107 @@ even with the make flags. So the app's fire table package digest differs from th
 | `FireOptics`, `FireSimulationRecords`, `FireProductionTables`, `FireSequence`, `FireSequenceCache`, `FireParameterSchema`, `FireProductionComputeMac` | global flags: `-ffast-math -fno-finite-math-only`, LTO as selected | `-fno-fast-math -ffp-contract=on` (unchanged effective flags) |
 | everything else | global flags (`-O3`, `-ffast-math -fno-finite-math-only`, `-funroll-loops`, LTO as selected) | global flags (`-O3`, `-ffast-math -fno-finite-math-only`, thin LTO in Deployment, none in Development, full in Opto) |
 
-## 8. Not verified
+## 8. Fire solver version 4: the fire-adjacent sources strict, thin LTO the default (2026-11-27, owner-approved re-pin)
 
-* Fire in the app: whether the app's fire output differs from the CLI's (§7, Consequence for Xcode) was inferred from
-  the scratch bisect, not run. The fire tier was run under thin and full LTO in make only; the GPU fire solver ran only
-  as part of that tier.
+The owner chose option (b) of §7. Everything was first done in a private copy of `cc071c604`
+(`/Volumes/SSD/claude-tmp/strictpin-scratch/RISE`, its own git metadata so the build identity works; deleted afterwards, logs and bakes kept in that folder), then applied to
+the real checkout with one `make clean` and a thin rebuild. Physical consequences and the re-pinned values are in
+`docs/SIMULATION_M8_RESULTS.md` §15.
+
+**The strict set.** The seven sources of §7 (`FireOptics`, `FireSimulationRecords`, `FireProductionTables`,
+`FireSequence`, `FireSequenceCache`, `FireParameterSchema`, `FireProductionComputeMac.mm`) now compile with
+`-fno-fast-math -ffp-contract=off`, exactly like the 42 of §6, in make (`FIRE_ADJACENT_STRICT_OBJS` and the
+`FireProductionComputeMac.o` rule; their test-library copies join `TEST_SAFE_FP32_OBJS` / `TEST_SAFE_FP32_MM_OBJS`) and
+in Xcode (the 21 entries of §6 item 2 change `-ffp-contract=on` to `off`; contraction on was not make's strict mode).
+Two more make-only objects: `tools/fire_simulator.o` (the reference simulator; it shares `tools/fire_simulator_core.h`
+with the strict CPU backend) and `tests/FireOpticsPresetTest.o` (its mutation fixtures recompute FireOptics' PCHIP
+derivative enclosures with a one-ulp margin, so the mirror must use FireOptics' arithmetic; with fast-math in the test
+and strict FireOptics, 8 mutation checks hit the enclosure gate first). `FireProductionSolverTest` leaves
+`TESTS_LINK_LTO` (its digest no longer depends on LTO).
+
+**Found and left alone (would be invasive; for the owner).**
+
+1. `FireCase.cpp` stays fast-math outside LTO (its own rule, identical in Xcode). It is already LTO-independent.
+   Compiled strict it changes the r57 source-pattern digest (`FireCaseTest`, `e399780e...`) and with it every case
+   record ID, which committed evidence and docs quote; not done.
+2. `FireSimulationSolverTest` (the reference simulator's unit tests, a fast-math test translation unit linked with LTO)
+   cannot be made LTO-independent without changing gates. Its own code computes the r80 values, so they move with the
+   LTO mode, and some of its roundoff gates hold only for fast-math with LTO inlining:
+
+   | build of the test | r80 discrepancy (selected / other branch) | other failures |
+   |---|---|---|
+   | fast-math, thin LTO (new default) | 0.0029506166530252841 / 0.038419987516984999 (**pinned now**) | none |
+   | fast-math, full LTO | 0.0029506166530252633 / 0.038419987516982668 (the old pin) | r70 pilot ledger (pilot-energy error 1.4e-14) |
+   | fast-math, no LTO | 0.0029506166530252494 / 0.038419987516979823 | r70 pilot ledger |
+   | strict (`-fno-fast-math -ffp-contract=off`), any LTO | strict value (not pinned) | "finite-increment consumers propagate binary32 precision" (the raw state's volume ratio is 0.99999999999999989, one ulp below 1, so the zero packet's expansion is -1.1e-16, not exactly 0); "V2/V3 projected-Heun executes converged R0, R1, R2" (periodic divergence-target mean -5.55e-14 against its 64-epsilon compatibility tolerance 1.4e-14) |
+
+   So it stays in `TESTS_LINK_LTO`, fast-math, with r80 pinned to the thin value. **It is the one fire test whose
+   pins depend on the LTO mode**; under `LTO=full` and `LTO=off` it fails (table). Making it strict means re-deciding
+   the two exactness expectations above (and possibly the reference simulator's arithmetic, which the CPU backend
+   shares): an owner decision.
+3. `LTO=off` cannot link `bin/tests/FireProductionCalibrationOracle` (undefined `...MetalDiagnostic` /
+   `...MetalWorkingSetBytes` symbols referenced from `FireSequenceTest.o`; with LTO they are dead-stripped first), so a
+   plain `make LTO=off tests` stops there; the runner builds what it needs and the fire tier still runs. Present before
+   this change (no source involved was touched); not fixed.
+
+**LTO independence, measured** (copy, a clean build per mode; fire tier = `--filter
+'Fire*,SimulationSceneTest,SimulationGoldenCacheTest,SourceHygieneTest,CstDerive*'`, 19 tests; bakes = `rise_sim bake`
+of a tier-6 certified Metal window (0.0625–0.13 s, two frames) and a tier-4 CPU window (0–0.0625 s, two frames),
+compared by the native `.frame` files and the legacy frames, checkpoint VDBs and frame times; manifests differ only by
+producer build identity and wall times):
+
+| build | fire tier | bakes |
+|---|---|---|
+| thin LTO (default) | 19 of 19 (after the re-pin) | reference |
+| full LTO | 18 of 19: only `FireSimulationSolverTest` (item 2) | identical |
+| no LTO | 18 of 19: only `FireSimulationSolverTest` (item 2); `FireCPUBackendTest` first failed its CLI render check because `bin/rise` was missing after item 3 stopped the build, and passes once `make LTO=off all` built it | identical |
+| thin, and **every other library source strict too** (no fast-math anywhere except `FireCase`) | table package digest, scene keys, `FireSequenceTest`'s pinned digests, agreement, solver and CPU tests unchanged; failures only where test or render code itself is compiled differently (`FireSimulationSolverTest`, the two `FireProductionSolverTest` fixtures whose test-side references mirror fast-math code, `CstDeriveGoldenTest`, and `FireSequenceTest`'s capstone spectral preview, which renders black with an all-strict renderer: renderer behaviour, not investigated) | identical |
+
+The last row is the test for "nothing fire pins comes from fast-math code elsewhere": changing the arithmetic of every
+non-fire source (colour, spectral, interpolation and math helpers included) moves no fire byte. It is a stronger version
+of the "different optimisation of unrelated code" check, so `-funroll-loops` off was not run separately.
+
+**Real checkout** (`make clean`, then thin `all tests build-tool/rise_sim build-tool/simulation_cache_import`: warning-free):
+fire tier 19 of 19 after the strict re-pin, and 19 of 19 again after the chemistry-light change of §15 (which moved no
+pinned value).
+
+**Xcode against make** (real checkout; derived data and per-configuration `DSTROOT` under the scratch folder):
+all six builds (`rise`, `rise-sim`, `RISE-GUI` × Development, Deployment) `BUILD SUCCEEDED`; apart from the Homebrew
+"built for newer macOS" linker notices the only warnings are the project's existing ones (`rise`: unsandboxed script
+phase; `RISE-GUI`: AppIntents metadata skipped). The compile lines show `-fno-fast-math -ffp-contract=off` last on the
+seven sources. The Xcode **Deployment** `rise-sim` writes exactly the make `rise_sim`'s fire frames (native `.frame` files,
+legacy frames, checkpoint VDBs, frame times) and the same job record for the tier-6 Metal bake and the tier-4 CPU bake;
+the **Development** (`-O0`) `rise-sim` writes the same CPU-backend frames (1,843 s against 177 s). Before this change the
+seven sources were fast-math in make and contraction-on strict in Xcode, so the two builds' table packages differed (§7).
+The Development `rise-sim` **cannot run the Metal bake**: it stops at step 0 with "projected-Heun resident owner
+certificate failed: working_set_passed=0 actual_bytes=6403604480 certified_bytes=4570578944". A Development `rise-sim`
+built from `cc071c604` (before this change) fails identically, so this is pre-existing and unrelated to floating-point
+flags (a Debug-build memory difference, not investigated).
+
+### Final per-file flags (fire solver version 4)
+
+| sources | make (`Config.OSX` + `Makefile`) | Xcode (`rise`, `rise-sim`, `RISE-GUI`; every configuration) |
+|---|---|---|
+| 42 simulation, fire solver, fire production and OSL sources (lists in §6) | `-fno-fast-math -ffp-contract=off` | same |
+| `FireOptics`, `FireSimulationRecords`, `FireProductionTables`, `FireSequence`, `FireSequenceCache`, `FireParameterSchema` (.cpp), `FireProductionComputeMac.mm` (+ `-fobjc-arc`) | `-fno-fast-math -ffp-contract=off` | same |
+| `tools/fire_simulator.cpp`, `tests/FireOpticsPresetTest.cpp` | `-fno-fast-math -ffp-contract=off` | (not in the project) |
+| `FireCase.cpp` | `-ffast-math ... -funroll-loops`, no LTO | `-O3 -ffast-math -fno-finite-math-only -funroll-loops -ffp-contract=fast -fno-lto` |
+| everything else | `-O3 -ffast-math -fno-finite-math-only -funroll-loops`, **thin LTO by default** (`LTO=full|off`) | `-O3` (`-O0` in Development) `-ffast-math -fno-finite-math-only`, thin LTO in Deployment, none in Development, full in Opto |
+
+Per-file flags in Xcode do not add `-O3`, so the strict sources compile at `-O0` in Development; strict IEEE code gives
+the same bytes at any optimisation level (checked for fire below and for cloth/liquid in §3).
+
+**Switching LTO modes needs `make clean`.** make does not record the mode: objects of two modes would be mixed
+(thin bitcode with full bitcode or native objects), which has broken a fire test link before. The renderer build
+identity records the mode, so the producer build ID of every cache changes with it (frames do not).
+
+## 9. Not verified
+
+* (§8) The extended tier under full or no LTO; fire under `-funroll-loops` off alone (covered by the all-strict
+  variant); the Opto configuration; `RISE-GUI` was only built, not run.
+* Fire in the app (§7, Consequence for Xcode): superseded by §8, where the Xcode `rise-sim` bakes were compared.
 * The extended tier under any variant, and the fire tier under no-LTO make; `RISE-GUI` was only built, not run; no headless
-  GUI probe.
+  GUI probe. (Fire tier under no-LTO make: done in §8.)
 * Pixel-exact render equality (impossible: renders are not reproducible); `bench_pt`'s 10% lower instruction count in
   Xcode builds is unexplained.
 * Quiet-machine wall times. Clean-build and run-time wall figures carry the load noted in §2.

@@ -755,12 +755,13 @@ void TestFire(const fs::path& root)
 	// M8d: scene selection of the CPU backend (docs/SIMULATION_M8_RESULTS.md section 12.4). These
 	// keys were recorded with the build before `backend` became a scene parameter (f005c0ac...df27,
 	// 5b419d96...712f) and re-pinned at the fire solver version bump 2 -> 3 (section 13: the
-	// rim-ignition witness), which changes every fire key: a fire scene keeps its key byte for byte
-	// across scene-schema changes, and so does one that states the default.
-	const std::string pinnedBase = "4a205582611b41442198b7e53158352c93981f099dbf2ffbf64b0e6703d2bc58", pinnedOptions = "1394dc8b95c2af91b6a9fe3dbbc73ca836b074869a51244da9725d87188b798d";
+	// rim-ignition witness, 4a205582...bc58, 1394dc8b...798d) and again at 3 -> 4 (section 15: strict
+	// IEEE compilation of the fire tables and records), each of which changes every fire key: a fire
+	// scene keeps its key byte for byte across scene-schema changes, and so does one that states the default.
+	const std::string pinnedBase = "6d51da161270d493f5e58b8a0ecaf20b84a21812f05693600fc3f47b5b119e6b", pinnedOptions = "b3a96f73aa30d35b89835f776b4d096e033e1be9aa600eb360029f1e1d3f41b2";
 	std::printf("fire keys: base %s options %s\n", base.c_str(), key.c_str());
 	Check(base == pinnedBase && key == pinnedOptions, "existing fire scenes keep their keys (pinned at "
-		"fire solver version 3)", base + " " + key);
+		"fire solver version 4)", base + " " + key);
 	Check(keyOf(window + "\tbackend\tmetal\n") == base, "backend metal (the default) keys like backend left out");
 	const std::string cpuKey = keyOf(window + "\tbackend\tcpu\n");
 	Check(!cpuKey.empty() && cpuKey != base && cpuKey.size() == 64, "backend cpu has its own key", cpuKey);

@@ -4,6 +4,8 @@ Last updated 2026-11-18, after the r272 soot window finished and its movie look 
 is the entry point for any new fire/smoke session. The `FIRE_SMOKE_*_R2xx.md`
 pages are a historical log, not instructions.
 
+**Fire solver version 4 (2026-11-27).** The fire-adjacent sources (tables, records, optics, sequence, cache, schema, Metal compute host) compile strict IEEE like the solver, so fire's bytes are the same under thin, full and no LTO and in the Xcode build; make now defaults to thin LTO (`make clean` when switching). The chemistry-light preview channels follow the local reaction at an absolute scale (the r272 look, no more warm-plume "blue column"). Every fire key changed; version-1 to -3 caches stay playable but read as stale. One exception: `FireSimulationSolverTest` (reference-simulator unit tests) still depends on the LTO mode (pinned for thin). [M8 results §15](SIMULATION_M8_RESULTS.md), [BUILD_FLAGS §8](BUILD_FLAGS.md).
+
 **Fire solver version 3 (2026-11-26).** The pre-pilot burner-rim ignition witness is a product fraction of 1e-6 instead of the ambient zero, so binary32 rounding residue no longer lights the burner at step 2–3 (ignition at about 0.13 s; CPU and Metal agree to rounding through it). Every fire key changed (`SimulationSceneTest` J re-pinned); version-1 and -2 caches stay playable but read as stale. No fire digest, frame or reference image changed. [M8 results §13](SIMULATION_M8_RESULTS.md).
 
 [r267 r264 full window](FIRE_SMOKE_R264_FULL_WINDOW_R267.md):

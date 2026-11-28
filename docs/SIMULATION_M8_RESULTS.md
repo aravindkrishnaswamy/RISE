@@ -1560,3 +1560,165 @@ spelled `()const{` where the normalised header form is `()const {`. After fixing
 
 1. Nothing remains of §13.7 items 1 and 2. §12.8 items 2–6 are unchanged.
 2. A committed scene's `fire_medium` rendered from a real tier-6 bake with a window at 1.0 s was not run (hours of Metal).
+
+## 15. Fire solver version 4: strict fire compilation, thin LTO, reaction-only chemistry light (2026-11-27, evening)
+
+Owner-approved ("Yes re-pin"), on `cc071c604` + uncommitted working tree. Build side in detail: `docs/BUILD_FLAGS.md` §8.
+Second part folded in at the coordinator's request, because every fire key changes anyway: the exporter's
+chemistry-light channels (the "tall blue column").
+
+**Outcome.**
+
+- **The fire-adjacent sources compile strict** (`-fno-fast-math -ffp-contract=off`, like the 42 solver sources):
+  `FireOptics`, `FireSimulationRecords`, `FireProductionTables`, `FireSequence`, `FireSequenceCache`,
+  `FireParameterSchema`, `FireProductionComputeMac.mm`, in make and Xcode alike (Xcode had contraction on). Fire's
+  bytes are now the same under thin, full and no LTO, with every other library source strict as well, and in the Xcode
+  build (§15.3). **make defaults to thin LTO.**
+- **Chemistry light follows the reaction.** `WriteLegacyFireFrame` (`FireRunFrames.cpp`) wrote `chem_CH/C2/CO2` =
+  0.8·{120, 50, 8}·max(reaction/reaction_max, (T−300)/(T_max−300)); the temperature term lit the whole warm plume and the
+  per-frame maxima renormalised every frame. It now writes chem_CH = 3e-6·max(reaction, 0) (W/m³ of band power per W/m³
+  of heat release), C2 and CO2 at 50/120 and 8/120 of that: the r272 `chem_from_reaction` rule
+  (`docs/FIRE_SMOKE_SOOT_R272.md`), absolute, so brightness is comparable across frames and runs. Still labelled
+  `SYNTHETIC_NON_PREDICTIVE`. The unit-render cold-chemistry fixture and the solver-less fixture frames keep their
+  values. Soot defaults are unchanged (soot formation stays opt-in, off).
+- **Solver version 3 → 4.** Every fire key changes; version 1–3 caches read as stale and still play.
+- **The physical change is rounding**: on Metal (tier 4, fast) products and heat release differ from version 3 by
+  < 1e-6 relative at 0.25, 0.5 and 1.0 s; ignition stays at step 80 (0.1349 s) on both backends; CPU and Metal still agree
+  to rounding through it. **The visible change is the chemistry light**, not the solver (§15.4).
+- **Not LTO-independent: `FireSimulationSolverTest`** (the reference simulator's unit tests). Its own fast-math test code
+  computes the r80 pin and holds some roundoff gates only with LTO inlining; it is pinned for thin and fails under full
+  and no LTO; making it strict needs two exactness expectations re-decided (owner; `BUILD_FLAGS.md` §8 item 2).
+
+### 15.1 What changed
+
+| File | Change |
+|---|---|
+| `build/make/rise/Config.OSX` | `LTO ?= thin`; comment (fire bytes the same in every mode; `make clean` when switching) |
+| `build/make/rise/Makefile` | `FIRE_ADJACENT_STRICT_OBJS` and a `FireProductionComputeMac.o` rule (strict); their test-library copies in `TEST_SAFE_FP32_*`; strict `tools/fire_simulator.o` and `tests/FireOpticsPresetTest.o`; `FireProductionSolverTest` leaves `TESTS_LINK_LTO`; comments |
+| `build/XCode/rise/rise.xcodeproj/project.pbxproj` | the 21 per-file entries of the seven sources: `-ffp-contract=on` → `off` |
+| `src/Library/Utilities/FireSequence.h` | `FireMethaneSolverVersion` `"4"`; `FireMethaneSolverCacheVersionPlayable` accepts 1–4 |
+| `src/Library/Simulation/Fire/FireRunFrames.cpp` | chemistry light from local reaction only, absolute scale |
+| `tests/FireCachePlaybackTest.cpp` | versions 1–4 playable, 0 and 5 refused |
+| `tests/SimulationSceneTest.cpp`, `tests/FireProductionSolverTest.cpp`, `tests/FireSimulationSolverTest.cpp` | re-pins (below); the last also prints the observed r80 values when they differ |
+| docs | this section, `BUILD_FLAGS.md` §1, §5, §8, `FIRE_SMOKE_STATUS.md`, contract Appendix C, a note in `FIRE_SMOKE_SOOT_R272.md` |
+
+No fire production source covered by the mirrors changed, so `tests/fire_production_fp64/SourceManifest.h` and
+`tests/fire_production_trace/SourceManifest.h` are unchanged (their `--check`s pass in the tier runs). `FireCase.cpp`
+keeps its fast-math, no-LTO rule (strict, it would change the r57 source-pattern digest and every case ID).
+
+**Re-pinned values**
+
+| Pin | Version 3 | Version 4 |
+|---|---|---|
+| `FireProductionSolverTest` r83 table package | `3e8f4650…ce55` | `e7912153c727b93f2e10e5f9cc41efb97b5ec944dc7cbd99d260f3ceb7bfeeed` |
+| `FireSimulationSolverTest` r80 discrepancies (selected / other) | 0.0029506166530252633 / 0.038419987516982668 | 0.0029506166530252841 / 0.038419987516984999 (thin LTO) |
+| `SimulationSceneTest` J fire keys (base / options) | `4a205582…bc58` / `1394dc8b…798d` | `6d51da161270d493f5e58b8a0ecaf20b84a21812f05693600fc3f47b5b119e6b` / `b3a96f73aa30d35b89835f776b4d096e033e1be9aa600eb360029f1e1d3f41b2` |
+| campfire scratch scene key | `4217e3bb672f…` | `e6de8ad7f603…` |
+
+Unchanged (checked by the tier with the strict build and again with the chemistry change): all of `FireSequenceTest`'s
+digests (its frame fixtures are solver-less or the cold-chemistry fixture, both unchanged; its capstone path calls the
+same `WriteLegacyFireFrame` but pins no chem bytes), the calibration digests, `FireOpticsPresetTest`'s record IDs,
+`FireCaseTest`'s r57 digest, `SimulationGoldenCacheTest` (no fire), and the CPU-vs-Metal bounds of
+`FireCPUMetalAgreementTest` (the 10-step curve is identical to version 3's to the printed digits, §15.2, so the margins
+of §13.3 stand). **What the r83 "independently pinned fixture" is:** a hash recorded from the build's own output
+(first `c4fbd663…`, re-recorded as `3e8f4650…` in `91c88a959` when the compiler changed); no generator under `tools/`
+or elsewhere computes the table package independently, so it cannot be regenerated, only re-recorded. The new value is
+the strict IEEE result, the same in every LTO mode, the all-strict build and (by the bisect of `BUILD_FLAGS.md` §7) with
+or without contraction at clang's default.
+
+### 15.2 Agreement and ignition (tier 4, fast)
+
+`FireCPUBackendTest --agreement 10`: identical to §13.3 to the printed digits (step 1: E 1.6e-9, T 4.5e-10, velocity
+6.2e-7; max over 10 steps: species 1.5e-7, T 8.0e-8, E 1.3e-6, velocity 1.0e-5), and the identical-start checks pass.
+
+Through ignition (`--long-run-child 4 {0,1} 1 0.3 DIR 160 1 1`, both backends, every state dumped and compared with
+§13.3's metric; `/Volumes/SSD/claude-tmp/strictpin-scratch/runs/{v3,v4}/`): both versions ignite at **step 80 (0.1349 s)** on
+both backends (version 4: Metal 3.68148063e-6 kg, CPU 3.68148076e-6 kg; version 3: 3.68148052e-6 / 3.68148075e-6). Maxima
+over steps 1–100: version 4 species 1.2e-6, T 3.9e-7, E 1.3e-6, velocity 1.8e-5 (version 3: 8.7e-7, 4.6e-7, 1.3e-6,
+1.9e-5); steps 76–84 species ≤ 1.1e-6, T ≤ 2.8e-7, E ≤ 3.1e-7, velocity ≤ 1.0e-5. So the backends agree to rounding
+through ignition as before. **New after ignition:** at step 131 (0.216 s) the version-4 pair jumps to species 1.75e-5,
+T 1.5e-5, E 2.8e-5, velocity 5.4e-4 in two cells at the burner edge ((18,21,1): 464.808 K on Metal, 464.824 K on the
+CPU), then decays (velocity 1.6e-5 two steps later; species 5.7e-6 at step 160). Version 3 shows no such step up to 160.
+It looks like the near-tie decisions of §14.3 (a cell crossing a threshold on one backend one ulp before the other);
+that is inferred, not isolated. No gate covers steps beyond 8 (the gated test is unchanged and passes).
+
+### 15.3 LTO and build independence
+
+From `BUILD_FLAGS.md` §8: a tier-6 certified Metal bake (2 frames) and a tier-4 CPU bake (2 frames) write identical
+frames (native `.frame` files, legacy frames, checkpoint VDBs, frame times) under thin, full and no LTO, and with every
+other library source strict; the fire tier passes there with the same pins except `FireSimulationSolverTest`.
+Those copy runs predate the chemistry-light change; with it, a clean full-LTO build of the final tree writes the
+same frames as the real checkout's thin build for both bakes (the fire tier was not rerun under full or no LTO after it;
+the change moved no pin).
+Strict compilation alone changes the CPU bake's second frame and the table package, not the Metal bake's two frames
+(their window is short); the Metal tier-4 statistics differ from version 3 from step 5 on, by ~1e-7.
+**Xcode against make:** the Xcode Deployment `rise-sim` writes the make `rise_sim`'s fire frames byte for byte on both
+backends, and the Xcode Development (`-O0`) one on the CPU backend; this was not true before (the seven sources were
+compiled differently by the two builds). The Development `rise-sim` fails the Metal bake at step 0 on its working-set
+certificate, before and after this change (pre-existing, `BUILD_FLAGS.md` §8).
+
+### 15.4 The visible change (old = `cc071c604` built in the copy, version 3; new = this tree)
+
+Metal fast, tier 4, 600 steps (`--long-run-child 4 0 1 3.2 DIR 600 5 0`):
+
+| t (s) | products old / new (kg) | Δ | frame heat release old / new (kW) | Δ | max T old / new (K) |
+|---:|---:|---:|---:|---:|---:|
+| 0.249 (step 150) | 4.212367e-4 / 4.212365e-4 | −5e-7 | 35.818758 / 35.818759 | +3e-8 | 1280.932 / 1280.933 |
+| 0.498 (step 300) | 1.2603477e-3 / 1.2603476e-3 | −8e-8 | 31.513868 / 31.513865 | −1e-7 | 1813.361 / 1813.360 |
+| 1.007 (step 600) | 2.9751952e-3 / 2.9751954e-3 | +6e-8 | 30.330031 / 30.330029 | −8e-8 | 1952.664 / 1952.664 |
+
+Heat release averaged over 0.5–1.0 s: 34.4811 kW both. (Version 3 here reproduces §13.4's version-3 statistics line for
+line, and its campfire bake writes §13.4's frames byte for byte.)
+
+**A rendered frame** (the §13.4 set-up: scratch copy of the committed `fire_campfire_scene`, tier 6, fast, window to
+1.0625 s, `rise-sim bake`, 647 steps, ~6 min each; 1.0 s frame, spectral path tracer, 64 spp, 960×540; scene
+`/Volumes/SSD/claude-tmp/strictpin-scratch/scene/strictpin_campfire.RISEscene`; EXR linear primary, PNG +7 EV, each with
+`_denoised`): `rendered/strictpin_v3.*` and `rendered/strictpin_v3_rerun.*` (version-3 cache, version-3 renderer, twice:
+the noise floor), `rendered/strictpin_v3cache_v4renderer.*` (the version-3 cache played by the version-4 build:
+`rise-sim status` reports it **stale**, key `e6de8ad7f603…` against the cache's `4217e3bb672f…`, and it **renders**),
+`rendered/strictpin_v4strict_oldchem.*` (the strict compilation alone: the real checkout's build before the
+chemistry-light change, its own cache), and `rendered/strictpin_v4.*` (version-4 cache and renderer).
+
+| pair (sRGB PNG, `ImageDiffTest`) | RMSE (denoised) | mean B old → new |
+|---|---|---|
+| v3 vs v3 rerun (noise floor) | 0.0284 (0.0053) | 0.0207 → 0.0207 |
+| v3 vs v3 cache in the v4 renderer | 0.0285 (0.0053) | 0.0207 → 0.0207 |
+| v3 vs strict compilation alone (old chemistry light) | 0.0287 (0.0051) | 0.0207 → 0.0207 |
+| v3 vs v4 | 0.0681 (0.0681) | 0.0207 → 0.0007 |
+
+Reading: the renderer change is nil (same cache, either renderer: noise floor). The version-4 frame is a different
+picture: the version-3 frame is a bright blue glow filling the plume (two lobes above a cone, the warm gas); the
+version-4 frame lights only the reaction zone, a small blue flame sheet just above the burner, about 30 times dimmer
+on average. That is the intended effect of the chemistry-light change; the solver change contributes nothing visible.
+**Under the RGB path tracer a soot-free fire still renders black**: the RGB path has no chemistry light and methane soot
+is off by default (a separate diagnostic is coming). The committed `fire_campfire_scene` uses the RGB path (`pathtracing_pel_rasterizer`).
+
+### 15.5 Tests
+
+- Real checkout, `make clean` then thin `all tests build-tool/rise_sim build-tool/simulation_cache_import`: warning-free.
+- `./run_all_tests.sh --tier fast --timeout 300 --filter 'Fire*,SimulationSceneTest,SimulationGoldenCacheTest,SourceHygieneTest,CstDerive*'`
+  (19 tests): **19 of 19** with the strict re-pin, and **19 of 19** again after the chemistry-light change (machine load
+  70–105; `FireSolverTest` 251 s). The runner's mirror `--check`s print `pass`.
+- Copy, same filter: thin 19 of 19 (before the chemistry change); full 18 of 19 and no LTO 18 of 19, the failure being
+  `FireSimulationSolverTest` in both (`BUILD_FLAGS.md` §8 item 2).
+- `FireSolverTest --extended`: **passed** (57 checks, 709 s wall under load; capstone path 83 s, its legacy frames byte-identical to `rise-sim`'s), run from a copy of the final binary so no relink could reach it.
+- `tests/test_schedule.tsv` unchanged.
+
+### 15.6 Verified versus inferred
+
+| Claim | Basis |
+|---|---|
+| Fire bytes do not depend on the LTO mode or on fast-math elsewhere | Bakes and tier in four builds of the copy (thin, full, off, all-strict) |
+| The r83 fixture is a recorded output, not an independent computation | History of the pin (`3e709528e`, `91c88a959`); no generator found |
+| Physical change is rounding | One Metal tier-4 run each (not an ensemble); ignition step and agreement curve on both backends |
+| The step-131 post-ignition difference is a near-tie decision | Two cells, decays in a few steps; cause not isolated |
+| The visible change is the chemistry light | One tier-6 frame each, against the render noise floor and the strict-only frame |
+| Version-3 caches stale but playable | `FireCachePlaybackTest`; a real version-3 cache: `rise-sim status` stale, rendered by the version-4 build |
+
+### 15.7 Open items
+
+1. `FireSimulationSolverTest` LTO dependence (owner decision, `BUILD_FLAGS.md` §8 item 2).
+2. `FireCase.cpp` stays fast-math (strict would move every case ID).
+3. `make LTO=off tests` stops at `FireProductionCalibrationOracle` (pre-existing link error, `BUILD_FLAGS.md` §8 item 3).
+4. The step-131 CPU/Metal event (§15.2), if bit-level agreement beyond ignition is wanted.
+5. The chemistry-light fraction 3e-6 is a look choice from r272, not a measured value.

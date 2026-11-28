@@ -59,18 +59,16 @@ endif
 
 CPPFLAGS_OIDN = -I$(OIDN_PREFIX)/include
 
-# Link-time optimisation mode (docs/BUILD_FLAGS.md): `make LTO=full|thin|off`.
-#   full (default)  -flto.  The pinned fire digests (FireProductionSolverTest r83 table package,
-#                   FireSimulationSolverTest r80 cycling branch) were recorded with it and are the
-#                   product of full-LTO fast-math code generation: under thin LTO both move.
-#                   Every relink is a ~160 s single-threaded job.
-#   thin            -flto=thin plus the linker's LTO cache (bin/lto-cache): an incremental rebuild
-#                   takes ~5 s; run time -6%..+3% against full; simulation bytes and the non-fire
-#                   fast tier unchanged, BUT the two fire digests above fail.  Opt-in iteration mode
-#                   for work that does not touch fire; delete the objects when switching modes.
+# Link-time optimisation mode (docs/BUILD_FLAGS.md): `make LTO=thin|full|off`.
+#   thin (default)  -flto=thin plus the linker's LTO cache (bin/lto-cache): an incremental rebuild
+#                   takes ~5 s instead of ~160 s; run time -6%..+3% against full.
+#   full            -flto: one single-threaded link-time code generation per binary (~160 s).
 #   off             no LTO; ~3 s incremental, up to ~5% slower on some workloads.
-# The floating-point flags below are the same in all modes.
-LTO ?= full
+# Simulation and fire bytes are the same in every mode: the solvers and the fire tables, records,
+# sequence and schema sources compile strict (fire solver version 4, docs/SIMULATION_M8_RESULTS.md
+# section 15).  make does not track the mode: run `make clean` when switching (objects of two
+# modes must not be mixed).  The floating-point flags below are the same in all modes.
+LTO ?= thin
 ifeq ($(LTO),full)
 LTOFLAG = -flto
 else ifeq ($(LTO),thin)

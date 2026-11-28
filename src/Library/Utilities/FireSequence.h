@@ -35,9 +35,13 @@ namespace RISE
 		// witness is a product fraction of 1e-6 (FireCase::RimIgnitionProductWitness), so
 		// every fire key changed.  Caches of versions 1 and 2 use the same grid and receipt
 		// formats: stale for baking (the version is in the key), still playable.
-		constexpr const char* FireMethaneSolverVersion = "3";
+		// Version 4 (docs/SIMULATION_M8_RESULTS.md section 15): the fire tables, records,
+		// optics, sequence and schema sources compile with strict IEEE arithmetic instead
+		// of fast-math (docs/BUILD_FLAGS.md), so their bytes no longer depend on the LTO
+		// mode; the solver's results move by rounding.  Version 3 caches stay playable.
+		constexpr const char* FireMethaneSolverVersion = "4";
 		inline bool FireMethaneSolverCacheVersionPlayable(const std::string& version)
-			{ return version=="1" || version=="2" || version==FireMethaneSolverVersion; }
+			{ return version=="1" || version=="2" || version=="3" || version==FireMethaneSolverVersion; }
 		constexpr const char* FireMethaneFrameReceiptFormat = "rise.fire.methane.frame.v1";
 
 		bool CurrentRendererBuildIdentity(
