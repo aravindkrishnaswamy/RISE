@@ -1,0 +1,358 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           unveiling.RISEscene                                                                     #
+#   Idea:           An unveiling.  A sheet of crimson silk hangs from a rod behind a black marble plinth    #
+#                   and falls forward over the crystal orb on it; then the rod rises and draws back, and    #
+#                   the silk slides over the orb, folds on itself and lifts away, revealing the crystal,    #
+#                   which throws a dispersed caustic onto the plinth.  Backlit, so the silk glows.          #
+#   Simulations:    cloth.shell `silk` alone: silk-lightweight, barrier contact with the plinth, the orb    #
+#                   and the floor (analytic colliders), self-collision on, its back edge pinned to the rod  #
+#                   (`pin v0 follow rod`: the rod's keyframed transform drives the pinned edge).            #
+#   Frame:          y up, metres.                                                                           #
+#   Time:           5 s at 30 fps (151 frames).                                                             #
+#   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
+#                   simulation_showcase.sh proof substitutes the proof value.                               #
+#   Bake/render:    scripts/simulation_showcase.sh proof|final unveiling   (docs/SIMULATION_SHOWCASE.md)     #
+#   showcase:       hero 84 frames 20 60 96 150                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			pnt_env
+	color			0.2 0.2 0.22
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			512		# proof 64
+	oidn_denoise	TRUE
+	radiance_map	pnt_env
+	radiance_scale	0.15
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/showcase/unveiling/final/unveiling		# proof rendered/showcase/unveiling/proof/unveiling
+	multiple		TRUE
+	type			PNG
+	bpp				8
+	color_space		sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1920		# proof 640
+	height			1080		# proof 360
+}
+
+animation_options
+{
+	time_start		0
+	time_end		5
+	num_frames		151
+}
+
+pinhole_camera
+{
+	location		1.05 0.78 1.75
+	lookat			0.0 0.62 0.0
+	up				0 1 0
+	fov				40.0
+}
+
+#############################################################################################################
+# The silk: 1.0 m by 0.9 m, starting level 0.70 m up (just above the orb), its back edge (v0) on the rod.
+
+cloth_simulation
+{
+	name			silk
+	frames			151
+	size_u			1.0
+	size_v			0.9
+	vertices_u		61		# proof 31
+	vertices_v		61		# proof 31
+	origin			-0.5 0.70 -0.25
+	axis_u			1 0 0
+	axis_v			0 0 1
+	material		silk-lightweight
+	pin				v0 follow rod
+	follow_object	rod
+	self_collision	TRUE
+	friction		0.25
+	collider		plane 0 0 0 0 1 0
+	collider		box -0.18 0 -0.18 0.18 0.4 0.18
+	collider		sphere 0 0.528 0 0.128
+}
+
+simulated_mesh_geometry
+{
+	name			geo_silk
+	source			silk.surface
+	double_sided	TRUE
+}
+
+uniformcolor_painter
+{
+	name			pnt_silk_warp
+	color			0.55 0.02 0.06
+}
+
+uniformcolor_painter
+{
+	name			pnt_silk_weft
+	color			0.75 0.10 0.12
+}
+
+weave_material
+{
+	name			mat_silk
+	fabric			silk
+	warp_color		pnt_silk_warp
+	weft_color		pnt_silk_weft
+	transmission	thin
+	sheer			0.3
+	warp_transmit	0.5
+	weft_transmit	0.5
+}
+
+standard_object
+{
+	name			silk_object
+	geometry		geo_silk
+	material		mat_silk
+}
+
+# The rod: holds still while the silk settles, then rises and draws back.
+cylinder_geometry
+{
+	name			geo_rod
+	axis			x
+	radius			0.01
+	height			1.1
+}
+
+uniformcolor_painter
+{
+	name			pnt_brass
+	color			0.75 0.55 0.25
+}
+
+ggx_material
+{
+	name			mat_brass
+	rd				pnt_brass
+	rs				pnt_brass
+	alphax			0.18
+	alphay			0.18
+}
+
+standard_object
+{
+	name			rod
+	geometry		geo_rod
+	material		mat_brass
+	position		0 0.70 -0.25
+}
+
+timeline
+{
+	element_type	object
+	element			rod
+	param			position
+	time			0.0
+	value			0 0.70 -0.25
+	time			1.8
+	value			0 0.70 -0.25
+	time			3.4
+	value			0 1.25 -0.75
+	time			5.0
+	value			0 1.55 -1.05
+}
+
+#############################################################################################################
+# The plinth and the orb
+
+box_geometry
+{
+	name			geo_plinth
+	width			0.36
+	height			0.4
+	depth			0.36
+}
+
+uniformcolor_painter
+{
+	name			pnt_marble
+	color			0.025 0.025 0.03
+}
+
+lambertian_material
+{
+	name			mat_marble_base
+	reflectance		pnt_marble
+}
+
+coated_material
+{
+	name			mat_marble
+	base			mat_marble_base
+	coat_ior		1.55
+	coat_roughness	0.03
+}
+
+standard_object
+{
+	name			plinth
+	geometry		geo_plinth
+	material		mat_marble
+	position		0 0.2 0
+}
+
+sphere_geometry
+{
+	name			geo_orb
+	radius			0.125
+}
+
+# Crystal with an exaggerated dispersion (per-channel IOR).
+dielectric_material
+{
+	name				mat_crystal
+	tau					0.97 0.98 0.99
+	ior					1.50 1.53 1.57
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+standard_object
+{
+	name			orb
+	geometry		geo_orb
+	material		mat_crystal
+	position		0 0.528 0
+}
+
+# A brass collar the orb sits in.
+torus_geometry
+{
+	name			geo_collar
+	majorradius		0.06
+	minorratio		0.18
+}
+
+standard_object
+{
+	name			collar
+	geometry		geo_collar
+	material		mat_brass
+	position		0 0.408 0
+	orientation		90 0 0
+}
+
+#############################################################################################################
+# The room: a dark floor and a far wall; light from a strong softbox behind and above (backlight) and a
+# narrow warm key from the left.
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-5 0 -5
+	ptb				 5 0 -5
+	ptc				 5 0  5
+	ptd				-5 0  5
+}
+
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.09 0.085 0.08
+}
+
+lambertian_material
+{
+	name			mat_floor_base
+	reflectance		pnt_floor
+}
+
+coated_material
+{
+	name			mat_floor
+	base			mat_floor_base
+	coat_ior		1.5
+	coat_roughness	0.25
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_wall
+	pta				-5 0 -2.2
+	ptb				 5 0 -2.2
+	ptc				 5 4 -2.2
+	ptd				-5 4 -2.2
+}
+
+uniformcolor_painter
+{
+	name			pnt_wall
+	color			0.12 0.12 0.13
+}
+
+lambertian_material
+{
+	name			mat_wall
+	reflectance		pnt_wall
+}
+
+standard_object
+{
+	name			wall
+	geometry		geo_wall
+	material		mat_wall
+}
+
+rect_light
+{
+	name			backlight
+	center			0.0 2.5 -1.3
+	size			1.2 0.8
+	facing			0 -1 0.75
+	color			1.0 0.92 0.82
+	exitance		70
+}
+
+rect_light
+{
+	name			key
+	center			-1.9 2.0 0.5
+	size			0.4 0.4
+	facing			1 -0.8 -0.25
+	color			1.0 0.88 0.72
+	exitance		110
+}
+
+rect_light
+{
+	name			fill
+	center			1.6 1.0 1.6
+	size			1.0 1.0
+	facing			-1 -0.3 -1
+	color			0.75 0.82 1.0
+	exitance		3
+}
