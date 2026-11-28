@@ -108,9 +108,9 @@ ForwardLayerValidation ValidateForwardLayers(const std::array<ForwardLayer,6>& l
     return result;
 }
 HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers,double wavelengthNm,
-    double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy,ForwardPostScatterPolicy postScatterPolicy):
+    double exteriorIOR,double fiberRate,AbsorptionEstimator estimator,double rouletteTarget,ForwardPlacementPolicy placementPolicy,ForwardPostScatterPolicy postScatterPolicy,ForwardShellGeometry shellGeometry):
     layers_(layers),wavelengthNm_(wavelengthNm),exteriorIOR_(exteriorIOR),fiberRate_(fiberRate),
-    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*ForwardEndpointGap(wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy),postScatterPolicy_(postScatterPolicy) {
+    rouletteTarget_(rouletteTarget),forwardAngle_(wavelengthNm<780 ? 5*Pi/180 : wavelengthNm<1400 ? (5*Pi/180)*ForwardEndpointGap(wavelengthNm)/620 : 0),estimator_(estimator),placementPolicy_(placementPolicy),postScatterPolicy_(postScatterPolicy),shell_(shellGeometry) {
     Require(postScatterPolicy==ForwardPostScatterPolicy::DiagnosticRetainParticleV1||postScatterPolicy==ForwardPostScatterPolicy::DiscardAfterScatterV1,"invalid post-scatter policy");
     Require(placementPolicy==ForwardPlacementPolicy::FixedEventDiagnosticV1||placementPolicy==ForwardPlacementPolicy::NullCollisionPlacementV1,"invalid placement policy");
     Require(Finite(wavelengthNm)&&wavelengthNm>0&&Finite(exteriorIOR)&&exteriorIOR>0,"invalid wavelength/exterior IOR");
@@ -120,8 +120,69 @@ HyLIoSForwardTransport::HyLIoSForwardTransport(std::array<ForwardLayer,6> layers
     const auto validated=ValidateForwardLayers(layers_);
     planes_=validated.planes;
     geometricRates_=validated.geometricRates;
+    if(shell_.kind!=ForwardShellKind::Planar) {
+        Require(Finite(shell_.outerRadiusMetres)&&shell_.outerRadiusMetres>planes_[6],
+            "curved shell outer radius must exceed total skin thickness");
+    }
     if(layers_[4].organelle&&layers_[4].organelle->organization==ForwardOrganization::ExplicitComplexPackV1)
         Require(fiberRate_==0,"PD complex host gaps with fiber scattering are unsupported");
+}
+void HyLIoSForwardTransport::ShellFrameAt(const SlabVector& pos, SlabVector& eT, SlabVector& eB, SlabVector& nIn) const {
+    if(shell_.kind==ForwardShellKind::Planar) {
+        eT={1,0,0}; eB={0,1,0}; nIn={0,0,1};
+        return;
+    }
+    const double R=shell_.outerRadiusMetres;
+    auto cross=[](const SlabVector& a,const SlabVector& b)->SlabVector {
+        return {a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
+    };
+    if(shell_.kind==ForwardShellKind::ConcentricCylinder) {
+        const double rx=pos.x, rz=pos.z-R;
+        const double r=std::hypot(rx,rz);
+        nIn = (r>0) ? SlabVector{-rx/r, 0.0, -rz/r} : SlabVector{0,0,1};
+        eB = {0,1,0};
+        eT = Unit(cross(eB, nIn));
+        return;
+    }
+    // ConcentricSphere: center at (0, 0, R)
+    const SlabVector radial{pos.x, pos.y, pos.z-R};
+    const double r=std::sqrt(radial.x*radial.x+radial.y*radial.y+radial.z*radial.z);
+    nIn = (r>0) ? SlabVector{-radial.x/r, -radial.y/r, -radial.z/r} : SlabVector{0,0,1};
+    const SlabVector ref = (std::abs(nIn.x) < 0.9) ? SlabVector{1,0,0} : SlabVector{0,1,0};
+    const double proj = Dot(ref, nIn);
+    eT = Unit(SlabVector{ref.x-proj*nIn.x, ref.y-proj*nIn.y, ref.z-proj*nIn.z});
+    eB = Unit(cross(nIn, eT));
+}
+double HyLIoSForwardTransport::ShellRadialDepth(const SlabVector& pos) const {
+    if(shell_.kind==ForwardShellKind::Planar) return pos.z;
+    const double R=shell_.outerRadiusMetres;
+    if(shell_.kind==ForwardShellKind::ConcentricCylinder) {
+        return R - std::hypot(pos.x, pos.z-R);
+    }
+    const double dx=pos.x, dy=pos.y, dz=pos.z-R;
+    return R - std::sqrt(dx*dx+dy*dy+dz*dz);
+}
+void HyLIoSForwardTransport::SnapToShellRadius(SlabVector& pos, double targetRadius) const {
+    if(shell_.kind==ForwardShellKind::Planar) return;
+    const double R=shell_.outerRadiusMetres;
+    if(shell_.kind==ForwardShellKind::ConcentricCylinder) {
+        const double rx=pos.x, rz=pos.z-R;
+        const double r=std::hypot(rx,rz);
+        if(r>0) {
+            const double scale=targetRadius/r;
+            pos.x = rx*scale;
+            pos.z = R + rz*scale;
+        }
+        return;
+    }
+    const double dx=pos.x, dy=pos.y, dz=pos.z-R;
+    const double r=std::sqrt(dx*dx+dy*dy+dz*dz);
+    if(r>0) {
+        const double scale=targetRadius/r;
+        pos.x = dx*scale;
+        pos.y = dy*scale;
+        pos.z = R + dz*scale;
+    }
 }
 ForwardState HyLIoSForwardTransport::Begin(SlabVector position,SlabVector direction) const {
     Require(direction.z>=0,"forward launch points outward");direction=Unit(direction);
@@ -131,7 +192,11 @@ ForwardState HyLIoSForwardTransport::Begin(SlabVector position,SlabVector direct
 }
 void HyLIoSForwardTransport::Encounter(ForwardState& s,SlabSide side) const {
     if(s.nextToken_==std::numeric_limits<std::uint64_t>::max()) {s.termination_=ForwardTermination::NumericalFailure;return;}
-    s.encounter_={++s.nextToken_,side,s.position_,s.direction_,wavelengthNm_,s.weight_,
+    ShellFrameAt(s.position_, s.boundaryFrameT_, s.boundaryFrameB_, s.boundaryFrameNIn_);
+    const SlabVector localDir = (shell_.kind==ForwardShellKind::Planar)
+        ? s.direction_
+        : SlabVector{Dot(s.direction_,s.boundaryFrameT_), Dot(s.direction_,s.boundaryFrameB_), Dot(s.direction_,s.boundaryFrameNIn_)};
+    s.encounter_={++s.nextToken_,side,s.position_,localDir,wavelengthNm_,s.weight_,
         side==SlabSide::Exterior ? exteriorIOR_ : layers_[0].realIOR,
         side==SlabSide::Exterior ? layers_[0].realIOR : exteriorIOR_};
     s.pending_=true;++s.counters_.boundaryEncounters;
@@ -145,7 +210,16 @@ void HyLIoSForwardTransport::ResumeBoundary(ForwardState& s,std::uint64_t token,
     const auto to=d.action==BoundaryAction::Reflect ? from : from==SlabSide::Exterior ? SlabSide::Interior : SlabSide::Exterior;
     Require(d.targetSide==to&&(to==SlabSide::Interior ? d.direction.z>=0 : d.direction.z<=0),"boundary side/hemisphere mismatch");
     const double weight=s.weight_*d.weightMultiplier;
-    s.pending_=false;s.direction_=direction;
+    s.pending_=false;
+    if(shell_.kind==ForwardShellKind::Planar) {
+        s.direction_=direction;
+    } else {
+        s.direction_=Unit(SlabVector{
+            s.boundaryFrameT_.x*direction.x + s.boundaryFrameB_.x*direction.y + s.boundaryFrameNIn_.x*direction.z,
+            s.boundaryFrameT_.y*direction.x + s.boundaryFrameB_.y*direction.y + s.boundaryFrameNIn_.y*direction.z,
+            s.boundaryFrameT_.z*direction.x + s.boundaryFrameB_.z*direction.y + s.boundaryFrameNIn_.z*direction.z
+        });
+    }
     if(!Finite(weight)||(weight==0&&s.weight_>0&&d.weightMultiplier>0)) {s.termination_=ForwardTermination::NumericalFailure;return;}
     s.weight_=weight;
     if(d.angularLaw==SlabBoundaryAngularLaw::IndependentFoldReflection&&d.action==BoundaryAction::Reflect)
@@ -205,10 +279,67 @@ bool HyLIoSForwardTransport::Roulette(ForwardState& s,ISampler& rng) const {
 }
 void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
     const auto i=static_cast<std::size_t>(s.layer_);const auto& l=layers_[i];
-    const bool down=s.direction_.z>0;double distance=0;int event=0;
-    bool finiteEvent=s.direction_.z!=0;
-    const double plane=planes_[down ? i+1 : i];
-    if(finiteEvent) {distance=(plane-s.position_.z)/s.direction_.z;if(!Finite(distance)||distance<0) {s.termination_=ForwardTermination::NumericalFailure;return;}}
+    bool down=s.direction_.z>0;double distance=0;int event=0;
+    bool finiteEvent=false;
+    double targetPlane=planes_[down ? i+1 : i];
+    double targetRadius=0;
+    if(shell_.kind==ForwardShellKind::Planar) {
+        finiteEvent=s.direction_.z!=0;
+        if(finiteEvent) {
+            distance=(targetPlane-s.position_.z)/s.direction_.z;
+            if(!Finite(distance)||distance<0) {s.termination_=ForwardTermination::NumericalFailure;return;}
+        }
+    } else {
+        // Exact analytic ray-shell intersection against concentric sphere or cylinder
+        // shells R_outer = R - planes_[i] and R_inner = R - planes_[i+1].
+        const double R=shell_.outerRadiusMetres;
+        const double rOuter=R-planes_[i];
+        const double rInner=R-planes_[i+1];
+        const bool isCyl=(shell_.kind==ForwardShellKind::ConcentricCylinder);
+        const double ox=s.position_.x, oy=isCyl ? 0.0 : s.position_.y, oz=s.position_.z-R;
+        const double dx=s.direction_.x, dy=isCyl ? 0.0 : s.direction_.y, dz=s.direction_.z;
+        const double a=dx*dx+dy*dy+dz*dz;
+        const double b=ox*dx+oy*dy+oz*dz;
+        const double r2=ox*ox+oy*oy+oz*oz;
+        if(a>0) {
+            // Outer shell R_outer: photon lies inside (r <= rOuter); find positive exit root.
+            const double cOut=r2-rOuter*rOuter;
+            const double discOut=std::max(0.0, b*b-a*cOut);
+            const double sqrtOut=std::sqrt(discOut);
+            double tOut=0.0;
+            if(cOut<=0.0) {
+                tOut = (b>=0.0) ? ((-cOut)/(b+sqrtOut)) : ((-b+sqrtOut)/a);
+            } else if(b<0.0) {
+                tOut = (-b+sqrtOut)/a;
+            } else {
+                tOut = 0.0;
+            }
+            if(!Finite(tOut)||tOut<0.0) tOut=0.0;
+
+            // Inner shell R_inner: hit only when moving inward (b < 0) and discriminant > 0.
+            bool hasIn=false;
+            double tIn=0.0;
+            const double cIn=r2-rInner*rInner;
+            if(b<0.0) {
+                if(cIn<=0.0) {
+                    hasIn=true; tIn=0.0;
+                } else {
+                    const double discIn=b*b-a*cIn;
+                    if(discIn>0.0) {
+                        const double sqrtIn=std::sqrt(discIn);
+                        tIn = cIn / (-b + sqrtIn);
+                        if(Finite(tIn)&&tIn>=0.0) hasIn=true;
+                    }
+                }
+            }
+            if(hasIn && tIn<=tOut) {
+                down=true; distance=tIn; targetRadius=rInner; finiteEvent=true;
+            } else {
+                down=false; distance=tOut; targetRadius=rOuter; finiteEvent=true;
+            }
+            if(!Finite(distance)||distance<0) {s.termination_=ForwardTermination::NumericalFailure;return;}
+        }
+    }
     const bool infiniteAbsorbingTangent=!finiteEvent&&geometricRates_[i]==0&&(i!=4||s.fiberUsed_||fiberRate_==0)&&l.hostAbsorptionPerMetre>0;
     const double rates[3]={estimator_==AbsorptionEstimator::Analog||infiniteAbsorbingTangent ? l.hostAbsorptionPerMetre : 0,geometricRates_[i],i==4&&!s.fiberUsed_ ? fiberRate_ : 0};
     for(int channel=0;channel<3;++channel) if(rates[channel]>0) {
@@ -222,7 +353,8 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
         ++s.counters_.particleCandidates;
         s.phase_=ForwardPhase::CandidatePlacement;
         if(placementPolicy_==ForwardPlacementPolicy::NullCollisionPlacementV1) return;
-        if(s.position_.z<=planes_[i]||s.position_.z>=planes_[i+1]) s.termination_=ForwardTermination::UnplaceableBoundaryCandidate;
+        const double curDepth=ShellRadialDepth(s.position_);
+        if(curDepth<=planes_[i]||curDepth>=planes_[i+1]) s.termination_=ForwardTermination::UnplaceableBoundaryCandidate;
         else {
             const auto& o=*l.organelle;
             // For a sphere, centre offsets at an entering ray's silhouette
@@ -230,33 +362,57 @@ void HyLIoSForwardTransport::Bulk(ForwardState& s,ISampler& rng) const {
             // clearance is r*(1-sqrt(1-dz^2)); use the cancellation-free form.
             // Equality has zero projected-area support, hence is unresolved.
             if(o.organization==ForwardOrganization::ExplicitComplexPackV1||o.semiMinorMetres==o.semiMajorMetres) {
-                const double az=std::abs(s.direction_.z);
+                SlabVector eT,eB,nIn; ShellFrameAt(s.position_,eT,eB,nIn);
+                const double az=std::abs(Dot(s.direction_,nIn));
                 const double radius=o.organization==ForwardOrganization::ExplicitComplexPackV1 ? o.envelopeRadiusMetres : o.semiMinorMetres;
                 const double margin=radius*(az*az/(1+std::sqrt((1-az)*(1+az))));
-                const double clearance=down ? planes_[i+1]-s.position_.z : s.position_.z-planes_[i];
+                const double clearance=down ? planes_[i+1]-curDepth : curDepth-planes_[i];
                 if(clearance<=margin) s.termination_=ForwardTermination::UnplaceableBoundaryCandidate;
             }
         }
         return;
     }
     if(event==3) {s.fiberUsed_=true;++s.counters_.fiberEvents;s.phase_=ForwardPhase::FiberPerturbation;s.perturbationAxis_=s.direction_;return;}
-    s.position_.z=plane;
+    if(shell_.kind==ForwardShellKind::Planar) {
+        s.position_.z=targetPlane;
+    } else {
+        SnapToShellRadius(s.position_, targetRadius);
+    }
     if(!down&&i==0) {Encounter(s,SlabSide::Interior);return;}
     double u,v;
     if(down&&i==5) {
         if(!Draw(rng,u)||!Draw(rng,v)) {s.termination_=ForwardTermination::InvalidSample;return;}
-        s.direction_=PolarComponents({0,0,-1},std::sqrt(1-u),std::sqrt(u),2*Pi*v);
+        SlabVector eT,eB,nIn; ShellFrameAt(s.position_,eT,eB,nIn);
+        const SlabVector nOut{-nIn.x,-nIn.y,-nIn.z};
+        s.direction_=PolarComponents(nOut,std::sqrt(1-u),std::sqrt(u),2*Pi*v);
         s.angularLineage_={ForwardAngularClass::AbsolutelyContinuous,ForwardAngularReason::DiffuseBottom};
         ++s.counters_.bottomReflections;return;
     }
     const auto j=down ? i+1 : i-1;
     if(!Draw(rng,u)) {s.termination_=ForwardTermination::InvalidSample;return;}
-    const auto d=SampleSlabSmoothDielectric({0,down ? SlabSide::Exterior : SlabSide::Interior,s.position_,s.direction_,wavelengthNm_,s.weight_,l.realIOR,layers_[j].realIOR},u);
-    s.direction_=d.direction;++s.counters_.internalInterfaces;
-    if(d.action==BoundaryAction::Transmit) {
-        s.layer_=static_cast<int>(j);
-        if(i==4) s.fiberUsed_=false;
-        if(j==4) {s.fiberUsed_=false;++s.counters_.fiberPasses;}
+    if(shell_.kind==ForwardShellKind::Planar) {
+        const auto d=SampleSlabSmoothDielectric({0,down ? SlabSide::Exterior : SlabSide::Interior,s.position_,s.direction_,wavelengthNm_,s.weight_,l.realIOR,layers_[j].realIOR},u);
+        s.direction_=d.direction;++s.counters_.internalInterfaces;
+        if(d.action==BoundaryAction::Transmit) {
+            s.layer_=static_cast<int>(j);
+            if(i==4) s.fiberUsed_=false;
+            if(j==4) {s.fiberUsed_=false;++s.counters_.fiberPasses;}
+        }
+    } else {
+        SlabVector eT,eB,nIn; ShellFrameAt(s.position_,eT,eB,nIn);
+        const SlabVector localIn{Dot(s.direction_,eT), Dot(s.direction_,eB), Dot(s.direction_,nIn)};
+        const auto d=SampleSlabSmoothDielectric({0,down ? SlabSide::Exterior : SlabSide::Interior,s.position_,localIn,wavelengthNm_,s.weight_,l.realIOR,layers_[j].realIOR},u);
+        s.direction_=Unit(SlabVector{
+            eT.x*d.direction.x + eB.x*d.direction.y + nIn.x*d.direction.z,
+            eT.y*d.direction.x + eB.y*d.direction.y + nIn.y*d.direction.z,
+            eT.z*d.direction.x + eB.z*d.direction.y + nIn.z*d.direction.z
+        });
+        ++s.counters_.internalInterfaces;
+        if(d.action==BoundaryAction::Transmit) {
+            s.layer_=static_cast<int>(j);
+            if(i==4) s.fiberUsed_=false;
+            if(j==4) {s.fiberUsed_=false;++s.counters_.fiberPasses;}
+        }
     }
 }
 void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
@@ -274,9 +430,16 @@ void HyLIoSForwardTransport::Placement(ForwardState& s,ISampler& rng) const {
     // Distance convention: geometric free-flight ends at the ENTRY point, so
     // centre = event position - sampled entryPoint. Never add half a chord.
     const SlabVector centre=Mul(V(hit.chord.entryPointMetres),-1);
-    const double az=particle.axis.z;
-    const double extent=std::hypot(particle.semiMinorMetres*std::sqrt(std::max(0.,(1-az)*(1+az))),particle.semiMajorMetres*az);
-    const double depth=s.position_.z+centre.z;
+    const SlabVector centrePos=Add(s.position_,centre);
+    double depth=0.0, extent=0.0;
+    if(shell_.kind==ForwardShellKind::Planar) {
+        const double az=particle.axis.z;
+        extent=std::hypot(particle.semiMinorMetres*std::sqrt(std::max(0.,(1-az)*(1+az))),particle.semiMajorMetres*az);
+        depth=centrePos.z;
+    } else {
+        depth=ShellRadialDepth(centrePos);
+        extent=particle.semiMajorMetres;
+    }
     if(depth-extent<planes_[i]||depth+extent>planes_[i+1]) {++s.counters_.containmentRejections;if(placementPolicy_==ForwardPlacementPolicy::NullCollisionPlacementV1) {s.phase_=ForwardPhase::BulkFlight;++s.counters_.nullPlacements;}return;}
     if(s.hasPredecessor_) {
         const auto overlap=ClassifyProlateOverlap(s.predecessor_,particle,P(Add(centre,Mul(V(s.predecessorCentreFromPosition_),-1))));

@@ -4486,9 +4486,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 					};
 
-					// 1. First-surface external reflection NEE (`K_r`) at entry hit.
+					// 1. Shared stochastic wavelength-node selection & first-surface external
+					//    reflection NEE (`K_r`) at entry hit.  Both `K_r` NEE and `SampleNonlocalNM`
+					//    use the exact same wavelength node so Fresnel/GGX MIS is consistent (P2-2).
+					std::size_t sharedNodeIdx = 0;
 					double bAlpha = 0.0, bEtaExt = 1.0, bEtaSC = 1.4;
-					if( pLS && pHyLIoS->GetNonlocalBoundaryParamsNM( ri.geometric, tag.nm, bAlpha, bEtaExt, bEtaSC ) && bAlpha > 0.0 )
+					const bool hasSharedNode = pHyLIoS->SelectNonlocalWavelengthNodeNM(
+						ri.geometric, tag.nm, static_cast<double>( sampler.Get1D() ),
+						sharedNodeIdx, bAlpha, bEtaExt, bEtaSC );
+					if( pLS && hasSharedNode && bAlpha > 0.0 )
 					{
 						Vector3 eN = Vector3Ops::Normalize( ri.geometric.vNormal );
 						Vector3 eNg = Vector3Ops::Normalize( ri.geometric.vGeomNormal );
@@ -4550,9 +4556,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 					};
 
-					// 3. Single iterative continuation ray.
+					// 3. Single iterative continuation ray (reusing `sharedNodeIdx` and
+					//    validating/snapping candidate exits against `ri.pObject`).
 					HyLIoSNonlocalSample nl;
-					if( !pHyLIoS->SampleNonlocalNM( ri.geometric, tag.nm, sampler, nl, onExitEncounter ) || !nl.escaped ) {
+					if( !pHyLIoS->SampleNonlocalNM(
+							ri.geometric, tag.nm, sampler, nl, onExitEncounter,
+							hasSharedNode ? &sharedNodeIdx : nullptr,
+							ri.pObject ) || !nl.escaped )
+					{
 						break;
 					}
 					if( !( nl.throughput > Scalar( 0 ) ) || !std::isfinite( static_cast<double>( nl.throughput ) ) ) {

@@ -40,6 +40,9 @@
 #include "../Lights/PointLight.h"
 #include "../Lights/SpotLight.h"
 #include "../Lights/DirectionalLight.h"
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h"
+#include "../Interfaces/IEmitter.h"
+#include "../Interfaces/IBSDF.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/ThreadPool.h"
@@ -53,10 +56,12 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <typeinfo>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -279,6 +284,250 @@ bool WriteDerivedObservableEXR(
 #endif
 }
 
+std::string ComputeSceneFingerprintHex(
+	const IScene& scene,
+	const std::vector<double>& wavelengths
+	)
+{
+	RISECBOR64::SHA256Accumulator sha;
+	auto feedBytes = [&]( const void* data, const std::size_t n ) {
+		if( n > 0 ) {
+			sha.Update( reinterpret_cast<const unsigned char*>( data ), n );
+		}
+	};
+	auto feedU64 = [&]( const std::uint64_t v ) {
+		feedBytes( &v, sizeof( v ) );
+	};
+	auto feedDouble = [&]( const double v ) {
+		const double canon = ( v == 0.0 ) ? 0.0 : v;
+		std::uint64_t bits = 0;
+		std::memcpy( &bits, &canon, sizeof( bits ) );
+		feedU64( bits );
+	};
+	auto feedStr = [&]( const std::string& s ) {
+		feedU64( static_cast<std::uint64_t>( s.size() ) );
+		feedBytes( s.data(), s.size() );
+	};
+	auto feedPoint = [&]( const Point3& p ) {
+		feedDouble( static_cast<double>( p.x ) );
+		feedDouble( static_cast<double>( p.y ) );
+		feedDouble( static_cast<double>( p.z ) );
+	};
+	auto feedVec = [&]( const Vector3& v ) {
+		feedDouble( static_cast<double>( v.x ) );
+		feedDouble( static_cast<double>( v.y ) );
+		feedDouble( static_cast<double>( v.z ) );
+	};
+
+	feedStr( "rise_hyperspectral_scene_fp_v1" );
+
+	// 1. Camera fingerprint via 5 canonical probe rays across the film.
+	if( const ICamera* pCam = scene.GetCamera() ) {
+		feedU64( 1u );
+		feedStr( typeid( *pCam ).name() );
+		const IFilm* pFilm = scene.GetFilm();
+		const double fw = pFilm ? static_cast<double>( pFilm->GetWidth() ) : 1.0;
+		const double fh = pFilm ? static_cast<double>( pFilm->GetHeight() ) : 1.0;
+		const double probes[5][2] = {
+			{ 0.5 * fw, 0.5 * fh },
+			{ 0.0,      0.0      },
+			{ fw,       0.0      },
+			{ 0.0,      fh       },
+			{ fw,       fh       }
+		};
+		const RandomNumberGenerator fpRng( 0u );
+		RuntimeContext rc( fpRng, RuntimeContext::PASS_NORMAL, false );
+		for( int k = 0; k < 5; ++k ) {
+			Ray r;
+			const bool ok = pCam->GenerateRay( rc, r, Point2( probes[k][0], probes[k][1] ) );
+			feedU64( ok ? 1u : 0u );
+			if( ok ) {
+				feedPoint( r.origin );
+				feedVec( r.Dir() );
+			}
+		}
+	} else {
+		feedU64( 0u );
+	}
+
+	// 2. Global environment / radiance map across 6 cardinal directions and sweep wavelengths.
+	const Vector3 cardinals[6] = {
+		Vector3(  1,  0,  0 ), Vector3( -1,  0,  0 ),
+		Vector3(  0,  1,  0 ), Vector3(  0, -1,  0 ),
+		Vector3(  0,  0,  1 ), Vector3(  0,  0, -1 )
+	};
+	if( const IRadianceMap* pEnv = scene.GetGlobalRadianceMap() ) {
+		feedU64( 1u );
+		feedStr( typeid( *pEnv ).name() );
+		const RasterizerState rast = { 0, 0 };
+		for( double nm : wavelengths ) {
+			for( int d = 0; d < 6; ++d ) {
+				const Ray r( Point3( 0, 0, 0 ), cardinals[d] );
+				feedDouble( static_cast<double>( pEnv->GetRadianceNM( r, rast, Scalar( nm ) ) ) );
+			}
+		}
+	} else {
+		feedU64( 0u );
+	}
+
+	// 3. Analytic lights (enabled state, position/direction, and spectral emission).
+	if( const ILightManager* pLights = scene.GetLights() ) {
+		const ILightManager::LightsList& lights = pLights->getLights();
+		feedU64( static_cast<std::uint64_t>( lights.size() ) );
+		for( const ILightPriv* pLight : lights ) {
+			if( !pLight ) {
+				feedU64( 0u );
+				continue;
+			}
+			feedU64( 1u );
+			feedStr( typeid( *pLight ).name() );
+			feedU64( pLight->CanGeneratePhotons() ? 1u : 0u );
+			feedPoint( pLight->position() );
+			feedVec( pLight->emissionDirection() );
+			feedDouble( static_cast<double>( pLight->emissionConeHalfAngle() ) );
+			feedDouble( static_cast<double>( pLight->emissionInnerAngle() ) );
+			feedDouble( static_cast<double>( pLight->emissionOuterAngle() ) );
+			feedDouble( static_cast<double>( pLight->emissionEnergy() ) );
+			for( double nm : wavelengths ) {
+				for( int d = 0; d < 6; ++d ) {
+					feedDouble( static_cast<double>( pLight->emittedRadianceNM( cardinals[d], Scalar( nm ) ) ) );
+				}
+			}
+		}
+	} else {
+		feedU64( 0u );
+	}
+
+	// 4. Objects (visibility, bounds, transforms, materials, HyLIoS parameters, emitters, BSDF).
+	struct ObjHasher final : public IEnumCallback<IObject>
+	{
+		std::function<void( const IObject& )> fn;
+		bool operator()( const IObject& obj ) override
+		{
+			fn( obj );
+			return true;
+		}
+	};
+	if( const IObjectManager* pObjMgr = scene.GetObjects() ) {
+		ObjHasher hasher;
+		hasher.fn = [&]( const IObject& obj ) {
+			feedU64( obj.IsWorldVisible() ? 1u : 0u );
+			feedU64( obj.DoesCastShadows() ? 1u : 0u );
+			feedU64( obj.DoesReceiveShadows() ? 1u : 0u );
+			const BoundingBox bb = obj.getBoundingBox();
+			feedPoint( bb.ll );
+			feedPoint( bb.ur );
+			if( const IGeometry* pGeom = obj.GetGeometry() ) {
+				feedU64( 1u );
+				feedStr( typeid( *pGeom ).name() );
+			} else {
+				feedU64( 0u );
+			}
+			// Probe object geometry along 6 axis-aligned rays through its bounding-box
+			// center so internal shape edits preserving bounds/transforms still change
+			// the scene fingerprint.
+			{
+				const Point3 center(
+					Scalar( 0.5 ) * ( bb.ll.x + bb.ur.x ),
+					Scalar( 0.5 ) * ( bb.ll.y + bb.ur.y ),
+					Scalar( 0.5 ) * ( bb.ll.z + bb.ur.z ) );
+				const Vector3 diag = Vector3Ops::mkVector3( bb.ur, bb.ll );
+				const Scalar span = std::max( Scalar( 1.0 ), Vector3Ops::Magnitude( diag ) );
+				const RasterizerState rast = { 0, 0 };
+				for( int d = 0; d < 6; ++d ) {
+					const Ray pr(
+						Point3Ops::mkPoint3( center, cardinals[d] * ( -span ) ),
+						cardinals[d] );
+					RayIntersection pri( pr, rast );
+					obj.IntersectRay( pri, span * Scalar( 2.5 ), true, true, false );
+					feedU64( pri.geometric.bHit ? 1u : 0u );
+					if( pri.geometric.bHit ) {
+						feedDouble( static_cast<double>( pri.geometric.range ) );
+						feedPoint( pri.geometric.ptIntersection );
+						feedVec( pri.geometric.vNormal );
+					}
+				}
+			}
+			if( const Matrix4* pMx = obj.GetFinalTransformMatrixPtr() ) {
+				feedU64( 1u );
+				const Scalar elems[16] = {
+					pMx->_00, pMx->_01, pMx->_02, pMx->_03,
+					pMx->_10, pMx->_11, pMx->_12, pMx->_13,
+					pMx->_20, pMx->_21, pMx->_22, pMx->_23,
+					pMx->_30, pMx->_31, pMx->_32, pMx->_33
+				};
+				for( int idx = 0; idx < 16; ++idx ) {
+					feedDouble( static_cast<double>( elems[idx] ) );
+				}
+			} else {
+				feedU64( 0u );
+			}
+			const IMaterial* pMat = obj.GetMaterial();
+			if( !pMat ) {
+				feedU64( 0u );
+				return;
+			}
+			feedU64( 1u );
+			feedStr( typeid( *pMat ).name() );
+			feedU64( static_cast<std::uint64_t>( pMat->GetPathDependence() ) );
+			feedU64( pMat->IsHyperspectralSkin() ? 1u : 0u );
+			if( const HyLIoSSkinMaterial* pHyLIoS = dynamic_cast<const HyLIoSSkinMaterial*>( pMat ) ) {
+				const HyLIoSSkinMaterialSummary& s = pHyLIoS->GetSummary();
+				feedStr( s.preset );
+				feedStr( s.transportMode );
+				feedStr( s.boundaryMode );
+				feedStr( s.modelRevision );
+				feedStr( s.dataRevision );
+				feedStr( s.specimenSourcePath );
+				feedStr( s.responseAssetPath );
+				feedStr( s.contentSHA256 );
+				feedStr( s.semanticSHA256 );
+				feedStr( s.productionSHA256 );
+				feedDouble( s.exteriorIOR );
+				feedDouble( s.physicalScale );
+				feedDouble( s.coveredFirstNm );
+				feedDouble( s.coveredLastNm );
+				const RasterizerState rast = { 0, 0 };
+				RayIntersectionGeometric probe( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+				probe.ptIntersection = Point3( 0, 0, 0 );
+				probe.vNormal = Vector3( 0, 0, 1 );
+				probe.vGeomNormal = Vector3( 0, 0, 1 );
+				probe.onb.CreateFromW( probe.vNormal );
+				feedDouble( pHyLIoS->EvaluateBoundaryRoughness( probe ) );
+				const RISEPel& g = pHyLIoS->GetVisibleGuideRGB();
+				feedDouble( static_cast<double>( g[0] ) );
+				feedDouble( static_cast<double>( g[1] ) );
+				feedDouble( static_cast<double>( g[2] ) );
+			}
+			if( const IEmitter* pEmit = pMat->GetEmitter() ) {
+				feedU64( 1u );
+				for( double nm : wavelengths ) {
+					feedDouble( static_cast<double>( pEmit->averageRadiantExitanceNM( Scalar( nm ) ) ) );
+				}
+			} else {
+				feedU64( 0u );
+			}
+			if( const IBSDF* pBSDF = pMat->GetBSDF() ) {
+				feedU64( 1u );
+				const RasterizerState rast = { 0, 0 };
+				RayIntersectionGeometric probe( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+				probe.ptIntersection = Point3( 0, 0, 0 );
+				probe.vNormal = Vector3( 0, 0, 1 );
+				probe.vGeomNormal = Vector3( 0, 0, 1 );
+				probe.onb.CreateFromW( probe.vNormal );
+				for( double nm : wavelengths ) {
+					feedDouble( static_cast<double>( pBSDF->valueNM( Vector3( 0, 0, 1 ), probe, Scalar( nm ) ) ) );
+				}
+			} else {
+				feedU64( 0u );
+			}
+		};
+		pObjMgr->EnumerateObjects( hasher );
+	}
+
+	return sha.FinalHex();
+}
+
 bool BuildProvenanceCBOR(
 	const double nm,
 	const std::uint32_t width,
@@ -287,6 +536,7 @@ bool BuildProvenanceCBOR(
 	const std::uint64_t seed,
 	const std::vector<double>& sweepWls,
 	const bool allowRGBUplift,
+	const std::string& sceneFingerprint,
 	RISECBOR64::Bytes& outBytes,
 	std::string& outError
 	)
@@ -297,6 +547,7 @@ bool BuildProvenanceCBOR(
 		{ "height",           V::Unsigned( height ) },
 		{ "rasterizer",       V::String( "hyperspectral_radiometric_v1" ) },
 		{ "samples_per_pixel",V::Unsigned( spp ) },
+		{ "scene_fingerprint",V::String( sceneFingerprint ) },
 		{ "seed",             V::Unsigned( seed ) },
 		{ "sweep_first_nm",   V::Float( sweepWls.front() ) },
 		{ "sweep_last_nm",    V::Float( sweepWls.back() ) },
@@ -664,6 +915,8 @@ void HyperspectralRadiometricRasterizer::RasterizeScene(
 	std::vector<ManifestEntry> manifestEntries;
 	manifestEntries.reserve( wavelengths.size() );
 
+	const std::string sceneFingerprint = ComputeSceneFingerprintHex( pScene, wavelengths );
+
 	bool cancelled = false;
 
 	for( std::size_t wlIdx = 0; wlIdx < wavelengths.size(); ++wlIdx ) {
@@ -676,7 +929,7 @@ void HyperspectralRadiometricRasterizer::RasterizeScene(
 
 		RISECBOR64::Bytes provBytes;
 		if( !BuildProvenanceCBOR( nm, width, height, config.samplesPerPixel, config.seed,
-				wavelengths, config.allowRGBUpliftSources, provBytes, lastError ) )
+				wavelengths, config.allowRGBUpliftSources, sceneFingerprint, provBytes, lastError ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error, "HyperspectralRadiometricRasterizer:: provenance encode failed: %s", lastError.c_str() );
 			return;

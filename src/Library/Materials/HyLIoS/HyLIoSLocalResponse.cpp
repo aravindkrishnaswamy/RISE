@@ -350,6 +350,19 @@ HyLIoSLocalResponse::HyLIoSLocalResponse(const LocalResponseDefinition& d, Local
     : storage_(storage), incident_(d.incident), outgoing_(d.outgoing),
       wavelengths_(d.wavelengthNm), continuous_(d.continuous), mirror_(d.mirror)
 {
+    auto isUniformAxis = [](const std::vector<double>& edges) -> bool {
+        if (edges.size() <= 2) return true;
+        const double w0 = edges[1] - edges[0];
+        for (std::size_t k = 1; k + 1 < edges.size(); ++k) {
+            const double wk = edges[k + 1] - edges[k];
+            if (std::abs(wk - w0) > 1e-12 * std::max(w0, wk)) return false;
+        }
+        return true;
+    };
+    incidentTUniform_ = isUniformAxis(incident_.tEdges);
+    incidentPhiUniform_ = isUniformAxis(incident_.phiEdges);
+    outgoingTUniform_ = isUniformAxis(outgoing_.tEdges);
+    outgoingPhiUniform_ = isUniformAxis(outgoing_.phiEdges);
     incidentAreas_.reserve(storage_.incidentCells);
     outgoingAreas_.reserve(storage_.outgoingCells);
     for (std::size_t i = 0; i < storage_.incidentCells; ++i) incidentAreas_.push_back(ProjectedArea(incident_, i));
@@ -744,10 +757,22 @@ double HyLIoSLocalResponse::EvaluateContinuousInterpolatedNM(LocalResponsePoint 
     const auto s = Bracket(nm);
     wi = CanonicalPoint(wi);
     wo = CanonicalPoint(wo);
-    const AngularBracket it = BracketNonPeriodicAxis(incident_.tEdges, wi.t);
-    const AngularBracket ip = BracketPeriodicAxis(incident_.phiEdges, wi.phi, LocalResponseTwoPi);
-    const AngularBracket ot = BracketNonPeriodicAxis(outgoing_.tEdges, wo.t);
-    const AngularBracket op = BracketPeriodicAxis(outgoing_.phiEdges, wo.phi, LocalResponseTwoPi);
+    auto exactCell = [](const std::vector<double>& edges, double v) -> AngularBracket {
+        const std::size_t idx = FindAxis(edges, v);
+        return {idx, idx, 0.0};
+    };
+    const AngularBracket it = incidentTUniform_
+        ? BracketNonPeriodicAxis(incident_.tEdges, wi.t)
+        : exactCell(incident_.tEdges, wi.t);
+    const AngularBracket ip = incidentPhiUniform_
+        ? BracketPeriodicAxis(incident_.phiEdges, wi.phi, LocalResponseTwoPi)
+        : exactCell(incident_.phiEdges, wi.phi);
+    const AngularBracket ot = outgoingTUniform_
+        ? BracketNonPeriodicAxis(outgoing_.tEdges, wo.t)
+        : exactCell(outgoing_.tEdges, wo.t);
+    const AngularBracket op = outgoingPhiUniform_
+        ? BracketPeriodicAxis(outgoing_.phiEdges, wo.phi, LocalResponseTwoPi)
+        : exactCell(outgoing_.phiEdges, wo.phi);
 
     const std::size_t nInPhi = incident_.phiEdges.size() - 1;
     const std::size_t nOutPhi = outgoing_.phiEdges.size() - 1;
@@ -794,8 +819,16 @@ double HyLIoSLocalResponse::EvaluateMirrorInterpolatedNM(LocalResponsePoint wo, 
 {
     const auto s = Bracket(nm);
     const LocalResponsePoint m = PlanarMirror(wo);
-    const AngularBracket it = BracketNonPeriodicAxis(incident_.tEdges, m.t);
-    const AngularBracket ip = BracketPeriodicAxis(incident_.phiEdges, m.phi, LocalResponseTwoPi);
+    auto exactCell = [](const std::vector<double>& edges, double v) -> AngularBracket {
+        const std::size_t idx = FindAxis(edges, v);
+        return {idx, idx, 0.0};
+    };
+    const AngularBracket it = incidentTUniform_
+        ? BracketNonPeriodicAxis(incident_.tEdges, m.t)
+        : exactCell(incident_.tEdges, m.t);
+    const AngularBracket ip = incidentPhiUniform_
+        ? BracketPeriodicAxis(incident_.phiEdges, m.phi, LocalResponseTwoPi)
+        : exactCell(incident_.phiEdges, m.phi);
 
     const std::size_t nInPhi = incident_.phiEdges.size() - 1;
     const std::size_t itIdx[2] = {it.k0, it.k1};

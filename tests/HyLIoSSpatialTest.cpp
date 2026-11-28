@@ -30,6 +30,10 @@
 #include "../src/Library/Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "../src/Library/Materials/HyLIoS/HyLIoSSpatialGeometry.h"
 #include "../src/Library/Materials/HyLIoS/HyLIoSReciprocalBoundary.h"
+#include "../src/Library/Materials/HyLIoS/HyLIoSForwardTransport.h"
+#include "../src/Library/Materials/HyLIoS/HyLIoSForwardExperiment.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Rendering/PathTracingSpectralRasterizer.h"
 #include "../src/Library/Rendering/HyperspectralRadiometricRasterizer.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
@@ -654,6 +658,214 @@ void TestSlice2P2KernelGuideAndContainment()
 	safe_release( pMatAir1 );
 }
 
+void TestReviewCorrectnessFixes()
+{
+	const TempDirGuard tmp( "hylios-review-fixes-" );
+	const std::string specJson =
+		"{\"schema_version\":1,\"approximate\":true,\"composition_revision\":\"synthetic-v1\","
+		"\"coverage_profile_id\":\"explicit-synthetic-approximation\","
+		"\"spectral_bundle_sha256\":\"untrusted_bundle_label\","
+		"\"resolved_specimen_sha256\":\"untrusted_specimen_label\","
+		"\"preset_id\":\"S3\",\"interpretation\":\"review fix test\","
+		"\"units\":{\"length\":\"m\",\"coefficient\":\"m^-1\",\"wavelength\":\"nm\",\"mass_concentration\":\"kg/m^3\"},"
+		"\"wavelength_nm\":[400,700],\"surface_fold_aspect_ratio\":0.75,\"provenance\":{\"retained\":\"yes\"},"
+		"\"layers\":["
+		"{\"layer_id\":\"stratum_corneum\",\"thickness_m\":0.00002,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.45,1.55],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_granulosum\",\"thickness_m\":0.00003,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_spinosum\",\"thickness_m\":0.00004,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null},"
+		"{\"layer_id\":\"stratum_basale\",\"thickness_m\":0.00003,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null},"
+		"{\"layer_id\":\"papillary_dermis\",\"thickness_m\":0.0002,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null},"
+		"{\"layer_id\":\"reticular_dermis\",\"thickness_m\":0.0005,\"host_absorption_m_inv\":[5,5],\"real_refractive_index\":[1.38,1.38],\"constituent_absorption_m_inv\":{\"s\":[5,5]},\"particles\":null}"
+		"]}\n";
+	const std::string specPath = ( tmp.dir / "spec.json" ).string();
+	{
+		std::ofstream ofs( specPath, std::ios::binary );
+		ofs.write( specJson.data(), static_cast<std::streamsize>( specJson.size() ) );
+	}
+
+	// 1. P1-2: Analytic curved-shell grazing-chord traversal (ConcentricSphere & ConcentricCylinder)
+	//    Outer radius R = 0.01 m (10 mm), layer 0 thickness = 2 mm (R_inner = 8 mm),
+	//    zero scattering, host absorption mu_a = 100 m^-1.
+	//    Launch ray inside shell 0 at grazing angle theta_t = 60 deg (sin(60)=0.866 -> closest approach
+	//    R*sin(60) = 8.66 mm > 8 mm = R_inner!).
+	//    Under true curved-shell traversal:
+	//      - misses inner shell R_inner completely (internalInterfaces == 0),
+	//      - travels exact chord L = 2 * R * cos(60) = 0.01 m,
+	//      - Beer-Lambert weight = exp(-100 * 0.01) = exp(-1),
+	//      - exits at exact radius R = 0.01 m from sphere/cylinder center!
+	{
+		const double R = 0.01;
+		const double muA = 100.0;
+		std::array<ForwardLayer, 6> layers{};
+		layers[0] = { 0.002, muA, 1.4, std::nullopt };
+		for( std::size_t k = 1; k < 6; ++k ) {
+			layers[k] = { 0.0005, 0.0, 1.4, std::nullopt };
+		}
+		const double theta = 60.0 * ( 3.14159265358979323846 / 180.0 );
+		const double sinT = std::sin( theta );
+		const double cosT = std::cos( theta );
+		const double expectedChord = 2.0 * R * cosT;
+		const double expectedWeight = std::exp( -muA * expectedChord );
+
+		for( ForwardShellKind kind : { ForwardShellKind::ConcentricSphere, ForwardShellKind::ConcentricCylinder } ) {
+			HyLIoSForwardTransport kernel(
+				layers, 550.0, 1.0, 0.0,
+				AbsorptionEstimator::Weighted, 0.0,
+				ForwardPlacementPolicy::NullCollisionPlacementV1,
+				ForwardPostScatterPolicy::DiscardAfterScatterV1,
+				ForwardShellGeometry{ kind, R } );
+			ForwardExperimentRandom rng( 1234567ULL );
+			ForwardState st = kernel.Begin( { 0.0, 0.0, 0.0 }, { 0.0, 0.0, 1.0 } );
+			const SlabBoundaryEncounter initEnc = st.PendingBoundary();
+			// Inject ray directly into layer 0 along (sinT, 0, cosT) (inward +Z, grazing +X)
+			kernel.ResumeBoundary( st, initEnc.token, SlabBoundaryDecision{
+				BoundaryAction::Transmit,
+				SlabSide::Interior,
+				{ sinT, 0.0, cosT },
+				1.0,
+				SlabBoundaryAngularLaw::Unclassified
+			} );
+			const ForwardAdvanceResult adv = kernel.Advance( st, rng, 16u );
+			Check( adv.kind == ForwardAdvanceKind::OuterBoundaryEncounter,
+				"Curved shell grazing ray returns directly to outer shell" );
+			Check( st.Counters().internalInterfaces == 0,
+				"Curved shell grazing chord misses inner shell (0 internal interfaces)" );
+			Near( st.Counters().pathLengthMetres, expectedChord, 1e-10,
+				"Curved shell grazing chord equals exact 2*R*cos(theta)" );
+			Near( st.Weight(), expectedWeight, 1e-10,
+				"Curved shell grazing Beer-Lambert weight equals exp(-mu_a * 2*R*cos(theta))" );
+			const SlabVector p = st.Position();
+			const double exitR = ( kind == ForwardShellKind::ConcentricCylinder )
+				? std::hypot( p.x, p.z - R )
+				: std::sqrt( p.x * p.x + p.y * p.y + ( p.z - R ) * ( p.z - R ) );
+			Near( exitR, R, 1e-12, "Curved shell exit lies at exact outer radius R" );
+			const SlabBoundaryEncounter exitEnc = st.PendingBoundary();
+			// Local arrival cosine at symmetric chord exit equals -cos(theta)
+			Near( exitEnc.incidentDirection.z, -cosT, 1e-10,
+				"Curved shell exit arrival cosine relative to curved normal equals -cos(theta)" );
+		}
+	}
+
+	// 2. P1-1: Host-object surface validation rejects off-edge exits as DomainBoundaryLoss
+	{
+		// Small 1 mm x 1 mm clipped plane in XY at z = 0: x in [0, 0.001], y in [0, 0.001]
+		Point3 pts[4] = {
+			Point3( 0.0,   0.0,   0.0 ),
+			Point3( 0.001, 0.0,   0.0 ),
+			Point3( 0.001, 0.001, 0.0 ),
+			Point3( 0.0,   0.001, 0.0 )
+		};
+		ClippedPlaneGeometry* pPlane = new ClippedPlaneGeometry( pts, false );
+		Object* pObj = new Object( pPlane );
+		safe_release( pPlane );
+
+		HyLIoSSkinMaterialConfig cfg;
+		cfg.transportMode = "nonlocal";
+		cfg.preset = "custom";
+		cfg.specimenSourcePath = specPath.c_str();
+		cfg.boundaryRoughness = 0.25;
+		cfg.domainHalfWidthMetres = 0.05; // huge material domain, but tiny host plane!
+		cfg.physicalScale = 1.0;
+		cfg.maxSubsurfaceSteps = 2048;
+
+		IMaterial* pMatI = 0;
+		Check( RISE_API_CreateHyLIoSSkinMaterial( &pMatI, cfg ) && pMatI != 0,
+			"Create nonlocal material for host-object edge test" );
+		const HyLIoSSkinMaterial* pMat = dynamic_cast<const HyLIoSSkinMaterial*>( pMatI );
+		pObj->AssignMaterial( *pMatI );
+
+		// Hit 0.05 mm from the x=0, y=0 corner of the 1 mm plane
+		const Ray camRay( Point3( 0.00005, 0.00005, 1.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersectionGeometric ri( camRay, nullRasterizerState );
+		ri.ptIntersection = Point3( 0.00005, 0.00005, 0.0 );
+		ri.vNormal = Vector3( 0, 0, 1 );
+		ri.vGeomNormal = Vector3( 0, 0, 1 );
+		ri.onb.CreateFromW( ri.vNormal );
+
+		RandomNumberGenerator rng( 7777u );
+		IndependentSampler smp( rng );
+		int nDomainLoss = 0;
+		for( int k = 0; k < 200; ++k ) {
+			HyLIoSNonlocalSample nl;
+			if( pMat->SampleNonlocalNM( ri, 550.0, smp, nl, {}, nullptr, pObj ) && nl.escaped ) {
+				Check( nl.exitPos.x >= -1e-6 && nl.exitPos.x <= 0.001 + 1e-6 &&
+					nl.exitPos.y >= -1e-6 && nl.exitPos.y <= 0.001 + 1e-6,
+					"Host-validated nonlocal exit lies strictly on host clipped plane" );
+			} else if( nl.domainBoundaryLoss ) {
+				++nDomainLoss;
+			}
+		}
+		Check( nDomainLoss > 0, "Off-edge walks near clipped plane boundary rejected as DomainBoundaryLoss" );
+		safe_release( pMatI );
+		safe_release( pObj );
+	}
+
+	// 3. P2-1: Per-exit boundary_roughness_map evaluation (entry smooth, exit rough)
+	{
+		struct StepRoughnessMap : public virtual IScalarPainter, public virtual Reference {
+			ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override {
+				const Scalar r = ( ri.ptIntersection.x <= Scalar( 0 ) ) ? Scalar( 0.05 ) : Scalar( 0.50 );
+				return ScalarTriple( r, r, r );
+			}
+		};
+		StepRoughnessMap* pStepMap = new StepRoughnessMap();
+		HyLIoSSkinMaterialConfig cfg;
+		cfg.transportMode = "nonlocal";
+		cfg.preset = "custom";
+		cfg.specimenSourcePath = specPath.c_str();
+		cfg.boundaryRoughness = 0.25;
+		cfg.boundaryRoughnessMap = pStepMap;
+		cfg.domainHalfWidthMetres = 0.05;
+		cfg.physicalScale = 1.0;
+
+		IMaterial* pMatI = 0;
+		Check( RISE_API_CreateHyLIoSSkinMaterial( &pMatI, cfg ) && pMatI != 0,
+			"Create nonlocal material with step boundary_roughness_map" );
+		const HyLIoSSkinMaterial* pMat = dynamic_cast<const HyLIoSSkinMaterial*>( pMatI );
+
+		// Enter at x = -0.00001 (smooth side, roughness = 0.05); walks crossing into x > 0 must report 0.50!
+		const Ray camRay( Point3( -0.00001, 0.0, 1.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersectionGeometric ri( camRay, nullRasterizerState );
+		ri.ptIntersection = Point3( -0.00001, 0.0, 0.0 );
+		ri.vNormal = Vector3( 0, 0, 1 );
+		ri.vGeomNormal = Vector3( 0, 0, 1 );
+		ri.onb.CreateFromW( ri.vNormal );
+
+		RandomNumberGenerator rng( 8888u );
+		IndependentSampler smp( rng );
+		int nRoughExits = 0;
+		int nSmoothExits = 0;
+		for( int k = 0; k < 200; ++k ) {
+			HyLIoSNonlocalSample nl;
+			pMat->SampleNonlocalNM( ri, 550.0, smp, nl, [&]( const HyLIoSExitBoundaryEncounter& enc ) {
+				if( enc.exitPos.x > Scalar( 0 ) ) {
+					Near( enc.boundaryRoughness, 0.50, 1e-12, "Exit on x > 0 evaluates local roughness 0.50" );
+					++nRoughExits;
+				} else {
+					Near( enc.boundaryRoughness, 0.05, 1e-12, "Exit on x <= 0 evaluates local roughness 0.05" );
+					++nSmoothExits;
+				}
+			} );
+		}
+		Check( nRoughExits > 0 && nSmoothExits > 0,
+			"Per-exit roughness map observed both smooth (x<=0) and rough (x>0) exits" );
+
+		// 4. P2-2: SelectNonlocalWavelengthNodeNM returns discrete node IOR matching endpoint
+		std::size_t nodeLo = 999, nodeHi = 999;
+		double rLo = 0, rHi = 0, eExt = 0, etaLo = 0, etaHi = 0;
+		Check( pMat->SelectNonlocalWavelengthNodeNM( ri, 550.0, 0.0, nodeLo, rLo, eExt, etaLo ),
+			"SelectNonlocalWavelengthNodeNM succeeds at u=0" );
+		Check( pMat->SelectNonlocalWavelengthNodeNM( ri, 550.0, 0.999999, nodeHi, rHi, eExt, etaHi ),
+			"SelectNonlocalWavelengthNodeNM succeeds at u~1" );
+		Check( nodeLo != nodeHi, "Midpoint wavelength selects distinct bracketing nodes at u=0 vs u~1" );
+		Check( std::isfinite( etaLo ) && std::isfinite( etaHi ) && etaLo > 1.0 && etaHi > 1.0,
+			"Selected discrete node IORs are finite and physical" );
+
+		safe_release( pMatI );
+		safe_release( pStepMap );
+	}
+}
+
 } // namespace
 
 int main()
@@ -662,6 +874,7 @@ int main()
 	TestNonlocalMaterialCSTAndIterativePT();
 	TestNonlocalNEEAndSmoothBoundaryRefusal();
 	TestSlice2P2KernelGuideAndContainment();
+	TestReviewCorrectnessFixes();
 
 	if( gFailures == 0 ) {
 		std::cout << "HyLIoSSpatialTest: ALL PASSED\n";

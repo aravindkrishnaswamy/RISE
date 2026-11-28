@@ -50,6 +50,11 @@ struct ForwardAngularSupport {
 };
 enum class ForwardReturnedAtomMap { None, PlanarSameExteriorMirror };
 enum class ForwardOrganization { IndividualSpheroids, UnsupportedComplexes, ExplicitComplexPackV1 };
+enum class ForwardShellKind { Planar, ConcentricSphere, ConcentricCylinder };
+struct ForwardShellGeometry {
+    ForwardShellKind kind = ForwardShellKind::Planar;
+    double outerRadiusMetres = 0.0; // required > totalThicknessMetres for Sphere/Cylinder
+};
 struct ForwardOrganelle {
     ForwardOrganization organization;
     double volumeFraction, semiMinorMetres, semiMajorMetres;
@@ -123,11 +128,15 @@ public:
     bool FiberUsedThisPass() const { return fiberUsed_; }
     bool HasPendingBoundary() const { return pending_; }
     const SlabBoundaryEncounter& PendingBoundary() const;
+    const SlabVector& BoundaryFrameT() const { return boundaryFrameT_; }
+    const SlabVector& BoundaryFrameB() const { return boundaryFrameB_; }
+    const SlabVector& BoundaryFrameNIn() const { return boundaryFrameNIn_; }
 private:
     friend class HyLIoSForwardTransport;
     ForwardState()=default;
     const HyLIoSForwardTransport* owner_=nullptr;
     SlabVector position_{},direction_{};
+    SlabVector boundaryFrameT_{1,0,0}, boundaryFrameB_{0,1,0}, boundaryFrameNIn_{0,0,1};
     double wavelengthNm_=0,weight_=1;
     int layer_=-1;
     ForwardPhase phase_=ForwardPhase::BulkFlight;
@@ -160,7 +169,8 @@ public:
     // is the named 1400-nm endpoint interpretation in HYLIOS_EQUATIONS.md §4.
     HyLIoSForwardTransport(std::array<ForwardLayer,6>, double wavelengthNm,
         double exteriorIOR, double papillaryFiberRatePerMetre,
-        AbsorptionEstimator, double rouletteTargetWeight, ForwardPlacementPolicy, ForwardPostScatterPolicy);
+        AbsorptionEstimator, double rouletteTargetWeight, ForwardPlacementPolicy, ForwardPostScatterPolicy,
+        ForwardShellGeometry shellGeometry = {});
     HyLIoSForwardTransport(const HyLIoSForwardTransport&)=delete;
     HyLIoSForwardTransport& operator=(const HyLIoSForwardTransport&)=delete;
     HyLIoSForwardTransport(HyLIoSForwardTransport&&)=delete;
@@ -182,6 +192,10 @@ private:
     AbsorptionEstimator estimator_;
     ForwardPlacementPolicy placementPolicy_;
     ForwardPostScatterPolicy postScatterPolicy_;
+    ForwardShellGeometry shell_;
+    void ShellFrameAt(const SlabVector& pos, SlabVector& eT, SlabVector& eB, SlabVector& nIn) const;
+    double ShellRadialDepth(const SlabVector& pos) const;
+    void SnapToShellRadius(SlabVector& pos, double targetRadius) const;
     void Encounter(ForwardState&,SlabSide) const;
     bool Flight(ForwardState&,double,double,bool,bool) const;
     bool Roulette(ForwardState&,ISampler&) const;

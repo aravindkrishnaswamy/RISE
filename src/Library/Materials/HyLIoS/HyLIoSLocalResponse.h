@@ -167,6 +167,13 @@ private:
     std::vector<double> minimumCellProbability_;
     // Exact binary proportionality of adjacent physical F columns, not a fit.
     std::vector<unsigned char> sameAdjacentColumn_;
+    // Per-axis uniformity flags: cell-center linear interpolation is exact
+    // mass-preserving on uniform grids; nonuniform axes fall back to exact
+    // cell lookup so passivity (integrated mass <= 1) is never violated.
+    bool incidentTUniform_ = true;
+    bool incidentPhiUniform_ = true;
+    bool outgoingTUniform_ = true;
+    bool outgoingPhiUniform_ = true;
 };
 
 // Prepared, separate proposal; physical coefficients and the original API stay
