@@ -9,6 +9,7 @@
 #include "pch.h"
 #include "FireSimulationRecords.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>

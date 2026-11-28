@@ -182,6 +182,8 @@ class ViewportBridge : public QObject
     Q_OBJECT
 
 public:
+    enum class Category : int;
+
     explicit ViewportBridge(RenderEngine* engine, QObject* parent = nullptr);
     ~ViewportBridge() override;
 

@@ -434,13 +434,13 @@ void SheetCover(const Grid& g, const std::vector<LiquidSheet>& sheets, std::vect
 				int(c.face/(std::size_t(d[0])*std::size_t(d[1])))};
 			double lo[2], hi[2];
 			square(a, idx, lo, hi);
-			bool near = false;
+			bool nearEdge = false;
 			for (const auto& x : f.edges) {
 				const double p[2] = {sh.x[3*std::size_t(x.first) + std::size_t(b)], sh.x[3*std::size_t(x.first) + std::size_t(e)]};
 				const double q[2] = {sh.x[3*std::size_t(x.second) + std::size_t(b)], sh.x[3*std::size_t(x.second) + std::size_t(e)]};
-				if (SegmentMeets(p, q, lo, hi)) { near = true; break; }
+				if (SegmentMeets(p, q, lo, hi)) { nearEdge = true; break; }
 			}
-			if (near) c.cover = PatchCover(sh, f, a, c.triangle, lo, hi, area, queue, seen);
+			if (nearEdge) c.cover = PatchCover(sh, f, a, c.triangle, lo, hi, area, queue, seen);
 		}
 	});
 	// The faces beside a free edge whose cell-centre segment the sheet does not cross but whose

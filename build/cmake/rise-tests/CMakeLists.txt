@@ -363,6 +363,12 @@ foreach(test_src ${TEST_SOURCES})
 	if(test_name STREQUAL "FireSequenceTest")
 		target_compile_options(${test_name} PRIVATE /fp:strict)
 	endif()
+	if(test_name STREQUAL "ExpressionMemoTest")
+		# MSVC v145 /O2 hits a multi-minute backend optimization blowup on
+		# this 2,800-line test TU; /Od keeps test-harness compilation under
+		# a few seconds while linking against optimized Release RISE.lib.
+		target_compile_options(${test_name} PRIVATE $<$<NOT:$<CONFIG:Debug>>:/Od>)
+	endif()
 	if(test_name STREQUAL "FireProductionCalibrationTest" OR
 	   test_name STREQUAL "FireSequenceTest")
 		add_custom_command(TARGET ${test_name} PRE_BUILD

@@ -2,6 +2,7 @@
 // Replays the same controlled nonzero Sobol salt; this is a clock sensitivity
 // check, not a Monte Carlo mean/variance study. Other measurement fixtures
 // disable OIDN or pin an explicit quality preset.
+#include <sstream>
 #include "SMSRenderTestSupport.h"
 #include "../src/Library/Rendering/OIDNDenoiser.h"
 #include "../src/Library/Rendering/AOVBuffers.h"

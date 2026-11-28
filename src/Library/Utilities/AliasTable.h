@@ -58,22 +58,22 @@ namespace RISE
 			}
 
 			// Vose's algorithm: partition into small (<1) and large (>=1)
-			std::vector<unsigned int> small, large;
-			small.reserve( n );
-			large.reserve( n );
+			std::vector<unsigned int> smallList, largeList;
+			smallList.reserve( n );
+			largeList.reserve( n );
 
 			for( unsigned int i = 0; i < n; i++ ) {
 				if( scaled[i] < 1.0 ) {
-					small.push_back( i );
+					smallList.push_back( i );
 				} else {
-					large.push_back( i );
+					largeList.push_back( i );
 				}
 			}
 
-			while( !small.empty() && !large.empty() )
+			while( !smallList.empty() && !largeList.empty() )
 			{
-				const unsigned int s = small.back(); small.pop_back();
-				const unsigned int l = large.back(); large.pop_back();
+				const unsigned int s = smallList.back(); smallList.pop_back();
+				const unsigned int l = largeList.back(); largeList.pop_back();
 
 				probabilities[s] = scaled[s];
 				aliases[s] = l;
@@ -81,23 +81,23 @@ namespace RISE
 				scaled[l] = (scaled[l] + scaled[s]) - 1.0;
 
 				if( scaled[l] < 1.0 ) {
-					small.push_back( l );
+					smallList.push_back( l );
 				} else {
-					large.push_back( l );
+					largeList.push_back( l );
 				}
 			}
 
 			// Remaining entries get probability 1.0 (numerical cleanup)
-			while( !large.empty() ) {
-				probabilities[large.back()] = 1.0;
-				aliases[large.back()] = large.back();
-				large.pop_back();
+			while( !largeList.empty() ) {
+				probabilities[largeList.back()] = 1.0;
+				aliases[largeList.back()] = largeList.back();
+				largeList.pop_back();
 			}
 
-			while( !small.empty() ) {
-				probabilities[small.back()] = 1.0;
-				aliases[small.back()] = small.back();
-				small.pop_back();
+			while( !smallList.empty() ) {
+				probabilities[smallList.back()] = 1.0;
+				aliases[smallList.back()] = smallList.back();
+				smallList.pop_back();
 			}
 		}
 

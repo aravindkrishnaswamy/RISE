@@ -1183,7 +1183,7 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         textColLayout->setContentsMargins(0, 0, 0, 0);
         textColLayout->setSpacing(2);
         auto* titleLbl = new QLabel(tr("Preview"));
-        titleLbl->setFont(Theme::sans(10, true));
+        titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
         titleLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
         auto* subLbl = new QLabel(tr("Evaluated over a synthetic UV/world patch, not a scene render."));
         subLbl->setFont(Theme::sans(9));
@@ -1202,7 +1202,7 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         }
         if (chunkType == QStringLiteral("ramp_painter")) {
             auto* gradLbl = new QLabel(tr("Gradient"));
-            gradLbl->setFont(Theme::sans(10, true));
+            gradLbl->setFont(Theme::sans(10, QFont::DemiBold));
             gradLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
             headerCol->addWidget(gradLbl);
 
@@ -1249,7 +1249,7 @@ void ViewportProperties::rebuildPropertyRows(bool pullFreshSnapshot)
         textColLayout->setContentsMargins(0, 0, 0, 0);
         textColLayout->setSpacing(2);
         auto* titleLbl = new QLabel(tr("Shaderball Preview"));
-        titleLbl->setFont(Theme::sans(10, true));
+        titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
         titleLbl->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDim)));
         auto* subLbl = new QLabel(tr("Evaluated over a 3D studio sphere with spectral quadrature and checker backdrop."));
         subLbl->setFont(Theme::sans(9));
@@ -1912,7 +1912,7 @@ void ViewportProperties::buildPropertyRow(const ViewportProperty& p, QVBoxLayout
 
                 auto* forkBtn = new QToolButton;
                 forkBtn->setText(tr("Fork"));
-                forkBtn->setFont(Theme::sans(10, true));
+                forkBtn->setFont(Theme::sans(10, QFont::DemiBold));
                 forkBtn->setCursor(Qt::PointingHandCursor);
                 forkBtn->setToolTip(tr("Duplicate this constant painter and rebind only this slot to the new copy"));
                 forkBtn->setStyleSheet(QStringLiteral(
@@ -2388,7 +2388,7 @@ QWidget* ViewportProperties::buildBlackbodyKelvinCard(const QVector<ViewportProp
     topLayout->addWidget(chip);
 
     auto* titleLbl = new QLabel(tr("Planckian Locus (1000 \xE2\x80\x93 12000 K)"));
-    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
     titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
     topLayout->addWidget(titleLbl);
     topLayout->addStretch(1);
@@ -2468,7 +2468,7 @@ QWidget* ViewportProperties::buildSellmeierGlassCard(const QVector<ViewportPrope
     topLayout->setSpacing(6);
 
     auto* titleLbl = new QLabel(tr("Sellmeier Optical Glass Presets"));
-    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
     titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
     topLayout->addWidget(titleLbl);
     topLayout->addStretch(1);
@@ -2528,7 +2528,7 @@ QWidget* ViewportProperties::buildMeasuredMetalPresetBar()
     col->setSpacing(5);
 
     auto* titleLbl = new QLabel(tr("Measured Metal (n, k) Presets"));
-    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
     titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
     col->addWidget(titleLbl);
 
@@ -2602,7 +2602,7 @@ QWidget* ViewportProperties::buildThinFilmIridescenceCard(const QString& materia
     topLayout->setSpacing(6);
 
     auto* titleLbl = new QLabel(tr("Thin-Film Iridescence (0\xC2\xB0 \xE2\x80\x93 89\xC2\xB0)"));
-    titleLbl->setFont(Theme::sans(10, true));
+    titleLbl->setFont(Theme::sans(10, QFont::DemiBold));
     titleLbl->setStyleSheet(QStringLiteral("color: %1; border: none;").arg(Theme::hex(Theme::textDim)));
     topLayout->addWidget(titleLbl);
     topLayout->addStretch(1);

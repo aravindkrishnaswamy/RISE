@@ -602,6 +602,13 @@ inline QString rgba(const QColor& c)
 		.arg(QString::number(c.alphaF(), 'f', 2));
 }
 
+inline QString rgba(const QColor& c, double alpha)
+{
+	return QStringLiteral("rgba(%1,%2,%3,%4)")
+		.arg(c.red()).arg(c.green()).arg(c.blue())
+		.arg(QString::number(alpha, 'f', 2));
+}
+
 inline QString hex(const QColor& c)
 {
 	return c.name(QColor::HexRgb);
