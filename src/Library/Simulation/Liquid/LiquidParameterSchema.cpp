@@ -196,6 +196,46 @@ bool TranslateSheet(const std::string& text, V& sheet, std::string& error)
 	return true;
 }
 
+// M9: `source <name> box cx cy cz sx sy sz | cylinder cx cy cz ax ay az r h | sphere cx cy cz r [options]`, options
+// `orientation w x y z` (box), `direction dx dy dz`, `speed s`, `start t`, `end t`, `schedule t f [t f ...]`,
+// `drops nx nz r period` (box); `drain <name> <shape> [orientation w x y z] [start t] [end t]`.
+bool TranslateSource(const std::string& text, bool drain, V& source, std::string& error)
+{
+	const auto t = Tokens(text);
+	const std::string where = std::string(drain ? "drain" : "source") + " `" + text + "`";
+	if (t.size() < 2) return Fail(error, where + ": expected `<name> box cx cy cz sx sy sz | cylinder cx cy cz ax ay az r h | sphere cx cy cz r [options]`");
+	V::Members m{{"name", V::String(t[0])}, {"shape", V::String(t[1])}};
+	std::size_t i = 2;
+	V a, b, c;
+	if (t[1] == "box" && Numbers(t, 2, 3, a) && Numbers(t, 5, 3, b)) { m.emplace_back("center", a); m.emplace_back("size", b); i = 8; }
+	else if (t[1] == "cylinder" && Numbers(t, 2, 3, a) && Numbers(t, 5, 3, b) && Numbers(t, 8, 2, c)) {
+		m.emplace_back("center", a); m.emplace_back("axis", b);
+		m.emplace_back("radius", c.GetArray()[0]); m.emplace_back("height", c.GetArray()[1]);
+		i = 10;
+	} else if (t[1] == "sphere" && Numbers(t, 2, 3, a) && Numbers(t, 5, 1, b)) { m.emplace_back("center", a); m.emplace_back("radius", b.GetArray()[0]); i = 6; }
+	else return Fail(error, where + ": the shape is `box cx cy cz sx sy sz` (centre and size), `cylinder cx cy cz ax ay az r h` "
+		"(centre, axis, radius, height along the axis) or `sphere cx cy cz r` (metres, world space)");
+	while (i < t.size()) {
+		const std::string& k = t[i];
+		double x = 0;
+		V v;
+		if ((k == "start" || k == "end" || (!drain && k == "speed")) && i + 1 < t.size() && Real(t[i + 1], x)) { m.emplace_back(k, V::Float(x)); i += 2; }
+		else if (k == "orientation" && Numbers(t, i + 1, 4, v)) { m.emplace_back("orientation", v); i += 5; }
+		else if (!drain && k == "direction" && Numbers(t, i + 1, 3, v)) { m.emplace_back("direction", v); i += 4; }
+		else if (!drain && k == "drops" && Numbers(t, i + 1, 4, v)) { m.emplace_back("drops", v); i += 5; }
+		else if (!drain && k == "schedule") {
+			V::Values xs;
+			++i;
+			while (i < t.size() && Real(t[i], x)) { xs.push_back(V::Float(x)); ++i; }
+			if (xs.size() < 2 || xs.size() % 2) return Fail(error, where + ": schedule takes pairs `t f` (seconds, factor)");
+			m.emplace_back("schedule", V::ArrayValue(xs));
+		} else return Fail(error, where + ": unexpected `" + k + "` (" + (drain ? "orientation w x y z | start t | end t" :
+			"orientation w x y z | direction dx dy dz | speed s | start t | end t | schedule t f [t f ...] | drops nx nz r period") + ")");
+	}
+	source = V::MapValue(m);
+	return true;
+}
+
 bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::string& error)
 {
 	auto all = [&](const char* name) -> const std::vector<std::string>& {
@@ -239,6 +279,19 @@ bool Translate(const SchemaFieldValues& values, SchemaTranslation& out, std::str
 		if (!TranslateSheet(text, sh, error)) return false;
 		sheets.push_back(sh);
 	}
+	V::Values sources, drains;   // M9
+	for (const auto& text : all("source")) {
+		V v;
+		if (!TranslateSource(text, false, v, error)) return false;
+		sources.push_back(v);
+	}
+	for (const auto& text : all("drain")) {
+		V v;
+		if (!TranslateSource(text, true, v, error)) return false;
+		drains.push_back(v);
+	}
+	if (!sources.empty()) out.parameters.emplace_back("sources", V::ArrayValue(sources));
+	if (!drains.empty()) out.parameters.emplace_back("drains", V::ArrayValue(drains));
 	if (!liquid.empty()) out.parameters.emplace_back("liquid", V::ArrayValue(liquid));
 	if (!sheets.empty()) out.parameters.emplace_back("sheets", V::ArrayValue(sheets));
 	if (!solids.empty()) out.parameters.emplace_back("solids", V::ArrayValue(solids));
@@ -342,6 +395,20 @@ ParameterSchema Build()
 	F("body_object", SchemaChunkField::Kind::Text, "A rigid body made from a scene object's closed mesh (m7d; world "
 		"space at t = 0, the body frame at its centroid and principal axes, mass properties from the mesh): `<object>` then the "
 		"options of `body` but `at` and `orientation`; the body is named after the object");
+	F("source", SchemaChunkField::Kind::Text, "An inflow source (M9, preview): `<name> box cx cy cz sx sy sz` (centre and size; "
+		"`orientation w x y z`), `cylinder cx cy cz ax ay az r h` (a nozzle: centre, axis, radius, length along the axis) or "
+		"`sphere cx cy cz r`, metres, world space, then `speed s` (m/s, default 1), `direction dx dy dz` (default the cylinder's "
+		"axis, else 0 -1 0), `start t`, `end t` (the window, seconds), `schedule t f [t f ...]` (a piecewise-linear factor on the "
+		"speed, held outside the table) and, for a box, `drops nx nz r period` (rain: nx x nz columns along its local x and z, "
+		"each releasing a drop of radius r once per period at a hashed position and phase; the schedule's factor is then the "
+		"chance of a release).  The region is filled with liquid at the end of every step of its window and the faces inside "
+		"it take the velocity, so the flux is its exit area (seen along the direction) times the speed, plus its own volume "
+		"at the first fill; the volume correction's target gains that fill and then the nominal flux (or each drop's "
+		"volume), and the volumes are reported in the progress detail.  Emit into air, at least two cells from sheets and bodies; a jet narrower than about three cells thins "
+		"(docs/SIMULATION_M9_RESULTS.md)");
+	F("drain", SchemaChunkField::Kind::Text, "A drain (M9, preview): `<name> box cx cy cz sx sy sz | cylinder cx cy cz ax ay az r h | "
+		"sphere cx cy cz r` with `orientation w x y z` (box), `start t`, `end t`: the liquid inside it is removed each step "
+		"(an overflow or a plughole; the volume removed is reported and taken from the volume correction's target)");
 	s.outputs = {{"surface", "mesh.v2", "The liquid surface: positions (m), velocities (m/s), normals; a new topology every frame"},
 		{"fields", "grid.v1", "phi (m), pressure (Pa), cell-centred velocity (m/s), when publish_fields"},
 		{"particles", "points.v1", "Marker particles: positions, velocities, radii, sign attribute, when publish_particles"},

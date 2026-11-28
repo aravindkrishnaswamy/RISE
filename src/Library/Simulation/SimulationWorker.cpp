@@ -368,7 +368,9 @@ class StopProgress final : public IProgress {
 public:
 	StopProgress(const std::atomic<bool>& stop,std::function<void(double,const std::string&)> status) :
 		stop_(stop), status_(std::move(status)), last_(Clock::now()) {}
+	std::string latest;   // M9: the last detail reported (printed when the run finishes)
 	bool Report(double simulatedTime,double,const std::string& detail) override {
+		latest=detail;
 		if (status_ && std::chrono::duration<double>(Clock::now()-last_).count()>=1.0) {
 			status_(simulatedTime,detail);
 			last_=Clock::now();
@@ -470,6 +472,8 @@ int Run(ISimulationSolver& solver,const SolverDescription& d,CacheWriter& writer
 	std::error_code ec;
 	fs::remove(root/checkpointName,ec);
 	update("finished","");
+	// M9: the solver's last progress detail (a liquid's volumes; a group bake prints its members' the same way).
+	if (!progress.latest.empty()) out<<"rise-sim: last progress: "<<progress.latest<<"\n";
 	out<<"rise-sim: finished, "<<status.framesWritten<<" frames sealed in "<<root.string()<<"\n";
 	return WorkerFinished;
 }

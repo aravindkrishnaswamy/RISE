@@ -103,6 +103,61 @@ struct SolverOptions {
 	bool interpolateCurvature = true;   // the curvature at the sub-cell interface position (else the liquid cell's)
 };
 
+//! M9: an inflow source or a drain, a region of the grid where liquid is added or removed (preview).
+//! A source's region is filled with liquid (the level set the union with the region's signed
+//! distance) at the end of every step its window holds, and the velocity on the open faces inside it
+//! is set to speed x factor(t) x direction at the step's start (a drop's before the projections of the
+//! step that releases it), so the
+//! liquid leaves it at that velocity and the next fill replaces what left: the flux is the region's
+//! exit area (its area seen along the direction) times the speed, plus the region's own volume at its
+//! first fill.  `drops` turns a box source into rain: its local x and z are split into nx x nz columns
+//! and each column releases one sphere of liquid (radius r, at a hashed position in its column) once
+//! per period, at a hashed phase (no random state: a function of the source's index, the column and
+//! the period's index).  A drain empties its region (the level set the difference with it).  The
+//! volume correction's target gains a source's measured first fill and then its nominal flux (or the
+//! drops' volume) and loses what a drain removes (measured), so the correction keeps the inflow; the
+//! totals per source are state (checkpointed).  A continuous source leaves the level set beyond its
+//! exit plane alone (the jet that left it).  A
+//! source should emit into air (inside liquid it only replaces what flows out of it) and keep about
+//! two cells from sheets and bodies.
+struct LiquidSource {
+	enum class Kind { Source, Drain };
+	enum class Type { Box, Cylinder, Sphere };
+	std::string name;
+	Kind kind = Kind::Source;
+	Type type = Type::Box;
+	V3 center{{0, 0, 0}};
+	std::array<double,9> R{{1, 0, 0, 0, 1, 0, 0, 0, 1}};   // box: local to world (row-major; columns the local axes)
+	V3 half{{0.05, 0.05, 0.05}};                             // box half extents (local)
+	V3 axis{{0, 1, 0}};                                      // cylinder axis (unit)
+	double radius = 0.05, height = 0.1;                      // cylinder (height along the axis) and sphere radius
+	V3 direction{{0, -1, 0}};                                // unit
+	double speed = 0;                                        // m/s
+	double start = 0, end = 1e300;                           // the window [start, end)
+	std::vector<double> schedule;                            // pairs (t, factor), piecewise linear, held outside; empty: 1
+	int dropsX = 0, dropsZ = 0;                              // drops: columns along the box's local x and z (0: continuous)
+	double dropRadius = 0, dropPeriod = 0;
+	bool Drops() const { return dropsX > 0 && dropsZ > 0; }
+	//! The region's signed distance (negative inside; exact for the box, cylinder and sphere).
+	double Distance(const V3& x) const;
+	double Factor(double t) const;
+	double MaxFactor() const;
+	//! Whether a continuous source or a drain acts in the step [t0, t0 + dt) (its midpoint in the window).
+	bool Active(double t0, double dt) const;
+	//! The region's area seen along `direction` (the exit area of a continuous source).
+	double ExitArea() const;
+	double RegionVolume() const;
+	//! The region's extent along `direction` from its centre (its exit plane).
+	double Support() const;
+	//! An axis-aligned bound of the region (world space).
+	void Bounds(V3& lo, V3& hi) const;
+	//! Drops: the centres and times of the drops released in [t0, t1) (index: the source's index).
+	void DropsIn(std::size_t index, double t0, double t1, std::vector<std::pair<V3, double>>& out) const;
+	//! The nominal volume over [start, min(t, end)): exit area x speed x the integral of the factor
+	//! (continuous sources), or the drops released times the drop volume.
+	double Nominal(std::size_t index, double t) const;
+};
+
 //! What a run simulates (everything but the numerics).
 struct LiquidSetup {
 	Grid grid;
@@ -123,6 +178,8 @@ struct LiquidSetup {
 	//! Sheets (m7d, LiquidSheets.h): thin open surfaces as moving boundaries
 	//! (preview); a Port sheet's geometry arrives through its port.
 	std::vector<LiquidSheet> sheets;
+	//! M9: inflow sources and drains, applied in this order each step (empty: nothing of it runs).
+	std::vector<LiquidSource> sources;
 };
 
 struct StepStats {
@@ -186,9 +243,24 @@ public:
 	//! (the triangles away from the pinned rim), counts the cells beside it on its back side that
 	//! it reaches: a path of open faces through the sheet itself (0: the barrier is watertight).
 	//! Returns -1 when no sheet qualifies.  Diagnostic, never changes results.
-	long long SheetBarrierHoles() const;
+	//! M9: only faces whose segment crosses the sheet once give their cells sides (a segment that a
+	//! sagging sheet crosses twice joins two cells of one side); `unjudged` (may be null) receives the
+	//! number of interior faces left out for it.
+	long long SheetBarrierHoles(long long* unjudged = nullptr) const;
 	double sheetCrossedVolume = 0;
 	double TargetVolume() const { return targetVolume_; }
+	//! M9: per source (LiquidSetup::sources order) the volume it added to the correction's target (a source: its
+	//! region's measured first fill, then exit area x speed x the factor's integral over the steps it stays
+	//! active, or the drops' nominal volume) or removed (a drain, positive: measured); the level set's own
+	//! measured change at each refill (sourceMeasured: the first fill plus what the level set's transport
+	//! took out of the region, which numerical erosion of a narrow jet makes larger than the nominal flux);
+	//! whether the source was active in the last step (1 or 0).  m^3; state (checkpointed with sources).
+	std::vector<double> sourceVolume, sourceMeasured, sourceActive;
+	std::vector<double> SourceState() const;
+	bool SetSourceState(const std::vector<double>& state);
+	//! M9: the drops released in the last step (not state).
+	struct StepDrop { std::size_t source = 0; V3 centre{{0, 0, 0}}; double time = 0; };
+	std::vector<StepDrop> stepDrops_;
 
 	// State (checkpoints).
 	std::vector<double> phi;
@@ -279,6 +351,13 @@ public:
 	//! Diagnostics only (not state; empty in the solver): called with a stage's name inside Step.
 	std::function<void(const char*)> stageHook;
 private:
+	//! M9: the sources' and drains' change of the level set at the end of the step [t0, t0 + dt) (the
+	//! volumes into sourceVolume and the target), the drops released in it into stepDrops_.
+	void ApplySources(double t0, double dt);
+	//! M9: the sources' velocity on the open faces inside them: the continuous sources active in the step
+	//! (at its start), or (`drops`) the step's new drops (before its projections); `known` (may be null)
+	//! marks those faces valid.
+	void ImposeSources(MacField& f, FaceMask* known, double t0, double dt, bool drops) const;
 	//! The pressure options of a step's last projection (and of Initialize).
 	PressureOptions FinalPressure() const;
 	//! The options of a step's projection with the surface-tension jump of a

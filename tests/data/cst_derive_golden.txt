@@ -399,6 +399,7 @@ scenes/Tests/Simulation/liquid_cloth_wave.RISEscene  1cc4a4182a281069925df624391
 scenes/Tests/Simulation/liquid_dam_break.RISEscene  cc52a0ede6e7a8bc4e7bb1bca483d589a55db18142343a42e2a7c6a624f2fc0f  1754  33
 scenes/Tests/Simulation/liquid_honey_cloth.RISEscene  a9c233948704946adc26f673b5a4054b7082277d109b7637f305533c8aa0a6e4  2329  39
 scenes/Tests/Simulation/liquid_honey_water.RISEscene  9dbe671a4b0b1f99e6b24d4224fa85a16d2f1bf594d03bcb9d19856cf983875f  1992  35
+scenes/Tests/Simulation/liquid_inflow.RISEscene  af9cf79e9d0456e6d08c79e5be141c07a1e871ffa6b6d07dcac447f9318704e8  1733  33
 scenes/Tests/Simulation/liquid_rigid_bodies.RISEscene  69d83fbd5b0fb4a43a72406076379b84a62020fe65e248810f63d300e37385d5  2870  47
 scenes/Tests/Simulation/plume_banner_from_cache.RISEscene  7590a52506a385da4a962877949a9ba1bcf4dd5b1bff728c33ba8ece68527890  1005  24
 scenes/Tests/Simulation/rigid_cloth_trampoline.RISEscene  39bd108aec44b6ca40d5264ed04222a8339ba16c5e4421de0a4c630d412e5e37  1680  32

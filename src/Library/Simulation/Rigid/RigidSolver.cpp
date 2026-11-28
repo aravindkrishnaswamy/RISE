@@ -275,6 +275,49 @@ bool ParseBody(const V& item, const ISceneInputs& inputs, std::vector<std::strin
 		r.out.emplace_back("contact", V::Bool(contact));
 	}
 	if (!(restitution >= 0 && restitution <= 1) || !(friction >= 0)) return r.Bad("restitution must be in [0, 1] and friction nonnegative");
+	// M9: the coupling surface of an analytic body from a mesh (a scene object's geometry, `surface_input`, or
+	// inline `surface_vertices` / `surface_triangles`), world space at t = 0 with the body at its initial pose:
+	// a cloth collider made from the same mesh (`collider_port <object>`) then has this surface's topology, so
+	// rigid_surface can drive it while the body keeps its analytic shape for mass, planes and body-body contact.
+	// Written back only when given (other bodies keep m6.2's effective parameters and record).
+	std::vector<double> surfaceWorld;
+	std::vector<std::uint32_t> surfaceTriangles;
+	const bool surfaceScene = r.Has("surface_input"), surfaceInline = r.Has("surface_vertices") || r.Has("surface_triangles");
+	if ((surfaceScene || surfaceInline) && s.type == Shape::Type::Mesh) return r.Bad("a mesh body's coupling surface is its own mesh");
+	if (surfaceScene && surfaceInline) return r.Bad("give surface_input or surface_vertices / surface_triangles, not both");
+	if (surfaceScene) {
+		const std::string input = r.Text("surface_input", "-", {}, false);
+		std::string hash, codec;
+		std::shared_ptr<const Bytes> bytes;
+		MeshFrame frame;
+		if (!inputs.Identity(input, hash, error) || !inputs.Sample(input, 0.0, bytes, codec, error) || !bytes)
+			return Fail(error, "body " + name + " surface input " + input + ": " + error);
+		const StaticPayloadResolver resolve = [&inputs](const std::string& digest, std::size_t budget,
+			std::shared_ptr<const Bytes>& fixed, std::string& why) { return inputs.ResolveStatic(digest, budget, fixed, why); };
+		if ((codec != "mesh.v1" && codec != "mesh.v2") || !DecodeMesh(*bytes, CodecBudget, resolve, frame, error))
+			return Fail(error, "body " + name + " surface input " + input + " is not a mesh frame: " + error);
+		for (std::uint32_t bits : frame.positions) surfaceWorld.push_back(FromF32(bits));
+		surfaceTriangles = frame.indices;
+		if (std::find(sceneNames.begin(), sceneNames.end(), input) == sceneNames.end()) sceneNames.push_back(input);
+		r.out.emplace_back("surface_input", V::String(input));
+		r.out.emplace_back("surface_identity", V::String(hash));
+		r.Raw("surface_identity");   // written back by Configure; accepted on input
+	} else if (surfaceInline) {
+		std::vector<double> idx;
+		if (!Numbers(r.Raw("surface_vertices"), surfaceWorld) || surfaceWorld.size() % 3 != 0 || surfaceWorld.empty())
+			return r.Bad("surface_vertices must be a flat array of 3n finite numbers");
+		if (!Numbers(r.Raw("surface_triangles"), idx) || idx.size() % 3 != 0 || idx.empty())
+			return r.Bad("surface_triangles must be a flat array of 3m vertex indices");
+		for (double k : idx) {
+			if (!(k >= 0) || std::floor(k) != k || k >= static_cast<double>(surfaceWorld.size()/3)) return r.Bad("surface triangle index out of range");
+			surfaceTriangles.push_back(static_cast<std::uint32_t>(k));
+		}
+		V::Values vs, ts;
+		for (double x : surfaceWorld) vs.push_back(V::Float(x));
+		for (std::uint32_t k : surfaceTriangles) ts.push_back(V::Unsigned(k));
+		r.out.emplace_back("surface_vertices", V::ArrayValue(vs));
+		r.out.emplace_back("surface_triangles", V::ArrayValue(ts));
+	}
 	if (!r.Finish()) return false;
 	MassProperties mp;
 	if (!ShapeMass(s, 1.0, mp, error)) return Fail(error, "body " + name + ": " + error);
@@ -309,6 +352,16 @@ bool ParseBody(const V& item, const ISceneInputs& inputs, std::vector<std::strin
 	};
 	ShapeSurface(s, spec.surface, spec.triangles);
 	toBody(spec.surface);
+	if (!surfaceWorld.empty()) {
+		// M9: the given surface in the body frame, R_b^T (y - x_b) at the initial pose.
+		const M3 Rw = QMatrix(b.q);
+		spec.surface.clear();
+		for (std::size_t k = 0; k + 2 < surfaceWorld.size(); k += 3) {
+			const V3 y = ApplyT(Rw, Sub(V3{{surfaceWorld[k], surfaceWorld[k + 1], surfaceWorld[k + 2]}}, b.x));
+			spec.surface.insert(spec.surface.end(), {y[0], y[1], y[2]});
+		}
+		spec.triangles = surfaceTriangles;
+	}
 	ShapeSupportPoints(s, b.support);
 	toBody(b.support);
 	spec.contact = MakeContactShape(s, restitution, friction);

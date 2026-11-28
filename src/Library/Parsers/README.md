@@ -458,6 +458,32 @@ results' Known limits): a layer resting on a sheet needs about 2.5 cells; very l
 with a free edge at a waterline on a coarse grid is kicked at the edge, which the progress detail flags as a rotation
 stretch or linearisation correction above 1%: use heavier cloth, pin the edge, or refine the grid.
 
+M9 (docs/SIMULATION_M9_RESULTS.md): inflow sources and drains (preview).  `source <name> box cx cy cz sx sy sz |
+cylinder cx cy cz ax ay az r h | sphere cx cy cz r` (centre and size; a cylinder is a nozzle: centre, axis, radius,
+length) then `speed s` (m/s, default 1), `direction dx dy dz` (default the cylinder's axis, else `0 -1 0`),
+`orientation w x y z` (box), `start t`, `end t` (the window), `schedule t f [t f ...]` (a piecewise-linear factor on the
+speed, held outside the table) and, for a box, `drops nx nz r period` (rain: nx x nz columns each release a drop of
+radius r once per period at a hashed position and phase; the schedule is then the chance of a release).  The region
+is filled with liquid at the end of every step of the window and its faces take the velocity, so the flux is its exit
+area (seen along the direction) times the speed, plus its own volume at the first fill.  `drain <name> <shape>
+[orientation ..] [start t] [end t]` removes the liquid inside its region (an overflow, a plughole).  The volume
+correction's target gains the first fill and then the nominal flux (or each drop's volume) and loses what a drain
+removes; the progress detail (printed when a bake finishes) reports each source's and drain's volume and the
+liquid's volume against the target.  Emit into air, two cells or more from sheets and bodies; a jet narrower than
+about three cells thins and its tip erodes.  Works with viscosity, bodies and sheets.  Sample:
+`scenes/Tests/Simulation/liquid_inflow.RISEscene`:
+
+```text
+liquid_simulation
+{
+    name            basin
+    liquid          fill 0.03
+    source          tap cylinder -0.08 0.25 0 0 -1 0 0.02 0.04 speed 0.8 end 1.2 schedule 0 0.1 0.2 1
+    source          shower box 0.09 0.27 0 0.18 0.03 0.26 speed 1.2 start 0.2 end 0.8 drops 3 4 0.022 0.15
+    drain           overflow box 0.18 0.08 -0.13 0.04 0.04 0.04
+}
+```
+
 ## Coupling (M6)
 
 docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and
@@ -474,6 +500,9 @@ rigid_simulation
     plane           0 0 0 0 1 0 restitution 0.5 friction 0.4               # impulse contact (preview)
 }
 cloth_simulation { ...  collider_port ball }  # the object's geometry as a collider moved by port collider_surface
+# M9: an analytic body coupled to cloth that also collides with other bodies and planes: `body ball sphere 0.1 mass 0.1
+# at 0 0.36 0 surface ball` takes its coupling surface from object `ball` (world space at t = 0, the body at its initial
+# pose), so `collider_port ball` has that surface's topology; the body keeps its sphere for mass and contact.
 simulation_group
 {
     name            trampoline

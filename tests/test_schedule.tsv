@@ -51,6 +51,7 @@ BDPTStrategyBalanceTest	single	194	one render thread so 10 tests share cores cle
 BDPTZeroExitanceBSSRDFTest	pool	6
 BidirectionalTextureFootprintParityTest	wide:7	18	128x96 renders (PT 64 spp, BDPT and VCM 1024 spp), 6.05 cores mean (112 s user / 18.5 s real; seconds measured alone on an idle machine, peak window not measured)
 CallbackOutputRenderScopeTest	wide:5	2	4.7 cores (measured)
+ClothRigidPrimitiveTest	pool	90	one core (M9: analytic bodies two-way coupled to cloth with body-body contact; implicit Gauss-Seidel sub-iterations)
 ClothSolverTest	pool	7
 ClothValidationTest	pool	25
 CompositeEnergyConservationTest	pool	8
@@ -85,6 +86,7 @@ LiquidRigidValidationTest	wide:3	35	2.9 cores mean (102 s cpu / 35 s real, 8-thr
 LiquidSheetTest	wide:4	17	about 3.4 cores mean (solver pools of 8 threads; measured alone)
 LiquidSheetViscosityTest	pool	5	one core (its grids are below the viscous solve's pool threshold; m7m: viscosity with sheets and the 3-D momentum audit, 4.6 s measured beside another suite)
 LiquidSolverTest	wide:3	20	2.2 cores mean (44 s cpu / 20 s real, solver pool of 16 threads; measured alone)
+LiquidSourceTest	wide:2	40	about 1.2 cores mean (8-thread pools on 24^3-32^3 grids; M9: inflow sources and drains)
 LiquidValidationTest	wide:4	34	3.6 cores mean (124 s user / 34 s real, 8-thread pool; measured alone)
 LuminarySamplerAreaTest	wide:4	19	multi-threaded renders (D/F/P)
 MLTMutationScheduleTest	pool	7

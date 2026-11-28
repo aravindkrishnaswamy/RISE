@@ -570,6 +570,91 @@ bool ParseSheet(const V& item, LiquidSheet& sh, double& relaxation, V& effective
 	return true;
 }
 
+// M9: an inflow source or a drain (LiquidModel.h LiquidSource): {name, shape: box | cylinder | sphere,
+// center; box: size [sx, sy, sz] and orientation (w, x, y, z); cylinder: axis, radius, height (along the
+// axis); sphere: radius; start, end (the window, seconds); a source also takes direction (unit; default
+// the cylinder's axis, else -y), speed (m/s), schedule [t0, f0, t1, f1, ...] (a piecewise-linear factor
+// on the speed, held outside; written back only when given) and, for a box, drops [nx, nz, radius,
+// period] (rain: written back only when given)}.
+bool ParseSource(const V& item, bool drain, LiquidSource& s, V& effective, std::string& error)
+{
+	Reader r(item, drain ? "drain" : "source", error);
+	s.kind = drain ? LiquidSource::Kind::Drain : LiquidSource::Kind::Source;
+	s.name = r.Text("name", "");
+	if (s.name.empty() || s.name.find('\0') != std::string::npos || !RISECBOR64::IsUTF8NFC(s.name))
+		return r.Bad("needs a nonempty NFC name");
+	const std::string shape = r.Text("shape", "box", {"box", "cylinder", "sphere"});
+	s.center = r.Vector("center", {{0, 0, 0}});
+	if (shape == "box") {
+		s.type = LiquidSource::Type::Box;
+		const V3 size = r.Vector("size", {{0.1, 0.1, 0.1}});
+		if (!(size[0] > 0 && size[1] > 0 && size[2] > 0)) return r.Bad("a box size must be positive on every axis");
+		for (int a = 0; a < 3; ++a) s.half[std::size_t(a)] = 0.5*size[std::size_t(a)];
+		Quat q{{1, 0, 0, 0}};
+		if (const V* v = r.Raw("orientation")) {
+			std::vector<double> xs;
+			if (!Numbers(v, xs) || xs.size() != 4) return r.Bad("orientation must be an array of 4 finite numbers (w, x, y, z)");
+			for (int k = 0; k < 4; ++k) q[std::size_t(k)] = xs[std::size_t(k)];
+		}
+		if (!CanonicalQuaternion(q)) return r.Bad("orientation must be a nonzero quaternion (w, x, y, z)");
+		r.out.emplace_back("orientation", V::ArrayValue({V::Float(q[0]), V::Float(q[1]), V::Float(q[2]), V::Float(q[3])}));
+		s.R = Rigid::QMatrix(q);
+	} else if (shape == "cylinder") {
+		s.type = LiquidSource::Type::Cylinder;
+		const V3 a = r.Vector("axis", {{0, 1, 0}}, false);
+		if (!(a[0]*a[0] + a[1]*a[1] + a[2]*a[2] > 0)) return r.Bad("the cylinder axis must be nonzero");
+		s.axis = Normalised(a);
+		r.out.emplace_back("axis", Vec(s.axis));
+		s.radius = r.Real("radius", 0.02);
+		s.height = r.Real("height", 0.03);
+		if (!(s.radius > 0) || !(s.height > 0)) return r.Bad("cylinder radius and height must be positive");
+	} else {
+		s.type = LiquidSource::Type::Sphere;
+		s.radius = r.Real("radius", 0.02);
+		if (!(s.radius > 0)) return r.Bad("radius must be positive");
+	}
+	s.start = r.Real("start", 0.0);
+	s.end = r.Real("end", 1e300);
+	if (!(s.end > s.start)) return r.Bad("end must be after start");
+	if (drain) {
+		for (const char* key : {"direction", "speed", "schedule", "drops"})
+			if (r.Has(key)) return r.Bad(std::string(key) + " is for a source");
+	} else {
+		const V3 d = r.Vector("direction", s.type == LiquidSource::Type::Cylinder ? s.axis : V3{{0, -1, 0}}, false);
+		if (!(d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > 0)) return r.Bad("direction must be nonzero");
+		s.direction = Normalised(d);
+		r.out.emplace_back("direction", Vec(s.direction));
+		s.speed = r.Real("speed", 1.0);
+		if (!(s.speed >= 0)) return r.Bad("speed must not be negative");
+		if (const V* v = r.Raw("schedule")) {
+			if (!Numbers(v, s.schedule) || s.schedule.size() < 2 || s.schedule.size() % 2 != 0)
+				return r.Bad("schedule must be pairs of finite numbers (t0, f0, t1, f1, ...)");
+			for (std::size_t k = 0; k < s.schedule.size(); k += 2) {
+				if (!(s.schedule[k + 1] >= 0)) return r.Bad("schedule factors must not be negative");
+				if (k >= 2 && !(s.schedule[k] > s.schedule[k - 2])) return r.Bad("schedule times must increase");
+			}
+			V::Values xs;
+			for (double x : s.schedule) xs.push_back(V::Float(x));
+			r.out.emplace_back("schedule", V::ArrayValue(xs));
+		}
+		if (const V* v = r.Raw("drops")) {
+			std::vector<double> xs;
+			if (s.type != LiquidSource::Type::Box) return r.Bad("drops are for a box source");
+			if (!Numbers(v, xs) || xs.size() != 4 || !(xs[0] >= 1 && xs[0] <= 4096) || !(xs[1] >= 1 && xs[1] <= 4096) ||
+				std::floor(xs[0]) != xs[0] || std::floor(xs[1]) != xs[1] || !(xs[2] > 0) || !(xs[3] > 0))
+				return r.Bad("drops must be [nx, nz, radius, period] (two counts in [1, 4096], a positive radius and period)");
+			s.dropsX = int(xs[0]);
+			s.dropsZ = int(xs[1]);
+			s.dropRadius = xs[2];
+			s.dropPeriod = xs[3];
+			r.out.emplace_back("drops", V::ArrayValue({V::Unsigned(std::uint64_t(xs[0])), V::Unsigned(std::uint64_t(xs[1])), V::Float(xs[2]), V::Float(xs[3])}));
+		}
+	}
+	if (!r.Finish()) return false;
+	effective = V::MapValue(r.out);
+	return true;
+}
+
 const char* MotionName(const LiquidBody& b)
 {
 	return b.motion == BodyMotion::Dynamic ? "dynamic" : b.motion == BodyMotion::Prescribed ? "prescribed" :
@@ -1056,6 +1141,7 @@ struct LiquidToken final : SolverStateToken {
 	double sheetStart = 0;
 	std::vector<std::uint32_t> sheetSegments;   // M7e
 	std::uint32_t sheetSegment = 0;
+	std::vector<double> sourceState;   // M9
 };
 
 // The pack of a body's state in checkpoints: x (3), q (4), v (3), pi (3), mass,
@@ -1193,8 +1279,10 @@ private:
 	double sheetCorrection_ = 0;   // m7j: the corotational linearisation's own strain error per step (LiquidSheets.h)
 	bool corotatedSheets_ = false;   // m7h: the estimate is the corotational model's (per step)
 	long long sheetHoles_ = -1;      // m7h: the barrier's watertightness check (LiquidModel::SheetBarrierHoles), largest over the run
+	long long sheetUnjudged_ = 0;    // M9: the faces that check left out (crossed twice), largest over the run
 	void SheetRotationDiagnostic(double span);
 	std::string SheetRotationDetail() const;
+	std::string SourceDetail() const;   // M9: the sources' and drains' volumes and the volume audit
 	std::vector<double> sheetRelaxation_;
 	std::vector<std::vector<double>> sheetLastPressure_;
 };
@@ -1294,6 +1382,22 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		}
 		if (!out.empty()) p.out.emplace_back("sheets", V::ArrayValue(out));
 	}
+	// M9: inflow sources and drains (each written back only when present: earlier effective parameters are unchanged).
+	for (const bool drain : {false, true}) {
+		V::Values out;
+		const char* key = drain ? "drains" : "sources";
+		if (const V* list = p.Raw(key)) {
+			if (list->GetType() != V::Array) return p.Bad(std::string(key) + " must be an array");
+			for (const V& item : list->GetArray()) {
+				LiquidSource s;
+				V eff;
+				if (!ParseSource(item, drain, s, eff, error)) return false;
+				setup.sources.push_back(std::move(s));
+				out.push_back(eff);
+			}
+		}
+		if (!out.empty()) p.out.emplace_back(key, V::ArrayValue(out));
+	}
 	SolverOptions o;
 	{
 		const std::string m = p.Text("momentum", "weno5", {"weno5", "maccormack", "semi_lagrangian"});
@@ -1349,6 +1453,9 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 	for (std::size_t i = 0; i < setup.bodies.size(); ++i)
 		for (std::size_t j = 0; j < i; ++j)
 			if (setup.bodies[i].name == setup.bodies[j].name) return Fail(error, "body names must be unique: " + setup.bodies[i].name);
+	for (std::size_t i = 0; i < setup.sources.size(); ++i)   // M9
+		for (std::size_t j = 0; j < i; ++j)
+			if (setup.sources[i].name == setup.sources[j].name) return Fail(error, "source and drain names must be unique: " + setup.sources[i].name);
 	{
 		// m7d: sheet names and port names unique.
 		std::vector<std::string> portNames{FieldsPort, StatePort, MassPort, LoadPort, ContactPort};
@@ -1688,6 +1795,46 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		// Measured (docs/SIMULATION_M7D_RESULTS.md): the crossings cost little next to the pressure solve.
 		caps.costEstimate *= 1.05;
 	}
+	if (!setup.sources.empty()) {
+		// M9: inflow sources and drains, always preview.
+		std::vector<std::string> kinds;
+		for (const LiquidSource& s : setup.sources) kinds.push_back(s.kind == LiquidSource::Kind::Drain ? "drain" : s.Drops() ? "drops" : "inflow");
+		std::sort(kinds.begin(), kinds.end());
+		kinds.erase(std::unique(kinds.begin(), kinds.end()), kinds.end());
+		candidate.evidence.conditions.push_back({"sources", kinds});
+		std::sort(candidate.evidence.conditions.begin(), candidate.evidence.conditions.end(),
+			[](const auto& a, const auto& b) { return a.first < b.first; });
+		candidate.evidence.scope += " M9 adds inflow sources and drains: a source's region is filled with liquid at the end of every "
+			"step of its window and the open faces inside it take its velocity at the step's start, "
+			"so liquid leaves it at that velocity (the flux its exit area times the speed, plus its own volume at the first fill; "
+			"rain: spheres released per column and period at hashed positions and phases); a drain empties its region; the "
+			"volume correction's target gains the region's measured first fill and then the nominal flux (or the drops' "
+			"volume) and loses what a drain removes, so the correction keeps the inflow.  This is "
+			"preview and not certified: no case bounds a jet's or a drop's error (a jet narrower than about three cells or a "
+			"drop smaller than about two thins and is lost to the level set and put back by the volume correction), a source "
+			"inside liquid adds only what flows out of it, and a region within two cells of a sheet or a body is not covered.";
+		candidate.evidence.fidelity = "preview";
+		if (caps.fidelityLimit.empty()) caps.fidelityLimit = "sources: inflow and drains are not certified (preview)";
+		const double h = setup.grid.h;
+		for (std::size_t i = 0; i < setup.sources.size(); ++i) {
+			const LiquidSource& s = setup.sources[i];
+			char buffer[400];
+			if (s.kind == LiquidSource::Kind::Drain)
+				std::snprintf(buffer, sizeof buffer, "drain %s: removes the liquid inside its region (%.3g L)", s.name.c_str(), 1000*s.RegionVolume());
+			else if (s.Drops())
+				std::snprintf(buffer, sizeof buffer, "source %s: rain, %d x %d columns, drops of radius %.3g m (%.2g cells) every %.3g s at %.3g m/s "
+					"(%.3g L/s at a factor of 1)", s.name.c_str(), s.dropsX, s.dropsZ, s.dropRadius, s.dropRadius/h, s.dropPeriod, s.speed,
+					1000*s.dropsX*s.dropsZ*4.0/3.0*3.14159265358979323846*s.dropRadius*s.dropRadius*s.dropRadius/s.dropPeriod);
+			else
+				std::snprintf(buffer, sizeof buffer, "source %s: exit area %.3g m^2 at %.3g m/s, a nominal flux of %.3g L/s at a factor of 1, its "
+					"region %.3g L (filled once at the start)", s.name.c_str(), s.ExitArea(), s.speed, 1000*s.ExitArea()*s.speed, 1000*s.RegionVolume());
+			candidate.notes.push_back(buffer);
+			double extent = s.type == LiquidSource::Type::Box ? 2*std::min(s.half[0], std::min(s.half[1], s.half[2])) : 2*s.radius;
+			if (s.Drops()) extent = 2*s.dropRadius;
+			if (extent < 2*h) candidate.notes.push_back(std::string(s.kind == LiquidSource::Kind::Drain ? "drain " : "source ") + s.name +
+				" is thinner than two cells: the level set does not resolve it (its liquid thins and the volume correction puts the loss back elsewhere)");
+		}
+	}
 	d = std::move(candidate);
 	return true;
 }
@@ -1946,8 +2093,10 @@ bool LiquidSolver::AcceptSheets(IPortExchange* ports, std::string& error)
 	if (implicitSheets_) model_.ResetSheetDynamics();
 	if (implicitSheets_) {
 		// m7h: the watertightness check of the barrier of sheets pinned all round (a diagnostic).
-		const long long holes = model_.SheetBarrierHoles();
+		long long unjudged = 0;
+		const long long holes = model_.SheetBarrierHoles(&unjudged);
 		if (holes >= 0) sheetHoles_ = std::max(sheetHoles_, holes);
+		if (holes >= 0) sheetUnjudged_ = std::max(sheetUnjudged_, unjudged);   // M9
 	}
 	sheetSegments_.clear();
 	sheetSegment_ = 0;
@@ -2153,8 +2302,30 @@ std::string LiquidSolver::SheetRotationDetail() const
 		out += b2;
 	}
 	// m7h: the barrier's watertightness (sheets pinned all round only).
-	if (sheetHoles_ >= 0) out += ", barrier holes (flood fill through the pinned sheet) " + std::to_string(sheetHoles_);
+	// M9: faces whose segment crosses the sheet twice are not judged (the check cannot tell their cells' sides).
+	if (sheetHoles_ >= 0) out += ", barrier holes (paths of open faces through the sheet pinned all round) " + std::to_string(sheetHoles_) +
+		" (faces crossed twice by the sheet, not judged: up to " + std::to_string(sheetUnjudged_) + ")";
 	return out;
+}
+
+// M9: per source the volume it added to the volume correction's target (its region's first fill, then the
+// nominal flux: exit area x speed x the factor's integral; or the drops' volume) and the level set's own
+// refills, per drain the volume it removed, and the liquid's volume against the target.
+std::string LiquidSolver::SourceDetail() const
+{
+	std::string out;
+	char buffer[400];
+	for (std::size_t i = 0; i < setup_.sources.size(); ++i) {
+		const LiquidSource& s = setup_.sources[i];
+		const double v = i < model_.sourceVolume.size() ? model_.sourceVolume[i] : 0.0;
+		const double m = i < model_.sourceMeasured.size() ? model_.sourceMeasured[i] : 0.0;
+		if (s.kind == LiquidSource::Kind::Drain) std::snprintf(buffer, sizeof buffer, ", drain %s removed %.4g L", s.name.c_str(), 1000*v);
+		else std::snprintf(buffer, sizeof buffer, ", source %s added %.4g L (the level set's refills %.4g L)", s.name.c_str(), 1000*v, 1000*m);
+		out += buffer;
+	}
+	std::snprintf(buffer, sizeof buffer, ", liquid volume %.4g L (target %.4g L: the initial volume, plus the sources', less the drains')",
+		1000*model_.Volume(), 1000*model_.TargetVolume());
+	return out + buffer;
 }
 
 // M7d: each port sheet's load over [sheetStart_, time]: the per-vertex pressure of
@@ -2436,7 +2607,7 @@ bool LiquidSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPor
 				std::to_string(model_.clampedFaces) + " in " + std::to_string(model_.clampedSteps) + " steps" +
 				", pressure iterations " + std::to_string(pressureIterations_) + " in " + std::to_string(pressureSteps_) + " steps" +
 				(model_.bodies.empty() ? std::string() : ", body wall contacts " + std::to_string(contacts_)) +
-				(implicitSheets_ ? SheetRotationDetail() : std::string())))
+				(implicitSheets_ ? SheetRotationDetail() : std::string()) + (setup_.sources.empty() ? std::string() : SourceDetail())))
 				return Done(result, AdvanceResult::Status::Stopped);
 			const double tn = s_.segJ + 1 == s_.segN ? s_.segTarget :
 				s_.segStart + (s_.segTarget - s_.segStart)*static_cast<double>(s_.segJ + 1)/static_cast<double>(s_.segN);
@@ -2526,6 +2697,8 @@ bool LiquidSolver::CheckpointTo(ICheckpointSink& sink, std::string& error)
 			m.emplace_back("sheetSegment", V::Unsigned(sheetSegment_));
 		}
 	}
+	// M9: the sources' and drains' volumes (only when there are any: other streams are unchanged).
+	if (!setup_.sources.empty()) m.emplace_back("sources", V::BytesValue(DoublesBytes(model_.SourceState())));
 	Bytes header;
 	if (!RISECBOR64::Encode(V::MapValue(m), header, &error)) return false;
 	StreamWriter w(sink);
@@ -2666,6 +2839,12 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 			return Fail(error, "the liquid checkpoint does not hold the implicit sheets' open exchange");
 		for (double x : sd) sheetSegments.push_back(std::uint32_t(x));
 	}
+	// M9: the sources' and drains' volumes.
+	std::vector<double> sourceVolume;
+	if (!setup_.sources.empty()) {
+		if (!BytesDoubles(v.Find("sources"), 3*setup_.sources.size(), sourceVolume))
+			return Fail(error, "the liquid checkpoint does not hold the configured sources and drains");
+	} else if (v.Find("sources")) return Fail(error, "the liquid checkpoint holds sources the configuration does not have");
 	// The static data (solid fractions) come from the configuration.
 	if (!model_.Initialize(setup_, options_, threads_, error)) return false;
 	const Grid& g = model_.GridSpec();
@@ -2779,6 +2958,7 @@ bool LiquidSolver::RestoreFrom(ICheckpointSource& source, std::string& error)
 	model_.targetVolume_ = target;
 	model_.steps = steps;
 	model_.particles.SetState(std::move(ps), nextId, options_.particle);
+	if (!sourceVolume.empty() && !model_.SetSourceState(sourceVolume)) return Fail(error, "invalid liquid checkpoint (sources)");   // M9
 	if (!sheets.empty()) {
 		// Before the bodies' geometry, which closes the sheets' faces again too.
 		model_.sheets = std::move(sheets);
@@ -2860,6 +3040,7 @@ bool LiquidSolver::SaveState(std::shared_ptr<const SolverStateToken>& token, std
 	t->sheetHistory = model_.sheetHistory;
 	t->sheetSegments = sheetSegments_;
 	t->sheetSegment = sheetSegment_;
+	t->sourceState = model_.SourceState();   // M9
 	token = std::move(t);
 	return true;
 }
@@ -2877,6 +3058,7 @@ bool LiquidSolver::RestoreState(const SolverStateToken& token, std::string& erro
 	model_.targetVolume_ = t->targetVolume;
 	model_.steps = t->steps;
 	model_.particles.SetState(t->particles, t->nextId, options_.particle);
+	model_.SetSourceState(t->sourceState);   // M9
 	if (!t->sheets.empty()) {
 		model_.sheets = t->sheets;
 		model_.sheetImpulse = t->sheetImpulse;

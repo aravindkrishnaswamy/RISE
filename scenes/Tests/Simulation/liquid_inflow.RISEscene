@@ -1,0 +1,146 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           liquid_inflow.RISEscene                                                                 #
+#   Description:    Simulation M9: inflow sources and a drain on liquid.mac (`liquid_simulation basin`).    #
+#                   A tap (a cylinder nozzle, 2 cm radius, 0.8 m/s down, its flow ramped up over 0.2 s and  #
+#                   shut at 1.2 s) pours into a shallow basin; a short shower of rain (drops from a box     #
+#                   above the right half, 0.2-0.8 s) falls beside it; an overflow drain at the basin's far  #
+#                   corner removes what rises above 6 cm there.  The progress detail reports what each      #
+#                   source added and the drain removed, and the liquid's volume against the volume          #
+#                   correction's target (docs/SIMULATION_M9_RESULTS.md).                                    #
+#                                                                                                           #
+#   Bake:           bin/tools/rise_sim bake <this scene> basin                                              #
+#                   bin/tools/rise_sim status <this scene>                                                  #
+#                                                                                                           #
+#   Frames:         1/30 s apart over 1.5 s (46 frames); 40 cells along x (1 cm cells).  Positions are      #
+#                   metres, y up.  The liquid's walls are free-slip; the surface closes on them.            #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky
+	color			0.75 0.8 0.9
+}
+
+uniformcolor_painter
+{
+	name			stone
+	color			0.55 0.5 0.45
+}
+
+uniformcolor_painter
+{
+	name			brass
+	color			0.75 0.6 0.3
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		stone
+}
+
+lambertian_material
+{
+	name			mat_tap
+	reflectance		brass
+}
+
+dielectric_material
+{
+	name				water
+	tau					0.92 0.97 0.99
+	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
+}
+
+pinhole_camera
+{
+	location		0.55 0.5 0.75
+	lookat			0 0.1 0
+	up				0 1 0
+	fov				42.0
+}
+
+liquid_simulation
+{
+	name			basin
+	frames			46
+	domain_min		-0.2 0 -0.15
+	domain_size		0.4 0.3 0.3
+	resolution		40
+	liquid			fill 0.03
+	source			tap cylinder -0.08 0.25 0 0 -1 0 0.02 0.04 speed 0.8 end 1.2 schedule 0 0.1 0.2 1
+	source			shower box 0.09 0.27 0 0.18 0.03 0.26 speed 1.2 start 0.2 end 0.8 drops 3 4 0.022 0.15
+	drain			overflow box 0.18 0.08 -0.13 0.04 0.04 0.04
+}
+
+simulated_mesh_geometry
+{
+	name			geo_water
+	source			basin.surface
+}
+
+standard_object
+{
+	name			water_object
+	geometry		geo_water
+	material		water
+}
+
+cylinder_geometry
+{
+	name			geo_tap
+	axis			y
+	radius			0.024
+	height			0.06
+}
+
+standard_object
+{
+	name			tap
+	geometry		geo_tap
+	material		mat_tap
+	position		-0.08 0.3 0
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-2.0 -0.001 -2.0
+	ptb				 2.0 -0.001 -2.0
+	ptc				 2.0 -0.001  2.0
+	ptd				-2.0 -0.001  2.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+directional_light
+{
+	name			sun
+	power			3
+	color			1 1 1
+	direction		-0.3 -1 -0.5
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	radiance_map	sky
+	radiance_scale	0.7
+	radiance_background	TRUE
+}
