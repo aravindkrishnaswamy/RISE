@@ -2,26 +2,29 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                                                                                           #
 #   File:           monsoon.RISEscene                                                                       #
-#   Idea:           A cloudburst over a courtyard basin.  A sheet of rain lands on a striped canvas awning  #
-#                   held in a frame tilted over the basin; the canvas bellies under the weight, fills, and  #
-#                   the water runs over its low edge in a sheet into the basin, where wooden floats and a   #
-#                   toy boat rock in the waves and knock against each other.                                #
+#   Idea:           A cloudburst over a courtyard basin.  Heavy rain falls on a striped awning held in a    #
+#                   frame tilted over the basin; the awning bellies under the weight, fills, and the water  #
+#                   runs over its low edge in a sheet into the basin, where wooden floats, a ball and a toy #
+#                   boat rock in the waves and knock against each other.                                    #
 #   Simulations:    three solvers in ONE simulation_group `courtyard`: liquid.mac `rain` (owner of both     #
 #                   exchanges), cloth.shell `canvas` (an implicitly coupled sheet: the liquid solves the    #
 #                   canvas's linearised response in its pressure solve) and rigid.bodies `floats` (bodies   #
 #                   solved in the same pressure system; rigid.bodies owns their body-body and basin-wall    #
 #                   contact).  The canvas and the bodies never touch each other (there is no cloth-body     #
 #                   contact inside a liquid group); they meet only through the water.                       #
-#   Limits:         the canvas is pinned on all four edges, so no free edge meets the waterline; the rain   #
-#                   starts 2-6 cm above it (a long fall kicked it past the 1% rotation indicator), and it   #
-#                   holds the water as a bag several cells deep (docs/SIMULATION_M7M_RESULTS.md, Known      #
-#                   limits; the design's history is in docs/SIMULATION_SHOWCASE.md).                       #
+#   Limits:         the canvas is pinned on all four edges, so no free edge meets the waterline, and it     #
+#                   holds the water as a bag several cells deep (docs/SIMULATION_SOLVER_CONTRACT.md §6,     #
+#                   known limits).  The rain is an M9 drop source (5 x 4 columns, 2.8 cm drops: 2 cells at  #
+#                   proof's 64, 4 at the final 128; src/Library/Parsers/README.md), released 3.5 cm above   #
+#                   the awning, in a box tilted with it, at 0.5 m/s (released 5 cm above its high edge at    #
+#                   1.2 m/s the drops kicked it past the 1% rotation indicator); an overflow drain in a     #
+#                   corner keeps the basin below its kerb.                                                  #
 #   Frame:          y up, metres; liquid domain -0.45..0.45 x 0..0.6 x -0.25..0.25 (the basin's inside).    #
 #   Time:           4 s at 30 fps (121 frames).                                                             #
 #   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
 #                   simulation_showcase.sh proof substitutes the proof value.                               #
 #   Bake/render:    scripts/simulation_showcase.sh proof|final monsoon   (docs/SIMULATION_SHOWCASE.md)       #
-#   showcase:       hero 30 frames 6 18 48 100                                                              #
+#   showcase:       hero 75 frames 15 30 45 110                                                             #
 #                                                                                                           #
 #############################################################################################################
 
@@ -126,9 +129,8 @@ liquid_simulation
 	resolution		128		# proof 64
 	threads			8
 	liquid			fill 0.11
-	liquid			box -0.40 0.515 -0.18 -0.25 0.595 0.18
-	liquid			box -0.25 0.475 -0.18 -0.10 0.595 0.18
-	liquid			box -0.10 0.44 -0.18 0.03 0.595 0.18
+	source			rain box -0.188 0.488 0.0 0.46 0.03 0.38 orientation 0.9922 0 0 -0.1247 speed 0.5 start 0.0 end 2.6 drops 5 4 0.028 0.22
+	drain			overflow box 0.42 0.135 -0.22 0.05 0.03 0.05
 	sheet			canvas port coupling implicit
 	body			float_a sphere 0.032 motion port at 0.20 0.14 0.08
 	body			float_b sphere 0.028 motion port at 0.30 0.14 -0.06

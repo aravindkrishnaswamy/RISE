@@ -14,7 +14,7 @@ RISE ASCII SCENE 7
 #   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
 #                   simulation_showcase.sh proof substitutes the proof value.                               #
 #   Bake/render:    scripts/simulation_showcase.sh proof|final unveiling   (docs/SIMULATION_SHOWCASE.md)     #
-#   showcase:       hero 84 frames 20 60 96 150                                                            #
+#   showcase:       hero 85 frames 20 60 110 150                                                            #
 #                                                                                                           #
 #############################################################################################################
 
@@ -65,7 +65,7 @@ animation_options
 pinhole_camera
 {
 	location		1.05 0.78 1.75
-	lookat			0.0 0.62 0.0
+	lookat			0.12 0.64 0.0
 	up				0 1 0
 	fov				40.0
 }
@@ -337,14 +337,27 @@ rect_light
 	exitance		70
 }
 
+# The key: small and bright, high on the left, so the orb takes a crisp highlight and focuses a caustic on the
+# plinth (an area light, so the path tracer finds the caustic).
 rect_light
 {
 	name			key
-	center			-1.9 2.0 0.5
-	size			0.4 0.4
-	facing			1 -0.8 -0.25
-	color			1.0 0.88 0.72
-	exitance		110
+	center			-1.35 1.6 0.2
+	size			0.12 0.12
+	facing			1.35 -1.07 -0.2
+	color			1.0 0.9 0.75
+	exitance		1400
+}
+
+# A rim from behind right and above, through the silk: it lights the folds' edges and the silk's translucency.
+rect_light
+{
+	name			rim
+	center			0.5 1.95 -1.25
+	size			0.6 0.5
+	facing			-0.3 -0.75 1
+	color			1.0 0.78 0.6
+	exitance		80
 }
 
 rect_light

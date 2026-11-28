@@ -10,7 +10,9 @@
 #   scene   the file stem (hearth, unveiling, ...) or `all`.
 #   step    bake (simulations only), render (frames only, from an existing bake) or both (default).
 #   frame   frame indices to render; default the scene's `showcase:` header line (hero frame and the
-#           others) in proof mode, the hero frame in final mode, or `animation` for every frame.
+#           others) in proof mode, the hero frame in final mode, or `animation` for every frame at a reduced
+#           size (960 x 540, 64 spp by default: SHOWCASE_ANIM_WIDTH/HEIGHT/SAMPLES), assembled into
+#           <scene>.mp4 when ffmpeg is installed.
 #
 # Each mode writes its own copy of the scene, rendered/showcase/<scene>/<scene>.<mode>.RISEscene,
 # bakes it with rise_sim and renders it with rise from the same path (the default cache folder of a
@@ -93,8 +95,33 @@ for scene in $scenes; do
     fi
     cd $repo
     if [[ ${frames[1]} == animation ]]; then
-      print "== $scene ($mode): render every frame"
-      printf "renderanimation\nquit\n" | $rise $work 2>&1 | tee $out_dir/$mode/render_animation.log
+      # The animation is rendered at a reduced size from the same caches: a copy of the scene (another path, so
+      # each producer is given its cache folder explicitly: the folder `rise_sim status` reports for $work),
+      # SHOWCASE_ANIM_WIDTH x SHOWCASE_ANIM_HEIGHT (default 960 x 540), SHOWCASE_ANIM_SAMPLES (default 64),
+      # frames to rendered/showcase/<scene>/<mode>/anim/.
+      anim=$out_dir/$scene.$mode-anim.RISEscene
+      mkdir -p $out_dir/$mode/anim
+      $rise_sim status $work 2>/dev/null | awk '/^[^ ].*: / { cur = $1; sub(/:$/, "", cur) } /^  cache: / { print cur, $2 }' > $out_dir/$mode/anim/caches.txt
+      awk -v caches=$out_dir/$mode/anim/caches.txt -v w=${SHOWCASE_ANIM_WIDTH:-960} -v h=${SHOWCASE_ANIM_HEIGHT:-540} \
+          -v spp=${SHOWCASE_ANIM_SAMPLES:-64} -v from="rendered/showcase/$scene/$mode/" -v to="rendered/showcase/$scene/$mode/anim/" '
+        BEGIN { while ((getline line < caches) > 0) { split(line, f, " "); dir[f[1]] = f[2] } }
+        /^[a-z_]+$/ { chunk = $1 }
+        chunk == "film" && $1 == "width" { print "\twidth\t\t\t" w; next }
+        chunk == "film" && $1 == "height" { print "\theight\t\t\t" h; next }
+        chunk ~ /rasterizer$/ && $1 == "samples" { print "\tsamples\t\t\t" spp; next }
+        chunk == "file_rasterizeroutput" && $1 == "pattern" { sub(from, to) }
+        { print }
+        chunk ~ /_simulation$/ && $1 == "name" && ($2 in dir) { print "\tcache\t\t\t" dir[$2] }
+      ' $work > $anim
+      print "== $scene ($mode): render every frame at ${SHOWCASE_ANIM_WIDTH:-960} x ${SHOWCASE_ANIM_HEIGHT:-540}"
+      printf "renderanimation\nquit\n" | $rise $anim > $out_dir/$mode/anim/render_animation.log 2>&1
+      grep -E "Total Rasterization Time|rror" $out_dir/$mode/anim/render_animation.log | tail -3 || true
+      if command -v ffmpeg >/dev/null; then
+        ffmpeg -y -loglevel error -framerate $(awk '$1=="time_end"{e=$2} $1=="time_start"{s=$2} $1=="num_frames"{n=$2} END{print (n-1)/(e-s)}' $work) \
+          -i $out_dir/$mode/anim/${scene}_denoised%04d.png -pix_fmt yuv420p $out_dir/$mode/$scene.mp4
+      else
+        print "ffmpeg is not installed: the frames are in $out_dir/$mode/anim/"
+      fi
     else
       for f in $frames; do
         print "== $scene ($mode): render frame $f"

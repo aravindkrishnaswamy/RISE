@@ -2,27 +2,28 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                                                                                           #
 #   File:           conjurer.RISEscene                                                                      #
-#   Idea:           A conjurer's canopy.  A square of midnight-blue silk hangs by its four corners over an  #
-#                   empty stage; a gilded cube and an ivory ball are tossed up into it from below, punch     #
-#                   two peaks into the silk, are thrown back down by it and tumble across the boards while   #
-#                   the canopy billows and settles.  One hard spotlight from above and a cool rim behind.    #
-#   Simulations:    rigid.bodies `props` (two bodies made from the scene objects' meshes, tossed with       #
-#                   velocity and spin; the stage as a plane) and cloth.shell `silk` (silk pinned at its     #
-#                   corners, barrier contact, self-collision) in one simulation_group `flourish`, coupled   #
-#                   implicitly and sub-iterated: each prop is a mesh collider of the cloth moved by its      #
-#                   body's state (`rigid_surface`), and the cloth's contact reaction loads the bodies       #
-#                   (`contact_reaction`), so the silk is lifted by the props and throws them back.           #
-#   Limits:         cloth-rigid coupling needs each body's surface to be the collider mesh's topology, so   #
-#                   the props are mesh bodies (`body_object`), and mesh bodies take no body-body contact    #
-#                   (`contact off`): the props are tossed apart and never meet.  A free silk dropped over   #
-#                   the props and pinched between a landing prop and the stage failed the cloth's Newton    #
-#                   solve in five attempts (docs/SIMULATION_SHOWCASE.md), so the silk is held above them.   #
+#   Idea:           A conjurer's canopy.  A square of champagne silk hangs by its four corners over an      #
+#                   empty stage; a gilded cube and an emerald ball are tossed up into it from either side,  #
+#                   meet in the silk with a clack, punch it into peaks, are thrown back down by it and      #
+#                   bounce across the boards while the canopy billows and settles.  A warm spotlight pool,  #
+#                   footlights, a cool rim behind.                                                          #
+#   Simulations:    rigid.bodies `props` (a sphere and a box: analytic shapes for their mass, their         #
+#                   contact with each other and with the stage; tossed with velocity and spin) and          #
+#                   cloth.shell `silk` (silk pinned at its corners, barrier contact, self-collision) in one #
+#                   simulation_group `flourish`, coupled implicitly and sub-iterated: each prop's coupling  #
+#                   surface is its scene object's mesh (`surface <object>`, M9), a mesh collider of the     #
+#                   cloth moved by the body's state (`rigid_surface`), and the cloth's contact reaction     #
+#                   loads the bodies (`contact_reaction`): the silk is lifted by the props, throws them     #
+#                   back, and the props collide with each other (body-body contact) on the way.            #
+#   Limits:         a free silk dropped over the props and pinched between a landing prop and the stage     #
+#                   failed the cloth's Newton solve in five attempts (docs/SIMULATION_SHOWCASE.md), so the  #
+#                   silk is held above them; `on_non_convergence halve` for the coupling (M9's advice).     #
 #   Frame:          y up, metres.                                                                           #
 #   Time:           3 s at 30 fps (91 frames).                                                              #
 #   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
 #                   simulation_showcase.sh proof substitutes the proof value.                               #
 #   Bake/render:    scripts/simulation_showcase.sh proof|final conjurer   (docs/SIMULATION_SHOWCASE.md)      #
-#   showcase:       hero 11 frames 6 16 24 90                                                               #
+#   showcase:       hero 22 frames 8 11 18 60                                                               #
 #                                                                                                           #
 #############################################################################################################
 
@@ -72,10 +73,10 @@ animation_options
 
 pinhole_camera
 {
-	location		0.35 0.55 2.5
-	lookat			0.0 0.68 0.0
+	location		0.25 0.62 2.1
+	lookat			0.0 0.76 0.0
 	up				0 1 0
-	fov				40.0
+	fov				36.0
 }
 
 #############################################################################################################
@@ -86,13 +87,10 @@ rigid_simulation
 	name			props
 	frames			91
 	substeps		16
-	body_object		ball mass 0.45 velocity -0.25 4.6 0.05 spin 2 0 -3 contact off
-	body_object		cube mass 0.55 velocity 0.3 4.3 -0.05 spin 4 2 5 contact off
-	plane			0 0 0 0 1 0 restitution 0.15 friction 0.6
+	body			ball sphere 0.105 mass 1.0 at -0.24 0.2 0.02 velocity 0.5 4.6 0.0 spin 2 0 -3 restitution 0.6 friction 0.4 surface ball
+	body			cube box 0.17 0.17 0.17 mass 1.2 at 0.26 0.2 -0.03 velocity -0.5 4.4 0.03 spin 4 2 5 restitution 0.6 friction 0.4 surface cube
+	plane			0 0 0 0 1 0 restitution 0.45 friction 0.5
 }
-
-# The stage the cloth lies on is 15 mm below the plane the props land on, so a prop resting on the silk on the
-# stage leaves the silk room for its contact offset (rigid.bodies' plane contact does not see the cloth).
 
 cloth_simulation
 {
@@ -113,7 +111,7 @@ cloth_simulation
 	substeps		16
 	newton_iterations	100
 	self_collision	TRUE
-	collider		plane 0 -0.015 0 0 1 0
+	collider		plane 0 0 0 0 1 0
 	collider_port	ball collider_ball
 	collider_port	cube collider_cube
 }
@@ -142,13 +140,13 @@ simulation_group
 uniformcolor_painter
 {
 	name			pnt_silk_warp
-	color			0.03 0.05 0.25
+	color			0.80 0.72 0.55
 }
 
 uniformcolor_painter
 {
 	name			pnt_silk_weft
-	color			0.10 0.06 0.35
+	color			0.90 0.84 0.70
 }
 
 weave_material
@@ -169,32 +167,38 @@ uniformcolor_painter
 	color			1.0 0.78 0.34
 }
 
+uniformcolor_painter
+{
+	name			pnt_gold_diffuse
+	color			0.02 0.015 0.005
+}
+
 ggx_material
 {
 	name			mat_gold
-	rd				pnt_gold
+	rd				pnt_gold_diffuse
 	rs				pnt_gold
-	alphax			0.12
-	alphay			0.12
+	alphax			0.22
+	alphay			0.22
 	fresnel_mode	schlick_f0
 }
 
 uniformcolor_painter
 {
-	name			pnt_ivory
-	color			0.85 0.80 0.68
+	name			pnt_emerald
+	color			0.04 0.32 0.20
 }
 
 lambertian_material
 {
-	name			mat_ivory_base
-	reflectance		pnt_ivory
+	name			mat_emerald_base
+	reflectance		pnt_emerald
 }
 
 coated_material
 {
-	name			mat_ivory
-	base			mat_ivory_base
+	name			mat_emerald
+	base			mat_emerald_base
 	coat_ior		1.5
 	coat_roughness	0.06
 }
@@ -223,7 +227,7 @@ coated_material
 uniformcolor_painter
 {
 	name			pnt_curtain
-	color			0.18 0.02 0.03
+	color			0.10 0.015 0.03
 }
 
 orennayar_material
@@ -253,24 +257,24 @@ standard_object
 sphere_geometry
 {
 	name			geo_ball
-	radius			0.085
+	radius			0.105
 }
 
 standard_object
 {
 	name			ball
 	geometry		geo_ball
-	material		mat_ivory
-	position		-0.22 0.16 0.02
+	material		mat_emerald
+	position		-0.24 0.2 0.02
 	transform_source	props.bodies[ball]
 }
 
 box_geometry
 {
 	name			geo_cube
-	width			0.14
-	height			0.14
-	depth			0.14
+	width			0.17
+	height			0.17
+	depth			0.17
 }
 
 standard_object
@@ -278,17 +282,17 @@ standard_object
 	name			cube
 	geometry		geo_cube
 	material		mat_gold
-	position		0.24 0.16 -0.03
+	position		0.26 0.2 -0.03
 	transform_source	props.bodies[cube]
 }
 
 clippedplane_geometry
 {
 	name			geo_stage
-	pta				-6 -0.015 -6
-	ptb				 6 -0.015 -6
-	ptc				 6 -0.015  6
-	ptd				-6 -0.015  6
+	pta				-6 0 -6
+	ptb				 6 0 -6
+	ptc				 6 0  6
+	ptd				-6 0  6
 }
 
 standard_object
@@ -318,12 +322,12 @@ standard_object
 spot_light
 {
 	name			spot
-	position		0.4 3.2 1.4
-	target			0 0.4 0
+	position		0.3 2.2 2.6
+	target			0 0.2 -0.2
 	color			1.0 0.9 0.75
-	power			70
-	inner			13
-	outer			22
+	power			110
+	inner			16
+	outer			26
 }
 
 # Footlights: a warm strip at the stage's front edge, lighting the props and the canopy's underside.
@@ -334,15 +338,15 @@ rect_light
 	size			1.4 0.08
 	facing			0 0.55 -1
 	color			1.0 0.8 0.55
-	exitance		80
+	exitance		40
 }
 
 rect_light
 {
 	name			rim
-	center			0.0 2.6 -1.2
+	center			0.0 2.3 -1.0
 	size			1.6 0.5
-	facing			0 -1 0.7
+	facing			0 -1 0.9
 	color			0.65 0.75 1.0
-	exitance		14
+	exitance		45
 }

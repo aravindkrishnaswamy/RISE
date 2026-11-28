@@ -2,24 +2,32 @@ RISE ASCII SCENE 7
 #############################################################################################################
 #                                                                                                           #
 #   File:           hearth.RISEscene                                                                        #
-#   Idea:           A fire-lit still life.  A methane pool fire burns in a slate hearth, a column of blue   #
-#                   chemiluminescent light that is the room's key light; a silk pennant hangs from an iron  #
-#                   rod beside the plume and flutters in its updraft, and a glass of water on a low oak     #
-#                   stool catches the flame.                                                                #
-#   Simulations:    fire.methane (Metal) `fire`, the 0.30 m / 33 kW certified burner; cloth.shell `pennant`  #
-#                   reads the fire's gas velocity and temperature one way through `port_source ... via      #
+#   Idea:           A fire-lit still life.  A pool fire burns in a slate hearth and is the room's only key  #
+#                   light: a yellow-orange flame on a blue base, puffing under a dark smoke column; a silk  #
+#                   pennant rides the plume's updraft out over the flame from an iron rod; a glass of #
+#                   water on a low oak stool catches the flame.  Shown in slow motion.                      #
+#   Simulations:    fire.methane (Metal) `fire`, the certified 0.30 m / 33 kW burner with soot (the chosen  #
+#                   look: `methane_soot_yield 0.1`, `soot_radiative_fraction_cap 0.45`,                     #
+#                   `soot_self_absorption 1`: a sooty-fuel look on methane chemistry, about three times     #
+#                   methane's fitted soot; real methane makes far less); cloth.shell `pennant` reads the    #
+#                   fire's gas velocity and temperature one way through `port_source ... via               #
 #                   aerodynamic_drag` (quadratic drag of the hot gas on the silk).  That is the only        #
 #                   fire-cloth coupling there is: the fire does not heat, scorch or burn the cloth, and     #
 #                   the glass of water is static geometry.  The fire's light on the silk, the stool and     #
 #                   the glass is ordinary light transport from the emitting medium.                         #
 #   Frame:          z up, metres: the fire's own frame (domain 0..2.12 x 0..2.12 x 0..3.26 at tier 6, the   #
 #                   burner centred at x = y = 1.06 on z = 0).  The cloth uses gravity 0 0 -9.81.            #
-#   Time:           scene t = 0 is fire time 1.0 s (frame_origin_s); 57 frames at 16 fps (the fire's fixed  #
-#                   1/16 s cadence) to t = 3.5 s.                                                           #
+#   Time:           the shot is the burner's ignition-pilot phase, fire time 1.0 to 2.06 s (scene t = 0 is  #
+#                   fire time 1.0 s, frame_origin_s): the tall, bright, puffing flame; at 2.1 s the pilot   #
+#                   ends and the flame settles to 0.4-0.5 m, 8-16 times dimmer.  The fire's frames are a    #
+#                   fixed 1/16 s apart and play back at scene time = fire time, so the animation renders    #
+#                   that 1.0625 s as 64 frames (a quarter-speed slow motion at 16 fps playback; between     #
+#                   fire frames the renderer advances the last frame by its velocity), and the pennant is   #
+#                   baked at 60 Hz so each rendered frame has its own cloth state.                          #
 #   Proof/final:    a value followed by `# proof <value>` is the final setting; scripts/                    #
 #                   simulation_showcase.sh proof substitutes the proof value.                               #
 #   Bake/render:    scripts/simulation_showcase.sh proof|final hearth   (docs/SIMULATION_SHOWCASE.md)        #
-#   showcase:       hero 40 frames 8 24 48 56                                                               #
+#   showcase:       hero 36 frames 12 20 44 63                                                              #
 #                                                                                                           #
 #############################################################################################################
 
@@ -29,9 +37,8 @@ standard_shader
 	shaderop		DefaultPathTracing
 }
 
-# The spectral path tracer: a methane flame has no soot (the fuel record's soot yield is zero), so its light
-# is the chemiluminescent CH*/C2*/CO2* emission, which only the spectral integrator evaluates (the Pel path
-# tracer draws this fire black).
+# The spectral path tracer: the soot glows in either integrator, but the flame's blue base is the
+# chemiluminescent CH*/C2*/CO2* emission, which only the spectral integrator evaluates.
 pathtracing_spectral_rasterizer
 {
 	samples			256		# proof 32
@@ -58,7 +65,7 @@ file_rasterizeroutput
 	type			PNG
 	bpp				8
 	color_space		sRGB
-	exposure		7.5
+	exposure		8.0
 	display_transform	aces
 }
 
@@ -71,20 +78,20 @@ film
 animation_options
 {
 	time_start		0
-	time_end		3.5
-	num_frames		57
+	time_end		1.05
+	num_frames		64
 }
 
 pinhole_camera
 {
-	location		1.95 -1.35 0.62
-	lookat			1.0 1.12 0.72
+	location		1.95 -1.05 0.50
+	lookat			1.10 1.12 0.75
 	up				0 0 1
-	fov				42.0
+	fov				50.0
 }
 
 #############################################################################################################
-# The fire: tier 6 for the proof, tier 8 for the final; window 1.0 .. 4.5 s of fire time.
+# The fire: tier 6 for the proof, tier 8 for the final; window 1.0 .. 2.07 s of fire time (the pilot phase).
 
 fire_simulation
 {
@@ -92,7 +99,10 @@ fire_simulation
 	tier			8		# proof 6
 	mode			fast
 	frame_origin_s	1.0
-	end_time_s		4.5
+	end_time_s		2.07
+	methane_soot_yield	0.1
+	soot_radiative_fraction_cap	0.45
+	soot_self_absorption	1
 }
 
 fire_medium
@@ -115,20 +125,24 @@ global_medium
 }
 
 #############################################################################################################
-# The pennant: lightweight silk, its top edge pinned along the rod, hanging beside the plume.
+# The pennant: silk chiffon (silk-lightweight at 25 g/m^2) pinned along one edge to a rod behind the fire and laid out level over the plume,
+# so the updraft meets its face (a pennant hanging edge-on in an updraft feels only the small tangential drag and
+# stays limp); gravity pulls it down, the plume pushes it up, and it rides the puffs.
 
 cloth_simulation
 {
 	name			pennant
 	material		silk-lightweight
-	size_u			0.36
-	size_v			0.72
+	material_density	0.025
+	size_u			0.46
+	size_v			0.58
 	vertices_u		19		# proof 13
 	vertices_v		37		# proof 25
-	frames			106
-	origin			1.26 1.20 1.92
+	frames			64
+	frame_rate		60
+	origin			0.83 1.36 1.42
 	axis_u			1 0 0
-	axis_v			0 0 -1
+	axis_v			0 -1 0
 	gravity			0 0 -9.81
 	pin				v0
 	self_collision	TRUE
@@ -145,13 +159,13 @@ simulated_mesh_geometry
 uniformcolor_painter
 {
 	name			pnt_silk_warp
-	color			0.62 0.05 0.08
+	color			0.85 0.45 0.10
 }
 
 uniformcolor_painter
 {
 	name			pnt_silk_weft
-	color			0.85 0.42 0.06
+	color			0.95 0.72 0.30
 }
 
 weave_material
@@ -202,7 +216,7 @@ standard_object
 	name			rod
 	geometry		geo_rod
 	material		mat_iron
-	position		1.75 1.20 1.928
+	position		1.06 1.36 1.428
 }
 
 #############################################################################################################
