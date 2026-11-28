@@ -928,6 +928,44 @@ void MultilinearAngularInterpolation()
     //    At 550 nm (spectral midpoint between 0.05 and 0.10 -> 0.075)
     Near(r->EvaluateMirrorInterpolatedNM({0.5, 0.5 * LocalResponsePi}, 550.0),
          0.075, "mirror bilinear + spectral midpoint");
+
+    // 5. Integrated energy passivity on nonuniform grid {0, 0.1, 1.0} (P2-3 regression)
+    //    Cell 0 has area 0.1*pi, F = 0.99 / (0.1*pi) -> exact row mass 0.99.
+    //    Naive cell-center interpolation would smear cell 0 out to t=0.55 (mass ~2.97).
+    LocalResponseDefinition nonunif;
+    nonunif.wavelengthNm = {550.0};
+    nonunif.incident = {{0.0, 1.0}, {0.0, LocalResponseTwoPi}};
+    nonunif.outgoing = {{0.0, 0.1, 1.0}, {0.0, LocalResponseTwoPi}};
+    nonunif.continuous = {0.99 / (0.1 * LocalResponsePi), 0.0};
+    nonunif.mirror = {0.0};
+    const auto rNonunif = HyLIoSLocalResponse::Create(nonunif);
+    double massNonunif = 0.0;
+    const int kQuad = 2000;
+    for (int k = 0; k < kQuad; ++k) {
+        const double t = (static_cast<double>(k) + 0.5) / static_cast<double>(kQuad);
+        massNonunif += rNonunif->EvaluateContinuousInterpolatedNM({0.5, 0.0}, {t, 0.0}, 550.0)
+            * (LocalResponsePi / static_cast<double>(kQuad));
+    }
+    Check(massNonunif <= 1.0, "nonuniform grid interpolated integrated mass never exceeds 1.0");
+    Near(massNonunif, 0.99, "nonuniform grid interpolated integrated mass equals 0.99", 1e-3);
+
+    // 6. Integrated energy passivity on uniform 4-cell grid (exact mass preservation)
+    LocalResponseDefinition unif;
+    unif.wavelengthNm = {550.0};
+    unif.incident = {{0.0, 1.0}, {0.0, LocalResponseTwoPi}};
+    unif.outgoing = {{0.0, 0.25, 0.5, 0.75, 1.0}, {0.0, LocalResponseTwoPi}};
+    // Row mass = (0.25*pi) * (0.99/(0.25*pi)) = 0.99 concentrated in cell 0
+    unif.continuous = {0.99 / (0.25 * LocalResponsePi), 0.0, 0.0, 0.0};
+    unif.mirror = {0.0};
+    const auto rUnif = HyLIoSLocalResponse::Create(unif);
+    double massUnif = 0.0;
+    for (int k = 0; k < kQuad; ++k) {
+        const double t = (static_cast<double>(k) + 0.5) / static_cast<double>(kQuad);
+        massUnif += rUnif->EvaluateContinuousInterpolatedNM({0.5, 0.0}, {t, 0.0}, 550.0)
+            * (LocalResponsePi / static_cast<double>(kQuad));
+    }
+    Check(massUnif <= 1.0, "uniform grid interpolated integrated mass never exceeds 1.0");
+    Near(massUnif, 0.99, "uniform grid interpolated integrated mass preserves exact 0.99", 1e-3);
 }
 
 } // namespace

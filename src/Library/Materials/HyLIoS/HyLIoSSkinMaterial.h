@@ -27,6 +27,10 @@
 
 namespace RISE
 {
+	class IObject;
+	class ISampler;
+	class IScalarPainter;
+
 	//! Versioned construction configuration for `hylios_skin_material`.
 	//! Callers must initialize via default member initializers (or set
 	//! `structVersion = kCurrentVersion` and `structSize = sizeof(HyLIoSSkinMaterialConfig)`).
@@ -293,16 +297,37 @@ namespace RISE
 				double& outEtaSC
 				) const noexcept;
 
+			//! Stochastically selects one bracketing wavelength node for `nm` using
+			//! `uSelect` in [0, 1) and returns that node's discrete `etaSC` together
+			//! with the entry hit's `boundary_roughness`.  Passing `outNodeIdx` into
+			//! `SampleNonlocalNM` guarantees first-surface `K_r` NEE and continuation
+			//! share the exact same Fresnel/GGX boundary model.
+			bool SelectNonlocalWavelengthNodeNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				const double uSelect,
+				std::size_t& outNodeIdx,
+				double& outRoughness,
+				double& outEtaExt,
+				double& outEtaSC
+				) const noexcept;
+
 			//! Executes one bounded iterative nonlocal spatial skin step at `nm`
 			//! (no recursive CastRay).  Invokes `onInteriorBoundaryEncounter` at
 			//! each valid interior encounter with the outer boundary before the
-			//! Fresnel R/T branch.  Returns true iff a continuation ray escaped.
+			//! Fresnel R/T branch.  When `pFixedNodeIdx` is non-null, reuses that
+			//! pre-selected wavelength node.  When `pHostObject` is non-null,
+			//! validates and snaps candidate exits against the host surface,
+			//! rejecting off-object exits as `DomainBoundaryLoss`.
+			//! Returns true iff a continuation ray escaped.
 			bool SampleNonlocalNM(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm,
 				ISampler& sampler,
 				HyLIoSNonlocalSample& outSample,
-				const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter = {}
+				const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter = {},
+				const std::size_t* pFixedNodeIdx = nullptr,
+				const IObject* pHostObject = nullptr
 				) const;
 
 			//! Number of paths terminated at explicit absorbing lateral side walls

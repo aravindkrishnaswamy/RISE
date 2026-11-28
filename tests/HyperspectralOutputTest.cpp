@@ -499,6 +499,81 @@ void TestStrictSkyPreflightAndObservables()
 		safe_release( pCstJobI );
 	}
 
+	// 4. P1-3: Checkpoint reuse must refuse a different scene (e.g., changed light/environment intensity)
+	{
+		const std::string ckptPrefix = ( tmp.dir / "fp_ckpt" ).string();
+		HyperspectralRadiometricConfig fpCfg;
+		fpCfg.wavelengthsNm = { 550.0 };
+		fpCfg.samplesPerPixel = 4;
+		fpCfg.seed = 42u;
+		fpCfg.outputPrefix = ( tmp.dir / "fp_out1" ).string();
+		fpCfg.checkpointPrefix = ckptPrefix;
+		fpCfg.allowRGBUpliftSources = false;
+
+		HyperspectralRadiometricRasterizer* pR1 = new HyperspectralRadiometricRasterizer( pCaster, fpCfg );
+		pR1->RasterizeScene( *pScene, 0, 0 );
+		Check( pR1->LastRenderCompleted(), "Initial checkpointed render completes" );
+		safe_release( pR1 );
+
+		// Modify scene illumination (different BlackBody temperature / scale) while keeping
+		// identical dimensions, wavelength, spp, seed, and checkpoint_prefix.
+		BlackBodyPainter* pBB2 = new BlackBodyPainter( 5800.0, 400.0, 700.0, 64, false, 2.5 );
+		RadianceMap* pEnv2 = new RadianceMap( *pBB2, 1.0 );
+		safe_release( pBB2 );
+		pScene->SetGlobalRadianceMap( pEnv2 );
+		safe_release( pEnv2 );
+
+		fpCfg.outputPrefix = ( tmp.dir / "fp_out2" ).string();
+		HyperspectralRadiometricRasterizer* pR2 = new HyperspectralRadiometricRasterizer( pCaster, fpCfg );
+		pR2->RasterizeScene( *pScene, 0, 0 );
+		Check( !pR2->LastRenderCompleted(),
+			"Checkpoint reuse refused after scene illumination changed (P1-3 scene fingerprint)" );
+		safe_release( pR2 );
+
+		// Reversing a DirectionalLight must also invalidate checkpoint reuse (and ThinLensCamera
+		// must probe cleanly with a live RNG — ASan P1-1 + P1-2 regression).
+		const std::string dirCkptPrefix = ( tmp.dir / "dir_ckpt" ).string();
+		fpCfg.allowRGBUpliftSources = false;
+		fpCfg.checkpointPrefix = dirCkptPrefix;
+		fpCfg.outputPrefix = ( tmp.dir / "dir_out1" ).string();
+		const double dirFwd[3] = { 0, 0, 1 };
+		const double dirRev[3] = { 0, 0, -1 };
+
+		IJob* pDirJobI = 0;
+		RISE_CreateJob( &pDirJobI );
+		Job* pDirJob = dynamic_cast<Job*>( pDirJobI );
+		pDirJob->SetFilm( 2, 2, 1.0 );
+		Check( pDirJob->AddThinlensCamera( "cam", loc, look, up, 0.036, 0.050, 2.8, 2.0, 1.0, 0.0, 0.0, 0.0, oriZero, targetZero, 0u, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 ),
+			"AddThinlensCamera succeeds" );
+		pDirJob->AddPhysicalDirectionalLight( "sun", 3, wls.data(), E.data(), "zero", 1.0, dirFwd );
+		RayCaster* pDirCaster1 = new RayCaster( true, 8, *pDefShader, true );
+		HyperspectralRadiometricRasterizer* pD1 = new HyperspectralRadiometricRasterizer( pDirCaster1, fpCfg );
+		pD1->RasterizeScene( *pDirJob->GetScene(), 0, 0 );
+		Check( pD1->LastRenderCompleted(), "Initial ThinLens + directional-light checkpointed render completes" );
+		pDirCaster1->AttachScene( 0 );
+		safe_release( pD1 );
+		safe_release( pDirCaster1 );
+		safe_release( pDirJobI );
+
+		IJob* pDirJobI2 = 0;
+		RISE_CreateJob( &pDirJobI2 );
+		Job* pDirJob2 = dynamic_cast<Job*>( pDirJobI2 );
+		pDirJob2->SetFilm( 2, 2, 1.0 );
+		Check( pDirJob2->AddThinlensCamera( "cam", loc, look, up, 0.036, 0.050, 2.8, 2.0, 1.0, 0.0, 0.0, 0.0, oriZero, targetZero, 0u, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0 ),
+			"AddThinlensCamera 2 succeeds" );
+		pDirJob2->AddPhysicalDirectionalLight( "sun", 3, wls.data(), E.data(), "zero", 1.0, dirRev ); // reversed!
+		fpCfg.outputPrefix = ( tmp.dir / "dir_out2" ).string();
+		RayCaster* pDirCaster2 = new RayCaster( true, 8, *pDefShader, true );
+		HyperspectralRadiometricRasterizer* pD2 = new HyperspectralRadiometricRasterizer( pDirCaster2, fpCfg );
+		pD2->RasterizeScene( *pDirJob2->GetScene(), 0, 0 );
+		Check( !pD2->LastRenderCompleted(),
+			"Checkpoint reuse refused after reversing DirectionalLight direction" );
+		pDirCaster2->AttachScene( 0 );
+		safe_release( pD2 );
+		safe_release( pDirCaster2 );
+		safe_release( pDirJobI2 );
+	}
+
 	safe_release( pCaster );
 	safe_release( pDefShader );
 	safe_release( pJobI );

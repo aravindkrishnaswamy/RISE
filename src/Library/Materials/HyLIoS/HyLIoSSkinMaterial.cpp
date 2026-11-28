@@ -23,6 +23,8 @@
 #include "HyLIoSSpatialGeometry.h"
 #include "../../Agent/Json.h"
 #include "../../Interfaces/ILog.h"
+#include "../../Interfaces/IObject.h"
+#include "../../Intersection/RayIntersection.h"
 #include "../../Utilities/Color/ColorUtils.h"
 #include "../../Utilities/Color/RGBSpectra.h"
 #include "../../Utilities/GeometricUtilities.h"
@@ -733,6 +735,15 @@ namespace
 				config.fiberRadiusMetres, nm * 1e-9,
 				config.fiberFraction, config.fiberRelativeIOR );
 
+			ForwardShellGeometry shellGeom{};
+			if( domainKind == SpatialDomainKind::ConcentricSphere ) {
+				shellGeom.kind = ForwardShellKind::ConcentricSphere;
+				shellGeom.outerRadiusMetres = config.domainRadiusMetres;
+			} else if( domainKind == SpatialDomainKind::ConcentricCylinder ) {
+				shellGeom.kind = ForwardShellKind::ConcentricCylinder;
+				shellGeom.outerRadiusMetres = config.domainRadiusMetres;
+			}
+
 			rt->kernels.emplace_back( std::make_shared<HyLIoSForwardTransport>(
 				resolved.Layers(),
 				nm,
@@ -741,7 +752,8 @@ namespace
 				AbsorptionEstimator::Weighted,
 				0.25,
 				placementPolicy,
-				postScatterPolicy ) );
+				postScatterPolicy,
+				shellGeom ) );
 		}
 
 		rt->totalThicknessMetres  = totalThickness;
@@ -1006,15 +1018,44 @@ bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
 	return true;
 }
 
+bool HyLIoSSkinMaterial::SelectNonlocalWavelengthNodeNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	const double uSelect,
+	std::size_t& outNodeIdx,
+	double& outRoughness,
+	double& outEtaExt,
+	double& outEtaSC
+	) const noexcept
+{
+	if( !pNonlocal ) {
+		return false;
+	}
+	const double wavelength = static_cast<double>( nm );
+	std::size_t wlLo = 0, wlHi = 0;
+	double wlT = 0.0;
+	if( !pNonlocal->SelectKernelBracket( wavelength, wlLo, wlHi, wlT ) ) {
+		return false;
+	}
+	outNodeIdx = ( wlHi > wlLo && uSelect < wlT ) ? wlHi : wlLo;
+	outRoughness = EvaluateBoundaryRoughness( ri );
+	outEtaExt = pNonlocal->exteriorIOR;
+	outEtaSC = pNonlocal->scIORAtNode[outNodeIdx];
+	return true;
+}
+
 // Samples a nonlocal subsurface walk at wavelength nm: stochastically picks
-// a bracketing kernel node, resolves outer reciprocal boundary R/T, steps
-// with absorbing lateral side-wall checks, and yields interior exits for K_t NEE.
+// a bracketing kernel node (or reuses pFixedNodeIdx), resolves outer reciprocal
+// boundary R/T, steps with absorbing lateral and host-object checks, and yields
+// interior exits for K_t NEE.
 bool HyLIoSSkinMaterial::SampleNonlocalNM(
 	const RayIntersectionGeometric& ri,
 	const Scalar nm,
 	ISampler& sampler,
 	HyLIoSNonlocalSample& outSample,
-	const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter
+	const std::function<void( const HyLIoSExitBoundaryEncounter& )>& onInteriorBoundaryEncounter,
+	const std::size_t* pFixedNodeIdx,
+	const IObject* pHostObject
 	) const
 {
 	outSample = HyLIoSNonlocalSample{};
@@ -1043,8 +1084,12 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		return false;
 	}
 
-	// Unbiased stochastic wavelength-node selection between adjacent resolved nodes.
-	const std::size_t wlIdx = ( wlHi > wlLo && static_cast<double>( sampler.Get1D() ) < wlT ) ? wlHi : wlLo;
+	// Unbiased stochastic wavelength-node selection between adjacent resolved nodes
+	// (or reuse the caller's pre-selected node so K_r NEE and continuation share the
+	// exact same discrete Fresnel/GGX boundary model).
+	const std::size_t wlIdx = ( pFixedNodeIdx && *pFixedNodeIdx < pNonlocal->kernels.size() )
+		? *pFixedNodeIdx
+		: ( ( wlHi > wlLo && static_cast<double>( sampler.Get1D() ) < wlT ) ? wlHi : wlLo );
 	const HyLIoSForwardTransport& kernel = *pNonlocal->kernels[wlIdx];
 	const double etaSC = pNonlocal->scIORAtNode[wlIdx];
 
@@ -1099,28 +1144,51 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		SlabBoundaryAngularLaw::Unclassified
 	} );
 
-	auto mapToDomain = [&]( const double xM, const double yM, const SlabVector& localOutDir ) -> SpatialExitMapping {
+	auto oracleVecToWorld = [&]( const SlabVector& v ) -> Vector3 {
+		return rhFrame.T * Scalar( v.x ) - rhFrame.B * Scalar( v.y ) - rhFrame.N * Scalar( v.z );
+	};
+
+	auto mapToDomain = [&]( const SlabVector& oraclePos, const SlabVector& localOutDir ) -> SpatialExitMapping {
+		const double xM = oraclePos.x;
+		const double yM = -oraclePos.y;
 		if( pNonlocal->domainKind == SpatialDomainKind::PlanarPolygon ) {
 			const PlanarPolygonDomain dom = PlanarPolygonDomain::MakeRectangle(
 				pNonlocal->domainHalfWidthMetres, pNonlocal->domainHalfWidthMetres,
 				pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
 			return dom.MapExit( entryFrame, 0.0, 0.0, xM, yM, localOutDir );
-		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
-			const Point3 center = Point3Ops::mkPoint3(
-				ri.ptIntersection,
-				rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-			const ConcentricSphereDomain dom(
-				center, pNonlocal->domainRadiusMetres,
-				pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-			return dom.MapExit( entryFrame, xM, yM, localOutDir );
-		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
-			const Point3 axisOrigin = Point3Ops::mkPoint3(
-				ri.ptIntersection,
-				rhFrame.N * Scalar( -pNonlocal->domainRadiusMetres * pNonlocal->physicalScale ) );
-			const ConcentricCylinderDomain dom(
-				axisOrigin, rhFrame.B, pNonlocal->domainRadiusMetres,
-				pNonlocal->domainHalfWidthMetres, pNonlocal->totalThicknessMetres, pNonlocal->physicalScale );
-			return dom.MapExit( entryFrame, xM, yM, localOutDir );
+		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ||
+				   pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder )
+		{
+			SpatialExitMapping out{};
+			if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder &&
+				std::fabs( yM ) > pNonlocal->domainHalfWidthMetres )
+			{
+				out.outcome = DomainMapOutcome::DomainBoundaryLoss;
+				out.lateralDisplacementMetres = std::fabs( yM );
+				return out;
+			}
+			const Vector3 dispWorld = oracleVecToWorld( oraclePos ) * Scalar( pNonlocal->physicalScale );
+			const SlabVector nIn = state.BoundaryFrameNIn();
+			const SlabVector eT = state.BoundaryFrameT();
+			const Vector3 nWorld = Vector3Ops::Normalize( oracleVecToWorld( { -nIn.x, -nIn.y, -nIn.z } ) );
+			Vector3 tWorld = oracleVecToWorld( eT );
+			tWorld = tWorld - nWorld * Vector3Ops::Dot( tWorld, nWorld );
+			if( Vector3Ops::SquaredModulus( tWorld ) <= Scalar( 1e-12 ) ) {
+				const Vector3 ref = ( fabs( nWorld.z ) < Scalar( 0.9 ) ) ? Vector3( 0, 0, 1 ) : Vector3( 1, 0, 0 );
+				tWorld = Vector3Ops::Cross( ref, nWorld );
+			}
+			tWorld = Vector3Ops::Normalize( tWorld );
+			const Vector3 bWorld = Vector3Ops::Normalize( Vector3Ops::Cross( nWorld, tWorld ) );
+			out.outcome = DomainMapOutcome::OuterSurfaceExit;
+			out.worldPos = Point3Ops::mkPoint3( ri.ptIntersection, dispWorld );
+			out.worldNormal = nWorld;
+			out.worldDir = Vector3Ops::Normalize(
+				tWorld * Scalar( localOutDir.x ) +
+				bWorld * Scalar( localOutDir.y ) +
+				nWorld * Scalar( localOutDir.z ) );
+			const double chordM = std::sqrt( oraclePos.x * oraclePos.x + oraclePos.y * oraclePos.y + oraclePos.z * oraclePos.z );
+			out.lateralDisplacementMetres = chordM;
+			return out;
 		}
 		IntrinsicLayerChart chart;
 		chart.uMin = 0.0; chart.uMax = 1.0;
@@ -1132,18 +1200,60 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 		return dom.MapExit( entryFrame, 0.5, 0.5, xM, yM, localOutDir );
 	};
 
+	const double hostPosTol = std::max(
+		1e-4,
+		0.05 * pNonlocal->totalThicknessMetres * pNonlocal->physicalScale );
+
+	auto hostContainsSurfacePoint = [&]( const SlabVector& posOracle ) -> bool {
+		if( pHostObject == nullptr ) {
+			return true;
+		}
+		Point3 surfPos;
+		Vector3 surfNormal;
+		if( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) {
+			const double R = pNonlocal->domainRadiusMetres;
+			const double rx = posOracle.x, ry = posOracle.y, rz = posOracle.z - R;
+			const double r = std::sqrt( rx * rx + ry * ry + rz * rz );
+			if( !( r > 0.0 ) ) return false;
+			const SlabVector onOuter{ rx * ( R / r ), ry * ( R / r ), R + rz * ( R / r ) };
+			const SlabVector nOutOracle{ rx / r, ry / r, rz / r };
+			surfPos = Point3Ops::mkPoint3( ri.ptIntersection, oracleVecToWorld( onOuter ) * Scalar( pNonlocal->physicalScale ) );
+			surfNormal = Vector3Ops::Normalize( oracleVecToWorld( nOutOracle ) );
+		} else if( pNonlocal->domainKind == SpatialDomainKind::ConcentricCylinder ) {
+			const double R = pNonlocal->domainRadiusMetres;
+			const double rx = posOracle.x, rz = posOracle.z - R;
+			const double r = std::hypot( rx, rz );
+			if( !( r > 0.0 ) ) return false;
+			const SlabVector onOuter{ rx * ( R / r ), posOracle.y, R + rz * ( R / r ) };
+			const SlabVector nOutOracle{ rx / r, 0.0, rz / r };
+			surfPos = Point3Ops::mkPoint3( ri.ptIntersection, oracleVecToWorld( onOuter ) * Scalar( pNonlocal->physicalScale ) );
+			surfNormal = Vector3Ops::Normalize( oracleVecToWorld( nOutOracle ) );
+		} else {
+			const SlabVector onOuter{ posOracle.x, posOracle.y, 0.0 };
+			surfPos = Point3Ops::mkPoint3( ri.ptIntersection, oracleVecToWorld( onOuter ) * Scalar( pNonlocal->physicalScale ) );
+			surfNormal = rhFrame.N;
+		}
+		const Ray probeRay(
+			Point3Ops::mkPoint3( surfPos, surfNormal * Scalar( hostPosTol ) ),
+			-surfNormal );
+		return pHostObject->IntersectRay_IntersectionOnly(
+			probeRay, Scalar( 2.0 * hostPosTol ), true, true );
+	};
+
 	const std::uint64_t workCap = std::max<std::uint64_t>( 64, pNonlocal->maxSubsurfaceSteps * 8ULL );
-	const std::size_t advanceQuantum = ( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere ) ? 64u : 1u;
+	const std::size_t advanceQuantum = ( pNonlocal->domainKind == SpatialDomainKind::ConcentricSphere && pHostObject == nullptr ) ? 64u : 1u;
 	while( state.Termination() == ForwardTermination::None &&
 		   state.Counters().workUnits < workCap )
 	{
 		const ForwardAdvanceResult adv = kernel.Advance( state, kernelRng, advanceQuantum );
 
-		// Step-wise absorbing side-wall check after every single quantum!
+		// Step-wise absorbing side-wall AND host-object footprint check after every single quantum!
 		const SlabVector posOracle = state.Position();
 		const double curXM = posOracle.x;
 		const double curYM = -posOracle.y;
-		if( !pNonlocal->IsInsideLateralBounds( curXM, curYM ) ) {
+		if( !pNonlocal->IsInsideLateralBounds( curXM, curYM ) ||
+			!hostContainsSurfacePoint( posOracle ) )
+		{
 			kernel.StopForBudget( state );
 			pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
 			outSample.escaped = false;
@@ -1154,13 +1264,110 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 
 		if( adv.kind == ForwardAdvanceKind::OuterBoundaryEncounter ) {
 			const SlabBoundaryEncounter enc = state.PendingBoundary();
-			const double xM = enc.position.x;
-			const double yM = -enc.position.y;
-			// Convert oracle upward arrival direction (z < 0) to boundary-frame inward `woInt` (z < 0).
-			const SlabVector woInt{ -enc.incidentDirection.x, enc.incidentDirection.y, enc.incidentDirection.z };
+			// Convert oracle upward arrival direction (z < 0) to simulated boundary-frame inward `woIntSim` (z < 0).
+			const SlabVector woIntSim{ -enc.incidentDirection.x, enc.incidentDirection.y, enc.incidentDirection.z };
 
-			const SpatialExitMapping probeMap = mapToDomain( xM, yM, { 0.0, 0.0, 1.0 } );
+			const SpatialExitMapping probeMap = mapToDomain( enc.position, { 0.0, 0.0, 1.0 } );
 			if( probeMap.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
+				kernel.StopForBudget( state );
+				pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+				outSample.escaped = false;
+				outSample.domainBoundaryLoss = true;
+				outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
+				return false;
+			}
+
+			// Build the simulated exit frame `(simT, simB, simN)` matching `woIntSim`.
+			const Vector3 simN = Vector3Ops::Normalize( probeMap.worldNormal );
+			const SpatialExitMapping tanMap = mapToDomain( enc.position, { 1.0, 0.0, 0.0 } );
+			Vector3 simT = tanMap.worldDir - simN * Vector3Ops::Dot( tanMap.worldDir, simN );
+			if( Vector3Ops::SquaredModulus( simT ) <= Scalar( 1e-12 ) ) {
+				const Vector3 refAxis = ( fabs( simN.z ) < Scalar( 0.9 ) )
+					? Vector3( 0, 0, 1 )
+					: Vector3( 1, 0, 0 );
+				simT = Vector3Ops::Cross( refAxis, simN );
+			}
+			simT = Vector3Ops::Normalize( simT );
+			const Vector3 simB = Vector3Ops::Normalize( Vector3Ops::Cross( simN, simT ) );
+
+			// Validate candidate exit against the host skin object with strict position
+			// AND normal agreement (P1-3: never teleport across air onto a distant/tilted
+			// patch), and construct exitRI for per-exit roughness evaluation (P2-1).
+			RayIntersectionGeometric exitRI( ri );
+			Point3 exitPos = probeMap.worldPos;
+			Vector3 exitNormal = simN;
+			if( pHostObject != nullptr ) {
+				const Ray probeRay(
+					Point3Ops::mkPoint3( probeMap.worldPos, simN * Scalar( hostPosTol ) ),
+					-simN );
+				RayIntersection probeRI( probeRay, ri.rast );
+				pHostObject->IntersectRay( probeRI, Scalar( 2.0 * hostPosTol ), true, true, false );
+				bool hostValid = probeRI.geometric.bHit;
+				if( hostValid ) {
+					const Scalar posErr = Vector3Ops::Magnitude(
+						Vector3Ops::mkVector3( probeRI.geometric.ptIntersection, probeMap.worldPos ) );
+					Vector3 snappedN = Vector3Ops::Normalize( probeRI.geometric.vNormal );
+					const Scalar nDot = Vector3Ops::Dot( snappedN, simN );
+					// Strict position agreement (<= hostPosTol) and normal agreement (>= 0.99, ~8 deg)
+					if( posErr > Scalar( hostPosTol ) || nDot < Scalar( 0.99 ) ) {
+						hostValid = false;
+					} else {
+						exitRI = probeRI.geometric;
+						exitRI.pmxObjectToWorld = ri.pmxObjectToWorld;
+						exitRI.pCamera = ri.pCamera;
+						exitRI.pObjectInfo = ri.pObjectInfo;
+						exitPos = exitRI.ptIntersection;
+						exitNormal = snappedN;
+						exitRI.vNormal = exitNormal;
+						if( Vector3Ops::Dot( exitRI.vGeomNormal, exitNormal ) < Scalar( 0 ) ) {
+							exitRI.vGeomNormal = -exitRI.vGeomNormal;
+						}
+						exitRI.onb.CreateFromW( exitNormal );
+					}
+				}
+				if( !hostValid ) {
+					kernel.StopForBudget( state );
+					pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
+					outSample.escaped = false;
+					outSample.domainBoundaryLoss = true;
+					outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
+					return false;
+				}
+			} else {
+				exitRI.ptIntersection = exitPos;
+				exitRI.ptObjIntersec = exitPos;
+				exitRI.vNormal = exitNormal;
+				exitRI.vGeomNormal = exitNormal;
+				exitRI.onb.CreateFromW( exitNormal );
+			}
+
+			const double exitRoughness = EvaluateBoundaryRoughness( exitRI );
+			const HyLIoSReciprocalBoundary exitBoundary(
+				exitRoughness, pNonlocal->exteriorIOR, etaSC );
+
+			// Build snapped exit tangent frame `(exitT, exitB, exitNormal)` and transform
+			// `woIntSim` into that frame so Fresnel, K_t NEE, and exit sampling all use
+			// consistent coordinates (P2-5).
+			Vector3 exitT = simT - exitNormal * Vector3Ops::Dot( simT, exitNormal );
+			if( Vector3Ops::SquaredModulus( exitT ) <= Scalar( 1e-12 ) ) {
+				const Vector3 refAxis = ( fabs( exitNormal.z ) < Scalar( 0.9 ) )
+					? Vector3( 0, 0, 1 )
+					: Vector3( 1, 0, 0 );
+				exitT = Vector3Ops::Cross( refAxis, exitNormal );
+			}
+			exitT = Vector3Ops::Normalize( exitT );
+			const Vector3 exitB = Vector3Ops::Normalize( Vector3Ops::Cross( exitNormal, exitT ) );
+
+			const Vector3 woIntWorld = Vector3Ops::Normalize(
+				simT * Scalar( woIntSim.x ) +
+				simB * Scalar( woIntSim.y ) +
+				simN * Scalar( woIntSim.z ) );
+			const SlabVector woInt{
+				static_cast<double>( Vector3Ops::Dot( woIntWorld, exitT ) ),
+				static_cast<double>( Vector3Ops::Dot( woIntWorld, exitB ) ),
+				static_cast<double>( Vector3Ops::Dot( woIntWorld, exitNormal ) )
+			};
+			if( !( woInt.z < 0.0 ) ) {
 				kernel.StopForBudget( state );
 				pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
 				outSample.escaped = false;
@@ -1171,59 +1378,67 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 
 			// Yield conditional exit boundary encounter to caller for `K_t` NEE/MIS
 			// BEFORE sampling the Fresnel R/T branch.
-			if( onInteriorBoundaryEncounter && !boundary.IsSmooth() ) {
-				const SpatialExitMapping tanMap = mapToDomain( xM, yM, { 1.0, 0.0, 0.0 } );
-				const Vector3 exitT = Vector3Ops::Normalize( tanMap.worldDir );
-				const Vector3 exitB = Vector3Ops::Normalize( Vector3Ops::Cross( probeMap.worldNormal, exitT ) );
+			if( onInteriorBoundaryEncounter && !exitBoundary.IsSmooth() ) {
 				HyLIoSExitBoundaryEncounter exitEnc;
-				exitEnc.exitPos           = probeMap.worldPos;
-				exitEnc.exitNormal        = probeMap.worldNormal;
+				exitEnc.exitPos           = exitPos;
+				exitEnc.exitNormal        = exitNormal;
 				exitEnc.exitTangent       = exitT;
 				exitEnc.exitBitangent     = exitB;
 				exitEnc.interiorWoLocal   = woInt;
 				exitEnc.interiorWeight    = enc.weight;
-				exitEnc.boundaryRoughness = hitRoughness;
+				exitEnc.boundaryRoughness = exitRoughness;
 				exitEnc.etaExt            = pNonlocal->exteriorIOR;
 				exitEnc.etaSC             = etaSC;
 				onInteriorBoundaryEncounter( exitEnc );
 			}
 
-			const ReciprocalBoundarySample exitStep = boundary.SampleFull(
+			const ReciprocalBoundarySample exitStep = exitBoundary.SampleFull(
 				woInt, kernelRng.Get1D(), kernelRng.Get1D(), kernelRng.Get1D() );
 			if( !exitStep.valid || !( exitStep.weight > 0.0 ) ) {
 				kernel.StopForBudget( state );
 				return false;
 			}
 			if( exitStep.isReflection ) {
+				// Transform reflected direction back from `(exitT, exitB, exitNormal)` into
+				// the simulated frame `(simT, simB, simN)` before resuming the kernel (P2-5).
+				const Vector3 reflWorld = Vector3Ops::Normalize(
+					exitT * Scalar( exitStep.direction.x ) +
+					exitB * Scalar( exitStep.direction.y ) +
+					exitNormal * Scalar( exitStep.direction.z ) );
+				const SlabVector reflSim{
+					static_cast<double>( Vector3Ops::Dot( reflWorld, simT ) ),
+					static_cast<double>( Vector3Ops::Dot( reflWorld, simB ) ),
+					static_cast<double>( Vector3Ops::Dot( reflWorld, simN ) )
+				};
+				if( !( reflSim.z < 0.0 ) ) {
+					kernel.StopForBudget( state );
+					return false;
+				}
 				kernel.ResumeBoundary( state, enc.token, SlabBoundaryDecision{
 					BoundaryAction::Reflect,
 					SlabSide::Interior,
-					{ exitStep.direction.x, -exitStep.direction.y, -exitStep.direction.z },
+					{ reflSim.x, -reflSim.y, -reflSim.z },
 					exitStep.weight,
 					SlabBoundaryAngularLaw::Unclassified
 				} );
 				continue;
 			}
 
-			const SpatialExitMapping mapped = mapToDomain( xM, yM, exitStep.direction );
 			kernel.StopForBudget( state );
-			if( mapped.outcome == DomainMapOutcome::DomainBoundaryLoss ) {
-				pNonlocal->domainBoundaryLosses.fetch_add( 1ULL, std::memory_order_relaxed );
-				outSample.escaped = false;
-				outSample.domainBoundaryLoss = true;
-				outSample.lateralDisplacementMetres = mapped.lateralDisplacementMetres;
-				return false;
-			}
+			const Vector3 exitDir = Vector3Ops::Normalize(
+				exitT * Scalar( exitStep.direction.x ) +
+				exitB * Scalar( exitStep.direction.y ) +
+				exitNormal * Scalar( exitStep.direction.z ) );
 
 			outSample.escaped = true;
 			outSample.isExternalReflection = false;
 			outSample.isDelta = exitStep.isDelta;
-			outSample.exitPos = mapped.worldPos;
-			outSample.exitNormal = mapped.worldNormal;
-			outSample.exitDir = mapped.worldDir;
+			outSample.exitPos = exitPos;
+			outSample.exitNormal = exitNormal;
+			outSample.exitDir = exitDir;
 			outSample.throughput = Scalar( enc.weight * exitStep.weight );
 			outSample.pdf = Scalar( exitStep.pdf );
-			outSample.lateralDisplacementMetres = mapped.lateralDisplacementMetres;
+			outSample.lateralDisplacementMetres = probeMap.lateralDisplacementMetres;
 			return true;
 		}
 
