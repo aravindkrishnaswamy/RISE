@@ -389,7 +389,7 @@ Scalar HyLIoSLocalBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionG
 		!WorldToLocalPoint( frame, -ri.ray.Dir(), wo ) ) {
 		return Scalar( 0 );
 	}
-	return Scalar( pResponse->EvaluateContinuousNM( wi, wo, wavelength ) );
+	return Scalar( pResponse->EvaluateContinuousInterpolatedNM( wi, wo, wavelength ) );
 }
 
 RISEPel HyLIoSLocalBSDF::albedo( const RayIntersectionGeometric& ) const
@@ -501,7 +501,19 @@ void HyLIoSLocalSPF::ScatterNM(
 		static_cast<std::uint64_t>( std::floor( uPhi * scale ) ), maxInt );
 
 	const LocalResponseSample sample = pProposal->SampleCameraNM( wo, wavelength, event, cell, ui, vi );
-	if( sample.event == LocalResponseSample::Event::None || !( sample.weight > 0.0 ) || !std::isfinite( sample.weight ) ) {
+	if( sample.event == LocalResponseSample::Event::None ) {
+		return;
+	}
+
+	double weight = 0.0;
+	if( sample.event == LocalResponseSample::Event::Continuous ) {
+		const double fInterp = pProposal->Response().EvaluateContinuousInterpolatedNM( sample.incident, wo, wavelength );
+		weight = ( sample.pdf > 0.0 ) ? ( fInterp * std::sqrt( sample.incident.t ) / sample.pdf ) : 0.0;
+	} else {
+		const double dInterp = pProposal->Response().EvaluateMirrorInterpolatedNM( wo, wavelength );
+		weight = 2.0 * dInterp;
+	}
+	if( !( weight > 0.0 ) || !std::isfinite( weight ) ) {
 		return;
 	}
 
@@ -518,7 +530,7 @@ void HyLIoSLocalSPF::ScatterNM(
 
 	ScatteredRay sr;
 	sr.ray.Set( ri.ptIntersection, wiWorld );
-	sr.krayNM = Scalar( sample.weight );
+	sr.krayNM = Scalar( weight );
 	sr.pdf = Scalar( sample.pdf );
 	sr.isDelta = ( sample.event == LocalResponseSample::Event::PlanarMirror );
 	sr.type = sr.isDelta ? ScatteredRay::eRayReflection : ScatteredRay::eRayDiffuse;

@@ -685,6 +685,143 @@ double HyLIoSLocalResponse::EvaluateContinuousNM(LocalResponsePoint wi, LocalRes
     return Interpolate(F(s.lo,i,j),F(s.hi,i,j),s);
 }
 
+namespace {
+
+struct AngularBracket {
+    std::size_t k0, k1;
+    double w1;
+};
+
+AngularBracket BracketNonPeriodicAxis(const std::vector<double>& edges, double value)
+{
+    const std::size_t n = edges.size() - 1;
+    if (n <= 1) return {0, 0, 0.0};
+    const double cFirst = 0.5 * (edges[0] + edges[1]);
+    if (value <= cFirst) return {0, 0, 0.0};
+    const double cLast = 0.5 * (edges[n - 1] + edges[n]);
+    if (value >= cLast) return {n - 1, n - 1, 0.0};
+    const std::size_t idx = FindAxis(edges, value);
+    const double cIdx = 0.5 * (edges[idx] + edges[idx + 1]);
+    const std::size_t k0 = (value >= cIdx) ? idx : (idx - 1);
+    const std::size_t k1 = k0 + 1;
+    const double c0 = 0.5 * (edges[k0] + edges[k0 + 1]);
+    const double c1 = 0.5 * (edges[k1] + edges[k1 + 1]);
+    const double span = c1 - c0;
+    const double w1 = (span > 0.0) ? std::clamp((value - c0) / span, 0.0, 1.0) : 0.0;
+    return {k0, k1, w1};
+}
+
+AngularBracket BracketPeriodicAxis(const std::vector<double>& edges, double value, double period)
+{
+    const std::size_t n = edges.size() - 1;
+    if (n <= 1) return {0, 0, 0.0};
+    const std::size_t idx = FindAxis(edges, value);
+    const double cIdx = 0.5 * (edges[idx] + edges[idx + 1]);
+    if (value >= cIdx) {
+        const std::size_t k0 = idx;
+        const std::size_t k1 = (idx + 1 < n) ? (idx + 1) : 0;
+        const double c0 = cIdx;
+        const double c1 = 0.5 * (edges[k1] + edges[k1 + 1]) + (k1 == 0 ? period : 0.0);
+        const double span = c1 - c0;
+        const double w1 = (span > 0.0) ? std::clamp((value - c0) / span, 0.0, 1.0) : 0.0;
+        return {k0, k1, w1};
+    } else {
+        const std::size_t k1 = idx;
+        const std::size_t k0 = (idx == 0) ? (n - 1) : (idx - 1);
+        const double c0 = 0.5 * (edges[k0] + edges[k0 + 1]);
+        const double c1 = cIdx + (idx == 0 ? period : 0.0);
+        const double v = value + (idx == 0 ? period : 0.0);
+        const double span = c1 - c0;
+        const double w1 = (span > 0.0) ? std::clamp((v - c0) / span, 0.0, 1.0) : 0.0;
+        return {k0, k1, w1};
+    }
+}
+
+} // namespace
+
+double HyLIoSLocalResponse::EvaluateContinuousInterpolatedNM(LocalResponsePoint wi, LocalResponsePoint wo, double nm) const
+{
+    const auto s = Bracket(nm);
+    wi = CanonicalPoint(wi);
+    wo = CanonicalPoint(wo);
+    const AngularBracket it = BracketNonPeriodicAxis(incident_.tEdges, wi.t);
+    const AngularBracket ip = BracketPeriodicAxis(incident_.phiEdges, wi.phi, LocalResponseTwoPi);
+    const AngularBracket ot = BracketNonPeriodicAxis(outgoing_.tEdges, wo.t);
+    const AngularBracket op = BracketPeriodicAxis(outgoing_.phiEdges, wo.phi, LocalResponseTwoPi);
+
+    const std::size_t nInPhi = incident_.phiEdges.size() - 1;
+    const std::size_t nOutPhi = outgoing_.phiEdges.size() - 1;
+
+    const std::size_t itIdx[2] = {it.k0, it.k1};
+    const double itW[2] = {1.0 - it.w1, it.w1};
+    const std::size_t itCount = (it.k0 == it.k1) ? 1 : 2;
+
+    const std::size_t ipIdx[2] = {ip.k0, ip.k1};
+    const double ipW[2] = {1.0 - ip.w1, ip.w1};
+    const std::size_t ipCount = (ip.k0 == ip.k1) ? 1 : 2;
+
+    const std::size_t otIdx[2] = {ot.k0, ot.k1};
+    const double otW[2] = {1.0 - ot.w1, ot.w1};
+    const std::size_t otCount = (ot.k0 == ot.k1) ? 1 : 2;
+
+    const std::size_t opIdx[2] = {op.k0, op.k1};
+    const double opW[2] = {1.0 - op.w1, op.w1};
+    const std::size_t opCount = (op.k0 == op.k1) ? 1 : 2;
+
+    double sumLo = 0.0;
+    double sumHi = 0.0;
+    for (std::size_t a = 0; a < itCount; ++a) {
+        for (std::size_t b = 0; b < ipCount; ++b) {
+            const std::size_t iCell = itIdx[a] * nInPhi + ipIdx[b];
+            const double wIn = itW[a] * ipW[b];
+            for (std::size_t c = 0; c < otCount; ++c) {
+                for (std::size_t d = 0; d < opCount; ++d) {
+                    const std::size_t jCell = otIdx[c] * nOutPhi + opIdx[d];
+                    const double w = wIn * otW[c] * opW[d];
+                    sumLo += w * F(s.lo, iCell, jCell);
+                    if (s.hi != s.lo) {
+                        sumHi += w * F(s.hi, iCell, jCell);
+                    }
+                }
+            }
+        }
+    }
+    if (s.hi == s.lo) return sumLo;
+    return Interpolate(sumLo, sumHi, s);
+}
+
+double HyLIoSLocalResponse::EvaluateMirrorInterpolatedNM(LocalResponsePoint wo, double nm) const
+{
+    const auto s = Bracket(nm);
+    const LocalResponsePoint m = PlanarMirror(wo);
+    const AngularBracket it = BracketNonPeriodicAxis(incident_.tEdges, m.t);
+    const AngularBracket ip = BracketPeriodicAxis(incident_.phiEdges, m.phi, LocalResponseTwoPi);
+
+    const std::size_t nInPhi = incident_.phiEdges.size() - 1;
+    const std::size_t itIdx[2] = {it.k0, it.k1};
+    const double itW[2] = {1.0 - it.w1, it.w1};
+    const std::size_t itCount = (it.k0 == it.k1) ? 1 : 2;
+
+    const std::size_t ipIdx[2] = {ip.k0, ip.k1};
+    const double ipW[2] = {1.0 - ip.w1, ip.w1};
+    const std::size_t ipCount = (ip.k0 == ip.k1) ? 1 : 2;
+
+    double sumLo = 0.0;
+    double sumHi = 0.0;
+    for (std::size_t a = 0; a < itCount; ++a) {
+        for (std::size_t b = 0; b < ipCount; ++b) {
+            const std::size_t iCell = itIdx[a] * nInPhi + ipIdx[b];
+            const double w = itW[a] * ipW[b];
+            sumLo += w * mirror_[s.lo * storage_.incidentCells + iCell];
+            if (s.hi != s.lo) {
+                sumHi += w * mirror_[s.hi * storage_.incidentCells + iCell];
+            }
+        }
+    }
+    if (s.hi == s.lo) return sumLo;
+    return Interpolate(sumLo, sumHi, s);
+}
+
 double HyLIoSLocalResponse::ForwardRowMassNM(LocalResponsePoint wi, double nm) const
 {
     const auto s = Bracket(nm);

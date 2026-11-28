@@ -877,6 +877,59 @@ void SupportedPreparationRefusalsAndIntegerGrid()
         "supported excessive midpoint cardinality refused by actual grid resolution");
 }
 
+void MultilinearAngularInterpolation()
+{
+    LocalResponseDefinition d;
+    d.wavelengthNm = {500.0, 600.0};
+    // 2x2 incident (t in {0,0.5,1}, phi in {0,pi,2pi}) x 2x1 outgoing (t in {0,0.5,1})
+    d.incident = {{0.0, 0.5, 1.0}, {0.0, LocalResponsePi, LocalResponseTwoPi}};
+    d.outgoing = {{0.0, 0.5, 1.0}, {0.0, LocalResponseTwoPi}};
+    // 2 wavelengths * 4 incident * 2 outgoing = 16 entries (strictly passive: row sum <= 0.52)
+    // At 500 nm: i=(it,ip), j=ot
+    //   (0,0)->[0.02, 0.04], (0,1)->[0.06, 0.08], (1,0)->[0.10, 0.12], (1,1)->[0.14, 0.16]
+    // At 600 nm: half of 500 nm
+    d.continuous = {
+        0.02, 0.04,  0.06, 0.08,  0.10, 0.12,  0.14, 0.16,
+        0.01, 0.02,  0.03, 0.04,  0.05, 0.06,  0.07, 0.08
+    };
+    d.mirror = {
+        0.01, 0.03, 0.05, 0.07,
+        0.02, 0.06, 0.10, 0.14
+    };
+    const auto r = HyLIoSLocalResponse::Create(d);
+
+    // 1. Exact agreement at cell centers (t = 0.25 or 0.75, phi = pi/2 or 3*pi/2)
+    const LocalResponsePoint c00{0.25, 0.5 * LocalResponsePi};
+    const LocalResponsePoint c11{0.75, 1.5 * LocalResponsePi};
+    const LocalResponsePoint o0{0.25, 0.5};
+    const LocalResponsePoint o1{0.75, 0.5};
+    Near(r->EvaluateContinuousInterpolatedNM(c00, o0, 500.0), 0.02, "interp exact at cell center (0,0)->0");
+    Near(r->EvaluateContinuousInterpolatedNM(c11, o1, 500.0), 0.16, "interp exact at cell center (1,1)->1");
+    Near(r->EvaluateContinuousInterpolatedNM(c11, o1, 550.0), 0.12, "interp spectral midpoint at cell center");
+
+    // 2. Exact midpoint between (t_in=0.25, t_out=0.25) and (t_in=0.75, t_out=0.75) at phi=pi/2
+    //    Average of 0.02, 0.04, 0.10, 0.12 = 0.07
+    Near(r->EvaluateContinuousInterpolatedNM({0.5, 0.5 * LocalResponsePi}, {0.5, 0.5}, 500.0),
+         0.07, "bilinear midpoint in (t_in, t_out)");
+
+    // 3. Periodic phi wraparound continuity across phi=0 / 2*pi (midway between 3*pi/2 and pi/2)
+    //    At t_in=0.25, t_out=0.25, phi=0: average of (0,0)->0 (0.02) and (0,1)->0 (0.06) = 0.04
+    const double atZero = r->EvaluateContinuousInterpolatedNM({0.25, 0.0}, o0, 500.0);
+    const double justBelow = r->EvaluateContinuousInterpolatedNM({0.25, LocalResponseTwoPi - 1e-9}, o0, 500.0);
+    const double justAbove = r->EvaluateContinuousInterpolatedNM({0.25, 1e-9}, o0, 500.0);
+    Near(atZero, 0.04, "periodic phi wraparound midpoint at phi=0");
+    Near(justBelow, atZero, "periodic phi continuous from below 2*pi", 1e-7);
+    Near(justAbove, atZero, "periodic phi continuous from above 0", 1e-7);
+
+    // 4. Mirror interpolation at cell center and midpoint
+    //    PlanarMirror({0.5, 0.5*pi}) = {0.5, 1.5*pi}, midway between (0,1) [0.03] and (1,1) [0.07] -> 0.05
+    Near(r->EvaluateMirrorInterpolatedNM({0.5, 0.5 * LocalResponsePi}, 500.0),
+         0.05, "mirror bilinear midpoint in t");
+    //    At 550 nm (spectral midpoint between 0.05 and 0.10 -> 0.075)
+    Near(r->EvaluateMirrorInterpolatedNM({0.5, 0.5 * LocalResponsePi}, 550.0),
+         0.075, "mirror bilinear + spectral midpoint");
+}
+
 } // namespace
 
 int main()
@@ -887,6 +940,7 @@ int main()
         ExactForwardPassivityAndSplitInvariance();
         MirrorCellBoundaryAndCanonicalWrap();
         SupportedProposalAnalytic(); SupportedEndpointClosure(); SupportedPreparationRefusalsAndIntegerGrid();
+        MultilinearAngularInterpolation();
     } catch (const std::exception& e) { ++failures; std::cerr<<"Unexpected exception: "<<e.what()<<'\n'; }
     if (failures) { std::cerr<<failures<<" failed checks\n"; return 1; }
     std::cout<<"HyLIoS local response analytic/control checks passed\n";
