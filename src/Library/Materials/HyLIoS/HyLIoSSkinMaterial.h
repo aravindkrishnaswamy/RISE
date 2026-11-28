@@ -13,6 +13,7 @@
 #include "../../Interfaces/IMaterial.h"
 #include "../../Interfaces/IBSDF.h"
 #include "../../Interfaces/ISPF.h"
+#include "../../Interfaces/IScalarPainter.h"
 #include "../../Utilities/Reference.h"
 #include "HyLIoSLocalResponse.h"
 #include "HyLIoSLocalResponseAsset.h"
@@ -31,7 +32,7 @@ namespace RISE
 	//! `structVersion = kCurrentVersion` and `structSize = sizeof(HyLIoSSkinMaterialConfig)`).
 	struct HyLIoSSkinMaterialConfig
 	{
-		static constexpr std::uint32_t kCurrentVersion = 1u;
+		static constexpr std::uint32_t kCurrentVersion = 2u;
 
 		std::uint32_t structVersion = kCurrentVersion;
 		std::uint32_t structSize    = sizeof( HyLIoSSkinMaterialConfig );
@@ -80,6 +81,12 @@ namespace RISE
 		double        domainHalfWidthMetres   = 0.05;              ///< Planar polygon half-width / cylinder half-length (m)
 		double        domainRadiusMetres      = 0.10;              ///< Concentric sphere/cylinder outer radius (m)
 		std::uint64_t maxSubsurfaceSteps      = 4096;              ///< Bounded iterative subsurface step budget (workCap = 8 * maxSubsurfaceSteps)
+
+		// Tail-appended v2 fields: optional spatially varying outer boundary
+		// roughness map (nonlocal mode only; single-scalar IScalarPainter in [0, 1],
+		// clamped to [1e-3, 1.0] at evaluation so it never silently becomes delta smooth).
+		const char*           boundaryRoughnessMapName = nullptr;  ///< Resolved by Job::AddHyLIoSSkinMaterial
+		const IScalarPainter* boundaryRoughnessMap     = nullptr;  ///< Direct API pointer (addref'd by material)
 	};
 
 	namespace Implementation
@@ -228,6 +235,7 @@ namespace RISE
 			std::shared_ptr<const RISE::HyLIoS::HyLIoSLocalResponseAsset> pAsset;
 			std::shared_ptr<const RISE::HyLIoS::HyLIoSSupportedCameraProposal> pProposal;
 			std::shared_ptr<HyLIoSNonlocalRuntime> pNonlocal;
+			const IScalarPainter* pBoundaryRoughnessMap;
 			RISEPel guideRGB;
 			HyLIoSSkinMaterialSummary summary;
 
@@ -238,6 +246,7 @@ namespace RISE
 				std::shared_ptr<const RISE::HyLIoS::HyLIoSLocalResponseAsset> asset,
 				std::shared_ptr<const RISE::HyLIoS::HyLIoSSupportedCameraProposal> proposal,
 				std::shared_ptr<HyLIoSNonlocalRuntime> nonlocal,
+				const IScalarPainter* pBoundaryRoughnessMap_,
 				const RISEPel& guideRGB_,
 				const HyLIoSSkinMaterialSummary& summary_
 				);
@@ -260,13 +269,24 @@ namespace RISE
 			bool IsHyperspectralSkin() const override { return true; }
 			bool HasSmoothNonlocalBoundary() const override;
 			bool HasSubsurfaceLeaf() const override { return IsNonlocalSkin(); }
+			unsigned int GetPathDependence() const override;
 			bool IsNonlocalSkin() const noexcept { return pNonlocal != nullptr; }
+			double EvaluateBoundaryRoughness( const RayIntersectionGeometric& ri ) const noexcept;
 			bool EvaluateVisibleGuideAlbedo( const RayIntersectionGeometric& geom, RISEPel& outAlbedo ) const override;
 			bool CoversWavelengthRange( const Scalar nmBegin, const Scalar nmEnd ) const override;
 
 			//! Queries the active nonlocal boundary parameters at `nm` for
 			//! first-surface external reflection NEE (`K_r`).
 			bool GetNonlocalBoundaryParamsNM(
+				const Scalar nm,
+				double& outRoughness,
+				double& outEtaExt,
+				double& outEtaSC
+				) const noexcept;
+
+			//! Hit-aware overload that evaluates `boundary_roughness_map` when bound.
+			bool GetNonlocalBoundaryParamsNM(
+				const RayIntersectionGeometric& ri,
 				const Scalar nm,
 				double& outRoughness,
 				double& outEtaExt,

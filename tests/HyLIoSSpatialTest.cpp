@@ -605,6 +605,50 @@ void TestSlice2P2KernelGuideAndContainment()
 			}
 		}
 		Check( escapedSubsurface > 0, "Organelle-bearing P2 nonlocal walk produces subsurface returns" );
+
+		// 5. Spatially varying boundary_roughness_map: per-hit evaluation, [1e-3, 1.0] clamp,
+		//    GetPathDependence forwarding, and baked_local refusal.
+		struct VaryingRoughnessMap : public virtual IScalarPainter, public virtual Reference {
+			ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override {
+				const Scalar r = ( ri.ptIntersection.x < Scalar( 0 ) ) ? Scalar( 0.0 ) : Scalar( 0.42 );
+				return ScalarTriple( r, r, r );
+			}
+			unsigned int GetPathDependence() const override { return PathDependence::kViewDirection; }
+		};
+		VaryingRoughnessMap* pRoughMap = new VaryingRoughnessMap();
+		HyLIoSSkinMaterialConfig mapCfg = cfgAir;
+		mapCfg.boundaryRoughness = 0.0; // smooth base, but mapped -> not smooth!
+		mapCfg.boundaryRoughnessMap = pRoughMap;
+		IMaterial* pMappedI = 0;
+		Check( RISE_API_CreateHyLIoSSkinMaterial( &pMappedI, mapCfg ) && pMappedI != 0,
+			"Create nonlocal HyLIoS with boundary_roughness_map" );
+		const HyLIoSSkinMaterial* pMapped = dynamic_cast<const HyLIoSSkinMaterial*>( pMappedI );
+		if( pMapped ) {
+			Check( !pMapped->HasSmoothNonlocalBoundary(),
+				"Mapped roughness is not treated as smooth Dirac boundary" );
+			Check( pMapped->GetPathDependence() == PathDependence::kViewDirection,
+				"HyLIoSSkinMaterial forwards GetPathDependence() from boundary_roughness_map" );
+			RayIntersectionGeometric riLeft( camRay, nullRasterizerState );
+			riLeft.ptIntersection = Point3( -1, 0, 0 );
+			RayIntersectionGeometric riRight( camRay, nullRasterizerState );
+			riRight.ptIntersection = Point3( 1, 0, 0 );
+			double rL = 0.0, rR = 0.0, eExt = 0.0, eSC = 0.0;
+			Check( pMapped->GetNonlocalBoundaryParamsNM( riLeft, 550.0, rL, eExt, eSC ) &&
+				pMapped->GetNonlocalBoundaryParamsNM( riRight, 550.0, rR, eExt, eSC ),
+				"Hit-aware GetNonlocalBoundaryParamsNM succeeds" );
+			Near( rL, 1e-3, 1e-12, "Zero texel in boundary_roughness_map clamps to 1e-3 floor" );
+			Near( rR, 0.42, 1e-12, "Positive texel in boundary_roughness_map evaluates exact value" );
+		}
+		safe_release( pMappedI );
+
+		// baked_local refuses boundary_roughness_map
+		HyLIoSSkinMaterialConfig badBakedMap;
+		badBakedMap.transportMode = "baked_local";
+		badBakedMap.boundaryRoughnessMap = pRoughMap;
+		IMaterial* pBadBaked = 0;
+		Check( !RISE_API_CreateHyLIoSSkinMaterial( &pBadBaked, badBakedMap ) && pBadBaked == 0,
+			"baked_local refuses boundary_roughness_map" );
+		safe_release( pRoughMap );
 	}
 	safe_release( pMatAir2 );
 	safe_release( pMatAir1 );

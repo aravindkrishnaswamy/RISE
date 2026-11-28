@@ -3684,11 +3684,34 @@ namespace RISE
 					cfg.specimenSourcePath   = specimenSource.empty() ? nullptr : specimenSource.c_str();
 
 					const std::string spatialDomain = bag.GetString( "spatial_domain", "planar_polygon" );
+					const std::string roughMapName  = bag.GetString( "boundary_roughness_map", "" );
 					cfg.boundaryRoughness     = bag.GetDouble( "boundary_roughness", 0.25 );
 					cfg.spatialDomain         = spatialDomain.c_str();
 					cfg.domainHalfWidthMetres = bag.GetDouble( "domain_half_width_m", 0.05 );
 					cfg.domainRadiusMetres    = bag.GetDouble( "domain_radius_m", 0.10 );
 					cfg.maxSubsurfaceSteps    = static_cast<std::uint64_t>( bag.GetUInt( "max_subsurface_steps", 4096 ) );
+					cfg.boundaryRoughnessMapName = roughMapName.empty() ? nullptr : roughMapName.c_str();
+
+					std::vector<double> explicitWls;
+					const std::vector<std::string>& wlList = bag.GetRepeatable( "wavelength_nm" );
+					if( !wlList.empty() ) {
+						explicitWls.reserve( wlList.size() );
+						double prevWl = 0.0;
+						for( const std::string& tok : wlList ) {
+							std::istringstream iss( tok );
+							iss.imbue( std::locale::classic() );
+							double val = 0.0;
+							std::string extra;
+							if( !( iss >> val ) || ( iss >> extra ) || !std::isfinite( val ) || val <= prevWl ) {
+								SetFinalizeDiagIfEmpty( "hylios_skin_material: wavelength_nm must be finite, positive, and strictly increasing" );
+								return false;
+							}
+							prevWl = val;
+							explicitWls.push_back( val );
+						}
+						cfg.wavelengthsNm   = explicitWls.data();
+						cfg.wavelengthCount = explicitWls.size();
+					}
 
 					const double maxFileMiB = bag.GetDouble( "max_file_mib", 256.0 );
 					const double maxResMiB  = bag.GetDouble( "max_resident_mib", 1024.0 );
@@ -3718,6 +3741,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "transport_mode";         p.kind = ValueKind::Enum;     p.enumValues = {"baked_local", "nonlocal", "diagnostic"}; p.description = "Transport mode (baked_local in P5)"; p.defaultValueHint = "baked_local"; }
 						{ auto& p = P(); p.name = "boundary_mode";          p.kind = ValueKind::Enum;     p.enumValues = {"smooth", "hylios2015", "rise_reciprocal_boundary_v1"}; p.description = "Outer surface boundary model"; p.defaultValueHint = "smooth"; }
 						{ auto& p = P(); p.name = "boundary_roughness";     p.kind = ValueKind::Double;   p.description = "GGX roughness alpha for rise_reciprocal_boundary_v1 (0 = smooth)"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "boundary_roughness_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional spatially varying outer boundary roughness scalar painter (nonlocal mode)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						{ auto& p = P(); p.name = "wavelength_nm";          p.kind = ValueKind::String;   p.repeatable = true; p.description = "Explicit baked wavelength node in nm (repeatable, strictly increasing; defaults to specimen grid)"; }
 						{ auto& p = P(); p.name = "spatial_domain";         p.kind = ValueKind::Enum;     p.enumValues = {"planar_polygon", "concentric_sphere", "concentric_cylinder", "intrinsic_layer"}; p.description = "Finite spatial domain for nonlocal transport"; p.defaultValueHint = "planar_polygon"; }
 						{ auto& p = P(); p.name = "domain_half_width_m";    p.kind = ValueKind::Double;   p.description = "Planar footprint half-width or cylinder half-length in metres"; p.defaultValueHint = "0.05"; }
 						{ auto& p = P(); p.name = "domain_radius_m";        p.kind = ValueKind::Double;   p.description = "Concentric sphere/cylinder outer radius in metres"; p.defaultValueHint = "0.10"; }

@@ -856,6 +856,7 @@ HyLIoSSkinMaterial::HyLIoSSkinMaterial(
 	std::shared_ptr<const HyLIoSLocalResponseAsset> asset,
 	std::shared_ptr<const HyLIoSSupportedCameraProposal> proposal,
 	std::shared_ptr<HyLIoSNonlocalRuntime> nonlocal,
+	const IScalarPainter* pBoundaryRoughnessMap_,
 	const RISEPel& guideRGB_,
 	const HyLIoSSkinMaterialSummary& summary_
 	) :
@@ -865,6 +866,7 @@ HyLIoSSkinMaterial::HyLIoSSkinMaterial(
   pAsset( std::move( asset ) ),
   pProposal( std::move( proposal ) ),
   pNonlocal( std::move( nonlocal ) ),
+  pBoundaryRoughnessMap( pBoundaryRoughnessMap_ ),
   guideRGB( guideRGB_ ),
   summary( summary_ )
 {
@@ -874,10 +876,14 @@ HyLIoSSkinMaterial::HyLIoSSkinMaterial(
 	}
 	pSPF = new HyLIoSLocalSPF( pProposal, guideRGB, summary.hasVisibleGuide );
 	GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "HyLIoSLocalSPF" );
+	if( pBoundaryRoughnessMap ) {
+		pBoundaryRoughnessMap->addref();
+	}
 }
 
 HyLIoSSkinMaterial::~HyLIoSSkinMaterial()
 {
+	safe_release( pBoundaryRoughnessMap );
 	safe_release( pBSDF );
 	safe_release( pSPF );
 }
@@ -914,7 +920,28 @@ std::uint64_t HyLIoSSkinMaterial::DomainBoundaryLossCount() const noexcept
 
 bool HyLIoSSkinMaterial::HasSmoothNonlocalBoundary() const
 {
-	return pNonlocal && pNonlocal->boundaryRoughness == 0.0;
+	return pNonlocal && !pBoundaryRoughnessMap && pNonlocal->boundaryRoughness == 0.0;
+}
+
+unsigned int HyLIoSSkinMaterial::GetPathDependence() const
+{
+	return pBoundaryRoughnessMap ? pBoundaryRoughnessMap->GetPathDependence() : 0u;
+}
+
+double HyLIoSSkinMaterial::EvaluateBoundaryRoughness( const RayIntersectionGeometric& ri ) const noexcept
+{
+	if( !pNonlocal ) {
+		return 0.0;
+	}
+	if( pBoundaryRoughnessMap ) {
+		const double raw = static_cast<double>( pBoundaryRoughnessMap->GetValuesAt( ri ).v[0] );
+		// Clamp mapped roughness (and any non-finite fallback) to [1e-3, 1.0] so a dark or
+		// non-finite texel never silently collapses to a smooth Dirac boundary incompatible with K_r/K_t NEE.
+		return std::isfinite( raw )
+			? std::clamp( raw, 1e-3, 1.0 )
+			: std::clamp( pNonlocal->boundaryRoughness, 1e-3, 1.0 );
+	}
+	return pNonlocal->boundaryRoughness;
 }
 
 bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
@@ -940,6 +967,21 @@ bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
 	outRoughness = pNonlocal->boundaryRoughness;
 	outEtaExt = pNonlocal->exteriorIOR;
 	outEtaSC = etaSC;
+	return true;
+}
+
+bool HyLIoSSkinMaterial::GetNonlocalBoundaryParamsNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	double& outRoughness,
+	double& outEtaExt,
+	double& outEtaSC
+	) const noexcept
+{
+	if( !GetNonlocalBoundaryParamsNM( nm, outRoughness, outEtaExt, outEtaSC ) ) {
+		return false;
+	}
+	outRoughness = EvaluateBoundaryRoughness( ri );
 	return true;
 }
 
@@ -982,8 +1024,9 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 	const HyLIoSForwardTransport& kernel = *pNonlocal->kernels[wlIdx];
 	const double etaSC = pNonlocal->scIORAtNode[wlIdx];
 
+	const double hitRoughness = EvaluateBoundaryRoughness( ri );
 	const HyLIoSReciprocalBoundary boundary(
-		pNonlocal->boundaryRoughness, pNonlocal->exteriorIOR, etaSC );
+		hitRoughness, pNonlocal->exteriorIOR, etaSC );
 
 	// Step 1: Outer boundary interaction at entry point.
 	const ReciprocalBoundarySample entryStep = boundary.SampleFull(
@@ -1115,7 +1158,7 @@ bool HyLIoSSkinMaterial::SampleNonlocalNM(
 				exitEnc.exitBitangent     = exitB;
 				exitEnc.interiorWoLocal   = woInt;
 				exitEnc.interiorWeight    = enc.weight;
-				exitEnc.boundaryRoughness = pNonlocal->boundaryRoughness;
+				exitEnc.boundaryRoughness = hitRoughness;
 				exitEnc.etaExt            = pNonlocal->exteriorIOR;
 				exitEnc.etaSC             = etaSC;
 				onInteriorBoundaryEncounter( exitEnc );
@@ -1299,8 +1342,12 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 			sum.coveredLastNm      = rt->wavelengthsNm.back();
 			sum.hasVisibleGuide    = hasGuide;
 
+			if( config.boundaryRoughnessMap && config.boundaryRoughnessMap->HasPerChannelVariation() ) {
+				FailCreate( outError, "boundary_roughness_map must be a single-scalar IScalarPainter (per-channel RGB scalar painters are rejected)" );
+				return nullptr;
+			}
 			HyLIoSSkinMaterial* pMat = new HyLIoSSkinMaterial(
-				nullptr, nullptr, nullptr, std::move( rt ), computedGuide, sum );
+				nullptr, nullptr, nullptr, std::move( rt ), config.boundaryRoughnessMap, computedGuide, sum );
 			GlobalLog()->PrintNew( pMat, __FILE__, __LINE__, "HyLIoSSkinMaterial (nonlocal)" );
 			return pMat;
 		} catch( const std::exception& ex ) {
@@ -1311,6 +1358,10 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 
 	if( transport != "baked_local" ) {
 		FailCreate( outError, "transport_mode `" + transport + "` is not supported (expected `baked_local` or `nonlocal`)" );
+		return nullptr;
+	}
+	if( config.boundaryRoughnessMap ) {
+		FailCreate( outError, "baked_local transport_mode rejects `boundary_roughness_map` (only `nonlocal` supports dynamic outer roughness maps)" );
 		return nullptr;
 	}
 	if( assetPath.empty() ) {
@@ -1485,6 +1536,7 @@ HyLIoSSkinMaterial* HyLIoSSkinMaterial::Create(
 			bundle,
 			bundle->asset,
 			bundle->proposal,
+			nullptr,
 			nullptr,
 			bundle->guideRGB,
 			sum );

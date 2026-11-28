@@ -7271,6 +7271,14 @@ bool Job::AddHyLIoSSkinMaterial(
 	const HyLIoSSkinMaterialConfig& config
 	)
 {
+	if( config.structVersion != HyLIoSSkinMaterialConfig::kCurrentVersion ||
+		config.structSize != sizeof( HyLIoSSkinMaterialConfig ) )
+	{
+		const char* msg = "invalid HyLIoSSkinMaterialConfig version or structSize";
+		GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
 	HyLIoSSkinMaterialConfig resolved = config;
 	std::string resolvedAssetPath;
 	std::string resolvedSpecimenPath;
@@ -7282,6 +7290,16 @@ bool Job::AddHyLIoSSkinMaterial(
 	if( config.specimenSourcePath && config.specimenSourcePath[0] ) {
 		resolvedSpecimenPath = GlobalMediaPathLocator().Find( config.specimenSourcePath ).c_str();
 		resolved.specimenSourcePath = resolvedSpecimenPath.c_str();
+	}
+	if( !resolved.boundaryRoughnessMap && config.boundaryRoughnessMapName && config.boundaryRoughnessMapName[0] ) {
+		IScalarPainter* pRoughMap = pScalarPntManager->GetItem( config.boundaryRoughnessMapName );
+		if( !pRoughMap ) {
+			const std::string msg = std::string( "boundary_roughness_map scalar painter not found `" ) + config.boundaryRoughnessMapName + "`";
+			GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", msg.c_str() );
+			RISE::SetFinalizeDiagIfEmpty( msg.c_str() );
+			return false;
+		}
+		resolved.boundaryRoughnessMap = pRoughMap;
 	}
 
 	IMaterial* pMaterial = 0;

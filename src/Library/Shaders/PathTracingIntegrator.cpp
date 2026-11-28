@@ -4488,7 +4488,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					// 1. First-surface external reflection NEE (`K_r`) at entry hit.
 					double bAlpha = 0.0, bEtaExt = 1.0, bEtaSC = 1.4;
-					if( pLS && pHyLIoS->GetNonlocalBoundaryParamsNM( tag.nm, bAlpha, bEtaExt, bEtaSC ) && bAlpha > 0.0 )
+					if( pLS && pHyLIoS->GetNonlocalBoundaryParamsNM( ri.geometric, tag.nm, bAlpha, bEtaExt, bEtaSC ) && bAlpha > 0.0 )
 					{
 						Vector3 eN = Vector3Ops::Normalize( ri.geometric.vNormal );
 						Vector3 eNg = Vector3Ops::Normalize( ri.geometric.vGeomNormal );
