@@ -12,8 +12,8 @@ mechanism it was opened for did **not** exist (§6.5 follow-up) and the perf ite
 beyond one contract fix.
 **Date:** 2026-08-25 (design); Phase 1 landed 2026-08-26/27.
 **Nature:** Decision document + phased execution plan, in the mold of
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey → scored candidates →
-recommendation) and [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) (gated phases).
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (survey → scored candidates →
+recommendation) and [SMS.md](SMS.md) (gated phases).
 **Inputs:** [MATERIALS.md](MATERIALS.md) (material contract + §9 new-BSDF checklist),
 [ARCHITECTURE.md](ARCHITECTURE.md) (BVH/TLAS, scene immutability, `Realize()` hook),
 [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) (scalar-vs-color pipe discipline),
@@ -695,7 +695,7 @@ noted so the storage layout (strand-major arrays) doesn't preclude it.
 
 Hair is the many-bounce forward-scattering glossy regime. The Phase-1 integrator matrix already
 concluded PT wins σ²·T on 10/13 classes precisely because of per-sample cost, and hair adds no
-caustic-class transport that would re-route it ([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md),
+caustic-class transport that would re-route it ([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md),
 routing map in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2). The `auto_rasterizer`
 Tier-1 static analysis routes unrecognized regimes `else → PT` — hair scenes land there
 correctly with **no new clause**; an explicit "high fiber density + low absorption → deep-bounce
@@ -945,7 +945,7 @@ re-run has not been done. Quality preset resolved to `HIGH` through `auto` at th
 
 ## 7. Phased plan
 
-Phases are gated in the [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) style: build
+Phases are gated in the [SMS.md](SMS.md) style: build
 gate (all five build projects, warning-free per AGENTS.md), baseline gate (no regression on
 existing suites), validation gate (phase-specific). Every phase ends with the
 implementation-review-loop (zero P1s) before the next begins. Test `.cpp` files are
@@ -1215,7 +1215,7 @@ data is vendored.
 
 **In-tree.** [MATERIALS.md](MATERIALS.md) §9 (new-BSDF checklist this plan instantiates);
 [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md); [ARCHITECTURE.md](ARCHITECTURE.md)
-(BVH/TLAS, `Realize()`); [OIDN.md](OIDN.md); [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)
+(BVH/TLAS, `Realize()`); [OIDN.md](OIDN.md); [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)
 + [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (routing);
 `src/Library/Materials/BioSpecSkinSPF.h` + `BioSpecSkinData.h` (melanin precedent);
 `src/Library/Geometry/BezierPatchGeometry.h` (embedded-accelerator + analytic-(u,v) precedent);

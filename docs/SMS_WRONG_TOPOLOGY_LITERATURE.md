@@ -6,7 +6,7 @@ phys-fails**: Newton converges algebraically (‖C‖ < 1e-4) to a chain with wi
 and wo on the SAME side of the local face normal at one of the specular
 vertices — geometrically a reflection masquerading as the labeled refraction
 (or vice versa). Post-seed-overtrace fix
-([SMS_SEEDING_OVERTRACE_FIX.md](SMS_SEEDING_OVERTRACE_FIX.md)) the residual
+([SMS.md](SMS.md)) the residual
 on a Gaussian-falloff bump is ~5 % of all converged chains, and a "smoothness
 paradox" is observed: smoother painters give Newton an *easier* landscape,
 yet phys-fail rate goes UP with smoothness.
@@ -350,7 +350,7 @@ ranked by leverage and cost:
    skill treat threshold bumping as a symptom suppressor — the rejected
    chain at ‖C‖ < 1e-4 with same-sign sign product *is* geometrically
    wrong, and accepting it adds energy at the wrong basin
-   ([SMS_SEEDING_OVERTRACE_FIX.md](SMS_SEEDING_OVERTRACE_FIX.md) anatomy).
+   ([SMS.md](SMS.md) anatomy).
    Instead, accept the floor on plain Newton and either (a) ship Specular
    Polynomials as an alt-solver, or (b) escalate to VCM for the user-facing
    displaced-caustic regime.

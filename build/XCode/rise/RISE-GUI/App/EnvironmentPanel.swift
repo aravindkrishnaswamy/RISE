@@ -16,7 +16,7 @@
 //
 //    Every edit routes through RISEViewportBridge -> SceneEditController,
 //    which applies it LIVE (viewport re-renders) and mirrors it into the
-//    CST so a save keeps it.  See docs/gui/ENVIRONMENT_SECTION.md.
+//    CST so a save keeps it.  See docs/gui/APPROACHABILITY_FOUNDATION.md.
 //
 //////////////////////////////////////////////////////////////////////
 

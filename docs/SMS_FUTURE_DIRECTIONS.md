@@ -1,19 +1,19 @@
 # SMS Future Directions: Literature & Candidate Extensions
 
 **Status:** **LITERATURE/BACKLOG SNAPSHOT.**
-- **Option A** (`SMS_UNIFORM_SEEDING_PLAN.md`) — **Shipped.**
+- **Option A** (`SMS.md`) — **Shipped.**
 - **Extended SMS (`sms_extended`, Phases 1–4, October 2026)** — **Shipped** ([SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md)). Solves native R/T below-TIR event proposals, per-channel RGB / per-wavelength NM / per-lane HWSS geometry & medium replay, unbiased root-level delta-light estimation (Estimator A), and topology-level area-emitter estimation with a canonical shared PT/SMS ownership partition (Estimator B).
 - **Still-open candidate research (Option B and beyond):** deterministic polynomial root-finding (`sms_solver "polynomial"`, Mo 2024), Manifold Path Guiding (MPG, Fan 2023) for long $k \ge 3$ chains, rough/glossy manifold sampling ( Zeltner 2020 glossy half-vectors / finite-scattering dielectrics beyond the parked `DL-379` delta limit), and bidirectional BDPT/VCM manifold integration. The body below preserves the pre-landing survey framing.
 
-This doc captures the post-2020 SMS literature surveyed during the planning of `docs/SMS_UNIFORM_SEEDING_PLAN.md` (Option A), plus the candidate future extensions (Option B and beyond) considered and deferred. Future work may revisit any of the candidates below.
+This doc captures the post-2020 SMS literature surveyed during the planning of `docs/SMS.md` (Option A), plus the candidate future extensions (Option B and beyond) considered and deferred. Future work may revisit any of the candidates below.
 
 ## Why this doc exists
 
 After the literature survey reframed our understanding (see `docs/SMS_TWO_STAGE_SOLVER.md` and the planning thread for context), we identified three options:
 
-- **Option A — Mitsuba-faithful core, properly-cited extensions.** Refactor RISE's SMS to match the published reference for unbiased / biased / MNEE-init modes, fix the fabricated Kondapaneni 2023 citation to Weisstein 2024 PMS, restructure photon-aided seeding as a documented biased-mode extension. See `docs/SMS_UNIFORM_SEEDING_PLAN.md`. **Shipped.**
+- **Option A — Mitsuba-faithful core, properly-cited extensions.** Refactor RISE's SMS to match the published reference for unbiased / biased / MNEE-init modes, fix the fabricated Kondapaneni 2023 citation to Weisstein 2024 PMS, restructure photon-aided seeding as a documented biased-mode extension. See `docs/SMS.md`. **Shipped.**
 - **Option B — Port a newer paper.** Implement one of the published post-2020 SMS extensions — most likely Specular Polynomials (Mo 2024) for deterministic seed-finding, or Manifold Path Guiding (Fan 2023) for k≥3 chain robustness.  Bigger lift than A; addresses different failure modes.  **Deferred.**
-- **Option C — Retire the "SMS for displaced meshes" goal.** Accept the literature consensus that no published paper solves heavy-vertex-displaced specular caustics inside SMS; document VCM as the production answer for that regime.  **Captured as a non-goal in `docs/SMS_TWO_STAGE_SOLVER.md` and `docs/SMS_UNIFORM_SEEDING_PLAN.md`.  Effectively the current policy.**
+- **Option C — Retire the "SMS for displaced meshes" goal.** Accept the literature consensus that no published paper solves heavy-vertex-displaced specular caustics inside SMS; document VCM as the production answer for that regime.  **Captured as a non-goal in `docs/SMS_TWO_STAGE_SOLVER.md` and `docs/SMS.md`.  Effectively the current policy.**
 
 ## Literature snapshot (post-2020)
 
@@ -25,7 +25,7 @@ Brief summaries of every relevant paper located during the survey, ordered rough
 
 [DOI 10.1145/3675375](https://dl.acm.org/doi/10.1145/3675375) · [HPG slides](https://www.highperformancegraphics.org/slides24/Photon-Driven%20Manifold%20Sampling%20HPG.pdf)
 
-Deposits multi-bounce caustic photons during a scene-prep light pass; queries them at render time to seed SMS Newton iterations.  Remains unbiased via the same Bernoulli inverse-probability framework as Zeltner 2020.  **This is what RISE actually implements** (via `SMSPhotonMap` / `kSMSMaxPhotonChain`), although our source comments incorrectly cite "Kondapaneni 2023."  Phase 1 of `SMS_UNIFORM_SEEDING_PLAN.md` fixes the citation.
+Deposits multi-bounce caustic photons during a scene-prep light pass; queries them at render time to seed SMS Newton iterations.  Remains unbiased via the same Bernoulli inverse-probability framework as Zeltner 2020.  **This is what RISE actually implements** (via `SMSPhotonMap` / `kSMSMaxPhotonChain`), although our source comments incorrectly cite "Kondapaneni 2023."  Phase 1 of `SMS.md` fixes the citation.
 
 **Status in RISE**: shipped, mis-cited.  Phase 1 corrects.
 
@@ -59,7 +59,7 @@ Replaces Newton iteration with **deterministic polynomial root-finding**.  Encod
 
 **Implementation effort**: significant — 6-10 weeks.  Replaces the Newton machinery (`Solve`, `NewtonSolve`, `BuildJacobian`, `EvaluateConstraint`, `UpdateVertexOnSurface`).  The constraint system itself is reused.
 
-**Why it matters for RISE — promoted to next-target priority:** post-Option-A measurements (`docs/SMS_UNIFORM_SEEDING_RESULTS.md`) confirmed that the bottleneck on heavily-displaced caustics is **Newton's basin of attraction on bumpy normals**, not the seeding strategy.  Specifically:
+**Why it matters for RISE — promoted to next-target priority:** post-Option-A measurements (`docs/SMS.md`) confirmed that the bottleneck on heavily-displaced caustics is **Newton's basin of attraction on bumpy normals**, not the seeding strategy.  Specifically:
 
 - Smooth Veach egg with our fixes: ratio 0.93 → 0.94 (close to 1.0; Fresnel paths recovered).
 - Displaced Veach egg with our fixes (snell mode + branching): ratio still 0.37 — even with a perfect refraction-basin seed, Newton fails on ~77% of trial-0 attempts because the half-vector constraint is C¹-discontinuous at every triangle edge of the displaced mesh.
@@ -169,7 +169,7 @@ If/when we revisit, the natural sequence is:
 
 1. **Pick a target scene class** that motivates the work — e.g. "multi-bounce mirror caustics" → MPG; "displaced-mesh caustics where VCM is unacceptable" → Bernstein Bounds; "Newton firefly elimination" → Specular Polynomials.
 2. **Read the candidate paper end-to-end** with the same depth we read Zeltner 2020 (multi-agent literature review, source-code inspection of the reference implementation if available).
-3. **Write a planning doc** matching `docs/SMS_UNIFORM_SEEDING_PLAN.md`'s structure — phased, with verification gates.
+3. **Write a planning doc** matching `docs/SMS.md`'s structure — phased, with verification gates.
 4. **Capture a numerical baseline** (Phase 0 equivalent) on the target scene class with Option A's SMS.
 5. **Implement against the baseline** with each phase verified.
 6. **Document the result** (success or failure, measured numbers) in this directory.

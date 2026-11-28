@@ -17178,7 +17178,7 @@ static void TestComposePhaseLightObjectExemption()
 //----------------------------------------------------------------------
 // ARC 81 (2026-08-12): `light_scene` -- THE CLEAN-ROOM LIGHTING PASS,
 // and the COMPOSE-phase refusal that forces its first use.
-// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+// Design: docs/agentic-redesign/83-staged-construction-plan.md.
 //
 // THE MEASUREMENT BEHIND IT.  Against the hand-authored frontier benchmark
 // on the same prompt, every agent run in this workstream produced 3-5

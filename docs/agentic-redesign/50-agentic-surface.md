@@ -68,7 +68,7 @@
 > dissolves the single biggest assumption baked into the existing AI specs in `docs/gui/`
 > ([MCP_TOOL_SURFACE.md](../gui/MCP_TOOL_SURFACE.md), [LLM_AGENT_RUNTIME.md](../gui/LLM_AGENT_RUNTIME.md),
 > [AI_SECURITY_MODEL.md](../gui/AI_SECURITY_MODEL.md), [VALIDATION_ARCHITECTURE.md](../gui/VALIDATION_ARCHITECTURE.md),
-> [TRANSACTION_MODEL.md](../gui/TRANSACTION_MODEL.md), [RENDER_COORDINATOR.md](../gui/RENDER_COORDINATOR.md)):
+> [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](../gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md), [RENDER_COORDINATOR.md](../gui/RENDER_COORDINATOR.md)):
 > namely the **"structured-save vs wholesale-text-rewrite" split**, which is a Model-A artifact
 > and is **deleted** under Model B. §3 states precisely what survives, what is reframed, and what dies.
 
@@ -84,9 +84,9 @@
 >   verbs (`read_document` / `read_schema` / `validate` / `propose_patch` / `render` / `read_image` /
 >   `read_skill` / `insert_chunk` / `remove_chunk` / `list_proposals` / `resolve_proposal` / `read_viewport`,
 >   plus the staged clean-room construction, composition, lighting, population, procedural material/painter,
->   shape-operator, and iteration-ratchet verbs from `docs 78–91` — **38 chat tools** in
->   `AgentChatCodecs.cpp`'s `kToolDefs`, plus MCP-only `list_proposals` / `resolve_proposal` /
->   `read_viewport`) over JSON-RPC/stdio and loopback HTTP,
+>   shape-operator, simulation (`sim_*`), and iteration-ratchet verbs — **49 chat tools** in
+>   `AgentChatCodecs.cpp`'s `kToolDefs` and **54 MCP tools** in `AgentMcpAdapter.cpp` (including
+>   MCP-only `list_proposals` / `resolve_proposal` / `read_viewport`) over JSON-RPC/stdio and loopback HTTP,
 >   the live GUI co-edit path (agent edits are render-safe, conflict-safe, save-safe, and
 >   **Cmd-Z citizens** via shared undo, including batched single-rederive edits via `ApplyCstEditBatch` /
 >   `AgentEditBatch`), an LLM **chat panel** (Mac + Windows) driving the verbs

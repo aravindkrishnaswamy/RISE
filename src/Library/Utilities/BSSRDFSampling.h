@@ -272,7 +272,7 @@ namespace RISE
 		///   form at 1 + 1e-3 (r ~ e/3 + O(e^2 log e) there); the
 		///   interpolation error is below 1e-6, measured against an
 		///   independent quadrature (BSSRDFNormalizationTest Test E and
-		///   docs/DL306_SSS_FRESNEL_PARTITION.md).
+		///   docs/DEBT_LEDGER.md).
 		/// eta < 1: Fresnel is symmetric in the two sides, so
 		///   F(mu; 1 -> eta) = F(t; 1 -> 1/eta) with t the transmitted
 		///   cosine, and Snell gives mu dmu = eta^2 t dt over t in [0,1]
@@ -338,7 +338,7 @@ namespace RISE
 			);
 
 		//////////////////////////////////////////////////////////////
-		// DL-408: CONTACT LAUNCHES (docs/DL408_SSS_CONTACT_CONTINUATION.md)
+		// DL-408: CONTACT LAUNCHES (docs/DEBT_LEDGER.md)
 		//
 		// A continuation launched from a point p that lies on a face SHARED
 		// with a neighbour T meets T at zero distance, where neither a ray

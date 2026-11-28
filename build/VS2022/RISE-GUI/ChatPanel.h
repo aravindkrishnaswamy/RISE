@@ -122,7 +122,7 @@ public:
     // via the chatRenderOutstandingChanged() signal below.
     bool isChatRenderOutstanding() const { return m_outstandingRenderJobId != 0; }
 
-    // ---- Start screen readiness (docs/gui/START_SCREEN.md §6) --------
+    // ---- Start screen readiness (docs/gui/APPROACHABILITY_FOUNDATION.md §6) --------
     // Reuses the EXACT gate sendMessage() checks before allowing a send
     // (providerRequiresApiKey(m_appliedProvider) && key empty) rather than
     // inventing a second source of truth -- a keyless provider (Local/

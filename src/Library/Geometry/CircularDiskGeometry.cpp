@@ -115,7 +115,7 @@ bool CircularDiskGeometry::TessellateToMesh(
 			break;
 	}
 
-	// DL-116 sibling (sphere pole pattern; see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md):
+	// DL-116 sibling (sphere pole pattern; see docs/DEBT_LEDGER.md):
 	// the center row (j=0, r=0) collapses to a single 3D position with the
 	// SAME axis normal AND the same canonicalized u=0 texcoord for every
 	// column -- bit-identical in every sense a downstream consumer could

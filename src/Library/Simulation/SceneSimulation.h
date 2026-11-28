@@ -1,6 +1,6 @@
 // Simulation M4: simulations declared by a scene -- the dependency graph,
 // the cache key of each simulation against the scene, and its state against
-// its cache on disk (docs/SIMULATION_M4_RESULTS.md).
+// its cache on disk (docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 // A simulation's cache key is MakeCacheKey(solver, version, effective
 // parameters, [(input, Identity(input))...]) exactly as every host computes

@@ -45,7 +45,7 @@ fixture preserves the documented approximation rather than correcting it.
   only — two identical panels, one facing down and one up, over one floor)
 - `MLT/`: Metropolis light transport baselines and comparison renders.
   `mlt_deep_fog`/`mlt_deep_fog_spectral` are the DL-08 render-level proof
-  fixtures (docs/DL08_PSSMLT_LANE_LAYOUT.md): a small, densely-scattering
+  fixtures (docs/DEBT_LEDGER.md): a small, densely-scattering
   fog-filled box whose eye subpaths commonly climb past loop depth 32 --
   the exact depth at which the pre-DL-08 `BDPTIntegrator` eye walk's
   `StartStream(16+depth)` literal-collided with MLT's old reserved stream
@@ -62,7 +62,8 @@ fixture preserves the documented approximation rather than correcting it.
   `rough_dielectric` compares smooth, isotropic rough and anisotropic rough
   glass against a checker backdrop, with a Lambertian lighting control.
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple
-  controls used to build the enamel-watch hero.
+  controls used to build the enamel-watch hero. `Materials/HyLIoS/` contains
+  the nonlocal HyLIoS hyperspectral skin slab scene (`hylios_nonlocal_slab.RISEscene`).
 
   `weave_presets` covers the `weave_material` triad
   (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A): all four `fabric`
@@ -176,17 +177,7 @@ fixture preserves the documented approximation rather than correcting it.
   spectral PT rasterizer with uniform SMS, matching the SF11/geometry of
   the legacy snell-mode `spectral_dispersive_caustic_pt_sms.RISEscene`
 - `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
-- `Simulation/`: scenes that read simulation caches.  `simulated_cloth_drape.RISEscene`
-  renders a baked cloth through `simulated_mesh_geometry` with deformation motion
-  blur; it needs a bake in `~/.cache` (`tools/simulation/render_cloth_drape.sh`), see
-  docs/SIMULATION_M3B_RESULTS.md
-  The M4 scenes declare their simulations (docs/SIMULATION_M4_RESULTS.md):
-  `cloth_flag_scene` (a `cloth_simulation` whose pinned edge follows a keyframed pole;
-  bake with `bin/tools/rise_sim bake <scene> flag` or run it live),
-  `cloth_chain_scene_inputs` (a cloth falling on a moving ball, and a second cloth
-  colliding with the first: a dependency), `fire_campfire_scene` (a `fire_simulation`
-  read by `fire_medium { source campfire.volume }`).  They load unbaked (empty consumers,
-  warnings); `bin/tools/rise_sim status <scene>` shows each simulation's state
+- `Simulation/`: scenes that read or declare simulations (`cloth_simulation`, `rigid_simulation`, `liquid_simulation`, `fire_simulation`, `simulation_group`, `simulation_cache`, `simulated_mesh_geometry`, `simulated_points_geometry`; see `docs/SIMULATION_SOLVER_CONTRACT.md`). Includes `simulated_cloth_drape`, `cloth_flag_scene`, `cloth_chain_scene_inputs`, `fire_campfire_scene`, `plume_banner_from_cache`, `rigid_cloth_trampoline`, `simulated_points_spray`, `liquid_dam_break`, `liquid_honey_water`, `liquid_rigid_bodies`, `liquid_cloth_flap`, `liquid_cloth_wave`, `liquid_cloth_catch`, and `liquid_honey_cloth`. Bake via `bin/tools/rise_sim bake <scene> [sim]` or check state with `bin/tools/rise_sim status <scene>`.
 - `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes
 - `VCM/`: vertex-connection-and-merging regression scenes (Cornell baseline,

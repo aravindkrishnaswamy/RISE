@@ -96,7 +96,7 @@ namespace RISE
 		//! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 		//! \return TRUE if successful, FALSE otherwise
 		virtual bool SetPrimaryAcceleration(
-			const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+			const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
@@ -3099,7 +3099,7 @@ namespace RISE
 		// compiled against the pre-Phase-3 header have no slot here.
 		// RISE's policy is "in-tree IJob impls only; out-of-tree
 		// callers must rebuild against the matching header."  See
-		// docs/skills/abi-preserving-api-evolution.md for the full
+		// AGENTS.md ("Interface ABI, hot-struct layout, and TLS invariants") for the full
 		// trade-off.  Out-of-tree IJob *callers* that don't dispatch
 		// through these methods are unaffected.
 		virtual bool        SetActiveRasterizer( const char* /*name*/ ) { return false; }

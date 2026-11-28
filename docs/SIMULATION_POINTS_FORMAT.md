@@ -1,6 +1,6 @@
 # Native particle payload v1
 
-`points.v1` (2026-11-25, M7 prerequisites; [M7 design](SIMULATION_M7_DESIGN.md) §3, [results](SIMULATION_M7_PREREQ_RESULTS.md)):
+`points.v1` (2026-11-25, M7 prerequisites; [M7 design](SIMULATION_SOLVER_CONTRACT.md) §3, [results](SIMULATION_SOLVER_CONTRACT.md)):
 one particle set at one time — positions, and optionally velocities, a radius (uniform or per point), stable ids
 and named per-point float attributes with units. It is the codec of a liquid's `particles` output (marker and spray
 particles) and of imported particle data; the renderer's `simulated_points_geometry` draws each point as a sphere.

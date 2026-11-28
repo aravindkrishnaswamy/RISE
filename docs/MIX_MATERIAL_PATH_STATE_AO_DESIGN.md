@@ -1,28 +1,15 @@
-# Material Mixing, Path State and Ray-Traced Ambient Occlusion — Design (DRAFT 3)
+# Material Mixing, Path State and Ray-Traced Ambient Occlusion — Design
 
-**Status:** draft 3, 2026-11-14. Nothing here is implemented. Draft 1 was
-reviewed by four independent reviewers
-([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 2 by a
-second model and harness
-([round 2](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND2.md)), whose verdict was
-that the transport features should not be started as written. This draft
-answers round 2 and records the owner's decisions ([Decisions](#decisions)).
-The largest changes: weights are response coefficients and are never
-normalised; the mix's own coverage survives resolution; the selector is keyed
-on the object instance; shadow visibility has a walk and a replacement rule
-of its own; only the camera flag keeps an emitter light-sampled; `ao()` in a
-bump keeps its inputs' gradient; no refracting leaf, without exception; a mix
-child may carry its own modifier; and the order of work puts declaration and
-refusal first.
-**After round 3 (2026-11-16): this document is superseded as a
-specification and is not redrafted.** A third review
-([round 3](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND3.md)) found fourteen new
-P1 defects, most of them in this note, and marked shadow visibility "made
-worse" for the second round running. The owner decided that mixing and
-shadow visibility are to be **prototyped against failing closed-form tests**
-built from the three reviews' counterexamples, and reviewed as code. Read
-what follows as the record of intent and of the audit, with these changes
-already decided:
+> **Shipped status (2026-11-27):** Core parts of this design are **implemented and shipped** on `master`:
+> - **Part 0 (`RISE::PathDependence` containment):** `GetPathDependence()` propagation across `IPainter`, `IScalarPainter`, `IRayIntersectionModifier`, and `IMaterial`; `AutoRasterizer` routes flagged scenes to PT; BDPT, VCM, and MLT refuse flagged scenes; SMS excludes flagged casters; OpenPGL skips flagged hits.
+> - **Part I (Material Mixing & Blending):** `mix_material` (`MixMaterial`), `diffuse_transmission_material` (`DiffuseTransmissionMaterial`), and `blended_modifier` (`BlendedModifier`).
+> - **Part II (Path-State Builtins):** `osl_layer_weight`, `osl_fresnel`, `osl_is_camera_ray`, and `osl_backfacing` (all propagating `PathDependence`).
+> - **Part III (Ray-Traced AO):** `osl_ao` (physically based, `kNone`, backed by the folded 1-way `AOCacheKey` in `ExpressionMemo::Tables`).
+> - **Still unshipped:** `scaled_material`, `passthrough_material`, and `allow_energy_gain`.
+>
+> The original draft 3 + Round 3 review record below is retained as historical design rationale.
+
+**Original draft record (draft 3, 2026-11-14):** Draft 1, draft 2, and draft 3 underwent three independent review rounds. Following round 3 (2026-11-16), mixing and shadow visibility were prototyped and verified against failing closed-form tests before shipping the implemented subset above. Read what follows as the historical record of intent and audit decisions:
 
 - **The leaf is drawn from the sampler once per hit**, stored on the record
   and copied to bidirectional vertices. The fixed patchwork of §I.1 (a hash
@@ -1026,7 +1013,7 @@ Decided by the owner on 2026-11-14: 1–9 before and after review round 1,
 selector stays a fixed patchwork keyed on the object instance and the hit
 position. Round 2 asked for an independent draw per transport event; the
 reasons for not taking that are in
-[round 2](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND2.md) §3. It is the first
+[round 2](MIX_MATERIAL_PATH_STATE_AO_DESIGN.md) §3. It is the first
 thing a third review should attack.
 
 ## Open items

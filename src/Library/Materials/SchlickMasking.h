@@ -49,7 +49,7 @@
 //  quarter turn with 1/p (A_p(phi) = A_{1/p}(phi + pi/2)).
 //
 //  Full derivation, the grid tables and the appearance gate:
-//  docs/DL225_BOUNDED_SCHLICK.md.
+//  docs/DEBT_LEDGER.md.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -248,7 +248,7 @@ namespace RISE
 			//! Tangent lines of W(c2) at 12 nodes c2_j = (j/11)^4.  W is
 			//! concave in c2 (its rearrangement makes it the convolution
 			//! of two symmetric-decreasing functions; verified numerically
-			//! down to isotropy 1e-4 in docs/DL225_BOUNDED_SCHLICK.md), so
+			//! down to isotropy 1e-4 in docs/DEBT_LEDGER.md), so
 			//! every tangent lies above W and min_j over them is an UPPER
 			//! bound on W -- which is all the Jensen bound needs, since
 			//! W atan(k Q / W) increases in W.  Looseness <= 1.31% at
@@ -347,7 +347,7 @@ namespace RISE
 				// ~3%).  Below isotropy 1/2 Jensen is within 0.5% of the
 				// smaller of the two everywhere (CS was tighter in 13 of
 				// 194560 swept (isotropy, azimuth, k) states, by at most
-				// 0.50%; docs/DL225_BOUNDED_SCHLICK.md), so the second
+				// 0.50%; docs/DEBT_LEDGER.md), so the second
 				// atan is skipped there.  Either alone is a valid bound.
 				if( L.p >= 0.5 ) {
 					E = std::min( E, std::sqrt( M2( k, L.p, L.q ) * EIso( k ) ) );

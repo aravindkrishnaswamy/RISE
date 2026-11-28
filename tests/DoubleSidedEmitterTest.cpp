@@ -2,7 +2,7 @@
 //
 //  DoubleSidedEmitterTest.cpp - DL-320: a DOUBLE-SIDED emitter emits
 //    from BOTH faces for every strategy, not only for the ones that
-//    HIT it.  docs/DL320_DOUBLE_SIDED_EMITTER.md.
+//    HIT it.  docs/DEBT_LEDGER.md.
 //
 //    THE CONTRACT (docs/SCENE_CONVENTIONS.md section 3.5, "Sidedness is
 //    the corner winding plus `doublesided`"): with `doublesided TRUE`
@@ -75,7 +75,7 @@
 //          The pixel hashes printed here are the bit-identity A/B for
 //          the single-sided path between builds.
 //
-//    Pre-fix (red-proof, docs/DL320_DOUBLE_SIDED_EMITTER.md): the back
+//    Pre-fix (red-proof, docs/DEBT_LEDGER.md): the back
 //    face read PT 0.09 / BDPT 0.09 / VCM 0.23 of the closed form and the
 //    direct-lighting legacy chain exactly 0.
 //

@@ -1,7 +1,7 @@
 // Simulation M6: the cloth <-> rigid-body coupling (cloth.shell with a
 // port-driven mesh collider, rigid.bodies) -- the canonical problems of its
 // evidence and of the M6 demonstrations, the group they run in, and the
-// momentum / energy totals they are judged by (docs/SIMULATION_M6_RESULTS.md).
+// momentum / energy totals they are judged by (docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 // The coupling: rigid body_state -> rigid_surface -> cloth collider_surface
 // (the collider follows the body), cloth collider_reaction -> contact_reaction

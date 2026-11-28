@@ -2292,9 +2292,9 @@ namespace
 
 		// Pixel 0: ordinary HDR survives finite and roughly in range.
 		// The Rec.709→ROMM matrix mixes channels (~±10 %); we only
-		// assert finite-and-bounded, not bit-identity.  Use a bit-
-		// pattern check because under -ffast-math std::isfinite may be
-		// constant-folded by the compiler (kIsFinite = exponent != all-
+		// assert finite-and-bounded, not bit-identity.  Uses a bit-
+		// pattern check (retained from pre-2026-07-29 -ffinite-math-only
+		// for -Ofast resistance; kIsFinite = exponent != all-
 		// ones AND value is normal/zero, ignoring sign).
 		auto isFiniteBits = []( float f ) -> bool {
 			uint32_t bits;
@@ -2319,11 +2319,9 @@ namespace
 		// against `RGBA32F_Linear` (identity target) where the
 		// invariant holds tautologically post Stage B.
 
-		// Pixel 2 / 3: NaN/Inf preservation through the matrix multiply
-		// is NOT a reliable invariant under -ffast-math (the compiler
-		// is told no non-finite inputs exist, so `Inf - Inf = NaN`
-		// branches may be folded away or special-cased differently
-		// across compilers).  Bit-identical NaN/Inf preservation is
+		// Pixel 2 / 3: NaN/Inf preservation through a channel-mixing
+		// matrix multiply is not bit-exact (reassociation / `Inf - Inf`
+		// differs across FP contraction modes).  Bit-identical NaN/Inf preservation is
 		// tested below against `RGBA32F_Linear`, which IS identity to
 		// RISEPel and therefore round-trips bit-exactly.
 
@@ -2350,8 +2348,7 @@ namespace
 		Check( srgbBuf[ 1 * 4 + 0 ] == -0.3f,
 			"RGBA32F_Linear archival preserves negative R (no Sanitise clamp)" );
 
-		// Pixel 2: NaN G PRESERVED.  Verify via bit pattern (under
-		// -ffast-math, isnan() may constant-fold to false).
+		// Pixel 2: NaN G PRESERVED.  Verify exact IEEE NaN bits via bit pattern.
 		uint32_t nanGBits;
 		std::memcpy( &nanGBits, &srgbBuf[ 2 * 4 + 1 ], sizeof(nanGBits) );
 		const bool gIsNaN = ( ( nanGBits & 0x7F800000u ) == 0x7F800000u )

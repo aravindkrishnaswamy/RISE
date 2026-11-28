@@ -4,9 +4,9 @@
 //    into the GGX microfacet BRDF/SPF (Phase-2 piece P2-B,
 //    docs/THIN_FILM_INTERFERENCE.md §7).
 //
-//    The thin-film GGX is NOT yet reachable through the public factory
-//    (parser/RISE_API wiring is the next piece, P2-C), so this test
-//    constructs GGXBRDF / GGXSPF DIRECTLY with uniform-value
+//    This unit test constructs GGXBRDF / GGXSPF directly to isolate
+//    the BRDF/SPF math (public factory & scene-parser plumbing are
+//    covered by ThinFilmSceneParseTest), using uniform-value
 //    IScalarPainters for the film/substrate stack, exactly like
 //    GGXFresnelModeTest does for the conductor/Schlick modes.
 //
@@ -387,7 +387,7 @@ static bool TestSpectralExactness()
 // the pre-DL-64 raw-tint weight (never the defect: a zero tint there
 // legitimately zeroes the lobe, and paying MeanNM's LUT/Airy-quadrature
 // cost on every Scatter()/Pdf() call bought nothing -- see
-// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "Cost").  Consequently
+// docs/DEBT_LEDGER.md "Cost").  Consequently
 // pSpecSelect is IDENTICAL between the TF/Cond twins again (both derive
 // `ws` from the same raw tint sample), restoring the pre-DL-64 exact
 // cancellation Test B originally relied on -- this helper mirrors

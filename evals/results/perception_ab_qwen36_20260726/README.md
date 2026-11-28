@@ -1,7 +1,7 @@
 # Curated perception-atlas A/B evidence
 
 This tracked snapshot preserves the clean 384x384 `qwen3.6:27b` run summarized
-in [docs/PERCEPTION_ATLAS_AB_RESULTS.md](../../../docs/PERCEPTION_ATLAS_AB_RESULTS.md).
+in [docs/AGENT_PERCEPTION.md](../../../docs/AGENT_PERCEPTION.md).
 It contains all 72 raw response rows, 24 input PNGs, 12 generated RISE scenes,
 and the machine-generated summary.
 

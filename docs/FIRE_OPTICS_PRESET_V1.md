@@ -293,7 +293,7 @@ certified domain. That replaces the vague "values live in figures" label.
 ### 2.6 Source-alternatives audit updates (owner, 2026-08-06)
 
 Per the owner's audit
-([FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md)):
+([FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md)):
 
 - **P1 partial — separate low-pressure axis adopted.** The open Sunderland
   dissertation tables give low-pressure acetylene d_p = 9.26–24.43 nm,

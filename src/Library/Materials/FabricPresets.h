@@ -11,7 +11,7 @@
 //       `Job::AddFabricMaterial` -- the sheen colour).
 //    2. `Job::AddFabricMaterial` reads the RECOMMENDED SUBSTRATE half
 //       to decide whether to emit the warn-level mismatch diagnostic,
-//       and the future `make_fabric` verb (9.7) reads the same half to
+//       and the `make_fabric` verb (9.7) reads the same half to
 //       MINT that substrate.
 //
 //  Keeping both halves in one struct is what makes 9.3's split table

@@ -1424,7 +1424,7 @@ namespace
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		// Retain historical physics bands, with a per-row check that they
 		// cover at least three measured SDs of the salted mean H.
-		// Pre-DL-306 deviations: docs/DL306_SSS_FRESNEL_PARTITION.md.
+		// Pre-DL-306 deviations: docs/DEBT_LEDGER.md.
 		const Row rows[] = {
 			{ Model::RandomWalk, Integrator::PT,         32,  0.015, 1.05 },
 			{ Model::RandomWalk, Integrator::PT,         32,  0.014, 1.33 / 1.5 },
@@ -1517,7 +1517,7 @@ namespace
 		// 15 base seeds: every row's band is >= 6 sd except the Lambertian
 		// control's 0.002, which is ~3.5 sd (sd 0.00057) -- a control, so a
 		// rare false red there says "rerun", not "defect"
-		// (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
+		// (docs/DEBT_LEDGER.md).
 		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const EncRow encRows[] = {
 			{ Model::RandomWalk, Integrator::PT,         16,  0.010, 1.5 },

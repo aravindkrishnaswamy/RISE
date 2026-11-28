@@ -207,9 +207,9 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 |--------|-------|----------|
 | Painters | 40 | `uniformcolor_painter`, `png_painter`, `voronoi3d_painter`, `iridescent_painter`, `channel_painter`, `function2d_painter` (the `*_function2d_painter` painters live here, not under Functions), `expression_painter` (the doc-88 texture-expression VM colour pipe; `scalar_painter`'s sibling `expression` and `painter` FORMs are not separate keywords), `ramp_painter` (doc-88 S3 P2.2, the universal scalar->colour remap), `mapping_painter` (doc-88 S7 P2.3, the domain scale/rotate/translate/reproject wrapper -- uv/world/object/triplanar), `stochastic_tile_painter` (doc-88 P3.1 S8, hex-tiling with histogram-preserving blending), `scatter_painter` (doc-88 P3.2 S8, texture-bombing / FX-map-lite) |
 | Functions | 3 | `piecewise_linear_function`, `piecewise_linear_function2d`, `expression_function2d` |
-| Materials | 33 | `null_boundary_material`, `lambertian_material`, `diffuse_transmission_material`, `mix_material`, `dielectric_material`, `rough_dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
+| Materials | 34 | `null_boundary_material`, `lambertian_material`, `diffuse_transmission_material`, `mix_material`, `dielectric_material`, `rough_dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material`, `hylios_skin_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` (all 5 cameras accept optional `near_clip` in scene units) |
-| Geometry | 28 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry` (a deforming mesh read from a simulation cache's mesh output -- a `cache` directory, or since M4 a producer's output by `source <simulation>.<output>` -- with deformation motion blur; docs/SIMULATION_M3B_RESULTS.md, docs/SIMULATION_M4_RESULTS.md) |
+| Geometry | 29 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `skin_geometry`, `path_instances_geometry`, `hair_geometry`, `simulated_mesh_geometry`, `simulated_points_geometry` (deforming mesh / particle outputs read from a simulation cache or producer `source <simulation>.<output>` with motion blur; see `docs/SIMULATION_SOLVER_CONTRACT.md`) |
 | Hair guides | 1 | `hair_guides` |
 | Simulations | 6 | `cloth_simulation`, `fire_simulation`, `simulation_cache` (M4), `rigid_simulation`, `simulation_group` (M6), `liquid_simulation` (M7) (`ChunkCategory::Simulation`; see "Simulation producers", "Coupling" and "Liquid" below) |
 | Modifiers | 5 | `relief_modifier`, `modifier_stack`, `blended_modifier`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
@@ -217,7 +217,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
-| Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
+| Rasterizers | 13 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer`, `hyperspectral_radiometric_rasterizer` |
 | Rasterizer outputs | 1 | `file_rasterizeroutput` (attaches to the active rasterizer — its rasterizer chunk must be declared before it, else the load fails with a "no rasterizer is set" diagnostic; a LATER rasterizer chunk replaces the active one and drops its outputs with a load warning) |
 
 | Lights | 7 | `rect_light`, `shape_light`, `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
@@ -227,7 +227,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 191 chunk keyword entries** -- counted directly from the 191 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword), and `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` while remaining its own keyword. Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
+**Total: 193 chunk keyword entries** -- counted directly from the 193 `add(...)` registrations in `CreateAllChunkParsers()` (pinned by `tests/SceneEditorSuggestionsTest.cpp`; 192 unique descriptors since `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop`). Note that `expression_function2d` is registered adjacent to the painter chunks in code and counted under `Functions` above (`40 + 3 = 43`), and `scalar_painter`'s `painter NAME channel RGB` form is a channel option on `scalar_painter` (not a separate keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list.
 
 ### Composite chunks (parse-time sugar)
 
@@ -330,7 +330,7 @@ fire_medium { name flame   fidelity_mode preview   source campfire.volume   chan
 
 ## Liquid (M7)
 
-docs/SIMULATION_M7A_RESULTS.md.  `liquid_simulation` (solver `liquid.mac`, chunk generated from its schema) is data
+docs/SIMULATION_SOLVER_CONTRACT.md.  `liquid_simulation` (solver `liquid.mac`, chunk generated from its schema) is data
 only, like the other producers: a free-surface liquid in a box on a staggered grid, its surface published as a
 changing-topology `mesh.v2` to show with `simulated_mesh_geometry` (a dielectric material for water).  Sample:
 `scenes/Tests/Simulation/liquid_dam_break.RISEscene`.
@@ -350,12 +350,12 @@ liquid_simulation
 simulated_mesh_geometry { name water  source pool.surface }
 ```
 
-Viscosity and surface tension (M7c, docs/SIMULATION_M7C_RESULTS.md) are off by default: `viscosity` (Pa s;
+Viscosity and surface tension (M7c, docs/SIMULATION_SOLVER_CONTRACT.md) are off by default: `viscosity` (Pa s;
 `viscous_walls no_slip|free_slip`) and `surface_tension` (N/m), with `density` (kg/m^3) for both; sample
 `scenes/Tests/Simulation/liquid_honey_water.RISEscene` (honey beside water).  Surface tension without viscosity is
 labelled preview.
 
-Rigid bodies (M7b, docs/SIMULATION_M7B_RESULTS.md) move with the liquid in its pressure solve: `body <name>
+Rigid bodies (M7b, docs/SIMULATION_SOLVER_CONTRACT.md) move with the liquid in its pressure solve: `body <name>
 sphere r | box sx sy sz | cylinder r h` (body frame at the centre of mass, cylinder axis z) then `motion dynamic`
 (default: the liquid integrates it; `density d` or `mass m`, `lock <xyzr>`), `motion prescribed` (`velocity`,
 `spin`, `amplitude ax ay az`, `frequency f`, `phase p`) or `motion port` (follows `rigid.bodies` in a group;
@@ -381,7 +381,7 @@ simulation_group
 standard_object { name buoy ... transform_source drop.bodies[buoy] }
 ```
 
-M7d (docs/SIMULATION_M7D_RESULTS.md): `body_object <object> [options]` makes a body from a scene object's closed
+M7d (docs/SIMULATION_SOLVER_CONTRACT.md): `body_object <object> [options]` makes a body from a scene object's closed
 mesh (world space at t = 0; body frame at its centroid and principal axes, mass properties from the mesh; the
 options of `body` but `at` and `orientation`; an open mesh is refused).  `sheet <name> port [port <accepted>]
 [load_port <offered>] [relaxation w]` is a thin open sheet as a moving boundary of the liquid (preview), following a
@@ -416,14 +416,14 @@ above, connect the cloth's `surface_mechanics` and `surface_stiffness` to `<m>` 
 (`owned pool cloth`, the liquid first).  The cloth then takes the liquid's steps.  A macro end within 1e-6 of a macro
 step of a frame time is snapped to it, so a macro step written a few digits short no longer leaves sliver steps; with
 the cloth first in Gauss–Seidel a staggered sheet still reads the cloth's state at the macro step's start.  Sample:
-`scenes/Tests/Simulation/liquid_cloth_wave.RISEscene`.  M7h (docs/SIMULATION_M7H_RESULTS.md): also connect
+`scenes/Tests/Simulation/liquid_cloth_wave.RISEscene`.  M7h (docs/SIMULATION_SOLVER_CONTRACT.md): also connect
 `cloth.surface_elements -> pool.sheet_elements` (sheet option `elements_port`): inside the macro step the cloth's model
 is corotational, and the liquid refuses an implicit sheet without its elements.  Rigid bodies (M7h) collide with each
 other (spheres, boxes, cylinders; body options `restitution e`, `friction mu`, `contact on|off`; a `body_object` among
 other bodies needs `contact off`), and `connect drop.body_contact -> pool.body_contact` gives the liquid's own copies
-of the bodies rigid.bodies' planes and body-body contact inside the macro step.  M7i (docs/SIMULATION_M7I_RESULTS.md):
+of the bodies rigid.bodies' planes and body-body contact inside the macro step.  M7i (docs/SIMULATION_SOLVER_CONTRACT.md):
 liquid resting on an implicit sheet needs a layer about 2.5 cells deep, as on a rigid floor (M7l, the level set two-valued
-at the sheet, docs/SIMULATION_M7L_RESULTS.md: without the volume correction a held bowl's 1.3-cell rim sloshing loses 2.5%
+at the sheet, docs/SIMULATION_SOLVER_CONTRACT.md: without the volume correction a held bowl's 1.3-cell rim sloshing loses 2.5%
 in 2 s and a sagging bag's 2.4 cells 4%, where M7i's 5-cell statement had 2.4 cells losing 41%); the faces at a sheet's
 free edge are split by the part the sheet covers; nothing to connect:
 
@@ -449,7 +449,7 @@ simulation_group
 }
 ```
 
-M7m (docs/SIMULATION_M7M_RESULTS.md): `viscosity` works with prescribed and implicit sheets: the sheet is a no-slip
+M7m (docs/SIMULATION_SOLVER_CONTRACT.md): `viscosity` works with prescribed and implicit sheets: the sheet is a no-slip
 wall of the viscous solve on each wetted side (no viscous stress crosses it), and an implicit cloth's vertex velocities
 are solved with the viscous step, so the liquid's drag reaches the cloth through `surface_load_steps` (nothing more
 to connect).  A staggered or one-way port sheet with viscosity is refused (its load is the pressure only).  Sample:
@@ -460,7 +460,7 @@ stretch or linearisation correction above 1%: use heavier cloth, pin the edge, o
 
 ## Coupling (M6)
 
-docs/SIMULATION_M6_RESULTS.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and
+docs/SIMULATION_SOLVER_CONTRACT.md.  `rigid_simulation` (solver `rigid.bodies`, chunk generated from its schema) and
 `simulation_group` are data only, like the other producers.  `rise-sim bake <scene> <group>` (or any member's name)
 bakes a group as ONE process running the group host; each member keeps its own cache.
 
@@ -689,25 +689,25 @@ Parameter sets shared across many chunks live in [ChunkParserRegistry.cpp](Chunk
 | Helper | Used by | Adds |
 |--------|---------|------|
 | `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … (raster dims — `width`, `height`, `pixelAR` — moved to the top-level `film` chunk in scene format v6 / Phase B2) |
-| `AddPixelFilterParams` | All 12 rasterizers | `pixel_sampler`, `pixel_sampler_param`, `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA`, `pixel_filter_paramB`, `blue_noise_sampler` |
+| `AddPixelFilterParams` | 12 of 13 rasterizers (all except `hyperspectral_radiometric_rasterizer`) | `pixel_sampler`, `pixel_sampler_param`, `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA`, `pixel_filter_paramB`, `blue_noise_sampler` |
 | `AddSpectralCoreParams` | All 6 spectral rasterizers (`pixelintegratingspectral` [FROZEN], `bdpt_spectral`, `vcm_spectral`, `pathtracing_spectral`, `auto_spectral`, `mlt_spectral` [FROZEN]) | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
 | `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (FROZEN since 2026-10-09; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5 and [docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md) §11.4) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
-| `AddStabilityConfigParams` | All 10 non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, `branching_threshold`, … |
-| `AddPathGuidingParams` | 5 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `auto_rasterizer`.  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, `auto_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
+| `AddStabilityConfigParams` | All 10 non-MLT/non-radiometric rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, … (`branching_threshold` was excised in 2026-05) |
+| `AddPathGuidingParams` | 5 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `auto_rasterizer`.  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, `auto_spectral_rasterizer`, VCM (pel + spectral), MLT, `hyperspectral_radiometric_rasterizer`, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
 | `AddAdaptiveSamplingParams` | 9 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_{pel,spectral}_rasterizer`, `bdpt_{pel,spectral}_rasterizer`, `vcm_{pel,spectral}_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
-| `AddRadianceMapParams` | All 10 non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient`, `radiance_background` |
+| `AddRadianceMapParams` | All 10 non-MLT/non-radiometric rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient`, `radiance_background` |
 | `AddProgressiveParams` | All progressive rasterizers | `progressive_rendering`, `progressive_samples_per_pass` |
-| `AddSMSConfigParams` | `pathtracing_pel_rasterizer` + `pathtracing_spectral_rasterizer` only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
+| `AddSMSConfigParams` | `pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, and `hyperspectral_radiometric_rasterizer` | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces`, `sms_extended` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md)) |
 | `AddOptimalMISParams` | 3 rasterizers: `pixelpel_rasterizer` [FROZEN], `pathtracing_pel_rasterizer`, `auto_rasterizer`.  BDPT pel/spectral and PT spectral do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator), so `optimal_mis*` lines authored against those chunks hard-fail at parse time; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
 | `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
 | `AddNoisePainterCommonParams` | Perlin / Turbulence / Wavelet / Worley / Simplex / Gabor 3D noise painters | `name`, `colora`, `colorb`, `persistence`, `octaves`, `scale`, `shift` |
-| `AddVariantTagParam` | All 29 material chunks (plus variant-participating chunks) | `variant` (CST `scene_variant` named-overlay tag; `none` = base) |
+| `AddVariantTagParam` | All 34 material chunks (plus variant-participating chunks) | `variant` (CST `scene_variant` named-overlay tag; `none` = base) |
 | `AddPhotonMapGenerateCommonParams` | All 6 photon-map generate parsers | `num`, `power_scale`, `max_recursion`, `min_importance`, `branch`, `reflect`, `refract`, … |
 | `AddPhotonMapGatherCommonParams` | All 6 photon-map gather parsers | `radius`, `ellipse_ratio`, `min_photons`, `max_photons` |
 
 Registry-level parser wrappers in `CreateAllChunkParsers()` also decorate descriptors uniformly:
 
-- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 33 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
+- **`AlphaMaterialParser`**: wraps every `ChunkCategory::Material` parser (all 34 material chunks) to add `alpha_mode` (`opaque|mask|blend`), `alpha_coverage` (`IScalarPainter` reference or inline scalar), and `alpha_cutoff` without duplicating them per material class (see `docs/ALPHA_COVERAGE.md`).
 - **`LegacyTierParser`** (`MarkFrozen` / `MarkDeprecated`): wraps chunks listed in `kLegacyTierTable` with a descriptor copy carrying their legacy tier and replacement guidance so the CST validator and editor surface frozen/deprecated diagnostics while keeping `Finalize` bit-identical.
 
 ## Where Agent Authors Usually Get Tripped Up

@@ -95,8 +95,8 @@ void SceneTextEdit::contextMenuEvent(QContextMenuEvent* event)
     });
     topMenu.addSeparator();
 
-    // Group by category — useful at SceneRoot where there are ~126 entries
-    // across 17 categories; flat for inside-a-block where the list is the
+    // Group by category — useful at SceneRoot across all registered
+    // ChunkCategory groups; flat for inside-a-block where the list is the
     // parameters of a single chunk.
     if (!sugs.empty()) {
         std::map<RISE::ChunkCategory, std::vector<const Suggestion*>> byCat;

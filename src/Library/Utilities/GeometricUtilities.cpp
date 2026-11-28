@@ -1696,7 +1696,7 @@ bool GeometricUtilities::WeldVertexPositions(
 
 //////////////////////////////////////////////////////////////////////
 // DL-382: the general open-surface certificate.  Proof and design:
-// docs/DL382_OPEN_SHEET_CERTIFICATE.md section 2.
+// docs/DEBT_LEDGER.md section 2.
 //////////////////////////////////////////////////////////////////////
 namespace
 {

@@ -229,7 +229,7 @@ static OptimalMISAccumulator::Config MakeConfig()
 //
 // This SUPERSEDES the "floating-point noise in two independently-built
 // EnvironmentSampler importance tables" explanation this file and
-// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md carried in round 6.
+// docs/DEBT_LEDGER.md carried in round 6.
 // That explanation was wrong: two separately-built Job/Scene instances
 // are not involved at all (the drift reproduces on ONE fixture), and
 // the EnvironmentSampler is built deterministically.

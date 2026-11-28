@@ -27,7 +27,7 @@ namespace
 	//! Stratified-quadrature resolution PER AXIS for the diffuse lobe's
 	//! selection coefficient C_D -- same role as SchlickSPF.cpp's
 	//! kSpecQuadN / IsotropicPhongSPF.cpp's kPhongQuadN.  See
-	//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 4.
+	//! docs/DEBT_LEDGER.md section 4.
 	const int kAshQuadN = 16;
 
 	//! The specular lanes Scatter()/ScatterNM() would emit: ONE ordinarily
@@ -115,7 +115,7 @@ static inline bool AshikminInvertPhi( const Scalar phi, const Scalar phi_root, S
 //! the caller).  kAshQuadN^2 deterministic stratified replays of
 //! GenerateSpecularRay's own (x,y) unit square, using the closed form
 //! `kray_j(direction) = fresnel(Rs_j,hdotk) * max(cos_o,0) /
-//! max(cos_i,cos_o)` derived in docs/DL98_DL99_PHONG_PDF_WEIGHTS.md
+//! max(cos_i,cos_o)` derived in docs/DEBT_LEDGER.md
 //! section 5 (the NU/NV terms in the BRDF and the inverse-pdf cancel
 //! exactly, leaving no dependence on the sampled half-vector's azimuth or
 //! polar angle beyond hdotk and cos_o -- so no separate "other lanes"
@@ -568,7 +568,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 			// ordering inside RandomlySelect and is handed straight back by
 			// RandomlySelectNonDiffuse (SMSPhotonMap / the caustic photon
 			// tracers), which applies no weight test.  See
-			// docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 7 (DL-100 sibling
+			// docs/DEBT_LEDGER.md section 7 (DL-100 sibling
 			// audit) and AshikminShirleySPFPdfConsistencyTest's `backface`
 			// rows.
 			const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), myonb.w() );

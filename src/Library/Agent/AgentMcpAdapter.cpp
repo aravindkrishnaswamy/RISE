@@ -3151,7 +3151,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 41 verbs as MCP tools.
+				// tools/list -> all registered agent verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

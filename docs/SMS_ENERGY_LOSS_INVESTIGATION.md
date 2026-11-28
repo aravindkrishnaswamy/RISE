@@ -362,7 +362,7 @@ other fixture above) read within ~1-2 %.
 FACE; the transmissive materials decided it by the IOR stack ("entering
 unless already inside"), so on an open sheet PT's paths and SMS's roots used
 two conventions.  With the materials crossing a provably open sheet by its
-face too ([DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)),
+face too ([DEBT_LEDGER.md](DEBT_LEDGER.md)),
 the flat ior-1.5 sheet reads SMS on / off 2.2506 -> 1.0004 with the SMS-on
 value UNCHANGED (0.20261 both builds; PT moved 0.090 -> 0.203), and the
 shipped scenes PT+SMS / PT: `sms_k1_refract` 1.0958 -> 0.9997 (PT / VCM

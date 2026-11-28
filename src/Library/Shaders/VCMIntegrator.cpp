@@ -2519,7 +2519,7 @@ namespace
 					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 			// DL-09: the NEE connection segment's graded-index factor
 			// (n_eye/n_light)^2 when both ends lie in one graded medium
-			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
+			// (docs/DEBT_LEDGER.md §3(ii)); exactly 1
 			// otherwise.  Throughput only -- no pdf above reads it.
 			const Scalar gradedScale = GradedIndexMedium::ConnectionScaleToPoint(
 				v.pGradedMedium, v.gradedIOR, ls.position );

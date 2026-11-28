@@ -20,7 +20,7 @@
 //  handler, the Metal contexts).  A second live instance refuses to
 //  configure, and a process applies one set of result-affecting options.
 //
-//  Parameters and their legacy environment names: docs/SIMULATION_M2_RESULTS.md.
+//  Parameters and their legacy environment names: docs/SIMULATION_SOLVER_CONTRACT.md.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

@@ -8,7 +8,7 @@ first byte-splice implementation was later deleted in the July 2026 CST
 cutover. Current persistence edits the retained CST `Document` and
 [`SaveEngine`](../src/Library/SceneEditor/SaveEngine.cpp) serializes it
 byte-exactly when unedited and minimal-diff when edited. The Phase-6 body below
-is historical; see [ROUND_TRIP_SAVE_PLAN.md](ROUND_TRIP_SAVE_PLAN.md).
+is historical; see [gui/ADR_DOCUMENT_FIRST_EDITOR.md](gui/ADR_DOCUMENT_FIRST_EDITOR.md).
 **Owner**: Aravind Krishnaswamy
 **Scope**: Add a true interactive 3D viewport on top of the existing Mac,
 Windows, and Android RISE apps. Toolbar-driven object/camera/timeline mutation,

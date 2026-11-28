@@ -31,7 +31,7 @@ namespace RISE
 		// envelope without a frame list (LoadFrameTemplate); fire_medium reads
 		// such a cache directly (AttachCache).
 		constexpr const char* FireMethaneSolverId = "fire.methane";
-		// Version 3 (docs/SIMULATION_M8_RESULTS.md section 13): the pre-pilot rim-ignition
+		// Version 3 (docs/SIMULATION_SOLVER_CONTRACT.md section 13): the pre-pilot rim-ignition
 		// witness is a product fraction of 1e-6 (FireCase::RimIgnitionProductWitness), so
 		// every fire key changed.  Caches of versions 1 and 2 use the same grid and receipt
 		// formats: stale for baking (the version is in the key), still playable.

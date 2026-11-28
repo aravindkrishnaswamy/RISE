@@ -33,7 +33,7 @@
 //    WHY THE CLOSED FORMS HERE ARE REFERENCE-FREE.  Rows A and B do not
 //    compare one integrator against another; they compare against an
 //    analytically known number.  Prior debt-30-adjacent investigations
-//    (docs/CAUSTIC_PHOTONMAP_NORMALIZATION.md 9-11) burned four sessions
+//    (docs/REFRACTIVE_RADIANCE_SCALING.md 9-11) burned four sessions
 //    on references that could not reach, or contaminated, the quantity
 //    under test.  A Lambertian luminaire viewed through one flat delta
 //    interface has no such escape hatch.

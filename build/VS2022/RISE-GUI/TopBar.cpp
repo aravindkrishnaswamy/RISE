@@ -637,7 +637,7 @@ void TopBar::updateSaveChip()
 {
     if (!m_saveBtn) return;
     // Untitled scenes (loadedFilePath empty but a bridge exists -- start-
-    // screen create path, docs/gui/START_SCREEN.md §5.2) get the SAME
+    // screen create path, docs/gui/APPROACHABILITY_FOUNDATION.md §5.2) get the SAME
     // save affordance: MainWindow::onSaveScene() routes to Save-As for
     // them, so the pill never leads to a silent no-op.
     if (m_loadedFilePath.isEmpty() && !m_bridge) {
@@ -724,7 +724,7 @@ void TopBar::updateSceneIdentity()
     if (m_loadedFilePath.isEmpty()) {
         if (m_bridge) {
             // Untitled scene (start-screen create path,
-            // docs/gui/START_SCREEN.md §5.2): loaded from the bundled
+            // docs/gui/APPROACHABILITY_FOUNDATION.md §5.2): loaded from the bundled
             // starter template, not yet on disk.  Gains a real name via
             // Save-As.
             m_sceneFileLabel->setText(QStringLiteral("Untitled"));

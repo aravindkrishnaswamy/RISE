@@ -1553,8 +1553,8 @@ static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
 // A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
 // path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
 // inline values for Reference-kind material scalars (g, roughness) that bypass the
-// descriptor's AllTokensAreFiniteNumbers gate; value-level isfinite is unreliable
-// under -ffast-math, so this is a STRING-layer check.
+// descriptor's AllTokensAreFiniteNumbers gate; string-layer rejection stays
+// immune even under -Ofast/-ffinite-math-only (macOS pairs -fno-finite-math-only since 2026-07-29).
 static bool ScalarLiteralIsNonFinite( const char* s )
 {
 	if( !s ) return false;
@@ -2147,7 +2147,7 @@ void Job::DestroyContainers()
 //! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 //! \return TRUE if successful, FALSE otherwise
 bool Job::SetPrimaryAcceleration(
-	const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+	const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 	const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 	const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 	const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
@@ -3610,7 +3610,7 @@ bool Job::AddPNGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3717,7 +3717,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3813,7 +3813,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3900,7 +3900,7 @@ bool Job::AddJPEGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;

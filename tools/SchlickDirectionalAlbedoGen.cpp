@@ -3,7 +3,7 @@
 //  SchlickDirectionalAlbedoGen.cpp - DL-310: bakes the directional
 //    albedo of the DL-225 bounded Schlick SPECULAR lobe, the quantity
 //    the coupled diffuse term of SchlickBRDF / SchlickSPF reads
-//    (docs/DL178_DL212_BOUNDED_SCHLICK_WARD.md, "DL-310").
+//    (docs/DEBT_LEDGER.md, "DL-310").
 //
 //  Writes src/Library/Materials/SchlickDirectionalAlbedo_LUTData.cpp.
 //  Run from the PROJECT ROOT:

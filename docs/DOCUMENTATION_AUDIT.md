@@ -1,260 +1,69 @@
 # Documentation Audit
 
 This document tracks repository-wide audits of RISE's first-party documentation.
-The consolidated implementation backlog produced alongside the November 2026
-audit lives in [ROADMAP.md](ROADMAP.md).
+The consolidated implementation backlog lives in [ROADMAP.md](ROADMAP.md).
 
 ---
 
-## Audit — 2026-11-10 (`6946c4c82`)
+## Audit & Stale-Doc Cleanup — 2026-11-27 (`b6663f1af`)
 
-Between the 2026-07-24 audit (`1514297d`) and `6946c4c82` (3,738 commits),
-first-party documentation grew from 142 files to **311+ tracked Markdown files**
-alongside **523 standalone C++ test suites** (now **529** on `master`), **176 scene chunk keywords**,
-**43 agent/MCP tools**, **9 runtime agent skills** (`skills/agent/`), and **12 contributor workflow skills** (`docs/skills/`).
+Between the 2026-11-10 audit (`6946c4c82`) and `b6663f1af` (1,447 commits),
+major subsystems landed across **HyLIoS hyperspectral skin** (P0–P8,
+`hylios_skin_material` v2, `hyperspectral_radiometric_rasterizer` v2),
+**Simulation** (`cloth.shell` m3a.8, `rigid.bodies` m6.2, `liquid.mac` m7m.1,
+`fire.methane` v3 CPU/Metal), **Rough Dielectric BSDF**
+(`rough_dielectric_material`), **Blender procedural / OSL / MixMaterial**
+(C ABI v23, 42 native shader nodes), **unified make/Xcode build flags**
+(`24423067f`), and **full Windows VS2022 + 503/503 CMake test suite builds**
+(`b6663f1af`).
 
-### Major accuracy corrections applied
+### 1. Aggressive Pruning & Citation Migration
 
-1. **Root & workflow guides (`README.md`, `AGENTS.md`, `CLAUDE.md`):**
-   - Removed the obsolete `branching_threshold` invariant from `AGENTS.md`
-     (multi-lobe path-tree splitting was completely excised in 2026-05 in favor
-     of single-lobe `RandomlySelect` + aggregate `ISPF::Pdf()` MIS partners).
-   - Removed the stale `CLAUDE.md` note claiming `shapes.RISEscene` still used
-     frozen `pixelpel_rasterizer`, deduplicated repeated `DL-25` / `DL-103` /
-     `DL-127` entries, updated `DL-41` / `DL-103` / `DL-161` / ABI v17 /
-     Legacy Phase 2 status claims, moved trailing bullets back above
-     `## Thread priority`, and replaced stale Makefile header-tracking caveats
-     with current `-MMD -MP` `.d` sidecar + `--tier` / `--filter` /
-     `tools/red_prove.sh` / `--mcp` / `--agent-eval` instructions.
-2. **Core rendering, materials, spectral & legacy tier docs:**
-   - Updated [IMPROVEMENTS.md](IMPROVEMENTS.md), [MATERIALS.md](MATERIALS.md),
-     [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md),
-     [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md),
-     [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md),
-     [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [SMS.md](SMS.md),
-     [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md), [VCM.md](VCM.md),
-     [OIDN.md](OIDN.md), [FRAMESTORE_DESIGN.md](FRAMESTORE_DESIGN.md), and
-     [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) to reflect shipped Hair BSDF +
-     medulla + Phase 4 LOD, Stage C D65 Jakob-Hanika LUT (`100 %` convergence),
-     `sms_extended` Phases 1–4, VCM volume merging (`DL-469`), scalar material
-     `alpha_coverage` (`DL-214`), `DisplayTransform::AgX` scalar placeholder scope, and Legacy
-     Phase 2 scene migrations.
-3. **GUI, editor, importers & agentic-redesign docs:**
-   - Updated [GUI_ROADMAP.md](GUI_ROADMAP.md) and `docs/gui/*.md` for shipped
-     Material Editor Slices 4–6 (`MaterialPreview` 3D shaderball, pipe-coloured
-     sockets/adapters, Kelvin/Sellmeier, measured metals, thin-film strip),
-     `ObjectGraphCanvas`, exact-byte CST undo, and Windows Qt `NamedViewsPanel` /
-     Credential Manager parity gaps (both subsequently shipped on 2026-11-12 in Tier 0).
-   - Added accurate status headers across `docs/agentic-redesign/00..91`,
-     subsystem `README.md`s (`src/Library`, `Parsers`, `Blender`, `android`,
-     `tests`, `scenes`, `evals`), and `docs/skills/*.md`.
-4. **Debt Ledger & link hygiene:**
-   - Repaired misplaced/headerless table blocks in
-     [DEBT_LEDGER.md](DEBT_LEDGER.md) and reconciled exact row counts (**357**
-     numeric `DL-*` rows at `6946c4c82`: **332 closed**, **18 parked**, **7 active open**:
-     `DL-626..DL-632`; all 7 subsequently closed on 2026-11-12 in Tier 0 -> **339 closed**, **18 parked**, **0 active open**), plus shipped status banners on `BATCH8..12_*.md`.
-   - Fixed all residual broken repository-relative Markdown links across all
-     tracked `.md` files (unbackticked `[Rd Ft](lc)` / `[...](float)` /
-     `[...](d)` / `[...](ray,)` code expressions, untracked `var_test` link in
-     `AUTO_RASTERIZER_DESIGN.md`, and local `.claude/skills` link in
-     `gui/SPECTRAL_DIFFERENTIATORS.md`).
+Pruned **290** completed execution records, per-revision logs, closed debt memos,
+and superseded snapshots (preserving git history and all runtime-read data/test
+fixtures such as `docs/data/`, `docs/evidence/`, `rendered/fire_production_calibration/`,
+`docs/INTERACTIVE_EDITOR_PLAN.md`, `docs/FIRE_SIM_DATASET_MANIFEST.md`,
+`docs/FIRE_SMOKE_TRANSPORT_ADOPTION_R212.md`, and
+`docs/FIRE_SMOKE_PRODUCER_KERNEL_CAMPAIGN.md`):
 
-### Status of 2026-07-24 removal candidates
+- **25** `BATCH7..12_*` closed debt-batch memos → migrated citations to [DEBT_LEDGER.md](DEBT_LEDGER.md)
+- **83** closed `DL*` individual debt-closure memos → migrated citations to [DEBT_LEDGER.md](DEBT_LEDGER.md)
+- **94** `FIRE_SMOKE_*_R2xx` per-revision experiment logs, commit maps, and superseded fire proposals → migrated citations to [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md)
+- **32** `SIMULATION_M0..M8` completed milestone design/results logs → migrated citations to [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) / [SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md) (retaining [SIMULATION_M7_REFERENCES.md](SIMULATION_M7_REFERENCES.md))
+- **34** completed landing plans, dated audits, baselines, review-round logs, and retired removal candidates (`CONSOLIDATION_*`, `PRE_PHASE1_*`, `BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1..3`, `PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1..3`, `UNIFIED_INTEGRATOR_*`, `SMS_UNIFORM_SEEDING_*`, `SMS_EXTENDED_PHASE1..2_VALIDATION`, `GUILLOCHE_*`, `INTEGRATOR_REFACTOR_*`, and completed C++/BVH/displaced-geometry/round-trip-save plans)
+- **8** superseded/completed `docs/gui/` snapshots and branch ledgers (current-state audit, design brief, redesign implementation, properties/references, open-items ledger, transaction model, environment section, and start-screen plan; remaining open items migrated to [GUI_ROADMAP.md](GUI_ROADMAP.md))
+- **11** completed `docs/agentic-redesign/` cutover plans, closed arc logs, and superseded designs (`61`, `62`, `IMPLEMENTATION_SLICES`, `72–76`, `81`, `86`, `CREATIVITY_JOURNAL`)
+- **3** dated scene/eval audit snapshots (`scenes/` 2026-07-24 scene audit, `evals/` render-grading convergence and dated results snapshots)
 
-Nine earlier transient phase/audit fragments were removed prior to `6946c4c82`;
-the four high-confidence candidates listed in the July 2026 table below
-(`CONSOLIDATION_MANUAL_GUI_CHECKLIST.md`, `CONSOLIDATION_WINDOWS_PASS.md`,
-`_audit_memory.md`, `PRE_PHASE1_OPTION_C_DESIGN.md`) remain tracked with
-explicit historical banners until their remaining prose references are retired.
+All **307** incoming citations across `src/`, `tests/`, `tools/`, `scripts/`, and
+surviving Markdown files were migrated to canonical surviving docs.
+
+### 2. Active Documentation Updates
+
+- **`CLAUDE.md`**: Rewritten from ~359 KB of superseded chronological entries into a compact current-invariants companion.
+- **`README.md` & `AGENTS.md`**: Updated Xcode `Deployment` fast-math parity (`24423067f`), `LTO=full|thin|off`, `hyperspectral_radiometric_rasterizer`, Blender ABI v23, `data/` layout, and simulation doc pointers.
+- **Core references (`docs/`)**: Updated `README.md`, `ROADMAP.md`, `PERFORMANCE.md` (`ExpressionMemo::Tables` = 4016 B, removed nonexistent `maxStoredLightVertices`), `CROSS_PLATFORM_CI.md` (`b6663f1af` clean Windows build), `MATERIALS.md` (34 material chunks, BioSpec correction, `hylios_skin_material` v2, `rough_dielectric_material`/`mix_material`/`diffuse_transmission_material`/`null_boundary_material`), `RENDERING_INTEGRATORS.md` (13 rasterizers: 9 active + 4 frozen), `LIGHTS.md` (`rect_light`/`shape_light`), `SCENE_CONVENTIONS.md`, `VCM.md`, `OIDN.md`, `IMPROVEMENTS.md`, `SPECTRAL_PARITY_AUDIT.md`, `RELEASE_NOTES.md`, `BLENDER_MATERIAL_TRANSLATION.md` (ABI v23 & 42 native shader nodes), `BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md`, `MIX_MATERIAL_PATH_STATE_AO_DESIGN.md`, `HYLIOS_WORKPLAN.md`, `RADIOMETRIC_PRIMITIVES.md`, `HYLIOS_LOCAL_RESPONSE_CORE.md`, `HYLIOS_EQUATIONS.md`, `data/hylios/README.md`, `SIMULATION_IN_RISE_PROPOSAL.md`, `SIMULATION_SOLVER_CONTRACT.md`, `SIMULATION_GUI_STATUS.md`, `SIMULATION_PERFORMANCE.md`, and `FIRE_SMOKE_STATUS.md`.
+- **Subsystem, GUI, Scene, Test & Eval docs**: Updated `src/Library/README.md` (`Acceleration/`, `Simulation/`, `HyperspectralRadiometricRasterizer`), `src/Library/Parsers/README.md` (193 keywords, removed `branching_threshold`), `src/Blender/README.md` (ABI v23), `android/README.md` & `build/cmake/rise-android/toolchain_notes.md` (484 TUs), `scenes/README.md` (removed nonexistent `Internal/`), `scenes/FeatureBased/README.md` (`HyLIoS/`), `scenes/Tests/README.md` (`Materials/HyLIoS/`, 10 new `Simulation/` scenes), `scenes/Tests/SDF/README.md`, `tests/README.md` (10 dual-mode extended suites, Windows MSVC build status), `evals/README.md` (OpenAI Responses API, `evals/references/`), `docs/GUI_ROADMAP.md`, `docs/gui/*`, `docs/agentic-redesign/00-OVERVIEW.md` / `00-CHARTER.md` / `50-agentic-surface.md` / `60-supersession-and-migration.md`, and `docs/skills/README.md` / `variance-measurement.md`.
+
+### 3. Stale Code Comment Sweep (`src/`, `build/`, `tests/`)
+
+- Updated stale `-ffast-math` / `-ffinite-math-only` comments that still claimed `std::isfinite`/`std::isnan` fold away on macOS.
+- Updated stale `AsciiSceneParser` / `ParseAndLoadScene` / `DispatchChunkParameters` comments pointing to the deleted July 2026 streaming parser.
+- Updated stale `BSPTreeSAH` comments on `ObjectManager` / `TriangleMeshGeometryIndexed` and `BilinearPatchGeometry` copy-paste comments.
+- Updated stale `ROMMRGB` working-space comments to `Rec709RGB_Linear` / `Rec709RGBPel`.
+- Removed stale `TODO` / "Phase N pending" / "not yet implemented" comments on already-shipped features (`VCMPelRasterizer`, `MaterialIntrospection`, `BVH.h`, `AccelerationConfig.h`, `PixelBasedRasterizerHelper.cpp`, `RISE_API.h`, `ViewportBridge.h`, `RISEViewportBridge.h`, `SceneEditor.cpp`, `SceneEditController.h`, `AgentSession.h`, `FabricPresets.h`, `HairBSDF.h`, `FrameSink.h`, `ThinFilmBRDFTest.cpp`).
+- Fixed stale hardcoded counts (`AgentMcpAdapter.cpp`, `AgentRpc.h`, `SceneTextEdit.cpp`, `SceneEditorSuggestionsTest.cpp`), broken/non-existent doc paths in comments (`CAMERA_CONTROLS_UX.md`, `BVH_CLEANUP_AND_NEXT.md`, `abi-preserving-api-evolution.md`, `docs/skills/procedural-textures.md`, `eval-hosted-provider-keys.md`, `memory/feedback_no_default_params.md`), and pruned-test citations.
 
 ---
 
-## Audit — 2026-07-24 (`1514297d`)
+## Earlier Audits (Summary)
 
-This report records a repository-wide audit of RISE's first-party
-documentation at commit `1514297d`. It is both a snapshot of the work
-performed and a removal/consolidation backlog for documentation that no longer
-belongs in the active reference set.
+- **2026-11-10 (`6946c4c82`)**: Updated root guides, rendering/material/spectral docs, GUI/agentic headers, and `DEBT_LEDGER.md` counts; fixed all relative Markdown links.
+- **2026-07-24 (`1514297d`)**: First repository-wide audit post-CST cutover; replaced `AsciiSceneParser` doc references, introduced lifecycle labels in `docs/README.md`, and established the safe citation-migration cleanup sequence.
 
-No documentation was deleted during this audit. Design records in this
-repository are frequently cited from source comments and tests, so deletion is
-only safe after those citations and any still-current invariants have been
-migrated.
+## Ongoing Maintenance Rules
 
-## Scope and method
-
-The pre-audit inventory contained 142 tracked first-party documentation files:
-
-- 4 root documents
-- 114 files under `docs/`
-- 24 subsystem, test, scene, tool, and asset README files
-
-The count excludes vendored documentation under `extlib/`, third-party license
-files, generated logs and render output, and ignored local experiment notes.
-
-The audit:
-
-1. inventoried every tracked first-party Markdown/text document;
-2. compared commands, paths, architecture claims, feature status, tests, and
-   scene indexes against the current tree and implementation;
-3. checked repository-relative Markdown links;
-4. added lifecycle labels to plans whose implementation status had changed;
-5. separated active references from historical records and removal candidates.
-
-## Corrections made
-
-### Canonical architecture and workflow
-
-- Replaced stale references to the removed `AsciiSceneParser.cpp` with the
-  current CST loader and `ChunkParserRegistry.cpp` entry points.
-- Documented the v7/CST scene-language cutover and identified legacy
-  macro/loop syntax as migration history rather than current syntax.
-- Corrected the parser-extension instructions in the agent and parser guides.
-- Marked `README.txt` as the intentionally frozen May 2006 user manual.
-- Rebuilt `docs/README.md` as a lifecycle-oriented index instead of presenting
-  every plan as equally current.
-
-### Tests and sample scenes
-
-- Replaced the manually maintained 77-test inventory with the current 219
-  standalone test executables and source-of-truth discovery commands.
-- Corrected scene-directory indexes, adding current `Camera`, `Lighting`, and
-  `Lights` coverage and removing nonexistent directories.
-- Added missing feature-scene entries for EnamelWatch, GuillocheWatch,
-  Materials, and SDF.
-- Corrected the current BSSRDF output color-space description.
-
-### Feature-status drift
-
-Lifecycle/status headers were corrected for the following major documents:
-
-- auto rasterizer: shipped;
-- FrameStore/HDR/AOV redesign: substantially implemented rather than
-  Phase-1-only;
-- glTF importer and physically based pipeline: broad core shipped with
-  explicit deferred extensions;
-- color-space migration stages A and B: complete;
-- scene variants: shipped;
-- agent chat compaction: shipped;
-- CST/save cutover execution plans: completed; broader immutable-scene design:
-  partial;
-- dynamic UI and agentic product facets: core surfaces shipped, advanced
-  snapshot/orchestration/security work partial;
-- interactive editor plan: completed/superseded by the CST implementation;
-- GUI roadmap and approachability work: partially implemented;
-- desktop redesign brief, environment editor, and editor-state hardening:
-  executed;
-- cameras/views and render-mode milestones: mostly or fully implemented;
-- entity creation, material editing, AI security, and transaction work:
-  partially implemented;
-- LLM runtime, MCP tool surface, and validation core: shipped with remaining
-  hardening work;
-- guilloche and unified-integrator studies: completed historical studies;
-- SMS uniform-seeding/two-stage plans: completed execution records;
-- vitreous-enamel plan: hero implementation shipped, broader roadmap partial.
-
-### Link hygiene
-
-The initial relative-link scan found 278 invalid targets. Most were mechanically
-stale `file.cpp:line` link targets or paths moved during the parser cutover.
-Those links were normalized or retargeted.
-
-The residual targets referred to deleted experiment scripts, reverted parser
-prototypes, removed tests, or pre-consolidation implementation files. Those
-were converted from dead links to plain historical path names. The final
-repository-relative link scan reports no missing first-party targets.
-
-## Current documentation classification
-
-### Active reference material
-
-Keep current and treat as authoritative:
-
-- `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/README.md`;
-- architecture and workflow references such as `ARCHITECTURE.md`,
-  `SCENE_CONVENTIONS.md`, `PERFORMANCE.md`, `MATERIALS.md`,
-  `RENDERING_INTEGRATORS.md`, and `SPECTRAL_RENDERING.md`;
-- current subsystem READMEs under `src/`, `tests/`, `scenes/`, and `tools/`;
-- process skills under `docs/skills/`;
-- GUI and agentic specifications that still contain unimplemented milestones.
-
-### Intentionally historical
-
-Retain, but do not present as current implementation guidance:
-
-- `README.txt`, the frozen 2006 manual;
-- completed design and retrospective documents whose decisions are still
-  cited by code or tests;
-- dated audits and investigation logs that explain a shipped architecture or
-  a rejected approach.
-
-Historical documents should carry an explicit status/date banner and point to
-the current reference when one exists.
-
-## Removal candidates
-
-### High-confidence candidates
-
-These files appear to have completed their one-time purpose and have no known
-live source/test citations. Review once for unique operational knowledge, then
-delete or move their useful residue into a retrospective:
-
-| Candidate | Why it is no longer an active reference | Gate before removal |
-|---|---|---|
-| `docs/CONSOLIDATION_MANUAL_GUI_CHECKLIST.md` | One-time consolidation verification checklist | Confirm no outstanding unchecked item still maps to a release requirement |
-| `docs/CONSOLIDATION_WINDOWS_PASS.md` | Dated Windows consolidation pass record | Preserve any still-relevant platform command in the current build docs |
-| `docs/_audit_memory.md` | Seed state for a weekly audit workflow that has not been maintained since May 2026 | Confirm no external automation consumes the file; this report supersedes it |
-| `docs/PRE_PHASE1_OPTION_C_DESIGN.md` | Records an abandoned/reverted PRE experiment and is not cited by current source/tests | Extract any unique stop condition into the current PRE/VCM retrospective and migrate the historical link in `CLAUDE.md` |
-
-### Consolidate first
-
-These clusters are stale or overly fragmented, but deletion now would destroy
-useful rationale or break live citations:
-
-| Cluster | Recommended destination | Why deletion must wait |
-|---|---|---|
-| `PRE_PHASE1_STATUS.md` and related PRE/VCM experiment notes | A compact PRE/VCM retrospective plus current architecture notes | The status log is very large, contains unique experiment evidence, and is cited from source |
-| Guilloche plan/results documents | Feature-scene README or one completed-study retrospective | Results are useful, but the plan/result split no longer helps day-to-day navigation |
-| Unified-integrator analysis, baselines, decision, and auto-rasterizer design | Keep the current auto-rasterizer reference and one compressed decision record | Some decision documents are cited by implementation comments |
-| Physical-light-transport landing plans 1–3 | One shipped-architecture retrospective | Several source comments still cite individual phases |
-| SMS uniform/seeding/two-stage solver fragments | `SMS.md` plus one dated solver retrospective | Multiple implementation comments cite the individual plans |
-| Agentic execution plans 61 and 62 | Current runtime/tool-surface docs plus a short rollout record | A few live implementation citations remain |
-| `docs/gui/CURRENT_STATE_AUDIT.md` | A generated/current GUI capability map | It is already historical, but other GUI plans still use it as their baseline |
-
-### Do not delete yet
-
-- `docs/ROUND_TRIP_SAVE_PLAN.md`: many live source citations target its
-  invariants and section anchors.
-- BVH and displaced-subdivision plans: they explain shipped architecture and
-  remain cited by implementation code.
-- `README.txt`: intentionally retained project history, now clearly labelled.
-- GUI/agentic plans with remaining unshipped milestones: their status labels
-  now distinguish implemented work from backlog.
-
-## Safe cleanup sequence
-
-For each removal or consolidation:
-
-1. identify every source, test, and documentation citation;
-2. extract still-current invariants into an active architecture/reference
-   document;
-3. migrate citations to that stable destination;
-4. preserve material experiment results in one retrospective when they affect
-   future engineering choices;
-5. rerun the relative-link audit;
-6. only then delete the superseded files.
-
-This order prevents documentation cleanup from erasing the reasoning behind
-load-bearing renderer and scene-language decisions.
-
-## Ongoing maintenance recommendations
-
-- Generate test counts and inventories from the tree; do not hand-maintain a
-  numbered executable list.
-- Require every execution plan to declare one of: proposed, active, partially
-  implemented, shipped, superseded, or historical.
-- When code cites a design document, cite a stable architecture section rather
-  than a temporary phase plan whenever possible.
-- Run a repository-relative link check when files are moved or removed.
-- Update `docs/README.md` when a document changes lifecycle, not merely when a
-  new document is added.
+- Generate test, chunk, and tool counts from the tree rather than hand-maintaining static counts in prose whenever possible.
+- Require every plan document to state its lifecycle status (`proposed`, `active`, `partially implemented`, `shipped`, `superseded`) at the top.
+- Cite stable reference docs (`ARCHITECTURE.md`, `MATERIALS.md`, `DEBT_LEDGER.md`, `SIMULATION_SOLVER_CONTRACT.md`, etc.) from source comments instead of transient per-phase or per-revision logs.
+- Run a repository-relative Markdown link scan and `SourceHygieneTest` whenever moving, renaming, or deleting documentation files.

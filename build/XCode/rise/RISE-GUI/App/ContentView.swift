@@ -427,7 +427,7 @@ struct ContentView: View {
             } else {
                 // No scene (fresh launch, after Close Scene, or a failed
                 // load) — the three-path start screen
-                // (docs/gui/START_SCREEN.md).  A load error renders as a
+                // (docs/gui/APPROACHABILITY_FOUNDATION.md).  A load error renders as a
                 // banner atop the start screen rather than a dead
                 // placeholder.
                 StartView()

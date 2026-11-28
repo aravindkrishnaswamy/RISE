@@ -4,11 +4,11 @@ Status: **r86 design contract; P0/P1 landed, P2 pinned**
 Reference date: 2026-08-18  
 Normative companions: [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md),
 [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md), and
-[FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md).
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md).
 
 ## Current transport amendment — r264
 
-The owner-authorized [centered momentum revision](FIRE_SMOKE_CENTERED_MOMENTUM_R264.md)
+The owner-authorized [centered momentum revision](FIRE_SMOKE_STATUS.md)
 supersedes earlier shared-scalar-carrier requirements for interior momentum
 in the active resident Metal production owner. Its primal gas carrier is
 centered density times projected face velocity plus unchanged physical gas

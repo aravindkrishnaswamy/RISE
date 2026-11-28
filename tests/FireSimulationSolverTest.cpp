@@ -5705,7 +5705,7 @@ int main()
 				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
 	{
-		// r273 poor-burn opt-ins (docs/FIRE_SMOKE_POOR_BURN_R273.md): parsing, off
+		// r273 poor-burn opt-ins (docs/FIRE_SMOKE_STATUS.md): parsing, off
 		// identity, bounds and conservation of the soot radiation budget and the
 		// sub-grid sheet oxidation gate.
 		Check(ParseMethaneSootRadiativeFractionCap(0)==-1.0&&

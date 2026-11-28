@@ -82,7 +82,7 @@ What the engine already does correctly for this asset:
 - BSDF: GGX (anisotropic alpha_x / alpha_y), Smith joint G2,
   Schlick Fresnel, Kulla-Conty multiscattering compensation, and the
   reciprocal single-pass interface-transmission model documented in
-  `docs/DL37_GGX_DIFFUSE_TRANSMISSION.md`.  See
+  `docs/DEBT_LEDGER.md`.  See
   `src/Library/Materials/GGXBRDF.cpp`.
 - Metallic interpolation still supplies dielectric F0 = 0.04 and conductor
   F0 = baseColor, with diffuse colour `baseColor * (1 - metallic)`.  GGX
@@ -233,7 +233,7 @@ Before landing 1, set up:
 
 ## Landing 1 — HDR primary output
 
-**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md)**
+**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md)**
 
 ### Goal
 
@@ -297,7 +297,7 @@ Out:
 
 ## Landing 2 — Ray differentials and mip LOD
 
-**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md)**
+**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md)**
 
 ### Goal
 
@@ -368,7 +368,7 @@ Out:
 
 ## Landing 3 — Spectral upsampling + spectral sun-and-sky
 
-**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md)**
+**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md)**
 
 ### Goal
 
@@ -678,8 +678,8 @@ clearcoat-over-paint scenes; its own landing.
 > through as a known failure.  The residual deficit *is* budget truncation —
 > the ~56 % of the returning diffuse population that TIRs back down hits
 > `kMaxReflectRecur = 2` at `steps = 2` and is dropped — so the original prose
-> describes what is left, not what was wrong.  Guarded by
-> [tests/CompositeExtinctionTest.cpp](../tests/CompositeExtinctionTest.cpp),
+> describes what is left, not what was wrong.  Originally guarded by
+> `tests/CompositeExtinctionTest.cpp` (retired in test-suite consolidation),
 > which red-proves 10 checks against the pre-fix code.
 >
 > **Row #7 (clearcoat / red GGX-PBR) is not "the same bug in another regime".**
@@ -745,7 +745,7 @@ references, not the current reciprocal interface-transmission semantics.
 
 ### Findings, in priority order
 
-> **UPDATE 2026-09-28 (DL-24, slice `debt-dl24`) — Finding A is CLOSED for row #3.**  After the 2026-09-01 IOR-stack fix the residual really was the budget truncation this finding describes (per-bounce ledger: exit 0.4260 + dropped 0.5740 = 1.0000 at normal incidence).  The fix went further than A1 or A2.  The budgets are now Russian-roulette onsets, not truncations, and `CompositeSPF` prices coat-over-substrate transport with a deterministic Monte-Carlo layered evaluator (Guo 2018 / PBRT-v4 `LayeredBxDF::f` -- the position-free cousin of A2).  It also reports an exact `Pdf`, and `CompositeMaterial` presents that evaluator as its BSDF, so NEE no longer prices the bare substrate.  Row #3 reads **1.0000** at all four angles and is gated at kPosturePass.  Row #7 is unchanged ({0.0389, 0.0654} at 0/60 deg): `GGXSPF` has no transmission lobe, so the substrate is never reached, and `coated_material` remains the answer there.  See [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md).
+> **UPDATE 2026-09-28 (DL-24, slice `debt-dl24`) — Finding A is CLOSED for row #3.**  After the 2026-09-01 IOR-stack fix the residual really was the budget truncation this finding describes (per-bounce ledger: exit 0.4260 + dropped 0.5740 = 1.0000 at normal incidence).  The fix went further than A1 or A2.  The budgets are now Russian-roulette onsets, not truncations, and `CompositeSPF` prices coat-over-substrate transport with a deterministic Monte-Carlo layered evaluator (Guo 2018 / PBRT-v4 `LayeredBxDF::f` -- the position-free cousin of A2).  It also reports an exact `Pdf`, and `CompositeMaterial` presents that evaluator as its BSDF, so NEE no longer prices the bare substrate.  Row #3 reads **1.0000** at all four angles and is gated at kPosturePass.  Row #7 is unchanged ({0.0389, 0.0654} at 0/60 deg): `GGXSPF` has no transmission lobe, so the substrate is never reached, and `coated_material` remains the answer there.  See [DEBT_LEDGER.md](DEBT_LEDGER.md).
 
 **Finding A — Catastrophic dielectric/Lambertian loss (#3).**  Most
 critical: this is the canonical "thin coat over diffuse paint"

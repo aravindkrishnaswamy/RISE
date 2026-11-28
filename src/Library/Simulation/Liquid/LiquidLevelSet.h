@@ -38,11 +38,11 @@ enum class Extension { Linear, Constant };
 double Weno5(double v1, double v2, double v3, double v4, double v5);
 
 //! m7f: grid faces that the level set's stencils do not read across (the faces
-//! an implicitly coupled sheet closes; docs/SIMULATION_M7F_RESULTS.md).  The two
+//! an implicitly coupled sheet closes; docs/SIMULATION_SOLVER_CONTRACT.md).  The two
 //! sides of a sheet are separate regions of the level set; a stencil that reads
 //! across one carries one side's values to the other (the WENO advection, the
 //! reinitialisation, the gradient that triggers it).
-//! m7l (docs/SIMULATION_M7L_RESULTS.md): the level set is two-valued at a sheet.  The
+//! m7l (docs/SIMULATION_SOLVER_CONTRACT.md): the level set is two-valued at a sheet.  The
 //! cells within a stencil's reach of a closed face (`second`) hold, besides their own
 //! value (their own side's level set, phi), the level set of the sheet's other side
 //! extended across the sheet to them along the sheet's normal (as a rigid solid's cells
@@ -58,7 +58,7 @@ double Weno5(double v1, double v2, double v3, double v4, double v5);
 //! beside a sheet holding liquid on one side at the signed distance to the sheet (a
 //! Dirichlet condition, LiquidModel PinSheetInterface, removed in m7l), which with one
 //! value per cell could not say where a thin layer on a curved sheet ends: a bag's 2.4
-//! cells lost 41% in 2 s and a held bowl's 1.3 cells 44% (docs/SIMULATION_M7J_RESULTS.md).
+//! cells lost 41% in 2 s and a held bowl's 1.3 cells 44% (docs/SIMULATION_SOLVER_CONTRACT.md).
 //! Beyond the domain the level set's linear extension stays.  Empty: no change to
 //! any arithmetic.
 struct LevelSetBarrier {
@@ -163,7 +163,7 @@ enum class ReinitScheme { None, Sussman, RussoSmereka, RussoSmerekaCentral, Subc
 //!                 step min(cfl h, d/2);
 //!   Frozen        near cells keep their values (the zero contour cannot
 //!                 move; the rest is redistanced from them).
-//! Measured choice (docs/SIMULATION_M7A_RESULTS.md): RussoSmereka drifts when
+//! Measured choice (docs/SIMULATION_SOLVER_CONTRACT.md): RussoSmereka drifts when
 //! applied every step (its estimate is biased high, so near-cell values
 //! shrink call after call); Subcell is the default.
 //! `barrier` (m7f): closed faces as walls (a neighbour across one is absent).
@@ -174,7 +174,7 @@ enum class ReinitScheme { None, Sussman, RussoSmereka, RussoSmerekaCentral, Subc
 //! upwind slope beside the slope from the true interface, |grad phi| > 1, and the
 //! wall cell falls further: a false interface spreads along the wall, settling
 //! with its zero on the wall plane (measured beside the walls below a sagging
-//! sheet, 1.5% of the volume at 40 cells; docs/SIMULATION_M7G_RESULTS.md).
+//! sheet, 1.5% of the volume at 40 cells; docs/SIMULATION_SOLVER_CONTRACT.md).
 //! Constant: zero normal slope at the walls (a 90 degree contact angle).
 void Reinitialize(const Grid& g, std::vector<double>& phi, ReinitScheme scheme, int iterations, double cfl, Pool* pool,
 	const LevelSetBarrier* barrier = nullptr, Extension wall = Extension::Linear);

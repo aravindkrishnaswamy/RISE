@@ -4,7 +4,7 @@
 // a solver samples it from its own threads while the viewport renders,
 // scrubs or edits the scene.
 //
-// Definitions (docs/SIMULATION_M4_RESULTS.md section 3):
+// Definitions (docs/SIMULATION_SOLVER_CONTRACT.md section 3):
 //   * The object's world matrix M(t) at any time t comes from pose holders
 //     (Object::ClonePoseHolder) of the object and each of its ancestors,
 //     captured at Capture, posed per call through the animator's read-only

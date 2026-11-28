@@ -135,7 +135,7 @@ static const double DELTA_DIR_TOL       = 1e-6;     // Angular tolerance for del
 //!
 //! `g_seedBase` is the one knob; `RISE_SPFBSDF_SEED` in the environment
 //! overrides it, which is how the multi-seed sweep quoted in
-//! docs/DL177_WARD_DENSITY_AND_KRAY.md section 5.1 was run without
+//! docs/DEBT_LEDGER.md section 5.1 was run without
 //! making every ordinary run 8x longer.
 static unsigned int g_seedBase = 424242u;
 
@@ -1217,7 +1217,7 @@ int main()
         // Schlick BRDF (Schlick 1994 approximation)
         //
         // DL-127 (CLOSED 2026-09-18,
-        // docs/DL127_SCHLICK_KRAY_VS_BRDF.md).  This entry used to carry
+        // docs/DEBT_LEDGER.md).  This entry used to carry
         // a 15% tolerance and this explanation: "At grazing incidence
         // (60+) the denominator in the specular term Z shrinks,
         // amplifying the specular lobe relative to the SPF importance
@@ -1241,7 +1241,7 @@ int main()
         // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992)
         //
         // DL-177 (CLOSED 2026-09-18,
-        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  These two entries used
+        // docs/DEBT_LEDGER.md).  These two entries used
         // to carry a 25% tolerance and this explanation: "The Ward model
         // is *not energy-conserving* by design.  Its specular term
         // 1/sqrt(n·r × n·v) × exp(-tan²h / α²) diverges as either n·r or

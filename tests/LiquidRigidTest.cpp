@@ -1,4 +1,4 @@
-// liquid.mac with rigid bodies (simulation M7b, docs/SIMULATION_M7B_RESULTS.md):
+// liquid.mac with rigid bodies (simulation M7b, docs/SIMULATION_SOLVER_CONTRACT.md):
 // the coupled pressure solve and its group integration.
 //
 //   A  the coupled operator A + rho h^3 J^T M^-1 J is symmetric and positive

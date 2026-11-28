@@ -77,7 +77,7 @@ namespace RISE
 			//! VALUES, never as a pointer to the parent: `Reference` has no
 			//! weak-ref primitive, so a child -> parent back-pointer is the one
 			//! change that would introduce a genuine lifetime cycle
-			//! (docs/agentic-redesign/86-object-grouping.md §3).
+			//! (docs/agentic-redesign/87-recursive-scene-graph.md §3).
 			Matrix4		m_mxParentWorld;
 			Matrix4		m_mxParentWorldInv;
 

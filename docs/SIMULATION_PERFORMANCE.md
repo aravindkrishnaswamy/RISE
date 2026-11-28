@@ -4,7 +4,7 @@
 the cloth part of the second half (at `052fc4338`, thin LTO) is §13. Plan:
 [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md). Contract:
 [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) (no contract change). Fire CPU timings of
-earlier rounds: [SIMULATION_M8_RESULTS.md](SIMULATION_M8_RESULTS.md) §11.6 and §12.3.
+earlier rounds: [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) §11.6 and §12.3.
 
 **Scope.** Measure every committed simulation scene class, attribute time to phases, rank the tuning opportunities
 (§6), and implement the byte-preserving ones outside the liquid solver, fire and tests of both (§8). The liquid
@@ -429,7 +429,7 @@ A flat sort-based hash grid (slower, A9) and a per-thread memo of `SampledTrack:
 | Build | Flags | Finding |
 |---|---|---|
 | make (`Config.OSX`) | `-O3 -flto` (full LTO), `-ffast-math -fno-finite-math-only`, `-funroll-loops`, default `-mcpu=apple-m1` | Already aggressive. No profile-guided optimisation; no `-mcpu=apple-m4` (the M4 has SME but the code is NEON; a newer `-mcpu` gains little for this code and ties the binary to M4). `-ffast-math` is on for the whole library except the fire production sources, which compile with `-fno-fast-math -ffp-contract=off` |
-| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN` (thin, not full), `-fno-finite-math-only` but no `-ffast-math`, no `-funroll-loops` | **Correction (second half):** the guess here that a Deployment `rise-sim` may write different bytes than the make `rise_sim` was measured by the build-flags work and is wrong: the frame sets are identical (see [BUILD_FLAGS.md](BUILD_FLAGS.md)). The make build has since switched to thin LTO by default (`LTO=thin`; `make LTO=full` restores full LTO); the second-half numbers in §13 are thin-LTO builds compared with thin-LTO builds |
+| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN`, `-ffast-math -fno-finite-math-only` (updated in `24423067f`; see [BUILD_FLAGS.md](BUILD_FLAGS.md)) | **Correction:** Xcode `Deployment` now carries `-ffast-math -fno-finite-math-only` matching `make` (with strict-FP simulation/fire/OSL sources pinned to `-fno-fast-math -ffp-contract=off`), and `make`'s default remains **`LTO ?= full`** (`make LTO=thin` is opt-in, because thin LTO moved two pinned fire digests; see [BUILD_FLAGS.md](BUILD_FLAGS.md)). The §13 measurements below were taken with opt-in `LTO=thin` vs `LTO=thin`. |
 | Library compile options for the simulation | none specific | The simulation hot loops (cloth `BandedCholesky`, liquid multigrid) are plain scalar loops that clang vectorises only as far as `-ffast-math` allows; an explicit NEON kernel would be a result-changing rewrite (B) unless the lane order is the same |
 
 ## 11. Not verified, not measured
@@ -453,7 +453,7 @@ Drivers and raw samples are in `/Volumes/SSD/claude-tmp/perf-scratch/` (not in g
 
 ## 13. Second half, cloth part (2026-11-27, at `052fc4338`, thin LTO)
 
-Same machine, now with the make build's thin LTO (`LTO=thin`, the new default): every before/after pair below is
+Same machine, using opt-in thin LTO (`make LTO=thin`; note `Config.OSX` reverted its default to `LTO ?= full` in `24423067f` per [BUILD_FLAGS.md](BUILD_FLAGS.md)): every before/after pair below is
 thin against thin (`base_thin` is `052fc4338` built in that mode). The machine was heavily shared (load average 10 to
 130, noted per table); instructions retired (`/usr/bin/time -l`) are the load-independent figure. Bakes:
 `cloth_flag_scene` (all 91 frames), `rigid_cloth_trampoline` (all 31 frames), `liquid_cloth_catch` reduced to 12

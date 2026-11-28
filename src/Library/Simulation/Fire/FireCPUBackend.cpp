@@ -238,7 +238,7 @@ namespace RISE
 				values.size()*sizeof(float));
 		}
 
-		// Diagnostic only (RISE_FIRE_CPU_BISECT=1; docs/SIMULATION_M8_RESULTS.md section 12):
+		// Diagnostic only (RISE_FIRE_CPU_BISECT=1; docs/SIMULATION_SOLVER_CONTRACT.md section 12):
 		// the Metal owner is run on the same request with its qualification trace, and every
 		// operand of every Picard-map evaluation is compared with the CPU owner's trace, as
 		// FireSequenceTest --fire-production-burner-bisect does on its fixture.  Prints only;

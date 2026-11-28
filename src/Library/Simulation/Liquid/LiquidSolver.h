@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  LiquidSolver.h - "liquid.mac": a free-surface liquid on a staggered
-//  grid on the solver contract (simulation M7, docs/SIMULATION_M7A_RESULTS.md)
+//  grid on the solver contract (simulation M7, docs/SIMULATION_SOLVER_CONTRACT.md)
 //
 //  Level-set interface (WENO5 + SSP-RK3, gradient-triggered
 //  reinitialisation, optional marker particles, volume correction), WENO5

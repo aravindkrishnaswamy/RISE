@@ -513,7 +513,7 @@ namespace RISE
 			//! scene carries a radiance-carrying photon map (caustic / global
 			//! / translucent), whose legacy gather ops already estimate the
 			//! light-through-a-delta-lobe path.
-			//! See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
+			//! See docs/DEBT_LEDGER.md.
 			//! Every NEE shadow site uses this so the flag is honored
 			//! UNIFORMLY.  Two families of caller:
 			//!   * LightSampler's delta / mesh-luminary NEE branches (the PT

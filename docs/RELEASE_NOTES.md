@@ -29,8 +29,10 @@ independent review's findings (callback buffers after failed renders, MLT
 sampler counters past 2^32, region endpoints at `UINT_MAX` plus registry/leak
 follow-ups); the branch was merged to `master` in `556bf4a3b`. The
 modernization plan ("Resolution of the snapshot, MLT budget and submission
-blockers") records the evidence; native Windows and Android build/runtime
-verification remain gated on those hosts.
+blockers") recorded the original macOS evidence; Android arm64-v8a
+(`00e1e9455`) and full Windows VS2022 + 503/503 CMake test suite builds
+(`b6663f1af`) subsequently compiled cleanly (see
+[CROSS_PLATFORM_CI.md](CROSS_PLATFORM_CI.md)).
 
 Regenerate photon maps, irradiance caches, serialized meshes, and other
 binary assets written through RISE’s scalar serializers by the historical
@@ -195,5 +197,5 @@ source assets with the corrected build.
   `TGAReader`, `HDRReader`, `PNGReader`, and `TIFFReader`, which retain
   image height for coordinate bounds checks.
 
-See [the modernization plan](CPP_UTILITY_MODERNIZATION_PLAN.md) for the
+See [the modernization plan](ARCHITECTURE.md) for the
 implementation checkpoint, measurements, and remaining platform gates.

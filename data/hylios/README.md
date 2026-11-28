@@ -62,6 +62,6 @@ python3 tools/hylios_compose_specimen.py \
   --output /tmp/hylios-s3-resolved.json
 ```
 
-Use `--strict-curves-dir` instead of `--approximation-bundle` for non-extrapolating source curves. It fails when an active constituent lacks coverage; inactive constituents need no spectral evaluation. A resolved specimen is preparation data, not a skin simulation result. The experimental [measurement CLI](../../docs/HYLIOS_MEASUREMENT.md) accepts individually dispersed S4 specimens; complex organization is currently unsupported. Its top-level approximation label and composition/coverage identities must survive downstream measurement and bake outputs.
+Use `--strict-curves-dir` instead of `--approximation-bundle` for non-extrapolating source curves. It fails when an active constituent lacks coverage; inactive constituents need no spectral evaluation. A resolved specimen is preparation data, not a skin simulation result. The [measurement CLI](../../docs/HYLIOS_MEASUREMENT.md) accepts both individually dispersed S4 specimens and explicit complex layouts (`--complex-layout explicit-pack-v1`). Its top-level approximation label and composition/coverage identities must survive downstream measurement and bake outputs.
 
 The NPSG files are publicly readable, but redistribution/licensing permission for the source tables has not been established. The repository records URLs and digests and does not vendor those files. No author contact or permission claim is made here.

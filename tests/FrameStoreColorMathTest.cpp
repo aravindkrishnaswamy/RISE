@@ -65,11 +65,8 @@ namespace
 		}
 	}
 
-	// Bit-pattern check: under -ffast-math (-ffinite-math-only) the
-	// std::isnan / std::isfinite intrinsics are unreliable; the
-	// compiler is told it may assume no NaN / Inf and folds the
-	// checks to constants.  Every finite-domain check in this test
-	// goes through these helpers instead.
+	// Bit-pattern check (retained from pre-2026-07-29 -ffinite-math-only
+	// for -Ofast resistance; matches the header note above).
 	bool BitsIsNaN( double x )
 	{
 		uint64_t bits;
@@ -87,13 +84,9 @@ namespace
 		return ( bits & expMask ) != expMask;
 	}
 
-	// Construct IEEE 754 special values via bit pattern.  Under
-	// `-ffast-math` (`-fno-honor-infinities` / `-fno-honor-nans`),
-	// referring to std::numeric_limits<>::infinity() or quiet_NaN()
-	// at the source level produces a `-Wnan-infinity-disabled`
-	// warning (RISE treats warnings as bugs).  These helpers produce
-	// the actual bit-pattern values without going through the
-	// numeric_limits source-level expressions.
+	// Construct IEEE 754 special values via bit pattern (avoids
+	// SourceHygieneTest's forbidden numeric_limits NaN/Inf sentinels
+	// and stays -Ofast-proof).
 	double MakeDoubleFromBits( uint64_t bits )
 	{
 		double d;
@@ -404,9 +397,8 @@ namespace
 	void TestHalfFloatRoundTrip()
 	{
 		// Sweep representable halves; each must be a fixed point.
-		// IMPORTANT: under -ffast-math the compiler may prove that any
-		// `float` value's bit pattern cannot satisfy NaN/Inf masks via
-		// type-based reasoning.  We therefore use the *Bits variants
+		// Use the *Bits variants (retained for -Ofast resistance and
+		// exact bit-payload preservation across float->half->float):
 		// (uint32_t in / out) which never let the value flow through a
 		// `float`-typed temporary.  This is exactly the situation the
 		// FloatBitsToHalf / HalfToFloatBits API exists for.
@@ -465,8 +457,8 @@ namespace
 		Check( FloatToHalf( -1e30f ) == 0xFC00u, "half encode -1e30f → -Inf" );
 
 		// Float NaN preserves NaN-ness.  Manufacture a NaN bit pattern
-		// directly via memcpy — std::numeric_limits<float>::quiet_NaN()
-		// can be folded to a non-NaN float by -ffinite-math-only.
+		// directly via memcpy (avoids SourceHygieneTest's NaN sentinel ban
+		// and stays -Ofast-proof).
 		uint32_t nanBits = 0x7FC00000u;  // canonical quiet NaN
 		float nanFloat;
 		std::memcpy( &nanFloat, &nanBits, sizeof(nanFloat) );

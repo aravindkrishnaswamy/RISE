@@ -1,6 +1,6 @@
 // SceneEditorSuggestionsTest — exercises the scene grammar, cursor
 // context resolver, and suggestion engine.  Asserts the core contract:
-// all 191 chunk keywords are enumerable, context resolution picks the
+// all 193 chunk keywords are enumerable, context resolution picks the
 // right scope in representative scene fragments, and the suggestion
 // engine returns chunk keywords at scene root and rejects already-
 // authored non-repeatable parameters inside a block.  (Bump the count
@@ -31,7 +31,7 @@ void TestGrammarCoverage()
 	std::cout << "GrammarCoverage\n";
 	const SceneGrammar& g = SceneGrammar::Instance();
 	const auto& kws = g.AllChunkKeywords();
-	// The parser registry holds 191 chunk keyword entries (the mis_pathtracing_shaderop alias counts); the EXPECT below carries the
+	// The parser registry holds 193 chunk keyword entries (the mis_pathtracing_shaderop alias counts); the EXPECT below carries the
 	// full per-addition history.  Bump this count when adding new chunks; the
 	// registration in CreateAllChunkParsers() is the source of truth.
 	// Includes channel_painter (64ca16bcc), which was omitted from the count.
@@ -48,7 +48,7 @@ void TestGrammarCoverage()
 		if( !d->keyword.empty() )     ++chunks_with_keyword;
 		if( !d->parameters.empty() )  ++chunks_with_parameters;
 	}
-	// 190 unique descriptors -- 191 keyword entries, but the mis_pathtracing_shaderop alias shares a
+	// 192 unique descriptors -- 193 keyword entries, but the mis_pathtracing_shaderop alias shares a
 	// parser with pathtracing_shaderop and therefore the same descriptor;
 	// both appear in AllChunks() as two entries pointing at one descriptor).
 	EXPECT( chunks_with_keyword == kws.size() );

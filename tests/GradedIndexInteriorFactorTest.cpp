@@ -3,7 +3,7 @@
 //  GradedIndexInteriorFactorTest.cpp - DL-09: the interior-segment
 //    basic-radiance factor inside a graded-index (position-dependent
 //    `ior`) medium.  Derivation and every closed form used below:
-//    docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md.
+//    docs/DEBT_LEDGER.md.
 //
 //    THE INVARIANT (reference-free).  A graded medium and a stack of
 //    nested CONSTANT-index boxes approximating it must render the same

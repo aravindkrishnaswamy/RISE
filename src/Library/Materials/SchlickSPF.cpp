@@ -33,7 +33,7 @@ namespace
 	//! measurement over 400 randomised (angle, rd, rs, roughness, isotropy,
 	//! tilt) configurations: mean |C_D error| 0.0034, max 0.022, against
 	//! 0.0083 / 0.039 at 8 and 0.0013 / 0.0083 at 32 (the cost grows as the
-	//! square).  See docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4a.
+	//! square).  See docs/DEBT_LEDGER.md section 4a.
 	const int kSpecQuadN = 16;
 
 	//! The specular lanes `Scatter()` would emit at this shading point: ONE
@@ -359,7 +359,7 @@ static inline Scalar SchlickKrayRatio(
 //! `SchlickReplaySpecular` and `SchlickDiffuseSelectCoefficient` below)
 //! now all take the SAME `onb` and use it consistently, so the sampler
 //! and its density agree in whichever frame Scatter actually sampled.
-//! See docs/DL100_SCHLICK_BACKFACE_SPECULAR.md.
+//! See docs/DEBT_LEDGER.md.
 static inline Vector3 SchlickSampleHalfVector(
 		const OrthonormalBasis3D& onb,
 		const Point2& random,
@@ -498,7 +498,7 @@ static Scalar ComputeSchlickSpecularPdf(
 	// why this went unnoticed; away from p=1 they are different
 	// distributions, off by up to 25x at p=0.3 (measured against a 2e6-draw
 	// histogram of the real sampler -- see
-	// docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4b).  The corrected
+	// docs/DEBT_LEDGER.md section 4b).  The corrected
 	// form below reproduces that histogram to MC noise at p = 1, .8, .6, .3.
 	// Quadrant-local t = |phi measured from this quadrant's axis|/(pi/2);
 	// see SchlickAzimuthalDensityFromPhi, which DL-127's kray ratio shares
@@ -578,7 +578,7 @@ static Scalar ComputeSchlickSpecularPdf(
 //      not a defect: Scatter really does return an empty container on
 //      those draws.
 //
-//  Full derivation and measurements: docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md
+//  Full derivation and measurements: docs/DEBT_LEDGER.md
 // ===================================================================
 
 //! Replay ONE (xi,b) draw of GenerateSpecularRay for one lane, and report
@@ -698,7 +698,7 @@ static void SchlickBuildQuadRows( const SchlickLobeSet& lobes, SchlickQuadRows& 
 	// Warping the xi axis (uniform in cos(theta_h), or in theta_h) was tried
 	// and measured WORSE: it buys resolution at the tangent end by starving
 	// the near-mirror end, which carries most of the probability mass at low
-	// roughness -- see docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4a.
+	// roughness -- see docs/DEBT_LEDGER.md section 4a.
 	//
 	// The three per-channel lanes share ONE random pair, so they must share
 	// the nodes too; only their own (r, p) differ.
@@ -1116,7 +1116,7 @@ void SchlickSPF::Scatter(
 			// this branch still overwrote `s.kray`/`s.pdf` with the
 			// CURRENT lane's values and pushed it -- a ray reaching the
 			// integrator at lane j's direction, priced as lane i.  See
-			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
+			// docs/DEBT_LEDGER.md.
 			ScatteredRay s;
 			Scalar fresnel = 0;
 			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );

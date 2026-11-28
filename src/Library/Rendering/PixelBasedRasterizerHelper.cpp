@@ -3114,14 +3114,9 @@ IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width
 	// the canonical), and L6f retires the redundant FrameSink copy
 	// once observers move to direct FrameStore subscription.
 	//
-	// L6c-1 does NOT yet bracket the rasterizer's per-pixel writes
-	// with `BeginTile/EndTile`.  Concurrent-reader correctness on
-	// `mFrameStore` is therefore NOT guaranteed in L6c-1 — but no
-	// such reader exists today (bridges read their own
-	// VFS-internal FrameStore which IS bracketed via FrameSink's
-	// CopyTileFromRasterImage).  L6e MUST add the bracketing in
-	// `SPRasterizeSingleBlock` before the bridges migrate, or
-	// concurrent UI repaints will see torn writes.  TODO L6e.
+	// SPRasterizeSingleBlock brackets block writes on `mFrameStore`
+	// with `BeginTile`/`EndTile` so concurrent UI repaints never
+	// observe torn tile writes.
 	//
 	// The FrameStore view's `addref` / `release` forward to the
 	// owning FrameStore (see FrameStore.cpp:78-80), so the existing

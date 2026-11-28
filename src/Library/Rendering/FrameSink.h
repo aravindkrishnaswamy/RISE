@@ -12,8 +12,9 @@
 //  then OnFrameComplete / OnPreDenoiseComplete / OnDenoiseComplete
 //  at end-of-frame).
 //
-//  Once Phase 2 lands (rasterizers write directly into FrameStore),
-//  FrameSink will become a notification-only adapter — no copies.
+//  Rasterizers with an attached FrameStore write directly into it via
+//  BeginTile/EndTile; FrameSink remains the IRasterizerOutput copy and
+//  notification adapter for output shims without direct FrameStore hooks.
 //
 //  Construction: FrameSink takes a FrameStore* whose dimensions
 //  must already match the rasterizer's image size.  The shim

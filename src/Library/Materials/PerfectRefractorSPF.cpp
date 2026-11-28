@@ -195,7 +195,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	// gate on the transmission at all; only the Fresnel lobe was gated.
 	//
 	// Disposal ruling, identical to DielectricSPF's (full derivation in
-	// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+	// docs/DEBT_LEDGER.md): RE-DERIVE the
 	// refraction about the true geometric normal and recompute its Fresnel
 	// there, rather than dropping.  It keeps the event a genuine refraction
 	// at the same eta (so a dispersion fan stays an ordered fan),
@@ -422,7 +422,7 @@ void PerfectRefractorSPF::ScatterNM(
 	// gate on the transmission at all; only the Fresnel lobe was gated.
 	//
 	// Disposal ruling, identical to DielectricSPF's (full derivation in
-	// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+	// docs/DEBT_LEDGER.md): RE-DERIVE the
 	// refraction about the true geometric normal and recompute its Fresnel
 	// there, rather than dropping.  It keeps the event a genuine refraction
 	// at the same eta (so a dispersion fan stays an ordered fan),

@@ -98,7 +98,7 @@ namespace RISE
 	};
 
 	//! DL-320: the SIDEDNESS of an area emitter, shared by every strategy
-	//! that samples or prices one.  docs/DL320_DOUBLE_SIDED_EMITTER.md.
+	//! that samples or prices one.  docs/DEBT_LEDGER.md.
 	//!
 	//! An `IEmitter` is one-sided about the normal it is HANDED
 	//! (`LambertianEmitter::emittedRadiance` returns 0 when

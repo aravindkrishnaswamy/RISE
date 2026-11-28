@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ClothValidation.h - Analytic validation cases for the cloth model
-//  (simulation M3a, docs/SIMULATION_M3A_RESULTS.md)
+//  (simulation M3a, docs/SIMULATION_SOLVER_CONTRACT.md)
 //
 //  Each runner builds a structured sheet with the given material,
 //  triangulation and integrator, runs the model and compares it with a
@@ -153,7 +153,7 @@ CaseResult RunContactBounce(const CaseSettings& settings, const ContactSettings&
 //   hairpin    strip (16 bending lengths) folded over itself on a frictionless
 //              plane, static: `measured` the loop height, `secondary` the
 //              fold's reach past the free ends (for self-convergence studies;
-//              no analytic reference, see docs/SIMULATION_M3A_RESULTS.md).
+//              no analytic reference, see docs/SIMULATION_SOLVER_CONTRACT.md).
 //   fold       every accepted step checked exactly for intersections, cloth
 //              against colliders and against itself, along its straight path
 //              (scenario 0: a sheet dropped corner-first onto a sphere; 1: a

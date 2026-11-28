@@ -1,6 +1,6 @@
 # HyLIoS P0 executable equations
 
-**Status:** P0 draft, candidate interpretation `hylios_reference_interp_v1` (2026-11-25). This is a derivation worksheet, not an implementation acceptance spec or a claim that required model inputs are complete. Candidate conventions need independent sampler/boundary tests and reconciliation with the absorber composition/data coverage ledger before implementation. It is not the authors' source code and does not establish bitwise or full numerical equivalence. `HYLIOS_RESEARCH_NOTES.md` remains the provenance ledger; no physiological spectra are defined or changed here.
+**Status:** P0 derivation worksheet (`hylios_reference_interp_v1`, 2026-11-25) implemented in `HyLIoSOptics`, `HyLIoSForwardTransport`, `HyLIoSComplexLayout`, and `HyLIoSSurfaceBoundary` (see [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md) §13 for shipped integration status). Retained as the equation reference separating clean-room interpretations from Chen et al. (2015) source statements; `HYLIOS_RESEARCH_NOTES.md` remains the provenance ledger.
 
 Primary references below mean Chen et al., *Hyperspectral Modeling of Skin Appearance*, ACM TOG 34(3), Article 31 (2015), abbreviated **paper**, and Tenn Francis Chen, *On the Modelling of Hyperspectral Light and Skin Interactions and the Simulation of Skin Appearance Changes Due to Tanning*, PhD thesis (University of Waterloo, 2015), abbreviated **thesis**. Section/equation numbering is included for comparison. Units are SI unless stated; angles are radians in equations and code.
 

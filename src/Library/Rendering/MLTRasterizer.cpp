@@ -290,7 +290,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This
 	// used to be the literal stream 48, which the eye walk's own
 	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
-	// docs/DL08_PSSMLT_LANE_LAYOUT.md) -- ordinary scattering-medium
+	// docs/DEBT_LEDGER.md) -- ordinary scattering-medium
 	// scenes get there with StabilityConfig::maxVolumeBounce's 64
 	// default and no unusual settings.  kPSSMLTFilmLensApertureStream
 	// sits between the walks' shallow and deep lanes.

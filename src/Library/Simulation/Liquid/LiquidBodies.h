@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  LiquidBodies.h - Rigid bodies inside the liquid solver (simulation
-//  M7b, docs/SIMULATION_M7B_RESULTS.md): moving cut-cell geometry rebuilt
+//  M7b, docs/SIMULATION_SOLVER_CONTRACT.md): moving cut-cell geometry rebuilt
 //  from each body's pose, the solid face velocities from its twist, and
 //  the coupled pressure solve of a dynamic body (Batty, Bertails and
 //  Bridson 2007, section 4).
@@ -17,7 +17,7 @@
 //  face centre is the smallest (a body or the static solids and walls).
 //
 //  Coupled pressure (derived here from the variational principle; the
-//  derivation is in docs/SIMULATION_M7B_RESULTS.md section 2).  A face f of
+//  derivation is in docs/SIMULATION_SOLVER_CONTRACT.md section 2).  A face f of
 //  axis a closed by a body carries the body velocity at its centre,
 //  u_s,f = g_f . w, g_f = (e_a, (x_f - X) x e_a), w = (V, Omega).  The
 //  projection minimises the kinetic energy

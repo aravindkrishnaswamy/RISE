@@ -845,7 +845,7 @@ exact signed field of two certified operand-center inscribed balls when
 both certificates exist; otherwise it retains `min(f_A, f_B)`. This fixes
 the published two-sphere overlap regression while remaining a conservative
 bound for arbitrary shapes. Loose or absent certificates can still leave
-`interior(r)` under-reading; see [DL-34's scope](DL34_UNION_INTERIOR_DEPTH.md).
+`interior(r)` under-reading; see [DL-34's scope](DEBT_LEDGER.md).
 The composite exactness flag remains false.
 **~~and sets the flag only when both operands set it AND its own σ is
 exact~~ — CORRECTED AT IMPLEMENTATION (§8.4 S3): NO COMPOSITE exports the
@@ -2445,7 +2445,7 @@ two queries cannot drift on them). `ExpressionProgram::UsesProximity()` becomes
 The following table records the original Phase-3 S4 measurements, before
 DL-34. Its strict-underread union row is historical; the current test instead
 pins the analytic crease depth and reports 491 passed, 0 failed with the
-supplemental cases. See [DL-34](DL34_UNION_INTERIOR_DEPTH.md).
+supplemental cases. See [DL-34](DEBT_LEDGER.md).
 
 | Phase-3 S4 gate | verdict |
 |---|---|
@@ -3119,7 +3119,7 @@ measured by a harness test against the tracked scene.
   the minimum of the base field and a certified inscribed-ball union field.
   `interior` may still under-read for arbitrary unions with absent or loose
   certificates; the published two-sphere overlap is now pinned to its
-  analytic depth. See [the retained scope](DL34_UNION_INTERIOR_DEPTH.md).
+  analytic depth. See [the retained scope](DEBT_LEDGER.md).
 - SDF neighbours are an upper bound on distance (never over-read contact),
   bounded by the last probe step; the gap is measured on C, not bounded
   analytically. A candidate whose crossing is not found within budget reads far.
@@ -3588,7 +3588,7 @@ measured by a harness test against the tracked scene.
   the published sphere example's `sqrt(3.56)` depth and keeps composite
   exactness false. Arbitrary overlaps can still under-read when these
   certificates are unavailable or loose; this is not a general exact CSG
-  distance claim. See [mechanism, corrected recipe and limits](DL34_UNION_INTERIOR_DEPTH.md).
+  distance claim. See [mechanism, corrected recipe and limits](DEBT_LEDGER.md).
   The following describes the historical pre-DL-34 field and measurements.
   A union
   exports `min(f_A, f_B)` as its signed lower bound. **It is a LOWER BOUND

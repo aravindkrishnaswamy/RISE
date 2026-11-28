@@ -116,14 +116,9 @@ IRasterImage& VCMPelRasterizer::GetIntermediateOutputImage( IRasterImage& primar
 }
 
 //////////////////////////////////////////////////////////////////////
-// IntegratePixel — Step 7 (VC-only s=0 path for now)
-//
-// Simpler than BDPTPelRasterizer::IntegratePixel: no progressive
-// film, no adaptive sampling, no ZSobol.  Just a straight per-sample
-// loop that generates an eye subpath, converts it through
-// ConvertEyeSubpath, calls VCMIntegrator::EvaluateS0, and
-// accumulates.  Steps 7c/7d/8/9 add NEE, t=1 light splat, interior
-// connections, and merging.
+// IntegratePixel — Pel VCM pixel evaluation (mirrors
+// BDPTPelRasterizer::IntegratePixel with VCM connections and merging,
+// progressive film, adaptive sampling, and ZSobol support).
 //////////////////////////////////////////////////////////////////////
 void VCMPelRasterizer::IntegratePixel(
 	const RuntimeContext& rc,

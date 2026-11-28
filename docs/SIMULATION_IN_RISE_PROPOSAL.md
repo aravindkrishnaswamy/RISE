@@ -1,9 +1,6 @@
 # Simulation in RISE: architecture and execution plan
 
-2026-11-22. **Approved direction; nothing here is built yet** except the r275 pieces named under "What exists".
-Owner decisions are recorded in §2. The earlier fire-only note,
-[FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md](FIRE_SMOKE_UI_INTEGRATION_PROPOSAL.md), remains as the survey of existing
-code; its phases are absorbed here as "fire, the first solver".
+**Status (2026-11-27):** **M0–M8 substantially shipped** on `master` (solver contract v1 frozen, `fire.methane` v3 [Metal + experimental CPU], `cloth.shell` m3a.8, `rigid.bodies` m6.2, `liquid.mac` m7m.1, scene chunks, `rise-sim`, portable CBOR caches, macOS `SimulationsPanel`, 11 `sim_*` agent verbs, and clean macOS/Windows/Android builds). See [§5 Execution status](#execution-status-2026-11-27) below, [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md), and [SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md). The earlier fire-only status doc, [FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md), remains the entry point for fire solver physics details.
 
 ## 1. The idea
 
@@ -107,89 +104,15 @@ contract is **frozen only after M3**; until then it may change.
 | M7 | **Liquid, the third solver.** Portable CPU first; particles, changing-topology surface mesh and optional volume outputs; two-way with rigid bodies or cloth through the ports; validation cases | Dam-break front position against published data, hydrostatic rest, volume conservation; renders as a refractive surface |
 | M8 | **Portable CPU paths to supported.** Fire's CPU path from `unsupported` to at least `experimental`; simulation on Windows where a backend exists | Cross-platform playback of every cache type; CPU fire agrees with Metal fast mode within tolerance on a coarse case |
 
-### Execution status (2026-11-22)
+### Execution status (2026-11-27)
 
-M0 historical references verified at both tiers; the forced make rebuild passed; the fresh fast tier built 419 executables and passed 416 on a host with no visible Metal device. The full SwiftUI executable now renders legacy and native scenes through its viewport probe. The warning-free macOS 26.2 release build remains open. The [build and capture status](SIMULATION_M0_RESULTS.md) and
-[M2 driver inventory](SIMULATION_M0_DRIVER_INVENTORY.md) are recorded.
-The [M1 cache design](SIMULATION_M1_CACHE_DESIGN.md) completed independent adversarial review with no open P1/P2 findings.
-On 2026-11-23 the owner authorized deferring the Metal fast-tier and macOS GUI build checks to M1 acceptance. The [M1 verification record](SIMULATION_M1_RESULTS.md) records voxel equality on six historical frames, sealed and partial playback, render noise comparisons and remaining integration gates. M1 is open.
-
-2026-11-23: **M1 accepted.** With a Metal device present the make build is warning-free, all 419 fast tests pass, and
-the certified fire path is byte-identical to the r274 reference (five checkpoints over 25 steps). Carried forward as
-a release item, not an M1 gate: a warning-free macOS 26.2 release build of the app needs an OpenVDB build that
-targets 26.2 for the import helper. M2 design: [SIMULATION_M2_DESIGN.md](SIMULATION_M2_DESIGN.md); execution moved
-from Codex to Claude.
-
-2026-11-23: **M4 implemented** (in review): producer chunks (`cloth_simulation`, `fire_simulation`,
-`simulation_cache`) in `ChunkCategory::Simulation`, `source <simulation>.<output>` consumers, scene inputs, the
-dependency graph with keys and states, `rise-sim bake|resume|status <scene>`, live runs from the scene without a
-pre-bake. [M4 results](SIMULATION_M4_RESULTS.md).
-
-2026-11-23: **M5a implemented** (library half of M5, in review): the process-wide bake manager (rise-sim
-processes on the scene file, dependency queue, machine-wide GPU lock, CPU cap, memory budget, monitoring,
-adoption, stop/resume), its C API for the GUI panels, and the agent verbs `sim_list`, `sim_bake`, `sim_status`,
-`sim_wait`, `sim_cancel` and live control. [M5a results](SIMULATION_M5A_RESULTS.md).
-
-2026-11-23: **M2 accepted.** A certified tier-8 fire baked from zero through `rise-sim` (6,457 steps, 5.95 h on a
-loaded machine) reproduced the three M0 reference frames at 10.466, 10.529 and 10.591 s byte for byte; the reference
-run predates r274. All 12 fire test programs pass on the tree at `524d42eba` plus in-progress M5/M6 edits.
-**M3 (cloth, deforming-geometry rendering, live viewport, contract v1), M4 (scene chunks, bindings, staleness) and
-M5 (bake manager, agent verbs, macOS UI) are built**; open within them: measured-fabric comparisons (M3 cases 7–8),
-cloth self-collision evidence, simulation fields in the properties panel, the worker in the app bundle, the Windows
-mirror. M6 (coupling) in progress.
-
-2026-11-25: **M6 implemented** (in review): the co-stepping group host (staggered Jacobi / Gauss–Seidel, implicit
-sub-iteration with Aitken relaxation and step halving, group checkpoints), five port adapters, the `transform.v1`
-codec, the rigid-body solver `rigid.bodies`, two-way cloth ↔ rigid coupling with momentum balanced across the port
-(implicit: 5e-8 relative), one-way fire → cloth from a fire cache, `simulation_group` / `port_source` /
-`rigid_simulation` / `transform_source` scene syntax, group bakes as one job. [M6 results](SIMULATION_M6_RESULTS.md).
-
-2026-11-26: **M7 in progress.** M7a (in review): `liquid.mac`, a free-surface liquid on a staggered grid with
-cut-cell static solids, predictive from computed evidence on canonical problems ([M7a results](SIMULATION_M7A_RESULTS.md)).
-M7b (in review): rigid bodies in the liquid's pressure solve (each body's six degrees of freedom solved with the
-pressure in one symmetric positive-definite system), dynamic, prescribed or following `rigid.bodies` through an
-owned implicit group exchange; validated by added mass in concentric containers, Archimedes at density ratios 0.1,
-0.5 and 0.9 (second order), a neutral body at rest, and a bobbing frequency against an independent potential-flow
-solve; stable at light density ratios where the staggered exchange diverges; contact inside the liquid, thin gaps
-and small bodies stay preview ([M7b results](SIMULATION_M7B_RESULTS.md)). M7c (in review): constant viscosity (implicit,
-the variational strain-rate form with a traction-free surface, no or free slip, bodies coupled implicitly in the
-viscous solve) and surface tension (ghost-fluid Laplace jump), each off by default and certified separately; inviscid
-surface tension and contact lines at solids stay preview ([M7c results](SIMULATION_M7C_RESULTS.md)). M7d (in review):
-thin sheets as moving boundaries of the liquid (preview: grid faces crossed by the sheet closed, no volume removed, no
-leakage found), prescribed or following a cloth's `surface_state` with the pressure load returned as its
-`surface_load`, lagged one macro step; that exchange is stable only for sheets of about 500 kg/m² and up (about 50
-with under-relaxation), so real cloth is one-way only; closed-mesh rigid bodies; the dam break at 256³ costs 2.3 s per
-step and 6.3 GB ([M7d results](SIMULATION_M7D_RESULTS.md)). **M7 is complete as planned** (design §7, steps 1–7).
-M7e (in review): cloth coupled implicitly with the liquid (preview): the cloth's linearised response (masses, force,
-projected Hessian, damping) is solved with the pressure in every step, the liquid on the faces the sheet closes moves
-with it, and the cloth takes the liquid's own steps with the same linear model; stable for areal densities 0.05–100
-kg/m² at 24–64 cells and macro steps 1/30 and 1/120 s where the staggered exchange diverges, cotton in a dam-break surge
-in the demo; checked against a piston (exact), a plate's added mass, a membrane's static deflection and natural
-frequency under a layer; a light sheet holding liquid on one side that sweeps across cell centres under gravity still
-leaks ([M7e results](SIMULATION_M7E_RESULTS.md)). M7f (in review): that leak fixed (preview). In 2-D the test strip
-had left the one-cell slab; in 3-D the level set read across the sheet and the volume correction drained the wet side.
-The sheet's faces are now walls or boundaries of the level set's stencils, and the level set is the signed distance to
-a sheet holding liquid on one side. A pinned bag passes no liquid through the sheet at 24–64 cells over 3 s, the
-membrane at large sag is within 0.8% of its reference, and the stability sweep still passes. A cloth catches a block of
-water in the demo. An implicit sheet's load without its steps is refused, and the rotation stretch of the cloth's
-linear step is reported. Viscosity with sheets stays refused ([M7f results](SIMULATION_M7F_RESULTS.md)). M7g (in
-review; `liquid.mac` m7g.1, preview): the values growing in a bag's dry corners were a false interface spreading along
-the domain walls from the reinitialisation's linear wall ghosts (constant with coupled sheets; none below a bag at
-24–64 cells now); a light flap's fast motion was two coupling artefacts (the face liquid driving the sheet at 1/n_a
-times its tangential speed, load across an air gap), fixed: above still water 1.15 → 0.09 m/s, dam-break peaks at
-40–64 cells 1.0–4.3 m/s (at 24 cells up to 15 m/s remain, located, not fixed); a through-sheet measure
-is reported (the catch demo: every attempted crossing held, none passed); a dense sphere settles onto the tank floor
-through water exactly at contact without jitter ([M7g results](SIMULATION_M7G_RESULTS.md)). M7h (in review;
-`liquid.mac` m7h.1, `cloth.shell` m3a.5, `rigid.bodies` m6.2, preview): the cloth's response inside a macro step is
-corotational, so a sheet rotating within a macro step is no longer stretched (10 rad/s at 1/30 s: 8.5e-5 against 5.4e-2,
-as the nonlinear model); `rigid.bodies` has body–body contact for spheres, boxes and cylinders (elastic collisions keep
-momentum and energy to rounding, a three-box stack rests), boxes rest on planes without walking, and the liquid's own
-copies of bodies use rigid.bodies' planes and contact; a watertightness check of pinned sheets is reported
-([M7h results](SIMULATION_M7H_RESULTS.md)). Not done within M7: spray and thin films, liquid layers on a sheet thinner
-than about five cells, the free edge of a sheet at coarse resolution, mesh bodies in body–body contact, the cut-cell
-velocity order, and the multigrid weakness with large bodies at 256³ (PCG iterations triple).
-
-2026-11-26: **M8 partial** (in review; [M8 results](SIMULATION_M8_RESULTS.md)). Cross-platform playback: every codec and the cache container were already byte-defined little-endian; a committed golden cache (all six frame codecs, a static topology record, changing and empty topology) is decoded value by value and re-encoded to identical bytes by a fast-tier test. The library, `rise`, `rise-sim` and all tests build warning-free with Metal compiled out and the non-fire fast tier passes there. Reading the VS2022 and Android builds found seven certain compile errors (four broke the fire stack on every non-Apple build; `liquid.mac` did not compile with MSVC), all fixed; neither platform was compiled, and neither has a `rise-sim` target. Fire on the CPU: a complete one-step CPU projected-Heun owner exists as a calibration reference, but it is single-threaded, capped at 2 GiB, not callable by the run driver, and lacks r264's centred momentum carrier; on a 64-cell fixture it differs from the Metal owner by 1–3e-6 of field maximum, 4–10× more than rounding explains, cause not isolated. **The fire CPU backend stays `unsupported`; the M8 exit criterion for fire is not met.** 2026-11-26, later: **M8 part A done** ([M8 results §10](SIMULATION_M8_RESULTS.md)): the gap was r264's centred momentum carrier, absent on the CPU side (with it the one-step burner fixture is bit-identical in 7 of 9 rows, velocity within 2 ulps). The CPU owner is now a run-driver backend (`backend: "cpu"`), runs with Metal compiled out, is threaded and bit-identical at any worker count, resumes from checkpoints bit for bit, and agrees with Metal fast mode on the tier-4 coarse case to rounding at step 1 (with matched V-cycle counts) and within 2e-4 (species), 3e-4 (temperature), 1e-2 (velocity) of the field scale over 24 steps, where a localised burner-surface difference from step 2 is not yet explained. **Fire `cpu` is `experimental`; the M8 exit criterion for fire is met.** It is about 15× slower than Metal at tier 8. Windows/Android remain uncompiled.
+All planned milestones **M0–M8** have shipped on `master`:
+- **M0–M2 (Cache, Contract, Hosts & Fire Extraction):** General CBOR cache container (`SimulationCache`), native frame codecs (`grid`, `field`, `mesh`, `points`, `transform`), frozen v1 solver contract ([SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md)), `InProcessHost`, `rise-sim` worker, and `fire.methane` extraction (subsequently bumped to **version 3** in `895950cd7`, requiring a `1e-6` product-fraction ignition witness).
+- **M3 (Cloth — `cloth.shell` m3a.8):** CPU continuum cloth solver with RCM `EnvelopeCholesky` factorization (`cc071c604`), persisted plan-time evidence, well-posed self-collision evidence, deforming-mesh rendering, and live interactive viewport playback.
+- **M4–M5 (Scene Chunks, Bake Manager, Agent Verbs & macOS GUI):** `ChunkCategory::Simulation` (`cloth_simulation`, `rigid_simulation`, `liquid_simulation`, `fire_simulation`, `simulation_group`, `simulation_cache`, `simulated_mesh_geometry`, `simulated_points_geometry`), dependency staleness graph, process-wide `SimulationBakeManager`, 11 `sim_*` agent verbs, and macOS `SimulationsPanel` ([SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md)). Remaining UI gap: Windows Qt6 mirror for `SimulationsPanel` and a Windows `rise-sim` VS2022 project.
+- **M6 (Coupling & Rigid Bodies — `rigid.bodies` m6.2):** `SimulationGroup` co-stepping host (staggered + implicit Aitken sub-iteration), 5 port adapters, `rigid.bodies` with body–body contact and plane resting, two-way cloth↔rigid coupling, and one-way fire→cloth playback.
+- **M7 (Liquid — `liquid.mac` m7m.1):** MAC staggered-grid free-surface liquid with cut-cell static solids, implicitly coupled rigid bodies, constant viscosity, ghost-fluid surface tension, corotational two-way cloth/sheet coupling, free-edge coverage (`m7i`), gradual sheet contact (`m7k`), two-valued level set at sheet-cut cells (`m7l`), and **viscosity with sheets** (`m7m`, `d0256a0a4`). Known limits: spray/thin films, mesh bodies in body–body contact, and coarse-grid free-edge artifacts.
+- **M8 (Cross-Platform Playback & CPU Fire):** Portable little-endian cache playback across all codecs, threaded `fire.methane` `cpu` backend (`experimental`, `c3385bfbc`/`d85a0f742`), clean Android arm64-v8a build (`00e1e9455`), and clean Windows MSVC v145 build across `Library`, `RISE-CLI`, Qt6 `RISE-GUI`, and all 503 CMake tests (`b6663f1af`).
 
 ## 6. Rules that hold throughout
 

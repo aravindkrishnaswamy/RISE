@@ -231,7 +231,7 @@ ParameterSchema Build()
 	s.summary = "A cloth sheet simulated by the cloth.shell solver (continuum shell: membrane + bending, "
 		"implicit integration, barrier contact), baked by `rise-sim bake <scene>` or run live in the "
 		"viewport (mode interactive).  Publishes `surface` (mesh.v2: positions, velocities, normals, "
-		"material UVs).  Parameters, defaults and evidence: docs/SIMULATION_M3A_RESULTS.md.";
+		"material UVs).  Parameters, defaults and evidence: docs/SIMULATION_SOLVER_CONTRACT.md.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const char* doc)
 		-> SchemaParameter& {
 		s.parameters.emplace_back();

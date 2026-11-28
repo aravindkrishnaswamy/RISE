@@ -34,7 +34,7 @@
 //  Build/run:  clang++ -O3 -std=c++17 -o mc tools/DL381RandomWalkReciprocityMC.cpp
 //              ./mc <mode> <photons>      (4e8 photons: ~10 s on 16 cores)
 //  Results (2026-10-02, 4e8 photons; mode 1 at 1.6e9) are in
-//  docs/DL381_RANDOM_WALK_RECIPROCITY.md.
+//  docs/DEBT_LEDGER.md.
 //
 //////////////////////////////////////////////////////////////////////
 

@@ -406,7 +406,7 @@ static void RunReadSchemaBatchTest()
 }
 
 //----------------------------------------------------------------------
-// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2, RE-TARGETED
 // by sec 7 to the two MEASURED bare-prompt deficits): unit-level red-proofs
 // of AgentSession::ComputeDesignNote, the ONE shared scan both carriers
 // (render-result, validate) call.  STATELESS -- calls the static function
@@ -599,7 +599,7 @@ static const char* const kValidateNoteTriggerScene =
 	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
 
 //----------------------------------------------------------------------
-// Creative-richness P2.b carrier test (73-creative-richness-design.md sec
+// Creative-richness P2.b carrier test (docs/agentic-redesign/50-agentic-surface.md sec
 // 9's closing recommendation): `validate` (both the HEAD form and the
 // stateless `text` form) NO LONGER attaches a `note` field -- EVER, clean
 // or triggering, this is not a "same convention as read_skill" omission

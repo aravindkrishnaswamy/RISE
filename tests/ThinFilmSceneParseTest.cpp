@@ -26,7 +26,7 @@
 //         actually carries thin-film behaviour (verified by a direct
 //         valueNM probe through the public factory).
 //      2. The two parse-time diagnostics fire (the chunk fails to load,
-//         so ParseAndLoadScene returns FALSE):
+//         so scene loading returns FALSE):
 //           (a) cooktorrance_material + fresnel_mode thinfilm  (GGX-only)
 //           (b) ggx_material fresnel_mode thinfilm WITHOUT film_thickness
 //               (the P2-B BSDF dereferences the film slots in thinfilm

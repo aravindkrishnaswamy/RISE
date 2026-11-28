@@ -25,8 +25,8 @@
 >   `render{isolate, zoom}` workflows.
 > - **Runtime & provider breadth:** batched single-rederive CST edits (`ApplyCstEditBatch`),
 >   malformed tool-call recovery, **5 chat providers** (`claude-sonnet-5`, `gemini-4-argon`,
->   `gpt-5.6-terra`, `grok-4.5`, `opencoder`), and **38 chat tools** in `kToolDefs`
->   (plus MCP/session verbs).
+>   `gpt-5.6-terra`, `grok-4.5`, `opencoder`), and **49 chat tools** in `kToolDefs` /
+>   **54 MCP tools** in `AgentMcpAdapter` (including 11 `sim_*` simulation verbs).
 >
 > The full immutable COW `DerivedScene`/`PreparedRenderState` publication DAG and persistent
 > `VersionGraph` remain unbuilt target design; the shipping editor retains and adapts
@@ -34,7 +34,7 @@
 > transfer-gate narrative below is preserved as the execution record.
 >
 > **Implementation update (2026-06-21):** the design is backed by **four prototype slices**
-> (`tests/Cst*SliceTest.cpp`; see [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md)) that
+> (`tests/Cst*SliceTest.cpp`; see [`50-agentic-surface.md`](50-agentic-surface.md)) that
 > validate the model's semantics and cost *model*, each three-way adversarially reviewed. An
 > **external review (2026-06-21) confirmed the architectural direction** and called for an in-tree
 > **"transfer gate"** next (render-equivalence harness → a real `src/Library/Cst` kernel →
@@ -155,14 +155,14 @@ Per-facet headline:
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is
   automatic (untouched nodes shared ⇒ byte-identical serialize ⇒ no SaveEngine).
 - **F4 (UI):** `render(UiModel::Build(CST, descriptors))` — a widget per parameter dispatched on
-  each chunk's `Describe()`; adaptive for free (all ~138 chunks get UI with zero new code);
+  each chunk's `Describe()`; adaptive for free (all 193 registered chunks get UI with zero new code);
   binding is name-path→`EditIntent`→F3's pathway; split form/source via spans; the bridge
   boundary-enum becomes generated (kills `case 5:` drift).
 - **F5 (Agent):** thin surface — one mutating verb (`propose_patch`, structured or text, both →
-  one validated CST version) + `validate`/`render`/`read_*` *(2026-11 shipped state: expanded to a
-  **38-tool tiered surface** across 5 providers — CST edit/batch verbs, staged clean-room builders,
-  shape & material operators, `render{isolate, zoom}` + perception atlas, and `revert_to_revision`;
-  see [`50-agentic-surface.md`](50-agentic-surface.md))*; the edit→validate→derive→render loop
+  one validated CST version) + `validate`/`render`/`read_*` *(2026-11 shipped state: expanded to
+  **49 chat tools / 54 MCP tools** across 5 providers — CST edit/batch verbs, staged clean-room
+  builders, shape & material operators, `render{isolate, zoom}` + perception atlas, `revert_to_revision`,
+  and 11 `sim_*` simulation verbs; see [`50-agentic-surface.md`](50-agentic-surface.md))*; the edit→validate→derive→render loop
   maps 1:1 onto the coding-agent loop; git-native diff/PR/bisect on INV-4; headless autonomy emits
   a branch/PR, not a commit.
 - **F6 (Migration):** concentrated supersession; phased P0–P8 strangler-fig with v6/v7 dual-path

@@ -2139,7 +2139,7 @@ static void RunDriverAsyncInlineImageTest()
 }
 
 //----------------------------------------------------------------------
-// Creative-richness P2 (73-creative-richness-design.md sec 2 P2, RE-TARGETED
+// Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2, RE-TARGETED
 // by sec 7): the observed-state design note is a BEAUTY-render-only carrier
 // -- populated on "production"/"draft" renderMode, NEVER on "objectmap".
 // kScene3 (3 bare spheres, uniformcolor_painter only, no scalar_painter

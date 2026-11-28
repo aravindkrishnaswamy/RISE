@@ -422,7 +422,7 @@ namespace
 	//   B = metallic
 	// Decoding the image twice (once under role "occlusion", once under
 	// role "metallic_roughness") is wasteful — both bindings produce
-	// the same byte buffer, the same color-space ("ROMMRGB_Linear" for
+	// the same byte buffer, the same color-space ("Rec709RGB_Linear" for
 	// both linear roles), and the same wrap from the shared sampler.
 	// This helper detects the case so PreDecodeTextures and
 	// CreateMaterial can route the AO channel-extraction at the MR

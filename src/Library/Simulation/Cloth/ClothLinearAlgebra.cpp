@@ -1152,7 +1152,7 @@ void CorotatedElements::Rotate(const std::vector<double>& x0, const std::vector<
 	// the rotations fed those differences back as an explicit geometric stiffness: at a light free
 	// edge in a dam break the cloth's own steps, driven by the partner's impulses alone (without the
 	// liquid's mass on its faces), grew them fourfold per step, to 7 m/s in a macro step
-	// (docs/SIMULATION_M7I_RESULTS.md).
+	// (docs/SIMULATION_SOLVER_CONTRACT.md).
 	std::vector<double> x0r(x0.size()), pr(p.size());
 	for (std::size_t k = 0; k < x0.size(); ++k) x0r[k] = static_cast<double>(static_cast<float>(x0[k]));
 	for (std::size_t k = 0; k < p.size(); ++k) pr[k] = static_cast<double>(static_cast<float>(p[k]));

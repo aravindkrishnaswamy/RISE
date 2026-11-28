@@ -3,7 +3,7 @@
 //  NamedViewsPanel.h - Right-panel "Named Views" section (Windows Qt6).
 //
 //    Session/UI camera view bookmarks mirroring macOS
-//    NamedViewsPanel.swift (docs/gui/CAMERA_CONTROLS_UX.md §3).
+//    NamedViewsPanel.swift (docs/gui/CAMERAS_AND_VIEWS.md §3).
 //    Capture the current view (free-fly pose if active, else the active
 //    camera), click a row to restore it non-destructively into the
 //    transient viewport pose, or use per-row actions to Update, Promote

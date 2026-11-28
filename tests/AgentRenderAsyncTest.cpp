@@ -6270,7 +6270,7 @@ static void RunRefusalCauseAttributionTest()
 }
 
 //////////////////////////////////////////////////////////////////////
-// R1b (2026-08-09, docs/agentic-redesign/75-expressive-surface-arc.md):
+// R1b (2026-08-09, docs/agentic-redesign/50-agentic-surface.md):
 // agent-surface render resolution/sample caps -- see AgentRenderParams::
 // fromAgentSurface's doc for the full mechanism.  Every case here drives
 // the REAL "render" RPC verb through AgentRpcDispatcher (never a direct

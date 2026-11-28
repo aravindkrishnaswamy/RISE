@@ -18,8 +18,8 @@
 //      `ptObjIntersec` (3D) respectively before delegating.  Per the
 //      RayIntersectionGeometric contract, a 3D-domain source painter
 //      (perlin3d, worley3d, voronoi3d, ...) reads ONE of those two
-//      fields (see docs/skills/procedural-textures.md's "2D vs 3D"
-//      section and the voronoi3d `space` field for the one painter
+//      fields (see skills/agent/procedural-textures.md and the
+//      voronoi3d `space` field for the one painter
 //      that reads ptObjIntersec by default); `world`/`object` here
 //      patch exactly the field that projection names and leave every
 //      OTHER domain field (ptCoord, the field `world`/`object` did NOT

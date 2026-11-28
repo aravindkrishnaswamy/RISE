@@ -17,7 +17,7 @@
 //  former is a no-op rewrite (managed-block override stays); the
 //  latter erases the managed-block entry.
 //
-//  Spec: docs/ROUND_TRIP_SAVE_PLAN.md §7.4.
+//  Spec: docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §7.4.
 //
 //////////////////////////////////////////////////////////////////////
 

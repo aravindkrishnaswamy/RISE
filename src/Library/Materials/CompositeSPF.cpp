@@ -2,7 +2,7 @@
 //
 //  CompositeSPF.cpp - Implementation of the Composite SPF and the
 //    composite's layered BSDF.  See CompositeSPF.h for the DL-24 model
-//    (DIRECT / COVERED / WALKER) and docs/DL24_COMPOSITE_ENERGY.md.
+//    (DIRECT / COVERED / WALKER) and docs/DEBT_LEDGER.md.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 6, 2004

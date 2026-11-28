@@ -2,7 +2,7 @@
 //
 //  GGXHeightCorrelatedEnergyLUTTest.cpp - DL-63 red proof.
 //
-//  DL-63 (docs/DL37_GGX_DIFFUSE_TRANSMISSION.md, docs/DEBT_LEDGER.md):
+//  DL-63 (docs/DEBT_LEDGER.md, docs/DEBT_LEDGER.md):
 //  GGXBRDF/GGXSPF's single-scatter specular term is D * G2 / (4 cosWi
 //  cosWo), where G2 is the Smith HEIGHT-CORRELATED masking-shadowing
 //  function (MicrofacetUtils::GGX_G2/GGX_G2_Aniso, Heitz 2014 JCGT
@@ -402,7 +402,7 @@ namespace
 		// Reported for diagnostic clarity -- how many standard errors the
 		// divergence actually is, versus the ratio to this check's pass
 		// threshold (two different, easily-conflated numbers; see this
-		// function's history in docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+		// function's history in docs/DEBT_LEDGER.md
 		// "DL-63" for a prior mix-up between them).
 		const double sigmaMultiple = ( stdErr > 0.0 ) ? diff / stdErr : 0.0;
 		const double toleranceRatio = ( tol > 0.0 ) ? diff / tol : 0.0;
@@ -574,7 +574,7 @@ namespace
 	// TRUE (still-rising, toward the Ess_G2(cosTheta=0)=1 boundary)
 	// single-scatter directional albedo right at the grazing limit --
 	// see MicrofacetEnergyLUT.h's LookupEssG2/LookupEssG2AnisoDirectional
-	// comments and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for
+	// comments and docs/DEBT_LEDGER.md "DL-86" for
 	// the fix (a one-sided extrapolation anchored at that exact
 	// boundary).  This promotes the doc's brute-force-vs-lookup numbers
 	// into GATING checks: every row below is RED on pre-fix master (the
@@ -739,7 +739,7 @@ namespace
 		// <=0.57% when one alpha is off-node, 3-4% at the debt-ggx3
 		// sweep's corner (off-node on all three) -- and that residual is
 		// DL-105/DL-77's, not this end-cap's; it does not move with the
-		// sub-grid.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+		// sub-grid.  See docs/DEBT_LEDGER.md
 		// "DL-86" for the full residual table.
 		const double tol = 8.0 * stdErr + toleranceAbs;
 		const double diff = std::fabs( looked - reference );

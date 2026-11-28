@@ -512,7 +512,7 @@ namespace RISE
 
 		//////////////////////////////////////////////////////////////////////
 		// DL-67: the ONE partition a guided continuation is built on
-		// (docs/DL67_GUIDED_GENERATING_DENSITY.md).
+		// (docs/DEBT_LEDGER.md).
 		//
 		// A guided vertex runs two techniques on the same integral
 		// `integral f(w) cos(w) L(w) dw`: the BSDF technique (Scatter +
@@ -574,7 +574,7 @@ namespace RISE
 			return den > 0 ? num / den : Scalar( 1 );
 		}
 
-		/// DL-67 round 3 (docs/DL67_GUIDED_GENERATING_DENSITY.md §2,
+		/// DL-67 round 3 (docs/DEBT_LEDGER.md §2,
 		/// premise 3): the one-sample guide technique's firing probability
 		/// `a` must satisfy 0 < a < 1 wherever the BSDF technique owns mass
 		/// the guide cannot reach.  A DELTA lobe is such mass (the guide

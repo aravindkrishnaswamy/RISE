@@ -37,13 +37,13 @@ namespace RISE
 
 
 		protected:
-			// The BSP tree of bezier patches
+			// The BSP tree of bilinear patches
 				BSPTreeSAH<const BilinearPatch*>*	pBSPTree;
 
-			// The Octree tree of bezier patches
+			// The Octree tree of bilinear patches
 			Octree<const BilinearPatch*>*		pOctree;
 
-			BilinearPatchList		patches;			// List of bezier patches
+			BilinearPatchList		patches;			// List of bilinear patches
 			unsigned int			nMaxPerOctantNode;	// Maximum number of patches per octant node
 			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
 			bool					bUseBSP;			// Are we using BSP trees ?

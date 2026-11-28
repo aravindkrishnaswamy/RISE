@@ -16,7 +16,7 @@
 //  +96 bytes per Ray is real cache pressure on BVH traversal —
 //  this is a deliberate trade against the alternative parallel-
 //  struct plumbing tech debt.  See
-//  docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md decision #1.
+//  docs/PHYSICALLY_BASED_PIPELINE_PLAN.md decision #1.
 //
 //  SCOPE: PRIMARY VISIBILITY ONLY.  Differentials are NEVER
 //  propagated through a scattering bounce.  There are no

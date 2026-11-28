@@ -140,7 +140,7 @@ void PathTracingShaderOp::PerformOperation(
 		0, rs.glossyFilterWidth,
 		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
 		rc.pAOV,
-		// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): `bsdfPdf` and the
+		// DL-74 (docs/DEBT_LEDGER.md): `bsdfPdf` and the
 		// MIS-PARTNER density are two different quantities in RAY_STATE and
 		// this boundary has to forward BOTH.  They differ for exactly one
 		// producer -- RayCaster's volume phase-scatter continuation under

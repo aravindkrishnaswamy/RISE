@@ -238,7 +238,7 @@ namespace RISE
 		//! at `.v[0]`.
 		virtual IScalarPainter* MakeSingleScalarSlotView() const { return nullptr; }
 
-		//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): is this
+		//! DL-09 (docs/DEBT_LEDGER.md): is this
 		//! painter a genuine function of WORLD POSITION and nothing else
 		//! the hit record carries -- so that it can be evaluated at an
 		//! arbitrary interior point of a medium (a point that is not a hit

@@ -21,7 +21,7 @@
 //    CST so a save keeps it.  Edit-enablement gates on the SAME
 //    bridgeInteractingEnabled term MainWindow pushes to OutlinerWidget /
 //    ViewportProperties via setSceneEditable (mirrors Mac's
-//    isSceneEditableForAgents).  See docs/gui/ENVIRONMENT_SECTION.md.
+//    isSceneEditableForAgents).  See docs/gui/APPROACHABILITY_FOUNDATION.md.
 //
 //////////////////////////////////////////////////////////////////////
 

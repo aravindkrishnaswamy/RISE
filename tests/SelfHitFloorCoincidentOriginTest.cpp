@@ -76,7 +76,7 @@
 //        root is `1e-12 * |cos in| / |cos out|` and is therefore a
 //        genuine root of that offset origin -- "the floor is below
 //        every true root" is NOT an achievable invariant here and is
-//        not claimed (see docs/DL120_SELFHIT_FLOOR_REGRESSION.md
+//        not claimed (see docs/DEBT_LEDGER.md
 //        section 5).
 //
 //  SEEDING.  A binary that calls `RISE_CreateJobPriv` directly never

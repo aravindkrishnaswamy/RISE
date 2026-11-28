@@ -2,7 +2,7 @@
 //
 //  SimulationViewportTest.cpp - Simulation M3c: simulated deforming
 //    geometry in the interactive viewport (SceneEditor/LiveSimulation.h,
-//    docs/SIMULATION_M3C_RESULTS.md).  Drives a SceneEditController over
+//    docs/SIMULATION_SOLVER_CONTRACT.md).  Drives a SceneEditController over
 //    the real interactive rasterizer, headless, at 640 x 360.
 //
 //      T  timeline: a scene whose only time-varying content is a simulated

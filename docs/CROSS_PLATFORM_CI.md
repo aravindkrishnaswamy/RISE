@@ -1,9 +1,8 @@
 # Cross-platform compile check (Windows and Android)
 
 `.github/workflows/cross-platform-compile.yml` compiles the RISE library on Windows (MSVC) and Android
-(NDK, arm64-v8a) so that platform breakage in recent work shows up as real compiler errors. It exists
-because the simulation work (Fire, Cloth, Rigid, Liquid, the cache, the worker process host) has only
-ever been compiled on macOS.
+(NDK, arm64-v8a) so that platform breakage shows up as real compiler errors even when primary
+development happens on macOS.
 
 ## Triggering it
 
@@ -90,19 +89,15 @@ Files other agents were editing when this was written (not touched): `src/Librar
 `Cloth/ClothParallel.cpp`, `ClothSolver.cpp`, `ClothContact.cpp`, `SimulationCache.cpp`,
 `Utilities/RISECBOR64.{h,cpp}`, `build/XCode/`.
 
-## Results so far (2026-11-28)
+## Results (2026-11-27, `b6663f1af`)
 
 - **Android (arm64-v8a, NDK 27.3):** `librise.a` and `rise_jni` compile and link with 0 errors (run 2, commit
-  `00e1e9455`). One real fix was needed: the vendored libpng 1.2.8 predates `png_set_expand_gray_1_2_4_to_8`
-  (`PNGReader.cpp`). Nothing has been run on a device.
-- **Windows (MSVC v145):** not yet compiling. Run 2 reported 211 distinct error lines, all under
-  `src\Library\Utilities\`. Fixed since: `GeometricUtilities.cpp` (missing `<array>`), `ManifoldSolver.h` (the GDI
-  `RGB` macro mangled `SMSQueryDomain::RGB`), `Log\Win32Console.h` (extra qualification on a member declaration).
-  Still open: `FireCase.cpp` (102 error lines) and `FireSimulationRecords.cpp` (60; at least a missing `<array>`).
-  Both are fire production sources whose digests are pinned in `tests/fire_production_*/SourceManifest.h`: after any
-  edit regenerate the mirrors and run the fire tier on macOS, and change no computed value.
-- **Not known:** whether MSBuild went on to compile the rest of the library (`Simulation\`, `Parsers\`, ...) after
-  the failing batch in run 2. Expect more errors once `Utilities\` is clean. The Win32 branches of
-  `SimulationProcess.cpp` and `SimulationCache.cpp` are marked "NOT COMPILED OR TESTED".
-- The Windows solution has no `rise-sim` project and the Windows GUI has no simulation code.
-- The Windows work is being continued on a Windows machine, not through this workflow.
+  `00e1e9455`, after fixing vendored libpng 1.2.8 compatibility in `PNGReader.cpp`). Runtime execution on a
+  physical device remains separate.
+- **Windows (MSVC v145, `b6663f1af`):** Full native Windows build now compiles and links cleanly in both
+  `Release|x64` and `Debug|x64` across `Library` (`RISE.lib`), `RISE-CLI`, `RISE-GUI` (Qt6), and all **503/503**
+  CMake `rise_all_tests` targets (`build/cmake/rise-tests`). Earlier CI failures in `GeometricUtilities.cpp`,
+  `ManifoldSolver.h` (GDI `RGB` macro clash), `Win32Console.h`, `FireCase.cpp`, `FireSimulationRecords.cpp`,
+  `LiquidSheets.cpp`, `AliasTable.h`, `KeyframableHelper.cpp`, and `Library.vcxproj` are all resolved.
+- **Remaining platform gaps:** The Windows solution does not yet have a `rise-sim` project and the Windows
+  Qt6 GUI does not yet mirror macOS `SimulationsPanel` (see [SIMULATION_GUI_STATUS.md](SIMULATION_GUI_STATUS.md)).

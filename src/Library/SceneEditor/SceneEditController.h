@@ -1803,7 +1803,7 @@ namespace RISE
 		// production renders are still always full-frame because their
 		// callbacks never read it; only the separately named Render Active
 		// Region action captures and forwards these bounds. See
-		// docs/gui/DESIGN_BRIEF.md A4.
+		// docs/GUI_ROADMAP.md A4.
 		// right/bottom are clamped to the film at use; a box whose
 		// left/top lies outside the film is ignored for that pass
 		// (full-frame render) while still reported by
@@ -3728,7 +3728,7 @@ namespace RISE
 		bool GetHasAnimation( bool& hasAnimation ) const;
 
 		// ---- Simulation M3c: playback, baked ranges, live simulation ----
-		// (LiveSimulation.h; docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation
+		// (LiveSimulation.h; docs/SIMULATION_SOLVER_CONTRACT.md).  GetHasAnimation
 		// also reports true for a scene whose only time-varying content is
 		// simulation assets (simulated meshes, fire media), and
 		// GetAnimationOptions then takes its range from their time maps when
@@ -3807,7 +3807,7 @@ namespace RISE
 		//! while an edit or a production render holds the scene.
 		bool GetSimulations( std::vector<Simulation::SceneSimulationStatus>& statuses, std::string& error ) const;
 
-		// ---- Simulation M5: baking (SimulationBakeManager.h; docs/SIMULATION_M5A_RESULTS.md) ----
+		// ---- Simulation M5: baking (SimulationBakeManager.h; docs/SIMULATION_SOLVER_CONTRACT.md) ----
 		//! What this document tells the process-wide bake manager: its scene
 		//! file (the Job's CST load/save identity; empty when never saved),
 		//! whether the document differs from that file (HasUnsavedChanges,
@@ -4102,7 +4102,7 @@ namespace RISE
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
-		// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the scene
+		// Phase 6.5 (docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §9.9): save the scene
 		// by serializing the Job's retained CST Document whole
 		// (SaveEngine::Save -> Cst::SerializeCst) to a `.RISEscene`
 		// file: an external-modification guard refuses an in-place
@@ -4586,7 +4586,7 @@ namespace RISE
 		//! reverts to rendering through the scene's active camera.  NONE of these
 		//! is a scene mutation: no SceneEdit, no revision bump, no undo entry
 		//! (identical cost/side-effect profile to today's active-camera navigation,
-		//! but non-destructive).  Stamp/promote (a later slice) is the only action
+		//! but non-destructive).  Stamp/promote (StampViewToNewCamera / PromoteNamedViewToCamera) is the only action
 		//! that writes a scene camera.  See docs/gui/CAMERAS_AND_VIEWS.md.
 
 		//! user-review P1#6 (round 2): the free-fly funnel takes an explicit
@@ -5573,7 +5573,7 @@ namespace RISE
 		//! and four `radiance_*` params on the ACTIVE rasterizer chunk bind it
 		//! as the global radiance map.  These accessors surface + edit that
 		//! singleton without the GUI needing to know the two-chunk shape.  See
-		//! docs/gui/ENVIRONMENT_SECTION.md.
+		//! docs/gui/APPROACHABILITY_FOUNDATION.md.
 		struct EnvironmentInfo
 		{
 			bool   hasEnvironment = false;  //!< a radiance_map painter is bound (name != "none")

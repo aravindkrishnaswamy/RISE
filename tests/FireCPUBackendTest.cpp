@@ -12,7 +12,7 @@
 //                every step to accumulated binary32 rounding (solver version 3: no
 //                pre-pilot rim ignition from rounding residue), and one step from
 //                identical bytes (Metal's steps 2 and 5) to rounding
-//                (docs/SIMULATION_M8_RESULTS.md sections 10-13).
+//                (docs/SIMULATION_SOLVER_CONTRACT.md sections 10-13).
 //   --agreement-certified N, --agreement-fixed-vcycles N   the same in other modes.
 //   --cost TIER STEPS  timing only: CPU and Metal seconds per step at that tier.
 //   Diagnostics (results section 11): --splice-checkpoint SOURCE TARGET OUT,

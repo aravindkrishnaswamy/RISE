@@ -438,7 +438,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 					}
 					// XYZ-only path: accumulate XYZ in both FilteredFilm
 					// and the local colAccruedXYZ.  No per-sample XYZ->
-					// ROMM conversion (deferred to per-pixel resolve).
+					// RGB working-space conversion (deferred to per-pixel resolve).
 					if( filmMode ) {
 						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c.base, *pPixelFilter );
 						colAccruedXYZ = colAccruedXYZ + c;

@@ -480,7 +480,7 @@ static void TestRandomWalkSampleRatios()
 // R(mu) + T(mu) must be 1, and over a cosine-weighted incident hemisphere
 // <R> + <T> must be 1.  Before DL-306 T was Schlick's approximation:
 // <R> + <T> = 0.966 / 0.980 / 0.9992 / 1.006 at eta 1.05 / 1.128 / 1.33 /
-// 1.5 (independent quadrature, recorded in docs/DL306_SSS_FRESNEL_PARTITION.md).
+// 1.5 (independent quadrature, recorded in docs/DEBT_LEDGER.md).
 //
 // Every quantity comes from production code EXCEPT the oracles:
 //   R      the real SubSurfaceScatteringSPF (smooth), RGB kray and NM krayNM,

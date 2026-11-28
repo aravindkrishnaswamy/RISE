@@ -12,25 +12,35 @@ The ordinary material-channel classifier chooses between two paths:
 
 1. **Direct translation** ("simple" graphs). Walk supported material
    input chains into RISE painters: constants, image textures (with
-   UV Mapping), and (since ABI v19) native procedural subgraphs compiled
-   by `procedural_expr.py` into RISE `expression_painter` expressions
-   (`ShaderNodeTexVoronoi`, `ShaderNodeTexNoise`, `ShaderNodeTexWhiteNoise`,
+   UV Mapping and `wrap_mode` since ABI v23), and (since ABI v19–v23) native
+   procedural subgraphs compiled by `procedural_expr.py` into RISE
+   `expression_painter` expressions (**42** Cycles node types including
+   `ShaderNodeTexVoronoi`, `ShaderNodeTexNoise`, `ShaderNodeTexWhiteNoise`,
+   `ShaderNodeTexBrick`, `ShaderNodeTexGradient`, `ShaderNodeTexImage` in
+   image-mixed chains, `ShaderNodeGroup` [up to depth 8],
    3D `ShaderNodeMapping` including dynamic linked Location/Rotation/Scale,
    `ShaderNodeMix`/`MixRGB` including `VECTOR NON_UNIFORM`,
    `ShaderNodeMath`, `ShaderNodeVectorMath`, `ShaderNodeClamp`,
    `ShaderNodeMapRange`, `ShaderNodeVectorRotate`,
    `ShaderNodeVectorTransform`, `ShaderNodeObjectInfo`,
-   `ShaderNodeTexCoord` `Generated`/`Object`/`UV`/`Normal`/`Camera`,
+   `ShaderNodeParticleInfo` (`Random`), `ShaderNodeUVMap`,
+   `ShaderNodeVertexColor`, `ShaderNodeAttribute` (`GEOMETRY`),
+   `ShaderNodeAmbientOcclusion`, `ShaderNodeNewGeometry`
+   (`Backfacing`/`Random Per Island`/`Position`/`Normal`/`True Normal`),
+   `ShaderNodeLayerWeight`, `ShaderNodeFresnel`, `ShaderNodeLightPath`
+   (`Is Camera Ray`), `ShaderNodeTexCoord` `Generated`/`Object`/`UV`/`Normal`/`Camera`,
    `ShaderNodeRGBToBW`, `ShaderNodeHueSaturation`,
-   `ShaderNodeValToRGB` RGB/HSV/HSL/EASE/Alpha, `ShaderNodeInvert`,
-   `ShaderNodeBrightContrast`, `ShaderNodeGamma`, and
+   `ShaderNodeValToRGB` RGB/HSV/HSL/EASE/Alpha, `ShaderNodeRGBCurve`,
+   `ShaderNodeInvert`, `ShaderNodeBrightContrast`, `ShaderNodeGamma`, and
    `Separate`/`Combine` XYZ/Color) on supported Principled sockets plus
-   procedural `ShaderNodeBump` heights (ABI v20 `RISE_BLENDER_MODIFIER_RELIEF`).  For
-   image-texture-driven chains outside procedural compilation, Mix nodes
-   still follow their A input and colour filters remain lossy
-   pass-throughs; `ShaderNodeTexChecker` and any unsupported procedural
-   socket or mode still warn per input and fall back to the socket default
-   (see the table below).
+   procedural `ShaderNodeBump` heights (ABI v20 `RISE_BLENDER_MODIFIER_RELIEF`)
+   and stacked/blended modifiers (ABI v23 `RISE_BLENDER_MODIFIER_STACK` /
+   `RISE_BLENDER_MODIFIER_BLEND`). `ShaderNodeTexChecker`, `ShaderNodeTexWave`,
+   `ShaderNodeTexMagic`, and any unsupported procedural socket or mode still
+   warn per input and fall back to the socket default (see the table below).
+   *(Note: ABI v22 added structured progress/ETA callbacks; ABI v23 added
+   `ModifierStack`, `BlendedModifier`, camera `clip_start`, texture `wrap_mode`,
+   and object `particle_random`.)*
 2. **Explicit image baking** ("complex" graphs, plus optional bake of
    procedural-texture materials). Click **Bake Procedural Materials** to
    run Cycles channel bakes and store PNG paths on the material. An
@@ -134,21 +144,22 @@ by its independent producer, and unused nodes do not affect classification:
   glass/refracting/volume mixes or non-expression factor masks) — the manual
   channel-image fallback is an approximation, not a faithful mixed-BSDF
   reconstruction. (Non-refracting `ShaderNodeMixShader` trees with supported
-  leaves and compilable factor expressions compile natively in ABI v21 via
+  leaves and compilable factor expressions compile natively in ABI v21+ via
   `mix_material`.)
-- `ShaderNodeGeometry` — incidence, position, true normal, etc.
-  Each output has a different semantic; bake.
-- `ShaderNodeLayerWeight` / `ShaderNodeFresnel` — view-dependent
-  weights that bake-to-texture can capture as a flat approximation
-  but procedural mapping would mis-render at off-axis views.
 - `ShaderNodeWireframe` — bake.
 - `ShaderNodeTexWave` — RISE has no equivalent (Gerstner is wave-y
   but different parameterisation).  Bake for now.
-- `ShaderNodeTexMagic`, `ShaderNodeTexBrick`, `ShaderNodeTexGradient`,
-  `ShaderNodeTexIES`, `ShaderNodeTexPointDensity` — no RISE
-  equivalent yet.
-- Any `ShaderNodeGroup` (custom node group) — bake.
-- Any node type not listed in either table above.
+- `ShaderNodeTexMagic`, `ShaderNodeTexIES`, `ShaderNodeTexPointDensity` — no
+  RISE equivalent yet.
+- Any node type not listed in `procedural_expr.py` (note: `ShaderNodeGroup` up
+  to depth 8, `ShaderNodeNewGeometry` [`Backfacing`/`Random Per Island`/
+  `Position`/`Normal`/`True Normal`], `ShaderNodeLayerWeight`,
+  `ShaderNodeFresnel`, `ShaderNodeLightPath` [`Is Camera Ray`],
+  `ShaderNodeTexBrick`, `ShaderNodeTexGradient`, `ShaderNodeTexImage`
+  image-mixed chains, `ShaderNodeRGBCurve`, `ShaderNodeUVMap`,
+  `ShaderNodeVertexColor`, and `ShaderNodeParticleInfo` [`Random`] are now
+  compiled natively in `procedural_expr.py` through ABI v23 and no longer
+  require baking).
 
 If a node type is on the force-bake list but a clean direct mapping
 shows up later, move it to the supported-node table.  Add a row to

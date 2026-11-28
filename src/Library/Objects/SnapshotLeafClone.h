@@ -31,7 +31,7 @@
 //  slots are copies of the live bindings at snapshot time, so a later
 //  in-place rebind on the live material does NOT bleed into the snapshot.
 //
-//  ABI NOTE (docs/skills/abi-preserving-api-evolution.md, Layer 2):
+//  ABI NOTE (AGENTS.md interface-ABI policy):
 //  IMaterial is an abstract interface; adding a `Clone()` virtual to it —
 //  even appended at the vtable end — breaks new-caller -> old-out-of-tree-
 //  implementation.  So this is a FREE function that dispatches on the

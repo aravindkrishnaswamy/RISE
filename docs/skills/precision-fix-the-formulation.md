@@ -214,7 +214,7 @@ quadratic-square alternative: `(x−1)^4` otherwise depended on singular
 Newton refinement to reunite split factors. This tie rule adds no error
 band. Positive-square, near-multiple-positive, repeated-real, scaled-root
 and live torus hit/miss controls are documented in
-[DL226_QUARTIC_FACTORIZATION.md](../DL226_QUARTIC_FACTORIZATION.md).
+[../DEBT_LEDGER.md](../DEBT_LEDGER.md).
 Evaluating both candidates preserves the recovery opportunity; it is
 not a guarantee of resolving every ill-conditioned floating-point root.
 
@@ -233,7 +233,7 @@ cannot represent all coefficients, preserve a separate exponent through
 the same factorization, including Vieta recovery, rather than silently
 turning small coefficients into zero. Range extension does not add
 significand precision. See [the derivation, finite boundary oracles and
-renewed gates](../DL273_DL274_DL275_QUARTIC_RANGE.md).
+renewed gates](../../DEBT_LEDGER.md).
 
 ### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
 

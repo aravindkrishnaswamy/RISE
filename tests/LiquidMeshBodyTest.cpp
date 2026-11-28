@@ -1,5 +1,5 @@
 // liquid.mac closed-mesh rigid bodies (simulation M7d part 2,
-// docs/SIMULATION_M7D_RESULTS.md section 3).
+// docs/SIMULATION_SOLVER_CONTRACT.md section 3).
 //
 //   A  the mesh shape: volume, centroid and moments by the divergence theorem
 //      against the analytic sphere (a tessellation's deficit), the distance

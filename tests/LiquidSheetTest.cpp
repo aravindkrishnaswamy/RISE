@@ -1,5 +1,5 @@
 // liquid.mac sheets: thin open surfaces as moving boundaries (simulation M7d,
-// docs/SIMULATION_M7D_RESULTS.md; preview).
+// docs/SIMULATION_SOLVER_CONTRACT.md; preview).
 //
 //   A  crossings: a plane closes exactly the faces between the cell-centre
 //      pairs it separates (vertical and tilted, against the plane's sign),

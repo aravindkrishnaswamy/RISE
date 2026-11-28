@@ -48,7 +48,7 @@
 //        lockstep -- welding the seam in the tessellator would either
 //        duplicate a position under two different (position, uv)
 //        identities or corrupt that per-vertex lookup.  See
-//        docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md for the
+//        docs/DEBT_LEDGER.md for the
 //        full account.  The seam residual is a job for the
 //        watertightness CONSUMER's own weld (tolerance or topology
 //        aware), not this tessellator -- it affects every UV-wrapped

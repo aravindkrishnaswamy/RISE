@@ -1,6 +1,6 @@
 // Liquid solver with viscosity and surface tension: validation (simulation
-// M7c, cases 10 and 11 of docs/SIMULATION_M7_DESIGN.md;
-// docs/SIMULATION_M7C_RESULTS.md section 4).
+// M7c, cases 10 and 11 of docs/SIMULATION_SOLVER_CONTRACT.md;
+// docs/SIMULATION_SOLVER_CONTRACT.md section 4).
 //
 //   10a viscous Taylor-Green vortex (free slip): exp(-2 nu t), exact
 //   10b viscous damping of a deep standing wave (free slip): Lamb's linear

@@ -31,7 +31,7 @@
 //  sections below: the Phase C created-entity channels and the
 //  Model-B F5 CST-head boolean channel.
 //
-//  See docs/ROUND_TRIP_SAVE_PLAN.md §7.1 + §7.5 + §7.6.
+//  See docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §7.1 + §7.5 + §7.6.
 //
 //////////////////////////////////////////////////////////////////////
 

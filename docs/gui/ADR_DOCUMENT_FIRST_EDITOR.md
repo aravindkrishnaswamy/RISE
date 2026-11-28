@@ -2,7 +2,7 @@
 
 **Status: ACCEPTED & SHIPPED 2026-07-22** (Phases 1–3 shipped in July 2026; Phase 4 undo fidelity resolved 2026-10-17 via exact-byte CST undo `Cst::DocReplaceChunkIfText`).
 **Decision owner:** Aravind.  **Context:** the GUI-redesign review arc
-([PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md) §7) — four
+([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §7) — four
 adversarial review rounds produced 12 P1s on one slice, and 11 of them
 were instances of two structural seams, not independent mistakes.
 
@@ -24,7 +24,7 @@ convention.
 
 ## 2. Why (the evidence)
 
-The 12 P1s cluster (full table in PROPERTIES_AND_REFERENCES.md §6–7):
+The 12 P1s cluster (full table in ../GUI_ROADMAP.md §6–7):
 
 - **Class A — dual-representation incoherence (6):** live scene, CST, and
   the dirty tracker updated by hand-rolled per-arm sequences.  Every

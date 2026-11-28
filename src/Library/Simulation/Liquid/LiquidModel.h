@@ -4,7 +4,7 @@
 //  step, the time-step limits, and the outputs (surface mesh, fields,
 //  marker particles) of the `liquid.mac` solver.
 //
-//  One step of length dt (operator splitting; docs/SIMULATION_M7A_RESULTS.md):
+//  One step of length dt (operator splitting; docs/SIMULATION_SOLVER_CONTRACT.md):
 //    1. extrapolate the velocity from the liquid's faces into the air;
 //    2. advect the marker particles (when enabled) and the level set
 //       (WENO5 + SSP-RK3) with that velocity;
@@ -339,7 +339,7 @@ private:
 	bool HasSolids() const { return !setup_.solids.empty() || !bodies.empty(); }
 	//! The interface field's linear layers: none with surface tension (m7c: the linear
 	//! extrapolation drove a static drop's parasitic currents to the capillary speed,
-	//! in 2-D without viscosity and in 3-D with it; docs/SIMULATION_M7C_RESULTS.md).
+	//! in 2-D without viscosity and in 3-D with it; docs/SIMULATION_SOLVER_CONTRACT.md).
 	int InterfaceLinearLayers() const { return setup_.surfaceTension > 0 ? 0 : options_.linearExtrapolationLayers; }
 	// m7d sheets: the closed faces, their fractions before closing (same order), the
 	// solid face velocity without bodies, and the faces whose velocity was set.

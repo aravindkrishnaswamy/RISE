@@ -38,8 +38,8 @@ cmake --build _out --target rise -j8
 `app/build.gradle.kts` does; omitting it still lets `--target rise` build
 `librise.a` on its own.)
 
-Expected output: a `librise.a` archive under `_out/` containing about 380
-object files (377 library TUs plus vendored zlib/libpng), with no compiler
+Expected output: a `librise.a` archive under `_out/` containing the compiled
+object files (484 library TUs plus vendored zlib/libpng), with no compiler
 warnings or errors. A warning or error means the source list in
 `rise_sources.cmake`, the compile flags in `CMakeLists.txt`, or the affected
 source needs correction.

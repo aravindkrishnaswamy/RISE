@@ -5,7 +5,7 @@
 and tested through the command line and unit tests. This note checks what the macOS app and the agent/chat
 layer expose of it, records what was added, and records what was driven headlessly through the app's probes.
 Plan: [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md) §4.5. Earlier app work:
-[M5b](SIMULATION_M5B_RESULTS.md), [M5c](SIMULATION_M5C_RESULTS.md).
+[M5b](SIMULATION_GUI_STATUS.md), [M5c](SIMULATION_GUI_STATUS.md).
 
 ## 1. Inventory
 
@@ -272,7 +272,7 @@ two lines).
 
 ## 4. Pins touched
 
-- **Chunk keyword count 191** (`SceneEditorSuggestionsTest`) and **`RewireConnectionTest` 6**: not touched, no chunk
+- **Chunk keyword count 191** (`SceneEditorSuggestionsTest`, subsequently **193** after HyLIoS P5/P6b merged) and **`RewireConnectionTest` 6**: not touched by the simulation GUI pass, no chunk
   keyword or rewire rule was added.
 - **Chat tool table**, `kToolDefs`: 38 to **49** in `AgentChatLoopTest` (OpenAI, xAI, Anthropic, Gemini bodies) and
   `AgentSkillsTest` (three providers).

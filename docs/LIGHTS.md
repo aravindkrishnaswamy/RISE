@@ -29,20 +29,24 @@ all `ILight` types are delta-position) versus **area** (mesh luminaire,
 sampled by area). These two split the sampling pipeline as well: see
 §5 below.
 
-There is no separate "area light" chunk. Area lights are constructed
-by giving an object a luminaire material
-([`lambertian_luminaire_material`](../src/Library/Materials/LambertianLuminaireMaterial.h);
+Area lights can be authored either via the one-chunk convenience keywords
+`rect_light` and `shape_light` (which parse-time-expand into a painter +
+`lambertian_luminaire_material` + geometry + `standard_object`; see
+[SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §3.5), by attaching a luminaire
+material ([`lambertian_luminaire_material`](../src/Library/Materials/LambertianLuminaireMaterial.h);
 [`phong_luminaire_material`](../src/Library/Materials/PhongLuminaireMaterial.h) is **FROZEN** legacy)
-or by authoring `emissive` + `emissive_scale` on a surface material that supports self-emission
-([`ggx_material`](../src/Library/Materials/GGXMaterial.h) / [`pbr_metallic_roughness_material`](../src/Library/Job.cpp)).
+to any object, or by authoring `emissive` + `emissive_scale` on a surface material
+that supports self-emission ([`ggx_material`](../src/Library/Materials/GGXMaterial.h) /
+[`pbr_metallic_roughness_material`](../src/Library/Job.cpp)).
 
-## 2. Catalogue of `ILight` chunks
+## 2. Catalogue of `ILight` & convenience light chunks
 
 | Chunk | Class | Role |
 |---|---|---|
 | `omni_light` | [`PointLight`](../src/Library/Lights/PointLight.h) | Isotropic point source. `IsPositionalLight() = true`, `emissionConeHalfAngle = π`. |
 | `spot_light` | [`SpotLight`](../src/Library/Lights/SpotLight.h) | Cone-restricted point source. Reports `emissionDirection` and `emissionConeHalfAngle` so the BVH and equiangular sampler can use them. |
 | `directional_light` | [`DirectionalLight`](../src/Library/Lights/DirectionalLight.h) | Infinitely distant parallel-ray source. `IsPositionalLight() = false`. **`direction` semantics**: vector pointing FROM the surface TO the light source — see [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) for the convention and the foreign-format negation rule. |
+| `rect_light` / `shape_light` | Area-light convenience chunks | Expand at parse time into a luminaire object (`lambertian_luminaire_material` + planar/arbitrary geometry) collected by `LuminaryManager`. |
 | `ambient_light` (**DEPRECATED**) | [`AmbientLight`](../src/Library/Lights/AmbientLight.h) | Legacy constant directionless ambient (deprecated in `kLegacyTierTable`; breaks energy conservation). Evaluated deterministically — does not enter stochastic light selection. |
 
 Two consequences of these defaults that bite contributors:

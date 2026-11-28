@@ -2279,7 +2279,7 @@ bool LightSampler::SampleLight(
 
 	// Single uniform random for env-vs-alias selection (continuous-PMF
 	// architectural fix 2026-05-29 — see Prepare()'s block + docs/
-	// PRE_PHASE1_STATUS.md Session 9).  Re-mapped into either the env-
+	// docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md Session 9).  Re-mapped into either the env-
 	// direction's u1 sub-interval (env path) or the alias-table's u
 	// sub-interval (alias path); net Get1D() consumption per call is
 	// identical to the prior binary-PMF flow, preserving Sobol / QMC
@@ -2842,7 +2842,7 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 
 namespace
 {
-	//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)): the NEE
+	//! DL-09 (docs/DEBT_LEDGER.md §3(ii)): the NEE
 	//! shadow segment from the shading point (whose walk's stack top has
 	//! been advanced to it, or telescopes to it) to the light point carries
 	//! the graded-index factor the BSDF-sampled continuation pays on
@@ -3604,7 +3604,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 							// integrand is `neeTrainingScale * contrib`.
 							// 1 everywhere else, so unchanged there.
 							// DL-84 round 7 (the REALIZED-MOMENT convention,
-							// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+							// docs/DEBT_LEDGER.md
 							// "Round 7"): `AccumulateCount` for this attempt
 							// fired BEFORE the light-sample roulette above, and
 							// a killed sample contributes a counted zero -- so
@@ -3751,8 +3751,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 				// MIS: power heuristic (or optimal MIS) against BSDF PDF.
 				//
-				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
-				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
+				// DL-73 (docs/DEBT_LEDGER.md) /
+				// DL-74 (docs/DEBT_LEDGER.md):
 				// `pMaterial->Pdf(...)` is the RAW, un-guided sampling pdf --
 				// at a VOLUME vertex (`pMaterial` is a `MediumScatterMaterial`
 				// adapter, see MediumTransport.cpp) this correctly matches
@@ -4836,8 +4836,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					}
 				}
 
-				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
-				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
+				// DL-73 (docs/DEBT_LEDGER.md) /
+				// DL-74 (docs/DEBT_LEDGER.md):
 				// NM twin of the RGB env-NEE MIS block above -- see that
 				// block's comment for the full derivation. `pGuidedBlend` is
 				// only ever non-null from PathTracingIntegrator's SURFACE NM

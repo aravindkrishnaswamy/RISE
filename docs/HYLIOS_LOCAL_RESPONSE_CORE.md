@@ -1,11 +1,11 @@
 # HyLIoS P4 local angular numeric core
 
+> **Integration status (2026-11-27):** This document specifies the standalone P4 local angular numeric core (`HyLIoSLocalResponse.{h,cpp}`). Subsequent increments wired this core into `HyLIoSLocalBake`, `HyLIoSLocalResponseAsset`, and `HyLIoSSkinMaterial` — see [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md) §13.
+
 This increment supplies a synthetic, immutable projected-cell response and its
-nonreciprocal camera transpose. It is **not** a skin asset, a bake, a material,
-or a completed P4/P5 milestone. No optical data or oracle histories enter these
-tests. No current forward-kernel or measurement-CLI behavior changes. The remaining
-bake, asset and renderer acceptance gates are tracked in
-[HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md).
+nonreciprocal camera transpose. The numeric core itself has no optical data or
+oracle histories; downstream bake, asset, and material integration are tracked
+in [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md).
 
 `HyLIoSLocalResponse.{h,cpp}` has no renderer dependencies. The representation
 tag is `hylios_local_projected_cells_v1`. Independent full incident and outgoing

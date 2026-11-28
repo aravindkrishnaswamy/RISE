@@ -1,4 +1,4 @@
-// Cloth model validation (simulation M3a, docs/SIMULATION_M3A_RESULTS.md).
+// Cloth model validation (simulation M3a, docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 //   element checks  membrane, hinge and rod gradients against finite
 //                   differences; the membrane Hessian exact in tension and

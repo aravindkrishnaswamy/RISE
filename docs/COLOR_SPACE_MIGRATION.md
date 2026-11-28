@@ -8,7 +8,7 @@ changed `RISEPel` to `Rec709RGBPel`. Current declarations are
 Sections that discuss `RISEPel = ROMMRGBPel`, kickoff choices, or future Stage
 B work are the pre-landing design record.
 **Triggered by:** Landing 3 v2 spectral pipeline correctness work (commit `a763141`) surfaced two structural costs of the current ROMM-RGB-as-`RISEPel` choice that a different working space would resolve cleanly.
-**Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)
+**Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)
 
 ---
 

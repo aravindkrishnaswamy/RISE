@@ -49,18 +49,18 @@ Phase 0, §14). It does **not** cover material *graph* editing
 ops this spec defines.
 
 > **Ground-truth basis.** Every capability claim below is reconciled against
-> [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (code-verified, supersedes
+> [../GUI_ROADMAP.md](../GUI_ROADMAP.md) (code-verified, supersedes
 > plan-doc `Status:` headers) and cited to `file:line`. Plan-doc status headers
 > were treated as suspect.
 
 > **Transaction-model basis.** Every add / duplicate / delete / rename / import
-> here is a **transaction** as defined by [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)
+> here is a **transaction** as defined by [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)
 > (the authoritative owner of what a transaction is, the `(documentUUID, revision)`
 > precondition, the one-shot whole-payload `Propose` / `Commit` surface, and undo
 > attribution). This spec defines the *ops*; TRANSACTION_MODEL owns their
 > epoch / precondition / snapshot-publication / attribution semantics. Where this
 > spec says "composite transaction" it means the `SceneTransaction` of
-> [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §4.1 — an ordered `std::vector<SceneEdit>`
+> [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §4.1 — an ordered `std::vector<SceneEdit>`
 > committed atomically under the controller's single-writer `mMutex`, never a
 > bespoke write path.
 
@@ -141,7 +141,7 @@ From [GUI_ROADMAP.md](../GUI_ROADMAP.md) §1, the load-bearing ones for this spe
   platform code (§9).
 - **§1.6 Everything routes through one mutation path.** Every add / duplicate /
   delete / rename / **import** is a `SceneTransaction` through `SceneEditor::Apply`
-  → `SceneEditController` ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)), so it is
+  → `SceneEditController` ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)), so it is
   undoable, diff-reviewable, attributed, and persistent — the same path GUI edits,
   hand-edits, and AI edits converge on. **Bulk glTF import is the one place this is
   currently violated** (`Job::ImportGLTFScene` mutates the managers directly with no
@@ -151,7 +151,7 @@ From [GUI_ROADMAP.md](../GUI_ROADMAP.md) §1, the load-bearing ones for this spe
   real `.RISEscene`); creation/deletion ride that. Avoid the bare `MCP` token
   (irrelevant here — no new agent types).
 
-Per the [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) companion spec (the
+Per the [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) companion spec (the
 authoritative model for editor transactions, `(documentUUID, revision)` document
 identity, published immutable snapshots, and preconditions;
 [GUI_ROADMAP.md](../GUI_ROADMAP.md) §14), **creations, deletions, and imports are
@@ -183,7 +183,7 @@ hang off.
 > **Status update (2026-07-22): `Category::Geometry` SHIPPED** — outliner
 > row, typed editable panel (generic descriptor+CST introspection), CRUD
 > via the suffix-generic Duplicate/Remove, jump-to-definition.  See
-> [PROPERTIES_AND_REFERENCES.md](PROPERTIES_AND_REFERENCES.md).  `Shader`
+> [../GUI_ROADMAP.md](../GUI_ROADMAP.md).  `Shader`
 > and `Modifier` remain unshipped (no `IJob` enumeration surface yet);
 > with the generic inspector each is now a one-arm addition.
 
@@ -267,7 +267,7 @@ object** (it was never removed from the manager or the file). Calling that
   is skipped from the **interactive preview** by the controller (it is *not*
   removed from the manager and *not* written to the file). This maps cleanly onto
   the TRANSACTION_MODEL notion of **owner-private state that is never published and
-  never snapshotted** ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.3) — it
+  never snapshotted** ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.3) — it
   bumps no revision, publishes no snapshot, and therefore is invisible to every
   other reader: background production renders, thumbnails, RMSE, the AI's scene
   context, and the "show me the code" diff all read a published snapshot and so
@@ -310,7 +310,7 @@ spec.)
 
 ## 4. Add / duplicate / delete — as transactions
 
-Every action is a `SceneTransaction` ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)
+Every action is a `SceneTransaction` ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)
 §4.1) — an ordered `std::vector<SceneEdit>` with a `(documentUUID, baseRevision)`
 precondition + attribution, committed atomically under the controller's
 single-writer `mMutex` (TRANSACTION_MODEL §4.2). A single-edit action (add one
@@ -476,7 +476,7 @@ from *the introspection that must be added*:
    an entity's *actual* bound reference names needs an `*Introspection::Inspect`
    surface for that entity's family. Those surfaces exist for **Camera, Light,
    Material, Media, Object, Film, Rasterizer** (the seven the audit enumerates,
-   [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) §3/§8 — verified: the only
+   [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §3/§8 — verified: the only
    `*Introspection.{h,cpp}` files in `src/Library/SceneEditor/` are
    `Camera/Film/Light/Material/Media/Object/Rasterizer`). `MaterialIntrospection`
    already yields a regular material's bound painter name + pipe
@@ -493,7 +493,7 @@ from *the introspection that must be added*:
      hazard §5.1 opens with). Add + test before relying on it.
    - **Composed / sugar-material slot-ref introspection (TO-BUILD).** Composed
      materials (`PBRMetallicRoughness`, `GGXEmissive`) are **read-only in
-     `MaterialIntrospection` today** ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)
+     `MaterialIntrospection` today** ([../GUI_ROADMAP.md](../GUI_ROADMAP.md)
      §3 — composed materials all-read-only), so their **material → painter** and
      **material → material** edges are not introspectable. Add a composed-material
      reference-readback (it need not be *editable* introspection — just enumerate the
@@ -530,7 +530,7 @@ above added + tested first); citations show where the binding lives in code:
 | Material (non-composed) → Painter (colour slots) | **EXISTING** | `MaterialIntrospection` slot pipe = `Painter` | [MaterialIntrospection.h:53](../../src/Library/SceneEditor/MaterialIntrospection.h) |
 | Material (non-composed) → ScalarPainter (IOR/roughness/scattering/…) | **EXISTING** | `MaterialIntrospection` slot pipe = `ScalarPainter` | [Job.cpp:2718](../../src/Library/Job.cpp) `ResolveOrDiagnoseScalar` |
 | Material → Material (composed: `PBRMetallicRoughness`, `GGXEmissive`) | **TO-BUILD** (composed materials read-only today, no ref-readback) | composed-material reference introspection — *add* | audit §3 (composed materials all-read-only) |
-| Composed material → Painter (slots inside a composed/sugar material) | **TO-BUILD** (same gap) | composed-material reference introspection — *add* | [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) §3 |
+| Composed material → Painter (slots inside a composed/sugar material) | **TO-BUILD** (same gap) | composed-material reference introspection — *add* | [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §3 |
 | **Painter → Painter** (blend chains / adapter graph) | **TO-BUILD** (no `PainterIntrospection`) | `PainterIntrospection` ref slots — *add + test*; descriptor `referenceCategories` | [ISCALARPAINTER_REFACTOR.md](../ISCALARPAINTER_REFACTOR.md) `PainterToScalarAdapter`, `BlendPainter` |
 | Object (interior) → Medium | **EXISTING** | `ObjectIntrospection`; `Object::AssignInteriorMedium` addrefs | [Object.cpp:175](../../src/Library/Objects/Object.cpp) |
 | Scene → active Camera | **EXISTING** | `Scene::activeCameraName` | [Scene.cpp:274](../../src/Library/Scene.cpp) (`RemoveCamera`) |
@@ -589,7 +589,7 @@ Per entity family, when the user deletes an entity that has referrers:
 
 The whole delete (cascade rebinds + the removal + — when it must survive reload —
 the tombstone emit, §5.4) is **one composite `SceneTransaction`**
-([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §4.1; the underlying
+([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §4.1; the underlying
 `CompositeBegin`/`CompositeEnd` bracket, [SceneEdit.h:248-251](../../src/Library/SceneEditor/SceneEdit.h))
 committed atomically under the single-writer `mMutex`, so one Undo restores the
 entity *and* re-binds every referrer (TRANSACTION_MODEL §4.2 partial-failure
@@ -677,7 +677,7 @@ construct:
 - **The block is the same sentinel-bracketed, wholesale-rendered region** the
   round-trip save plan defines (`kManagedBlockSentinelOpen`/`Close`,
   `OverrideSpanIndex.h:43-45` — file deleted in Slice 6d;
-  managed-block contract pinned 2.3 / 2.7, [ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md)).
+  managed-block contract pinned 2.3 / 2.7, [ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md)).
   Tombstones live in it alongside `override_object` chunks and created-entity
   chunks; the block is regenerated in canonical form on every save (pinned 2.7).
   This *mirrors the existing managed-override-block pattern* — the tombstone is a
@@ -693,7 +693,7 @@ construct:
 runtime mutator: it can only remove a name the manager already contains, so it must
 appear *after* that name's declaration in scene-file order (the same
 "target-exists-at-parse-time" invariant `override_object` already relies on,
-[ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md) §9.6). The managed block's
+[ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md) §9.6). The managed block's
 placement rule (pinned 2.19 — *after* all managed targets' declarations and
 *before* the first barrier `>` command) already satisfies this: the deleted
 entity's `standard_object` (or material/painter/…) chunk is upstream of the block,
@@ -730,7 +730,7 @@ only for the session) when:
    removable identity that a single `> remove sphere_7` can address without the
    loop re-creating it on the next reload's loop expansion — `> remove` runs once,
    the loop body runs N times. (RISE's parser visits a `FOR` body's bytes once per
-   iteration via `seekg`-back, [ROUND_TRIP_SAVE_PLAN.md](../ROUND_TRIP_SAVE_PLAN.md)
+   iteration via `seekg`-back, [ADR_DOCUMENT_FIRST_EDITOR.md](ADR_DOCUMENT_FIRST_EDITOR.md)
    §4.2; the entity is `chunkRevisited`, pinned 2.12.) V1 cannot statically prove
    the loop won't regenerate the name, so it refuses — the same conservatism the
    save plan applies to `FOR`-shared lines (Mode B) and cross-file targets (pinned
@@ -1089,7 +1089,7 @@ scene** with no rollback; and the AI/diff tooling sees a pile of entities appear
 with no attribution and no reviewable transaction.
 
 **Redesign: a first-class import transaction / provenance object.** The import
-becomes a single `SceneTransaction` ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)
+becomes a single `SceneTransaction` ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)
 §4.1) that **owns the complete generated set** and commits as **one unit**:
 
 - **Provenance object.** An `ImportProvenance` value (asset path, `name_prefix`,
@@ -1295,8 +1295,8 @@ Filled-in per the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §15 template.
 
 ## Related specs
 
-- [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) — code-verified ground truth (read first).
-- [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) — transaction/epoch/precondition model these ops obey.
+- [../GUI_ROADMAP.md](../GUI_ROADMAP.md) — code-verified ground truth (read first).
+- [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) — transaction/epoch/precondition model these ops obey.
 - [GUI_ROADMAP.md](../GUI_ROADMAP.md) — §1 principles, §11 Phase 0, §15 acceptance template, §16 decisions.
 - [GLTF_IMPORT.md](../GLTF_IMPORT.md) — the importer wired into "Add Model".
 - [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md) — material graph (consumes created materials).

@@ -316,7 +316,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This used
 	// to be the literal stream 48, which the eye walk's own
 	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
-	// docs/DL08_PSSMLT_LANE_LAYOUT.md).
+	// docs/DEBT_LEDGER.md).
 	sampler.StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
 
 	// Pick film position + lens position (two independent 2D

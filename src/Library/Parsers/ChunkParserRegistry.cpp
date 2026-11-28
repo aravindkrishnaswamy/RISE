@@ -157,7 +157,7 @@ static bool ReadSampleColumns( const std::string& row, double* samples, size_t c
 	return true;
 }
 
-// Phase 6.2 helper (docs/ROUND_TRIP_SAVE_PLAN.md §8.10): compose a
+// Phase 6.2 helper (docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §8.10): compose a
 // column-major 4×4 from translation, glTF-style quaternion (xyzw),
 // and per-axis stretch.  Extracted from the inline body of
 // StandardObjectAsciiChunkParser::Finalize (originally line 5534) so
@@ -582,10 +582,11 @@ namespace RISE
 			// values: every whitespace-separated token must fully consume as
 			// a number, and `nan` / `inf` spellings are rejected by TEXT
 			// before strtod ever runs.  This is deliberately not a value
-			// check (std::isfinite / !(x>0) nets) -- the build uses
-			// -ffast-math (finite-math-only), under which inf/NaN VALUE
-			// comparisons are undefined and really do get folded away (see
-			// the guilloché dial inf-seed miscompile, 2026-06-11).  Scene
+			// check (std::isfinite / !(x>0) nets) -- historically the build
+			// used bare -ffast-math (-ffinite-math-only), under which inf/NaN
+			// value checks folded away (guilloché dial inf-seed bug, 2026-06-11);
+			// macOS now pairs -fno-finite-math-only, but text-layer rejection
+			// remains preferred and -Ofast-proof.  Scene
 			// text is the one layer where the rejection cannot be optimized
 			// out.  Also closes String::toDouble's uninitialized return on
 			// entirely non-numeric tokens.
@@ -6662,9 +6663,9 @@ namespace RISE
 			};
 
 			// Simulation M3b: a deforming mesh read from a simulation cache's
-			// mesh output, one frame per render frame (docs/SIMULATION_M3B_RESULTS.md).
+			// mesh output, one frame per render frame (docs/SIMULATION_SOLVER_CONTRACT.md).
 			// M4: or bound to a producer chunk's output by `source <simulation>.<output>`
-			// (docs/SIMULATION_M4_RESULTS.md).
+			// (docs/SIMULATION_SOLVER_CONTRACT.md).
 			struct SimulatedMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -6750,7 +6751,7 @@ namespace RISE
 			};
 
 			// M7 prerequisites: a particle set (points.v1) read from a simulation
-			// cache, each point a sphere (docs/SIMULATION_M7_PREREQ_RESULTS.md).
+			// cache, each point a sphere (docs/SIMULATION_SOLVER_CONTRACT.md).
 			struct SimulatedPointsGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -7030,7 +7031,7 @@ namespace RISE
 						cd.category = ChunkCategory::Simulation;
 						cd.description = "M6: simulations that are two-way coupled, run by one co-stepping group host with a "
 							"shared macro step and a port exchange per step (`rise-sim bake <scene> <group>` bakes it as one "
-							"job; each member keeps its own cache).  docs/SIMULATION_M6_RESULTS.md.";
+							"job; each member keeps its own cache).  docs/SIMULATION_SOLVER_CONTRACT.md.";
 						SimulationChunks::AddCommonParams( cd );
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "members"; p.kind = ValueKind::Reference; p.repeatable = true;
@@ -10905,7 +10906,7 @@ namespace RISE
 				}
 			};
 
-			// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §8.9): applies
+			// Phase 6.2 (docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §8.9): applies
 			// transform overrides to an already-declared object.  The
 			// chunk MUST appear AFTER the target's standard_object;
 			// missing target is a hard parse error.  Precedence
@@ -11209,7 +11210,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; p.deprecated = true; p.replacement = "the rasterizer's own radiance_map"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "radiance_scale";  p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "radiance_orient"; p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
-						// Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-arc.md
+						// Post-arc enforcement E1 (docs/agentic-redesign/50-agentic-surface.md
 						// sec 7, the LUMINAIRE_NULL_GEOMETRY entry): a csg_object has no directly-
 						// owned geometry, so an emissive material bound to it is never selected by
 						// NEE light-sampling -- it only glows on direct view.  This flag has a
@@ -14489,7 +14490,7 @@ namespace RISE
 					//     corrupt it)
 					//   - LDR (PNG / TGA / PPM / TIFF): "aces" (proper
 					//     highlight rolloff for an LDR display; see
-					//     docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md)
+					//     docs/PHYSICALLY_BASED_PIPELINE_PLAN.md)
 					// Picking the default per-type here means the user's
 					// 86+ existing HDR scenes don't trip the constructor's
 					// "display_transform ignored on HDR" warning at every
@@ -15345,7 +15346,7 @@ namespace RISE
 	// Factory that creates one instance of every chunk parser the scene
 	// grammar supports.  Ownership transfers to the caller; when the
 	// returned vector goes out of scope all parsers are destroyed.  The
-	// same list powers AsciiSceneParser's dispatch map and
+	// same list powers Cst::DeriveToJob's dispatch map and
 	// SceneEditorSuggestions' grammar enumeration.
 	std::vector<ChunkParserEntry> CreateAllChunkParsers()
 	{

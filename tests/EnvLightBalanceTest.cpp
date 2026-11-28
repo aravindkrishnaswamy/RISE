@@ -9,7 +9,7 @@
 //    forms below, and BDPT/VCM must agree with its mean at the original
 //    energy tolerances. Quantiles from different estimators need not agree;
 //    existing caps on each estimator's own peak/mean still guard fireflies.
-//    docs/DL346_ENVIRONMENT_MIS_MEASURE.md derives the complete measure.
+//    docs/DEBT_LEDGER.md derives the complete measure.
 //
 //    PROPERTY (unchanged)
 //    ==================================================================

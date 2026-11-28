@@ -72,7 +72,7 @@ bool SphereGeometry::TessellateToMesh(
 	// Any residual seam-only "boundary edge" a watertightness check
 	// reports on a tessellated sphere/torus/cylinder is a job for that
 	// check's own position weld (tolerance or topology aware), not for
-	// this tessellator -- see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md.
+	// this tessellator -- see docs/DEBT_LEDGER.md.
 	//
 	// IMPORTANT: this weld MUST keep vertices[]/normals[]/coords[] a
 	// single combined (position, normal, texcoord) record per index --

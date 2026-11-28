@@ -1352,7 +1352,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 		// "clear interior medium" sentinel.  Both match the load-
 		// time parser's `interior_medium "none"` behaviour (which
 		// short-circuits the SetObjectInteriorMedium call entirely
-		// — see AsciiSceneParser.cpp StandardObjectAsciiChunkParser).
+		// — see ChunkParserRegistry.cpp StandardObjectAsciiChunkParser).
 		// Non-"none" non-empty resolves through IJob::GetMedium.
 		if( !isReplay && IsContainerNodeForEdit_( obj )
 		 && !( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) ) {
@@ -4327,8 +4327,8 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// lexicographically, which doesn't match the user's prior
 		// selection — explicit SetActiveCamera fixes that).  When
 		// the captured prev camera no longer exists (some other code
-		// path removed it between Apply and Undo — rare today, but
-		// possible once a Phase-4 RemoveCamera op lands), log and
+		// path — e.g. RemoveCamera — removed it between Apply and
+		// Undo), log and
 		// leave the auto-promoted active in place rather than
 		// silently swallowing the inconsistency.
 		if( !mJob ) return false;

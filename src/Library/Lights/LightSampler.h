@@ -120,7 +120,7 @@ namespace RISE
 
 	class IORStack;
 
-	/// Optional per-call hook (DL-74, docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
+	/// Optional per-call hook (DL-74, docs/DEBT_LEDGER.md)
 	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
 	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
 	/// shadow-ray direction.
@@ -924,7 +924,7 @@ namespace RISE
 			//! null luminary and for a luminary with no directly-owned
 			//! geometry (a CSG composite: `GetGeometry() == 0`, and it is
 			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
-			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
+			//! and docs/DEBT_LEDGER.md.
 			static bool LuminaryIsTwoSided( const IObject* pLum );
 
 			//! DL-431: the surface-mean radiant exitance of ONE luminary.
@@ -949,7 +949,7 @@ namespace RISE
 			//! shoots bit for bit as before.  On a clipped plane the sample
 			//! points are exactly the old UV grid's cell centres, so a
 			//! UV-keyed painter averages to the same value as well.
-			//! \sa docs/DL431_EMITTER_AVERAGE_EXITANCE.md
+			//! \sa docs/DEBT_LEDGER.md
 			struct LuminaryExitance
 			{
 				RISEPel	average;		///< surface-mean exitance (before area / face count)
@@ -1223,7 +1223,7 @@ namespace RISE
 				//! every vertex), so that its top is the index the caller's
 				//! throughput was priced to.  Only then is the NEE
 				//! connection segment priced `(top/n(light point))^2`
-				//! (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)).
+				//! (docs/DEBT_LEDGER.md §3(ii)).
 				//! Default NULL: a walk that does not advance (the legacy
 				//! shader-op chain, RayCaster's own volume walk) keeps its
 				//! pre-DL-09 accounting on BOTH its NEE and its
@@ -1543,7 +1543,7 @@ namespace RISE
 			/// scenes (env + other lights), which closes the MIS
 			/// partition-of-unity that the previous binary 0-or-1
 			/// formulation broke — see `docs/IMPROVEMENTS.md` #12 and
-			/// `docs/PRE_PHASE1_STATUS.md` Session 9 for the rationale
+			/// `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` Session 9 for the rationale
 			/// (continuous-PMF refactor 2026-05-29).
 			Scalar EnvSelectProbability() const
 			{

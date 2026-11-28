@@ -51,7 +51,7 @@ void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref()
 //! THE TRUE solid-angle density of the half-vector `GenerateSpecularRay`
 //! draws.
 //!
-//! DL-177 (docs/DL177_WARD_DENSITY_AND_KRAY.md).  The sampler draws
+//! DL-177 (docs/DEBT_LEDGER.md).  The sampler draws
 //! `phi` uniformly and `theta = atan(alpha*sqrt(-ln xi))`.  Writing
 //! `t = tan(theta)`, `xi = exp(-t^2/alpha^2)`, so
 //! `P(T <= t) = 1 - exp(-t^2/alpha^2)` and
@@ -158,7 +158,7 @@ static void GenerateSpecularRay(
 	// UNFLIPPED normal while Scatter's own accept-check tested the
 	// FLIPPED `myonb.w()` -- every specular draw was then on the wrong
 	// side and got rejected, silently losing the whole specular lobe.
-	// See docs/DL100_SCHLICK_BACKFACE_SPECULAR.md (same pattern as
+	// See docs/DEBT_LEDGER.md (same pattern as
 	// SchlickSPF, fixed in the same slice).
 	const Vector3	h(
 		  onb.u().x*a.x + onb.v().x*a.y + onb.w().x*a.z,
@@ -258,7 +258,7 @@ void WardIsotropicGaussianSPF::Scatter(
 		for( int i=0; i<3; i++ ) {
 			// DL-101: a FRESH ScatteredRay every iteration -- see
 			// SchlickSPF.cpp's identical fix and
-			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
+			// docs/DEBT_LEDGER.md.
 			ScatteredRay s;
 			Scalar ratio = 0;
 			GenerateSpecularRay( s, myonb, ri, ptrand, a[i], ratio );
@@ -324,7 +324,7 @@ void WardIsotropicGaussianSPF::ScatterNM(
 //! aggregate: the probability `RandomlySelect` returns the diffuse ray,
 //! averaged over the specular draw it is competing against.
 //!
-//! DL-177 defect (2) (docs/DL177_WARD_DENSITY_AND_KRAY.md).  Before the
+//! DL-177 defect (2) (docs/DEBT_LEDGER.md).  Before the
 //! fix `Pdf` was a RAW-ALBEDO mixture `(wD p_D + wS p_S)/(wD + wS)`,
 //! which was exact only while `kray_S` was the reflectance painter's
 //! direction-INDEPENDENT colour.  Once defect (3) makes `kray_S` carry

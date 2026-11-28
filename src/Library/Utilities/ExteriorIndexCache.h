@@ -35,7 +35,7 @@
 //      with the NEAREST key once the cache is full, with a one-shot
 //      warning.  That is an approximation, bounded by the spacing of
 //      the keys already cached, and it depends on which exteriors
-//      arrived first; it is documented in docs/DL49_SSS_EXTERIOR_INDEX.md.
+//      arrived first; it is documented in docs/DEBT_LEDGER.md.
 //
 //  Author: RISE debt-cleanup, slice `debt-dl291`
 //  Tabs: 4

@@ -1,6 +1,8 @@
 # Raw radiometric primitives
 
-This internal primitive slice implements scalar accumulation, checkpoint serialization, and raw scalar EXR output. It does not connect a rasterizer, certify any source/material/scene units, change wavelength sampling, or establish calibrated UV/IR rendering. The dedicated renderer adapter and calibration gates in [HyLIoS P6b](HYLIOS_WORKPLAN.md#82-raw-bands-and-derived-display-p6b) remain required.
+> **Integration status (2026-11-27):** This document specifies the standalone primitive layer (`RadiometricFilm`, `RadiometricCheckpoint`, `WriteRadiometricEXR`). The P6b renderer adapter (`hyperspectral_radiometric_rasterizer`, `HyperspectralRadiometricRasterizer.{h,cpp}`) has since landed and consumes these primitives — see [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md) §13.
+
+This internal primitive slice implements scalar accumulation, checkpoint serialization, and raw scalar EXR output. The standalone primitive layer itself does not connect a rasterizer, certify any source/material/scene units, change wavelength sampling, or establish calibrated UV/IR rendering; those responsibilities live in `HyperspectralRadiometricRasterizer` ([HyLIoS P6b](HYLIOS_WORKPLAN.md#13-implementation-status-and-release-evidence-2026-11-27)).
 
 ## Quantity and identity
 

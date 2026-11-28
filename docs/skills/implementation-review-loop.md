@@ -200,7 +200,7 @@ Pattern worth internalizing:
 - **Every internal-round P1 was doc/claim drift**: reparse-rename "invalidates"
   (it carries lineage), param key "(chunkId, role)" (it's a 3-tuple), reflow
   "O(log² N) amortized" (the gap-exhaustion reflow is Θ(N), making `DocInsertItem`
-  **Θ(N·log N) worst-case**, disclosed — matching IMPLEMENTATION_SLICES.md's item-4
+  **Θ(N·log N) worst-case**, disclosed — matching ../agentic-redesign/50-agentic-surface.md's item-4
   bound). Each lived in a family of surfaces; the loop only converged once the whole
   family was fixed in one pass and all surfaces were grepped proactively.
 - A real cost P1 was resolved by **narrowing the claim to the truth** (the

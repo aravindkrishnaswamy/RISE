@@ -2032,7 +2032,7 @@ final class RenderViewModel: ObservableObject {
     //
     // Simulation M5: playback runs on the LIBRARY clock
     // (RISE_API_SceneEditController_PlaybackPlay / Pause / Seek,
-    // docs/SIMULATION_M3C_RESULTS.md section 2).  The clock owns the scrub
+    // docs/SIMULATION_SOLVER_CONTRACT.md section 2).  The clock owns the scrub
     // composite, advances scene time in real time on a controller thread
     // through the same OnTimeScrub path a slider drag uses, coalesces frames
     // the viewport cannot keep up with, and never runs ahead of an attached

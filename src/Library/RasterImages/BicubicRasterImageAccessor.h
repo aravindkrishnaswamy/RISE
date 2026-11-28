@@ -90,9 +90,8 @@ namespace RISE
 				// pre-clamps into int(NaN) (UB) — and here it also
 				// breaks the ClampToEdge fallback's "px < 0 implies
 				// xlo == 0" invariant, so px would be ASSIGNED the
-				// garbage xlo instead of clamped.  Bit tests because
-				// plain FP comparisons are foldable under -ffast-math
-				// (rationale at BilinRasterImageAccessor::GetPel /
+				// garbage xlo instead of clamped.  Uses FiniteMath.h bit
+				// tests for uniformity and -Ofast resistance (see
 				// FiniteMath.h).
 				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					p = C();

@@ -1688,7 +1688,7 @@ static void TestSubmergedCeilingMISCombination()
 // raising it would only add render cost for no measurable change.
 //
 // MEAN BAND TIGHTENED TO 2% BY DL-103's CLOSURE (2026-09-17,
-// docs/DL103_PT_ESCAPE_MIS_PARTNER.md).  Until that row, un-guided PT's
+// docs/DEBT_LEDGER.md).  Until that row, un-guided PT's
 // escape-side MIS partner at a multi-lobe SPF was the SELECTED lobe's
 // own density rather than the material's aggregate, so this row's own
 // REFERENCE carried a Schlick-specific bias.  Isolated A/B on
@@ -2297,7 +2297,7 @@ static void MeasureRoughSSSU(unsigned samples, bool gate, double radius, bool st
 
 //////////////////////////////////////////////////////////////////////
 // Topology W: NARROW-FOV light-tracing splat (DL-294) -- VCM twin of
-// BDPTStrategyBalanceTest topology W (docs/DL294_NARROW_FOV_SPLAT.md).
+// BDPTStrategyBalanceTest topology W (docs/DEBT_LEDGER.md).
 //
 // W1: BDPT's topology W scene verbatim -- a spot aimed up at a perfect
 // mirror, the reflected beam lighting a Lambertian floor that a pinhole
@@ -3097,7 +3097,7 @@ static void TestAutoRadiusSmallPatchX()
 // table.  Two different selection densities for one strategy is a
 // partition-of-unity violation; one light (no BVH) and one mesh
 // luminary are immune by construction, which is the row's own
-// discriminator.  Numbers: docs/DL348_MULTI_LUMINARY_SELECTION_PDF.md.
+// discriminator.  Numbers: docs/DEBT_LEDGER.md.
 //////////////////////////////////////////////////////////////////////
 namespace TopologyY
 {

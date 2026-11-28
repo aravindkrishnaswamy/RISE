@@ -89,7 +89,7 @@ void FindSheetCrossings(const Grid& g, const std::vector<LiquidSheet>& sheets, s
 			// projected onto the grid's plane.  Without it a strip whose two vertex rows sagged
 			// unequally was pushed across the slab by the hydrostatic load (a tenth of it at a
 			// 0.1 rad twist, against a cloth's weight of a few pascals), left the cell-centre line
-			// and closed no face at all (docs/SIMULATION_M7F_RESULTS.md).  Only for sheets coupled
+			// and closed no face at all (docs/SIMULATION_SOLVER_CONTRACT.md).  Only for sheets coupled
 			// implicitly (the bytes of other sheets are m7e.1's).
 			if (sh.implicit) {
 				bool thin = false;

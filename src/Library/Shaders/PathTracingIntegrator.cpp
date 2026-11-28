@@ -847,7 +847,7 @@ namespace
 		return !pLS || !pLS->IsLuminaryInLightTable( ri.pObject );
 	}
 
-	//! DL-295 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9):
+	//! DL-295 (docs/DEBT_LEDGER.md section 9):
 	//! is the specular chain this scatter extends one that SMS can NEVER
 	//! have estimated?  Returns the value of the "SMS-uncovered chain"
 	//! state AFTER @a scat:
@@ -1595,7 +1595,7 @@ namespace
 	// Phase 2b part 2: additional IntegrateFromHit dispatch helpers.
 	// Each forwards at compile time to the existing dual-signature API,
 	// reproducing the EXACT per-variant call the original Pel / NM
-	// IntegrateFromHit bodies made.  See PRE_PHASE1_STATUS.md
+	// IntegrateFromHit bodies made.  See docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md
 	// "Pre-Phase-1 Piece 3 outcome (Phase 2b)".
 	// ================================================================
 
@@ -1918,7 +1918,7 @@ namespace
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
 
 #ifdef RISE_ENABLE_OPENPGL
-	//! DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the ONE nominal
+	//! DL-74 (docs/DEBT_LEDGER.md): the ONE nominal
 	//! MIS-partner density for a shading point under active path guiding.
 	//!
 	//! THE TWO ROLES OF A GUIDED PDF.  A guided continuation's throughput
@@ -1929,7 +1929,7 @@ namespace
 	//! biases the estimator, so none of it is touched.  The MIS WEIGHT is a
 	//! different job: `sum_s w_s(w) == 1` is the only property the estimator
 	//! needs (see the unbiasedness note in
-	//! docs/DL74_ENV_NEE_GUIDING_PARTITION.md), so the weights may be built
+	//! docs/DEBT_LEDGER.md), so the weights may be built
 	//! from ANY common density, and the useful choice is one that both the
 	//! BSDF-sampling side and every NEE arm can evaluate for the same
 	//! direction without knowing which lobe was, or will be, selected:
@@ -2406,7 +2406,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// `bsdfTimesCos`, a value separate from `throughput`) can fold
 		// in the SAME medium attenuation its NEE partner already
 		// carries via `EvalShadowTransmittance` -- see
-		// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's DL-124 entry.
+		// docs/DEBT_LEDGER.md's DL-124 entry.
 		Value escapeTr = PTValueOne<Tag>();
 
 		// ============================================================
@@ -3280,7 +3280,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// exit-point index, and a gather here (emission below, NEE in PART
 		// 2) is priced with (1/n_here)^2 rather than the entry index's.
 		// Exactly nothing happens -- no multiply, no stack write -- unless
-		// the innermost medium is graded (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+		// the innermost medium is graded (docs/DEBT_LEDGER.md).
 		{
 			Scalar gradedScale;
 			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
@@ -4702,7 +4702,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// NM original instead forced considerEmission=false here, which
 				// turned lights seen directly through glass/mirrors black under
 				// spectral rendering with SMS on.  Fixed together with the PART3
-				// flag tracking below -- see PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+				// flag tracking below -- see docs/RENDERING_INTEGRATORS.md #1/#3.
 				const bool nextConsiderEmissionSPF = true;
 				rs2.considerEmission = nextConsiderEmissionSPF;
 				// DL-295: a BSDF-less material's delta lobe can be one SMS
@@ -5401,7 +5401,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			PTScatter<Tag>( pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 		}
 
-		// DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md): whether this
+		// DL-67 (docs/DEBT_LEDGER.md): whether this
 		// vertex is guided is decided from the VERTEX -- the shared
 		// distribution is active (trained field, depth, alpha, non-specular
 		// arrival) and the material has a BSDF for the guide technique to
@@ -5818,7 +5818,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 
 			// THE REALIZED-MOMENT CONVENTION (DL-84 round 7, docs/
-			// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 7" -- which
+			// docs/DEBT_LEDGER.md "Round 7" -- which
 			// RETRACTS round 6's opposite ruling).
 			//
 			// `OptimalMISAccumulator::Solve()` weights each technique by
@@ -5863,7 +5863,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// DL-74 / DL-103: the nominal MIS-partner density for the
 			// direction actually being traced.
 			//
-			// DL-103 (docs/DL103_PT_ESCAPE_MIS_PARTNER.md): the partner is
+			// DL-103 (docs/DEBT_LEDGER.md): the partner is
 			// the material's AGGREGATE `ISPF::Pdf()` in BOTH branches, not
 			// just the guided one.  `LightSampler`'s four NEE arms have
 			// always weighted against that aggregate
@@ -5925,7 +5925,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			IRayCaster::RAY_STATE rs2 = rs;
 			rs2.depth = depth + 2;
 			rs2.importance = importance * PTSurvivalMagnitude( scatterThroughput );
-			// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the two roles
+			// DL-74 (docs/DEBT_LEDGER.md): the two roles
 			// of the guided pdf, kept in two fields.
 			//  * `bsdfPdf` stays `effectiveBsdfPdf` -- the density this
 			//    direction was really drawn from and the one
@@ -6065,7 +6065,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// fixed while these flags stayed Pel-only, bHadNonSpecularShading
 			// would never latch for NM, smsSuppressEmission would stay false,
 			// and the double-count would return as fireflies.  See
-			// PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+			// docs/RENDERING_INTEGRATORS.md #1/#3.
 			if( pS->isDelta ) {
 				bPassedThroughSpecular = true;
 			} else {

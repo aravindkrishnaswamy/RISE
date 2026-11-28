@@ -2,7 +2,7 @@
 //  Theme.h
 //  RISE-GUI (Windows / Qt6)
 //
-//  Design tokens for the RISE UI redesign (docs/gui/DESIGN_BRIEF.md).
+//  Design tokens for the RISE UI redesign (docs/GUI_ROADMAP.md).
 //  Single source of truth for color, type, spacing and radii on Windows.
 //  The macOS client mirrors these values in
 //  build/XCode/rise/RISE-GUI/App/Theme.swift; the two files are kept in

@@ -1,6 +1,6 @@
 // Boundary-aware expectation of Ward's realized diffuse selection weight.
 // Pure value inputs permit exact bounded thread-local memoization. See
-// docs/DL178_DL212_BOUNDED_SCHLICK_WARD.md for the domain transformation.
+// docs/DEBT_LEDGER.md for the domain transformation.
 #ifndef RISE_WARD_SELECTION_QUADRATURE_H
 #define RISE_WARD_SELECTION_QUADRATURE_H
 #include "../Utilities/Math3D/Math3D.h"

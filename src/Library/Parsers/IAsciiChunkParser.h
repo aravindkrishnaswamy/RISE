@@ -1,11 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  IAsciiChunkParser.h - Interface for the per-chunk parsers used by
-//    AsciiSceneParser.  Was defined inline in AsciiSceneParser.cpp
-//    until it was extracted here so that consumers of the scene
-//    grammar (the scene-editor suggestion engine, future validators)
-//    can include it without pulling in the 8000-line scene parser
-//    implementation.
+//  IAsciiChunkParser.h - Interface for the per-chunk parsers driven by
+//    Cst::DeriveToJob (concrete chunk parsers live in
+//    ChunkParserRegistry.cpp).  Extracted into a lightweight header so
+//    consumers of the scene grammar (SceneEditorSuggestions, CST
+//    validators) can include it without pulling in the registry TU.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: 2026-04-24

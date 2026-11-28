@@ -125,7 +125,7 @@ void RenderWidget::paintEvent(QPaintEvent* /*event*/)
 
         // The Idle no-scene placeholder that used to live here is gone --
         // MainWindow now shows StartWidget (the three-path launch screen,
-        // docs/gui/START_SCREEN.md) for that state instead; this widget
+        // docs/gui/APPROACHABILITY_FOUNDATION.md) for that state instead; this widget
         // is only on screen while state == Loading (see
         // MainWindow::updateCenterViewStack), where the loading overlay
         // above already covers the surface.

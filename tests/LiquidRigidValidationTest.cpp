@@ -1,5 +1,5 @@
 // Liquid solver with rigid bodies: validation (simulation M7b, case 9 of
-// docs/SIMULATION_M7_DESIGN.md; docs/SIMULATION_M7B_RESULTS.md section 4).
+// docs/SIMULATION_SOLVER_CONTRACT.md; docs/SIMULATION_SOLVER_CONTRACT.md section 4).
 //
 //   9a added mass of an impulsive start in concentric containers (2-D
 //      cylinder, 3-D sphere): exact potential flow; the error over six offsets

@@ -1,20 +1,22 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BVH.h - Templated 2-wide BVH with SAH binned top-down construction.
+//  BVH.h - Templated SAH-binned BVH2 / BVH4 SIMD accelerator with
+//    opt-in parallel construction and in-place refit.
 //
-//  Phase 1 partial scope (per docs/BVH_ACCELERATION_PLAN.md §5):
 //    - SAH binned builder, recursive; single-threaded by default.  An
-//      opt-in parallel build (BuildOptions::parallel, M7 prerequisites:
-//      a changing-topology simulated mesh rebuilds every frame) splits
-//      the top levels serially, builds the subtrees on the global thread
-//      pool and splices them in the serial build's node order, so the
-//      tree is bit-identical to the serial one.
-//    - Single-ray stack traversal, fixed depth 64.
+//      opt-in parallel build (BuildOptions::parallel: a changing-topology
+//      simulated mesh rebuilds every frame) splits the top levels serially,
+//      builds the subtrees on the global thread pool and splices them in
+//      the serial build's node order, so the tree is bit-identical to the
+//      serial one.
+//    - Collapses BVH2 to 4-wide BVH4 with SIMD child-AABB testing.
+//    - Single-ray stack traversal, fixed depth 64; supports in-place
+//      refit for deforming geometry.
 //    - Float-stored AABBs in nodes (conservative pad from double).
 //    - Double-precision ray-triangle intersection at leaves
 //      (delegated to TreeElementProcessor::RayElementIntersection).
-//    - No SBVH spatial splits, no compressed nodes, no refit yet.
-//      Those land in follow-up sessions.
+//    - SBVH spatial splits were evaluated and excised (see
+//      docs/BVH_RETROSPECTIVE.md).
 //
 //  Header-only template, mirroring the existing Octree<T>/BSPTreeSAH<T>
 //  pattern.  Element type T is specialized via TreeElementProcessor<T>
@@ -381,7 +383,7 @@ namespace RISE
 		//  ordering).  BVH4 collapse and float-filter precompute are
 		//  derived at load time from the BVH2 + the input prims, so the
 		//  on-disk format stays compatible across Phase 3+ traversal
-		//  changes.  See docs/BVH_ACCELERATION_PLAN.md §4.5 (deferred
+		//  changes.  See docs/BVH_RETROSPECTIVE.md §4.5 (deferred
 		//  but partially-realised here for the Tier 1 scope).
 		//
 		//  Format:

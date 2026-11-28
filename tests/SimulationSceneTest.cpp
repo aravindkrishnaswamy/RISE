@@ -1,4 +1,4 @@
-// Simulation M4: simulations as scene elements (docs/SIMULATION_M4_RESULTS.md).
+// Simulation M4: simulations as scene elements (docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 //   P  non-render pose-holder capture: exact Object chains accepted, custom/CSG nodes refused before cloning
 //      (`--pose-holder-only` runs only this section)
@@ -759,7 +759,7 @@ void TestFire(const fs::path& root)
 	const std::string base = keyOf(window);
 	Check(!base.empty() && base == keyOf(window + "\tadvective_cfl\t0.5\n\tmode\tcertified\n\tinert_plume\tFALSE\n"),
 		"an option given its default value keys like the option left out");
-	// M8d: scene selection of the CPU backend (docs/SIMULATION_M8_RESULTS.md section 12.4). These
+	// M8d: scene selection of the CPU backend (docs/SIMULATION_SOLVER_CONTRACT.md section 12.4). These
 	// keys were recorded with the build before `backend` became a scene parameter (f005c0ac...df27,
 	// 5b419d96...712f) and re-pinned at the fire solver version bump 2 -> 3 (section 13: the
 	// rim-ignition witness), which changes every fire key: a fire scene keeps its key byte for byte

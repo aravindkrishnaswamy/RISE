@@ -22,7 +22,7 @@ See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-andro
 1. In Android Studio: *File → Open* → select the `android/` directory.
 2. Wait for Gradle sync. First sync will download AGP 8.13.2 and the Compose
    dependencies, then invoke CMake against `../build/cmake/rise-android/
-   CMakeLists.txt` and compile ~380 library TUs (377 in `rise_sources.cmake`).
+   CMakeLists.txt` and compile the library TUs (`484` in `rise_sources.cmake`).
    Expect the first build to take several minutes; incremental builds are fast.
 3. Select the `app` run configuration and an arm64 emulator, then Run.
 
@@ -82,6 +82,7 @@ android/
             RenderViewModel.kt         state orchestration
             RenderState.kt             sealed UI state
             SceneCatalog.kt            bundled scene list
+            LicensesDialog.kt          third-party notices dialog
             theme/Theme.kt
         cpp/
           rise_jni.cpp                 JNIEXPORT entry points, JNI_OnLoad

@@ -4193,10 +4193,10 @@ namespace RISE
 					while( iss >> tok ) {
 						const char* begin = tok.c_str();
 						char* end = nullptr;
-						// REJECT AT THE STRING LAYER.  This avoids a value-level
-						// classification after -ffast-math has attached a finite
-						// assumption to the parsed double.  Text and errno are
-						// integer-domain, so they are immune to that assumption:
+						// REJECT AT THE STRING LAYER.  Historically required under
+						// bare -ffast-math (-ffinite-math-only); macOS now passes
+						// -fno-finite-math-only (2026-07-29), but integer-domain
+						// text+errno validation stays immune even under -Ofast:
 						//   * no valid decimal OR hex float token contains 'n' or
 						//     'i' ('n'/'i' are not hex digits, and the exponent
 						//     markers are e/E/p/P), so those letters can only come
@@ -5309,7 +5309,7 @@ namespace RISE
 					// bounds INCLUSIVE.  Honest residual caveat: this is a CST-side check
 					// -- it cannot see render visibility, so a determined MULTI-decoy scene
 					// (>= min hidden decoys) still passes; that closer is deferred
-					// (A2/P3, docs/agentic-redesign/73-creative-richness-design.md).
+					// (A2/P3, docs/agentic-redesign/50-agentic-surface.md).
 					// Populates CheckOutcome::metricValue too (the qualifying-root count)
 					// -- trivial once the BFS already computes it, and this op is also,
 					// deliberately, the exact object->material->painter scan the deferred
@@ -6693,7 +6693,7 @@ namespace RISE
 						&session->LightSoloMeasurements() );
 
 					if( expect == "clean" ) {
-						// Creative-richness P2.b (73-creative-richness-design.md
+						// Creative-richness P2.b (docs/agentic-redesign/50-agentic-surface.md
 						// sec 9): "clean" means no ERROR or WARNING diagnostics --
 						// Severity::Info entries (the DESIGN_SCALAR_PIPE_UNUSED /
 						// DESIGN_NO_ADVANCED_GEOMETRY advisories) do NOT count.

@@ -10,8 +10,8 @@ Windows/Qt, Android, and `FrameStore` metadata), with policy coverage in
 [`AutoRasterizerTest.cpp`](../tests/AutoRasterizerTest.cpp). The body is the
 executed design record; section-level status notes record later probe and
 spectral landings. See
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) §4.1 and
-[UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md).
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4.1 and
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md).
 **Date:** 2026-06-04.
 **Goal:** a thin-shell `auto_rasterizer` that picks the right integrator
 (PT / BDPT / VCM) per scene, so authors land on the efficient choice without
@@ -60,7 +60,7 @@ light exists. Ordinary BDPT lacks the proven C-S-M-S-L one-scatter path; a black
 probe cannot establish support. The shared RGB/spectral selector retains explicit
 pins. This conservative census can overroute absorption-only or mixed-material
 objects; nested bindings not exposed by the object census remain outside it.
-See [BATCH10_DL475_DESIGN.md](BATCH10_DL475_DESIGN.md) for the path proof and gates.
+See [DEBT_LEDGER.md](DEBT_LEDGER.md) for the path proof and gates.
 
 **No signal-based routing rule ever existed here, and none is needed
 (2026-09-11).** Tiers 0–2 key on transmissive-material presence, positional
@@ -328,7 +328,7 @@ PAIR `pool_caustics`/`diamond_teapot` still hit VCM correctly; `glass_pavilion`'
 static heuristic (dielectric + positional light → VCM) is now a **known, accepted
 miss**: **DL-154 (2026-09-17)** found the "VCM (intent)" verdict in this row was
 itself never independently confirmed against the matrix — `docs/
-UNIFIED_INTEGRATOR_BASELINES.md` §5's own RMSE-decisive table has always listed
+RENDERING_INTEGRATORS.md` §5's own RMSE-decisive table has always listed
 `glass_pavilion`'s true winner as **PT**, and its VCM measurement there was
 inflated 20-32x by the (now-fixed) debt28 thin-lens camera-aperture splat bug
 (commit `c3c37e08`; see §6.2.1 below). This IS a route Tier-1 alone gets
@@ -715,7 +715,7 @@ band the over-fire class (`jewel_vault`, `crystal_garden`) already occupied
 pre-fix — **no threshold on this signal currently separates a real caustic from
 a converging one**, so `τ_reach = 1.50` has no known corpus scene left to fire
 it correctly, **for two unrelated reasons**. `glass_pavilion`'s corrected route
-(PT) is independently confirmed correct by `docs/UNIFIED_INTEGRATOR_BASELINES.md`
+(PT) is independently confirmed correct by `docs/RENDERING_INTEGRATORS.md`
 §5's RMSE-decisive table (unaffected by either bug, since that table's own
 winner column reads PT). `diamond_teapot`'s corrected route is a **live,
 untested regression risk**: that same baselines table lists `diamond_teapot`'s
@@ -744,7 +744,7 @@ Fresnel **surface reflection**, the caustic photon map **under-counts ~2×**, an
 the pool BDPT/PT references **cannot reach the delta caustic through the
 surface**. **The routing (caustic → VCM) and the brightness VCM produces are both
 correct; no merge fix is warranted and no probe gate needs re-tuning.** Full
-corrected analysis in [CAUSTIC_PHOTONMAP_NORMALIZATION.md](CAUSTIC_PHOTONMAP_NORMALIZATION.md) §11.
+corrected analysis in [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §11.
 
 (The probe-routing limitation in the paragraph above — `pool_caustics` routes PT
 because its caustic is localized and the median gate doesn't fire — is a separate,

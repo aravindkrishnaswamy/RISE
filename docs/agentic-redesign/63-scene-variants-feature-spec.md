@@ -2,7 +2,7 @@
 
 Spec for a first-class **named, selectable scene variant** feature — the principled CST-world replacement for
 the imperative `> modify` command block (being **deprecated**). Surfaced by the P5 Slice-1 review (doc
-[62](62-model-b-p5-save-as-cst-plan.md)) and shaped by the user's decisions (2026-06-28): *name it
+[62](10-scene-language-and-cst.md)) and shaped by the user's decisions (2026-06-28): *name it
 `scene_variant`, make it flexible enough to do almost anything, require a name (so it's UI-switchable), store a
 selected active variant, single-select; a variant can set the active camera and specify materials.*
 
@@ -123,7 +123,7 @@ material BY NAME at derive time — there is NO post-derive re-pointing of a bui
 by pointer — the correct render-time form, realize bakes geometry only — and re-pointing a built graph is the
 fragile mutation pattern Model-B avoids: change the source + re-derive, don't mutate.) It also applies the
 active variant's `active_camera` via `SetActiveCamera`. No `>` layer; CST-loadable / -editable / -saveable
-end-to-end. Switching variants = a CST edit to `active_scene_variant` → re-derive (full per [62](62-model-b-p5-save-as-cst-plan.md) D2; sub-millisecond). CST-native: the whole-document derive sees the active variant before
+end-to-end. Switching variants = a CST edit to `active_scene_variant` → re-derive (full per [62](10-scene-language-and-cst.md) D2; sub-millisecond). CST-native: the whole-document derive sees the active variant before
 objects resolve; the legacy streaming reader (slated for deletion) parses the chunks and renders the base.
 
 ## 4. Why an overlay, not N full scenes
@@ -214,7 +214,7 @@ front-end. A future implementer works off §3.2/§3.4, not from scratch.
 
 ## 11. Read next
 
-- [62-model-b-p5-save-as-cst-plan.md](62-model-b-p5-save-as-cst-plan.md) — P5 plan; Slice 2 owns the
+- [10-scene-language-and-cst.md](10-scene-language-and-cst.md) — P5 plan; Slice 2 owns the
   `> modify` → `scene_variant` migrator conversion + the `light_rr_threshold` easy-convert.
 - [src/Library/Parsers/AsciiCommandParser.cpp](../../src/Library/Parsers/AsciiCommandParser.cpp) — the
   `> modify` dispatch this subsumes; [Job::SetActiveCamera](../../src/Library/Job.h) — the active-camera hook.

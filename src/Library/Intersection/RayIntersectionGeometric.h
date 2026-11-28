@@ -541,7 +541,7 @@ namespace RISE
 		//! when that is false, because for a ray-derived normal this
 		//! returns a ray-facing direction that is not a surface side at
 		//! all.  See both flags' doc comments above for the contract, and
-		//! docs/DL70_GEOM_NORMAL_ORIENTATION_SITES.md for the site table.
+		//! docs/DEBT_LEDGER.md for the site table.
 		inline Vector3 UnflippedGeomNormal() const
 		{
 			return ( bGeomNormalOrientedToRay && !bGeomNormalRayDerived )

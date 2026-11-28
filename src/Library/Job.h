@@ -648,7 +648,7 @@ namespace RISE
 		//! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 		//! \return TRUE if successful, FALSE otherwise
 		bool SetPrimaryAcceleration(
-			const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+			const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth

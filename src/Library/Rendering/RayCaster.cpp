@@ -75,7 +75,7 @@ namespace
 	// PT room 34.2 KB, pt_sss_dragon 36.0, HWSS and PT-spectral rooms 30.6,
 	// BDPT-spectral guiding probe 30.6, legacy hall of mirrors at
 	// max_recursion 200 11.1).  ASan builds were not measured.  See
-	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.  A refusal returns no
+	// docs/DEBT_LEDGER.md.  A refusal returns no
 	// radiance, exactly like the depth cap, and is COUNTED
 	// (RayCaster::StackGuardRefusals) and logged.
 	const size_t kCastStackMarginBytes = 128u * 1024u;
@@ -1953,7 +1953,7 @@ bool RayCaster::CastRayImpl_(
 		// Scatter per sample on the stack an earlier sample's cast had
 		// rewritten, so a later entry push was keyed on the wrong object.
 		// See
-		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
+		// docs/DEBT_LEDGER.md.
 		IORStack hitStack( ior_stack );
 
 		// DL-292: the interior-segment graded-index factor (DL-09) for the
@@ -2038,7 +2038,7 @@ bool RayCaster::CastRayImpl_(
 		// at the point it is called) now sees the SAME medium
 		// attenuation its NEE partner already carries via
 		// EvalShadowTransmittance, instead of the raw pre-medium
-		// radiance.  See docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's
+		// radiance.  See docs/DEBT_LEDGER.md's
 		// DL-124 entry.
 		if( pMedium ) {
 			c = c * RayCasterSurvivalWeight(
@@ -3564,7 +3564,7 @@ bool RayCaster::WalkShadowSegment(
 // DL-05: also the one place a DELTA light's shadow ray is let through a
 // non-bending delta pass-through (a thin weave's gap) -- see the header
 // comment on CastShadowRayAuto for why delta lights only, and
-// docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.  It is geometry-agnostic: it forwards to the same closest-hit
+// docs/DEBT_LEDGER.md.  It is geometry-agnostic: it forwards to the same closest-hit
 // traversal that analytic primitives and SDFs both use, so primitive and SDF
 // dielectrics occlude (flag off) or transmit (flag on) identically.
 // ================================================================
@@ -3604,7 +3604,7 @@ bool RayCaster::CastShadowRayAuto(
 	// arm says so), SMS estimates its light through the caster and the walk
 	// is off for this ray; everywhere else -- volume in-scattering, the
 	// BSSRDF entry NEE, a directional light SMS never samples -- the walk is
-	// the light's only estimator.  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
+	// the light's only estimator.  docs/DEBT_LEDGER.md.
 	const bool bDielectrics = DielectricShadowWalk( bDeltaLight, bSMSCoversLight );
 	if( bDielectrics ) {
 		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );

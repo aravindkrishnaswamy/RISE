@@ -10,7 +10,7 @@
 //  it against the current on-disk identity to refuse an in-place save
 //  when the file was modified or atomically replaced between load and save.
 //
-//  See docs/ROUND_TRIP_SAVE_PLAN.md §11.6 for the guard rationale.
+//  See docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §11.6 for the guard rationale.
 //
 //////////////////////////////////////////////////////////////////////
 

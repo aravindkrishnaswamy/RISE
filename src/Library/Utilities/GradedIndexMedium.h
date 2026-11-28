@@ -4,7 +4,7 @@
 //    for a medium whose `ior` varies with WORLD POSITION (DL-09).
 //
 //  Derivation, factor tables and scope:
-//    docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md.
+//    docs/DEBT_LEDGER.md.
 //
 //  THE MODEL.  RISE traces straight segments.  Basic radiance L/n^2 is
 //  continuous across every interface (debt 30, `RadianceEtaScale`) AND

@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  PTGuidingMISPartitionTest.cpp - Red-proof for DL-74 (docs/
-//    DL74_ENV_NEE_GUIDING_PARTITION.md): under active OpenPGL path
+//    docs/DEBT_LEDGER.md): under active OpenPGL path
 //    guiding, PathTracingIntegrator's BSDF-sampling side and
 //    LightSampler's next-event-estimation side must feed the SAME
 //    function of direction to the MIS heuristic, or the two weights
@@ -66,7 +66,7 @@
 //    before and after the fix, which is what proves the other four
 //    rows are measuring the asymmetry and not the harness.
 //
-//  THE FIX THIS PINS (see docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
+//  THE FIX THIS PINS (see docs/DEBT_LEDGER.md)
 //
 //    Separate the guided pdf's two roles.  The THROUGHPUT denominator
 //    stays the true sampling density (per-lobe alpha, per-lobe cosine
@@ -583,7 +583,7 @@ static Scalar IntegrateOneSample(
 
 //////////////////////////////////////////////////////////////////////
 //
-//  DL-103 (docs/DL103_PT_ESCAPE_MIS_PARTNER.md) -- the UN-GUIDED
+//  DL-103 (docs/DEBT_LEDGER.md) -- the UN-GUIDED
 //  multi-lobe rows.  No guiding field, no OpenPGL: the default path
 //  tracer, the configuration every shipped render uses.
 //
@@ -1113,7 +1113,7 @@ static void RunMultiLobeAreaRow()
 
 //////////////////////////////////////////////////////////////////////
 //
-//  DL-170 (docs/DL170_DL171_HWSS_AND_LEGACY_MIS_PARTNERS.md) -- the
+//  DL-170 (docs/DEBT_LEDGER.md) -- the
 //  HWSS twin of row (j).  `PathTracingIntegrator::IntegrateFromHitHWSS`
 //  computes ONE aggregate MIS-partner density at the HERO wavelength
 //  (`misBsdfPdfHW`) and applies that SAME scalar to every companion
@@ -2655,7 +2655,7 @@ static void RunVolumeEmitterRow()
 
 //////////////////////////////////////////////////////////////////////
 //
-//  DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md) -- the GUIDED
+//  DL-67 (docs/DEBT_LEDGER.md) -- the GUIDED
 //  continuation at a MULTI-LOBE, MULTI-EMIT SPF.
 //
 //  Every row above this block guides a SINGLE-lobe material, where the

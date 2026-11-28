@@ -19,7 +19,7 @@
 //  EXACTLY for every direction pair both of whose directions already
 //  conserve energy under the additive model (Rd <= 1 - A(v)), and only
 //  clips pairs where one of them does not -- the DL-225 ruling
-//  applied to the diffuse term.  docs/DL178_DL212_BOUNDED_SCHLICK_WARD.md
+//  applied to the diffuse term.  docs/DEBT_LEDGER.md
 //  "DL-310" compares it with the DL-37 product form (which moves every
 //  material at every angle) and the Kulla-Conty normalisation.
 //

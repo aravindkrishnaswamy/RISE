@@ -250,7 +250,7 @@ namespace RISEFireProductionTrace
 		//! of solver spec r74 that the source build and the Metal owner's EOS use. The
 		//! binary32 inversion's endpoint tolerance scales with the bracket's upper
 		//! enthalpy, so the two brackets give different temperatures within ~0.7 K of
-		//! the lower bound (docs/SIMULATION_M8_RESULTS.md section 12.1).
+		//! the lower bound (docs/SIMULATION_SOLVER_CONTRACT.md section 12.1).
 		double canonicalInversionLowerK=0.0,canonicalInversionUpperK=0.0;
 
 		FireProductionScalarPhysicalFluxPrerequisiteRequest() : ambientTemperatureK(0.0f)

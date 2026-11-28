@@ -2916,7 +2916,7 @@ int main()
 	       "every tests/*.cpp defining a capturing IRasterizerOutput sink sets "
 	       "`oidn_denoise FALSE` somewhere (or opts out with an OIDN-DENOISED-OK comment)" );
 
-	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
+	// ---- Start-screen starter-template sync (docs/gui/APPROACHABILITY_FOUNDATION.md)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
 	// each GUI build's resources (Mac: build/XCode/rise/RISE-GUI/Resources/).
 	// The asset headers CLAIM a test keeps the copies identical -- this is
@@ -3018,7 +3018,6 @@ int main()
 		const std::string win = slurp( repoRoot / "build" / "VS2022"
 			/ "RISE-GUI" / "ViewportWidget.cpp" );
 		const std::string design = slurp( repoRoot / "docs" / "gui" / "RENDER_MODES.md" );
-		const std::string ledger = slurp( repoRoot / "docs" / "gui" / "OPEN_ITEMS.md" );
 		Check( mac.find( "[\"preview\", \"wireframe\", \"normals\", \"depth\"]" )
 		       != std::string::npos,
 		       "macOS N-up preset is exactly Preview/Wireframe/Normals/Depth" );
@@ -3028,9 +3027,6 @@ int main()
 		Check( design.find( "pane 1 = `wireframe`, pane 2 = `normals`, pane 3 =\n`depth`" )
 		       != std::string::npos,
 		       "RENDER_MODES documents the desktop preset exactly" );
-		Check( ledger.find( "pane 1 = `wireframe`, pane 2 = `normals`, and (in Quad) pane 3\n  as `depth`" )
-		       != std::string::npos,
-		       "OPEN_ITEMS records the shipped desktop preset exactly" );
 	}
 
 	// ---- Post-load timeline reveal parity ----

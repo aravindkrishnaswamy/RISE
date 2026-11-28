@@ -2,7 +2,7 @@
 
 **Status: IMPLEMENTED & SHIPPED (Phases 1–4 merged to `master`: Phase 1 at `34bd520ec`, Phase 2 at `818004785`, Phase 3 at `fbd421bd1`, Phase 4 + `sms_extended` scene flag at `master`). Ledger reconciliation (`docs/DEBT_LEDGER.md`): `DL-378`, `DL-312`, `DL-437`, `DL-438`, `DL-376`, `DL-421`, `DL-420`, and `DL-445` are CLOSED; `DL-451` (HWSS legacy shader-op path) is WON'T-FIX on the frozen shader-op pipeline; `DL-449` (extended area-emitter cost) was optimized down to ~8.8–9.8× via RTTI + `Capture` memoization and closed into parked `DL-500`; `DL-379` (finite-scattering dielectric delta-limit approximation) and `DL-450` remain PARKED. Earlier audit sections below preserve the historical pre-landing framing.**
 
-Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
+Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. At that base, DL-437 and DL-438 remained open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DEBT_LEDGER.md). It does not replace them with a general participating-medium or absorbing-film model.
 
 ## Using extended SMS
 
@@ -447,7 +447,7 @@ After each coherent production increment, apply [the independent review loop](sk
 
 ## Integration evidence
 
-The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. Phase 2 implementation and current isolated/production evidence are recorded in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md); The user accepted the four-salt wide-spot slab/BDPT discrepancy as variance and authorized continuation. Cone 80/85 remains a reported measurement with the original three-SD band; it supplies no DL-420 closure. The historical `13a31c7d7` replacement gate passes 28 make modes (17665 reported checks/0 failures), twelve actual Xcode-linked controls and the disclosed partial ASan/UBSan suite, with zero compiler diagnostics and verified source hashes. Fresh final review and Phase 2 integration remain pending. No ledger row closes on the contract statement.
+The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DEBT_LEDGER.md](DEBT_LEDGER.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md); production activation and acceptance remain pending. Phase 2 implementation and current isolated/production evidence are recorded in [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md); The user accepted the four-salt wide-spot slab/BDPT discrepancy as variance and authorized continuation. Cone 80/85 remains a reported measurement with the original three-SD band; it supplies no DL-420 closure. The historical `13a31c7d7` replacement gate passes 28 make modes (17665 reported checks/0 failures), twelve actual Xcode-linked controls and the disclosed partial ASan/UBSan suite, with zero compiler diagnostics and verified source hashes. Fresh final review and Phase 2 integration remain pending. No ledger row closes on the contract statement.
 
 ## Adopted interim composite policy (2026-10-03)
 
@@ -556,7 +556,7 @@ prove its cause or satisfy internal-double bit identity. The original internal-d
 recorded as failed. The subsequent complete replacement gate passes **36373/0**
 across 28 modes, twelve actual Xcode-linked controls and five partial-sanitizer
 modes, with zero compiler diagnostics. No Phase 2 merge or fresh review
-verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
+verdict is claimed. See `SMS_EXTENDED_DESIGN.md`.
 
 **Original ruling, superseded by the one-ULP ruling below:** cross-build shipped
 mode-off image pixels must match bit-identically after float32 conversion.
@@ -618,7 +618,7 @@ and uncertain start-inside orientation. The original thin close-patch example
 was not reachable through native acceleration; a corrected wide disjoint
 native mesh demonstrates the accepted-root alias numerically. Current fixes
 and their limits are recorded in
-[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md).
 Complete replacement gates and fresh Round 5 convergence are required before
 Phase 2 integration. Round 5 has not begun; no ledger closure is claimed.
 
@@ -640,7 +640,7 @@ without changing separation, thresholds or native production code. Current
 hash-checked evidence composes unchanged native clean builds and eight source
 A/B builds with fresh committed proofs, all changed-test modes, actual Xcode
 controls, partial sanitizers and memory. Details and limits are in
-[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md).
 Fresh Round 5 is still required before merge; it is the final allowed round.
 No design decision, ledger closure or new row follows from this gate.
 
@@ -653,7 +653,7 @@ are missing, and preparation-audit cost was understated. Further reports
 concern near-commensurate Jacobian aliasing, fixed-offset surface-frame
 reconstruction and modified ONB replay. Numerical/source-traced findings and
 verification limits are recorded in
-[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+[SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md).
 The initial five-round stop was reported. The user subsequently authorized
 continuation beyond Round 5 and asked for explicit checks against local
 maxima. Phase 2 remains unmerged; no ledger closure or new row is claimed.
@@ -718,7 +718,7 @@ reproduce the hashes and locate one R component at `(38,59)` differing by
 one float32 ULP (5.684341886080802e-14), from underlying double values only
 4.642574878406611e-16 apart. All other fifteen float32 image hashes match.
 The measured candidate cost changes range from +0.069% to +1.185% (n4;
-SD0.595%–1.003%). See SMS_EXTENDED_PHASE2_VALIDATION.md for complete raw
+SD0.595%–1.003%). See SMS_EXTENDED_DESIGN.md for complete raw
 provenance, counts, timing SDs and limitations.
 
 This run is **failed**, not a passing gate or a review convergence. No
@@ -762,7 +762,7 @@ cell hash. The repair uses defined unsigned wrapping, preserving the weld
 coordinates/tolerance and distance acceptance. Rebuilt pre-fix UBSan fails;
 restored full-instrumentation review passes193401/0. A complete fresh gate
 and fresh reviews remain required. Evidence and limits are recorded in
-SMS_EXTENDED_PHASE2_VALIDATION.md. No contract change, ledger row, closure,
+SMS_EXTENDED_DESIGN.md. No contract change, ledger row, closure,
 merge or push follows from this implementation repair.
 
 
@@ -780,7 +780,7 @@ NM +1.759% ±0.919% and HWSS +1.616% ±1.028% (n4). All12 narrow-cone slab
 channels pass; the previously accepted wide-cone red −0.174% /−5.139 combined
 SD measurement remains disclosed under the original band, with no DL-420
 closure. Full provenance, counts, memory and scope limits are in
-SMS_EXTENDED_PHASE2_VALIDATION.md. Fresh Round6 review remains required;
+SMS_EXTENDED_DESIGN.md. Fresh Round6 review remains required;
 Phase2 is unmerged and no ledger row is opened or closed.
 
 ### Fresh Round 6: composed input differential stop (2026-10-04)
@@ -834,7 +834,7 @@ Phase2 remains unmerged. No rows are opened/closed and no changes are pushed.
 
 The composed-input correction is implemented through optional `ISMSUVDifferential` and conservative `SMSFrameDependsOnUV`. Generated-UV differentials receive the native object-space point/normal and their transported derivatives. Transformed real-mesh controls cover both windings and incidence sides, all RGB components and NM450/NM650, with independently shifted constraint and emitter endpoint Jacobians. PCH order, safe weld-cell conversion and the actually executed post-preparation rejection cases are repaired. The committed pre-transform proof is281/60; pre-composed UV321/30, unsupported1005/76 and hygiene170/2; restored UV321/0, unsupported1081/0 and hygiene172/0. The fully instrumented committed weld proof reproduces native float-cast overflow, then restores weld37/0 and UV321/0.
 
-The current checkpoint `f5f04b1f5` passes35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, ten full-project sanitizer modes /236320 checks /0 failures, and clean make/Deployment/Opto with zero owned diagnostics. The gate retains29 completed make modes and resumes six on the same checked binary with unchanged20-native/4-test hashes; the interrupted slab is rerun in full. Four earlier committed rollback scenarios and eight interleaved A/B builds are retained on identical native hashes; current native-master/restored proofs and updated toolchain builds/controls are rerun. The initial rejected Xcode setup retry and sanitizer harness termination mismatch are preserved separately. Full provenance, cost and scope are in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md). All12 narrow-cone comparisons retain and pass their original3SD bands; the accepted wide-cone discrepancy supplies no DL-420 closure. Fresh independent Round7 review and integration remain pending. No ledger row is opened or closed.
+The current checkpoint `f5f04b1f5` passes35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, ten full-project sanitizer modes /236320 checks /0 failures, and clean make/Deployment/Opto with zero owned diagnostics. The gate retains29 completed make modes and resumes six on the same checked binary with unchanged20-native/4-test hashes; the interrupted slab is rerun in full. Four earlier committed rollback scenarios and eight interleaved A/B builds are retained on identical native hashes; current native-master/restored proofs and updated toolchain builds/controls are rerun. The initial rejected Xcode setup retry and sanitizer harness termination mismatch are preserved separately. Full provenance, cost and scope are in [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md). All12 narrow-cone comparisons retain and pass their original3SD bands; the accepted wide-cone discrepancy supplies no DL-420 closure. Fresh independent Round7 review and integration remain pending. No ledger row is opened or closed.
 
 ### Fresh Round 7 implementation audit (2026-10-05)
 
@@ -842,22 +842,22 @@ Three independent reviewers completed on `01fcb931e`. The estimator lens found i
 
 ### Phase 2 fresh Round 8 replacement gate (2026-10-05)
 
-Checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853` has fresh six-scenario committed rollback proofs,39 make modes /414590/0,24 actual Xcode-linked controls /406140/0,14 all374-unit sanitizer modes /238826/0, clean make/Deployment/Opto with zero owned diagnostics, full interleaved n4 A/B costs and process-memory evidence. Round7 irrelevant-UV, native signal provenance and curved-normal UV coverage findings are repaired. All20 native/four test hashes verify; no retained Round7 gate substitution. Fresh independent review is pending; Phase2 remains unmerged and all target ledger rows remain open. See SMS_EXTENDED_PHASE2_VALIDATION.md for actual counts, historical failed attempts and cost scope.
+Checkpoint `7c7248a4baca25673ec682a6095e65fa1368a853` has fresh six-scenario committed rollback proofs,39 make modes /414590/0,24 actual Xcode-linked controls /406140/0,14 all374-unit sanitizer modes /238826/0, clean make/Deployment/Opto with zero owned diagnostics, full interleaved n4 A/B costs and process-memory evidence. Round7 irrelevant-UV, native signal provenance and curved-normal UV coverage findings are repaired. All20 native/four test hashes verify; no retained Round7 gate substitution. Fresh independent review is pending; Phase2 remains unmerged and all target ledger rows remain open. See SMS_EXTENDED_DESIGN.md for actual counts, historical failed attempts and cost scope.
 
 ### Phase 2 fresh Round 8 disposition (2026-10-05)
 
-Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal normalization/derivatives, and SSS return-boundary clamping of downstream reference A) plus a P2 factorization-capacity reservation/coverage gap. No DESIGN finding. These require native witnesses, repairs and another fresh gate/review before integration. The contract remains unchanged and Phase2 is unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh review on 1a1eaeedd found two implementation P1s (Polished native normal normalization/derivatives, and SSS return-boundary clamping of downstream reference A) plus a P2 factorization-capacity reservation/coverage gap. No DESIGN finding. These require native witnesses, repairs and another fresh gate/review before integration. The contract remains unchanged and Phase2 is unmerged. See SMS_EXTENDED_DESIGN.md.
 
 
 Round 8 implementation repair: reference-A radiance provenance survives opaque SSS shader returns. A return containing an actual nonzero reference contribution remains unclamped as a whole at its SSS caller; ordinary-only and HWSS legacy returns retain existing clamps. This implements the adopted unclamped reference contract without introducing the deferred path-level membership provenance. Replacement gate and fresh review are required before Phase 2 integration.
 
-Fresh Round 9 gate at 4495ae81be81107fd604bfad0faedfd46a6fe846: all 21 native/four test hashes verify;42 make modes/ 416773/ 0,30 actual Xcode-linked controls/ 410506/ 0,17 all 374-unit sanitizer modes/ 241009/ 0, clean make/Deployment/Opto 0 owned diagnostics, nine committed rollback scenarios and full interleaved n4 cost/memory evidence. All three Round 8 findings are repaired. Fresh independent review is pending; Phase 2 remains unmerged. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 9 gate at 4495ae81be81107fd604bfad0faedfd46a6fe846: all 21 native/four test hashes verify;42 make modes/ 416773/ 0,30 actual Xcode-linked controls/ 410506/ 0,17 all 374-unit sanitizer modes/ 241009/ 0, clean make/Deployment/Opto 0 owned diagnostics, nine committed rollback scenarios and full interleaved n4 cost/memory evidence. All three Round 8 findings are repaired. Fresh independent review is pending; Phase 2 remains unmerged. See SMS_EXTENDED_DESIGN.md.
 
 ### Round 9 scaled ONB sibling repair
 
-Fresh material review found native Optics normalizes a nonunit ONB W, while the extended constraint retained its magnitude. A corrected committed witness reproduces 4145/1040, including actual native root-position and price failures; focused repair passes 5185/0. Estimator/evidence reviews reported no P1/P2 and no lens found a DESIGN defect. Reproduce native event normalization and its derivative branch while retaining raw coating/material query fields. Replacement gate and fresh review remain required; no ledger closure is claimed. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh material review found native Optics normalizes a nonunit ONB W, while the extended constraint retained its magnitude. A corrected committed witness reproduces 4145/1040, including actual native root-position and price failures; focused repair passes 5185/0. Estimator/evidence reviews reported no P1/P2 and no lens found a DESIGN defect. Reproduce native event normalization and its derivative branch while retaining raw coating/material query fields. Replacement gate and fresh review remain required; no ledger closure is claimed. See SMS_EXTENDED_DESIGN.md.
 
-Fresh Round 10 gate: 43 make modes / 424086/0, 32 actual Xcode-linked controls / 425132/0, 18 all-374-unit sanitizer modes / 248322/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent scaled-ONB proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 10 gate: 43 make modes / 424086/0, 32 actual Xcode-linked controls / 425132/0, 18 all-374-unit sanitizer modes / 248322/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent scaled-ONB proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_DESIGN.md.
 
 
 ### Fresh Round 10 disposition and native-event repairs (2026-10-06)
@@ -868,7 +868,7 @@ Replay now retains mandatory TIR before coating evaluation, including the propos
 
 The focused combined witness passes 44681/0: RGB/NM native events, both indexed windings/incidences, transformed/variable modifiers, scales on both sides of both normalization boundaries, a bounded indexed patch excluding the spurious root, coated TIR on open-plane/closed-indexed/nested/actual non-top overlap exits, and actual PT production with four salts at N=2048 against a single-open-sheet analytic reflection using native BSDF/emitter values. The original box production attempt admitted other walls and is discarded as an unmatched single-root oracle. Early TIR fixture attempts had incomplete vertex fields and an unaudited open-mesh assumption; they are not claimed as final coherent numerical proofs. The current 21-path committed rollback and full replacement gate remain pending; this focused result does not authorize integration. No ledger row is closed or opened.
 
-Fresh Round 11 gate: 44 make modes / 468767/0, 34 actual Xcode-linked controls / 514494/0, 19 all-374-unit sanitizer modes / 293003/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 11 gate: 44 make modes / 468767/0, 34 actual Xcode-linked controls / 514494/0, 19 all-374-unit sanitizer modes / 293003/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 21 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_DESIGN.md.
 
 
 Phase 2 Round 11 review and repair checkpoint (2026-10-06): estimator and evidence reviewers reported no P1/P2 or design finding. The material reviewer found a P2: native DielectricSPF only attempts the geometric transmission fallback when the initial reflectance is below one. Extended replay had attempted it after every successful shading Snell calculation. The repair binds native constraints to the RGB component or NM wavelength, distinguishes true TIR from film saturation, preserves the native raw-film query after successful refraction, and sweeps crossing, pricing and proposal consumers. No native scattering algorithm or virtual SPF interface changes.
@@ -881,11 +881,11 @@ The second Round 12 proof run stopped on four transformed NM signal-painter root
 
 The corrected optical-price scope passes the focused sequence: signal prices 1665/0, mixed geometry 4297/0, four-film fallback 14635/0, signal production 393/0, curved UV 425/0, polished normals 1089/0, scratch depth 109/0, SSS clamps 1065/0, scaled frames 7233/0 and native events 44681/0. Checked library/test builds have zero compiler diagnostics. These are focused results, not substitutes for the final complete gate or fresh review.
 
-Fresh Round 12 gate: 45 make modes / 483402/0, 36 actual Xcode-linked controls / 543774/0, 20 all-374-unit sanitizer modes / 307648/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 12 gate: 45 make modes / 483402/0, 36 actual Xcode-linked controls / 543774/0, 20 all-374-unit sanitizer modes / 307648/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_DESIGN.md.
 
-Fresh Round 13 gate: 46 make modes / 500509/0, 38 actual Xcode-linked controls / 577988/0, 21 all-374-unit sanitizer modes / 324755/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 13 gate: 46 make modes / 500509/0, 38 actual Xcode-linked controls / 577988/0, 21 all-374-unit sanitizer modes / 324755/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_DESIGN.md.
 
-Fresh Round 14 gate: 47 make modes / 508576/0, 40 actual Xcode-linked controls / 594122/0, 22 all-374-unit sanitizer modes / 332822/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_PHASE2_VALIDATION.md.
+Fresh Round 14 gate: 47 make modes / 508576/0, 40 actual Xcode-linked controls / 594122/0, 22 all-374-unit sanitizer modes / 332822/0, clean make/Deployment/Opto zero owned diagnostics, fresh coherent native-event proof and full n = 4 interleaved cost/memory evidence. All 23 native/four test hashes verify. Fresh review and Phase 2 integration remain pending. See SMS_EXTENDED_DESIGN.md.
 
 ## Phase 3 implementation record (2026-10-06, pending independent review)
 

@@ -41,7 +41,7 @@ bool Complete(const ParameterSchema& schema, const V& authored, V& completed, st
 	if (authored.GetType() != V::Map) return Fail(error, "fire parameters must be a map");
 	// M8d: `backend` enters the key only as "cpu" (FireSolver::Configure omits "metal"): left
 	// out, or stated as its default, it is not completed, so every existing fire scene keeps
-	// its key (docs/SIMULATION_M8_RESULTS.md section 12.4).
+	// its key (docs/SIMULATION_SOLVER_CONTRACT.md section 12.4).
 	V::Members m;
 	for (const auto& member : authored.GetMap())
 		if (!(member.first == "backend" && member.second.GetType() == V::Text && member.second.GetText() == "metal"))
@@ -112,7 +112,7 @@ ParameterSchema Build()
 	s.summary = "A methane pool fire simulated by the fire.methane solver (the production capstone case: a "
 		"0.30 m pool at 33 kW; Metal, or the experimental CPU backend with `backend cpu`; baked by `rise-sim bake <scene>`, never live).  Publishes `volume` "
 		"(grid.v1: carbon, temperature and the chemistry channels a fire_medium binds).  Parameters and their "
-		"legacy environment names: docs/SIMULATION_M2_RESULTS.md.  A scene bake passes every option "
+		"legacy environment names: docs/SIMULATION_SOLVER_CONTRACT.md.  A scene bake passes every option "
 		"explicitly, so the legacy RISE_FIRE_* environment never changes a scene's fire.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const std::string& doc)
 		-> SchemaParameter& {
@@ -134,7 +134,7 @@ ParameterSchema Build()
 	  p.values = {"certified", "fast"}; }
 	// M8d: scene selection of the backend; keyed only when cpu (Complete above).
 	{ auto& p = P("backend", SchemaType::Enum, "metal", "", "The step's backend: metal (default) or cpu (the "
-		"experimental CPU backend, docs/SIMULATION_M8_RESULTS.md sections 10-12; different bytes, its own cache). "
+		"experimental CPU backend, docs/SIMULATION_SOLVER_CONTRACT.md sections 10-12; different bytes, its own cache). "
 		"Enters the cache key only as cpu");
 	  p.values = {"metal", "cpu"}; }
 	for (const FireSolverOptionInfo& o : FireSolverOptionInfos()) {

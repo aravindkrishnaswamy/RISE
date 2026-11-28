@@ -440,7 +440,7 @@ void BodyGeometry::Update(const std::vector<LiquidBody>& bodies, std::vector<dou
 	// centre (h_s = h / 4).  It is continuous in the bodies' poses: the
 	// volume correction reads it at every step, and the coarse estimate from
 	// the eight nodes (static solids) changed by jumps that pumped energy into
-	// a bobbing body (docs/SIMULATION_M7B_RESULTS.md section 3).
+	// a bobbing body (docs/SIMULATION_SOLVER_CONTRACT.md section 3).
 	auto bodyMin = [&](const V3& p, int ci, int cj, int ck) {
 		double d = 1e300;
 		for (std::size_t q = 0; q < nb; ++q) {

@@ -87,7 +87,7 @@ private slots:
     void onSaveAndReload(const QString& filePath);
     void onSceneSavedToPath(const QString& path, bool wasSaveAs);
 
-    // ---- Start screen (docs/gui/START_SCREEN.md) ----------------------
+    // ---- Start screen (docs/gui/APPROACHABILITY_FOUNDATION.md) ----------------------
     // StartWidget owns no scene state itself; every one of its signals
     // routes to the exact code path the equivalent menu/button already
     // uses (see each slot's doc below).
@@ -421,7 +421,7 @@ private:
     RenderWidget* m_renderWidget = nullptr;
     HDRRenderWidget* m_hdrRenderWidget = nullptr;  // L5b — Windows HDR display
     QStackedWidget* m_productionPaneStack = nullptr;  // SDR / HDR within production
-    // Start screen (docs/gui/START_SCREEN.md): the no-scene launch
+    // Start screen (docs/gui/APPROACHABILITY_FOUNDATION.md): the no-scene launch
     // surface, persistent like TopBar/ChatPanel -- built once, shown/
     // hidden by updateCenterViewStack() rather than recreated per scene
     // load/close.
@@ -498,7 +498,7 @@ private:
     // Shows nothing until setBridge() gives it a live scene; hides itself
     // entirely when the scene has no active rasterizer.
     EnvironmentPanel* m_environmentPanel = nullptr;
-    // Named Views (session/UI camera bookmarks, docs/gui/CAMERA_CONTROLS_UX.md §3),
+    // Named Views (session/UI camera bookmarks, docs/gui/CAMERAS_AND_VIEWS.md §3),
     // persistent between EnvironmentPanel and the per-scene ViewportProperties
     // (mirrors macOS ContentView.swift:854-859).
     NamedViewsPanel*  m_namedViewsPanel = nullptr;

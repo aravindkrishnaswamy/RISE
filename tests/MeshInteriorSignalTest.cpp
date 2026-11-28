@@ -84,7 +84,7 @@
 //        TessellateToMesh` now weld their own pole row to a single
 //        shared (position, normal, texcoord) index and skip the wedge
 //        triangle that entry would make degenerate (see
-//        docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md), so the
+//        docs/DEBT_LEDGER.md), so the
 //        raw triangle list fed into this mesh no longer contains ANY
 //        degenerate triangles at either pole -- DL-143's position-weld
 //        (whose tolerance also absorbs the ordinary u-seam's ~1e-16
@@ -630,7 +630,7 @@ static void TestFlatShadedPerCornerCubeWelds()
 //! `EllipsoidGeometry::TessellateToMesh` now weld every pole ROW to a
 //! single shared (position, normal, texcoord) index and skip the one
 //! wedge triangle per pole cell that entry would make degenerate (see
-//! docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md) -- so the raw
+//! docs/DEBT_LEDGER.md) -- so the raw
 //! triangle list fed into this mesh contains zero degenerate triangles
 //! at either pole, DL-143's position-weld finds a genuinely closed
 //! 2-manifold (its tolerance also swallows the ordinary u-seam's
@@ -942,7 +942,7 @@ public:
 //! bare tessellator this file already tests directly in (f)/(i)/(j).
 //! `DisplacedGeometry::BuildMesh` bakes via `m_pBase->TessellateToMesh`
 //! and copies positions VERBATIM (see `DisplacedGeometry.h`'s own class
-//! comment and `docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md`'s
+//! comment and `docs/DEBT_LEDGER.md`'s
 //! sibling-audit correction on this exact point), so the baked mesh's
 //! topology and DL-136 residual are identical to the un-wrapped case --
 //! this section exists to prove that identity holds through the real

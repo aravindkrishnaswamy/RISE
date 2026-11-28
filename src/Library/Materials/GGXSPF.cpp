@@ -199,7 +199,7 @@ void GGXSPF::Scatter(
 	// an unconditional 21-tap MicrofacetEnergyLUT::ComputeFresnelAvg
 	// (conductor -- the parser DEFAULT) or a 21-node Gauss-Legendre
 	// quadrature over a 32-wavelength-step Airy thin-film evaluation
-	// (thin-film) -- see docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// (thin-film) -- see docs/DEBT_LEDGER.md
 	// "Cost".  Restrict the hemispherical-average path to Schlick mode
 	// only; the other modes keep the pre-DL-64 raw-tint weight, which
 	// was never the defect.
@@ -214,13 +214,13 @@ void GGXSPF::Scatter(
 	// actually renders with (MicrofacetUtils::GGX_G2_Aniso) -- NOT the
 	// separable-G1(wi)*G1(wo) LUT CookTorranceSPF/BRDF use, which is
 	// calibrated to a different single-scatter model.  See
-	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md and the DL-63 ledger row.
+	// docs/DEBT_LEDGER.md and the DL-63 ledger row.
 	// DL-77 (fixed): the G2 LUT's plain alphaEff=sqrt(alphaX*alphaY) form
 	// is calibrated to the ISOTROPIC Smith model -- exact only when
 	// alphaX==alphaY.  The "Aniso" twins below resolve an additional
 	// anisotropy-ratio table dimension and fall back to the exact
 	// isotropic lookup when alphaX==alphaY; see the DL-77 ledger row and
-	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77".
+	// docs/DEBT_LEDGER.md "DL-77".
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
@@ -440,7 +440,7 @@ void GGXSPF::Scatter(
 				else if( fresnelMode == eFresnelThinFilmConductor )
 				{
 					// Thin-film multiscatter tail (thin-film hemispherical F_avg, not the
-					// substrate's; tests/ThinFilmFurnaceTest.cpp).  Twin of GGXBRDF::value.
+					// substrate's; tests/ThinFilmBRDFTest.cpp).  Twin of GGXBRDF::value.
 					// Dispersion-correct per-lambda stack (twin of the single-scatter site).
 					const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
 					auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {

@@ -164,7 +164,7 @@ namespace RISE
 			// draws alone (stream 2048, sample 0..5) require
 			// `idx = 2048 + 4096*5 = 22528`, i.e. 22529 materialised
 			// `PrimarySample` slots (~528 KB at the 24-byte slots of that time; see
-			// docs/DL08_PSSMLT_LANE_LAYOUT.md for the exact byte count
+			// docs/DEBT_LEDGER.md for the exact byte count
 			// and the measured bootstrap-time regression, ~5x on
 			// `scenes/Tests/Legacy/cornellbox_mlt_fast.RISEscene`) on
 			// EVERY fresh sampler, vs 294 slots (~6.9 KB) before the
@@ -208,7 +208,7 @@ namespace RISE
 			//    `MLTRasterizer.cpp`'s bootstrap loop -- so a hash
 			//    table's bucket-array allocation on first insert is paid
 			//    100,000 times over) -- see
-			//    docs/DL08_PSSMLT_LANE_LAYOUT.md for the measured
+			//    docs/DEBT_LEDGER.md for the measured
 			//    numbers.  Touching stream 2048 for 6 samples still
 			//    costs exactly 6 `PrimarySample` slots -- independent of
 			//    the stream's numeric value -- and there is still no
@@ -235,7 +235,7 @@ namespace RISE
 			// owns it, so `Reject()` can find the sample back without
 			// re-deriving stream/sampleIndex arithmetic.
 			//
-			// See docs/DL08_PSSMLT_LANE_LAYOUT.md for the measured
+			// See docs/DEBT_LEDGER.md for the measured
 			// before/after slot counts and bootstrap timings, and
 			// tests/PSSMLTStreamAliasingTest.cpp's memory-cost and
 			// determinism rows for the red-proof.

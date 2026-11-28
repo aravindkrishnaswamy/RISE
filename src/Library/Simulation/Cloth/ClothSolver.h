@@ -12,7 +12,7 @@
 //  (the same payloads) and accepts "surface_load" (grid.v1 on the sheet's
 //  vertex lattice: "pressure" in Pa and/or "traction", 3 components, Pa).
 //  Honours imposed macro steps; deterministic; checkpoints are exact.
-//  M7e (docs/SIMULATION_M7E_RESULTS.md): also offers "surface_mechanics"
+//  M7e (docs/SIMULATION_SOLVER_CONTRACT.md): also offers "surface_mechanics"
 //  (lumped masses, pins, force, Rayleigh coefficients) and
 //  "surface_stiffness" (the projected elastic Hessian's upper blocks), and
 //  accepts "surface_load_steps" (a partner's steps and their impulses: the
@@ -26,7 +26,7 @@
 //  process.  "predictive" is requested only in bake mode without
 //  colliders and air drag; the host derives the label from the cases.
 //
-//  Parameters and their defaults: docs/SIMULATION_M3A_RESULTS.md.
+//  Parameters and their defaults: docs/SIMULATION_SOLVER_CONTRACT.md.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

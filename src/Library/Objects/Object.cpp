@@ -1338,7 +1338,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// backs off by that amount along the ray, exactly as the
 		// general-path stamp below always has), far below any UV
 		// generator's output resolution (see
-		// docs/DL95_OBJECT_UV_GENERATOR_INPUT.md for the per-geometry
+		// docs/DEBT_LEDGER.md for the per-geometry
 		// verification table).  For `TriangleMeshGeometry{,Indexed}`, which
 		// stamp NEITHER field themselves, it is the fix: previously this
 		// call read whatever stale point happened to sit in the shared

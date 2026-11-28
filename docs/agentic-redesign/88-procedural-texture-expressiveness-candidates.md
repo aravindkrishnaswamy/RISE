@@ -7,7 +7,7 @@
 - §1's gap table below records the **PRE-ARC** baseline.
 
 This is the texture half of the directive that closed the creative-richness arc
-(CREATIVITY_JOURNAL.md, closing line: *"build even more expressive geometry and
+(50-agentic-surface.md, closing line: *"build even more expressive geometry and
 procedural textures within RISE itself"*).  Doc 85 executed the geometry half
 (C1 skeleton, C2 sweeps, C6 superellipsoid — all shipped).  This doc scopes the
 texture half: a much richer, more flexible way to specify spatially-varying

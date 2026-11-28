@@ -4,11 +4,11 @@
 - **Shipped inside `SceneEditController` (`src/Library/SceneEditor/SceneEditController.{h,cpp}`):** Single-document render admission and FIFO serialization over the interactive render slot (`RenderJobId`, `RenderClass`, `SubmitAgentRenderAsync` / `SubmitAgentRenderSync`, `SubmitProductionRenderSync`), suspending/resuming interactive viewport refinement safely around production and agent renders, plus synchronous fast analytical/2D previews (`MaterialPreview` / `PainterPreview` under `try_to_lock`).
 - **Unbuilt (still design work in §1–§9 below):** Standalone process-wide multi-document `RenderCoordinator` singleton arbitrating across multiple simultaneously open `SceneEditController` instances, background `Thumbnail` / `RmseReference` priority queues over immutable `SceneSnapshot` copies, and resumable render checkpoints.
 
-This is the deep-dive spec for the full multi-document coordinator design surfaced during review of the `docs/gui/` specs: **when multiple documents or asynchronous background thumbnail/reference jobs exist, a single process-wide arbiter must govern the one `GlobalThreadPool()`.** **Hardened 2026-06-20** against a *second* adversarial review held against the concurrency frame in [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 (single-writer; **one process-wide worker pool**; background readers get an immutable published `SceneSnapshot`). That pass found three mechanical defects (§0.1): the coordinator was described as *factored from each controller*, so two open documents would each own a coordinator and render concurrently — violating the one-render-takes-all-cores rule the doc exists to enforce; the anti-starvation claim ("low-priority work runs between passes") had no policy implementing it; and the isolated-job model still read as if this doc *designed* the snapshot rather than *consuming* TRANSACTION_MODEL's.
+This is the deep-dive spec for the full multi-document coordinator design surfaced during review of the `docs/gui/` specs: **when multiple documents or asynchronous background thumbnail/reference jobs exist, a single process-wide arbiter must govern the one `GlobalThreadPool()`.** **Hardened 2026-06-20** against a *second* adversarial review held against the concurrency frame in [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 (single-writer; **one process-wide worker pool**; background readers get an immutable published `SceneSnapshot`). That pass found three mechanical defects (§0.1): the coordinator was described as *factored from each controller*, so two open documents would each own a coordinator and render concurrently — violating the one-render-takes-all-cores rule the doc exists to enforce; the anti-starvation claim ("low-priority work runs between passes") had no policy implementing it; and the isolated-job model still read as if this doc *designed* the snapshot rather than *consuming* TRANSACTION_MODEL's.
 **Owner:** Aravind Krishnaswamy
-**Scope:** Design a single process-wide shared-C++ **`RenderCoordinator`** (a singleton lease on the one global CPU worker pool) with **per-document clients**, that arbitrates *every* full-scene and isolated render across *all open documents*: interactive viewport refinement, production render, asset/material thumbnails, node-graph previews, the auto-router probe, RMSE references, and agent (AI) renders. It unifies the per-spec render policies that previously contradicted each other (thumbnails "queue", node previews "budget", MCP "reject-if-busy", agent "stop/restart the viewport"), defines priority + exclusivity + a concrete **anti-starvation policy**, cancellation + stale-revision rejection, a *safe* isolated preview/thumbnail job model that consumes TRANSACTION_MODEL's immutable `SceneSnapshot`, viewport suspend/resume, and the API the GUI / MCP / agent call. Excludes scene-state authority, document identity, and the snapshot primitive itself (that is [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3) and side-effect-free parse/validate (that is [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md)).
+**Scope:** Design a single process-wide shared-C++ **`RenderCoordinator`** (a singleton lease on the one global CPU worker pool) with **per-document clients**, that arbitrates *every* full-scene and isolated render across *all open documents*: interactive viewport refinement, production render, asset/material thumbnails, node-graph previews, the auto-router probe, RMSE references, and agent (AI) renders. It unifies the per-spec render policies that previously contradicted each other (thumbnails "queue", node previews "budget", MCP "reject-if-busy", agent "stop/restart the viewport"), defines priority + exclusivity + a concrete **anti-starvation policy**, cancellation + stale-revision rejection, a *safe* isolated preview/thumbnail job model that consumes TRANSACTION_MODEL's immutable `SceneSnapshot`, viewport suspend/resume, and the API the GUI / MCP / agent call. Excludes scene-state authority, document identity, and the snapshot primitive itself (that is [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3) and side-effect-free parse/validate (that is [VALIDATION_ARCHITECTURE.md](VALIDATION_ARCHITECTURE.md)).
 
-This doc sits under [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §9–§11 and honors its §1 principles — in particular **#2 "maximize shared C++"** (the coordinator is library code; nothing platform-specific) and **#6 "everything routes through one mutation path"** (extended here to "everything routes through one *render* path"). Pre-cutover `file:line` citations below were anchored to the historical June 2026 baseline ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)).
+This doc sits under [../GUI_ROADMAP.md](../GUI_ROADMAP.md) §9–§11 and honors its §1 principles — in particular **#2 "maximize shared C++"** (the coordinator is library code; nothing platform-specific) and **#6 "everything routes through one mutation path"** (extended here to "everything routes through one *render* path"). Pre-cutover `file:line` citations below were anchored to the historical June 2026 baseline ([../GUI_ROADMAP.md](../GUI_ROADMAP.md)).
 
 ---
 
@@ -32,7 +32,7 @@ something else is rendering" policy — and each able to call `RasterizeScene`
 directly. Two such consumers running at once would each spawn `numWorkers` tasks
 into the *same* pool and the machine becomes unusable (the documented "never kick
 off two renders concurrently" rule). And because the worker pool is **one
-process-wide singleton** ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 #6) but
+process-wide singleton** ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 #6) but
 a session may have **several open documents**, the danger is not just N consumers
 *within* one document — it is N consumers *across* documents. The fix is not new
 render code; it is to **promote the implicit single-render invariant
@@ -49,7 +49,7 @@ share the one pool fairly.
 
 ### 0.1 Findings this hardening pass closes (second adversarial review, 2026-06-20)
 
-Held against the CONFIRMED frame in [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md)
+Held against the CONFIRMED frame in [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)
 §0 (single-writer; one process-wide worker pool; readers get an immutable
 published `SceneSnapshot`). The v1 draft of this doc predated that frame and was
 mechanically wrong in three places.
@@ -67,7 +67,7 @@ mechanically wrong in three places.
 ### 1.1 One pool, one scene, N would-be consumers
 
 RISE is a CPU path tracer; "the GPU" is a present surface, not a render path
-([CURRENT_STATE_AUDIT.md §10](CURRENT_STATE_AUDIT.md)). The render resources that
+([../GUI_ROADMAP.md §10](../GUI_ROADMAP.md)). The render resources that
 are genuinely scarce and genuinely shared are:
 
 1. **The global worker pool.** `GlobalThreadPool()` is a process singleton; a
@@ -76,7 +76,7 @@ are genuinely scarce and genuinely shared are:
    and the animation path at `:1358-1363`). Thread policy (P-cores + E-cores
    minus one) is owned by `CPUTopology` / `ThreadPool` per CLAUDE.md; the *count*
    is topology-aware but the *pool* is one — **process-wide, not per-document**
-   ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 #6 confirms render / thumbnail
+   ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 #6 confirms render / thumbnail
    / RMSE / probe all draw from this one pool). A session with two open documents
    therefore shares this single pool between them; an arbiter that lived inside
    each document could not see the other document's in-flight render and would
@@ -130,7 +130,7 @@ A thumbnail or node preview that did the same thing while the viewport thread wa
 live would (a) tear the film mid-read, (b) double-book the global pool, and (c)
 require stopping the render thread first per the `ResizeFilm` contract. Isolated
 work needs an *isolated private film* and a *held immutable
-[`SceneSnapshot`](TRANSACTION_MODEL.md)* (TRANSACTION_MODEL §3.5), not a borrow of
+[`SceneSnapshot`](EDITOR_STATE_AND_TRANSACTION_HARDENING.md)* (TRANSACTION_MODEL §3.5), not a borrow of
 the live film or a read of the live graph (see §5).
 
 ---
@@ -152,7 +152,7 @@ does not contain any integrator; it composes the existing rasterizers exactly as
 
 **Per-document clients.** Each open document — i.e. each `SceneEditController`
 (one controller = one document = one `(UUID, revision)` lineage,
-[TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §13 non-goals "multi-document") —
+[EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §13 non-goals "multi-document") —
 **registers as a client** of the one coordinator and gets a `RenderClientId`. A
 client is a *submission source bound to a document*, not an owner of the pool:
 
@@ -167,7 +167,7 @@ void           UnregisterClient( RenderClientId );                  // on docume
 `RenderClientId` (§3.5) so the coordinator can (a) attribute the job to a
 document, (b) schedule *fairly across documents* (§3.6), and (c) drop every job
 belonging to a client when that client unregisters (document close / reload's
-document-swap, [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §9.3). The coordinator
+document-swap, [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §9.3). The coordinator
 owns the slot, the queue, and the pool; the controller owns only its document and
 its submissions. This is the crux of finding #1: arbitration cannot live *inside*
 a document, because the scarce resource (the pool) is shared *between* documents.
@@ -187,11 +187,11 @@ Core invariants the coordinator guarantees by construction:
 - **I3 — Every job carries the `DocumentId` it was admitted against.** A job whose
   document revision is superseded by completion (the scene changed under it) has
   its result dropped, not displayed (§4.3). The revision is the snapshot's
-  `Id().revision` from [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5 / §6.4 —
+  `Id().revision` from [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5 / §6.4 —
   the coordinator *consumes* that token, it does not mint its own.
 - **I4 — Isolated jobs never touch the live film or live scene.** They render
   against a *held* immutable `SceneSnapshot` (acquired from
-  [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5) + a private `IFilm` (§5).
+  [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5) + a private `IFilm` (§5).
 - **I5 — All admission, preemption, completion, and cross-document fairness
   decisions are made on the coordinator's own thread under one lock.** No
   consumer — and no document — pokes the pool, the live film, or another job
@@ -221,7 +221,7 @@ per-document brain — is what keeps the pool single-booked (finding #1).
   `mRendering` atomic is *replaced* by the coordinator's one process-wide slot:
   "is *this document* rendering" becomes "does the active slot belong to this
   client." The render thread is no longer per-controller; the **one** pool serves
-  every client (finding #1, [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 #6).
+  every client (finding #1, [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 #6).
 - `SceneEditController` becomes a *registered client* (§2.1): on construction it
   `RegisterClient`s; it submits a long-lived `Interactive` job for its viewport
   and feeds edits to the coordinator; on destruction it `UnregisterClient`s and
@@ -240,7 +240,7 @@ This keeps roadmap principle #6 intact: GUI, AI, and hand-edits still converge o
 `RenderCoordinator` for *rendering*. Mutation authority stays per-document (each
 controller's `mMutex`); render arbitration becomes process-global (the one
 coordinator). The two are deliberately different scopes —
-[TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) owns the former, this doc the latter.
+[EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) owns the former, this doc the latter.
 
 ### 2.3 Shared-C++ vs platform-specific
 
@@ -251,7 +251,7 @@ coordinator). The two are deliberately different scopes —
 | Cross-document fair scheduling + anti-starvation (credits/bursts, yield points) | all of it (§3.6) | — |
 | Worker-pool ownership / fan-out | all of it (already process-wide `GlobalThreadPool`) | — |
 | Job model (`RenderRequest`, `JobHandle`, `RenderClientId`, priorities) | all of it | — |
-| Snapshot-isolated thumbnail/preview job (private `IFilm` + held `SceneSnapshot`) | all of it; the `SceneSnapshot` itself is owned by [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5 | — |
+| Snapshot-isolated thumbnail/preview job (private `IFilm` + held `SceneSnapshot`) | all of it; the `SceneSnapshot` itself is owned by [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5 | — |
 | Cancellation / stale-revision plumbing | all of it (`CancellableProgressCallback`, `FrameStore::Generation`, snapshot `Id().revision`) | — |
 | Viewport suspend/resume around production & agent renders | all of it | — |
 | Result delivery | coordinator → `IRasterizerOutput` / `FrameStore` (shared) | the present surface that *displays* the framebuffer (Metal / DXGI / Android bitmap) — display only, unchanged |
@@ -610,13 +610,13 @@ and re-enqueues at priority 100.
 > **Production-layer (depends on the revision/`DocumentId` work not in the spike).**
 > The stale-drop logic below keys on `DocumentId` / `snapshot->Id().revision` /
 > `CurrentDocumentId()`, all of which are the publication layer
-> [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5.4 still has to build (the
+> [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5.4 still has to build (the
 > prototyped `SceneSnapshot` carries no `DocumentId` yet). The rule is sound and
 > is what the coordinator *will* enforce; it is not exercisable until that seam
 > lands.
 
 Every `RenderRequest` is admitted against a `DocumentId = (UUID, revision)`
-([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.4). For isolated jobs that
+([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.4). For isolated jobs that
 revision is **intrinsic** to the held `SceneSnapshot` —
 `req.snapshot->Id().revision == req.baseDocument.revision` — which is exactly the
 stale-result token TRANSACTION_MODEL §3.5 / §6.4 hands the coordinator ("the
@@ -629,7 +629,7 @@ revision against the live document's. This is the coordinator's
    `controller.CurrentDocumentId()` (TRANSACTION_MODEL §3.5). If
    `job.baseDocument != live` — either the **revision** moved (the scene was
    edited while the job waited) or the **UUID** moved (the document was reloaded /
-   swapped, [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §9.3) — **discard the
+   swapped, [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §9.3) — **discard the
    job** before it ever runs. Observer gets `dropped_stale`. This is what makes a
    queue of thumbnails self-clean when the user reloads or edits the scene. (A
    UUID mismatch is the reload case; that client is also unregistering, so its
@@ -657,7 +657,7 @@ across a revision bump in the first place; checkpoint (2) is the belt-and-braces
 for edits that land via a non-coordinator path and is the same class of guard as
 SaveEngine's external-modification `FileIdentity` check (`SaveEngine.cpp` ~223-247,
 `FileIdentity.h`; the pre-cutover "span check" framing is history — see
-[CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)'s erratum).
+[../GUI_ROADMAP.md](../GUI_ROADMAP.md)'s erratum).
 
 > **Terminology — "revision," not "epoch."** This doc tracks the per-commit
 > **revision** (TRANSACTION_MODEL §3.2's `mRevision`, bumped once per committed
@@ -666,7 +666,7 @@ SaveEngine's external-modification `FileIdentity` check (`SaveEngine.cpp` ~223-2
 > which TRANSACTION_MODEL §3.2 keeps strictly separate as a list-rebuild signal.
 > The full identity the coordinator matches is the `(UUID, revision)` pair, so a
 > reloaded document (fresh UUID) can never coincidentally match a stale job's base
-> ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.4, finding #3 there).
+> ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.4, finding #3 there).
 
 ---
 
@@ -679,7 +679,7 @@ the safe alternative.
 > **Implementation status (what this section consumes is partly built).** The
 > snapshot primitive this section relies on is **PROTOTYPED & TESTED** on branch
 > `feature/gui-snapshot-prototype`
-> ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5): `Scene::CreateSnapshot()`
+> ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5): `Scene::CreateSnapshot()`
 > ([`Scene.cpp:927`](../../src/Library/Scene.cpp)) returns a ref-counted
 > `SceneSnapshot` ([`Scene.cpp:862`](../../src/Library/Scene.cpp)) that **clones**
 > the document's mutable wrapper state (object transforms via
@@ -716,7 +716,7 @@ position (§3.4), which a thumbnail can never occupy.
 ### 5.2 Isolated job = held `SceneSnapshot` + private film (acquire → render → release)
 
 The isolated job's scene view is **not designed here** — it is a held reference to
-[TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5's ref-counted `SceneSnapshot`
+[EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5's ref-counted `SceneSnapshot`
 (prototyped: a clone of the document's mutable wrapper state that addref-shares the
 immutable leaves). This doc *consumes* that primitive; TRANSACTION_MODEL owns its
 definition, publication, resource lifetime, and the production gaps (§3.7). An
@@ -727,7 +727,7 @@ isolated job carries:
   ([`Scene.cpp:927`](../../src/Library/Scene.cpp)); in the *production* model it is
   acquired from the published pointer via the not-yet-built
   `SceneEditController::AcquireSnapshot()` seam
-  ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5.4: "addref'd; caller
+  ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5.4: "addref'd; caller
   `Release()`s … reflects the currently-published revision"). Either way the
   snapshot is a read-only capture of the document as of one revision: it clones the
   mutable wrapper (object transforms + camera pose) and addref-shares the immutable
@@ -859,7 +859,7 @@ TRANSACTION_MODEL §3.5's snapshot.
 ### 5.6 Snapshot lifetime under a job — why one process-wide pool is safe
 
 The held-snapshot ref is precisely the mechanism that lets the **one
-process-wide worker pool** ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 #6)
+process-wide worker pool** ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 #6)
 serve isolated jobs from multiple documents safely. TRANSACTION_MODEL §3.5 owns
 the lifetime guarantee; this doc relies on it.
 
@@ -1049,7 +1049,7 @@ the rules, it does not assert behavior no rule produces (finding #2).
   `SuspendForEdit` lease so mutation and rendering interlock; it does not itself
   edit the scene.
 - **Owning scene state / revisions / document identity / the snapshot primitive.**
-  That is [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3. The coordinator
+  That is [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3. The coordinator
   *consumes* the `(UUID, revision)` `DocumentId` (admission tag + drop-stale, §4.3)
   and *holds* an immutable `SceneSnapshot` per isolated job (§5.2); it does not
   define, publish, or pin them. It never reads the live scene graph for an
@@ -1069,7 +1069,7 @@ the rules, it does not assert behavior no rule produces (finding #2).
 - **Resumable production renders.** Only the Interactive job is suspend/resume;
   production-class jobs are run-to-completion or cancelled-and-dropped (§3.2).
 - **MLT region render.** Region (`pRect`) is honored by the pixel integrators but
-  ignored by MLT ([CURRENT_STATE_AUDIT.md §5](CURRENT_STATE_AUDIT.md)); the
+  ignored by MLT ([../GUI_ROADMAP.md §5](../GUI_ROADMAP.md)); the
   coordinator forwards `pRect` and inherits that limitation — a region request
   under MLT silently renders full-frame. Documented, not fixed here.
 
@@ -1145,7 +1145,7 @@ the rules, it does not assert behavior no rule produces (finding #2).
   job class exists but no mobile UI invokes it.
   > **Android note — the single-pool constraint matters *more* on mobile.** The
   > one-process-wide-pool / single-render-takes-all-cores rule
-  > ([TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §0 #6, I1/I2) is most load-bearing
+  > ([EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §0 #6, I1/I2) is most load-bearing
   > on phones and tablets: far fewer cores, a hard thermal ceiling, and an OS that
   > kills a backgrounded app that pegs the CPU. A second concurrent render (or an
   > ungated thumbnail batch) that the desktop merely *feels* would on Android thermal-
@@ -1177,7 +1177,7 @@ the rules, it does not assert behavior no rule produces (finding #2).
   **clone of the mutable wrapper state only** (per-object transform matrices + the
   transform-stack deque + the camera pose), addref-sharing the heavy immutable
   leaves (geometry/BVH/painters), **not** a deep scene copy. Owned/bounded by
-  [TRANSACTION_MODEL.md](TRANSACTION_MODEL.md) §3.5/§3.6 (extra RSS ∝ per-object
+  [EDITOR_STATE_AND_TRANSACTION_HARDENING.md](EDITOR_STATE_AND_TRANSACTION_HARDENING.md) §3.5/§3.6 (extra RSS ∝ per-object
   wrapper size × object count, not scene size); measured clone time ≈3.5–4 µs warm
   for 2 objects (~2–5 ms per 100 objects). Cap: **thumbnail queue depth ≤ 64 per client** with drop-oldest;
   **node-preview debounce ~80 ms**; a single shared scratch-film pool may be reused

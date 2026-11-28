@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  LiquidGrid.h - The staggered (MAC) grid of the liquid solver
-//  (simulation M7, docs/SIMULATION_M7A_RESULTS.md), deterministic
+//  (simulation M7, docs/SIMULATION_SOLVER_CONTRACT.md), deterministic
 //  parallel loops over it, interpolation, and the static geometry
 //  (solid signed-distance fields, face-area fractions, initial liquid).
 //
@@ -156,7 +156,7 @@ void SolidNodes(const Grid& g, const std::vector<Shape>& shapes, double band, st
 //! distances within 1e-9 h of zero are zero and only strictly positive
 //! values are open, so a solid face lying on a grid plane closes the faces
 //! in that plane and opens none inside the solid (round-off had opened
-//! slivers of 1e-16 there; docs/SIMULATION_M7A_RESULTS.md section 13).
+//! slivers of 1e-16 there; docs/SIMULATION_SOLVER_CONTRACT.md section 13).
 //! Domain boundary faces are closed (fraction 0), except the top faces of
 //! axis `openAxis` when `openTop` (fraction from the solid as inside).
 void FaceFractions(const Grid& g, const std::vector<double>& nodes, bool openTop, int openAxis,

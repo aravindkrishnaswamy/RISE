@@ -521,7 +521,7 @@ struct EvidenceSpec {
 };
 // Tolerances: 1.25 x the largest error observed at the stated resolution over
 // the four built-in records for that integrator, rounded up
-// (tests/ClothValidationTest.cpp "Evidence resolutions"; docs/SIMULATION_M3A_RESULTS.md).
+// (tests/ClothValidationTest.cpp "Evidence resolutions"; docs/SIMULATION_SOLVER_CONTRACT.md).
 // The order cases require an observed order of at least 1.8.
 const EvidenceSpec EvidenceSpecs[] = {
 	{"catenary-n20", "hanging strip, no bending, 20 segments: max position error / sag vs the elastic catenary",
@@ -1196,7 +1196,7 @@ bool ClothSolver::Configure(const V& parameters, const ISceneInputs& inputs, Sol
 			model.dragCoefficient > 0 ? "air drag is explicit and unvalidated" :
 			sceneMotion ? "motion sampled from the scene is not covered by the validation cases" :
 			"penalty contact has no collision detection";
-	// What the label covers (docs/SIMULATION_M3A_RESULTS.md section 5), as
+	// What the label covers (docs/SIMULATION_SOLVER_CONTRACT.md section 5), as
 	// conditions and one sentence; both are bound into the evidence digests.
 	{
 		std::vector<std::string> colliders;
@@ -1587,7 +1587,7 @@ bool ClothSolver::Advance(const AdvanceRequest& request, IFrameSink& sink, IPort
 				// M7f: a `force` channel on surface_load is an implicitly coupled sheet's load (the
 				// liquid's step impulses over the macro step).  Without its steps the cloth would
 				// apply their mean over its own substeps, the exchange that diverges for light cloth
-				// (docs/SIMULATION_M7E_RESULTS.md section 2.1): refused.
+				// (docs/SIMULATION_SOLVER_CONTRACT.md section 2.1): refused.
 				if (macro && stepsUnbound_ && !system_.portForce.empty())
 					return Fail(error, std::string("surface_load carries an implicitly coupled sheet's force but ") + StepsPort +
 						" is not connected: connect the liquid's sheet load steps port (sheet_load_steps by default) to " + StepsPort +

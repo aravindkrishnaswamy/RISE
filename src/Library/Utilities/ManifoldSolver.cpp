@@ -5389,7 +5389,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 //   semantics.
 //
 //   Extracted from BuildSeedChain in Phase 3 of the Mitsuba-faithful
-//   SMS port (docs/SMS_UNIFORM_SEEDING_PLAN.md): used by both the
+//   SMS port (docs/SMS.md): used by both the
 //   legacy Snell-trace seed entry AND the uniform-on-shape Mitsuba-
 //   faithful seed entry (where the first vertex is sampled and we
 //   need to extend the chain through any subsequent specular hits).
@@ -9200,7 +9200,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// `sms_seeding "uniform"`).  The two seeding strategies are
 	// structurally different enough — per-caster iteration vs single
 	// Snell-traced seed — that they live in separate functions.  See
-	// `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
+	// `docs/SMS.md`.
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform ||
         (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage()) )
 	{
@@ -10127,7 +10127,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 //   estimator with the same uniform-area proposal in every trial. Alpha
 //   coverage also selects that Bernoulli path rather than biased dedupe.
 //
-//   See `docs/SMS_UNIFORM_SEEDING_PLAN.md` for the full plan.
+//   See `docs/SMS.md` for the full plan.
 //////////////////////////////////////////////////////////////////////
 
 ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(

@@ -12,7 +12,7 @@ RISE already has significant infrastructure in place:
 
 - Full bidirectional path tracing with explicit light and eye subpaths
 - Spectral rendering (sampled spectrum, per-wavelength PT/BDPT)
-- SMS / manifold solving (Zeltner et al. 2020), with uniform seeding and the `sms_extended` two-stage solver shipped.  See [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md) for the two-stage extension scope, [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) for the Mitsuba-faithful uniform-seeding refactor, and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) for the post-2020 literature catalogue (PMS / SMBS / MPG / Specular Polynomials / PSMS-ReSTIR / Bernstein Bounds).
+- SMS / manifold solving (Zeltner et al. 2020), with uniform seeding, the `sms_two_stage` solver, and the `sms_extended` multi-bounce R/T solver shipped (note: `sms_extended` and `sms_two_stage` are distinct modes).  See [SMS.md](SMS.md), [SMS_EXTENDED_DESIGN.md](SMS_EXTENDED_DESIGN.md), [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md), and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md).
 - OpenPGL path guiding with RIS and variance-aware adaptive alpha (PT and BDPT eye subpaths)
 - BSSRDF-aware transport (Donner-Jensen, Burley diffusion profiles) in both PT and BDPT
 - Owen-scrambled Sobol samplers
@@ -41,7 +41,7 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | 6 | ~~Blue-noise screen-space error distribution (ZSobol)~~ **DONE** | Sampling | Small | None |
 | 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
 | 8 | ~~Optimal MIS weights~~ **DONE** | Transport | Medium | None |
-| 9 | ~~VCM (Vertex Connection and Merging)~~ **DONE** (v1: VC+VM, surface-only, fixed radius, balance heuristic, Pel + Spectral/HWSS — see [docs/VCM.md](VCM.md)) | Transport | Medium-Large | None |
+| 9 | ~~VCM (Vertex Connection and Merging)~~ **DONE** (v2: VC+VM, surface + volumetric merging, SPPM auto-radius, balance heuristic, Pel + Spectral/HWSS — see [docs/VCM.md](VCM.md)) | Transport | Medium-Large | None |
 | 10 | ~~Hair/fiber BSDF (Chiang et al. 2016)~~ **DONE** | Materials | Medium | ~~1 (GGX foundation)~~ None |
 | 11 | ~~Jakob-Hanika sigmoid spectral uplifting~~ **DONE** | Spectral | Small | 5 (HWSS) |
 
@@ -599,7 +599,7 @@ Implement Kulla and Fajardo (EGSR 2012) equiangular sampling: distribute samples
 **Modified interfaces:** `IMedium.h` (DistanceSample, SampleDistanceWithPdf, EvalDistancePdf, GetBoundingBox), `ILight.h` (IsPositionalLight)
 **Test scenes:** `pt_equiangular_fog`, `pt_equiangular_hetero`, `pt_chromatic_fog`, `pt_thick_fog_corridor`
 
-**Eye-walk escape segment Tr — FIXED (2026-05-31, coordinated PT + BDPT + VCM).**  Previously, in all 3 RISE PT integrator variants (RGB / NM / HWSS), both at the first-bounce entry (`IntegrateRay*`) and inside the iterative loop (`IntegrateFromHit*`), when the eye ray escaped the scene through a participating medium (no surface hit, no volume scatter event), the environment radiance was multiplied into the path throughput WITHOUT first applying the medium transmittance along the escape segment.  PBRT-v4's `VolPathIntegrator::Li()` applies `T_maj` to `beta` before reading `beta * Le` at `if (!si)`; RISE skipped this step.  BDPT's `GenerateEyeSubpath` + `GenerateEyeSubpathNM` shared the same gap (`vEnv.throughput = beta` at the synthetic env-light vertex push); VCM inherited it via the shared eye-subpath generator.  **The fix applies the escape-segment Tr at all 9 PT sub-sites + 2 BDPT sites (using `maxDist = 1e10` to match PT's existing escape constant, so a global medium evaporates `exp(-σ_t·∞) → 0` and a bounded AABB medium clips to a finite Tr); VCM's s=0 env-escape inherits it transitively with no VCM code change.**  Validated by a new **bounded-medium** regression fixture ([scenes/Tests/Volumes/env_bounded_fog_{pt,bdpt,vcm}.RISEscene](../scenes/Tests/Volumes/) — a diffuse sphere in an AABB-clipped global medium under uniform env-IBL), on which PT / BDPT / VCM agree to within ±5 % (VCM +0.1 % of PT, BDPT +4.5 %) — the cross-integrator-consistency property the global-medium scenes (which evaporate to 0) could not test.  On the global `*_env_through_fog` scenes, PT now gives ~0.0002 (effectively black) vs the pre-fix over-bright ~0.38.  Tr is applied to throughput only (MIS-orthogonal); the fix also removes a pre-existing PT MIS *mismatch* (env-NEE already applied shadow-segment Tr while env-BSDF did not).  Full site enumeration, gate table, adversarial-review ledger in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) "Coordinated escape-Tr fix (PT + BDPT + VCM)".  **Residual (separate workstream, NOT the escape-Tr fix):** with in-scattering (σ_s > 0) on env-IBL bounded fog, VCM under-counts single-scatter of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS issue in the §12 SA-MIS / medium-vertex-connection domain; the pure-absorption fixture isolates and validates the escape-Tr fix independently of it.
+**Eye-walk escape segment Tr — FIXED (2026-05-31, coordinated PT + BDPT + VCM).**  Previously, in all 3 RISE PT integrator variants (RGB / NM / HWSS), both at the first-bounce entry (`IntegrateRay*`) and inside the iterative loop (`IntegrateFromHit*`), when the eye ray escaped the scene through a participating medium (no surface hit, no volume scatter event), the environment radiance was multiplied into the path throughput WITHOUT first applying the medium transmittance along the escape segment.  PBRT-v4's `VolPathIntegrator::Li()` applies `T_maj` to `beta` before reading `beta * Le` at `if (!si)`; RISE skipped this step.  BDPT's `GenerateEyeSubpath` + `GenerateEyeSubpathNM` shared the same gap (`vEnv.throughput = beta` at the synthetic env-light vertex push); VCM inherited it via the shared eye-subpath generator.  **The fix applies the escape-segment Tr at all 9 PT sub-sites + 2 BDPT sites (using `maxDist = 1e10` to match PT's existing escape constant, so a global medium evaporates `exp(-σ_t·∞) → 0` and a bounded AABB medium clips to a finite Tr); VCM's s=0 env-escape inherits it transitively with no VCM code change.**  Validated by a new **bounded-medium** regression fixture ([scenes/Tests/Volumes/env_bounded_fog_{pt,bdpt,vcm}.RISEscene](../scenes/Tests/Volumes/) — a diffuse sphere in an AABB-clipped global medium under uniform env-IBL), on which PT / BDPT / VCM agree to within ±5 % (VCM +0.1 % of PT, BDPT +4.5 %) — the cross-integrator-consistency property the global-medium scenes (which evaporate to 0) could not test.  On the global `*_env_through_fog` scenes, PT now gives ~0.0002 (effectively black) vs the pre-fix over-bright ~0.38.  Tr is applied to throughput only (MIS-orthogonal); the fix also removes a pre-existing PT MIS *mismatch* (env-NEE already applied shadow-segment Tr while env-BSDF did not).  Full site enumeration, gate table, adversarial-review ledger in [docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) "Coordinated escape-Tr fix (PT + BDPT + VCM)".  **Residual (separate workstream, NOT the escape-Tr fix):** with in-scattering (σ_s > 0) on env-IBL bounded fog, VCM under-counts single-scatter of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS issue in the §12 SA-MIS / medium-vertex-connection domain; the pure-absorption fixture isolates and validates the escape-Tr fix independently of it.
 
 ---
 
@@ -963,7 +963,7 @@ of its catastrophe modes, so the remaining 5–10% residual is now in
   env+omni / env+mesh and BDPT/VCM collapse to ~36% on env-only
   spectral HWSS=true).  Reverted.
 - **2026-05-27 / 2026-05-28 (Sessions 2-8)**: design-driven re-attempts
-  per [docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md)
+  per [docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
   — group decomposition (s=0 group, light-subpath group, VCM group)
   with delta-aware `remap0` precondition.  Sessions 5+7+8 landed the
   s=0 group partially.  Empirically the §0.4 magnitude prediction
@@ -999,7 +999,7 @@ This item is **substantively closed** at lax tolerances.  The Piece-1.A
 `ConvertDensity` helper remains in place as foundation for a future
 strict-tolerance closure (would require SA-measure pdfFwd/pdfRev at
 env vertices to remove the ±5-30% residual visible at strict 10/30/1
-tolerances).  See PRE_PHASE1_STATUS.md Session 9 outcome for the
+tolerances).  See VCM_ENV_MIS_PARTITION_INVESTIGATION.md Session 9 outcome for the
 per-topology delta table and recommended next-session paths if a
 production team wants to push for strict closure.
 
@@ -1017,7 +1017,7 @@ tests as no-op or < 0.001 linR in env-dominant scenes.  Mesh-side
 strategies, splats, and interior connections are all empirically
 innocent (≤ 0.005 linR contribution each).  The fix is the monolithic
 SA-MIS migration originally specced in
-[docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md), but
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md), but
 now with significantly reduced scope and risk per the Session-9
 continuous-PMF fix:
 
@@ -1047,7 +1047,7 @@ into VCM, but the companion piece — transmittance along the eye-walk
 medium to env-IBL — was missing in all three integrators (PT, BDPT,
 and VCM-via-shared-generator credited un-attenuated env radiance on
 escape).  That **escape-Tr gap is now closed** (see §7 "Eye-walk escape
-segment Tr — FIXED" and [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)
+segment Tr — FIXED" and [docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
 "Coordinated escape-Tr fix").  With it, **VCM connection-Tr + escape-Tr
 are both media-aware and consistent with PT/BDPT**, and a new
 bounded-medium env-IBL fixture establishes a *cross-integrator
@@ -1334,7 +1334,7 @@ because `s=0` eye-escape remained un-attenuated while `s=1` env-NEE
 attenuated to 0; once escape-segment `Tr` landed across all integrators,
 connection `Tr` and escape `Tr` became mutually consistent and validated on
 the bounded-medium `env_bounded_fog_{pt,bdpt,vcm}` fixtures (details in
-[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)).
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)).
 
 ### Companion limitation — env not in alias table for mixed-light scenes — CLOSED 2026-05-29
 
@@ -1361,7 +1361,7 @@ EnvLightBalanceTest mixed-scene topologies recover from 85% to 109%
 (env+omni) / 92% (env+mesh) without any regression on env-only or
 non-uniform-env topologies, and the prior spectral env-only Sobol
 catastrophe does NOT recur.  See
-[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) Session 9 outcome
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) Session 9 outcome
 for the per-topology delta and implementation citations.
 
 ### References
@@ -1383,9 +1383,9 @@ for the per-topology delta and implementation citations.
 
 CLOSED 2026-09-12 — `000df0b4`: reciprocal single-pass diffuse transmission now covers RGB/NM Schlick, conductor and thin-film GGX. `LayeredWhiteFurnaceTest` reports `0 of 57 configurations failed.` The committed unfixed test failed four configurations, including anisotropic and mixed conductor/film siblings.
 
-The former constant deduction did not give up diffuse energy as specular Fresnel rose; conductor/film mixtures had no deduction. The replacement multiplies entry and exit transmissions and deliberately omits diffuse recycling. It is a rough-interface approximation, not a universal exact-energy theorem. See [formulation, curves and validation](DL37_GGX_DIFFUSE_TRANSMISSION.md).
+The former constant deduction did not give up diffuse energy as specular Fresnel rose; conductor/film mixtures had no deduction. The replacement multiplies entry and exit transmissions and deliberately omits diffuse recycling. It is a rough-interface approximation, not a universal exact-energy theorem. See [formulation, curves and validation](DEBT_LEDGER.md).
 
-A broader independent BRDF sweep changed from 150 checks/46 failures to 150 checks/3 failures. Those identical specular-only baseline failures were tracked as DL-63. Glossy-filter evaluation mismatch and zero-F0 sampling support were tracked as DL-62/DL-64 and CLOSED 2026-09-13 (`dfdd5ee1`; see [DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md](DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md)) — re-verified DL-63's three failures unchanged (bit-for-bit identical against a stashed pre-fix rebuild) in the same pass. **DL-63 itself was subsequently CLOSED 2026-09-14** (`052ec469`, height-correlated-G2 multiscatter-compensation LUT; same doc's "DL-63" section) — the independent sweep is now `150 checks, 0 failures`. The standalone report includes the serial linear before/after images and all gate counters.
+A broader independent BRDF sweep changed from 150 checks/46 failures to 150 checks/3 failures. Those identical specular-only baseline failures were tracked as DL-63. Glossy-filter evaluation mismatch and zero-F0 sampling support were tracked as DL-62/DL-64 and CLOSED 2026-09-13 (`dfdd5ee1`; see [DEBT_LEDGER.md](DEBT_LEDGER.md)) — re-verified DL-63's three failures unchanged (bit-for-bit identical against a stashed pre-fix rebuild) in the same pass. **DL-63 itself was subsequently CLOSED 2026-09-14** (`052ec469`, height-correlated-G2 multiscatter-compensation LUT; same doc's "DL-63" section) — the independent sweep is now `150 checks, 0 failures`. The standalone report includes the serial linear before/after images and all gate counters.
 
 ---
 

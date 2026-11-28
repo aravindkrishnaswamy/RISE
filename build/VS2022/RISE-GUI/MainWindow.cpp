@@ -251,7 +251,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, this, &MainWindow::updateMenuActionStates);
     connect(m_chatPanel, &ChatPanel::chatRenderOutstandingChanged, m_topBar, &TopBar::onChatRenderOutstandingChanged);
 
-    // ---- Start screen (docs/gui/START_SCREEN.md) -----------------------
+    // ---- Start screen (docs/gui/APPROACHABILITY_FOUNDATION.md) -----------------------
     // StartWidget owns no scene/agent state itself; every signal routes
     // to the exact code path the equivalent menu/button already uses.
     connect(m_startWidget, &StartWidget::openPathRequested, this, &MainWindow::onOpenRecentScene);
@@ -2001,7 +2001,7 @@ void MainWindow::onOpenScene()
 }
 
 // ============================================================
-// Start screen (docs/gui/START_SCREEN.md)
+// Start screen (docs/gui/APPROACHABILITY_FOUNDATION.md)
 // ============================================================
 
 void MainWindow::updateCenterViewStack()

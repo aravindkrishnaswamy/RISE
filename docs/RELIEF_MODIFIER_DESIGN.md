@@ -2972,7 +2972,7 @@ only, and `DumpJob` does not record them.
 seen**.
 
 **Left undone / deliberately not touched.** Historical records keep their
-text — `docs/SMS_*`, `GUILLOCHE_*`, `NORMAL_USAGE_AUDIT.md`,
+text — `docs/SMS_*`, `GUILLOCHE_*`, `ARCHITECTURE.md`,
 `GEOMETRY_SHADING_SIGNALS_DESIGN.md`, `HAIR_FUR_DESIGN.md`,
 `ENAMEL_SPARKLE_BRDF.md` are past-tense findings and
 implementation-precedent citations (several cite `BumpMap.cpp` line

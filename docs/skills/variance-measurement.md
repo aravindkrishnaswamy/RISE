@@ -136,14 +136,14 @@ the reference — both converge to the same physical truth.  EXR output.
 Two modes — run both for the full picture:
 
 ```bash
-# Mode 1: pure inter-run variance (no ground truth needed)
-./bin/tools/HDRVarianceTest.exe var_test/master/run{0..15}.exr
-./bin/tools/HDRVarianceTest.exe var_test/fix/run{0..15}.exr
+# Mode 1: pure inter-run variance (no ground truth needed; append .exe on Windows)
+./bin/tools/HDRVarianceTest var_test/master/run{0..15}.exr
+./bin/tools/HDRVarianceTest var_test/fix/run{0..15}.exr
 
 # Mode 2: RMSE vs reference (bias + variance)
-./bin/tools/HDRVarianceTest.exe --ref var_test/ref/ref.exr \
+./bin/tools/HDRVarianceTest --ref var_test/ref/ref.exr \
     var_test/master/run{0..15}.exr
-./bin/tools/HDRVarianceTest.exe --ref var_test/ref/ref.exr \
+./bin/tools/HDRVarianceTest --ref var_test/ref/ref.exr \
     var_test/fix/run{0..15}.exr
 ```
 

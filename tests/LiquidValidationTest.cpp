@@ -1,4 +1,4 @@
-// Liquid solver validation (simulation M7, docs/SIMULATION_M7A_RESULTS.md section 4).
+// Liquid solver validation (simulation M7, docs/SIMULATION_SOLVER_CONTRACT.md section 4).
 //
 //   1  interface transport: Zalesak's slotted disk (one revolution) and the
 //      single vortex (T = 2), 50 / 100 / 200 cells, without and with marker

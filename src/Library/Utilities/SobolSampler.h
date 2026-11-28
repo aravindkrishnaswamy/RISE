@@ -23,7 +23,7 @@
 //    were two Owen-scrambled copies of ONE base value.  Distinct
 //    dimensions are now distinct SEQUENCES, so an even stride is
 //    harmless; see SobolSequence.h's header for the mechanism and
-//    docs/DL81_SOBOL_DIMENSION_PARITY.md for the measurements.  There
+//    docs/DEBT_LEDGER.md for the measurements.  There
 //    is now a finite dimension supply (`SobolSequence::kNumDimensions`
 //    = 8192 = 256 streams' worth), sized so that every PER-VERTEX
 //    stream a SHIPPED scene reaches has dimensions of its own; past

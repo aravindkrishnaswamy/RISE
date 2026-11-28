@@ -1,40 +1,10 @@
-# Blender Procedural Shader Translation — Design (DRAFT 6)
+# Blender Procedural Shader Translation — Design
 
-**Status:** draft 6, 2026-11-14. Implemented so far:
-constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6),
-all seven groups of procedural builtins -- gradient noise, fractal
-noise, the Noise Texture node and White Noise (2026-11-20), the Voronoi
-Texture node (2026-11-22), colour conversions and Mix Color (2026-11-22),
-Safe Math / Vector Math / Clamp / Map Range (2026-11-23), componentwise
-vec3 ops and Vector Rotate (2026-11-23), and live object/world/camera
-space transforms (2026-11-23), §5.2(b) -- Python compiler coverage and
-unit tests (`src/Blender/addons/rise_renderer/procedural_expr.py`,
-`test_procedural_expr.py`), §8 lowered-size and PT/BDPT performance
-baselines (`tools/measure_procedural_lowering.py`,
-`tools/osl_golden/bench_procedural_baseline.cpp`,
-`tools/bench_procedural_render.py`), thin diffuse
-transmission (`DiffuseTransmissionMaterial.{h,cpp}`,
-`tests/DiffuseTransmissionClosedFormTest.cpp`) and standalone Round 3
-closed-form mix/shadow contract prototypes
-(`tools/prototypes/mix_and_shadow_closed_form_proto.cpp`),
-plus the companion's step P
-(2026-11-16, DL-633). Draft 4 was
-reviewed by four independent reviewers
-([round 1](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND1.md)) and draft 5 by a
-second model and harness
-([round 2](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND2.md)). Round 2's verdict:
-the transport features (material mixing, shadow visibility, ambient
-occlusion, the program cache) must not be started as written; the procedural
-kernels, graph inspection and performance measurements may. This draft
-answers round 2 and records the owner's decisions (§10). The largest
-changes: a new thin diffuse-transmission lobe for Blender's Translucent; a
-mix child may carry its own bump; declaration and refusal of path-dependent
-inputs move into Phase 1, ahead of the first such input; the coverage rules
-no longer count refused or unmapped shaders; cache keys cover all external
-state; and Phase 1's fit in the existing evaluator is to be measured, not
-assumed.
+> **Shipped status (2026-11-27, Blender C ABI v23):** Substantial parts of this design have shipped on `master`. `src/Blender/addons/rise_renderer/procedural_expr.py` now natively compiles **42** Cycles shader node types into RISE `expression_painter`, `mix_material`, `diffuse_transmission_material`, `ReliefModifier`, `ModifierStack`, and `BlendedModifier` (including Noise/Voronoi/White Noise/Brick/Gradient/Image textures, Math/VectorMath/Mix/ColorRamp/RGBCurve/HSV/Mapping, `ShaderNodeGroup`, `ShaderNodeBump`, `ShaderNodeMixShader`, `ShaderNodeAmbientOcclusion` [`osl_ao`], `ShaderNodeLayerWeight` [`osl_layer_weight`], `ShaderNodeFresnel` [`osl_fresnel`], `ShaderNodeLightPath` [`osl_is_camera_ray`], `ShaderNodeNewGeometry` [`osl_backfacing` etc.], `ShaderNodeAttribute`, `ShaderNodeUVMap`, `ShaderNodeVertexColor`, and `ShaderNodeParticleInfo`), alongside `RISE::PathDependence` containment and camera `near_clip`. See [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) for the current shipped translation surface; the draft text below is retained as architectural design record.
+
+**Original draft record (draft 6, 2026-11-14):** Early implementation landed constant-reflectance GGX and energy-preserving Oren-Nayar (2026-11-19, §5.6), core procedural builtins (gradient/fractal/Voronoi/White Noise, color conversions, Mix Color, Math/Vector Math/Clamp/Map Range, vec3 ops, Vector Rotate, object/world/camera transforms), `DiffuseTransmissionMaterial`, and DL-633. Draft 4 and draft 5 were reviewed by independent reviewers (review outcomes consolidated into §10 and [MIX_MATERIAL_PATH_STATE_AO_DESIGN.md](MIX_MATERIAL_PATH_STATE_AO_DESIGN.md)).
 **After round 3 (2026-11-16).** A third review
-([round 3](BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND3.md)) found fourteen new
+([round 3](MIX_MATERIAL_PATH_STATE_AO_DESIGN.md)) found fourteen new
 P1 defects in this draft and the companion's draft 3. The owner then decided
 to stop iterating on prose for mixing and shadow visibility: they are to be
 prototyped against failing closed-form tests, and the next review is of code

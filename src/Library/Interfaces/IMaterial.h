@@ -207,7 +207,7 @@ namespace RISE
 			return info;
 		}
 
-		/// \return DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the
+		/// \return DL-09 (docs/DEBT_LEDGER.md): the
 		/// `ior` field of the MEDIUM this material encloses, when that field
 		/// is a genuine function of world position
 		/// (`IScalarPainter::IsWorldPositionField()`), else null.  A walk
@@ -288,7 +288,7 @@ namespace RISE
 		//! here because PT's BSDF-sampled continuation already reaches it
 		//! THROUGH the delta lobe at MIS weight 1 (a delta vertex has no NEE
 		//! partner), so letting that NEE arm see through too would count
-		//! the same path twice.  See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
+		//! the same path twice.  See docs/DEBT_LEDGER.md.
 		//!
 		//! A wrapper whose `GetSPF()` forwards (or re-prices) a base SPF's
 		//! pass-through lobe MUST forward this too, and its SPF must

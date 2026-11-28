@@ -2,11 +2,9 @@
 //
 //  AccelerationConfig.h - Tuning parameters for the BVH builder.
 //
-//  Phase 1 partial delivery (per docs/BVH_ACCELERATION_PLAN.md §5):
-//    - SAH binned BVH2 only.  SBVH spatial splits, refit, and
-//      compressed nodes are deferred to follow-up sessions.
-//    - All fields explicit; no defaults in the header per project
-//      convention (see memory/feedback_no_default_params.md).
+//    - Controls SAH-binned BVH2 construction and BVH4 collapse (see
+//      docs/BVH_RETROSPECTIVE.md; SBVH spatial splits were excised).
+//    - All fields are explicit with no in-header defaults.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

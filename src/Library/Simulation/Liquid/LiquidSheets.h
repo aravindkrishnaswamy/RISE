@@ -2,7 +2,7 @@
 //
 //  LiquidSheets.h - Thin open surfaces (a cloth, a paddle) as moving
 //  boundaries of the liquid solver (simulation M7d, preview;
-//  docs/SIMULATION_M7D_RESULTS.md).
+//  docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 //  A zero-thickness sheet cannot be a signed-distance solid.  It is a
 //  face-crossing barrier instead (Guendelman, Selle, Losasso and Fedkiw 2005, in
@@ -32,7 +32,7 @@
 //  sheet's on the liquid.  It is spread to the crossed triangle's vertices by
 //  the barycentric weights of the crossing.
 //
-//  Implicit coupling (m7e, docs/SIMULATION_M7E_RESULTS.md).  A port sheet
+//  Implicit coupling (m7e, docs/SIMULATION_SOLVER_CONTRACT.md).  A port sheet
 //  with `coupling: implicit` carries its partner's linearised response for
 //  the macro step (SheetDynamics: lumped masses M, pins, the force f0 at the
 //  macro step's start x0, the projected elastic Hessian K, Rayleigh

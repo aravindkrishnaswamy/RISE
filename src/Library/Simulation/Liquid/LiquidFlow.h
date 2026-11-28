@@ -81,7 +81,7 @@ void VelocityAdvectionRate(const Grid& g, const MacField& u, MacField& rate, Poo
 //! read two faces downwind; at a velocity peak against a wall in a film one
 //! or two cells thick every candidate stencil is non-smooth and the
 //! derivative took the wrong sign, so the unlimited stage raised the peak
-//! by about 10% a step (docs/SIMULATION_M7A_RESULTS.md section 13).  In
+//! by about 10% a step (docs/SIMULATION_SOLVER_CONTRACT.md section 13).  In
 //! smooth flow the bound is inactive except at extrema.
 void LimitedAdvectionStage(const Grid& g, const MacField& u, double dt, MacField& out, Pool* pool);
 
@@ -165,7 +165,7 @@ struct PressureStats {
 //! in its open part, A u its flux: copied into a full face by the
 //! extrapolation or the advection it carried 1/A times the flux, which the
 //! next projection drained through the nearly empty cells beside the solid
-//! at u* + q / theta, as jets (docs/SIMULATION_M7A_RESULTS.md section 13).
+//! at u* + q / theta, as jets (docs/SIMULATION_SOLVER_CONTRACT.md section 13).
 //! The projection minimises sum A_f theta_f (u_f - u*_f)^2 (theta = 1
 //! between liquid cells; the ghost-fluid update is that minimiser).  Faces with no open part
 //! take the solid velocity (zero when `solid` is null); domain boundary

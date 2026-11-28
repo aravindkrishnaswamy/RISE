@@ -1,6 +1,6 @@
 # Direction D — Spectral Differentiators ("don't replicate")
 
-**Status:** **SLICE 6 (`ace0e08d8`, 2026-10-31) SHIPPED ON MACOS + WINDOWS** — **D1 subset** (`blackbody_painter` Kelvin strip & `scalar_painter { sellmeier }` optical glass presets with computed $n_d$ and Abbe $V_d$), **D2** (CC0 measured-metal `(n, k)` presets for Au/Ag/Cu/Al/Cr/Ti under `colors/conductors/`), and **D3** (`fresnel_mode thinfilm` `0°–89°` iridescence angle-sweep strip + interactive View Angle slider) are shipped across shared C++, C-ABI, macOS SwiftUI, and Windows Qt. **Remaining open:** D1 monochromatic slider, CSV SPD import/plot, and prism preview; D4 gamut/clipping overlays (EDR/HDR display + EV + 5 tone curves already ship); D5 pre-render probe card & per-region variance heatmap (top-bar resolved integrator + reason already ship; `ProbeResult` per-pixel buffers remain private, §5.3); D6 cinematography scopes; and D7 Spectral Light Mix. *(Note: [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) is a frozen June 2026 pre-implementation snapshot and is **not** present-day authority; D3's thin-film engine backing merged to `master` on 2026-07-31.)* Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
+**Status:** **SLICE 6 (`ace0e08d8`, 2026-10-31) SHIPPED ON MACOS + WINDOWS** — **D1 subset** (`blackbody_painter` Kelvin strip & `scalar_painter { sellmeier }` optical glass presets with computed $n_d$ and Abbe $V_d$), **D2** (CC0 measured-metal `(n, k)` presets for Au/Ag/Cu/Al/Cr/Ti under `colors/conductors/`), and **D3** (`fresnel_mode thinfilm` `0°–89°` iridescence angle-sweep strip + interactive View Angle slider) are shipped across shared C++, C-ABI, macOS SwiftUI, and Windows Qt. **Remaining open:** D1 monochromatic slider, CSV SPD import/plot, and prism preview; D4 gamut/clipping overlays (EDR/HDR display + EV + 5 tone curves already ship); D5 pre-render probe card & per-region variance heatmap (top-bar resolved integrator + reason already ship; `ProbeResult` per-pixel buffers remain private, §5.3); D6 cinematography scopes; and D7 Spectral Light Mix. *(Note: [../GUI_ROADMAP.md](../GUI_ROADMAP.md) is a frozen June 2026 pre-implementation snapshot and is **not** present-day authority; D3's thin-film engine backing merged to `master` on 2026-07-31.)* Deep-dive spec spun off from [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8.
 **Owner:** Aravind Krishnaswamy
 **Scope:** Design the seven GUI features (D1–D7) that an RGB renderer **physically cannot** do, because they
 expose RISE's spectral engine: live spectral colour/curve editing, measured-metal n,k, real thin-film
@@ -440,8 +440,8 @@ The heatmap is the probe's **already-computed per-pixel candidate images**, not 
 **Data sourcing:** add read-back accessors so `RunProbe` can optionally retain the per-pixel candidate luminance
 buffers (today they're consumed to scalars and discarded). This is a **pure-additive** change to `AutoRasterizer`
 (no integrator code touched — the byte-identical constraint the dispatcher maintains stays intact); the buffers
-already exist transiently inside `ProbeCandidate`. **Confirmed net-new (ground truth, [CURRENT_STATE_AUDIT.md
-§11](CURRENT_STATE_AUDIT.md)):** the per-candidate `ProbeResult` struct and the `ProbeFrame`'s per-pixel `lum`
+already exist transiently inside `ProbeCandidate`. **Confirmed net-new (ground truth, [../GUI_ROADMAP.md
+§11](../GUI_ROADMAP.md)):** the per-candidate `ProbeResult` struct and the `ProbeFrame`'s per-pixel `lum`
 vector are **`private`** ([AutoRasterizer.h:192](../../src/Library/Rendering/AutoRasterizer.h) — the struct
 holds only `medianLum / meanLum / robustMeanLum / meanVar / rasSeconds`, all consumed to scalars inside
 `RunProbe`/`ProbeCandidate` and discarded). Only the *scalar* surface is public today
@@ -1059,7 +1059,7 @@ net-new engine read-back this spec identified.
 - [GUI_ROADMAP.md](../GUI_ROADMAP.md) §8 (this spec's parent), §10.4 (Android tiering), §13 (spikes), §15
   (acceptance template — filled in at §10A), §16 (confirmed `pipe`-field decision, relevant to D4's IPainter-vs-
   IScalarPainter scoping).
-- [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) — frozen June 2026 pre-implementation snapshot (historical context
+- [../GUI_ROADMAP.md](../GUI_ROADMAP.md) — frozen June 2026 pre-implementation snapshot (historical context
   only; do not treat as present-day authority); §11 notes that `ProbeResult` per-pixel buffers are **private** (D5
   net-new readback), while D3 thin-film merged to `master` on 2026-07-31 and shipped in Slice 6 (`ace0e08d8`).
 - [RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) — the isolated preview/thumbnail job model + single render slot;

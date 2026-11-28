@@ -5,7 +5,7 @@
 // BumpSceneHeader() is the Phase-C header stamp (`RISE ASCII SCENE 6` -> `... 7`) the first-class tool applies
 // on top of Migrate().  Extracted from CstCorpusEquivalenceTest so the equivalence
 // GATE and the migration TOOL (tools/MigrateScenesV6toV7) share ONE migrator -- byte-identical by
-// construction.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
+// construction.  Phase A of docs/agentic-redesign/10-scene-language-and-cst.md.
 //
 // Header-local `static` functions + state: each translation unit that includes this gets its own copy +
 // its own g_migratorHalton.  Migrate() Reset()s g_migratorHalton at the start of every top-level scene (see

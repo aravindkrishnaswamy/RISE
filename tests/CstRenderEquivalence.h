@@ -20,7 +20,7 @@
 //  point was REMOVED when the legacy-vs-CST equivalence oracle was retired --
 //  the golden (CstDeriveGoldenTest) is now the CST-derive safety net.  Do not
 //  reintroduce a legacy-parser call here; the legacy streaming parser
-//  (AsciiSceneParser::ParseAndLoadScene) is being deleted (6c-3c).
+//  (AsciiSceneParser::ParseAndLoadScene) was deleted (6c-3c).
 //
 //////////////////////////////////////////////////////////////////////
 #ifndef RISE_TESTS_CST_RENDER_EQUIVALENCE_H

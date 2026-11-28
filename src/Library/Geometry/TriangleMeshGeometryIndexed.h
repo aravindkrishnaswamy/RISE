@@ -681,7 +681,7 @@ namespace RISE
 			//! first) or on size mismatch.
 			//!
 			//! Thread-safety: must be called between frames, never
-			//! concurrent with intersection.  See docs/BVH_ACCELERATION_PLAN.md
+			//! concurrent with intersection.  See docs/BVH_RETROSPECTIVE.md
 			//! §4.6 for the full design.
 			unsigned int UpdateVertices( const VerticesListType& newVertices,
 			                             const NormalsListType&  newNormals ) override;

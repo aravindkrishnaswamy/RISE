@@ -3,7 +3,7 @@
 **Status:** DRAFT (revision 32 — after 4 internal review rounds, 6 external
 expert review rounds, 20 post-r11 implementation-review rounds, and an r32
 scope restoration; history in
-[FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md)). No fire
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md)). No fire
 *feature* code has landed; two Phase-A prerequisites have: the
 trilinear-accessor repair (commit `2fba2b48`, in master) and the shared
 per-nm Planck radiance kernel with its numeric gates (on
@@ -547,7 +547,7 @@ place. §3.8's verification tier includes a **timestep-refinement
 convergence test** on the heat-release history — the closure must produce
 Δt-independent physics under the CFL-selected step.
 
-**r249 revision:** [variant (e)](FIRE_SMOKE_EXTINCTION_PARCEL_R249.md) uses
+**r249 revision:** [variant (e)](FIRE_SMOKE_STATUS.md) uses
 parcel CFT and a one-cell cold-edge waiver beside original warm parcel-passing
 vertices, preserving warm seeds and connectivity. It is implemented for the
 from-zero tier-8 fuel/heat-height check. The older whole-cell criteria below
@@ -2137,7 +2137,7 @@ radiative fraction vs the fuel's measured χ_r, and escaped soot vs y_s):
    (gas-band χ_r working, §3.5).
 
 **Protocol requirements** (numbers in tables, not impressions, per
-[UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)): a
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)): a
 startup-transient discard interval (≥5 flow-through times) before
 statistics; fixed, recorded RNG seeds including the §3.6 symmetry-breaking
 perturbation; determinism stated precisely — **bitwise-identical fields at a
@@ -2225,7 +2225,7 @@ steady 0.30 m, 33 kW, seed-1234, plume-law tier-6 case and inherited chi_r are
 required. Omission preserves existing case-v1 bytes. The production r54
 multipliers remain unchanged pending comparative evidence; implementation
 and verification status are recorded in
-[FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md](FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md).
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md).
 
 **The user chooses; the tool derives.** Semantics per field:
 
@@ -2545,7 +2545,7 @@ following; two conforming tools must derive identical bytes:
    resident evidence adapter, not a tolerance comparison or fabricated
    oracle/VDB trace. Certificate v1 verification and historical bytes remain
    unchanged; a versioned bridging record connects the current lineage.
-   See [r211](FIRE_SMOKE_RESIDENT_MIGRATION_R211.md) for derivation and REDs.
+   See [r211](FIRE_SMOKE_STATUS.md) for derivation and REDs.
 
    Build migration is pin-8 run infrastructure: it changes neither the case
    payload nor `case_record_id`. The certificate proves the continuation
@@ -2957,7 +2957,7 @@ fire media** (per-λ fallback) until the companion-proposal fix lands
 | Painter-baked volumes | `VolumeAccessor_Painter.h`, `painter_heterogeneous_medium` chunk | any 3D painter baked to a grid at author time — the Phase-A procedural-flame vehicle |
 | Distance sampling | delta/Woodcock tracking (heterogeneous), analytic (homogeneous) | `RayCaster.cpp` medium blocks: ~747–1259 (RGB), ~1461–1835 (NM) |
 | Transmittance | ratio tracking (Novák 2014) | |
-| Majorant machinery | [MajorantGrid.h](../src/Library/Utilities/MajorantGrid.h) + Amanatides–Woo DDA; [NullScatteringTracker.h](../src/Library/Utilities/NullScatteringTracker.h) (Miller–Georgiev–Jarosz 2019 null-scattering PDFs) | the substrate for the Phase A emission estimator and Phase D spectral tracking; grid built once in the medium constructors (HeterogeneousMedium.cpp:55–62, 94–101); cell resolution `clamp(ceil(dim/8), 4, 32)` per axis — note the 32-cap, which drives §7.2.3's two-level CDF |
+| Majorant machinery | [MajorantGrid.h](../src/Library/Utilities/MajorantGrid.h) + Amanatides–Woo DDA; `NullScatteringTracker.h` (historical; Miller–Georgiev–Jarosz 2019 null-scattering PDFs) | the substrate for the Phase A emission estimator and Phase D spectral tracking; grid built once in the medium constructors (HeterogeneousMedium.cpp:55–62, 94–101); cell resolution `clamp(ceil(dim/8), 4, 32)` per axis — note the 32-cap, which drives §7.2.3's two-level CDF |
 | Distance-sampling MIS | 50/50 **balance** one-sample MIS, delta-tracking vs equiangular ([EquiangularSampler.h](../src/Library/Utilities/EquiangularSampler.h), Kulla–Fajardo) | gated on `GetPositionalLightCount() > 0` (RayCaster.cpp:807, 1486); MIS denominators are *deterministic sums over all positional lights* via `EvalDeterministicOpticalDepth` (HeterogeneousMedium.cpp:729 — knot-aligned DDA + 5-pt Gauss–Legendre, exact for all three accessors *today*; §7.1 step 1 upgrades fire media to 7-point with φ-root panel splitting). Phase B extends exactly this structure (§7.2.4). In-tree comment drift note: the comment at RayCaster.cpp ~903–906 says pdf_dt uses majorant transmittance; the code computes deterministic real transmittance — fix the comment when Phase B lands |
 | Medium stack / nesting | [MediumTracking.h](../src/Library/Utilities/MediumTracking.h) via IORStack; shadow-ray boundary walk in `LightSampler.cpp` | **r40 note:** medium resolution reads `ior_stack.topObject()` — there is no independent medium stack, which is why the null boundary requires §7.2.2's optical/enclosure split of `IORStack` |
 | Volume emission (limited) | `MediumCoefficients::emission`, closed-form per-segment integral `Le·(1−Tr)·t/τ` with Le evaluated at a **single point** per segment (scatter point RayCaster.cpp:~1014, midpoint :~1238/:~1821; blocks 1181–1259 RGB, 1792–1833 NM) | **constant per medium** (G1) and **the estimator itself dies with spatially varying Le** (G9) — see §6 |
@@ -2976,7 +2976,7 @@ fire media** (per-λ fallback) until the companion-proposal fix lands
 
 **All fire/smoke work targets the PT path (and its equiangular MIS)
 exclusively**, on σ²·T grounds from the integrator matrix
-([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)): PT's
+([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)): PT's
 per-sample cost advantage is largest on heavy volumes (37×), and VCM shows
 −63…+76 % volume luminance bias. (Correction from revision 1: BDPT's medium
 support is *not* "global-medium-only" — `BDPTIntegrator.cpp` implements full
@@ -5704,7 +5704,7 @@ medium in Phase C.
 
 The full per-revision log — 32 revisions across 4 internal review rounds, 6
 external expert rounds, and 20 implementation-review rounds — lives in
-[FIRE_SMOKE_DESIGN_HISTORY.md](FIRE_SMOKE_DESIGN_HISTORY.md). **Consult it
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md). **Consult it
 before reverting anything here**; many current forms are corrections of
 plausible-looking earlier ones.
 

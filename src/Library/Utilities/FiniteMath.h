@@ -73,9 +73,8 @@ namespace RISE
 	}
 
 	//! Returns true iff @a value is either signed representation of zero.
-	//! The volatile materialisation is required for the same -ffast-math
-	//! reason as IsFiniteDouble: a floating comparison may assume that a
-	//! positive product cannot underflow to zero.
+	//! The volatile materialisation is retained for the same uniformity
+	//! and -Ofast-resistance reason as IsFiniteDouble.
 	inline bool IsZeroDouble( const double value )
 	{
 		static_assert( sizeof( double ) == sizeof( std::uint64_t ),
