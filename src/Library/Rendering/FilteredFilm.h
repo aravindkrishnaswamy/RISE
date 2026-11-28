@@ -95,7 +95,7 @@ namespace RISE
 			//! the filter's support around the given screen position.
 			//! Accumulator is XYZ (linear, no gamut clip).  Spectral
 			//! integrators pass XYZPel directly; RGB integrators rely on
-			//! the implicit XYZPel(const ROMMRGBPel&) lossless conversion.
+			//! the implicit XYZPel(const Rec709RGBPel&) lossless conversion.
 			//! Nonfinite positions or negative/nonfinite support are no-ops.
 			//! Finite off-image positions still contribute when support intersects.
 			void Splat(

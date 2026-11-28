@@ -40,7 +40,11 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 		return;
 	}
 #ifdef _WIN32
+#ifdef _MSC_VER
+	struct __stat64 fileStats{};
+#else
 	struct _stat64 fileStats{};
+#endif
 	const bool regular = _fstat64( _fileno(hFile.get()), &fileStats ) == 0 &&
 		(fileStats.st_mode & _S_IFMT) == _S_IFREG;
 #else

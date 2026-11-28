@@ -20,7 +20,7 @@ mixed-norm distance bound stays conservative).  C3 (`lathe_geometry`),
 [doc 89](89-generic-shape-operators.md)'s per-station loft (`sweep_geometry`) + `skin_geometry`,
 and `hair_geometry` subsequently shipped too; C4, C5, and `extruded_poly_geometry` remain open.
 This is the opening document of the workstream seeded by the
-creative-richness closing verdict ([CREATIVITY_JOURNAL.md](CREATIVITY_JOURNAL.md),
+creative-richness closing verdict ([50-agentic-surface.md](50-agentic-surface.md),
 Closing): *"what limits realism now is what a `part` line can EXPRESS"* —
 the harness work is done; the next lever is richer geometry inside RISE
 itself, exposed so scene-building agents actually reach for it.
@@ -282,7 +282,7 @@ CLAUDE.md.
 
 ## 5. Source pointers
 
-- Agentic surface + adoption mechanics: [CREATIVITY_JOURNAL.md](CREATIVITY_JOURNAL.md)
+- Agentic surface + adoption mechanics: [50-agentic-surface.md](50-agentic-surface.md)
   (laws 8/9/12, closing handoff), `skills/agent/modeling-workflow-and-geometry.md`,
   `src/Library/Agent/AgentRpc.h`.
 - Geometry inventory ground truth: `src/Library/Parsers/ChunkParserRegistry.cpp`,

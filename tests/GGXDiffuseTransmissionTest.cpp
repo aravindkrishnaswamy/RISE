@@ -578,7 +578,7 @@ namespace
 	// for strongly anisotropic alphaX/alphaY this under-compensated
 	// (measured E_ss deficits of 11-44% at F0=1 against an independent
 	// per-axis quadrature; see the DL-77 ledger row and
-	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77").
+	// docs/DEBT_LEDGER.md "DL-77").
 	// CheckRGBBound's energy gate is one-sided (fails only on a GAIN,
 	// `mean > 1 + 6*SE + 0.005`), so this deficit was invisible to every
 	// aniso F0=1 row in TestSchlickSweep above -- it silently PASSED
@@ -691,7 +691,7 @@ namespace
 		// mean/SE at kRGBSamples plus the review round 2 residual
 		// measurement (2.58% at this exact point, via an independent
 		// 4e6-sample scratch program -- see
-		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's "P2 root-cause
+		// docs/DEBT_LEDGER.md's "P2 root-cause
 		// correction") -- so a future re-coarsening of ANISO_PHI_SIZE, or
 		// a change to the low-alpha grid that reopens this specific
 		// residual, fails this row long before it could regress all the
@@ -769,7 +769,7 @@ namespace
 		return passed;
 	}
 
-	// DL-86 (docs/DEBT_LEDGER.md, docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md
+	// DL-86 (docs/DEBT_LEDGER.md, docs/DEBT_LEDGER.md
 	// "DL-86"): every Ess lookup used to flat-clamp cosTheta below the
 	// first LUT bin center c0=0.5/32~=0.0156 (theta > ~89.11 degrees) to
 	// that bin's value, mis-reading the true single-scatter directional
@@ -934,7 +934,7 @@ namespace
 		// twin (exercises LookupEssG2AnisoDirectional's low-Y dispatch,
 		// which reduces to the low-X branch via the relabel symmetry
 		// rather than a separate bake).  See the DL-161 residual table in
-		// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161" for the
+		// docs/DEBT_LEDGER.md "DL-161" for the
 		// measured pre-fix/post-fix numbers.
 		// tolAbs=0.015 red-proofs at kGrazingSamples: pre-fix measured
 		// 0.97306+/-0.00110 and 0.97104+/-0.00110 (diff ~0.027-0.029 from

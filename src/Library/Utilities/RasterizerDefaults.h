@@ -7,9 +7,9 @@
 //    defaults for "what value should this parameter take when the
 //    user / scene file omits it?":
 //
-//      1. AsciiSceneParser chunk parsers' `Finalize` fallback —
+//      1. ChunkParserRegistry chunk parsers' `Finalize` fallback —
 //         `bag.GetUInt("samples", 32)` style.
-//      2. AsciiSceneParser chunk parsers' `Describe` defaultValueHint
+//      2. ChunkParserRegistry chunk parsers' `Describe` defaultValueHint
 //         strings — what the GUI panel labels the default as.
 //      3. Job::InstantiateRasterizerWithDefaults — the literals it
 //         passes when the GUI lazy-builds a rasterizer with no

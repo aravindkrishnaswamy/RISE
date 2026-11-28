@@ -1115,7 +1115,7 @@ static void TestDiagnosticsLiveDocInvariant()
 
 //----------------------------------------------------------------------
 // T6c: "diagnostics" checkpoint expect:"clean" IGNORES Info-severity
-// entries (creative-richness P2.b, 73-creative-richness-design.md sec 9):
+// entries (creative-richness P2.b, docs/agentic-redesign/50-agentic-surface.md sec 9):
 // a document tripping the DESIGN_SCALAR_PIPE_UNUSED advisory (>=3
 // standard_object, no scalar_painter anywhere) is NOT "unclean" for
 // expect:"clean" purposes -- the deficit is independently observable via
@@ -1735,7 +1735,7 @@ static void TestFinalTextCheckpoint()
 
 //----------------------------------------------------------------------
 // S0.2: headless SetSkillIndex parity.  The 74-log (docs/agentic-redesign/
-// 74-creative-richness-arc-log.md Sec.5) recorded that only the two GUI
+// docs/agentic-redesign/50-agentic-surface.md Sec.5) recorded that only the two GUI
 // drivers (ChatViewModel.swift / ChatPanel.cpp) called SetSkillIndex --
 // a headless eval run's system prompt carried no "Available skills"
 // section, so models had to burn a bare read_skill{} round-trip just to
@@ -1997,11 +1997,10 @@ static void TestSeedScenariosCheckpointsAreTrue()
 		// both fixture-less by their own doc comments), and a fixture
 		// can only be authored from a REAL live-provider trajectory
 		// (recording one, then replaying it -- see
-		// docs/eval-hosted-provider-keys.md / the eval harness's own
-		// doctrine).  A build environment with no hosted provider key
-		// set (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY /
-		// XAI_API_KEY -- the exact set docs/eval-hosted-provider-keys.md
-		// names) cannot record one here: doing so would either silently
+		// docs/agentic-redesign/70-agent-eval-harness.md / evals/README.md).
+		// A build environment with no hosted provider key set
+		// (ANTHROPIC_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY /
+		// XAI_API_KEY) cannot record one here: doing so would either silently
 		// fabricate a fixture (never actually run against a model) or
 		// fail outright against a live provider call.  Per DL-60's
 		// disposition: skip with
@@ -5165,7 +5164,7 @@ static void TestAdversarialControlNeverAsksStillBuilds()
 //----------------------------------------------------------------------
 // T-mr: material-richness P0's three new "document" ops --
 // distinct_chunk_kinds / any_param_references_kind / no_orphan_chunks
-// (docs/agentic-redesign/73-creative-richness-design.md).  Proves BOTH
+// (docs/agentic-redesign/50-agentic-surface.md).  Proves BOTH
 // directions for each op against crafted documents, plus the loader's
 // hard-fail-fast validation of malformed op configs.  Every scene here
 // is read-only (kReadThenDoneFixture -- one read_document, no model

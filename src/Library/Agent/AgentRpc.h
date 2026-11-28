@@ -276,7 +276,7 @@
 //                                            DETERMINISTICALLY from `name` (no RNG, no
 //                                            clock).  DELIBERATELY excluded from
 //                                            IsProposeSafeVerb (see that function's doc) --
-//                                            unlike the 5 verbs above, this one is refused
+//                                            unlike the IsProposeSafeVerb verbs, this one is refused
 //                                            under BOTH Read AND Propose autonomy, with a
 //                                            dedicated Propose-specific message
 //                                            (MakeProposeAutonomyRefusedError) so the

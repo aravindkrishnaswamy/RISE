@@ -1,5 +1,5 @@
 // Simulation M5: the bake scheduler and monitor the apps and the agent use
-// (docs/SIMULATION_M5A_RESULTS.md).
+// (docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 // A bake is a separate `rise-sim` process (SimulationWorker.h) run on the
 // scene FILE: `rise-sim bake <scene> <simulation> --no-upstream`, one

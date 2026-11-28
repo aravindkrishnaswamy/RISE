@@ -456,7 +456,7 @@ static void EmitFace(
 // The PLY spec does not formally name a colour space, but the universal
 // convention from Blender / PCL / glTF / FBX exporters is sRGB; the
 // uchar form especially is invariably gamma-encoded.  Source channels
-// in [0, 1] go through the sRGBPel→ROMMRGBPel converting constructor;
+// in [0, 1] go through the sRGBPel→RISEPel (Rec709RGBPel) converting constructor;
 // integer channels are normalised first by NormalizePlyChannelValue.
 static RISEPel ConvertPlyVertexColor(
 	double r_raw, PlyType rType,

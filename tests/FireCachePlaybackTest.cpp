@@ -122,10 +122,11 @@ bool CheckMissingRecords(std::string& error)
 	return true;
 }
 
-// Solver version 4 (docs/SIMULATION_M8_RESULTS.md section 15; version 3: section 13): a cache
-// written by fire.methane versions 1, 2 and 3 passes playback's version gate (it is stale for
-// baking only, through the key); any other version is refused there.  The fixture has no frame
-// template, so an admitted version stops at the physical-record check, after the gate.
+// Solver version 4 (docs/FIRE_SMOKE_STATUS.md, "Fire solver version 4"; version 3: the contract's
+// Appendix C, docs/SIMULATION_SOLVER_CONTRACT.md): a cache written by fire.methane versions 1, 2
+// and 3 passes playback's version gate (it is stale for baking only, through the key); any other
+// version is refused there.  The fixture has no frame template, so an admitted version stops at
+// the physical-record check, after the gate.
 bool CheckSolverCacheVersions(std::string& error)
 {
 	const std::string versions[]={"1","2","3","4",Implementation::FireMethaneSolverVersion,"0","5"};

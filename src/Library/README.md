@@ -25,6 +25,7 @@ Important anchors:
 
 ## Directory Map
 
+- `Acceleration/`: SAH-binned BVH2 construction, BVH4 SIMD collapse, and in-place refit (`BVH.h`, `AccelerationConfig.h`)
 - `Agent/`: embedded scene-editing agent loop, LLM provider codecs, perception/viewport observers, and evaluation runner
 - `Animation/`: keyframes, timelines, animation helpers
 - `Cameras/`: camera models
@@ -50,6 +51,7 @@ Important anchors:
 - `SceneEditor/`: interactive scene editing model, transactions, gizmos, and revision history
 - `SceneEditorSuggestions/`: grammar-driven completions, hover diagnostics, and editor suggestions
 - `Shaders/`: shader ops, shader composition, volume shaders, `PathTracingIntegrator`, `BDPTIntegrator`, `VCMIntegrator`
+- `Simulation/`: frozen v1 solver contract, CBOR cache container & payload codecs, `InProcessHost`, `SimulationBakeManager`, `SimulationGroup`, and builtin solvers (`Fire/`, `Cloth/`, `Rigid/`, `Liquid/`, `Coupling/`)
 - `Utilities/`: reference counting, logging, media paths, math, optics, threading
 - `Volume/`: volume data and accessors
 
@@ -109,6 +111,7 @@ Pixel-based rasterizers inherit from `PixelBasedRasterizerHelper` (common block 
 **Pure integrator rasterizers** (bypass ShaderOp dispatch and call the modern integrators directly):
 - `PathTracingPelRasterizer` (extends `PixelBasedPelRasterizer`, overrides `IntegratePixel()`) — iterative PT, RGB (`PathTracingIntegrator`)
 - `PathTracingSpectralRasterizer` (extends `PixelBasedSpectralIntegratingRasterizer`, overrides `IntegratePixel()`) — iterative PT, spectral NM/HWSS (`PathTracingIntegrator`)
+- `HyperspectralRadiometricRasterizer` (`hyperspectral_radiometric_rasterizer`) — fixed-wavelength NM radiometric PT sweeps into `RadiometricFilm` with raw EXR/manifest output and checkpoint resume (`PathTracingIntegrator::IntegrateRayNM`)
 - `BidirectionalRasterizerBase` (extends `PixelBasedRasterizerHelper`) — shared bidirectional subpath/light-pass base; calls integrators directly (NOT ShaderOp dispatch):
   - `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional path tracing (`BDPTIntegrator`)
   - `VCMRasterizerBase` → `VCMPelRasterizer` / `VCMSpectralRasterizer` — vertex connection and merging (`VCMIntegrator` + `BDPTIntegrator`)

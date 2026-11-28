@@ -1,4 +1,4 @@
-// liquid.mac: inflow sources and drains (simulation M9, docs/SIMULATION_M9_RESULTS.md; preview).
+// liquid.mac: inflow sources and drains (simulation M9, src/Library/Parsers/README.md; preview).
 //
 //   A  volume accounting: a nozzle (cylinder, 1 m/s) over a pool, with a drain; the volume each adds or
 //      removes, measured as the volume correction measures the liquid, against the nominal flux
@@ -24,11 +24,17 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 using namespace RISE::Simulation;

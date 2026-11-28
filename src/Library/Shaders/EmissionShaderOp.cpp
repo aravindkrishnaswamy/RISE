@@ -97,7 +97,7 @@ void EmissionShaderOp::PerformOperation(
 		// NEE-sampleable, full BSDF weight, and no GetArea() call is even reached.
 		const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
 		const bool emitterNeeSampleable = ( pEmitGeom && pEmitGeom->CanBeAreaLight() );
-		// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): `p_bsdf` below is
+		// DL-74 (docs/DEBT_LEDGER.md): `p_bsdf` below is
 		// the MIS PARTNER, not the training denominator, so it reads
 		// `MisPartnerPdf()`.  The two differ for RayCaster's volume
 		// phase-scatter continuation under volume guiding (`bsdfPdf` = the

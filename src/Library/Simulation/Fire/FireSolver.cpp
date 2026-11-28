@@ -148,7 +148,7 @@ constexpr const char* fastModeEnvironment = "RISE_FIRE_FAST_MODE";
 constexpr const char* backendEnvironment = "RISE_FIRE_BACKEND";
 using namespace RISE::FireRun;
 
-// M8b: the CPU backend's status evidence (docs/SIMULATION_M8_RESULTS.md section 10).
+// M8b: the CPU backend's status evidence (docs/SIMULATION_SOLVER_CONTRACT.md section 10).
 std::string CPUBackendDetail()
 {
 	return "experimental (M8): the r190 projected-Heun CPU owner with the r264 centred momentum carrier, "

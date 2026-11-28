@@ -1,5 +1,5 @@
 // Simulation M5: the few process and file-lock primitives the bake manager
-// and the worker share (docs/SIMULATION_M5A_RESULTS.md).  POSIX is the
+// and the worker share (docs/SIMULATION_SOLVER_CONTRACT.md).  POSIX is the
 // implemented and tested path; the Windows branches (CreateProcessW,
 // LockFileEx, GetProcessTimes, TerminateProcess) are written to the same
 // contract but are NOT compiled or tested here.

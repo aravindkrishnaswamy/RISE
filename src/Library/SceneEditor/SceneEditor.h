@@ -242,7 +242,7 @@ namespace RISE
 		EditHistory&       History()       { return mHistory; }
 
 		//! Dirty-since-load tracker (origin: Phase 6.3,
-		//! docs/ROUND_TRIP_SAVE_PLAN.md §7.1).  Populated by Apply /
+		//! docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §7.1).  Populated by Apply /
 		//! Undo / Redo (and the agent path via MarkCstHeadDirty).
 		//! Historically the Phase 6.4 byte-splice save engine read it
 		//! to decide which objects to compare against the loaded

@@ -483,8 +483,8 @@ namespace RISE
 		//!   tier 2 -- `sigma_a` non-null
 		//!   tier 3 -- `color` non-null
 		//! The four appearance slots (`beta_m`, `beta_n`, `alpha`,
-		//! `ior`) are all mandatory; the caller (Job / the chunk parser
-		//! in a later slice) supplies inline-numeric defaults.
+		//! `ior`) are all mandatory; the caller (Job / HairMaterialAsciiChunkParser)
+		//! supplies inline-numeric defaults.
 		//!
 		//! Pointers, not references, purely so the optional tiers can be
 		//! null.  HairBRDF / HairSPF addref every non-null pointer.

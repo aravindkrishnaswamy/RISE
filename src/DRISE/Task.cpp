@@ -205,7 +205,7 @@ namespace RISE
 
 					sprintf( fname, "%s-sRGB", szOutputFileName );
 					// Landing 1 (PB pipeline): ACES tone curve + PIZ defaults
-					// — see docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md.
+					// — see docs/PHYSICALLY_BASED_PIPELINE_PLAN.md.
 					RISE_API_CreateFileRasterizerOutput( &fro, fname, false, 2, 8, eColorSpace_sRGB,
 						/*exposureEV*/ 0.0, /*display_transform*/ eDisplayTransform_ACES,
 						/*exr_compression*/ eExrCompression_Piz, /*exr_with_alpha*/ true );

@@ -16,6 +16,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#include <locale.h>
+#include <locale>
+#include <sstream>
+#include <iomanip>
 #include <string>
 #include "../Utilities/FiniteMath.h"
 
@@ -23,8 +28,58 @@ namespace RISE
 {
 	namespace Agent
 	{
+#ifdef RISE_JSON_NUMERIC_LOCALE_DESTRUCTION_TEST
+        void JsonNumericLocaleDestroyedForTest();
+#endif
 		namespace
 		{
+            // Locale objects are immutable after construction. This private C
+            // numeric locale never changes either the process or thread locale.
+            class NumericLocale {
+            public:
+                NumericLocale() noexcept {
+#ifdef _WIN32
+                    value_ = _create_locale(LC_NUMERIC, "C");
+#else
+                    value_ = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+#endif
+                }
+                ~NumericLocale() {
+#ifdef RISE_JSON_NUMERIC_LOCALE_DESTRUCTION_TEST
+                    JsonNumericLocaleDestroyedForTest();
+#endif
+#ifdef _WIN32
+                    if(value_) _free_locale(value_);
+#else
+                    if(value_) freelocale(value_);
+#endif
+                }
+                bool Parse(const std::string& token, double& value) const {
+                    if(!value_) return false;
+                    char* end = nullptr;
+#ifdef _WIN32
+                    value = _strtod_l(token.c_str(), &end, value_);
+#else
+                    value = strtod_l(token.c_str(), &end, value_);
+#endif
+                    return end != token.c_str() && *end == '\0';
+                }
+            private:
+#ifdef _WIN32
+                _locale_t value_ = nullptr;
+#else
+                locale_t value_ = nullptr;
+#endif
+            };
+            bool ParseNumericToken(const std::string& token, double& value) {
+                // One bounded process-lifetime object and C-locale resource are
+                // intentionally retained. Numeric JSON parsing remains valid in
+                // earlier globals' destructors and atexit callbacks; a destructed
+                // function static would leave those late callers a freed locale.
+                static const NumericLocale* const locale = new NumericLocale;
+                return locale->Parse(token, value);
+            }
+
 			//! A cap on nesting depth so a pathological line (e.g. thousands
 			//! of `[`) fails as a parse error rather than overflowing the
 			//! C++ stack.  The RPC message set nests only a handful deep.
@@ -157,24 +212,30 @@ namespace RISE
 				bool ParseNumber( JsonValue& out )
 				{
 					// Scan the JSON number grammar (int frac? exp?) then hand
-					// the whole span to strtod for a lossless parse.
+					// the whole span to the private C-locale binary64 conversion.
 					const std::size_t start = mPos;
 					if( mPos < mS.size() && mS[mPos] == '-' ) ++mPos;
-					while( mPos < mS.size() && mS[mPos] >= '0' && mS[mPos] <= '9' ) ++mPos;
+                    const std::size_t integerStart = mPos;
+                    while( mPos < mS.size() && mS[mPos] >= '0' && mS[mPos] <= '9' ) ++mPos;
+                    if( mPos == integerStart || ( mPos - integerStart > 1 && mS[integerStart] == '0' ) )
+                        return Fail( "invalid number" );
 					if( mPos < mS.size() && mS[mPos] == '.' ) {
 						++mPos;
+                        const std::size_t fractionalStart = mPos;
 						while( mPos < mS.size() && mS[mPos] >= '0' && mS[mPos] <= '9' ) ++mPos;
+                        if( mPos == fractionalStart ) return Fail( "invalid number" );
 					}
 					if( mPos < mS.size() && ( mS[mPos] == 'e' || mS[mPos] == 'E' ) ) {
 						++mPos;
 						if( mPos < mS.size() && ( mS[mPos] == '+' || mS[mPos] == '-' ) ) ++mPos;
+                        const std::size_t exponentStart = mPos;
 						while( mPos < mS.size() && mS[mPos] >= '0' && mS[mPos] <= '9' ) ++mPos;
+                        if( mPos == exponentStart ) return Fail( "invalid number" );
 					}
 					if( mPos == start ) return Fail( "invalid number" );
 					const std::string tok = mS.substr( start, mPos - start );
-					char* end = nullptr;
-					const double d = std::strtod( tok.c_str(), &end );
-					if( end == tok.c_str() || *end != '\0' ) return Fail( "invalid number" );
+					double d = 0;
+					if( !ParseNumericToken( tok, d ) ) return Fail( "invalid number" );
 					out = JsonValue::MakeNumber( d );
 					return true;
 				}
@@ -280,7 +341,7 @@ namespace RISE
 				std::string         mError;
 			};
 
-			//! Serialize a number: %.17g, but collapse an exact integer to its
+			//! Serialize a number: C-locale 17-digit general format; collapse an exact integer to its
 			//! integer form (no trailing ".0") so ids and dims read cleanly.
 			void SerializeNumber( std::string& out, double d )
 			{
@@ -300,9 +361,10 @@ namespace RISE
 					out += buf;
 					return;
 				}
-				char buf[64];
-				std::snprintf( buf, sizeof( buf ), "%.17g", d );
-				out += buf;
+                std::ostringstream number;
+                number.imbue(std::locale::classic());
+                number << std::setprecision(17) << d;
+                out += number.str();
 			}
 
 			void SerializeValue( std::string& out, const JsonValue& v )

@@ -3,7 +3,7 @@
 //  LiquidValidation.h - Canonical problems of the liquid solver
 //  (simulation M7) with references computed here or from closed forms,
 //  shared by tests/LiquidValidationTest.cpp and the evidence the solver
-//  computes at Configure (docs/SIMULATION_M7A_RESULTS.md section 4).
+//  computes at Configure (docs/SIMULATION_SOLVER_CONTRACT.md section 4).
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -111,7 +111,7 @@ SloshResult RunSloshing(int cells, double periods, const SolverOptions& options,
 //! Early-time collapse of a two-dimensional column (height H = 1, length L,
 //! against the wall x = 0, dam face x = L): the acceleration field at the
 //! instant the dam is removed, from the potential-flow series derived in
-//! docs/SIMULATION_M7A_RESULTS.md, against u / dt after one step from rest.
+//! docs/SIMULATION_SOLVER_CONTRACT.md, against u / dt after one step from rest.
 //! Interfaces off the grid (h = 1 / (cells + 0.3)).  Errors / g: the L2 norm
 //! over the liquid's faces and the max over faces at least H/4 from the
 //! bottom corner of the dam face (the series' log singularity).
@@ -186,7 +186,7 @@ LiquidBody MakeBody(const BodyShape& shape, BodyMotion motion, double mass, cons
 //! impulse -m_a V.  2-D: a circular cylinder of radius a along z in a slab one
 //! cell thick, m_a = rho pi a^2 (b^2 + a^2) / (b^2 - a^2) per unit length; 3-D:
 //! a sphere, m_a = (rho V / 2) (b^3 + 2 a^3) / (b^3 - a^3) (both derived in
-//! docs/SIMULATION_M7B_RESULTS.md section 4).  The box is [0, 1]^d, the centre
+//! docs/SIMULATION_SOLVER_CONTRACT.md section 4).  The box is [0, 1]^d, the centre
 //! offset from the grid by `shift` cells along each axis; `cells` per unit.
 struct AddedMassResult { double added = 0, exact = 0, error = 0, seconds = 0; int iterations = 0, steps = 0; double sideForce = 0; };
 //! m7d: `shape` (3-D only; e.g. a tessellated sphere as a mesh body) replaces
@@ -295,7 +295,7 @@ NeutralResult RunNeutralBody(int cells, bool threeD, double duration, const Solv
 // ------------------------------------------------------------------ viscosity and surface tension (m7c: cases 10 and 11)
 
 //! Linear waves on deep liquid with viscosity and surface tension (Lamb
-//! 1932, section 349; derived in docs/SIMULATION_M7C_RESULTS.md): the root
+//! 1932, section 349; derived in docs/SIMULATION_SOLVER_CONTRACT.md): the root
 //! s of (s + 2 nu k^2)^2 + g k + (sigma / rho) k^3 = 4 nu^2 k^3 m with
 //! m = sqrt(k^2 + s / nu), Re m > 0, near -2 nu k^2 + i omega_0 (complex
 //! Newton): the amplitude decay rate -Re s and the frequency Im s.

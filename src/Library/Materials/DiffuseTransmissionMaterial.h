@@ -5,7 +5,7 @@
 //    plus optional front/back diffuse reflection).
 //
 //  Contract (docs/BLENDER_PROCEDURAL_TRANSLATION_DESIGN.md §5.6 &
-//  docs/BLENDER_TRANSLATION_DESIGN_REVIEW_ROUND3.md P1-13):
+//  docs/MIX_MATERIAL_PATH_STATE_AO_DESIGN.md P1-13):
 //    * Thin sheet: NO interior IOR tracking (`hasInterior = false`,
 //      `canRefract = false`).  Transmitted rays keep `ior_stack` unchanged.
 //    * Both-directions hemisphere test: decides reflection vs

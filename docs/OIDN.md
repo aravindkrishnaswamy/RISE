@@ -123,7 +123,7 @@ An exception from rendering, OIDN, an observer, or an output callback releases
 the full AOV member allocation during stack unwind. Cache retention therefore
 describes successful OIDN renders only, never failed attempts.
 
-### OIDN 2.4 feature surface vs. RISE usage
+### OIDN 2.4 feature surface vs. RISE usage (historical 2026-04-29 baseline — see shipped items below)
 
 | Feature | OIDN exposes | RISE uses |
 |---|---|---|

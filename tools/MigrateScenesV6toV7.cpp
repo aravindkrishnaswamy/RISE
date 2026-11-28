@@ -2,7 +2,7 @@
 //  MigrateScenesV6toV7.cpp -- the canonical v6->v7 scene migrator tool.
 //  Wraps the shared Migrate() (tools/CstMigrator.h) -- the SAME transform the equivalence gate
 //  (CstCorpusEquivalenceTest) verifies -- so the tool output is byte-identical to the gated migrator
-//  BY CONSTRUCTION.  Phase A of docs/agentic-redesign/61-v6v7-parser-cutover-execution-plan.md.
+//  BY CONSTRUCTION.  Phase A of docs/agentic-redesign/10-scene-language-and-cst.md.
 //
 //  Usage:  MigrateScenesV6toV7 <scene.RISEscene> [more ...]
 //    Prints each input's migrated text to stdout.  Constructs are folded toward v7 AND the scene-version

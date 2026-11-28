@@ -110,7 +110,7 @@ Piece PointTriangle(const V3* xs)
 // distance exactly.  (m3a.3 switched at sin^2 = 1e-6, overestimating the
 // distance by up to L sin/2 there: the barrier energy jumped where a pair
 // crossed the threshold and Newton stalled on the jump, sec. 2 of
-// docs/SIMULATION_M3A_RESULTS.md.  The interior piece's 1/sin^2 Hessian growth
+// docs/SIMULATION_SOLVER_CONTRACT.md.  The interior piece's 1/sin^2 Hessian growth
 // near parallel is now cancelled by the edge-edge mollifier, Mollifier below.)
 Piece EdgeEdge(const V3* xs, double parallel = 1e-14)
 {

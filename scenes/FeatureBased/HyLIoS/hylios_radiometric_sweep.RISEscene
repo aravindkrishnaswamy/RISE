@@ -1,0 +1,73 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           hylios_radiometric_sweep.RISEscene                                                      #
+#   Description:    Raw fixed-wavelength hyperspectral radiometric sweep of a HyLIoS nonlocal skin          #
+#                   target illuminated by a calibrated physical_directional_light.                          #
+#                                                                                                           #
+#############################################################################################################
+
+film
+{
+	width				64
+	height				48
+}
+
+pinhole_camera
+{
+	location			0 0 2.0
+	lookat				0 0 0
+	up					0 1 0
+	fov					35.0
+}
+
+hyperspectral_radiometric_rasterizer
+{
+	wavelength_nm		450
+	wavelength_nm		550
+	wavelength_nm		650
+	samples_per_pixel	8
+	seed				42
+	output_prefix		rendered/hylios_radiometric_sweep
+}
+
+hylios_skin_material
+{
+	name				skin_s3_planar
+	preset				S3
+	transport_mode		nonlocal
+	boundary_mode		rise_reciprocal_boundary_v1
+	boundary_roughness	0.25
+	spatial_domain		planar_polygon
+	domain_half_width_m	0.5
+	exterior_ior		1.0
+	specimen_source		scenes/Tests/Materials/HyLIoS/s3_nonlocal_demo.json
+}
+
+box_geometry
+{
+	name				skin_slab_geom
+	width				4.0
+	height				4.0
+	depth				0.2
+}
+
+standard_object
+{
+	name				skin_slab
+	geometry			skin_slab_geom
+	position			0 0 -0.1
+	material			skin_s3_planar
+}
+
+directional_light
+{
+	name				sun_cal
+	direction			0.2 0.3 1.0
+	power				1.0
+	spectral_outside	zero
+	spectral_samples	380 12.0
+	spectral_samples	550 20.0
+	spectral_samples	780 15.0
+}

@@ -10,7 +10,7 @@
 //       recursion budget -- the budgets are a cost knob, not an energy
 //       sink.  Pre-fix the walk hard-truncated the internal Fresnel/TIR
 //       reflection series at the top interface's underside (per-bounce
-//       energy ledger in docs/DL24_COMPOSITE_ENERGY.md: exit 0.4260 +
+//       energy ledger in docs/DEBT_LEDGER.md: exit 0.4260 +
 //       dropped 0.5740 == 1.0000 at normal incidence).  A
 //       `coated_material` of the same physical layers is the control.
 //
@@ -726,7 +726,7 @@ static void SectionT( Fixtures& f )
 	// Composite batches: 64 for the scattering-5 top, whose pre-fix error was
 	// small (z -7.2 / -8.6 at 64 batches), 16 for the others: the
 	// scattering-0 top's weakest pre-fix row read 0.9539 vs 0.9781 (z -24.9,
-	// docs/DL24_COMPOSITE_ENERGY.md), which at 16 batches is still 3.4x the
+	// docs/DEBT_LEDGER.md), which at 16 batches is still 3.4x the
 	// 0.001 + 5 sigma band, and the 1e6 / translucent tops are consistency
 	// pins the fix did not move.
 	for( int k = 0; k < 4; ++k ) {
@@ -1435,7 +1435,7 @@ static void SectionD9()
 //                   must render as one glass interface);
 //    the others  -> the same composite on the double-sided OUTWARD
 //                   version of the geometry (winding must not matter).
-//  Expected value per cell (docs/DL24_COMPOSITE_ENERGY.md section 9.4e):
+//  Expected value per cell (docs/DEBT_LEDGER.md section 9.4e):
 //    closed box, furnace   glass/glass 1 and its twin 1; nested 1
 //                          (lossless); glass/translucent == twin
 //    closed box, light in  == twin
@@ -1630,7 +1630,7 @@ static void SectionM()
 						// glass/glass under PT and BDPT, whose single render
 						// sd (~0.5 %) leaves the 3 % band 6 sd wide while the
 						// smallest red cell (mixed, 0.100 vs 0.106: -5.7 %,
-						// docs/DL24_COMPOSITE_ENERGY.md) stays 5 sd outside.
+						// docs/DEBT_LEDGER.md) stays 5 sd outside.
 						const int nRep = ( g == 1 ) ? ( ( c.kind == 0 && r != 2 ) ? 1 : 3 ) : 1;
 						double mL = 0, mR = 0;
 						bool ok = true;

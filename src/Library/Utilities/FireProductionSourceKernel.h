@@ -1094,7 +1094,7 @@ namespace RISE
 			return overrideYield<0.0?fuel.SootYieldKGPerKGFuel():overrideYield;
 		}
 
-		// r273 poor-burn closure (docs/FIRE_SMOKE_POOR_BURN_R273.md). Two opt-ins,
+		// r273 poor-burn closure (docs/FIRE_SMOKE_STATUS.md). Two opt-ins,
 		// both off when unset, and the solver is then bit-identical.
 		//
 		// RISE_FIRE_SOOT_RADIATIVE_FRACTION_CAP=<c> (0 < c <= 1): soot joins the
@@ -1153,7 +1153,7 @@ namespace RISE
 				ambient2*ambient2*ambientTemperatureK);
 		}
 
-		// RISE_FIRE_SOOT_SELF_ABSORPTION=1 (needs the cap; docs/FIRE_SMOKE_POOR_BURN_R273.md §6):
+		// RISE_FIRE_SOOT_SELF_ABSORPTION=1 (needs the cap; docs/FIRE_SMOKE_STATUS.md §6):
 		// soot leaves the gas budget and radiates its own emission, attenuated by
 		// the soot column around the cell and never scaled up. The gas keeps the
 		// case radiative fraction with its escape factor bounded by 1; the cap only

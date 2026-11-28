@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-03
 **Scope:** The three integrator anomalies surfaced as by-products of the
-Phase-1 measurement ([UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)
+Phase-1 measurement ([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)
 §6/§7/§9): `glass_pavilion` Inf fireflies (Bug 1), `sculptors_studio` BDPT
 near-black (Bug 2), `prism_dispersion` spectral-BDPT −36 % (Bug 3).
 **Status:** Bug 1 FIXED (both halves at the EXR layer; integrators are correct).

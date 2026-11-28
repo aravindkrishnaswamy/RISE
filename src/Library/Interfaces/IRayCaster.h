@@ -110,8 +110,8 @@ namespace RISE
 			//! continuations are the other standing case: `bsdfPdf`
 			//! carries the guided effective pdf while the partner is the
 			//! raw `phasePdf` its NEE arm uses (DL-73).
-			//! DL-74 / docs/DL74_ENV_NEE_GUIDING_PARTITION.md,
-			//! DL-103 / docs/DL103_PT_ESCAPE_MIS_PARTNER.md.
+			//! DL-74 / docs/DEBT_LEDGER.md,
+			//! DL-103 / docs/DEBT_LEDGER.md.
 			//!
 			//! Three-valued, and read through `MisPartnerPdf()` rather
 			//! than directly:

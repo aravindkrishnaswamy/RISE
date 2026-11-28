@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reproducible Decimal(110) exact-binary64 oracle generator and verifier for
-tests/SSSNearUnityFresnelCases.inl (DL-334: docs/DL334_SSS_NEAR_UNITY.md).
+tests/SSSNearUnityFresnelCases.inl (DL-334: docs/DEBT_LEDGER.md).
 
 Usage:
   python3 tools/generate_sss_near_unity_fresnel_cases.py --verify

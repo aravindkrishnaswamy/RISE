@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  StartView.swift - The no-scene launch screen (docs/gui/START_SCREEN.md).
+//  StartView.swift - The no-scene launch screen (docs/gui/APPROACHABILITY_FOUNDATION.md).
 //
 //    Replaces the old "Open a .RISEscene file to begin" placeholder with
 //    the three real entry intents, on screen simultaneously:

@@ -92,7 +92,7 @@ Findings that changed the plan:
   lights); it never inspects painters. There is nothing to remove there; the
   containment is the one-time `GlobalLog` warning plus descriptor/README text.
 - **The VCM light-vertex store does not need widening** (row 4).
-- **CORRECTED (DL-14, 2026-09-17 — docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md):
+- **CORRECTED (DL-14, 2026-09-17 — docs/DEBT_LEDGER.md):
   this bullet's original claim was wrong.** `hasDifferentials` does not need
   to appear anywhere in the BDPT/VCM/MLT rasterizer FILES for the eye ray to
   carry differentials: `ICamera::GenerateRay` (Pinhole/ThinLens/Orthographic/
@@ -129,7 +129,7 @@ the fields `BuildContext` reads and the vertex does not carry:
    consumer reads").  (Corrected: it is NOT all-zero -- the depth-0 eye
    vertex carries the camera ray's footprint, DL-14; and since 2026-11-17 a
    t == 1 connection shades its light endpoint with the landing pixel's
-   footprint, DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md §10.) The sentinel test pins all three.
+   footprint, DEBT_LEDGER.md §10.) The sentinel test pins all three.
 2. **Population** at both subpath generators (rows 2): straight copies from
    `ri.geometric`, after `ri.pModifier->Modify( ri.geometric )` exactly as
    the existing fields are. Medium, camera, light and env vertices keep the
@@ -561,7 +561,7 @@ Ledger (filled per slice):
 - **GUI painter preview, realize-time displacement, `HairGenerator`** —
   not transport; unchanged and already disclosed.
 - **~~Ray differentials under BDPT/VCM/MLT~~ — CLOSED 2026-09-17, on
-  re-verification (DL-14, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md): this
+  re-verification (DL-14, docs/DEBT_LEDGER.md): this
   bullet's premise was wrong.** The depth-0 eye vertex DOES carry a real,
   non-zero `txFootprint` under BDPT/VCM/MLT — the camera ray they all start
   from unconditionally carries Igehy differentials (every `ICamera`
@@ -589,7 +589,7 @@ Ledger (filled per slice):
   The bounded approximation is deliberately retained and directly tested
   by the real two-blade fixture in SignalEmitterRecordTest; this is not
   a physics correction across a signal discontinuity. See
-  [DL-36 closure](DL36_EMITTER_NEIGHBOUR_PIN.md). The existing behavior: a second surface of the same
+  [DL-36 closure](DEBT_LEDGER.md). The existing behavior: a second surface of the same
   luminary inside the emitter probe's standoff band along the normal and
   within the 0.01·D acceptance tolerance is accepted with that neighbour's
   live channel (a louvred single-object fixture with blade pitch under

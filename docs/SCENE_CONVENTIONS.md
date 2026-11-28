@@ -492,7 +492,7 @@ Before that date only strategies that HIT the emitter saw the back face;
 next-event estimation and light-subpath emission treated it as one-sided,
 so a back-facing panel lit the scene 7-14x too dark under PT and BDPT
 and not at all under the legacy direct-lighting chain
-([DL320_DOUBLE_SIDED_EMITTER.md](DL320_DOUBLE_SIDED_EMITTER.md)).
+([DEBT_LEDGER.md](DEBT_LEDGER.md)).
 
 - **A `clippedplane_geometry` luminaire is double-sided by default and
   emits from both faces -- size `scale` for both, or set `doublesided
@@ -1242,7 +1242,7 @@ is an interface, not a solid: the side its normal points to (the winding's
 front) is the surrounding medium and the side behind it is glass.  Every ray
 refracts by the face it strikes (front: enters, back: exits), in every
 integrator and in SMS (DL-345, 2026-10-02,
-[DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)).  So:
+[DEBT_LEDGER.md](DEBT_LEDGER.md)).  So:
 
 - a slab built from two sheets needs both normals pointing OUT of the slab
   (top facing up, bottom facing down); a sheet wound the other way makes
@@ -1347,7 +1347,7 @@ When a new scene renders unexpectedly:
 ## 10. HDR output pipeline
 
 Added by Landing 1 of the
-[PB pipeline plan](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md).
+[PB pipeline plan](PHYSICALLY_BASED_PIPELINE_PLAN.md).
 The recommended pattern for any new scene is to declare **two**
 `file_rasterizeroutput` chunks: an HDR primary and a tone-mapped
 display preview.
@@ -1694,7 +1694,7 @@ section is the legacy -> modern table.
 | `cooktorrance_material`, `isotropic_phong_material`, `ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`, `ward_anisotropic_material`, `polished_material` | **FROZEN** | legacy lobe models, each fully covered by `ggx_material` (+ `coated_material` for polished); see the table below |
 | `composite_material` | **FROZEN** | legacy arbitrary two-material combiner (unbounded energy / uncoupled lobes); covered in practice by `coated_material`, `ggx_material`, and `sheen_material` |
 | `phong_luminaire_material` | **FROZEN** | legacy emission PROFILE (`cos^N` directional exitance) over another material; `lambertian_luminaire_material` has no equivalent shaping and `spot_light` is a different entity, so no direct single-chunk replacement exists, but the chunk is frozen under owner ruling #9 |
-| `ggx_material`, `pbr_metallic_roughness_material`, `coated_material`, `fabric_material`, `weave_material`, `sheen_material`, `hair_material`, `lambertian_material`, `orennayar_material`, `dielectric_material`, `perfectreflector_material`, `perfectrefractor_material`, the SSS / skin / tissue family, `lambertian_luminaire_material`, `datadriven_material` | modern / specialised -- keep | physically based, or an ideal/measured model with no deprecated twin (Oren-Nayar is a physically derived rough-diffuse whose albedo is baked exactly, DL-07; `datadriven_material` is measured data) |
+| `ggx_material`, `rough_dielectric_material`, `pbr_metallic_roughness_material`, `coated_material`, `fabric_material`, `weave_material`, `sheen_material`, `mix_material`, `diffuse_transmission_material`, `null_boundary_material`, `hair_material`, `lambertian_material`, `orennayar_material`, `dielectric_material`, `perfectreflector_material`, `perfectrefractor_material`, the SSS / skin / tissue family (including `hylios_skin_material`), `lambertian_luminaire_material`, `datadriven_material` | modern / specialised -- keep | physically based, or an ideal/measured model with no deprecated twin (Oren-Nayar is a physically derived rough-diffuse whose albedo is baked exactly, DL-07; `datadriven_material` is measured data) |
 | `translucent_material` | **NOT deprecated** (no real replacement) | the only two-sided diffuse-transmitting THIN-sheet model (leaf, paper, lampshade) with per-side `ref`/`tau` and Beer extinction.  Considered and rejected as replacements: `dielectric_material` (a Fresnel interface with an IOR-stack, no per-side diffuse reflect/transmit split), `subsurfacescattering_material` / `randomwalk_sss_material` (volumetric SOLIDS that need a closed body and a mean free path), `weave_material transmission thin` (cloth gap).  It was also rebuilt as one consistent sampler/density/evaluator in DL-157/DL-41.  Revisit if a thin-sheet material is added |
 
 **Legacy -> modern mapping.**  The translations are *starting points*:
@@ -1719,10 +1719,12 @@ starting point, not identical.
 | `ward_anisotropic_material` | `ggx_material`, `fresnel_mode schlick_f0` | `alphax`->`alphax`, `alphay`->`alphay`; `tangent_rotation_scalar` for the direction |
 | `polished_material` | `coated_material` over a `lambertian_material` | `base` = a `lambertian_material` with the same `reflectance`; `coat_ior = ior`; `coat_roughness = 1/sqrt(2*scattering+1)` (the coat lobe is `cos^N` about the reflection vector, `PolishedBRDF::ComponentDensity`, same 4N rule as Phong), and for the delta case (`scattering` >= 1e6, `kPhongDeltaThreshold`) use the smallest `coat_roughness` (it is floored at 1e-3, so `coated_material` is never a true delta).  **`tau` has no equivalent**: it is NOT a transmittance tint -- `PolishedBRDF` multiplies only the coat REFLECTION by `tau` (`tau min(F(ci),F(co))` glossy, `tau F(ci)` delta) while the substrate term `(1-F(ci))(1-F(co))` is `tau`-independent; `tau 1` is a full coat, and `coat_weight` is the nearest knob for a weaker one (`coat_tint` / `coat_absorption` act on transmission, a different thing).  `henyey-greenstein TRUE` has no equivalent either.  `add_wetness` already emits the `coated_material` shape |
 
-**Producers audited (2026-10-02).**  Nothing in the importers emits a
-deprecated chunk: the glTF importer and the Blender bridge build
-`pbr_metallic_roughness_material` / `ggx_material` / `coated_material` /
-`fabric_material` / `randomwalk_sss_material` only, and `add_wetness`
+**Producers audited.**  Nothing in the importers emits a
+deprecated chunk: the glTF importer and the Blender bridge build modern
+materials only (`pbr_metallic_roughness_material`, `ggx_material`,
+`coated_material`, `fabric_material`, `randomwalk_sss_material`,
+`mix_material`, `lambertian_material`, `orennayar_material`,
+`dielectric_material`, `hair_material`, etc.), and `add_wetness`
 wraps with `coated_material`.  The agent texture recipes
 `rough_stone` and `aged_bronze` (were `cooktorrance_material`) and
 `brushed_metal` (was `ward_anisotropic_material`) in `AgentSession.cpp`
@@ -1772,7 +1774,7 @@ unchanged; `CstDeriveGoldenTest` (derive-state digests) is unaffected.
   procedure for authoring scenes that render right the first time.
 - [docs/GLTF_IMPORT.md](GLTF_IMPORT.md): glTF-specific conventions and
   the convention-conversion sites in the importer.
-- [docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md):
+- [docs/PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md):
   Landing 1 detailed design for the HDR output pipeline.
 
 ## Material coverage (DL-214)

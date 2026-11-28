@@ -2489,10 +2489,11 @@ namespace
 				"[fire provenance] invalid authored option rejects transactionally: "+suffix);
 		};
 		EncodeOpts invalidOpts = identityPngOpts;
-		invalidOpts.colorSpace = static_cast<COLOR_SPACE>(99);
-		rejectsAuthoredOptions(*png,invalidOpts,"_invalid_color.png","color space");
-		invalidOpts = identityPngOpts;
-		invalidOpts.viewTransform.toneCurve = static_cast<DISPLAY_TRANSFORM>(99);
+		// DISPLAY_TRANSFORM has values 0..4, hence its unfixed enum range is
+		// 0..7. Value 7 is a defined conversion but an unsupported curve.
+		// COLOR_SPACE occupies its entire 0..3 enum range; manufacturing 99
+		// there is undefined behavior, not a valid authored-input test.
+		invalidOpts.viewTransform.toneCurve = static_cast<DISPLAY_TRANSFORM>(7);
 		rejectsAuthoredOptions(*png,invalidOpts,"_invalid_curve.png","tone curve");
 		invalidOpts = identityPngOpts;
 		invalidOpts.viewTransform.exposureEV =

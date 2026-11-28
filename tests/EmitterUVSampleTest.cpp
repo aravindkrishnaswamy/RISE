@@ -231,7 +231,7 @@ static double RenderMeanLuminance( const char* scenePath )
 //! loading the scene and BEFORE rasterizing, binds a BoxUVGenerator to
 //! the named object via the construction-API setter `IJob::
 //! SetObjectUVToBox` -- there is no scene-language chunk that reaches
-//! `Object::SetUVGenerator` (see docs/DL95_OBJECT_UV_GENERATOR_INPUT.md
+//! `Object::SetUVGenerator` (see docs/DEBT_LEDGER.md
 //! "Scene-level impact"), so this is the only way to exercise an
 //! override UV generator through a real end-to-end render.
 static double RenderMeanLuminanceWithBoxUV(

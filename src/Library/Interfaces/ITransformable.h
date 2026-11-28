@@ -90,7 +90,7 @@ namespace RISE
 		//! a parent's matrix onto the transform stack instead: the stack never
 		//! self-clears, so a second push composes `P * P * local` and every
 		//! subsequent re-apply squares in another factor.  That is the entire
-		//! bug class recorded in docs/agentic-redesign/86-object-grouping.md §3.
+		//! bug class recorded in docs/agentic-redesign/87-recursive-scene-graph.md §3.
 		//! Passing `parentWorld` as an ARGUMENT makes re-composition idempotent
 		//! by construction — calling this twice with the same argument, or with
 		//! a new one, always yields exactly `parentWorld * local`.

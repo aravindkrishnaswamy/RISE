@@ -1129,8 +1129,8 @@ private:
 
 //! Unions the world bounding boxes of all bounded objects; unbounded
 //! objects (infinite planes report infinite boxes) are skipped by
-//! threshold compare rather than isfinite (-ffast-math makes value-
-//! level isfinite guards unreliable; see the repo FP notes).
+//! finite-threshold compare (retained from the pre-2026-07-29
+//! -ffinite-math-only convention; also avoids forming infinities).
 class SceneExtentEnum : public IEnumCallback<IObject>
 {
 public:

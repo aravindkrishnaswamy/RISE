@@ -550,7 +550,7 @@ would restore the match; not done here, since it touches the selection
 weighting for every PT delta vertex in the tree, not just the ones this
 fix addresses.
 
-## 10. Relationship to `CAUSTIC_PHOTONMAP_NORMALIZATION.md` §9–§11
+## 10. Relationship to `REFRACTIVE_RADIANCE_SCALING.md` §9–§11
 
 §9.3 correctly observed that "RISE applies no η² radiance scaling in
 transport". §10 then proposed a **merge-side measure rescale** to fix an
@@ -574,8 +574,8 @@ at the time. The baseline has since moved to **574017** checks, 0
 failures (DL-52's probe fix, `00cd6723`, 2026-09-13, reaches additional
 entry points on flat/near-flat surfaces; the DL-71 follow-up fix does
 not move it further) — see
-[DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
-and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
+[DEBT_LEDGER.md](DEBT_LEDGER.md)
+and [DEBT_LEDGER.md](DEBT_LEDGER.md).
 
 **DL-04 audit correction, 2026-09-12.** The
 previous account conflated a complete subsurface event with one boundary,
@@ -620,11 +620,11 @@ eta-square mutations supply the discriminating check.
 Matched nonzero physical coefficients do not generally imply equal
 Burley-profile and explicit-volume reflectance. The conservative control
 uses zero absorption. Sw normalization was subsequently corrected in
-[DL-48](DL48_SSS_NORMALIZATION.md). Non-air relative-index handling
+[DL-48](DEBT_LEDGER.md). Non-air relative-index handling
 (DL-49), spectral random-walk survival (DL-50), planar probe support
 (DL-52), and recursive environment MIS (DL-53) were distinct questions (all
 since fixed; DL-49 on `debt-dl49`, 2026-09-28, see
-[DL49_SSS_EXTERIOR_INDEX.md](DL49_SSS_EXTERIOR_INDEX.md)). No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
+[DEBT_LEDGER.md](DEBT_LEDGER.md)). No eta factor should be used to hide them. See [the decision and measurement record](DEBT_LEDGER.md)
 for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.
@@ -797,7 +797,7 @@ BDPT eye RIS's missing actual guide substitutions in this fixture were
 separately explained by DL-43; that PDF defect is now CLOSED (`a69c9ce6`,
 2026-09-13 -- eye RIS achieves actual outward guide-direction
 substitutions after the fix; see docs/DEBT_LEDGER.md). See
-[DL-03 mechanism, audit and verification](DL03_GUIDED_IOR_CONTINUATION.md).
+[DL-03 mechanism, audit and verification](DEBT_LEDGER.md).
 
 **What used to be item (b) here is CLOSED, not a residual.** An earlier
 draft described a `ScatteredRayContainer` overflow-only leak in the
@@ -834,20 +834,20 @@ exit previously charged it again before the Beer-attenuated weight split
 into exit and backscatter. Removing that second factor aligns the local
 weights with RGB. The unfixed-library run on `6486656e`, with test commit
 `fc371041`, reported 174 failures. See
-[DL-01 closure and independent residuals](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
+[DL-01 closure and independent residuals](DEBT_LEDGER.md).
 
 **~~RGB/NM exit-lobe density support/shape (debt 31 item 4 / DL-02).~~
 CLOSED 2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks,
 0 failures` (red: 324 failures).** The evaluator now uses the sampled
 positive shading hemisphere, and NM exit sampling is cosine like RGB.
-See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). Stateful BSDF/HWSS
+See [DL-02 closure](DEBT_LEDGER.md). Stateful BSDF/HWSS
 amplitudes were tracked as DL-38 (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)); full mixture/reverse densities and NEE state
 were tracked as DL-41 (subsequently CLOSED — see [DEBT_LEDGER.md](DEBT_LEDGER.md)). Local exit-density agreement alone did not prove renderer parity prior to those closures.
 
 ### 10.4 DL-09 closure: the interior-segment factor (2026-09-28, slice `debt-dl09`)
 
 Full derivation, factor tables, measurements and residuals:
-[DL09_GRADED_INDEX_INTERIOR_FACTOR.md](DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+[DEBT_LEDGER.md](DEBT_LEDGER.md).
 
 **The rule, extended.**  §1's `(η_before/η_after)²` is the interface form of
 one statement: basic radiance `L/n²` is continuous along every straight
@@ -1017,7 +1017,7 @@ entirely.
   BDPT/PT 0.9988 and VCM/PT 0.9927.  The convention doc already says a
   double-sided quad emits from both faces, so the HIT side is right and
   NEE and light-subpath emission are the sides to fix.  Fixed the same
-  day (slice `debt-dl320`, docs/DL320_DOUBLE_SIDED_EMITTER.md): with its
+  day (slice `debt-dl320`, docs/DEBT_LEDGER.md): with its
   ORIGINAL winding that fixture now reads BDPT/PT 0.9996 and VCM/PT 0.9981
   at depth 32 (salted n = 4).
 
@@ -1061,11 +1061,11 @@ salting-exposed sibling findings (neither a depth-cap issue).
 ## 12. Cross-references
 
 - [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp) — the closed forms
-- [`docs/CAUSTIC_PHOTONMAP_NORMALIZATION.md`](CAUSTIC_PHOTONMAP_NORMALIZATION.md) §11, §13
+- [`docs/REFRACTIVE_RADIANCE_SCALING.md`](REFRACTIVE_RADIANCE_SCALING.md) §11, §13
 - [`docs/RENDERING_INTEGRATORS.md`](RENDERING_INTEGRATORS.md) debt 30
 - [`docs/SUBMERGED_CAMERA_IOR_SEEDING.md`](SUBMERGED_CAMERA_IOR_SEEDING.md) — the ×n² exit factor
 - [`docs/skills/bdpt-vcm-mis-balance.md`](skills/bdpt-vcm-mis-balance.md) step 0
 - [`src/Library/Utilities/IORStack.h`](../src/Library/Utilities/IORStack.h) — `RadianceEtaScale`
 - [`src/Library/Utilities/GradedIndexMedium.h`](../src/Library/Utilities/GradedIndexMedium.h) — the interior-segment factor (DL-09, §10.4)
-- [`docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md`](DL09_GRADED_INDEX_INTERIOR_FACTOR.md) — its derivation
+- [`docs/DEBT_LEDGER.md`](DEBT_LEDGER.md) — its derivation
 - [`src/Library/Interfaces/ISPF.h`](../src/Library/Interfaces/ISPF.h) — the `kray` contract

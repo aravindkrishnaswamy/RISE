@@ -254,6 +254,22 @@ SRCLIBPAINTERS =\
 
 # Materials
 SRCLIBMATERIALS =\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSOpticalData.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSOptics.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSlabTransport.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardTransport.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleGeometry.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSParticleOverlap.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSComplexLayout.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSurfaceBoundary.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalBake.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSkinMaterial.cpp		\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSReciprocalBoundary.cpp	\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSSpatialGeometry.cpp	\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponse.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSLocalResponseAsset.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSForwardExperiment.cpp			\
+	$(PATHLIBRARY)Materials/HyLIoS/HyLIoSResolvedExperiment.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongBRDF.cpp			\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
@@ -416,6 +432,7 @@ SRCLIBCAMERA =\
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
 	$(PATHLIBRARY)Rendering/DisplayTransformWriter.cpp						\
+	$(PATHLIBRARY)Rendering/BeautyMoments.cpp			\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/InteractivePelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
@@ -428,6 +445,9 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
 	$(PATHLIBRARY)Rendering/ThreadLocalSplatBuffer.cpp						\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
+	$(PATHLIBRARY)Rendering/RadiometricFilm.cpp	\
+	$(PATHLIBRARY)Rendering/HyperspectralRadiometricRasterizer.cpp	\
+	$(PATHLIBRARY)Rendering/RadiometricCheckpoint.cpp	\
 	$(PATHLIBRARY)Rendering/AdaptiveTileSizer.cpp							\
 	$(PATHLIBRARY)Rendering/PreviewScheduler.cpp							\
 	$(PATHLIBRARY)Rendering/BidirectionalRasterizerBase.cpp					\
@@ -511,6 +531,7 @@ SRCLIBMODIFIERS =\
 SRCLIBRASTERIMAGES =\
 	$(PATHLIBRARY)RasterImages/EXRReader.cpp					\
 	$(PATHLIBRARY)RasterImages/EXRWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/RadiometricEXRWriter.cpp	\
 	$(PATHLIBRARY)RasterImages/HDRReader.cpp					\
 	$(PATHLIBRARY)RasterImages/HDRWriter.cpp					\
 	$(PATHLIBRARY)RasterImages/PPMWriter.cpp					\
@@ -528,6 +549,7 @@ SRCLIBLIGHTS =\
 	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
 	$(PATHLIBRARY)Lights/LightBVH.cpp							\
 	$(PATHLIBRARY)Lights/PointLight.cpp							\
+	$(PATHLIBRARY)Lights/PhysicalLightSpectrum.cpp							\
 	$(PATHLIBRARY)Lights/SpotLight.cpp							\
 	$(PATHLIBRARY)Lights/LightSampler.cpp
 

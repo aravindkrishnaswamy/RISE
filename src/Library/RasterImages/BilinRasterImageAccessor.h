@@ -348,11 +348,11 @@ namespace RISE
 					GetPEL( x, y, p );
 					return;
 				}
-				// Non-finite LODs are classified with the optimisation-safe
-				// bit tests from FiniteMath.h — FP comparisons on NaN/inf
-				// operands can be folded incorrectly under this project's
-				// -ffast-math configs (Config.OSX, legacy SGI/Solaris,
-				// Xcode "Opto"), which is how a NaN lod previously flowed
+				// Non-finite LODs are classified with the bit tests from
+				// FiniteMath.h — historically required under bare
+				// -ffast-math (-ffinite-math-only; macOS now pairs
+				// -fno-finite-math-only) and retained for uniformity and
+				// -Ofast resistance; a NaN lod previously flowed
 				// into (int)std::floor(NaN) (UB) and a garbage pyramid
 				// index.  A NaN lod is reachable in production: a NaN
 				// texture-footprint determinant passes the
@@ -474,8 +474,8 @@ namespace RISE
 				// an edge texel (well-defined) — dropping to the zero pel
 				// there is a deliberate change, one uniform outcome for
 				// garbage UV over mode-dependent salvage.
-				// Bit tests, not FP comparisons — those are foldable
-				// under the -ffast-math configs (see FiniteMath.h).
+				// Uses FiniteMath.h bit tests (retained from pre-2026-07-29
+				// -ffinite-math-only for uniformity and -Ofast resistance).
 				// Non-finite UVs (e.g. from a NaN ri.ptCoord) return the
 				// zero pel, matching the zero-dimension convention.
 				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {

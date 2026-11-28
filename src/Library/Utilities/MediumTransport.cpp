@@ -148,7 +148,7 @@ Scalar MediumScatterMaterial::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	// DL-73 (ruled not a debt, see docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+	// DL-73 (ruled not a debt, see docs/DEBT_LEDGER.md
 	// "DL-73 RULED NOT A DEBT"): this is the RAW, un-guided phase pdf --
 	// deliberately NOT combined with any OpenPGL volume-guiding mixture.
 	// RayCaster.cpp's volume phase-scatter continuation records this SAME

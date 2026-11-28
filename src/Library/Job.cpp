@@ -40,6 +40,7 @@
 #include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
+#include "Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "SceneEditor/CancellableProgressCallback.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
 #include <fstream>
@@ -78,6 +79,7 @@
 #include "Rendering/FileRasterizerOutput.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/HyperspectralRadiometricRasterizer.h"
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Rendering/BlockRasterizeSequence.h"
 #include "Rendering/AdaptiveTileSizer.h"
@@ -1551,8 +1553,8 @@ static bool ERangeTokenIsUnderflow( const char* tok, const char* end )
 // A non-numeric value (e.g. a painter name like "pnt_zero", which the legacy atof
 // path turns into 0) returns FALSE and is left untouched.  Used to reject non-finite
 // inline values for Reference-kind material scalars (g, roughness) that bypass the
-// descriptor's AllTokensAreFiniteNumbers gate; value-level isfinite is unreliable
-// under -ffast-math, so this is a STRING-layer check.
+// descriptor's AllTokensAreFiniteNumbers gate; string-layer rejection stays
+// immune even under -Ofast/-ffinite-math-only (macOS pairs -fno-finite-math-only since 2026-07-29).
 static bool ScalarLiteralIsNonFinite( const char* s )
 {
 	if( !s ) return false;
@@ -2145,7 +2147,7 @@ void Job::DestroyContainers()
 //! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 //! \return TRUE if successful, FALSE otherwise
 bool Job::SetPrimaryAcceleration(
-	const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+	const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 	const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 	const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 	const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
@@ -3608,7 +3610,7 @@ bool Job::AddPNGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3715,7 +3717,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3811,7 +3813,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -3898,7 +3900,7 @@ bool Job::AddJPEGTexturePainter(
 	// Landing 2: when both mipmap is requested AND lowmem is set,
 	// route to footprint stochastic supersampling instead of building
 	// a pyramid (which would defeat lowmem's memory budget).  See
-	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN.md for the full
 	// trade-off analysis.
 	const bool effective_mipmap     = mipmap && !lowmemory;
 	const bool effective_supersample = mipmap && lowmemory;
@@ -7264,6 +7266,58 @@ bool Job::AddDiffuseTransmissionMaterial(
 	return ok;
 }
 
+bool Job::AddHyLIoSSkinMaterial(
+	const char* name,
+	const HyLIoSSkinMaterialConfig& config
+	)
+{
+	if( config.structVersion != HyLIoSSkinMaterialConfig::kCurrentVersion ||
+		config.structSize != sizeof( HyLIoSSkinMaterialConfig ) )
+	{
+		const char* msg = "invalid HyLIoSSkinMaterialConfig version or structSize";
+		GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", msg );
+		RISE::SetFinalizeDiagIfEmpty( msg );
+		return false;
+	}
+	HyLIoSSkinMaterialConfig resolved = config;
+	std::string resolvedAssetPath;
+	std::string resolvedSpecimenPath;
+
+	if( config.responseAssetPath && config.responseAssetPath[0] ) {
+		resolvedAssetPath = GlobalMediaPathLocator().Find( config.responseAssetPath ).c_str();
+		resolved.responseAssetPath = resolvedAssetPath.c_str();
+	}
+	if( config.specimenSourcePath && config.specimenSourcePath[0] ) {
+		resolvedSpecimenPath = GlobalMediaPathLocator().Find( config.specimenSourcePath ).c_str();
+		resolved.specimenSourcePath = resolvedSpecimenPath.c_str();
+	}
+	if( !resolved.boundaryRoughnessMap && config.boundaryRoughnessMapName && config.boundaryRoughnessMapName[0] ) {
+		IScalarPainter* pRoughMap = pScalarPntManager->GetItem( config.boundaryRoughnessMapName );
+		if( !pRoughMap ) {
+			const std::string msg = std::string( "boundary_roughness_map scalar painter not found `" ) + config.boundaryRoughnessMapName + "`";
+			GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", msg.c_str() );
+			RISE::SetFinalizeDiagIfEmpty( msg.c_str() );
+			return false;
+		}
+		resolved.boundaryRoughnessMap = pRoughMap;
+	}
+
+	IMaterial* pMaterial = 0;
+	std::string err;
+	if( !RISE_API_CreateHyLIoSSkinMaterial( &pMaterial, resolved, &err ) || !pMaterial ) {
+		if( err.empty() ) {
+			err = "hylios_skin_material creation failed";
+		}
+		GlobalLog()->PrintEx( eLog_Error, "hylios_skin_material `%s`: %s", name ? name : "", err.c_str() );
+		RISE::SetFinalizeDiagIfEmpty( err.c_str() );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
+
 //! Adds Schlick material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddSchlickMaterial(
@@ -8890,6 +8944,52 @@ bool Job::AddDirectionalLight(
 	RISE_API_CreateDirectionalLight( &pLight, power, c, Vector3(dir) );
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
+	return ok;
+}
+
+bool Job::AddPhysicalPointOmniLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointOmniLight(&light, count, nm, values, outsidePolicy, scale, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalPointSpotLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double target[3], const double inner, const double outer, const double pos[3], const bool shootPhotons)
+{
+	if (!name || !*name || !pos || !target || !RISE::IsFiniteDouble(pos[0]) || !RISE::IsFiniteDouble(pos[1]) || !RISE::IsFiniteDouble(pos[2]) || (pos[0] == target[0] && pos[1] == target[1] && pos[2] == target[2])) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalPointSpotLight(&light, count, nm, values, outsidePolicy, scale, Point3(pos), Point3(target), inner, outer, shootPhotons)) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	light->SetPosition(Point3(pos));
+	light->FinalizeTransformations();
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
+	return ok;
+}
+
+bool Job::AddPhysicalDirectionalLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double direction[3])
+{
+	if (!name || !*name || !direction) { RISE::SetFinalizeDiagIfEmpty("physical light requires a name and geometric parameters"); return false; }
+	ILightPriv* light = nullptr;
+	if (!RISE_API_CreatePhysicalDirectionalLight(&light, count, nm, values, outsidePolicy, scale, Vector3(direction))) {
+		RISE::SetFinalizeDiagIfEmpty("physical light: invalid spectrum, scale, geometry or outside policy (expected zero)");
+		return false;
+	}
+	const bool ok = RegisterOrDiag(pLightManager, light, name, "light");
+	safe_release(light);
+	if (!ok) RISE::SetFinalizeDiagIfEmpty("physical light registration failed");
 	return ok;
 }
 
@@ -14267,6 +14367,42 @@ bool Job::SetPathTracingSpectralRasterizer(
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
 	return RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
+}
+
+bool Job::SetHyperspectralRadiometricRasterizer(
+	const HyperspectralRadiometricConfig& config
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( "default" );
+	if( !pShader ) {
+		std::vector<IShaderOp*> emptyOps;
+		RISE_API_CreateStandardShader( &pShader, emptyOps );
+	} else {
+		pShader->addref();
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, true, kDefaultPathTracingMaxDepth, *pShader, true );
+	safe_release( pShader );
+	if( !pCaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: failed to create ray caster" );
+		return false;
+	}
+
+	IRasterizer* pRaster = 0;
+	const bool created = RISE_API_CreateHyperspectralRadiometricRasterizer( &pRaster, pCaster, config );
+	safe_release( pCaster );
+	if( !created || !pRaster ) {
+		RISE::SetFinalizeDiagIfEmpty( "hyperspectral_radiometric_rasterizer: creation failed" );
+		return false;
+	}
+
+	RasterizerParams snap;
+	snap.numPixelSamples = static_cast<unsigned int>( std::min<std::uint64_t>( config.samplesPerPixel, 0xffffffffULL ) );
+	snap.oidnDenoise     = config.oidnDenoise;
+	snap.stability       = config.stabilityConfig;
+	snap.sms             = config.smsConfig;
+	return RegisterAndActivateRasterizer( "hyperspectral_radiometric_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTRasterizer(

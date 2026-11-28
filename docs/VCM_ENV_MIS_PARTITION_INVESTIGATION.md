@@ -1,7 +1,7 @@
 # VCM env-light MIS partition investigation — Session 11 (2026-05-30)
 
 **Audience**: a future supervisor / planning agent staging the SA-MIS
-migration ([IMPROVEMENTS.md §12](IMPROVEMENTS.md), [PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md)).
+migration ([IMPROVEMENTS.md §12](IMPROVEMENTS.md), [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)).
 **Status**: investigation complete; **no code change landed** beyond
 keeping Session 10's diagnostic state in-tree (see "Working-tree state"
 below).
@@ -46,7 +46,7 @@ MIS partition violation, characterised quantitatively below).
 3. **Splats, mesh-NEE, mesh-S0, interior-connect contributions are all
    tiny** (< 0.005 linR each in env+mesh). Not over-count sources either.
 4. The fix is the **monolithic SA-MIS migration** specced in
-   [PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md) — but
+   [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) — but
    the design's v2 catastrophe modes are now substantially defused by
    the Session 9 continuous-PMF fix. What's left is genuinely just the
    env-vertex pdfFwd/pdfRev SA-vs-disc-area normalization. Detailed
@@ -57,7 +57,7 @@ MIS partition violation, characterised quantitatively below).
 
 ## 1. Context — what was already known going in
 
-From [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) Session 10:
+From [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) Session 10:
 
 - VCM env+mesh = 122 % of PT (over).
 - BDPT env+mesh = 92 % of PT (closer, passing).
@@ -232,7 +232,7 @@ contribution AND restores the other's "alone" estimate — a non-linear
 relationship.
 
 This is the **disc-area-vs-solid-angle pdf measure mismatch** at the
-env vertex that [PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md)
+env vertex that [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
 predicted requires monolithic SA-MIS migration. The Session 9
 continuous-PMF fix closed most of the symptom (env+mesh was 24 % UNDER
 PT before Session 9; now 22 % OVER), but the partition mismatch at the
@@ -322,7 +322,7 @@ These two measures are linked by the disc-Jacobian but aren't computed
 in a way that closes partition-of-unity. The correct fix is to express
 the env vertex's pdfFwd/pdfRev in solid-angle measure and propagate
 the SA convention through MIS — exactly what PBRT-v4 does and what
-[PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md) §"Group 3:
+[VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) §"Group 3:
 VCM caller flags" specs.
 
 ---
@@ -435,7 +435,7 @@ The supervisor agent should sequence these as one atomic landing:
    lightPickProb` divide becomes unnecessary.
 3. **BDPT env-vertex pdfFwd / pdfRev** at the corresponding sites in
    [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp).
-   The 6 sites enumerated in PRE_PHASE1_OPTION_C_DESIGN.md "Group 2"
+   The 6 sites enumerated in VCM_ENV_MIS_PARTITION_INVESTIGATION.md "Group 2"
    need SA-measure pdfs on env vertices. Use
    `BDPTVertex::IsInfiniteLight()` (already landed Phase 1.A) and
    `BDPTUtilities::ConvertDensity` (also landed) to migrate each
@@ -526,7 +526,7 @@ make a judgement call on before staging SA-MIS work:
    used standalone PNG render diffing which is fine for finding
    where contributions land but not for quantifying variance. The
    supervisor should plan for K-trial gates per-step.
-5. **Timeline budget**: PRE_PHASE1_OPTION_C_DESIGN.md scoped 3 weeks
+5. **Timeline budget**: VCM_ENV_MIS_PARTITION_INVESTIGATION.md scoped 3 weeks
    for the full Piece 1 SA-MIS migration. With the catastrophe modes
    defused by Session 9 and the scope reduction from this session's
    evidence (only 2 VCM sites + 6 BDPT sites + OpenPGL audit), the
@@ -540,8 +540,8 @@ make a judgement call on before staging SA-MIS work:
 For the underlying theory and the v2 attack plan that this
 investigation refines:
 
-- [PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md) — original v2 spec
-- [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) — Sessions 1–10 historical record (Session 11 to be appended)
+- [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) — original v2 spec
+- [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) — Sessions 1–10 historical record (Session 11 to be appended)
 - [IMPROVEMENTS.md §12](IMPROVEMENTS.md) — Phase 1 canonical spec; status field references this doc
 - [VCM.md](VCM.md) — Georgiev 2012 recurrence reference + env-vertex relevant sections
 - [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) — MIS regression diagnostic procedure
@@ -814,7 +814,7 @@ partial-migration measure inconsistency, not a spurious denominator term.**
 would re-break partition the other way and, per Session 12, double-count merges in
 VM-enabled env caustic scenes. Nor is it "generation correction" (option-a's fix) —
 generation is healthy. It is the **MONOLITHIC** migration the original
-`PRE_PHASE1_OPTION_C_DESIGN.md` mandated: migrate the env-vertex pdf convention
+`VCM_ENV_MIS_PARTITION_INVESTIGATION.md` mandated: migrate the env-vertex pdf convention
 **consistently across both subpath sides** —
 (i) eye-side `EvaluateS0Impl` / `EvaluateNEEImpl` env branches,
 (ii) light-side `InitLight` env-vertex seeding (+ the finite/infinite gate) which feeds

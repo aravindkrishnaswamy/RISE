@@ -20,7 +20,7 @@
 //  point was REMOVED when the legacy-vs-CST equivalence oracle was retired --
 //  the golden (CstDeriveGoldenTest) is now the CST-derive safety net.  Do not
 //  reintroduce a legacy-parser call here; the legacy streaming parser
-//  (AsciiSceneParser::ParseAndLoadScene) is being deleted (6c-3c).
+//  (AsciiSceneParser::ParseAndLoadScene) was deleted (6c-3c).
 //
 //////////////////////////////////////////////////////////////////////
 #ifndef RISE_TESTS_CST_RENDER_EQUIVALENCE_H
@@ -33,6 +33,9 @@
 #include <algorithm>
 #include <sstream>
 #include <set>
+#include <iomanip>
+#include "../src/Library/Lights/PhysicalLightSpectrum.h"
+#include "../src/Library/Materials/HyLIoS/HyLIoSSkinMaterial.h"
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -533,6 +536,17 @@ inline std::string DumpJob( Job& job )
 		if( const RISE::Implementation::DiffuseTransmissionMaterial* dtm = dynamic_cast<const RISE::Implementation::DiffuseTransmissionMaterial*>( mat ) ) {
 			o << " diffuse_transmission(refl=" << ReverseName( job.GetPainters(), &dtm->GetReflectance() )
 			  << " trans=" << ReverseName( job.GetPainters(), &dtm->GetTransmittance() ) << ")";
+		} else if( const RISE::Implementation::HyLIoSSkinMaterial* hylios = dynamic_cast<const RISE::Implementation::HyLIoSSkinMaterial*>( mat ) ) {
+			const auto& s = hylios->GetSummary();
+			char hb[160];
+			std::snprintf( hb, sizeof(hb), " ior=%.9g scale=%.9g band=[%.9g..%.9g]",
+				s.exteriorIOR, s.physicalScale, s.coveredFirstNm, s.coveredLastNm );
+			o << " hylios_skin(mode=" << s.transportMode
+			  << " boundary=" << s.boundaryMode
+			  << " preset=" << s.preset
+			  << " sem=" << s.semanticSHA256
+			  << " content=" << s.contentSHA256
+			  << hb << ")";
 		} else if( const RISE::Implementation::MixMaterial* mix = dynamic_cast<const RISE::Implementation::MixMaterial*>( mat ) ) {
 			o << " mix(children=[";
 			for( unsigned int ci = 0; ci < mix->GetChildCount(); ++ci ) {
@@ -638,7 +652,7 @@ inline std::string DumpJob( Job& job )
 	}
 	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
 	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a
-	// CST divergence in any light value (power/colour/position/cone) reorders or changes a row. Media dump the
+	// CST divergence in any light value (power/colour/position/cone/physical SPD) changes a row. Media dump the
 	// global medium identity + per-medium state via DumpMedium (coefficients at the bbox centre, phase-g, placement).
 	o << "lights:\n";
 	{
@@ -658,7 +672,16 @@ inline std::string DumpJob( Job& job )
 					(double)p.x,(double)p.y,(double)p.z, (double)d.x,(double)d.y,(double)d.z,
 					(double)l->emissionConeHalfAngle(), (double)l->emissionInnerAngle(), (double)l->emissionOuterAngle(),
 					(double)tg.x,(double)tg.y,(double)tg.z, (int)l->CanGeneratePhotons() );
-				rows.push_back( b );
+                std::ostringstream row;
+                row << b;
+                if (const auto spectrum = RISE::Implementation::GetPhysicalLightSpectrum(*l)) {
+                    row << " physical_spd(zero" << std::setprecision(17);
+                    for (std::size_t si = 0; si < spectrum->Wavelengths().size(); ++si) {
+                        row << ";" << spectrum->Wavelengths()[si] << "=" << spectrum->Values()[si];
+                    }
+                    row << ")";
+                }
+                rows.push_back(row.str());
 			}
 		}
 		std::sort( rows.begin(), rows.end() );

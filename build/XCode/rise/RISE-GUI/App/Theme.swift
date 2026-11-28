@@ -2,7 +2,7 @@
 //  Theme.swift
 //  RISE-GUI
 //
-//  Design tokens for the RISE UI redesign (docs/gui/DESIGN_BRIEF.md).
+//  Design tokens for the RISE UI redesign (docs/GUI_ROADMAP.md).
 //  Single source of truth for color, type, spacing and radii on macOS.
 //  The Windows client mirrors these values in build/VS2022/RISE-GUI/Theme.h;
 //  the two files are kept in sync by convention — change both together,

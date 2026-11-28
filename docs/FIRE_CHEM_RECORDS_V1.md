@@ -179,7 +179,7 @@ definition* — it becomes required for any fuel whose model discrepancy
 cannot be bounded from existing same-regime data.
 
 **Source-alternatives audit (owner, 2026-08-06,
-[full audit](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md)) — three
+[full audit](FIRE_SMOKE_STATUS.md)) — three
 findings that sharpen this section:**
 
 - **The "~10⁻⁴" numerator anchor is model evidence, not measurement.**

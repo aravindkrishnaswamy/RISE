@@ -131,7 +131,7 @@ namespace RISE
 		// drove a light-vertex decision AND an eye-vertex decision of
 		// ONE connected path -- a bias, not just a correlation: -12 % on
 		// a light inside albedo-0.99 / sigma_t-8 fog under BDPT with
-		// Sobol' and -13 % under MLT (docs/DL81_SOBOL_DIMENSION_PARITY.md
+		// Sobol' and -13 % under MLT (docs/DEBT_LEDGER.md
 		// section 10, the DL-286 ledger row).
 		//
 		// The SHALLOW iterations keep their historical streams, so a

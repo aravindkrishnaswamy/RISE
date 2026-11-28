@@ -1,5 +1,5 @@
 // Two small deterministic CPU reference solvers for the M2 solver contract
-// (docs/SIMULATION_M2_DESIGN.md "Reference solvers"). Test code only: they
+// (docs/SIMULATION_SOLVER_CONTRACT.md "Reference solvers"). Test code only: they
 // prove the hosts are not fire-shaped and exercise grid and mesh outputs.
 //
 //   test.advection_diffusion  scalar u_t + v.grad u = D lap u + S on a periodic

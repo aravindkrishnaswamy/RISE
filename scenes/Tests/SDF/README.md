@@ -81,26 +81,18 @@ chunks ready to paste into `watch_dial.RISEscene`).
 
 ## Unit test
 
-`tests/SDFGeometryTest.cpp` (126 checks) validates the SDF against closed forms:
+`tests/SDFGeometryTest.cpp` (Tests 1–36) validates the SDF against closed forms:
 SDF sphere ≡ analytic sphere (range + normal over many directions), box face
-distances, `smin` bulges the neck, bbox containment, inside-start exit, rigid
-transform, non-uniform scale, plus the boolean ops: **subtract** (hard *and*
-smooth k=1) carves a real cavity without tunnelling a wall or filling the hole,
-**intersect** produces a lens with exact hit positions, and
-`IntersectRay_IntersectionOnly` agrees with `IntersectRay` on the front/back
-face filter, plus the first-class surface machinery: GetArea vs closed
-forms, on-surface/uniform sampling, TessellateToMesh contract (indices, areas,
-outward winding, append offsets), and a 400k-sample MC integration of the NEE
-integrand against the analytic answer (ratio 1.000).  Test 20 covers the
-shared part-line grammar (`ParsePartLines`): field-exact parsing with
-comments / blank lines, hard failures on unknown / malformed / trailing
-tokens and the retired count-header format, and hit-identity between parsed
-and directly-constructed parts.  Test 21 pins the first-op rule (leading
-`subtract`/`intersect` rejected; leading `smin` hits identically to `union`).
-Test 22 pins the missed-component detector (sub-cell nub: rendered but
-unsampled + flagged + `CanBeAreaLight()` withdrawn at detail 8; sampled +
-unflagged + capability restored at detail 64).  Test 23
-pins the curvature-corrected `GetArea` against closed forms.
+distances, `smin` bulges the neck and AABB containment (Test 36), inside-start
+exit, rigid transform, non-uniform scale, roundcone/roundbox/capsule/superellipsoid
+primitives and AABBs (Tests 32–35), degenerate shape/scale diagnostics, plus the
+boolean ops: **subtract** (hard *and* smooth k=1) carves a real cavity without
+tunnelling a wall or filling the hole, **intersect** produces a lens with exact
+hit positions, and `IntersectRay_IntersectionOnly` agrees with `IntersectRay` on
+the front/back face filter, plus the first-class surface machinery: `GetArea` vs
+closed forms, on-surface/uniform sampling, `TessellateToMesh` contract, NEE MC
+integration, part-line parsing (`ParsePartLines`), first-op rules, missed-component
+detection, and curvature-corrected `GetArea`.
 
 ## Why subtract / intersect don't overstep
 
@@ -214,7 +206,7 @@ integrators (linear-HDR patch means; PT as reference):
   `docs/skills/bdpt-vcm-mis-balance.md` step 0.  The analytic-torus control now
   reads 1.0007.)  VCM's volumetric in-scatter deficit matches the documented
   RISE-wide VCM volume luminance bias (see
-  `docs/UNIFIED_INTEGRATOR_DECISION.md`: VCM is the right integrator for
+  `docs/RENDERING_INTEGRATORS.md`: VCM is the right integrator for
   caustic transport only).
 
 The property this geometry is responsible for — *behaving indistinguishably

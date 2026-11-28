@@ -390,7 +390,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// both roughness eigenvalues on their reachable grid and fall back to the
 	// exact isotropic LookupEavgG2/LookupEssG2 when alphaX==alphaY (so
 	// isotropic materials render byte-identically to before this fix).
-	// See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77" and the
+	// See docs/DEBT_LEDGER.md "DL-77" and the
 	// DL-77 ledger row for the azimuthal-averaging design and residual.
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavgG2Aniso( alphaX, alphaY );
 
@@ -425,7 +425,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			// Thin-film multiscatter tail: the Kulla-Conty F_avg is the THIN-FILM
 			// hemispherical average, not the substrate's -- the film shifts the
 			// average reflectance by up to ~0.5 (~13% rough-surface albedo error
-			// otherwise; tests/ThinFilmFurnaceTest.cpp, design doc section 7 P2-D).
+			// otherwise; tests/ThinFilmBRDFTest.cpp, design doc section 7 P2-D).
 			// Dispersion-correct per-lambda stack (twin of the single-scatter
 			// site): film/substrate n,k sampled at each integration wavelength.
 			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );

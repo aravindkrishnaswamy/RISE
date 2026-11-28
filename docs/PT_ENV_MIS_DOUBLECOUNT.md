@@ -37,7 +37,7 @@ residual-ledger item 8).
    against closed forms in F3; see "Fallout and re-calibration" below.
 5. **The PT-default integrator decision is unaffected.** It was made on
    wall-clock-normalized variance (σ²·T), not on absolute luminance — see
-   [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md). Nothing
+   [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md). Nothing
    here changes which integrator is cheaper per unit of variance.
 
 ---
@@ -328,7 +328,7 @@ BDPT/VCM mean-ratio up to `2.21 %` (was `1.27 %`), p99-ratio up to
 
 The Session 9-13 investigation in
 [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
-and [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) ran entirely against the
+and [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) ran entirely against the
 inflated PT reference this arc fixes. Their **relative** findings — which
 sites were bisected and ruled innocent (Session 10's `pdfSelect` plumbing,
 splats, mesh-side strategies), the diagnosis that VCM's residual is a
@@ -342,7 +342,7 @@ architectural shape of the residual is has changed.
 
 What needs re-reading through this lens is any **absolute** luminance
 percentage those sessions quoted against PT — e.g. "VCM env+mesh = 122% of
-PT" (`PRE_PHASE1_STATUS.md` Session 10) or "the 22% over VCM env+mesh...
+PT" (`VCM_ENV_MIS_PARTITION_INVESTIGATION.md` Session 10) or "the 22% over VCM env+mesh...
 share a single source" (`VCM_ENV_MIS_PARTITION_INVESTIGATION.md` TL;DR
 item 1). Those percentages were computed against a PT that was itself
 `+13.6-17.7%` over truth on the same topologies; the corrected, truth-
@@ -352,7 +352,7 @@ between env-S0 and env-NEE — is unaffected; its *size*, measured against
 truth rather than against inflated PT, is larger than previously stated.
 
 The PT-default integrator-selection decision in
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) is
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) is
 unaffected: that decision was made on wall-clock-normalized variance
 (σ²·T), where PT's 3-7× lower per-sample cost was the deciding factor, not
 on absolute luminance agreement with any other integrator. Nothing in this

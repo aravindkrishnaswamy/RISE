@@ -13,7 +13,7 @@
 //  estimator of the same transport on top of a full-weight one: an
 //  index-1.0 box around a white-furnace subject read 1.14-1.17x open air.
 //
-//  The ruling (docs/DL344_TRANSPARENT_SHADOW_PARTITION.md) is DL-05's:
+//  The ruling (docs/DEBT_LEDGER.md) is DL-05's:
 //  only a DELTA light's shadow ray sees through a clear dielectric,
 //  because no BSDF-sampled strategy can ever hit a delta light, so that
 //  ray is the path's only estimator; area/env NEE keeps a binary shadow

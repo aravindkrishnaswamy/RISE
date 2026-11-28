@@ -36,7 +36,7 @@
 //  DL-111 -- THE FIX (and why it is NOT DL-68's clip, mostly)
 //
 //    These are DELTA Snell lobes: there is no lobe to renormalize.  The
-//    ruling adopted (see docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md
+//    ruling adopted (see docs/DEBT_LEDGER.md
 //    for the full derivation) is to RE-DERIVE THE REFRACTION ABOUT THE
 //    TRUE GEOMETRIC NORMAL when the shading normal's Snell result is
 //    geometrically impossible -- the treatment these same functions

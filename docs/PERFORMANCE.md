@@ -257,8 +257,8 @@ This was the single biggest VCM win in the sprint (−14 % wall).
 ### [Thread-local expression memo](../src/Library/Utilities/ExpressionMemo.h)
 
 A two-level per-hit memo for the texture-expression VM and the geometry
-shading signals it calls, entirely in `thread_local` fixed-size tables (2976
-bytes per worker, ~53.6 kB across 18 workers — matching
+shading signals it calls, entirely in `thread_local` fixed-size tables (4016
+bytes per worker, ~72.3 kB across 18 workers — matching
 [ARCHITECTURE.md](ARCHITECTURE.md) and
 [ExpressionMemoTest.cpp](../tests/ExpressionMemoTest.cpp); no
 heap, no locks, no sharing).  L1 keys a signal builtin on
@@ -422,9 +422,12 @@ Counters are essentially free (~5 ns each).
   and `BDPTRasterizerBase.cpp`.  Expose as a scene-file option if
   needed.
 - **Memory too high?**  `ProgressiveFilm` memory scales with
-  resolution × 72 B/pixel (`sizeof(ProgressivePixel)`).  Largest store is `LightVertexStore` at
-  VCM's 1080p × 10 light-depth ≈ 1.6 GB.  Cap via
-  `maxStoredLightVertices`.
+  resolution × 72 B/pixel (`sizeof(ProgressivePixel)`).  In VCM, the
+  largest transient store is `LightVertexStore` (surface vertices,
+  unbounded per pass; 1080p × 10 light-depth ≈ 1.6 GB), while medium
+  merge storage (`LightMediumVertexStore`) is capped via the
+  `vcm_volume_merge_max_vertices` option (default `250000`, see
+  [VCM.md](VCM.md)).
 - **Want smaller/larger tiles?**  Override `ComputeTileSize`'s
   `targetTilesPerThread` (default 8) if your scene's per-pixel cost
   is unusually uneven — denser scenes with complex materials may

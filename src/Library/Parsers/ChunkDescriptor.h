@@ -348,7 +348,7 @@ namespace RISE
 	};
 
 	// Type-erased property bag populated by the generic parameter
-	// dispatcher (DispatchChunkParameters in AsciiSceneParser.cpp) and
+	// dispatcher (DispatchChunkParameters in ChunkParserRegistry.cpp) and
 	// consumed by each parser's Finalize() method.  This is the
 	// mechanism that makes the descriptor the single source of truth:
 	// the dispatcher walks the input lines, validates each name
@@ -709,7 +709,7 @@ namespace RISE
 		std::string                  replacement;                            //!< human-readable replacement hint
 
 		//! Optional presentation soft range for the Properties panel slider
-		//! (docs/gui/MATERIAL_EDITOR.md §6.3, docs/gui/PROPERTIES_AND_REFERENCES.md §4.1).
+		//! (docs/gui/MATERIAL_EDITOR.md §6.3, docs/GUI_ROADMAP.md §4.1).
 		//! Pure presentation hint — the scene language and text well still accept
 		//! values outside `[softMin, softMax]`, and Reference-kind painter slots
 		//! only surface the slider while their current value is a single finite

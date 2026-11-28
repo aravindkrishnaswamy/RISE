@@ -3704,7 +3704,7 @@ static void RunSceneInventoryTests()
 
 //======================================================================
 // ARC 81 (2026-08-12): THE TONAL FACT.
-// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+// Design: docs/agentic-redesign/83-staged-construction-plan.md.
 //
 // WHY IT EXISTS.  Arc 80 sec 6.1 pointed the brand-new inventory at the
 // arc-79 scene that "renders empty" and found 17 of 19 objects covering

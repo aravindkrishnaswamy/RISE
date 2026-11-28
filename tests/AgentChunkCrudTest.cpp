@@ -3565,7 +3565,8 @@ static void TestCsgOperandRebaseWarning()
 // rasterizer ("its a specialized rasterizer"), narrowed by the user to
 // "agents may use PT and VCM only".  ALLOWED: pathtracing_pel /
 // pathtracing_spectral / vcm_pel / vcm_spectral.  BLOCKED: bdpt_pel /
-// bdpt_spectral / mlt / mlt_spectral / auto / auto_spectral.
+// bdpt_spectral / mlt / mlt_spectral / auto / auto_spectral, and (HyLIoS
+// P6b, 2026-11) hyperspectral_radiometric_rasterizer, a measurement tool.
 // Legacy-deprecation Phase 1 (2026-10-09): pixelpel_rasterizer /
 // pixelintegratingspectral_rasterizer were DELIBERATELY UNGATED (on the
 // stale "pixelpel is required for alpha-mask scenes" premise, false since
@@ -3632,7 +3633,7 @@ static const char* const kUserAuthoredMLTScene =
 	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tmaterial matte\n}\n\n"
 	"omni_light\n{\n\tname lamp\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 3 3\n}\n";
 
-//! The eight kinds this policy blocks, each with a minimal, VALID body so
+//! The nine kinds this policy blocks, each with a minimal, VALID body so
 //! a refusal can never be confused with a parse/derive failure.
 struct BlockedRasterizerCase { const char* kind; const char* chunkText; };
 static const BlockedRasterizerCase kBlockedRasterizerCases[] = {
@@ -3652,6 +3653,8 @@ static const BlockedRasterizerCase kBlockedRasterizerCases[] = {
 	  "pixelpel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
 	{ "pixelintegratingspectral_rasterizer",
 	  "pixelintegratingspectral_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}" },
+	{ "hyperspectral_radiometric_rasterizer",
+	  "hyperspectral_radiometric_rasterizer\n{\n\twavelength_nm 550\n\tsamples_per_pixel 1\n}" },
 };
 static const std::size_t kBlockedRasterizerCaseCount =
 	sizeof( kBlockedRasterizerCases ) / sizeof( kBlockedRasterizerCases[0] );
@@ -4325,11 +4328,11 @@ static void TestRasterizerAllowlistGate()
 			       "R1c(i) rasterizer kind `" + kw + "` is EXPLICITLY classified by the R1c policy "
 			       "(a new rasterizer defaults to BLOCKED -- classify it deliberately)" );
 		}
-		Check( seen == 12,
-		       "R1c(i) the parser registers exactly 12 rasterizer kinds (update this count AND the "
+		Check( seen == 13,
+		       "R1c(i) the parser registers exactly 13 rasterizer kinds (update this count AND the "
 		       "policy sets together when that changes)" );
 		Check( allowed == 4, "R1c(i) exactly FOUR kinds are agent-selectable (PT + VCM, pel + spectral)" );
-		Check( blocked == 8, "R1c(i) exactly EIGHT kinds are blocked (BDPT, MLT, auto, and the frozen legacy pixel rasterizers -- pel + spectral)" );
+		Check( blocked == 9, "R1c(i) exactly NINE kinds are blocked (BDPT, MLT, auto, and the frozen legacy pixel rasterizers -- pel + spectral -- plus the HyLIoS hyperspectral_radiometric_rasterizer measurement tool)" );
 		// `light_rr_threshold` is ChunkCategory::Rasterizer but is NOT a
 		// rasterizer -- the suffix half of the predicate is load-bearing.
 		Check( RISE::Agent::ClassifyAgentRasterizerKind( "light_rr_threshold" ) ==
@@ -17178,7 +17181,7 @@ static void TestComposePhaseLightObjectExemption()
 //----------------------------------------------------------------------
 // ARC 81 (2026-08-12): `light_scene` -- THE CLEAN-ROOM LIGHTING PASS,
 // and the COMPOSE-phase refusal that forces its first use.
-// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+// Design: docs/agentic-redesign/83-staged-construction-plan.md.
 //
 // THE MEASUREMENT BEHIND IT.  Against the hand-authored frontier benchmark
 // on the same prompt, every agent run in this workstream produced 3-5

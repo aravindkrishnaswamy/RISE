@@ -360,7 +360,7 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	// Cut faces less than `minFaceFraction` open are closed (default 0: none).  The
 	// jets that closing faces below 1/2 had suppressed came from transporting the
 	// velocities of narrow cut faces (LiquidFlow.h Project, minValidFraction); closing
-	// locates the solid only to half a cell (docs/SIMULATION_M7A_RESULTS.md section 13).
+	// locates the solid only to half a cell (docs/SIMULATION_SOLVER_CONTRACT.md section 13).
 	if (options.minFaceFraction > 0)
 		for (int a = 0; a < 3; ++a) for (double& f : fraction[a]) if (f < options.minFaceFraction) f = 0;
 	CellOpenFractions(g, solidNodes, openCells, pool);
@@ -414,7 +414,7 @@ bool LiquidModel::Initialize(const LiquidSetup& setup, const SolverOptions& opti
 	// extrapolated from the liquid's), so the level set inside a solid's
 	// boundary cells follows the liquid; an explicit extrapolation of phi
 	// (mean or linear) perturbed a hydrostatic surface near a solid
-	// (docs/SIMULATION_M7A_RESULTS.md section 2).
+	// (docs/SIMULATION_SOLVER_CONTRACT.md section 2).
 	u.Resize(g);
 	for (int a = 0; a < 3; ++a) if (g.n[a] > 1) std::fill(u.u[a].begin(), u.u[a].end(), setup.initialVelocity[a]);
 	q_.assign(g.Cells(), 0.0);
@@ -509,7 +509,7 @@ double LiquidModel::MaxStep(double segment) const
 	if (gn > 0 && depth_ > 0) dt = std::min(dt, options_.waveCfl*g.h/std::sqrt(gn*depth_));
 	// m7c: the capillary limit sqrt(rho h^3 / (2 pi sigma)) with the liquid's density (the 2 pi
 	// form is Denner and van Wachem 2015; Brackbill, Kothe and Zemach 1992 have 4 pi;
-	// docs/SIMULATION_M7C_RESULTS.md for the measured stability).
+	// docs/SIMULATION_SOLVER_CONTRACT.md for the measured stability).
 	if (setup_.viscosity > 0 && options_.viscousCfl > 0) dt = std::min(dt, options_.viscousCfl*g.h*g.h*setup_.density/setup_.viscosity);
 	if (setup_.surfaceTension > 0)
 		dt = std::min(dt, options_.capillaryCfl*std::sqrt(setup_.density*g.h*g.h*g.h/(2*3.14159265358979323846*setup_.surfaceTension)));
@@ -795,7 +795,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// layers, which makes the surface velocity second-order accurate; for
 	// momentum advection constant, which keeps under-resolved films stable
 	// (a linear extrapolation ahead of a dam-break front made its film
-	// accelerate without bound; docs/SIMULATION_M7A_RESULTS.md section 2).
+	// accelerate without bound; docs/SIMULATION_SOLVER_CONTRACT.md section 2).
 	const std::vector<double> phiStart = sheets.empty() ? std::vector<double>() : phi;   // m7d
 	sweptCells_.clear();
 	MacField ui = u;
@@ -807,7 +807,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// to be transported (minTransportFraction) take the solids' velocity (at rest,
 	// or the bodies' rigid velocity) instead of the liquid's extrapolated one, so
 	// the advection beside a no-slip wall carries the wall's momentum
-	// (docs/SIMULATION_M7C_RESULTS.md, circular Couette).  The interface field
+	// (docs/SIMULATION_SOLVER_CONTRACT.md, circular Couette).  The interface field
 	// keeps the m7b extension.
 	if (setup_.viscosity > 0 && setup_.noSlip && solids) {
 		if (hasBodies) geometry_.SolidVelocity(BodyVelocities(), solidVelocity_);
@@ -973,7 +973,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	// minimising the strain energy without the incompressibility constraint
 	// and then projecting, which is not Stokes flow once nu dt / h^2 is large:
 	// the 2-D Stokes drag on a cylinder in a concentric container came out at 26%
-	// of the exact value at nu dt / h^2 = 30 (docs/SIMULATION_M7C_RESULTS.md).  The
+	// of the exact value at nu dt / h^2 = 30 (docs/SIMULATION_SOLVER_CONTRACT.md).  The
 	// viscous solve therefore sees the step's gravity and the previous step's
 	// pressure gradient (scaled to this dt; `stagePart` the part of it this
 	// projection carries), s - G q_prev + w dt g, and G q_prev is added back
@@ -1201,7 +1201,7 @@ bool LiquidModel::Step(double dt, StepStats& stats, std::string& error)
 	if (coupledSheets) CloseUnwetted();   // m7g
 	// Safeguard (not part of the validated model): valid face speeds above
 	// speedLimit sqrt(2 |g| D) are clamped and counted (none in the robustness
-	// sweep since m7a.2: docs/SIMULATION_M7A_RESULTS.md section 13; invalid faces
+	// sweep since m7a.2: docs/SIMULATION_SOLVER_CONTRACT.md section 13; invalid faces
 	// are replaced by the extrapolation before any use); a non-finite state fails.
 	{
 		const double gn = std::sqrt(setup_.gravity[0]*setup_.gravity[0] + setup_.gravity[1]*setup_.gravity[1] +
@@ -2166,7 +2166,7 @@ void LiquidModel::OpenUnwetted()
 	// carrying the sheet: closed, the wet cell's pressure acted on the sheet across the air gap
 	// (a flap's light edge 3 cm above still water was kicked to 1.15 m/s in one step by the
 	// pressure of the cell below a face it closed 1.2 cm above the water;
-	// docs/SIMULATION_M7G_RESULTS.md).  The face stays a barrier of the level set and of the
+	// docs/SIMULATION_SOLVER_CONTRACT.md).  The face stays a barrier of the level set and of the
 	// sweeps; it is closed again after the step's projections (CloseUnwetted).  So the rule acts
 	// where a free surface meets the sheet (cells with an interface of their own): beside a sheet
 	// holding liquid on one side the level set is the distance to the sheet, contact by definition.
@@ -2206,7 +2206,7 @@ void LiquidModel::OpenUnwetted()
 		// closed and moving with the sheet (its J and face mass scaled by it), A (1 - r c) open, r
 		// falling linearly from 1 at the tolerance to 0 a band beyond it.  Switched (m7g-m7j), the
 		// liquid on a light free edge's faces came and went whole from one step to the next (0 to
-		// 3.6 g on a 34 mg vertex; docs/SIMULATION_M7J_RESULTS.md section 2.4).
+		// 3.6 g on a 34 mg vertex; docs/SIMULATION_SOLVER_CONTRACT.md section 2.4).
 		const double gap = reach - theta*h, band = kContactBand*h;
 		if (!(gap > tol)) continue;
 		const double r = std::max(0.0, 1 - (gap - tol)/band);
@@ -2244,7 +2244,7 @@ void LiquidModel::ExtrapolateEnclosed()
 	// |x - x_o| (exact for a plane; the trilinear stencil at x_o lies outside
 	// the enclosed cells).  Left as advected, the inside of a moving body
 	// turned the liquid under it into air within a few steps
-	// (docs/SIMULATION_M7B_RESULTS.md section 3).
+	// (docs/SIMULATION_SOLVER_CONTRACT.md section 3).
 	const Grid& g = setup_.grid;
 	const auto& E = geometry_.EnclosedCells();
 	if (E.empty()) return;
@@ -2433,7 +2433,7 @@ void LiquidModel::SheetFaceMass(const MacField& s, std::vector<std::vector<Sheet
 	// face whose axis lies nearly in the sheet (n_a small, the staircase's faces beside tangential
 	// flow) the liquid sliding along the sheet drove a light cloth's vertex across it at 1 / n_a
 	// times its speed (a 0.05 kg/m^2 flap's edge at 10 m/s in a 2 m/s surge, n_a = 0.16;
-	// docs/SIMULATION_M7G_RESULTS.md).  The two agree for an axis-aligned sheet.
+	// docs/SIMULATION_SOLVER_CONTRACT.md).  The two agree for an axis-aligned sheet.
 	const Grid& g = setup_.grid;
 	const double scale = setup_.density*g.h*g.h*g.h;
 	blocks.assign(sheets.size(), {});
@@ -2865,7 +2865,7 @@ void LiquidModel::ClearSheets(const std::array<int,3>& d, const std::vector<doub
 	// level set beside it is the distance to it) or past it, and the surface's facets, chords between
 	// them over a cell, cross the sheet's own facets, chords between its vertices: seen from the dry
 	// side the liquid's surface showed through the zero-thickness sheet in a fine speckle
-	// (docs/SIMULATION_M7I_RESULTS.md: a third of the surface vertices over a bag lay below the sheet,
+	// (docs/SIMULATION_SOLVER_CONTRACT.md: a third of the surface vertices over a bag lay below the sheet,
 	// by up to 0.045 h).  Each such vertex is moved towards the wet sample until it lies at least
 	// 0.1 h from the crossed triangle's plane on the wet side (along the edge: 0.1 h / |n_a|, at most
 	// 0.45 h, and never past the wet sample); the fans' centroids follow.  Output only.

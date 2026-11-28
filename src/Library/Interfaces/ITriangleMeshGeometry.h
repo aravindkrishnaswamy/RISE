@@ -116,7 +116,7 @@ namespace RISE
 		//!
 		//! Caller must ensure this is invoked between frames, never
 		//! concurrent with intersection.  See
-		//! docs/BVH_ACCELERATION_PLAN.md §4.6.
+		//! docs/BVH_RETROSPECTIVE.md §4.6.
 		virtual unsigned int UpdateVertices(
 			const VerticesListType& newVertices,
 			const NormalsListType&  newNormals ) = 0;

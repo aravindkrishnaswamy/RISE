@@ -22,7 +22,7 @@
 //  axis (Dzhanibekov) keeping energy and angular momentum over many flips;
 //  projectile motion; a physical pendulum held by a stiff external spring
 //  against the exact period.  "predictive" is requested only without plane
-//  contact.  Parameters: docs/SIMULATION_M6_RESULTS.md.
+//  contact.  Parameters: docs/SIMULATION_SOLVER_CONTRACT.md.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

@@ -648,7 +648,7 @@ namespace RISE
 		//! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 		//! \return TRUE if successful, FALSE otherwise
 		bool SetPrimaryAcceleration(
-			const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+			const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
@@ -1767,6 +1767,12 @@ namespace RISE
 			const char* name,
 			const char* reflectance,
 			const char* transmittance
+			);
+
+		//! Adds a HyLIoS hyperspectral skin material (`hylios_skin_material`).
+		bool AddHyLIoSSkinMaterial(
+			const char* name,
+			const HyLIoSSkinMaterialConfig& config
 			);
 
 		//! Adds Schlick material
@@ -3072,6 +3078,11 @@ namespace RISE
 			const ProgressiveConfig& progressiveConfig
 			);
 
+		//! Installs a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer.
+		bool SetHyperspectralRadiometricRasterizer(
+			const HyperspectralRadiometricConfig& config
+			);
+
 		bool SetPathTracingSpectralRasterizer(
 			const unsigned int numPixelSamples,
 			const char* shader,
@@ -3962,6 +3973,12 @@ namespace RISE
 									const double sunIntensityScale,
 									const bool   createSun
 									);
+
+		bool AddPhysicalPointOmniLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double pos[3], const bool shootPhotons);
+
+		bool AddPhysicalPointSpotLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double target[3], const double inner, const double outer, const double pos[3], const bool shootPhotons);
+
+		bool AddPhysicalDirectionalLight(const char* name, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const double direction[3]);
 
 	private:
 		//! Callback-output render scope (2026-11-14).  Every

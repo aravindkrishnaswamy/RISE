@@ -4,7 +4,7 @@
 # DIVERGENT PT code paths (guiding, BSSRDF, random-walk SSS, SMS, volume)
 # that the standard cornellbox baseline set does NOT exercise.  Used to
 # verify the Phase 2b-part-2 IntegrateFromHit templatization is
-# zero-behaviour-change on those paths (PRE_PHASE1_STATUS.md stop-rule #2).
+# zero-behaviour-change on those paths (docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md stop-rule #2).
 #
 # Usage:
 #   bash scripts/divergent_baselines.sh capture <tag>   # 2 trials each; saves trial-a + noise floor

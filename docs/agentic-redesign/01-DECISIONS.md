@@ -438,7 +438,7 @@ chunk list and any large `RepeatGroup`/heightfield (e.g. 10 000 `part`s) use the
 > **Θ(N)** under adversarial dense inserts, making the combined `DocInsertItem` **Θ(N·log N) worst-case**
 > (common-case O(log N)) — the disclosed **v1 fallback** (this D23 prerequisite). Bender's level-scaled
 > order-maintenance (window → O(1) amortized) restores O(log N) inserts and is the documented refinement.
-> The COUNTED lookups (name / id→node / id→position) ARE O(log N). See `IMPLEMENTATION_SLICES.md` item 4.
+> The COUNTED lookups (name / id→node / id→position) ARE O(log N). See `50-agentic-surface.md` item 4.
 
 ## D17 — Asset fingerprint = prefilter + content hash; save = temp-write + fsync + revalidate + atomic rename (amends D5, D6; resolves R2-P1-7)
 

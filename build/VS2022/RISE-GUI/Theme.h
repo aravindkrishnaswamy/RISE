@@ -2,7 +2,7 @@
 //  Theme.h
 //  RISE-GUI (Windows / Qt6)
 //
-//  Design tokens for the RISE UI redesign (docs/gui/DESIGN_BRIEF.md).
+//  Design tokens for the RISE UI redesign (docs/GUI_ROADMAP.md).
 //  Single source of truth for color, type, spacing and radii on Windows.
 //  The macOS client mirrors these values in
 //  build/XCode/rise/RISE-GUI/App/Theme.swift; the two files are kept in
@@ -600,6 +600,13 @@ inline QString rgba(const QColor& c)
 	return QStringLiteral("rgba(%1,%2,%3,%4)")
 		.arg(c.red()).arg(c.green()).arg(c.blue())
 		.arg(QString::number(c.alphaF(), 'f', 2));
+}
+
+inline QString rgba(const QColor& c, double alpha)
+{
+	return QStringLiteral("rgba(%1,%2,%3,%4)")
+		.arg(c.red()).arg(c.green()).arg(c.blue())
+		.arg(QString::number(alpha, 'f', 2));
 }
 
 inline QString hex(const QColor& c)

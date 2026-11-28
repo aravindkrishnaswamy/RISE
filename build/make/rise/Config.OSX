@@ -65,8 +65,8 @@ CPPFLAGS_OIDN = -I$(OIDN_PREFIX)/include
 #   full            -flto: one single-threaded link-time code generation per binary (~160 s).
 #   off             no LTO; ~3 s incremental, up to ~5% slower on some workloads.
 # Simulation and fire bytes are the same in every mode: the solvers and the fire tables, records,
-# sequence and schema sources compile strict (fire solver version 4, docs/SIMULATION_M8_RESULTS.md
-# section 15).  make does not track the mode: run `make clean` when switching (objects of two
+# sequence and schema sources compile strict (fire solver version 4, docs/BUILD_FLAGS.md
+# section 8).  make does not track the mode: run `make clean` when switching (objects of two
 # modes must not be mixed).  The floating-point flags below are the same in all modes.
 LTO ?= thin
 ifeq ($(LTO),full)

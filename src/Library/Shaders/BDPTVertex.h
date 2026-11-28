@@ -163,7 +163,7 @@ namespace RISE
 		// ---------------------------------------------------------------
 		SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature + the texcoord chart map
 		SurfaceSignalInfo		signals;		///< the geometry-signal channel: own-surface half (provider, primId, barycentrics) AND cross-object half (pScene/pSelf/ptWorld)
-		TextureFootprint		txFootprint;	///< pixel footprint (DL-14, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md): non-zero on the depth-0 EYE vertex, because `ICamera::GenerateRay` unconditionally stamps Igehy differentials onto the camera ray every rasterizer shares, and zero everywhere else -- identical to PT's own footprint, which likewise only ever reaches the primary hit (no ray carries differentials after a scattering bounce, in ANY integrator).  A light-traced (t == 1) camera connection shades a COPY of its light endpoint stamped with the footprint of the pixel it lands in (PathVertexEval::WithPixelFootprint, DL-14 / DL-402); the stored light vertex itself keeps zero. An earlier revision of this comment claimed the field was always zero here ("they emit no ray differentials"); that was never true of the depth-0 vertex and was refuted by direct render measurement -- see the doc for the numbers
+		TextureFootprint		txFootprint;	///< pixel footprint (DL-14, docs/DEBT_LEDGER.md): non-zero on the depth-0 EYE vertex, because `ICamera::GenerateRay` unconditionally stamps Igehy differentials onto the camera ray every rasterizer shares, and zero everywhere else -- identical to PT's own footprint, which likewise only ever reaches the primary hit (no ray carries differentials after a scattering bounce, in ANY integrator).  A light-traced (t == 1) camera connection shades a COPY of its light endpoint stamped with the footprint of the pixel it lands in (PathVertexEval::WithPixelFootprint, DL-14 / DL-402); the stored light vertex itself keeps zero. An earlier revision of this comment claimed the field was always zero here ("they emit no ray differentials"); that was never true of the depth-0 vertex and was refuted by direct render measurement -- see the doc for the numbers
 		const Matrix4*			pmxWorldToObject;	///< Group 7 space transforms: world->object matrix at hit (or null for CSG/non-surface)
 		const Matrix4*			pmxObjectToWorld;	///< Group 7 space transforms: object->world matrix at hit (or null for CSG/non-surface)
 		const ICamera*			pCamera;			///< Group 7 space transforms: live scene camera at hit
@@ -374,7 +374,7 @@ namespace RISE
 		/// record's ray is aimed per query and is not that arrival.
 		bool					bGeomNormalOpposesArrival;
 		bool					bIsCameraRay;	///< True iff eye subpath vertex y_1 was struck by a primary camera ray
-		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
+		/// DL-09 (docs/DEBT_LEDGER.md): the graded-index
 		/// medium the walk was travelling in when it produced this vertex
 		/// (null if that medium is not a world-position `ior` field) and the
 		/// walk's TRACKED index there (its IOR stack top, which telescopes

@@ -11,6 +11,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include "pch.h"
 #include "KeyframableHelper.h"
 
 // ParseStrictScalar and ParseStrictVec3 live in their own TU

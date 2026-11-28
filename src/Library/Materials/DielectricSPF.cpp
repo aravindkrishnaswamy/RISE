@@ -324,7 +324,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// read as an exit that was never legitimately entered: the DL-03 /
 	// DL-45 / DL-68 misclassification, here at a delta lobe.
 	//
-	// THE DISPOSAL RULING (docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md has
+	// THE DISPOSAL RULING (docs/DEBT_LEDGER.md has
 	// the full derivation).  A delta Snell lobe has no distribution to
 	// renormalize, so DL-68's clip does not apply; of the candidates --
 	// mirroring the Snell result across the geometric plane, re-labelling

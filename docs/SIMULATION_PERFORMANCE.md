@@ -4,7 +4,7 @@
 the cloth part of the second half (at `052fc4338`, thin LTO) is §13. Plan:
 [SIMULATION_IN_RISE_PROPOSAL.md](SIMULATION_IN_RISE_PROPOSAL.md). Contract:
 [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) (no contract change). Fire CPU timings of
-earlier rounds: [SIMULATION_M8_RESULTS.md](SIMULATION_M8_RESULTS.md) §11.6 and §12.3.
+earlier rounds: [SIMULATION_SOLVER_CONTRACT.md](SIMULATION_SOLVER_CONTRACT.md) §11.6 and §12.3.
 
 **Scope.** Measure every committed simulation scene class, attribute time to phases, rank the tuning opportunities
 (§6), and implement the byte-preserving ones outside the liquid solver, fire and tests of both (§8). The liquid
@@ -430,8 +430,8 @@ A flat sort-based hash grid (slower, A9) and a per-thread memo of `SampledTrack:
 
 | Build | Flags | Finding |
 |---|---|---|
-| make (`Config.OSX`) | `-O3 -flto` (full LTO), `-ffast-math -fno-finite-math-only`, `-funroll-loops`, default `-mcpu=apple-m1` | Already aggressive. No profile-guided optimisation; no `-mcpu=apple-m4` (the M4 has SME but the code is NEON; a newer `-mcpu` gains little for this code and ties the binary to M4). `-ffast-math` is on for the whole library except the fire production sources, which compile with `-fno-fast-math -ffp-contract=off` |
-| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN` (thin, not full), `-fno-finite-math-only` but no `-ffast-math`, no `-funroll-loops` | **Correction (second half):** the guess here that a Deployment `rise-sim` may write different bytes than the make `rise_sim` was measured by the build-flags work and is wrong: the frame sets are identical (see [BUILD_FLAGS.md](BUILD_FLAGS.md)). The make build has since switched to thin LTO by default (`LTO=thin`; `make LTO=full` restores full LTO); the second-half numbers in §13 are thin-LTO builds compared with thin-LTO builds |
+| make (`Config.OSX`) | `-O3 -flto` (full LTO when measured; thin `-flto=thin` is the default since fire solver version 4), `-ffast-math -fno-finite-math-only`, `-funroll-loops`, default `-mcpu=apple-m1` | Already aggressive. No profile-guided optimisation; no `-mcpu=apple-m4` (the M4 has SME but the code is NEON; a newer `-mcpu` gains little for this code and ties the binary to M4). `-ffast-math` is on for the whole library except the fire production sources, which compile with `-fno-fast-math -ffp-contract=off` |
+| Xcode, Deployment configuration, targets `rise` and `rise-sim` | `GCC_OPTIMIZATION_LEVEL = 3`, `LLVM_LTO = YES_THIN`, `-ffast-math -fno-finite-math-only` (updated in `24423067f`; see [BUILD_FLAGS.md](BUILD_FLAGS.md)) | **Correction:** the guess here that a Deployment `rise-sim` may write different bytes than the make `rise_sim` was measured and is wrong: the frame sets are identical ([BUILD_FLAGS.md](BUILD_FLAGS.md)). Xcode `Deployment` now carries `-ffast-math -fno-finite-math-only` matching `make` (with the strict-FP simulation/fire/OSL/radiometric sources pinned to `-fno-fast-math -ffp-contract=off`). make's LTO default went full, then thin, then back to full (`24423067f`: thin LTO moved two pinned fire digests), and is **thin again since fire solver version 4** (`f7d0b2f4b`: the fire-adjacent sources compile strict, so fire bytes no longer depend on the LTO mode; `make LTO=full` restores full LTO; [BUILD_FLAGS.md](BUILD_FLAGS.md) §8). The §13 measurements below are thin-LTO builds compared with thin-LTO builds. |
 | Library compile options for the simulation | none specific | The simulation hot loops (cloth `BandedCholesky`, liquid multigrid) are plain scalar loops that clang vectorises only as far as `-ffast-math` allows; an explicit NEON kernel would be a result-changing rewrite (B) unless the lane order is the same |
 
 ## 11. Not verified, not measured
@@ -455,7 +455,7 @@ Drivers and raw samples are in `/Volumes/SSD/claude-tmp/perf-scratch/` (not in g
 
 ## 13. Second half, cloth part (2026-11-27, at `052fc4338`, thin LTO)
 
-Same machine, now with the make build's thin LTO (`LTO=thin`, the new default): every before/after pair below is
+Same machine, using thin LTO (`make LTO=thin`; the default was full at the time, `24423067f`, and is thin again since fire solver version 4, [BUILD_FLAGS.md](BUILD_FLAGS.md) §8): every before/after pair below is
 thin against thin (`base_thin` is `052fc4338` built in that mode). The machine was heavily shared (load average 10 to
 130, noted per table); instructions retired (`/usr/bin/time -l`) are the load-independent figure. Bakes:
 `cloth_flag_scene` (all 91 frames), `rigid_cloth_trampoline` (all 31 frames), `liquid_cloth_catch` reduced to 12
@@ -656,7 +656,7 @@ not changed. The 1-ulp-nudge and thread perturbations were applied only to the i
 Everything in `src/Library/Simulation/Liquid/`. All A-class: **no liquid byte moved, liquid.mac stays m7m.1**; the
 B4 preconditioner was measured and not adopted (§14.4). Builds: a private copy of the tree (cloth sources frozen at
 the state of 15:30, cloth.shell m3a.8) built with `make LTO=thin`; `base` is `d0256a0a4`'s liquid in that copy, `a1`
-adds §14.2 (evidence), `a3` all of §14.2 and §14.3. The final check in the real checkout (default full LTO) is §14.6.
+adds §14.2 (evidence), `a3` all of §14.2 and §14.3. The final check in the real checkout (then-default full LTO) is §14.6.
 Machine shared throughout: load average 5 to 30, noted per table. Scratch, drivers, samples and bakes:
 `/Volumes/SSD/claude-tmp/perf3-scratch/` (not in git).
 
@@ -813,7 +813,7 @@ and bodies, which would also cut the 10 to 14 iterations per solve), outside the
 
 ### 14.6 Tests, warnings, final check (this part)
 
-Real checkout, default full LTO: `mk.sh all tests build-tool/rise_sim build-tool/simulation_cache_import`,
+Real checkout, then-default full LTO: `mk.sh all tests build-tool/rise_sim build-tool/simulation_cache_import`,
 **warning-free** (not even the Homebrew linker notices this time). `./run_all_tests.sh --tier fast --timeout 300
 --filter '[!F]*,F[!i]*,Fi[!r]*,Fir[!e]*'`: **453 of 453 pass** (the liquid suites included, so every liquid validation
 gate and pin holds unchanged; no pin needed updating: the liquid tests pin no cloth version, and cloth m3a.8 was

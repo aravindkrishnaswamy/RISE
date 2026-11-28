@@ -44,6 +44,11 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	// Path text is diagnostic/provenance only; OS operations retain nativePath.
+	std::string PathText( const std::filesystem::path& path, bool utf8 )
+	{
+		return utf8 ? path.u8string() : path.string();
+	}
 	thread_local bool failRecoveryStreamAdoption = false;
 }
 
@@ -204,8 +209,21 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 {
 	if( openFailure ) openFailure->clear();
 	if( created ) *created = false;
-	if( !file_name ) return;
-	filename = file_name;
+	if( file_name ) OpenNative(std::filesystem::path(file_name), file_name, openFailure, policy, created);
+}
+
+DiskFileWriteBuffer::DiskFileWriteBuffer( const std::filesystem::path& nativePath, const std::string& displayName,
+	std::error_code* openFailure, OpenPolicy policy, bool* created )
+{
+	OpenNative(nativePath, displayName, openFailure, policy, created);
+}
+
+void DiskFileWriteBuffer::OpenNative( const std::filesystem::path& nativePath, const std::string& displayName,
+	std::error_code* openFailure, OpenPolicy policy, bool* created )
+{
+	if( openFailure ) openFailure->clear();
+	if( created ) *created = false;
+	filename = displayName;
 	int openError = 0;
 	if( policy != OpenPolicy::Direct ) {
 		const bool exclusive = policy == OpenPolicy::ExclusiveStaging || policy == OpenPolicy::ExclusiveRecovery;
@@ -216,7 +234,7 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 #ifdef _WIN32
 		const int flags = _O_WRONLY | _O_CREAT | _O_BINARY | _O_NOINHERIT |
 			(exclusive ? _O_EXCL : 0);
-		const int descriptor = ::_open(filename.c_str(), flags, _S_IREAD | _S_IWRITE);
+		const int descriptor = ::_wopen(nativePath.c_str(), flags, _S_IREAD | _S_IWRITE);
 		if( descriptor >= 0 ) {
 			if( created && exclusive ) *created = true;
 			if( policy == OpenPolicy::RegularOutput ) {
@@ -246,7 +264,7 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 		// opened descriptor; preserve user-authored symlink destinations.
 		const int flags = O_WRONLY | O_CREAT | O_CLOEXEC |
 			(exclusive ? O_EXCL | O_NOFOLLOW : O_NONBLOCK);
-		const int descriptor = ::open(filename.c_str(), flags, policy == OpenPolicy::ExclusiveRecovery ? 0600 : 0666);
+		const int descriptor = ::open(nativePath.c_str(), flags, policy == OpenPolicy::ExclusiveRecovery ? 0600 : 0666);
 		if( descriptor >= 0 ) {
 			if( created && exclusive ) *created = true;
 			if( policy == OpenPolicy::RegularOutput ) {
@@ -269,14 +287,18 @@ DiskFileWriteBuffer::DiskFileWriteBuffer( const char* file_name, std::error_code
 		} else openError = errno;
 #endif
 	} else {
-		hFile.reset(fopen(filename.c_str(), "wb"));
+#ifdef _WIN32
+		hFile.reset(::_wfopen(nativePath.c_str(), L"wb"));
+#else
+		hFile.reset(fopen(nativePath.c_str(), "wb"));
+#endif
 		if( !hFile ) openError = errno;
 	}
 
 	if( !hFile ) {
 		writeError = std::error_code(openError, std::generic_category());
 		if( openFailure ) *openFailure = writeError;
-		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file '%s': %s", file_name, writeError.message().c_str() );
+		GlobalLog()->PrintEx( eLog_Warning, "DiskFileWriteBuffer:: Failed to open file '%s': %s", filename.c_str(), writeError.message().c_str() );
 	}
 }
 
@@ -487,10 +509,10 @@ bool DiskFileWriteBuffer::WriteNewFile( const std::string& path,
 		}
 	};
 	for( unsigned int attempt = 0; attempt < 16; ++attempt ) {
-		if( attempt ) target = requested.parent_path() / (requested.stem().string() + "-" +
-			std::to_string(nextRecoveryId.fetch_add(1, std::memory_order_relaxed) + 1) + requested.extension().string());
+		if( attempt ) target = requested.parent_path() / (requested.stem().native() + fs::path("-" +
+			std::to_string(nextRecoveryId.fetch_add(1, std::memory_order_relaxed) + 1)).native() + requested.extension().native());
 		bool created = false;
-		buffer.reset(new DiskFileWriteBuffer(target.string().c_str(), nullptr, OpenPolicy::ExclusiveRecovery, &created));
+		buffer.reset(new DiskFileWriteBuffer(target, target.string(), nullptr, OpenPolicy::ExclusiveRecovery, &created));
 		GlobalLog()->PrintNew(buffer.get(), __FILE__, __LINE__, "automatic recovery write buffer");
 		if( buffer->ReadyToWrite() ) break;
 		if( created ) {
@@ -531,6 +553,20 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
 	WriteDiagnostics* diagnostics )
 {
+	return WriteAtomicallyNative(std::filesystem::path(path), write, policy, diagnostics, false);
+}
+
+bool DiskFileWriteBuffer::WriteAtomicallyUTF8( const std::string& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
+	WriteDiagnostics* diagnostics )
+{
+	return WriteAtomicallyNative(std::filesystem::u8path(path), write, policy, diagnostics, true);
+}
+
+bool DiskFileWriteBuffer::WriteAtomicallyNative( const std::filesystem::path& path,
+	const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
+	WriteDiagnostics* diagnostics, bool utf8Diagnostics )
+{
 	namespace fs = std::filesystem;
 	WriteDiagnostics result;
 	struct Report {
@@ -543,21 +579,21 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		result.operation = operation;
 		result.error = failure;
 		GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: %s '%s' failed: %s (%d)",
-			operation, file.string().c_str(), failure.message().c_str(), failure.value());
+			operation, PathText(file, utf8Diagnostics).c_str(), failure.message().c_str(), failure.value());
 		return false;
 	};
 	const auto writeFile = [&]( const fs::path& file, const std::function<bool(DiskFileWriteBuffer&)>& encode,
 		std::error_code* openFailure = nullptr, OpenPolicy openPolicy = OpenPolicy::RegularOutput ) {
 		const auto release = []( DiskFileWriteBuffer* buffer ) { buffer->release(); };
 		std::unique_ptr<DiskFileWriteBuffer, decltype(release)> buffer(
-			new DiskFileWriteBuffer( file.string().c_str(), openFailure, openPolicy ), release );
+			new DiskFileWriteBuffer( file, PathText(file, utf8Diagnostics), openFailure, openPolicy ), release );
 		GlobalLog()->PrintNew( buffer.get(), __FILE__, __LINE__, "disk file write buffer" );
 		if( !buffer->ReadyToWrite() ) return fail("open output", file, buffer->writeError);
 		bool encoded = false;
 		try {
 			encoded = encode( *buffer );
 		} catch( const std::exception& failure ) {
-			GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Encoding `%s` failed: %s", file.string().c_str(), failure.what() );
+			GlobalLog()->PrintEx( eLog_Error, "DiskFileWriteBuffer:: Encoding `%s` failed: %s", PathText(file, utf8Diagnostics).c_str(), failure.what() );
 		}
 		const bool finished = buffer->Finish( true );
 		if( !finished ) return fail("finish output", file, buffer->writeError);
@@ -595,7 +631,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		// Probe write access without requiring read permission or changing bytes.
 		// An existing-only descriptor also avoids creating a target if it vanishes.
 #ifdef _WIN32
-		const int probe = ::_open(target.string().c_str(), _O_WRONLY | _O_BINARY | _O_NOINHERIT);
+		const int probe = ::_wopen(target.c_str(), _O_WRONLY | _O_BINARY | _O_NOINHERIT);
 		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
 		NativeFileStatus opened{};
 		const int inspected = ::_fstat64(probe, &opened);
@@ -607,7 +643,7 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		}
 		if( ::_close(probe) != 0 ) return fail("close destination probe", target, std::error_code(errno, std::generic_category()));
 #else
-		const int probe = ::open(target.string().c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+		const int probe = ::open(target.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
 		if( probe < 0 ) return fail("probe destination write access", target, std::error_code(errno, std::generic_category()));
 		struct stat opened{};
 		const int inspected = ::fstat(probe, &opened);
@@ -661,12 +697,24 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 		const fs::path& file;
 		const fs::path& directory;
 		WriteDiagnostics& result;
+		bool utf8Diagnostics;
 		bool retain = false;
 		~Cleanup() {
 			std::error_code error;
 			if( retain ) {
-				result.recoveryPath = fs::absolute(file, error).string();
-				if( error ) result.recoveryPath = file.string();
+				result.recoveryPath = PathText(fs::absolute(file, error), utf8Diagnostics);
+				if( error ) result.recoveryPath = PathText(file, utf8Diagnostics);
+				// Required replacement may already have copied a write-only
+				// destination mode. Adjust only the retained completed artifact;
+				// successful publication must keep the destination's original mode.
+				std::error_code recoveryAccessError;
+				fs::permissions(file, fs::perms::owner_read, fs::perm_options::add, recoveryAccessError);
+				if( recoveryAccessError ) {
+					// A secondary diagnostic must not replace the publication
+					// operation/error or erase the completed artifact's path.
+					GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not add owner read permission to retained recovery '%s': %s (%d)",
+						result.recoveryPath.c_str(), recoveryAccessError.message().c_str(), recoveryAccessError.value());
+				}
 				GlobalLog()->PrintEx(eLog_Error, "DiskFileWriteBuffer:: Completed output retained for recovery at '%s'", result.recoveryPath.c_str());
 				return;
 			}
@@ -679,13 +727,13 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 			if( error ) {
 				result.cleanupError = error;
 				std::error_code absoluteError;
-				result.cleanupPath = fs::absolute(remaining, absoluteError).string();
-				if( absoluteError ) result.cleanupPath = remaining.string();
+				result.cleanupPath = PathText(fs::absolute(remaining, absoluteError), utf8Diagnostics);
+				if( absoluteError ) result.cleanupPath = PathText(remaining, utf8Diagnostics);
 				GlobalLog()->PrintEx(eLog_Warning, "DiskFileWriteBuffer:: Could not remove staging path '%s': %s (%d)",
 					result.cleanupPath.c_str(), error.message().c_str(), error.value());
 			}
 		}
-	} cleanup{ staging, directory, result };
+	} cleanup{ staging, directory, result, utf8Diagnostics };
 	std::error_code stagingOpenFailure;
 	if( !writeFile( staging, write, &stagingOpenFailure, OpenPolicy::ExclusiveStaging ) ) {
 		// No callback ran if opening the staging file failed. Permission-only
@@ -718,7 +766,11 @@ bool DiskFileWriteBuffer::WriteAtomically( const std::string& path,
 	// the existing inode, including writable files whose mount forbids rename.
 	fs::permissions(staging, fs::perms::owner_read, fs::perm_options::add, error);
 	if( error ) return fail("make staged output readable", staging, error);
-	std::unique_ptr<FILE, decltype(&fclose)> input(fopen(staging.string().c_str(), "rb"), &fclose);
+#ifdef _WIN32
+	std::unique_ptr<FILE, decltype(&fclose)> input(::_wfopen(staging.c_str(), L"rb"), &fclose);
+#else
+	std::unique_ptr<FILE, decltype(&fclose)> input(fopen(staging.c_str(), "rb"), &fclose);
+#endif
 	if( !input ) return fail("open staged output for copying", staging, std::error_code(errno, std::generic_category()));
 	std::error_code readFailure;
 	const bool copied = writeFile( target, [&]( DiskFileWriteBuffer& output ) {

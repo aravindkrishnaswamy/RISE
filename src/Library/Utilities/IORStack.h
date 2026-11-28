@@ -14,7 +14,7 @@
 //    topology — single closed watertight meshes, nested DIFFERENT-
 //    material volumes (glass sphere containing water sphere), two
 //    disjoint objects of the same material, and concentric same-
-//    material volumes.  See tests/IORStackBehaviorTest.cpp for the
+//    material volumes.  See tests/IORStackTest.cpp for the
 //    exhaustive trace.
 //
 //    It is INCORRECT for the narrow case where:
@@ -1056,7 +1056,7 @@ namespace RISE
 		// conceptual volume modeled as MULTIPLE distinct objects of
 		// the same material (slab-from-planes) is not recognized as a
 		// single volume.  See the file-header comment for the full
-		// scenario audit and tests/IORStackBehaviorTest.cpp for a
+		// scenario audit and tests/IORStackTest.cpp for a
 		// locked-in regression guard.
 		inline bool containsCurrent() const
 		{
@@ -1239,7 +1239,7 @@ namespace RISE
 	//!   reads in place of `before.top()`.
 	//! - **Spatially varying `ior` -- DL-09, fixed 2026-09-28 by keeping
 	//!   `before.top()` CURRENT, not by changing this function.**  Read
-	//!   docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md before touching either.
+	//!   docs/DEBT_LEDGER.md before touching either.
 	//!   Basic radiance `L / n^2` is conserved ALONG a ray inside a graded
 	//!   medium as well as across an interface, so a camera(air) ->
 	//!   A(`n_A`) -> B(`n_B`) -> air trip is

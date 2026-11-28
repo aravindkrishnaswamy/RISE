@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Simulation M3b demonstration (docs/SIMULATION_M3B_RESULTS.md): bake the M3a cloth
+# Simulation M3b demonstration (docs/SIMULATION_SOLVER_CONTRACT.md): bake the M3a cloth
 # demonstration with the CPU cloth solver and render a few frames of
 # scenes/Tests/Simulation/simulated_cloth_drape.RISEscene with and without
 # deformation motion blur.
@@ -22,7 +22,7 @@ cache="$root/cloth_drape"
 mkdir -p "$root"
 chmod 700 "$HOME/.cache/rise" "$root"
 
-# The M3a demonstration (SIMULATION_M3A_RESULTS.md §7), 2 s at 30 Hz.
+# The M3a demonstration (docs/SIMULATION_SOLVER_CONTRACT.md §7), 2 s at 30 Hz.
 params="$root/cloth_drape.json"
 cat > "$params" <<'EOF'
 {"mode": "bake", "vertices_u": 51, "vertices_v": 51, "frames": 61,

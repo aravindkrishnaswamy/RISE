@@ -491,7 +491,7 @@ private:
         // viewport, the staged-vector path was churning ~115 MB/sec
         // through the macOS xzone allocator, fragmenting it within a few
         // minutes and crashing inside `xzm_segment_group_alloc_chunk`
-        // (see post-mortem in BVH_CLEANUP_AND_NEXT.md → Tier A follow-ups).
+        // (see docs/BVH_RETROSPECTIVE.md).
         //
         // Cutting the intermediate buffer halves the per-frame allocation
         // pressure with no thread-safety implication: the rep itself is

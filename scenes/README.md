@@ -6,10 +6,6 @@ This directory contains the authored scene assets used to exercise RISE. The top
 - [Tests/README.md](Tests/README.md): focused regression, baseline, comparison, and validation scenes
 - `Benchmarks/`: frontier-model qualitative benchmark scenes for agent scene-building comparisons; each carries a provenance header (verbatim prompt, authoring model, date) and is held as the bar a state-of-the-art model reaches on that prompt
 - `Templates/`: starter `.RISEscene` templates (`scenes/Templates/`) surfaced on the RISE-GUI Start Screen
-- `Internal/`: local or historical internal scenes that are not part of the curated public taxonomy
-
-The completed public-corpus deduplication and placement record is
-[SCENE_AUDIT_2026-07-24.md](SCENE_AUDIT_2026-07-24.md).
 
 ## Placement Rules
 

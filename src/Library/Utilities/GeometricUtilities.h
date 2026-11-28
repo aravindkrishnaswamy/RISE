@@ -713,7 +713,7 @@ namespace RISE
 			//! centre (sum of (a-c).((b-c)x(d-c))/6).  For a closed
 			//! outward-wound solid it is the enclosed volume; negative on a
 			//! certified surface hints at an inside-out cracked solid
-			//! (diagnostic only -- see docs/DL382_OPEN_SHEET_CERTIFICATE.md
+			//! (diagnostic only -- see docs/DEBT_LEDGER.md
 			//! section 2.1).  Filled only when `certified`.
 			Scalar	signedVolumeAboutCentre = 0;
 			//! DL-623: certified lower bound on the Step-4 Euclidean
@@ -747,7 +747,7 @@ namespace RISE
 		//! DL-382: does a triangle set PROVABLY enclose no volume, with a
 		//! consistently oriented (readable) face?  The general certificate
 		//! behind the open-sheet face rule for meshes; the full proof is in
-		//! docs/DL382_OPEN_SHEET_CERTIFICATE.md section 2.  `corners` holds
+		//! docs/DEBT_LEDGER.md section 2.  `corners` holds
 		//! 3 points per triangle.  Certified iff, after the DL-143 weld
 		//! (WeldVertexPositions):
 		//!  1. no triangle repeats a welded vertex and every triangle's

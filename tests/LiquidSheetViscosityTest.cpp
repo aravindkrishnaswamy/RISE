@@ -1,4 +1,4 @@
-// liquid.mac: viscosity with sheets (simulation M7m, docs/SIMULATION_M7M_RESULTS.md; preview) and
+// liquid.mac: viscosity with sheets (simulation M7m, docs/SIMULATION_SOLVER_CONTRACT.md; preview) and
 // the 3-D momentum audit of the coupled liquid, sheet and rigid-body exchange.
 //
 //   A  a honey layer flowing down a tilted held sheet (2-D, gravity at 0.3 rad to the sheet's

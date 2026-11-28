@@ -40,7 +40,7 @@
 //    selection and Russian roulette at successive bounces.  The
 //    render-visible consequence was a systematic per-channel bias in
 //    RGB dispersion (two channels at the SAME index of refraction
-//    rendering 12.1% apart).  See docs/DL81_SOBOL_DIMENSION_PARITY.md.
+//    rendering 12.1% apart).  See docs/DEBT_LEDGER.md.
 //
 //  Two draw shapes, and why they differ
 //  ------------------------------------

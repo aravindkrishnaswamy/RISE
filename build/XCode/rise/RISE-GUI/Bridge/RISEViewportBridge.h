@@ -56,7 +56,7 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 /// Snapshot of the scene's IBL environment (a scene-level singleton: an
 /// hdr/exr painter bound via `radiance_*` on the active rasterizer, NOT
 /// an ILight).  See SceneEditController::EnvironmentInfo and
-/// docs/gui/ENVIRONMENT_SECTION.md.  Returned by -[RISEViewportBridge environmentInfo].
+/// docs/gui/APPROACHABILITY_FOUNDATION.md.  Returned by -[RISEViewportBridge environmentInfo].
 @interface RISEEnvironmentInfo : NSObject
 @property (nonatomic, readonly) BOOL hasEnvironment;   ///< a radiance_map painter is bound
 @property (nonatomic, readonly) BOOL proceduralSky;    ///< a procedural sky / non-painter map is installed (read-only)
@@ -302,7 +302,7 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @property (nonatomic, readonly, copy) NSString *name;
 @end
 
-// ---- Simulation M5 (docs/SIMULATION_M5B_RESULTS.md) ----
+// ---- Simulation M5 (docs/SIMULATION_GUI_STATUS.md) ----
 // Plain value snapshots of the library's simulation state.  Every field is
 // copied from one C-API read (RISE_API.h "Simulation M3c" / "M4" / "M5");
 // the shell presents them and computes nothing from them.
@@ -379,7 +379,7 @@ typedef NS_ENUM(NSInteger, RISERewireClosure) {
 @end
 
 /// One bake job of this document (GetSimulationBakeJob; the library bake
-/// manager, docs/SIMULATION_M5A_RESULTS.md).
+/// manager, docs/SIMULATION_SOLVER_CONTRACT.md).
 @interface RISESimulationBakeJob : NSObject
 @property (nonatomic, readonly) unsigned long long jobId;
 @property (nonatomic, readonly, copy) NSString *simulation;
@@ -1071,9 +1071,8 @@ typedef void (^RISEViewportDirtyChangedBlock)(BOOL hasUnsavedChanges);
 
 #pragma mark - Selection
 
-/// Phase 3 picking is not yet implemented (waits on Phase 5 ray-cast
-/// integration).  This is a test hook for setting selection by name
-/// from the UI when picking lands.
+/// Programmatically select an object by name (used by the outliner/UI
+/// alongside viewport ray-cast picking).
 - (void)setSelectedObjectName:(nullable NSString *)name;
 @property (nonatomic, readonly, nullable) NSString *selectedObjectName;
 
@@ -1785,11 +1784,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// camera / unclonable type.  Caller passes a non-empty NSString
 /// (an empty string falls back to "camera_copy").
 ///
-/// Persistence caveat: the clone lives only in the in-memory
-/// Scene/Job.  Reloading the .RISEscene file via the editor
-/// drops it (scene-text round-trip is still pending Phase 6
-/// work).  The Swift caller should surface a one-shot warning
-/// the first time per session.
+/// Persistence: inserts the cloned camera chunk into the retained
+/// CST Document so Save / Save As writes it to disk.
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName
     NS_SWIFT_NAME(addCameraFromActive(proposedName:));
 

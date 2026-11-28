@@ -3,7 +3,7 @@
 // frame, and a frame may be empty).  It maps a render's time support to the cache frame,
 // reads and verifies the payload, and derives the positions a deforming-mesh
 // geometry installs at the nominal time and at the shutter keys.
-// See docs/SIMULATION_M3B_RESULTS.md.
+// See docs/SIMULATION_SOLVER_CONTRACT.md.
 #ifndef RISE_SIMULATION_SIMULATED_MESH_SOURCE_H
 #define RISE_SIMULATION_SIMULATED_MESH_SOURCE_H
 

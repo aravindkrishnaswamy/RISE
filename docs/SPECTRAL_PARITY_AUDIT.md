@@ -11,13 +11,13 @@
 
 ## TL;DR
 
-**Current state as of 2026-06-07:** all shippable quick wins have landed; both refactor-blocked items (PT-spectral inline AOV, BDPT-spectral inline AOV) unblocked by Phase 2b/2c completion and the PT-spectral case is wired.  The **architectural §3 VCM-spectral per-wavelength photon store remains open**: a first design pass (per-photon-hero v2) was refuted 3-of-3 in adversarial review (§3.6) and the only viable path is now the chain-storing v3 (4–6 weeks, sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed).  A **new sibling correctness gap** was also surfaced — the NM lobe-selection wavelength divergence (§3.7) — which affects every NM rasterizer, not just merging.
+**Current state (verified 2026-11-27):** all shippable quick wins have landed; both refactor-blocked items (PT-spectral inline AOV, BDPT-spectral inline AOV) unblocked by Phase 2b/2c completion and the PT-spectral case is wired.  The **architectural §3 VCM-spectral per-wavelength photon store remains open**: a first design pass (per-photon-hero v2) was refuted 3-of-3 in adversarial review (§3.6) and the only viable path is now the chain-storing v3 (4–6 weeks, sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed).  A **new sibling correctness gap** was also surfaced — the NM lobe-selection wavelength divergence (§3.7) — which affects every NM rasterizer, not just merging.
 
 Historical scorecard for the 13 original ✗ / partial / "(limited)" cells:
 
 - **All 3 quick wins LANDED**: BDPT-spectral path guiding subset (2026-05-07), BDPT/VCM-spectral OIDN albedo proxy (2026-05-07), BDPT-spectral adaptive sampling (2026-05-24).
 - **PT-spectral inline AOV LANDED 2026-06-02** — both `pathtracing_spectral_rasterizer` and `pixelintegratingspectral_rasterizer` allocate/accumulate the inline `PixelAOV` and feed AOV-guided OIDN in accurate mode (§2.6 OUTCOME, §6.2).  The shader-dispatch path uses a new `RuntimeContext::pAOV` bridge (no `IShaderOp` interface change); the Phase-2b Accurate hook was completed with its missing BSDF-section sibling (was inert for diffuse-behind-glass on Pel too).
-- **Phases 2b/2c LANDED 2026-05-31 / 2026-06-02** — the integrator refactor that PT-spectral and BDPT-spectral inline AOV blocked on is now complete; templatized PT, VCM, BDPT are all single-source-of-truth across Pel/NM (see [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)).
+- **Phases 2b/2c LANDED 2026-05-31 / 2026-06-02** — the integrator refactor that PT-spectral and BDPT-spectral inline AOV blocked on is now complete; templatized PT, VCM, BDPT are all single-source-of-truth across Pel/NM (see [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)).
 - **BDPT-spectral inline AOV** is structurally unblocked but not the listed gap — see §2.12.
 - **1 architectural item REMAINS OPEN** (4–6 weeks, design + implementation): **VCM HWSS companion ancestor-chain re-evaluation / per-wavelength photon stores for VCM-spectral merging (§3)** — the remaining §3 correctness issue now that §3.1 `ILight::emittedRadianceNM` is closed (2026-09-02).  The photon store is still Pel-sourced (caching a deposit-time illuminant uplift `LightVertex::throughputSpectrum` via `VCMIntegrator::LightThroughputSpectrum` rather than `RISEPelToNMProxy`, which was deleted; see §3's status block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5), and `LightVertexNM` in [VCMLightVertex.h](../src/Library/Shaders/VCMLightVertex.h) is currently unused scaffolding.
 - **2 deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
@@ -30,22 +30,25 @@ The single **correctness** issue (vs feature gap) in the matrix is **VCM-spectra
 
 ## 1. Matrix decoded against source
 
-The [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4 matrix has been corrected against the parser and rasterizer source as part of this audit (Step 1, see §6.1). The current matrix below is bit-for-bit what's now in [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4.
+The [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4 matrix is the canonical table (kept in sync below):
 
 | Chunk | Path guiding | Adaptive sampling | SMS | Optimal MIS | OIDN denoise |
 |---|---|---|---|---|---|
-| `pixelpel_rasterizer` | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
-| `pixelintegratingspectral_rasterizer` ¹ | ✗ | ✗ | (via shader-op) | ✗ | (limited) |
+| `auto_rasterizer` | ✓ (PT/BDPT delegates) | ✓ | ✗ | ✓ (PT delegate) | ✓ |
+| `auto_spectral_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
 | `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | ✓ |
 | `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | (limited) |
+| `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | (limited) |
-| `mlt_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off) |
-| `mlt_spectral_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off) |
+| `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `hyperspectral_radiometric_rasterizer` | ✗ | ✗ | ✓ | ✗ | ✗ (raw radiometric EXR) |
+| `pixelpel_rasterizer` *(FROZEN)* | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
+| `pixelintegratingspectral_rasterizer` ¹ *(FROZEN)* | ✗ | ✗ | (via shader-op) | ✗ | ✓ |
+| `mlt_rasterizer` *(FROZEN)* | ✗ | ✗ | ✗ | ✗ | ✗ (default off) |
+| `mlt_spectral_rasterizer` *(FROZEN)* | ✗ | ✗ | ✗ | ✗ | ✗ (default off) |
 
-¹ `pixelintegratingspectral_rasterizer` is soft-deprecated — see §2.1–§2.5.
+¹ `pixelintegratingspectral_rasterizer` (and `pixelpel_rasterizer` / `mlt_*`) are **FROZEN** legacy chunks since 2026-10-09 ([LEGACY_DEPRECATION_ASSESSMENT.md](LEGACY_DEPRECATION_ASSESSMENT.md)).
 ² VCM-spectral merge correctness gap — see §3.
 
 **Pre-correction errors fixed in Step 1** (kept here for change-log audit trail):
@@ -84,9 +87,9 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 ### 2.3 `pixelintegratingspectral_rasterizer` — SMS (via shader-op)
 
 - **Diagnosis:** correct as documented. SMS in the shader-dispatch pipeline lives in `SMSShaderOp` and `ManifoldSolverShaderOp`, attached to the `defaultshader` chain. No remediation needed.
-- **Correctness fix 2026-05-31** (separate from the wiring/parity question above): within this wired SMS path the spectral (NM) emission-suppression logic had a latent **through-glass black** bug — a light seen directly through glass rendered black under NM+SMS while Pel was correct (asymmetry #1) — plus a coupled diffuse→glass→light double-count risk (#3) and an HWSS-mode double-count exposed by the #1 fix. All three are now FIXED in `PathTracingIntegrator.cpp`. See [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md) (#1/#3 marked FIXED) and [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)". Regression fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`.
-- **Correctness fix 2026-06-02** (Codex review Finding 2 — the SSS-recursion-boundary sibling of the 2026-05-31 family): the spectral (NM) SMS emission-suppression flags were DROPPED across the BSSRDF (SSS) recursion boundary — `PathTracingShaderOp::PerformOperationNM` did not forward `rs.smsPassedThroughSpecular/smsHadNonSpecularShading`, and the two BSSRDF continuations in `IntegrateFromHitTemplated<Tag>` populated them Pel-only. A spectral camera→SSS(emerge diffuse)→glass→light path therefore double-counted the SMS-covered emission. Now FIXED (NM forwards + both BSSRDF sites set the flags for both tags; Pel byte-identical). See [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Codex-review findings — FIXED (2026-06-02)".
-- **Known residual (HWSS):** the 2026-05-31 "HWSS-mode double-count … FIXED" above covers the HWSS no-BSDF/**glass** mid-path delegation (`IntegrateFromHitHWSS` ~line 3719, passes `smsHadNonSpecularShading=true`). The HWSS **SSS** mid-path delegation (~line 3742) was missed — it delegates to `IntegrateFromHitNM` with the false/false defaults and should mirror ~3719's `false, true`. One-line fix (no signature change); HWSS+SSS+glass+emitter only. Documented in PRE_PHASE1_STATUS.md §"Codex-review findings" Finding 2 "ADDITIONAL ISSUE"; left for the user.
+- **Correctness fix 2026-05-31** (separate from the wiring/parity question above): within this wired SMS path the spectral (NM) emission-suppression logic had a latent **through-glass black** bug — a light seen directly through glass rendered black under NM+SMS while Pel was correct (asymmetry #1) — plus a coupled diffuse→glass→light double-count risk (#3) and an HWSS-mode double-count exposed by the #1 fix. All three are now FIXED in `PathTracingIntegrator.cpp`. See [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (#1/#3 marked FIXED) and [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) §"Session outcome (2026-05-31)". Regression fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`.
+- **Correctness fix 2026-06-02** (Codex review Finding 2 — the SSS-recursion-boundary sibling of the 2026-05-31 family): the spectral (NM) SMS emission-suppression flags were DROPPED across the BSSRDF (SSS) recursion boundary — `PathTracingShaderOp::PerformOperationNM` did not forward `rs.smsPassedThroughSpecular/smsHadNonSpecularShading`, and the two BSSRDF continuations in `IntegrateFromHitTemplated<Tag>` populated them Pel-only. A spectral camera→SSS(emerge diffuse)→glass→light path therefore double-counted the SMS-covered emission. Now FIXED (NM forwards + both BSSRDF sites set the flags for both tags; Pel byte-identical). See [VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md) §"Codex-review findings — FIXED (2026-06-02)".
+- **Known residual (HWSS):** the 2026-05-31 "HWSS-mode double-count … FIXED" above covers the HWSS no-BSDF/**glass** mid-path delegation (`IntegrateFromHitHWSS` ~line 3719, passes `smsHadNonSpecularShading=true`). The HWSS **SSS** mid-path delegation (~line 3742) was missed — it delegates to `IntegrateFromHitNM` with the false/false defaults and should mirror ~3719's `false, true`. One-line fix (no signature change); HWSS+SSS+glass+emitter only. Documented in VCM_ENV_MIS_PARTITION_INVESTIGATION.md §"Codex-review findings" Finding 2 "ADDITIONAL ISSUE"; left for the user.
 
 ### 2.4 `pixelintegratingspectral_rasterizer` — Optimal MIS ✗ (matrix corrected)
 
@@ -299,9 +302,9 @@ introduced by that change**.
     genuine RGB/NM twin-drift bug in one lobe's shape, not the cross-lobe
     selection-weight approximation described above. Fixed by `a041e51d`
     (`TranslucentSpectralParityTest` 1918/0 checks/failures, was 324); see
-    [DL-02](DL02_TRANSLUCENT_EXIT_DENSITY.md). A separate double-charged-tau
+    [DL-02](DEBT_LEDGER.md). A separate double-charged-tau
     bug in the same material's NM exit weight was fixed by `1239edf2`
-    ([DL-01](DL01_TRANSLUCENT_EXIT_WEIGHT.md)).
+    ([DL-01](DEBT_LEDGER.md)).
 
 #### Follow-up (2026-09-04, REVIEW_CHIP3): `CookTorranceSPF` — achromatic selection floor
 
@@ -426,7 +429,7 @@ bias the achromatic-selection fix itself introduced.
 > code snippets in this section as historical; the ARGUMENT for a per-wavelength
 > ancestor-chain store stands unchanged.
 
-This is the only gap with **correctness** (not just feature) impact. The proxy is documented in [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md):35 as a "v1 architectural debt", and in [docs/VCM.md](VCM.md):242 as a known limitation.
+This is the only gap with **correctness** (not just feature) impact. The proxy is documented in [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md):35 as a "v1 architectural debt", and in [docs/VCM.md](VCM.md):242 as a known limitation.
 
 ### 3.1 What the proxy does
 
@@ -665,8 +668,8 @@ These came up during the audit and need a decision before the corresponding reme
 ## 8. References
 
 - [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4 — the matrix (the source of truth this audit cross-checks).
-- [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) §2-§3 — Pel/NM duplication map; Phase 2b/2c scope.
-- [docs/INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) — what's done (Phase 0, 1, 2a) vs deferred.
+- [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2-§3 — Pel/NM duplication map; Phase 2b/2c scope.
+- [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) — what's done (Phase 0, 1, 2a) vs deferred.
 - [docs/MIS_HEURISTICS.md](MIS_HEURISTICS.md) — power vs balance per integrator; why optimal MIS is currently PT-only.
 - [docs/VCM.md](VCM.md) — VCM design, the "spectral merges use luminance proxy" v1 limitation (line 242), the HWSS interaction, scope of optimal-MIS research.
 - [docs/OIDN.md](OIDN.md) — OIDN integration, the AOV retrace fallback and inline-AOV (Accurate) modes, the FilteredFilm bypass invariant.

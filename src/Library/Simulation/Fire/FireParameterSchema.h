@@ -41,9 +41,9 @@ const ParameterSchema& FireParameterSchema();
 //!    which builds only the 10-level one.  The driver refuses a run whose
 //!    reserve does not fit min(RAM/2, 32 GiB), so this is the number a
 //!    scheduler should count.  An upper bound: measured footprints are 2-3x
-//!    lower (docs/SIMULATION_M5C_RESULTS.md).
+//!    lower (docs/SIMULATION_GUI_STATUS.md).
 //!  - costEstimate: wall seconds per simulated second, approximate: tier 8
-//!    measured (docs/FIRE_SMOKE_SPEED_R274.md, r275 table: certified 2324,
+//!    measured (docs/FIRE_SMOKE_STATUS.md, r275 table: certified 2324,
 //!    fast 1121, quiet M1 Max); tier 10 scaled by the measured full-window
 //!    tier-10 / tier-8 ratio (1.29); tier 6 unknown (0).
 //! `grid` is the case's (nx, ny, nz) when known (Configure's launch case);

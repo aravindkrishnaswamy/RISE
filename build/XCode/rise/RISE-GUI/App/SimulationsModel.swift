@@ -9,7 +9,7 @@
 //    computes no keys, inspects no files and runs no simulation logic:
 //    states, cache locations, consumer geometries, ranges and the
 //    trusted-location decision all come back from the library.  See
-//    docs/SIMULATION_M5B_RESULTS.md.
+//    docs/SIMULATION_GUI_STATUS.md.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -302,7 +302,7 @@ enum TrustedCacheRootStore {
     }
 }
 
-// MARK: - Bake service (bake manager C API; see docs/SIMULATION_M5A_RESULTS.md)
+// MARK: - Bake service (bake manager C API; see docs/SIMULATION_SOLVER_CONTRACT.md)
 
 /// Bake / stop / resume of a scene simulation.  The library's bake manager
 /// (another M5 track) owns scheduling, workers and progress; this protocol

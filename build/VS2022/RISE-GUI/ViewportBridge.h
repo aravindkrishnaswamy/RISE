@@ -182,6 +182,8 @@ class ViewportBridge : public QObject
     Q_OBJECT
 
 public:
+    enum class Category : int;
+
     explicit ViewportBridge(RenderEngine* engine, QObject* parent = nullptr);
     ~ViewportBridge() override;
 
@@ -1838,11 +1840,8 @@ public:
     /// Returns the actual name registered, or an
     /// empty QString on no-active-camera / unclonable type.
     ///
-    /// Persistence caveat: the clone lives only in the in-memory
-    /// Scene/Job.  Reloading the .RISEscene file from the editor
-    /// drops it (scene-text round-trip is the pending Phase 6
-    /// work).  Caller should surface a one-shot warning the first
-    /// time per session.
+    /// Persistence: inserts the cloned camera chunk into the retained
+    /// CST Document so Save / Save As writes it to disk.
     QString addCameraFromActive(const QString& proposedName);
 
     // ---- Environment / IBL section ----------------------------------

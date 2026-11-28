@@ -106,6 +106,8 @@ namespace RISE
 				return GetColorNM( ri, nm );
 			}
 
+			bool							IsNormalized() const { return normalize; }
+
 			//! DL-165: Planck's-law SPD -- see IPainter::IsSpectrallyDefined's doc comment.
 			bool							IsSpectrallyDefined() const { return true; }
 

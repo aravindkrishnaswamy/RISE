@@ -17,6 +17,7 @@
 #ifndef SPOTLIGHT_
 #define SPOTLIGHT_
 
+#include "PhysicalLightSpectrum.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/RGBSpectra.h"
@@ -52,6 +53,10 @@ namespace RISE
 			//! `SetIntermediateValue( COLOR_ID )`, which both keyframes and
 			//! the SceneEditor / agent light-edit tools funnel through).
 			RGBIlluminantSpectrum	cSpectrum;
+			std::shared_ptr<const PhysicalLightSpectrum> physicalSpectrum;
+            bool physicalPoseValid = true;
+            bool ValidPhysicalAxis(const Point3& target) const;
+			Scalar ScaledSourceSpectrumNM(Scalar nm) const { return physicalSpectrum ? physicalSpectrum->EvalScaled(nm,radiantEnergy) : cSpectrum.Eval(nm)*radiantEnergy; }
 
 			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
 			//! `cColor`.
@@ -66,9 +71,15 @@ namespace RISE
 			inline void SetTimeSlot( const int slot ) { m_timeSlot.value = slot; }
 			inline int GetTimeSlot() const { return m_timeSlot.value; }
 
+			//! Null for legacy RGB authoring; immutable physical samples otherwise.
+			std::shared_ptr<const PhysicalLightSpectrum> GetPhysicalSpectrum() const { RISE_TIME_INDEXED_FORWARD( SpotLight, GetPhysicalSpectrum() ); return physicalSpectrum; }
+
 			//! DL-465: a per-thread clone, exact copy of this light's state
 			//! (never itself slotted).
 			SpotLight* CloneForTimeView() const { SpotLight* c = new SpotLight( *this ); CopyTransformMetadataTo( *c ); return c; }
+
+            // Physical construction/animation requires a representable cone proposal.
+            static bool IsSupportedPhysicalCone(Scalar inner, Scalar outer);
 
 			inline bool CanGeneratePhotons() const override
 			{
@@ -87,6 +98,7 @@ namespace RISE
 
 			inline RISEPel radiantExitance() const override
 			{ RISE_TIME_INDEXED_FORWARD( SpotLight, radiantExitance() );
+                if (physicalSpectrum && !physicalPoseValid) return RISEPel(0,0,0);
 				// Integrate emittedRadiance over the emission solid angle.
 				// dInnerAngle/dOuterAngle are full cone angles; half-angles
 				// are used for the actual cone geometry.
@@ -109,6 +121,7 @@ namespace RISE
 					solidAngle += falloffIntegral;
 				}
 
+				if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy,TWO_PI*solidAngle);
 				return cColor * radiantEnergy * TWO_PI * solidAngle;
 			}
 
@@ -117,7 +130,7 @@ namespace RISE
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionColor() ); return cColor; }
+			inline RISEPel   emissionColor() const override  { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionColor() ); return physicalSpectrum ? physicalSpectrum->ScaledVisibleRGB(radiantEnergy) : cColor; }
 			inline Scalar    emissionEnergy() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionEnergy() ); return radiantEnergy; }
 			inline LightType lightType() const override      { return LightType::Spot; }
 			inline Point3    emissionTarget() const override { RISE_TIME_INDEXED_FORWARD( SpotLight, emissionTarget() ); return ptTarget; }
@@ -126,6 +139,7 @@ namespace RISE
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadiance( vLightOut ) );
+                if (physicalSpectrum && !physicalPoseValid) return RISEPel(0,0,0);
 				// Find the angle between the light out and vDirection.
 				// dInnerAngle/dOuterAngle are full cone angles, so we
 				// compare against half of each (matching ComputeDirectLighting).
@@ -140,11 +154,13 @@ namespace RISE
 				const Scalar halfInner = dInnerAngle / 2.0;
 				const Scalar halfOuter = dOuterAngle / 2.0;
 
-				const Scalar acost = acos(cost);
+				const Scalar acost = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vLightOut,vDirection)),cost) : acos(cost);
 				if( acost <= halfInner ) {
+					if (physicalSpectrum) return physicalSpectrum->ScaledVisibleRGB(radiantEnergy);
 					return (cColor * radiantEnergy);
 				} else if( acost <= halfOuter ) {
 					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
+					if (physicalSpectrum) return physicalSpectrum->VisibleProduct(RISEPel(1,1,1),{radiantEnergy,t,t});
 					return (cColor * radiantEnergy) * (t * t);
 				}
 
@@ -154,9 +170,26 @@ namespace RISE
 			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  The
 			//! cone geometry below MUST stay identical to the RGB version
 			//! above; only the colour term differs (cached illuminant
-			//! spectrum at `nm` instead of the RGB triple).
+			//! or immutable physical spectrum at `nm` instead of the RGB triple).
+            Scalar PhysicalEmissionProductNM(const Vector3& vLightOut,const Scalar nm,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm> factors,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm> divisors) const
+            { RISE_TIME_INDEXED_FORWARD(SpotLight,PhysicalEmissionProductNM(vLightOut,nm,factors,divisors));
+                if(!physicalSpectrum || !physicalPoseValid) return 0;
+                const Scalar cost=Vector3Ops::Dot(vLightOut,vDirection);
+                if(cost<0) return 0;
+                const Scalar angle=std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vLightOut,vDirection)),cost);
+                if(angle<=dInnerAngle/2) return physicalSpectrum->EvalProduct(nm,factors,divisors,{radiantEnergy});
+                if(angle<=dOuterAngle/2) {
+                    const Scalar t=(dOuterAngle/2-angle)/((dOuterAngle-dInnerAngle)/2);
+                    return physicalSpectrum->EvalProduct(nm,factors,divisors,{radiantEnergy,t,t});
+                }
+                return 0;
+            }
+
 			inline Scalar emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const override
 			{ RISE_TIME_INDEXED_FORWARD( SpotLight, emittedRadianceNM( vLightOut, nm ) );
+                if (physicalSpectrum) return PhysicalEmissionProductNM(vLightOut,nm,{},{});
 				const Scalar cost = Vector3Ops::Dot( vLightOut, vDirection );
 				if( cost < 0 ) {
 					return Scalar(0);
@@ -165,12 +198,12 @@ namespace RISE
 				const Scalar halfInner = dInnerAngle / 2.0;
 				const Scalar halfOuter = dOuterAngle / 2.0;
 
-				const Scalar acost = acos(cost);
+				const Scalar acost = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vLightOut,vDirection)),cost) : acos(cost);
 				if( acost <= halfInner ) {
-					return cSpectrum.Eval( nm ) * radiantEnergy;
+					return ScaledSourceSpectrumNM( nm );
 				} else if( acost <= halfOuter ) {
 					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
-					return cSpectrum.Eval( nm ) * radiantEnergy * (t * t);
+					return ScaledSourceSpectrumNM( nm ) * (t * t);
 				}
 
 				return Scalar(0);
@@ -178,6 +211,7 @@ namespace RISE
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
 			{ RISE_TIME_INDEXED_FORWARD( SpotLight, generateRandomPhoton( ptrand ) );
+                if (physicalSpectrum && !physicalPoseValid) return Ray(Point3(0,0,0),Vector3(0,0,1));
 				// Uniform solid angle sampling within the outer half-cone
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cosAlpha = cos( halfOuter );
@@ -199,6 +233,7 @@ namespace RISE
 
 			inline Scalar pdfDirection( const Vector3& dir ) const override
 			{ RISE_TIME_INDEXED_FORWARD( SpotLight, pdfDirection( dir ) );
+                if (physicalSpectrum && !physicalPoseValid) return 0;
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
 				if( cost <= 0 ) return 0;
@@ -212,7 +247,8 @@ namespace RISE
 				const Scalar inner,
 				const Scalar outer,
 				const RISEPel& c,
-				const bool shootPhotons
+				const bool shootPhotons,
+				std::shared_ptr<const PhysicalLightSpectrum> physical = {}
 				);
 
 			//! `bFullSphereReceiver` (residual wave 2 item D): no-op, for
@@ -253,7 +289,7 @@ namespace RISE
 				Transformable::PreparedExternalMutationScope preparedMutation;
 				if( !preparedMutation.IsValid() ) return;
 				Transformable::RegenerateData();
-				vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+				if (!physicalSpectrum) vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
 			}
             void ComputeDirectLightingSampled(const RayIntersectionGeometric& ri,
                 const IRayCaster& caster, const IBSDF& bsdf, bool shadows, RISEPel& amount,

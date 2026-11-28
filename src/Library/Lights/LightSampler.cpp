@@ -13,6 +13,9 @@
 
 #include "pch.h"
 #include "LightSampler.h"
+#include "PointLight.h"
+#include "SpotLight.h"
+#include <typeinfo>
 #include <cmath>
 #include <vector>
 #include <optional>
@@ -44,6 +47,26 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+template<class Light> Scalar PhysicalProductNM(const void* light,const Vector3& out,const Scalar nm,
+    std::initializer_list<PhysicalLightSpectrum::ProductTerm> factors,
+    std::initializer_list<PhysicalLightSpectrum::ProductTerm> divisors)
+{
+    return static_cast<const Light*>(light)->PhysicalEmissionProductNM(out,nm,factors,divisors);
+}
+void BindPhysicalProduct(LightEntry& entry)
+{
+    // Unknown subclasses keep their virtual emitted-radiance semantics.
+    if(typeid(*entry.pLight)==typeid(PointLight)) {
+        const auto* point=dynamic_cast<const PointLight*>(entry.pLight);
+        if(point->GetPhysicalSpectrum()) {entry.physicalLight=point;entry.physicalProductNM=&PhysicalProductNM<PointLight>;}
+    } else if(typeid(*entry.pLight)==typeid(SpotLight)) {
+        const auto* spot=dynamic_cast<const SpotLight*>(entry.pLight);
+        if(spot->GetPhysicalSpectrum()) {entry.physicalLight=spot;entry.physicalProductNM=&PhysicalProductNM<SpotLight>;}
+    }
+}
+}
 
 // Effective bindings follow the same override rule as CSG intersection:
 // an explicit material ends inheritance, including an OPAQUE override.
@@ -1315,25 +1338,94 @@ LightSampler::~LightSampler()
 	pLightBVH = 0;
 }
 
+void LightSampler::CopyMotionSweepFrom(const LightSampler& source, const IScene& scene)
+{
+    if (source.pPreparedScene != &scene) return;
+    sweptSceneBox = source.sweptSceneBox;
+    sweptSceneBoxValid = source.sweptSceneBoxValid;
+    sweptLights = source.sweptLights;
+    sweptLuminaries = source.sweptLuminaries;
+    bMotionSweep = source.bMotionSweep;
+}
+
+void LightSampler::SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain)
+{
+    spectralDomain = std::move(domain);
+    if (spectralDomain) {
+        risCandidates = 0;
+        lightSampleRRThreshold = 0;
+        bUseLightBVH = false;
+        delete pLightBVH;
+        pLightBVH = nullptr;
+    }
+}
+
+SpectralSourceDomain::Mass LightSampler::EstimateSpectralPower(const ILightPriv& light) const
+{
+    SpectralSourceDomain::Mass sum;
+    // Angular quadrature, not a proof of blackness. The final PMF has a
+    // uniform component even if a narrow spot or spectral line is missed.
+    for (unsigned int y=0;y<8;++y) for (unsigned int x=0;x<16;++x) {
+        const Scalar z = 1-2*(Scalar(y)+.5)/8;
+        const Scalar phi = TWO_PI*(Scalar(x)+.5)/16;
+        const Scalar r = sqrt(r_max(Scalar(0),1-z*z));
+        const Vector3 direction(r*cos(phi),r*sin(phi),z);
+        const auto m = spectralDomain->Integrate([&](double nm) { return light.emittedRadianceNM(direction,nm); });
+        if (m.positive) sum.AddLog(m.logarithm);
+    }
+    sum.Multiply(4*PI/128);
+    return sum;
+}
+
+SpectralSourceDomain::Mass LightSampler::EstimateSpectralPower(const IObject& object) const
+{
+    SpectralSourceDomain::Mass sum;
+    const IEmitter* emitter = object.GetMaterial()->GetEmitter();
+    for (unsigned int y=0;y<10;++y) for (unsigned int x=0;x<10;++x) {
+        const unsigned int k = y*10+x;
+        const Scalar z = Scalar(k+1)*Scalar(.6180339887498949);
+        Point3 position; Vector3 normal; Point2 coord;
+        object.UniformRandomPoint(&position,&normal,&coord,
+            Point3((Scalar(x)+.5)/10,(Scalar(y)+.5)/10,z-Scalar(int(z))));
+        RayIntersectionGeometric rig(Ray(),nullRasterizerState);
+        FillEmitterRecord(rig,position,normal,coord,EmitterObjectPoint(&object,position,rig.ptObjIntersec),&object,
+            pPreparedScene ? pPreparedScene->GetCamera() : nullptr);
+        rig.signals.pScene = pPreparedScene ? pPreparedScene->GetObjects() : nullptr;
+        rig.signals.pSelf = &object;
+        rig.signals.ptWorld = position;
+        if (EmitterProbeWanted()) {
+            EmitterSurfacePayload surface;
+            ProbeEmitterSurface(&object,rig.signals.pScene,position,normal,surface);
+            ApplyEmitterSurface(rig,surface);
+        }
+        const auto m = spectralDomain->Integrate([&](double nm) { return emitter->radiantExitanceAtNM(rig,nm); });
+        if (m.positive) sum.AddLog(m.logarithm);
+    }
+    sum.Multiply(1.0/100);
+    sum.Multiply(object.GetArea());
+    sum.Multiply(EmitterSides::FaceCount(LuminaryIsTwoSided(&object)));
+    return sum;
+}
+
 void LightSampler::SetUseLightBVH(
 	const bool enable
 	)
 {
-	bUseLightBVH = enable;
+	bUseLightBVH = spectralDomain ? false : enable;
 }
 
 void LightSampler::SetRISCandidates(
 	const unsigned int M
 	)
 {
-	risCandidates = M;
+	risCandidates = spectralDomain ? 0 : M;
 }
 
 void LightSampler::SetLightSampleRRThreshold(
 	const Scalar threshold
 	)
 {
-	lightSampleRRThreshold = threshold;
+	lightSampleRRThreshold = spectralDomain ? 0 : threshold;
 }
 
 void LightSampler::SetEnvironmentSampler(
@@ -1341,59 +1433,68 @@ void LightSampler::SetEnvironmentSampler(
 	const EnvironmentSampler* pSampler
 	)
 {
-	if( pEnvSampler ) {
-		pEnvSampler->release();
-	}
-	// Addref `pEnvironmentMap` so it can't go away from under us via
-	// `Scene::SetGlobalRadianceMap` swapping the scene-level pointer
-	// mid-render (which `release()`s its old map).  Workers inside
-	// `SampleEnvLightEmission` call `pEnvironmentMap->GetRadiance(...)`;
-	// without the addref a concurrent swap dangles the pointer and
-	// crashes.  Same shape as the existing `pEnvSampler` ownership.
-	if( pEnvironmentMap ) {
-		pEnvironmentMap->release();
-	}
-	pEnvironmentMap = pEnvMap;
-	if( pEnvironmentMap ) {
-		pEnvironmentMap->addref();
-	}
-	pEnvSampler = pSampler;
-	if( pEnvSampler ) {
-		pEnvSampler->addref();
-	}
+    // Retain both incoming objects before releasing either previous owner.
+    // Self-assignment is valid when this sampler owns the final reference;
+    // either old object can also be the only owner of the other incoming one.
+    if (pEnvMap) pEnvMap->addref();
+    if (pSampler) pSampler->addref();
+    if (pEnvSampler) pEnvSampler->release();
+    if (pEnvironmentMap) pEnvironmentMap->release();
+    pEnvironmentMap = pEnvMap;
+    pEnvSampler = pSampler;
 	RecomputeEnvSelectProbability();
 }
 
 void LightSampler::RecomputeEnvSelectProbability()
 {
-	// Continuous-PMF env selection (2026-05-29 architectural fix —
-	// see docs/PRE_PHASE1_STATUS.md Session 9).  Replaces the prior
-	// binary 0-or-1 `EnvSelectProbability()` that crowded env out of
-	// NEE in mixed scenes — root cause of the documented BDPT/VCM
-	// env-IBL deficit (env+omni / env+mesh at ~85 % of PT because env
-	// never participated in light-subpath emission or s=1 NEE MIS
-	// bookkeeping).  envWeight is the env totalLuminance × scene-disc
-	// area — dimensionally comparable to mesh exitance × area.  In
-	// env-only scenes (alias table empty) this gives 1.0 — identical
-	// to the old binary behaviour.  In env+other-lights scenes it's
-	// fractional and env participates via the env-vs-alias roll in
-	// `SampleLight()`.  Called from both `SetEnvironmentSampler` and
-	// `Prepare` so the cache stays valid regardless of which gets
-	// invoked first (RayCaster::AttachScene calls Prepare first, then
-	// SetEnvironmentSampler — and the order may differ elsewhere).
+    // Cache the actual class PMF used by root sampling and every MIS query.
+    // Legacy proxy power guides importance, but midpoint estimates cannot
+    // establish absence. Mixed present classes retain a uniform support share.
 	const bool bEnvExists = pEnvSampler && pEnvSampler->IsValid() &&
 		pEnvironmentMap && cachedSceneRadius > 0;
-	if( bEnvExists ) {
-		const Scalar discArea = PI * cachedSceneRadius * cachedSceneRadius;
-		const Scalar envWeight = pEnvSampler->TotalLuminance() * discArea;
-		const Scalar aliasWeight = static_cast<Scalar>(
-			aliasTable.TotalWeight() );
-		const Scalar totalWeight = envWeight + aliasWeight;
-		cachedEnvSelectProb = ( totalWeight > 0 ) ?
-			( envWeight / totalWeight ) : Scalar( 0 );
-	} else {
-		cachedEnvSelectProb = Scalar( 0 );
-	}
+    if (spectralDomain) {
+        if (!bEnvExists) cachedEnvSelectProb = 0;
+        else if (!aliasTable.IsValid()) cachedEnvSelectProb = 1;
+        else {
+            auto environmentPower = pEnvSampler->SpectralPower();
+            environmentPower.Multiply(PI);
+            environmentPower.Multiply(cachedSceneRadius);
+            environmentPower.Multiply(cachedSceneRadius);
+            cachedEnvSelectProb = spectralDomain->Probabilities({spectralFinitePower,environmentPower})[1];
+        }
+        return;
+    }
+    const Scalar aliasWeight = static_cast<Scalar>(aliasTable.TotalWeight());
+    if (!RISE::IsFiniteDouble(aliasWeight) || aliasWeight < 0)
+        throw std::invalid_argument("legacy finite-light power proxy is nonfinite or negative");
+    if (bEnvExists) {
+        const Scalar angularPower = pEnvSampler->TotalLuminance();
+        if (!RISE::IsFiniteDouble(angularPower) || angularPower < 0 ||
+            !RISE::IsFiniteDouble(cachedSceneRadius))
+            throw std::invalid_argument("legacy environment power/radius proxy is invalid");
+        if (!aliasTable.IsValid()) { cachedEnvSelectProb = 1; return; }
+        // Power products and their sum can overflow although the ratio is
+        // ordinary. Form log masses and a stable logistic ratio; an estimated
+        // zero environment mass contributes zero importance, never zero support.
+        Scalar probability = 0;
+        if (angularPower > 0) {
+            const Scalar logEnvironment = std::log(angularPower)+std::log(PI)+2*std::log(cachedSceneRadius);
+            const Scalar logFinite = std::log(aliasWeight);
+            if (logEnvironment >= logFinite) {
+                probability = 1/(1+std::exp(logFinite-logEnvironment));
+            } else {
+                const Scalar relative = std::exp(logEnvironment-logFinite);
+                probability = relative/(1+relative);
+            }
+        }
+        // Mix 5% uniformly across the two present root classes. This is proposal
+        // policy, not fabricated physical power, and keeps the remapped legacy
+        // class intervals away from 0/1 even for extreme finite power ratios.
+        const Scalar support = EnvironmentSampler::UniformSupportFraction();
+        cachedEnvSelectProb = support/2+(1-support)*probability;
+    } else {
+        cachedEnvSelectProb = 0;
+    }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1573,8 +1674,16 @@ void LightSampler::Prepare(
 	const LuminaryManager::LuminariesList& luminaries
 	)
 {
+    try {
+
 	pPreparedScene = &scene;
 	pPreparedLuminaries = &luminaries;
+    std::vector<SpectralSourceDomain::Mass> spectralPowers;
+    spectralFinitePower = SpectralSourceDomain::Mass();
+    if (spectralDomain) {
+        // Policy is re-applied on every preparation, not just first attach.
+        risCandidates = 0; lightSampleRRThreshold = 0; bUseLightBVH = false;
+    }
 
 	// Build the combined light table from non-mesh lights and mesh luminaries
 	lightEntries.clear();
@@ -1596,8 +1705,8 @@ void LightSampler::Prepare(
 		for( m=lights.begin(), n=lights.end(); m!=n; m++, lightIdx++ )
 		{
 			const ILightPriv* l = *m;
-			Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-			const MotionSweepRecord* pSwept = bSweptLights ? &sweptLights[lightIdx] : 0;
+			Scalar exitance = spectralDomain ? 0 : ColorMath::MaxValue( l->radiantExitance() );
+			const MotionSweepRecord* pSwept = !spectralDomain && bSweptLights ? &sweptLights[lightIdx] : 0;
 			if( pSwept ) {
 				exitance = SweptSelectionWeight( *pSwept, exitance );
 			}
@@ -1605,10 +1714,11 @@ void LightSampler::Prepare(
 			// may still shine BETWEEN them (an interpolator's overshoot);
 			// keep it at a floor weight (set below) rather than pmf 0.
 			const bool bFloor = pSwept && !( exitance > 0 ) && l->IsPositionalLight();
-			if( exitance > 0 || bFloor )
+			if( spectralDomain ? l->IsPositionalLight() : (exitance > 0 || bFloor) )
 			{
 				LightEntry entry;
 				entry.pLight = l;
+                BindPhysicalProduct(entry);
 				entry.lumIndex = 0;
 				entry.exitance = exitance;
 				entry.position = l->position();
@@ -1616,6 +1726,7 @@ void LightSampler::Prepare(
 				if( pSwept ) {
 					ApplySweptBounds( entry, *pSwept );
 				}
+				if (spectralDomain) spectralPowers.push_back(EstimateSpectralPower(*l));
 				lightEntries.push_back( entry );
 			}
 		}
@@ -1650,13 +1761,13 @@ void LightSampler::Prepare(
 			// DL-431: the surface mean over this luminary's own points, not
 			// the emitter's construction-time estimate at P = Po = 0.
 			const bool twoSided = LuminaryIsTwoSided( luminaries[li].pLum );
-			Scalar exitance = LuminarySelectionWeight( luminaries[li].pLum );
-			const MotionSweepRecord* pSwept = bSweptLums ? &sweptLuminaries[li] : 0;
+			Scalar exitance = spectralDomain ? 0 : LuminarySelectionWeight( luminaries[li].pLum );
+			const MotionSweepRecord* pSwept = !spectralDomain && bSweptLums ? &sweptLuminaries[li] : 0;
 			if( pSwept ) {
 				exitance = SweptSelectionWeight( *pSwept, exitance );
 			}
 			const bool bFloor = pSwept && !( exitance > 0 );
-			if( exitance > 0 || bFloor )
+			if( spectralDomain ? (luminaries[li].pLum->GetGeometry() && luminaries[li].pLum->GetGeometry()->CanBeAreaLight() && luminaries[li].pLum->GetArea() > 0) : (exitance > 0 || bFloor) )
 			{
 				LightEntry entry;
 				entry.pLight = 0;
@@ -1676,15 +1787,23 @@ void LightSampler::Prepare(
 				entry.position = repPos;
 
 				luminaryEntryIndex[ luminaries[li].pLum ] = static_cast<unsigned int>( lightEntries.size() );
+				if (spectralDomain) spectralPowers.push_back(EstimateSpectralPower(*luminaries[li].pLum));
 				lightEntries.push_back( entry );
 			}
 		}
 	}
 
+    if (spectralDomain) {
+        const auto probabilities = spectralDomain->Probabilities(spectralPowers);
+        for (size_t i=0;i<lightEntries.size();++i) {
+            lightEntries[i].exitance = probabilities[i];
+            if (spectralPowers[i].positive) spectralFinitePower.AddLog(spectralPowers[i].logarithm);
+        }
+    }
 	// DL-463: the floor weight of swept lights that read dark at every
 	// sample: 1e-3 of the mean positive weight (1 when none is positive) --
 	// any positive weight is an unbiased pmf; this one costs ~nothing.
-	{
+	if (!spectralDomain) {
 		Scalar sum = 0;
 		unsigned int n = 0;
 		for( std::size_t i = 0; i < lightEntries.size(); i++ ) {
@@ -1729,7 +1848,7 @@ void LightSampler::Prepare(
 	// is sufficient and RIS overhead is wasted.
 	// (Skipped when light BVH is enabled — BVH provides superior
 	// spatial selection with tractable MIS.)
-	if( !bUseLightBVH && risCandidates == 0 && lightEntries.size() > 8 )
+	if( !spectralDomain && !bUseLightBVH && risCandidates == 0 && lightEntries.size() > 8 )
 	{
 		risCandidates = 8;
 	}
@@ -1986,6 +2105,22 @@ void LightSampler::Prepare(
 
 	// DL-463: a sweep describes one frame's shutter; it is consumed here.
 	ClearMotionSweep();
+    } catch (...) {
+        pPreparedScene = nullptr;
+        pPreparedLuminaries = nullptr;
+        lightEntries.clear(); luminaryEntryIndex.clear(); positionalLightIndices.clear();
+        aliasTable.Build({}); volumeEmissionAlias.Build({}); equiangularPivotAlias.Build({});
+        volumeEmissionMedia.clear(); positionalLightBandPowers.clear(); volumeEmissionPowerProxies.clear();
+        cachedTotalExitance = 0; positionalLightTotalExitance = 0;
+        cachedEnvSelectProb = 0; cachedSceneRadius = 0;
+        SetEnvironmentSampler(nullptr,nullptr);
+        delete pLightBVH; pLightBVH = nullptr;
+        bSceneHasObjectMedia = false; bSceneHasObjectFireMedia = false;
+        bSceneHasNullBoundaries = false; bSceneHasAlphaCoverage = false;
+        volumeEmissionDistributionValid = false; equiangularPivotDistributionValid = false;
+        ClearMotionSweep();
+        throw;
+    }
 }
 
 //
@@ -2144,13 +2279,17 @@ bool LightSampler::SampleLight(
 
 	// Single uniform random for env-vs-alias selection (continuous-PMF
 	// architectural fix 2026-05-29 — see Prepare()'s block + docs/
-	// PRE_PHASE1_STATUS.md Session 9).  Re-mapped into either the env-
+	// docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md Session 9).  Re-mapped into either the env-
 	// direction's u1 sub-interval (env path) or the alias-table's u
 	// sub-interval (alias path); net Get1D() consumption per call is
 	// identical to the prior binary-PMF flow, preserving Sobol / QMC
 	// dimension layout (the 2026-05-26 attempt added env as an alias-
 	// table entry and consumed an extra Get1D() — caused a severe
 	// spectral env-only regression that this wrapper avoids).
+    // Spectral mixed roots use a fresh conditional draw. Reusing a tiny
+    // class interval would collapse its 32-bit Sobol conditional support.
+    // The legacy no-domain dimension layout remains unchanged.
+    const bool independentConditional = spectralDomain && bEnvExists && bAliasValid;
 	const Scalar u_top = sampler.Get1D();
 
 	const bool bChooseEnv = bEnvExists &&
@@ -2165,7 +2304,7 @@ bool LightSampler::SampleLight(
 		// distributed uniform input.
 		const Scalar denom = ( cachedEnvSelectProb > 0 ) ?
 			cachedEnvSelectProb : Scalar( 1 );
-		const Scalar u_env = u_top / denom;
+		const Scalar u_env = independentConditional ? sampler.Get1D() : u_top / denom;
 		if( !SampleEnvLightEmission( u_env, sampler, sample ) ) {
 			return false;
 		}
@@ -2180,9 +2319,9 @@ bool LightSampler::SampleLight(
 	// alias-table selection draw.  In env-not-exists scenes u_top is
 	// the alias draw directly (cachedEnvSelectProb == 0 -> identity).
 	const Scalar aliasSpan = Scalar( 1 ) - cachedEnvSelectProb;
-	const Scalar u_alias = ( aliasSpan > 0 ) ?
+	const Scalar u_alias = independentConditional ? sampler.Get1D() : (( aliasSpan > 0 ) ?
 		( ( u_top - cachedEnvSelectProb ) / aliasSpan ) :
-		u_top;
+		u_top);
 	const unsigned int idx = aliasTable.Sample( u_alias );
 	const LightEntry& entry = lightEntries[idx];
 	// pdfSelect is the JOINT probability of (alias path was taken) ×
@@ -2703,7 +2842,7 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 
 namespace
 {
-	//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)): the NEE
+	//! DL-09 (docs/DEBT_LEDGER.md §3(ii)): the NEE
 	//! shadow segment from the shading point (whose walk's stack top has
 	//! been advanced to it, or telescopes to it) to the light point carries
 	//! the graded-index factor the BSDF-sampled continuation pays on
@@ -2905,7 +3044,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				continue;
 			}
 			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-			if( exitance <= 0 )
+			if( spectralDomain ? !l->IsPositionalLight() : exitance <= 0 )
 			{
 				RISEPel amount( 0, 0, 0 );
 				// FULL-SPHERE NEE, DirectionalLight sibling (residual
@@ -3465,7 +3604,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 							// integrand is `neeTrainingScale * contrib`.
 							// 1 everywhere else, so unchanged there.
 							// DL-84 round 7 (the REALIZED-MOMENT convention,
-							// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md
+							// docs/DEBT_LEDGER.md
 							// "Round 7"): `AccumulateCount` for this attempt
 							// fired BEFORE the light-sample roulette above, and
 							// a killed sample contributes a counted zero -- so
@@ -3612,8 +3751,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 				// MIS: power heuristic (or optimal MIS) against BSDF PDF.
 				//
-				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
-				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
+				// DL-73 (docs/DEBT_LEDGER.md) /
+				// DL-74 (docs/DEBT_LEDGER.md):
 				// `pMaterial->Pdf(...)` is the RAW, un-guided sampling pdf --
 				// at a VOLUME vertex (`pMaterial` is a `MediumScatterMaterial`
 				// adapter, see MediumTransport.cpp) this correctly matches
@@ -4203,7 +4342,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				continue;
 			}
 			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-			if( exitance <= 0 )
+			if( spectralDomain ? !l->IsPositionalLight() : exitance <= 0 )
 			{
 				// Per-NM direct lighting evaluation — uses brdf.valueNM
 				// (per-wavelength BSDF) so the surface's spectral
@@ -4366,12 +4505,22 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		if( entry.pLight )
 		{
-			// Non-mesh (delta-position) light — spectral approximation
-			// via CIE luminance of the RGB emitted radiance.  Matches
-			// the BDPT integrator's spectral handling of non-mesh lights.
+			// Non-mesh (delta-position) light. Recover its actual NM source
+			// evaluator below: cached uplift for RGB authoring, or the
+			// immutable authored SPD for a physical source.
 			const Point3 lightPos = entry.pLight->position();
-			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
-			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+			Vector3 vToLight;
+            Scalar dist;
+            PhysicalLightSpectrum::ProductTerm distance;
+            if(entry.physicalProductNM) {
+                if(!PhysicalLightSpectrum::DirectionBetween(lightPos,ri.ptIntersection,vToLight,distance,dist)) {
+                    GlobalLog()->PrintEasyError("Physical point/spot NEE requires a finite nonzero representable point distance.");
+                    break;
+                }
+            } else {
+                vToLight=Vector3Ops::mkVector3(lightPos,ri.ptIntersection);
+                dist=Vector3Ops::NormalizeMag(vToLight);
+            }
 			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
 				ri.RayFacingShadingCosine( vToLight );
 			// FULL-SPHERE NEE site 1 of 3 (NM): delta-position light.
@@ -4387,10 +4536,21 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
+				if( ShadowOccludedNM( caster, rayToLight, entry.physicalProductNM ? dist : dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
 						gradedTrack ? &*gradedTrack : 0, &lightPos, bSMSCoversDeltaLights ) )
 					break;
 			}
+
+            if(entry.physicalProductNM) {
+                const Ray rayToLight(ri.ptIntersection,vToLight);
+                const Scalar mediumTr=EvalShadowTransmittanceNM(rayToLight,dist,pMedium,pMediumObject,pPreparedScene,
+                    bSceneHasObjectMedia,nm,pMediumStack,mediumRecords(rayToLight,dist));
+                const Scalar graded=GradedNEESegmentScale(pGradedIndexStack,lightPos,gradedTrack ? &*gradedTrack : 0);
+                const Scalar response=brdf.valueStatefulNM(vToLight,ri,nm,pMisIorStack);
+                result+=entry.physicalProductNM(entry.physicalLight,-vToLight,nm,
+                    {response,cosSurface,shadowTNM,risWeight,mediumTr,graded},{distance,distance,pdfAlias});
+                break;
+            }
 
 			// emittedRadiance expects the outgoing direction FROM the
 			// light; -vToLight is the light-to-surface direction.
@@ -4418,7 +4578,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			}
 
 			// DL-09: the connection segment's graded-index factor.
-			result = neeContrib *
+			result += neeContrib *
 				GradedNEESegmentScale( pGradedIndexStack, lightPos, gradedTrack ? &*gradedTrack : 0 );
 			break;
 		}
@@ -4604,7 +4764,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		// DL-09: the connection segment's graded-index factor (after
 		// training -- see the RGB twin).
-		result = contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
+		result += contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
 			GradedNEESegmentScale( pGradedIndexStack, ptOnLum, gradedTrack ? &*gradedTrack : 0 ) );
 	} while( false );
 
@@ -4676,8 +4836,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					}
 				}
 
-				// DL-73 (docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md) /
-				// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md):
+				// DL-73 (docs/DEBT_LEDGER.md) /
+				// DL-74 (docs/DEBT_LEDGER.md):
 				// NM twin of the RGB env-NEE MIS block above -- see that
 				// block's comment for the full derivation. `pGuidedBlend` is
 				// only ever non-null from PathTracingIntegrator's SURFACE NM

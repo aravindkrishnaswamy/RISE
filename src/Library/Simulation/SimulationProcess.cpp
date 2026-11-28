@@ -10,7 +10,7 @@
 #include <system_error>
 
 #ifdef _WIN32
-// NOT COMPILED OR TESTED in this tree (docs/SIMULATION_M5A_RESULTS.md, "Windows").
+// NOT COMPILED OR TESTED in this tree (docs/SIMULATION_SOLVER_CONTRACT.md, "Windows").
 #include <windows.h>
 #else
 #include <fcntl.h>

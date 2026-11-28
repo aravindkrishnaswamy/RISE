@@ -31,11 +31,11 @@ namespace RISE
 		// envelope without a frame list (LoadFrameTemplate); fire_medium reads
 		// such a cache directly (AttachCache).
 		constexpr const char* FireMethaneSolverId = "fire.methane";
-		// Version 3 (docs/SIMULATION_M8_RESULTS.md section 13): the pre-pilot rim-ignition
+		// Version 3 (docs/SIMULATION_SOLVER_CONTRACT.md section 13): the pre-pilot rim-ignition
 		// witness is a product fraction of 1e-6 (FireCase::RimIgnitionProductWitness), so
 		// every fire key changed.  Caches of versions 1 and 2 use the same grid and receipt
 		// formats: stale for baking (the version is in the key), still playable.
-		// Version 4 (docs/SIMULATION_M8_RESULTS.md section 15): the fire tables, records,
+		// Version 4 (docs/FIRE_SMOKE_STATUS.md, "Fire solver version 4"): the fire tables, records,
 		// optics, sequence and schema sources compile with strict IEEE arithmetic instead
 		// of fast-math (docs/BUILD_FLAGS.md), so their bytes no longer depend on the LTO
 		// mode; the solver's results move by rounding.  Version 3 caches stay playable.

@@ -3208,8 +3208,8 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// refuse-all below applies nothing).  `let` chunks are CST-level, NOT engine entities -> skipped.
 	const LetBindings lets = CollectLetBindings( items, diags );
 
-	// PASS 1 -- validate EVERY chunk through the live descriptor registry, the
-	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects a
+	// PASS 1 -- validate EVERY chunk through the live descriptor registry via
+	// DispatchChunkParameters (rejects a
 	// no-space line, an undeclared parameter name, or a non-finite/non-numeric
 	// numeric value -- see its doc in IAsciiChunkParser.h). Collect each
 	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
@@ -3617,7 +3617,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 //! re-point re-runs the SAME transform on the SAME geometry -> bit-identical bbox;
 //! a geometry-extent or transform edit changes it.  Exact == is the right gate (a
 //! tolerance would let a genuine sub-epsilon move skip the TLAS rebuild); finite-only,
-//! so -ffast-math's no-NaN/Inf assumption does not affect it.
+//! so NaN/Inf edge cases do not arise.
 static bool LooksNumeric( const std::string& s );   // defined below (shared with BuildReferenceGraph)
 
 //! Does an entity of (cat, name) exist in the ALREADY-derived Job's managers?  Used by
@@ -3725,7 +3725,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 
 	// Slice 3 (stable-object apply) needs the object manager: it re-points existing
 	// objects in place and reads each object's bbox to gate the TLAS rebuild.  Downcast
-	// IJob -> IJobPriv exactly as the parser does (AsciiSceneParser.cpp ~470); an IJob
+	// IJob -> IJobPriv to reach the object manager; an IJob
 	// that is not an IJobPriv cannot be derived into at all -> full derive.
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;
@@ -3825,6 +3825,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
 		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
 		if( node->role == "let" ) { diags.push_back( "incremental: a let-binding edit requires a full derive (its consumers are not yet traced)" ); return 0; }   // #5 slice 3
+		if( node->role == "hylios_skin_material" || node->role == "hyperspectral_radiometric_rasterizer" ) { diags.push_back( "incremental: HyLIoS/radiometric chunk edits fall back to a full derive" ); return 0; }
 		IAsciiChunkParser::ParamsList plist;
 		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
 		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.
@@ -4372,7 +4373,7 @@ static bool LooksNumeric( const std::string& s )
 // Synthetic `defs` sub-namespace keys for the Function namespace (review #3, 2nd pass):
 // ChunkCategory::Function lumps Function1D + Function2D producers, but the engine resolves
 // `function1d` via GetFunction1Ds and `function2d`/`heightfield_function` via GetFunction2Ds
-// (AsciiSceneParser.cpp ~1386/1397).  Seeding producers + resolving consumers through these
+// (see ChunkParserRegistry.cpp).  Seeding producers + resolving consumers through these
 // DIMENSION-PRECISE keys (well above any ChunkCategory enum value, so no collision in the
 // (int,name) `defs` map) makes a same-named 1D/2D pair resolve to the RIGHT one in BOTH
 // DocEditClosure and DocRename -- not the (Function,name) first-wins edge.  The coarse

@@ -1,4 +1,4 @@
-// rise-sim: the simulation worker host (docs/SIMULATION_M2_DESIGN.md).
+// rise-sim: the simulation worker host (docs/SIMULATION_SOLVER_CONTRACT.md).
 // Usage and exit codes: src/Library/Simulation/SimulationWorker.h.
 // Solvers are found only through the registry. The shipped library solvers
 // are registered here (a static library drops self-registering objects that

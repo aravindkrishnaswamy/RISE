@@ -103,6 +103,7 @@
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/EnvironmentSampler.h"
 #include "LightBVH.h"
+#include "PhysicalLightSpectrum.h"
 
 namespace RISE
 {
@@ -119,7 +120,7 @@ namespace RISE
 
 	class IORStack;
 
-	/// Optional per-call hook (DL-74, docs/DL74_ENV_NEE_GUIDING_PARTITION.md)
+	/// Optional per-call hook (DL-74, docs/DEBT_LEDGER.md)
 	/// letting a caller replace the density `EvaluateDirectLighting{,NM}`'s
 	/// NEE arms use as the BSDF-SAMPLING technique's MIS-PARTNER for a given
 	/// shadow-ray direction.
@@ -489,6 +490,13 @@ namespace RISE
 		struct LightEntry
 		{
 			const ILightPriv*	pLight;		///< Non-null for non-mesh lights
+            // Exact built-in physical source bound once at Prepare. No RTTI,
+            // shared ownership copy, or ILight vtable change on a NEE query.
+            const void* physicalLight = nullptr;
+            using PhysicalProductNM = Scalar (*)(const void*,const Vector3&,Scalar,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm>,
+                std::initializer_list<PhysicalLightSpectrum::ProductTerm>);
+            PhysicalProductNM physicalProductNM = nullptr;
 			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
@@ -582,6 +590,11 @@ namespace RISE
 			virtual ~LightSampler();
 
 			/// Cached state set by Prepare()
+			std::shared_ptr<const SpectralSourceDomain> spectralDomain;
+            SpectralSourceDomain::Mass spectralFinitePower;
+            // Spectral-domain preparation is per sampler/pass, never a source cache.
+            SpectralSourceDomain::Mass EstimateSpectralPower(const ILightPriv& light) const;
+            SpectralSourceDomain::Mass EstimateSpectralPower(const IObject& object) const;
 			const IScene*									pPreparedScene;
 			const LuminaryManager::LuminariesList*			pPreparedLuminaries;
 			Scalar											cachedTotalExitance;
@@ -627,11 +640,11 @@ namespace RISE
 			/// (vs an alias-table light) on the next call.  Set during
 			/// `Prepare()` and `SetEnvironmentSampler()` from env
 			/// totalLuminance × disc area vs the alias table's total
-			/// weight.  Zero when env doesn't exist or env total
-			/// radiance is zero; 1 when env exists and the alias table
-			/// is empty (env-only scenes); fractional in mixed
-			/// env+other-lights scenes (continuous PMF, matching PBRT-
-			/// v4's `LightSampler::PMF(env)` semantics).
+			/// weight, with 5% uniform support across present classes in
+			/// legacy mixed roots. A zero midpoint estimate cannot disable
+			/// a present environment. Zero when env is absent, zero-scale,
+			/// or vertex placement is infeasible; one in env-only scenes.
+			/// Explicit spectral domains use their separate support policy.
 			Scalar						cachedEnvSelectProb;
 
 			/// Recomputes `cachedEnvSelectProb` from current env +
@@ -911,7 +924,7 @@ namespace RISE
 			//! null luminary and for a luminary with no directly-owned
 			//! geometry (a CSG composite: `GetGeometry() == 0`, and it is
 			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
-			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
+			//! and docs/DEBT_LEDGER.md.
 			static bool LuminaryIsTwoSided( const IObject* pLum );
 
 			//! DL-431: the surface-mean radiant exitance of ONE luminary.
@@ -936,7 +949,7 @@ namespace RISE
 			//! shoots bit for bit as before.  On a clipped plane the sample
 			//! points are exactly the old UV grid's cell centres, so a
 			//! UV-keyed painter averages to the same value as well.
-			//! \sa docs/DL431_EMITTER_AVERAGE_EXITANCE.md
+			//! \sa docs/DEBT_LEDGER.md
 			struct LuminaryExitance
 			{
 				RISEPel	average;		///< surface-mean exitance (before area / face count)
@@ -1048,6 +1061,16 @@ namespace RISE
 			{
 				pOptimalMIS = pAccum;
 			}
+
+            // Configure before Prepare; immutable during sampling. This concrete
+            // seam deliberately does not enable a radiometric rasterizer/API.
+            void SetSpectralSourceDomain(std::shared_ptr<const SpectralSourceDomain> domain);
+            const SpectralSourceDomain* GetSpectralSourceDomain() const { return spectralDomain.get(); }
+            Scalar LightSampleRRThreshold() const { return lightSampleRRThreshold; }
+            bool IsPrepared() const { return pPreparedScene && pPreparedLuminaries; }
+            // Preparation-only transfer to a replacement sampler; source scene
+            // must be the same frozen attachment. No proposal tables are copied.
+            void CopyMotionSweepFrom(const LightSampler& source, const IScene& scene);
 
 			/// Cache the scene and luminaries list for subsequent queries.
 			/// Builds the alias table for O(1) light selection.
@@ -1200,7 +1223,7 @@ namespace RISE
 				//! every vertex), so that its top is the index the caller's
 				//! throughput was priced to.  Only then is the NEE
 				//! connection segment priced `(top/n(light point))^2`
-				//! (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)).
+				//! (docs/DEBT_LEDGER.md §3(ii)).
 				//! Default NULL: a walk that does not advance (the legacy
 				//! shader-op chain, RayCaster's own volume walk) keeps its
 				//! pre-DL-09 accounting on BOTH its NEE and its
@@ -1513,13 +1536,14 @@ namespace RISE
 			/// next call.  Continuous in (0, 1] when env exists, by
 			/// the env-vs-alias selection roll in `SampleLight()` —
 			/// computed during `Prepare()` from env totalLuminance ×
-			/// disc area vs the alias table's total weight.  Matches
+			/// disc area vs the alias table's total weight, including the
+			/// legacy 5% uniform class-support mixture. Matches
 			/// PBRT-v4's `LightSampler::PMF(env)` semantics so MIS at
 			/// the Path B s=0 site has a non-zero pdfRev in mixed
 			/// scenes (env + other lights), which closes the MIS
 			/// partition-of-unity that the previous binary 0-or-1
 			/// formulation broke — see `docs/IMPROVEMENTS.md` #12 and
-			/// `docs/PRE_PHASE1_STATUS.md` Session 9 for the rationale
+			/// `docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md` Session 9 for the rationale
 			/// (continuous-PMF refactor 2026-05-29).
 			Scalar EnvSelectProbability() const
 			{

@@ -22,7 +22,7 @@ Navigation aid for LLM-powered contributors. Use [README.txt](README.txt) for hi
 - Iterative PT integrator: [src/Library/Shaders/PathTracingIntegrator.h](src/Library/Shaders/PathTracingIntegrator.h)
 - Main CLI entry point: [src/RISE/commandconsole.cpp](src/RISE/commandconsole.cpp)
 
-Fire/smoke simulation work: read [docs/FIRE_SMOKE_STATUS.md](docs/FIRE_SMOKE_STATUS.md) first. It is the current state, the open problems and the operating rules; the per-revision `FIRE_SMOKE_*_R2xx.md` pages are history.
+Simulation work (cloth, rigid, liquid, fire, groups, caches): read [docs/SIMULATION_SOLVER_CONTRACT.md](docs/SIMULATION_SOLVER_CONTRACT.md), [docs/SIMULATION_GUI_STATUS.md](docs/SIMULATION_GUI_STATUS.md), and [docs/SIMULATION_PERFORMANCE.md](docs/SIMULATION_PERFORMANCE.md). Fire/smoke solver specifics and open problems live in [docs/FIRE_SMOKE_STATUS.md](docs/FIRE_SMOKE_STATUS.md).
 
 Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scenes/Tests`, `tests`, and `build/make/rise`. `src/DRISE`, `src/PRISE`, `src/3DSMax`, `build/VS2005` and the SGI / Solaris make configs are FROZEN legacy surfaces (kept, unsupported, may not build; docs/LEGACY_DEPRECATION_ASSESSMENT.md §13), and `src/RISE/risempi.cpp` is a legacy sidecar.
 
@@ -53,7 +53,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
   Native scenes use CST `expr(...)` values and document-level `let` constants.
   See [src/Library/Parsers/README.md](src/Library/Parsers/README.md).
 - Tests are standalone executables, not a framework-based suite.
-- Two rendering pipelines exist: **shader-dispatch** (RayCaster → ShaderOp chain; its user-facing chunks -- `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, the chain ops, photon maps, MLT -- are FROZEN since 2026-10-09, docs/SCENE_CONVENTIONS.md §11.4) and **pure integrator** (PathTracingIntegrator called directly by `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer`). Changes to path tracing logic should go in `PathTracingIntegrator`, which serves both pipelines.
+- Two rendering pipelines exist: **shader-dispatch** (RayCaster → ShaderOp chain; its user-facing chunks -- `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, the chain ops, photon maps, MLT -- are FROZEN since 2026-10-09, docs/SCENE_CONVENTIONS.md §11.4) and **pure integrator** (PathTracingIntegrator called directly by `pathtracing_pel_rasterizer`, `pathtracing_spectral_rasterizer`, and `hyperspectral_radiometric_rasterizer`). Changes to path tracing logic should go in `PathTracingIntegrator`, which serves both pipelines.
 - **OIDN + FilteredFilm invariant**: When OIDN denoising is enabled, the filtered film resolve is skipped. OIDN needs raw MC noise, not filter-reconstructed images. See `docs/ARCHITECTURE.md` for details.
 - **Interactive viewport parity invariant**: macOS (`build/XCode/rise/RISE-GUI/Bridge/RISEViewportBridge.mm`), Windows (`build/VS2022/RISE-GUI/ViewportBridge.cpp`), and Android (`android/app/src/main/cpp/RiseBridge.cpp`) must use the same interactive render pipeline. Shared preview shading / AO / rasterizer behavior belongs in `src/Library/Rendering/InteractivePelRasterizer.{h,cpp}` (currently `CreateInteractiveMaterialPreviewPipeline`) rather than platform bridges. Platform bridge code should only adapt frame delivery and UI lifecycle.
 - **No path-tree branching at multi-lobe vertices (excised 2026-05)**: `branching_threshold` and deterministic subpath splitting across PT, BDPT, VCM, MLT, and uniform-mode SMS were completely removed after deterministic Fresnel splits were shown to bias BDPT `MISWeight` ratios on SDS regions and lose wall-clock-normalized variance in PT. All integrators use stochastic single-lobe selection (`ScatteredRayContainer::RandomlySelect`) with `kray / selectProb` compensation and aggregate `ISPF::Pdf()` MIS partners. Scenes authoring `branching_threshold` fail to parse; the retired `branch` flag on `PathTracingShaderOp` / `DistributionTracingShaderOp` is silently ignored by the parser; photon tracers retain their own separate `bBranch` parameter.
@@ -310,12 +310,14 @@ and do not leave them behind when you finish a task.
 
   ⚠ **`Deployment` is NOT the configuration that ships.**  The release DMG is
   built from `Opto` (`scripts/create_macos_release.sh`, scheme `RISE-GUI-Opto`).
-  `Opto` carries `-ffast-math` and full `LLVM_LTO = YES`; `Deployment` carries
-  neither and uses `YES_THIN`.  This warning gate is fine for warnings, but
-  anything **FP- or LTO-sensitive must additionally be verified against `Opto`**
-  — historically the worst miscompiles only appeared with full LTO.  (The
-  finite-math half of that gap was closed 2026-07-29 when every configuration
-  gained `-fno-finite-math-only`; the rest of the gap remains.)
+  All Xcode configurations (`Development`, `Deployment`, `Default`, `Opto`) now
+  carry `-ffast-math -fno-finite-math-only` globally (matching `make`, with
+  strict-FP32 simulation/fire/OSL sources pinned to `-fno-fast-math
+  -ffp-contract=off` — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md)), but
+  `Opto` uses full `LLVM_LTO = YES` while `Deployment` uses `YES_THIN`.  The
+  warning gate above is fine for warnings, but anything **LTO-sensitive must
+  additionally be verified against `Opto`** — historically the worst
+  miscompiles only appeared with full LTO.
 
   Incremental builds will hide warnings on files that didn't recompile.
   When you've finished a task that touched headers or shared sources,

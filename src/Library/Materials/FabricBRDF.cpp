@@ -574,7 +574,7 @@ RISEPel FabricBRDF::albedo( const RayIntersectionGeometric& ri ) const
 // (moment-matched fixed-node quadrature, tools/GGXSpecularBihemisphericalGen.cpp)
 // plus multiscatter (falls out algebraically from value()'s own f_ms
 // separability, no new baking needed) integral -- see GGXBRDF.cpp's
-// own DL-123 comment and docs/DL123_GGX_HEMISPHERICAL_ALBEDO.md.  Gate
+// own DL-123 comment and docs/DEBT_LEDGER.md.  Gate
 // 5b's GGX rows drop from 4.2-7.7% to 0.007-0.026%.
 //
 // A TRANSMISSIVE SUBSTRATE NEEDS NOTHING EXTRA HERE (R8 P1.1), and the

@@ -65,6 +65,7 @@ namespace RISE
 
 			//! DL-165: this IS the spectral painter -- see IPainter::IsSpectrallyDefined's doc comment.
 			bool							IsSpectrallyDefined() const { return true; }
+			const SpectralPacket&			GetSpectralPacket() const { return spectrum; }
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};

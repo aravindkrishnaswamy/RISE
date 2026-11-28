@@ -39,7 +39,7 @@
 //       was actually proposed -- exactly the bug BDPTIntegrator.cpp's
 //       DL-43 fix (swapping the two arguments at the four eye-subpath
 //       call sites) corrects.  See docs/DEBT_LEDGER.md DL-43 and
-//       docs/DL03_GUIDED_IOR_CONTINUATION.md's "eye RIS actual-guide
+//       docs/DEBT_LEDGER.md's "eye RIS actual-guide
 //       limitation" note.
 //
 //////////////////////////////////////////////////////////////////////

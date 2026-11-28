@@ -218,7 +218,7 @@ bool MeasureClothRigid(const IReadOnlyCacheSnapshot& sheet, const IReadOnlyCache
 namespace {
 struct CaseSpec { const char* id; const char* description; double tolerance; };
 // Tolerances: about five times the drift observed at the canonical
-// resolution (docs/SIMULATION_M6_RESULTS.md "Coupling evidence").
+// resolution (docs/SIMULATION_SOLVER_CONTRACT.md "Coupling evidence").
 const CaseSpec Specs[] = {
 	{"zero-g-linear-momentum", "box into a free sheet, zero gravity, implicit Gauss-Seidel: max |P(t) - P(0)| / |P(0)|", 5e-7},
 	{"zero-g-angular-momentum", "the same: max |L(t) - L(0)| / |L(0)| about the origin (includes backward Euler's own rotational damping)", 5e-4},

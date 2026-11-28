@@ -1,4 +1,4 @@
-// liquid.mac (simulation M7, docs/SIMULATION_M7A_RESULTS.md): contract
+// liquid.mac (simulation M7, docs/SIMULATION_SOLVER_CONTRACT.md): contract
 // conformance.
 //
 //   A  description: id, version, outputs, capabilities, estimates, the

@@ -63,7 +63,7 @@ Contract conformance targets: [MATERIALS.md](MATERIALS.md),
 Pope & Fry 1997, Weidlich & Wilkie 2007, Belcour 2018, and the OpenPBR surface
 specification — enumerated in §15.
 **Nature:** research + design recommendation, in the mold of
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey →
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (survey →
 candidates against evidence → recommendation) and
 [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
 (observed-need-gated phases with per-phase exit gates). **The user drives
@@ -551,7 +551,7 @@ an `IScalarPainter`.
 >
 > **UPDATE 2026-09-28 (DL-24):** the residual budget truncation above and
 > items 1 and 2 (heuristic `Pdf`, top-wins `GetBSDF`) are all FIXED -- see
-> §12 item 2 and [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md).
+> §12 item 2 and [DEBT_LEDGER.md](DEBT_LEDGER.md).
 > `composite_material` is no longer disqualified on correctness; this design
 > stays on `coated_material` for cost and variance.
 >
@@ -561,8 +561,8 @@ an `IScalarPainter`.
 > [0, 1], so every extinction above ~1 is silently clamped in every spectral
 > rasterizer.  Retyping the slot to `IScalarPainter` remains open (it touches
 > the ctor, `RISE_API`, `Job::AddCompositeMaterial`, the chunk descriptor, and
-> needs a scene migration).  Guard for all of the above:
-> [tests/CompositeExtinctionTest.cpp](../tests/CompositeExtinctionTest.cpp).
+> needs a scene migration).  Historical guard for all of the above:
+> `tests/CompositeExtinctionTest.cpp` (retired in test-suite consolidation).
 
 ### 3.3 `polished_material` — the closest existing precedent, and genuinely close
 
@@ -2029,7 +2029,7 @@ single-bounce approximation is weakest. The harness to detect that already exist
   `f = c·f_coat + (c·K + (1−c))·f_base`, with
   `K = T(θ_i)·T(θ_o)·A_in·A_out / (η²·(1 − E_ret·R))` (`E_ret = r_i` for a clear
   coat; for an absorbing one the exact path-length average of the trapped
-  field's round trip, DL-342, [DL342_COATED_ABSORBING_COAT.md](DL342_COATED_ABSORBING_COAT.md) --
+  field's round trip, DL-342, [DEBT_LEDGER.md](DEBT_LEDGER.md) --
   it was `r_i·A_rt` with one Beer factor at outer cosine 0.5, up to 15 % bright), `f_coat` the GGX coat
   lobe carrying its own Fresnel, and `R` the substrate albedo made
   **direction-free** (a reciprocity requirement — a view-dependent `R` breaks
@@ -2158,7 +2158,7 @@ one. Recorded as a Non-goal in §14 so the boundary is explicit.
 decision is unambiguous: PT is the runtime default because it wins
 wall-clock-normalized variance on the converged bulk, with BDPT routed in for
 strong-indirect/glossy and VCM only for caustics
-([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) §2, §4). The
+([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2, §4). The
 `auto_rasterizer` dispatcher applies that map automatically. Wetness must look
 right under PT first, and its documentation should not steer authors off PT.
 
@@ -2192,7 +2192,7 @@ chains** beyond what the scene already has. **SMS is therefore irrelevant to
 Phase 1** — there is no new specular manifold to solve. Geometry-level pools *are*
 real dielectric surfaces and do add chains; for a scene whose hero effect is
 light focused through a pool, the integrator map says VCM
-([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) §2: VCM is the
+([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2: VCM is the
 only integrator that reaches caustic transport, where PT/BDPT miss 44–78 % of the
 energy) — at the cost of its env/volume bias and its σ²·T penalty everywhere else.
 
@@ -2264,7 +2264,7 @@ the first-ever strict-gate pass on that instrument by any provider.
 *"Summoned category, price the inferior path, exactly one worked example that
 parses, and let the census say whether it moved"*
 ([GEOMETRY_SHADING_SIGNALS_DESIGN.md:977](GEOMETRY_SHADING_SIGNALS_DESIGN.md);
-origin `docs/agentic-redesign/CREATIVITY_JOURNAL.md:431-433`).
+origin `docs/agentic-redesign/50-agentic-surface.md:431-433`).
 
 | leg | wetness instantiation |
 |---|---|
@@ -2468,7 +2468,7 @@ timing exists because no implementation exists.
    The fix belongs to Landing 6's owner; if it lands, `composite_material` becomes
    usable for coat-over-diffuse but still carries the 50/50 `Pdf` and top-wins
    `GetBSDF` architectural defects (§3.2). **Open.**
-   > **UPDATE 2026-09-28 — FIXED as DL-24 (slice `debt-dl24`; [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md)).**
+   > **UPDATE 2026-09-28 — FIXED as DL-24 (slice `debt-dl24`; [DEBT_LEDGER.md](DEBT_LEDGER.md)).**
    > All three defects are gone: the energy loss (budget truncation of the
    > internal Fresnel/TIR series; the budgets are now Russian-roulette
    > onsets), the 50/50 `Pdf` (now the exact density of what `Scatter`
@@ -3007,7 +3007,7 @@ the add-a-BSDF checklist),
 living harness and Phase 2's exit gate),
 [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) (the
 signals this consumes, the verb-effect census, the phased-gate form),
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (PT-default
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (PT-default
 routing; decision-doc form),
 [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) (scalar-vs-colour pipe
 discipline — the routing hazard in §3.2),
@@ -3021,7 +3021,7 @@ behaviour on near-deterministic speculars),
 `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §2
 (the adoption laws), `docs/agentic-redesign/90-iteration-ratchet.md` §2 (the
 read-the-surface-before-designing lesson, applied in §3.1),
-`docs/agentic-redesign/CREATIVITY_JOURNAL.md` (the master triad),
+`docs/agentic-redesign/50-agentic-surface.md` (the master triad),
 `src/Library/Parsers/README.md` (descriptor-driven chunk parsers).
 
 **External prior art.** Only the facts this design argues from are listed.

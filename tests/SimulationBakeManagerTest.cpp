@@ -1,5 +1,5 @@
 // Simulation M5: the bake manager and the agent's simulation verbs
-// (docs/SIMULATION_M5A_RESULTS.md).  CPU only: cloth.shell and the reference
+// (docs/SIMULATION_SOLVER_CONTRACT.md).  CPU only: cloth.shell and the reference
 // solvers.  Every bake is a real separate worker process: this program
 // re-runs itself as rise-sim (`--rise-sim-worker`, the library WorkerMain
 // with the built-in and reference solvers registered), started by the

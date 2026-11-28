@@ -127,7 +127,7 @@ static Job* MakeSamplerScene()
 static double LiveLightEnergy( ILightManager* lights, const char* name )
 {
 	ILightPriv* l = lights->GetItem( name );
-	if( !l ) { return -1.0e30; }   // finite poison: NaN sentinel folds under -ffast-math (keystone disease)
+	if( !l ) { return -1.0e30; }   // finite poison: avoids NaN sentinels (banned by SourceHygieneTest)
 	return (double)l->emissionEnergy();
 }
 

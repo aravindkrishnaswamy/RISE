@@ -37,7 +37,7 @@
 //  writes were inert ("all-zero... they emit no ray differentials",
 //  BDPTVertex.h's field comment) because it never traced the camera
 //  ray's own differentials through to `GenerateEyeSubpathImpl`.  They
-//  were not inert.  See docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md
+//  were not inert.  See docs/DEBT_LEDGER.md
 //  for the full account, including the stale doc/comment corrections
 //  this discovery required.
 //

@@ -290,7 +290,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This
 	// used to be the literal stream 48, which the eye walk's own
 	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
-	// docs/DL08_PSSMLT_LANE_LAYOUT.md) -- ordinary scattering-medium
+	// docs/DEBT_LEDGER.md) -- ordinary scattering-medium
 	// scenes get there with StabilityConfig::maxVolumeBounce's 64
 	// default and no unusual settings.  kPSSMLTFilmLensApertureStream
 	// sits between the walks' shallow and deep lanes.
@@ -1378,10 +1378,11 @@ void MLTRasterizer::RasterizeScene(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_pel_rasterizer.",
 				offender.c_str() );
 			return;
@@ -1510,10 +1511,11 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
 		std::string offender;
 		if( pObjMgr->ComputeScenePathDependence( &offender ) != 0u ||
-			pObjMgr->SceneHasMixMaterial( &offender ) )
+			pObjMgr->SceneHasMixMaterial( &offender ) ||
+			pObjMgr->SceneHasHyLIoSMaterial( &offender ) )
 		{
 			GlobalLog()->PrintEx( eLog_Error,
-				"MLTRasterizer:: Refusing scene with MixMaterial or non-physical path/view-dependent inputs "
+				"MLTRasterizer:: Refusing scene with MixMaterial, HyLIoS skin, or non-physical path/view-dependent inputs "
 				"(first object '%s'). Use pathtracing_pel_rasterizer.",
 				offender.c_str() );
 			return;

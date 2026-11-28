@@ -218,7 +218,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		for( int i=0; i<3; i++ ) {
 			// DL-101: a FRESH ScatteredRay every iteration -- see
 			// SchlickSPF.cpp's identical fix and
-			// docs/DL101_PERCHANNEL_SCATTEREDRAY_REUSE.md.
+			// docs/DEBT_LEDGER.md.
 			ScatteredRay s;
 			Scalar ratio = 0;
 			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i], ratio );

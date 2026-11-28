@@ -1,31 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  MaterialIntrospection.h - Read-only introspection of an IMaterial
-//    for the interactive editor's properties panel.
-//
-//  Phase-2 scope (this PR):
-//    - Surface the material's manager-registered name + concrete
-//      type (e.g. "Lambertian", "GGX", "PerfectReflector") in the
-//      Materials accordion's property panel.
-//    - Lambertian additionally surfaces its `reflectance` painter
-//      binding (reverse-looked-up via the IPainterManager) — also
-//      read-only.
-//    - Every row's `editable` flag is false.  Editing requires
-//      per-material setter API (or material-rebuild-on-edit) that
-//      doesn't exist on IBSDF / ISPF today — those store their
-//      painter as `const IPainter&` (a reference, not a rebindable
-//      pointer).  Adding the setter surface across ~20 material
-//      classes is the documented Phase 4 follow-up; the panel
-//      already shows the bindings so the user has a discoverable
-//      starting point.
-//
-//  Future work (Phase 4):
-//    - Add `SetReflectance(IPainter&)` / `SetSpecular(IPainter&)`
-//      / ... on each BRDF / SPF, rebinding via stored pointer.
-//    - Add a SceneEdit op `SetMaterialPainterSlot` that swaps the
-//      painter by name + walks downstream consumers if needed.
-//    - Extend this introspection layer to mark those rows editable
-//      and supply preset lists from IPainterManager.
+//  MaterialIntrospection.h - Read/write introspection of concrete
+//    IMaterial types for the interactive editor's properties panel,
+//    node graph, and CstIntrospection augmentation (see
+//    docs/gui/MATERIAL_EDITOR.md).
 //
 //////////////////////////////////////////////////////////////////////
 

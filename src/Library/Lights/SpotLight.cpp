@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/FiniteMath.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/IndependentSampler.h"
 #include "SpotLight.h"
@@ -27,7 +28,8 @@ SpotLight::SpotLight(
 	const Scalar inner,
 	const Scalar outer,
 	const RISEPel& c,
-	const bool shootPhotons
+	const bool shootPhotons,
+	std::shared_ptr<const PhysicalLightSpectrum> physical
 	) :
   radiantEnergy( radiantEnergy_ ),
   ptPosition( Point3( 0, 0, 0 ) ),
@@ -35,10 +37,35 @@ SpotLight::SpotLight(
   dInnerAngle( inner ),
   dOuterAngle( outer ),
   cColor( c ),
-  bShootPhotons( shootPhotons )
+  bShootPhotons( shootPhotons ),
+  physicalSpectrum( std::move(physical) )
 {
-	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
-	RefreshSpectrum();
+    if (physicalSpectrum) {
+        PhysicalLightSpectrum::ProductTerm distance;
+        Scalar queryDistance;
+        physicalPoseValid = PhysicalLightSpectrum::DirectionBetween(ptTarget,ptPosition,vDirection,distance,queryDistance) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
+        if (!physicalPoseValid) vDirection=Vector3(0,0,0);
+    } else {
+        vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+    }
+    RefreshSpectrum();
+}
+
+bool SpotLight::ValidPhysicalAxis(const Point3& target) const
+{
+    Vector3 unit;
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar queryDistance;
+    return PhysicalLightSpectrum::DirectionBetween(target,ptPosition,unit,distance,queryDistance);
+}
+
+bool SpotLight::IsSupportedPhysicalCone(const Scalar inner, const Scalar outer)
+{
+    if (!RISE::IsFiniteDouble(inner) || !RISE::IsFiniteDouble(outer) || inner < 0 || outer <= 0 || inner > outer || outer > PI) return false;
+    // The existing cone sampler uses this CDF interval. Reject a zero or
+    // unrepresentable interval rather than publish an infinite direction PDF.
+    const Scalar solidAngle = TWO_PI*(1-std::cos(outer/2));
+    return solidAngle > 0 && RISE::IsFiniteDouble(1/solidAngle);
 }
 
 void SpotLight::RefreshSpectrum()
@@ -75,10 +102,18 @@ void SpotLight::ComputeDirectLightingSampled(
 	// Computing direct lighting for spot lights
 	//
 	amount = RISEPel(0.0);
+    if (physicalSpectrum && !physicalPoseValid) return;
 
 	// Vector to the light from the surface
 	Vector3	vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	Scalar fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical SpotLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return;
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
@@ -105,7 +140,7 @@ void SpotLight::ComputeDirectLightingSampled(
 	}
 
 	const Scalar fDirDot = Vector3Ops::Dot( vToLight, -vDirection );
-	const Scalar fAngleOfIncidence = acos(fDirDot);
+	const Scalar fAngleOfIncidence = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vToLight,-vDirection)),fDirDot) : acos(fDirDot);
 
 	if( fAngleOfIncidence <= dOuterAngle/2.0 )
 	{
@@ -125,15 +160,24 @@ void SpotLight::ComputeDirectLightingSampled(
 			}
 		}
 
+        if (physicalSpectrum) {
+            const RISEPel response=brdf.valueStateful(vToLight,ri,pIORStack);
+            if (fAngleOfIncidence<=dInnerAngle/2) amount=physicalSpectrum->VisibleProduct(response,{radiantEnergy,fDot},{distance,distance},shadowT);
+            else {
+                const Scalar t=(dOuterAngle/2-fAngleOfIncidence)/(dOuterAngle/2-dInnerAngle/2);
+                amount=physicalSpectrum->VisibleProduct(response,{radiantEnergy,fDot,t,t},{distance,distance},shadowT);
+            }
+            return;
+        }
 		// Physically-based inverse-square falloff
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
+            amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
+            amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
 }
@@ -152,12 +196,20 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 {
 	// DL-465: this render thread's pose of the light, if it moves.
 	RISE_TIME_INDEXED_FORWARD( SpotLight, ComputeDirectLightingSampledNM( ri, pCaster, brdf, bReceivesShadows, nm, bFullSphereReceiver, bVolumeReceiver, pIORStack, sampler, boundaries ) );
+    if (physicalSpectrum && !physicalPoseValid) return 0;
 
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
 	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
 	// CastShadowRayAuto bNM=true).  VOLUME RECEIVER: see the RGB overload.
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
-	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+    PhysicalLightSpectrum::ProductTerm distance;
+    Scalar fDistFromLight;
+    if (physicalSpectrum) {
+        if (!PhysicalLightSpectrum::DirectionBetween(ptPosition,ri.ptIntersection,vToLight,distance,fDistFromLight)) {
+            GlobalLog()->PrintEasyError("physical SpotLight: direct query has zero, nonfinite or unrepresentable light distance");
+            return Scalar(0);
+        }
+    } else fDistFromLight=Vector3Ops::NormalizeMag(vToLight);
 
 	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
@@ -166,7 +218,7 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 	}
 
 	const Scalar fDirDot = Vector3Ops::Dot( vToLight, -vDirection );
-	const Scalar fAngleOfIncidence = acos( fDirDot );
+	const Scalar fAngleOfIncidence = physicalSpectrum ? std::atan2(Vector3Ops::Magnitude(Vector3Ops::Cross(vToLight,-vDirection)),fDirDot) : acos( fDirDot );
 	if( fAngleOfIncidence > dOuterAngle/2.0 ) {
 		return Scalar(0);
 	}
@@ -186,11 +238,16 @@ Scalar SpotLight::ComputeDirectLightingSampledNM(
 		}
 	}
 
-	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
-	const Scalar lightSpec = cSpectrum.Eval( nm );
-	const Scalar base = lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
+    if (physicalSpectrum) {
+        const Scalar f=brdf.valueStatefulNM(vToLight,ri,nm,pIORStack);
+        if (fAngleOfIncidence<=dInnerAngle/2) return physicalSpectrum->EvalProduct(nm,{radiantEnergy,f,fDot,shadowT},{distance,distance});
+        const Scalar t=(dOuterAngle/2-fAngleOfIncidence)/(dOuterAngle/2-dInnerAngle/2);
+        return physicalSpectrum->EvalProduct(nm,{radiantEnergy,f,fDot,shadowT,t,t},{distance,distance});
+    }
+    const Scalar invDistSq=1.0/(fDistFromLight*fDistFromLight);
+    const Scalar base=cSpectrum.Eval(nm)*brdf.valueStatefulNM(vToLight,ri,nm,pIORStack)*invDistSq*fDot*radiantEnergy*shadowT;
 
 	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 		return base;
@@ -207,7 +264,15 @@ void SpotLight::FinalizeTransformations( const Matrix4& parentWorld )
 
 	// Then calculate the real-world position of this light...
 	ptPosition = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );
-	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+	if (physicalSpectrum) {
+        PhysicalLightSpectrum::ProductTerm distance;
+        Scalar queryDistance;
+        physicalPoseValid = PhysicalLightSpectrum::DirectionBetween(ptTarget,ptPosition,vDirection,distance,queryDistance) && IsSupportedPhysicalCone(dInnerAngle,dOuterAngle);
+        if (!physicalPoseValid) vDirection=Vector3(0,0,0);
+        if (!physicalPoseValid) GlobalLog()->PrintEasyError("physical spot: invalid finalized axis or cone; emission disabled until a valid pose is finalized");
+    } else {
+        vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+    }
 }
 
 static const unsigned int TARGET_ID = 100;
@@ -223,29 +288,30 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 	// Check the name and see if its something we recognize
 	if( name == "target" ) {
 		double d[3];
-		if( ParseStrictVec3( value, d ) ) {
+		if( ParseStrictVec3( value, d ) && (!physicalSpectrum || ValidPhysicalAxis(Point3(d))) ) {
 			p = new Point3Keyframe( Point3( d[0], d[1], d[2] ), TARGET_ID );
 		}
 	} else if( name == "color" ) {
+		if( physicalSpectrum ) return nullptr;
 		double d[3];
 		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
 		Scalar parsed;
-		if( !ParseStrictScalar( value, parsed ) ) {
+		if( !ParseStrictScalar( value, parsed ) || (physicalSpectrum && !physicalSpectrum->CanScale(parsed, FOUR_PI)) ) {
 			return 0;
 		}
 		p = new Parameter<Scalar>( parsed, ENERGY_ID );
 	} else if( name == "inner_angle" ) {
 		Scalar parsed;
-		if( !ParseStrictScalar( value, parsed ) ) {
+		if( !ParseStrictScalar( value, parsed ) || (physicalSpectrum && !IsSupportedPhysicalCone(parsed * DEG_TO_RAD,dOuterAngle)) ) {
 			return 0;
 		}
 		p = new Parameter<Scalar>( parsed * DEG_TO_RAD, INNER_ANGLE_ID );
 	} else if( name == "outer_angle" ) {
 		Scalar parsed;
-		if( !ParseStrictScalar( value, parsed ) ) {
+		if( !ParseStrictScalar( value, parsed ) || (physicalSpectrum && !IsSupportedPhysicalCone(dInnerAngle,parsed * DEG_TO_RAD)) ) {
 			return 0;
 		}
 		p = new Parameter<Scalar>( parsed * DEG_TO_RAD, OUTER_ANGLE_ID );
@@ -264,28 +330,49 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case TARGET_ID:
 		{
-			ptTarget = *(Point3*)val.getValue();
+			const Point3 target = *(const Point3*)val.getValue();
+            if (physicalSpectrum && !ValidPhysicalAxis(target)) {
+                GlobalLog()->PrintEasyError("physical spot: invalid target keyframe; previous target retained");
+                return;
+            }
+            ptTarget = target;
 		}
 		break;
 	case COLOR_ID:
 		{
+			if( physicalSpectrum ) return;
 			cColor = *(RISEPel*)val.getValue();
 			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:
 		{
-			radiantEnergy = *(Scalar*)val.getValue();
+			const Scalar energy = *(const Scalar*)val.getValue();
+			if( physicalSpectrum && !physicalSpectrum->CanScale(energy, FOUR_PI) ) {
+                GlobalLog()->PrintEasyError("physical SpotLight: invalid intensity scale; previous scale retained");
+                return;
+            }
+			radiantEnergy = energy;
 		}
 		break;
 	case INNER_ANGLE_ID:
 		{
-			dInnerAngle = *(Scalar*)val.getValue();
+			const Scalar angle = *(const Scalar*)val.getValue();
+            if (physicalSpectrum && !IsSupportedPhysicalCone(angle,dOuterAngle)) {
+                GlobalLog()->PrintEasyError("physical spot: invalid cone keyframe; previous cone retained");
+                return;
+            }
+            dInnerAngle = angle;
 		}
 		break;
 	case OUTER_ANGLE_ID:
 		{
-			dOuterAngle = *(Scalar*)val.getValue();
+			const Scalar angle = *(const Scalar*)val.getValue();
+            if (physicalSpectrum && !IsSupportedPhysicalCone(dInnerAngle,angle)) {
+                GlobalLog()->PrintEasyError("physical spot: invalid cone keyframe; previous cone retained");
+                return;
+            }
+            dOuterAngle = angle;
 		}
 		break;
 	}

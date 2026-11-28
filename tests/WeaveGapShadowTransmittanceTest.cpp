@@ -85,7 +85,7 @@
 //             (and its free-standing two-plane twin) with the omni
 //             light OUTSIDE.  PT/BDPT/VCM within 8%.
 //
-//    fovsweep DL-294 (docs/DL294_NARROW_FOV_SPLAT.md): the spot rows
+//    fovsweep DL-294 (docs/DEBT_LEDGER.md): the spot rows
 //             at fov 1/2/3/5/10 deg on the 2 x 2 patch, BDPT, VCM, VCM
 //             with merging off and BDPT under the default gaussian
 //             filter, every render referenced to PT's no-sheet render
@@ -1111,7 +1111,7 @@ static void TestAreaPartitionGuard()
 	// arm).  BDPT is PRINTED, NOT GATED: over nine runs it reads -0.20 ..
 	// -5.35 % (mean ~-2.2 %), before and after DL-05 alike -- a
 	// pre-existing BDPT residual on this fixture that DL-05 does not touch
-	// (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 8, filed as
+	// (docs/DEBT_LEDGER.md section 8, filed as
 	// DL-330 at merge), and a band wide enough to hold it would say
 	// nothing.  The BDPT row therefore runs only with WEAVE_GAP_AREA_BDPT
 	// set (the suite skips it: 16 BDPT renders that gate nothing).
@@ -1952,7 +1952,7 @@ static void TestSMSEmissionThroughGap()
 	// is exactly reproducible from its seed base and a seed sweep IS the
 	// run-to-run spread.  Every band is >= 3.3 sd of a 12-seed sweep
 	// (seed bases 1000-12000) at these sample counts,
-	// docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9.3.  Relative
+	// docs/DEBT_LEDGER.md section 9.3.  Relative
 	// sd (band / sd): area RGB 0.83 % (3.6), spectral 0.69 % (5.8),
 	// look-up 0.08 %, composite area 5.35 % (3.7) / look-up 2.14 % (7.0;
 	// 15 % also covers the external review's MULTITHREADED pooled 3.16 %

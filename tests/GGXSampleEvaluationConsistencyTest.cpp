@@ -735,7 +735,7 @@ namespace
 	//  two modes, not GGXInterfaceFresnel::Mean()/MeanNM()) -- a
 	//  regression guard against reintroducing the unconditional Mean()/
 	//  MeanNM() call P2-1 removed for performance
-	//  (docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "Cost"), and against
+	//  (docs/DEBT_LEDGER.md "Cost"), and against
 	//  Scatter()/Pdf() mixture-identity drift in these modes.
 	// ================================================================
 

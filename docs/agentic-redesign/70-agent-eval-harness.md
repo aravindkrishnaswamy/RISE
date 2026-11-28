@@ -9,7 +9,7 @@
 > the scenario corpus grew to **28 scenarios** in `evals/scenarios/` plus the **`evals/scenarios/battery/`**
 > benchmark suite, adding **vision/image-input coverage**, **`malformed_tool_recovery`**
 > (adversarial/malformed tool-call repair), `reserved_name_clarify`, bare-prompt creative-richness
-> scenarios ([docs 73–75](73-creative-richness-design.md)), and **8+ new checker ops** (`param_range`,
+> scenarios ([docs 73–75](50-agentic-surface.md)), and **8+ new checker ops** (`param_range`,
 > creative painter/geometry diversity & scalar-pipe checks, `metricLabel` per-label aggregation,
 > `terminalStatus` gates, etc.). The body below preserves the original 2026-07-09 design and the
 > 2026-07-15 E6 calibration log. Grounded in two research

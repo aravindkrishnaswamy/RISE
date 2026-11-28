@@ -217,7 +217,7 @@ namespace RISE
 			/// unusual settings).  This was debt 29 / DL-08 in
 			/// docs/RENDERING_INTEGRATORS.md §7 and
 			/// docs/DEBT_LEDGER.md; CLOSED 2026-09-17, see
-			/// docs/DL08_PSSMLT_LANE_LAYOUT.md.
+			/// docs/DEBT_LEDGER.md.
 			APERTURE_CURRENT_STREAM
 		};
 

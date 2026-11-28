@@ -18,6 +18,8 @@
 #include "pch.h"
 #include "PathTracingIntegrator.h"
 #include "../Materials/RoughDielectricMaterial.h"
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h"
+#include "../Materials/HyLIoS/HyLIoSReciprocalBoundary.h"
 #include "../Utilities/SobolSampler.h"
 #include <atomic>
 #include "../Rendering/LuminaryManager.h"
@@ -845,7 +847,7 @@ namespace
 		return !pLS || !pLS->IsLuminaryInLightTable( ri.pObject );
 	}
 
-	//! DL-295 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9):
+	//! DL-295 (docs/DEBT_LEDGER.md section 9):
 	//! is the specular chain this scatter extends one that SMS can NEVER
 	//! have estimated?  Returns the value of the "SMS-uncovered chain"
 	//! state AFTER @a scat:
@@ -1593,7 +1595,7 @@ namespace
 	// Phase 2b part 2: additional IntegrateFromHit dispatch helpers.
 	// Each forwards at compile time to the existing dual-signature API,
 	// reproducing the EXACT per-variant call the original Pel / NM
-	// IntegrateFromHit bodies made.  See PRE_PHASE1_STATUS.md
+	// IntegrateFromHit bodies made.  See docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md
 	// "Pre-Phase-1 Piece 3 outcome (Phase 2b)".
 	// ================================================================
 
@@ -1916,7 +1918,7 @@ namespace
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
 
 #ifdef RISE_ENABLE_OPENPGL
-	//! DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the ONE nominal
+	//! DL-74 (docs/DEBT_LEDGER.md): the ONE nominal
 	//! MIS-partner density for a shading point under active path guiding.
 	//!
 	//! THE TWO ROLES OF A GUIDED PDF.  A guided continuation's throughput
@@ -1927,7 +1929,7 @@ namespace
 	//! biases the estimator, so none of it is touched.  The MIS WEIGHT is a
 	//! different job: `sum_s w_s(w) == 1` is the only property the estimator
 	//! needs (see the unbiasedness note in
-	//! docs/DL74_ENV_NEE_GUIDING_PARTITION.md), so the weights may be built
+	//! docs/DEBT_LEDGER.md), so the weights may be built
 	//! from ANY common density, and the useful choice is one that both the
 	//! BSDF-sampling side and every NEE arm can evaluate for the same
 	//! direction without knowing which lobe was, or will be, selected:
@@ -2404,7 +2406,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// `bsdfTimesCos`, a value separate from `throughput`) can fold
 		// in the SAME medium attenuation its NEE partner already
 		// carries via `EvalShadowTransmittance` -- see
-		// docs/DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md's DL-124 entry.
+		// docs/DEBT_LEDGER.md's DL-124 entry.
 		Value escapeTr = PTValueOne<Tag>();
 
 		// ============================================================
@@ -3278,7 +3280,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// exit-point index, and a gather here (emission below, NEE in PART
 		// 2) is priced with (1/n_here)^2 rather than the entry index's.
 		// Exactly nothing happens -- no multiply, no stack write -- unless
-		// the innermost medium is graded (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+		// the innermost medium is graded (docs/DEBT_LEDGER.md).
 		{
 			Scalar gradedScale;
 			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
@@ -4407,6 +4409,189 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		}
 
 		// ============================================================
+		// P7 Nonlocal HyLIoS spatial skin transport (iterative, zero recursion)
+		//   1. First-surface external reflection NEE (`K_r`) with MIS against
+		//      the reflection continuation branch `q_B(event=R, w_L | x, w_o)`.
+		//   2. Conditional subsurface-exit transmission NEE (`K_t`) at each
+		//      valid interior outer-boundary encounter before the R/T branch,
+		//      with MIS against `q_B(event=T, w_L | P_exit, w_int)`.
+		//   3. Single iterative continuation ray (no recursive PTCastRay).
+		// ============================================================
+		if constexpr ( Traits::is_nm )
+		{
+			if( ri.pMaterial && ri.pMaterial->IsHyperspectralSkin() &&
+				!EffectivePathTracingClayOverride( rc, mClayOverride ) )
+			{
+				const HyLIoSSkinMaterial* pHyLIoS = dynamic_cast<const HyLIoSSkinMaterial*>( ri.pMaterial );
+				if( pHyLIoS && pHyLIoS->IsNonlocalSkin() )
+				{
+					// Stack-local BSDF+Material adapter for `K_r` (first-surface reflection NEE)
+					// and `K_t` (conditional interior-exit transmission NEE).
+					struct HyLIoSBoundaryNEEAdapter final : public IBSDF, public IMaterial
+					{
+						Vector3 T, B, N, Ng;
+						RISE::HyLIoS::SlabVector woLocal;
+						RISE::HyLIoS::HyLIoSReciprocalBoundary boundary;
+						bool isReflection;
+
+						HyLIoSBoundaryNEEAdapter(
+							const Vector3& T_, const Vector3& B_, const Vector3& N_, const Vector3& Ng_,
+							const RISE::HyLIoS::SlabVector& wo_,
+							const double alpha_, const double etaExt_, const double etaInt_,
+							const bool isRefl_
+							) :
+						  T( T_ ), B( B_ ), N( N_ ), Ng( Ng_ ),
+						  woLocal( wo_ ),
+						  boundary( alpha_, etaExt_, etaInt_ ),
+						  isReflection( isRefl_ ) {}
+
+						void addref() const override {}
+						bool release() const override { return false; }
+						unsigned int refcount() const override { return 1; }
+
+						RISEPel value( const Vector3&, const RayIntersectionGeometric& ) const override { return RISEPel( 0, 0, 0 ); }
+						Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric&, const Scalar ) const override
+						{
+							const Vector3 wiW = Vector3Ops::Normalize( vLightIn );
+							if( Vector3Ops::Dot( wiW, N ) <= Scalar( 0 ) || Vector3Ops::Dot( wiW, Ng ) <= Scalar( 0 ) ) {
+								return Scalar( 0 );
+							}
+							const RISE::HyLIoS::SlabVector wiL{
+								static_cast<double>( Vector3Ops::Dot( wiW, T ) ),
+								static_cast<double>( Vector3Ops::Dot( wiW, B ) ),
+								static_cast<double>( Vector3Ops::Dot( wiW, N ) )
+							};
+							return Scalar( isReflection
+								? boundary.EvalReflection( wiL, woLocal )
+								: boundary.EvalTransmission( wiL, woLocal ) );
+						}
+
+						IBSDF* GetBSDF() const override { return const_cast<HyLIoSBoundaryNEEAdapter*>( this ); }
+						ISPF* GetSPF() const override { return 0; }
+						IEmitter* GetEmitter() const override { return 0; }
+						Scalar PdfNM( const Vector3& wiW, const RayIntersectionGeometric&, const Scalar, const IORStack& ) const override
+						{
+							const Vector3 wiNorm = Vector3Ops::Normalize( wiW );
+							if( Vector3Ops::Dot( wiNorm, N ) <= Scalar( 0 ) || Vector3Ops::Dot( wiNorm, Ng ) <= Scalar( 0 ) ) {
+								return Scalar( 0 );
+							}
+							const RISE::HyLIoS::SlabVector wiL{
+								static_cast<double>( Vector3Ops::Dot( wiNorm, T ) ),
+								static_cast<double>( Vector3Ops::Dot( wiNorm, B ) ),
+								static_cast<double>( Vector3Ops::Dot( wiNorm, N ) )
+							};
+							return Scalar( isReflection
+								? boundary.PdfReflectionBranch( wiL, woLocal )
+								: boundary.PdfTransmissionBranch( wiL, woLocal ) );
+						}
+					};
+
+					// 1. First-surface external reflection NEE (`K_r`) at entry hit.
+					double bAlpha = 0.0, bEtaExt = 1.0, bEtaSC = 1.4;
+					if( pLS && pHyLIoS->GetNonlocalBoundaryParamsNM( ri.geometric, tag.nm, bAlpha, bEtaExt, bEtaSC ) && bAlpha > 0.0 )
+					{
+						Vector3 eN = Vector3Ops::Normalize( ri.geometric.vNormal );
+						Vector3 eNg = Vector3Ops::Normalize( ri.geometric.vGeomNormal );
+						const Vector3 woW = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
+						if( Vector3Ops::Dot( eN, woW ) < Scalar( 0 ) ) eN = -eN;
+						if( Vector3Ops::Dot( eNg, woW ) < Scalar( 0 ) ) eNg = -eNg;
+						Vector3 refAxis = ( fabs( eN.z ) < Scalar( 0.9 ) ) ? Vector3( 0, 0, 1 ) : Vector3( 1, 0, 0 );
+						const Vector3 eT = Vector3Ops::Normalize( Vector3Ops::Cross( refAxis, eN ) );
+						const Vector3 eB = Vector3Ops::Normalize( Vector3Ops::Cross( eN, eT ) );
+						const RISE::HyLIoS::SlabVector woL{
+							static_cast<double>( Vector3Ops::Dot( woW, eT ) ),
+							static_cast<double>( Vector3Ops::Dot( woW, eB ) ),
+							static_cast<double>( Vector3Ops::Dot( woW, eN ) )
+						};
+						if( woL.z > 0.0 ) {
+							HyLIoSBoundaryNEEAdapter krAdapter( eT, eB, eN, eNg, woL, bAlpha, bEtaExt, bEtaSC, true );
+							const Scalar directKr = PTEvaluateDirectLighting<NMTag>(
+								pLS, ri.geometric, krAdapter, &krAdapter, caster, sampler,
+								ri.pObject, pCurrentMedium, false, pMediumObject, tag,
+								0, &iorStack, Scalar( 1 ), &iorStack, false, &iorStack );
+							Scalar krContrib = ClampContribution( throughput * directKr, stabilityConfig.directClamp );
+							if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+								result = result + krContrib;
+							} else if( pDirectResult ) {
+								*pDirectResult = *pDirectResult + krContrib;
+							}
+						}
+					}
+
+					// 2. Resumable nonlocal walk with conditional `K_t` NEE at every valid
+					//    interior outer-boundary encounter (before the Fresnel R/T branch).
+					auto onExitEncounter = [&]( const HyLIoSExitBoundaryEncounter& enc ) {
+						if( !pLS || !( enc.boundaryRoughness > 0.0 ) || !( enc.interiorWeight > 0.0 ) ) {
+							return;
+						}
+						RayIntersectionGeometric exitRI(
+							Ray( Point3Ops::mkPoint3( enc.exitPos, enc.exitNormal * Scalar( 1e-4 ) ), -enc.exitNormal ),
+							rast );
+						exitRI.bHit = true;
+						exitRI.ptIntersection = enc.exitPos;
+						exitRI.vNormal = enc.exitNormal;
+						exitRI.vGeomNormal = enc.exitNormal;
+						exitRI.onb.CreateFromW( enc.exitNormal );
+
+						HyLIoSBoundaryNEEAdapter ktAdapter(
+							enc.exitTangent, enc.exitBitangent, enc.exitNormal, enc.exitNormal,
+							enc.interiorWoLocal, enc.boundaryRoughness, enc.etaExt, enc.etaSC, false );
+						const Scalar directKt = PTEvaluateDirectLighting<NMTag>(
+							pLS, exitRI, ktAdapter, &ktAdapter, caster, sampler,
+							ri.pObject, pCurrentMedium, false, pMediumObject, tag,
+							0, &iorStack, Scalar( enc.interiorWeight ), &iorStack, false, &iorStack );
+						Scalar ktContrib = ClampContribution(
+							throughput * Scalar( enc.interiorWeight ) * directKt,
+							stabilityConfig.directClamp );
+						if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
+							result = result + ktContrib;
+						} else if( pDirectResult ) {
+							*pDirectResult = *pDirectResult + ktContrib;
+						}
+					};
+
+					// 3. Single iterative continuation ray.
+					HyLIoSNonlocalSample nl;
+					if( !pHyLIoS->SampleNonlocalNM( ri.geometric, tag.nm, sampler, nl, onExitEncounter ) || !nl.escaped ) {
+						break;
+					}
+					if( !( nl.throughput > Scalar( 0 ) ) || !std::isfinite( static_cast<double>( nl.throughput ) ) ) {
+						break;
+					}
+
+					throughput = throughput * nl.throughput;
+					importance = importance * nl.throughput;
+
+					const Point3 nextOrigin = Point3Ops::mkPoint3(
+						nl.exitPos, nl.exitNormal * Scalar( 1e-4 ) );
+					currentRay.Set( nextOrigin, nl.exitDir );
+					depth = depth + 1;
+					bsdfPdf = nl.isDelta ? Scalar( 0 ) : nl.pdf;
+					bsdfMisPdf = bsdfPdf;
+					pNEESelfObject = ri.pObject;
+					bsdfTimesCos = Traits::zero();
+					considerEmission = true;
+					smsGuardedEmission = false;
+					rayType = nl.isExternalReflection
+						? IRayCaster::RAY_STATE::eRaySpecular
+						: IRayCaster::RAY_STATE::eRayDiffuse;
+					if( nl.isExternalReflection ) {
+						glossyBounces = glossyBounces + 1;
+					} else {
+						diffuseBounces = diffuseBounces + 1;
+					}
+					bPassedThroughSpecular = nl.isDelta;
+					bHadNonSpecularShading = false;
+					bSMSChainUncovered = false;
+					if( smsChain ) {
+						smsChain->Invalidate();
+					}
+					continue;
+				}
+			}
+		}
+
+		// ============================================================
 		// Specular surfaces (no BSDF — use SPF)
 		// ============================================================
 		if( !pBRDF )
@@ -4517,7 +4702,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// NM original instead forced considerEmission=false here, which
 				// turned lights seen directly through glass/mirrors black under
 				// spectral rendering with SMS on.  Fixed together with the PART3
-				// flag tracking below -- see PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+				// flag tracking below -- see docs/RENDERING_INTEGRATORS.md #1/#3.
 				const bool nextConsiderEmissionSPF = true;
 				rs2.considerEmission = nextConsiderEmissionSPF;
 				// DL-295: a BSDF-less material's delta lobe can be one SMS
@@ -5216,7 +5401,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			PTScatter<Tag>( pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 		}
 
-		// DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md): whether this
+		// DL-67 (docs/DEBT_LEDGER.md): whether this
 		// vertex is guided is decided from the VERTEX -- the shared
 		// distribution is active (trained field, depth, alpha, non-specular
 		// arrival) and the material has a BSDF for the guide technique to
@@ -5633,7 +5818,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 
 			// THE REALIZED-MOMENT CONVENTION (DL-84 round 7, docs/
-			// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 7" -- which
+			// docs/DEBT_LEDGER.md "Round 7" -- which
 			// RETRACTS round 6's opposite ruling).
 			//
 			// `OptimalMISAccumulator::Solve()` weights each technique by
@@ -5678,7 +5863,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// DL-74 / DL-103: the nominal MIS-partner density for the
 			// direction actually being traced.
 			//
-			// DL-103 (docs/DL103_PT_ESCAPE_MIS_PARTNER.md): the partner is
+			// DL-103 (docs/DEBT_LEDGER.md): the partner is
 			// the material's AGGREGATE `ISPF::Pdf()` in BOTH branches, not
 			// just the guided one.  `LightSampler`'s four NEE arms have
 			// always weighted against that aggregate
@@ -5740,7 +5925,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			IRayCaster::RAY_STATE rs2 = rs;
 			rs2.depth = depth + 2;
 			rs2.importance = importance * PTSurvivalMagnitude( scatterThroughput );
-			// DL-74 (docs/DL74_ENV_NEE_GUIDING_PARTITION.md): the two roles
+			// DL-74 (docs/DEBT_LEDGER.md): the two roles
 			// of the guided pdf, kept in two fields.
 			//  * `bsdfPdf` stays `effectiveBsdfPdf` -- the density this
 			//    direction was really drawn from and the one
@@ -5880,7 +6065,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// fixed while these flags stayed Pel-only, bHadNonSpecularShading
 			// would never latch for NM, smsSuppressEmission would stay false,
 			// and the double-count would return as fireflies.  See
-			// PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+			// docs/RENDERING_INTEGRATORS.md #1/#3.
 			if( pS->isDelta ) {
 				bPassedThroughSpecular = true;
 			} else {
@@ -7527,7 +7712,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// hero-bundle path instead of unconditionally falling back to
 		// per-wavelength for a surface that no longer has any SSS behavior
 		// to represent.
-		if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
+		const bool isHyLIoS = firstHit.pMaterial && firstHit.pMaterial->IsHyperspectralSkin();
+		if( ( pProfile || pRWParams || hasRWNM || isHyLIoS ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 		{
 			std::optional<HWSSLaneSeeds> laneSeeds;
 			if( !preseededOriginLanes_ ) {
@@ -8441,7 +8627,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			// the entry-point Fallback 2 routing above -- don't route away
 			// from HWSS for a surface that no longer has SSS behavior
 			// under clay_lights.
-			if( ( pProfile || pRWParams || hasRWNM ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
+			const bool isHyLIoS = ri.pMaterial && ri.pMaterial->IsHyperspectralSkin();
+			if( ( pProfile || pRWParams || hasRWNM || isHyLIoS ) && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
 				HWSSLaneSeeds laneSeeds( iorStack, swl, ri.geometric.ray.origin,
 					Point3Ops::mkPoint3( ri.geometric.ray.origin, ri.geometric.ray.Dir() * ( ri.geometric.range * 0.5 ) ),

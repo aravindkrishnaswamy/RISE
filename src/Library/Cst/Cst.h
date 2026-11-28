@@ -6,7 +6,7 @@
 //  (docs/agentic-redesign): the scene document is a lossless, immutable CST;
 //  text is its serialization and the rendered scene is a separate derivation.
 //  Built across the transfer-gate items (docs/agentic-redesign/
-//  IMPLEMENTATION_SLICES.md) -- the foundation validated by the four
+//  docs/agentic-redesign/50-agentic-surface.md) -- the foundation validated by the four
 //  `tests/Cst*SliceTest` prototypes, promoted into the real library and, while
 //  the legacy parser still existed, gated by a render-equivalence harness
 //  (DumpJob(cstJob) == DumpJob(legacyJob)).  That harness is a RETIRED ORACLE
@@ -207,7 +207,7 @@ namespace RISE
 
 		//! Optimistic-concurrency identity of a Job's RETAINED CST head (Facet 5,
 		//! live co-edit -- slice 1a).  `(uuid, revision)` is the document-identity
-		//! pair of docs/gui/TRANSACTION_MODEL.md §3.4: `uuid` names the retained
+		//! pair of docs/gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md §3.4: `uuid` names the retained
 		//! head (a fresh value is minted on EVERY load, incl. a reload of the same
 		//! file, so a stale reference from a prior load can never collide with a
 		//! new one -- the reload-collision guard); `revision` bumps IFF the retained
@@ -266,11 +266,10 @@ namespace RISE
 		//! its start before its Slice-6c deletion) so nothing leaks between
 		//! successive derives -- the redesign
 		//! runs this on every edit. Each chunk is then looked up by keyword in
-		//! CreateAllChunkParsers(); each param line is normalised exactly as the
-		//! legacy parser normalises it (whitespace runs collapsed to single
-		//! spaces, like AsciiCommandParser::TokenizeString + rejoin), validated +
-		//! bagged by the SAME DispatchChunkParameters the legacy parser runs, and
-		//! applied via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk
+		//! CreateAllChunkParsers(); each param line is normalised (whitespace
+		//! runs collapsed to single spaces, like AsciiCommandParser::TokenizeString
+		//! + rejoin), validated + bagged by DispatchChunkParameters, and applied
+		//! via IAsciiChunkParser::Finalize. So ANY registry chunk
 		//! type derives, and -- while the legacy parser still existed -- the CST
 		//! path and the legacy path built an IDENTICAL Job for the CANONICAL
 		//! scenes the CST is actually fed: the v6->v7 serializer's output:

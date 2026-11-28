@@ -27,9 +27,9 @@
 //       profile/path points, malformed point lines, degenerate pitch,
 //       missing instancer templates, a function2d reference to a missing
 //       function, and malformed/under-specified expressions.  (The
-//       dispatcher's TEXT-domain numeric validation -- the build's
-//       -ffast-math erases value-domain inf/NaN guards, so the token layer
-//       is the contract.)
+//       dispatcher's TEXT-domain numeric validation -- historically
+//       bare -ffast-math erased value-domain inf/NaN guards, and text-
+//       layer rejection remains the -Ofast-proof contract.)
 //    3. Out-of-range mesh_n CLAMPS (parses fine) rather than rejects.
 //
 //////////////////////////////////////////////////////////////////////

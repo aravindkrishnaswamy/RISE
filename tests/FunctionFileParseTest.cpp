@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  FunctionFileParseTest.cpp - Regression test for the file-backed
-//    data-curve loaders in AsciiSceneParser.
+//    data-curve loaders in ChunkParserRegistry.cpp.
 //
 //  Historically every `... { file <path> }` loader used the classic
 //  buggy idiom:

@@ -8,7 +8,7 @@
 //  refuses an IN-PLACE save when the loaded file changed on disk after
 //  load.
 //
-//  See docs/ROUND_TRIP_SAVE_PLAN.md §9 (algorithm history) and §11.6
+//  See docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §9 (algorithm history) and §11.6
 //  (the external-modification guard's rationale).
 //
 //////////////////////////////////////////////////////////////////////

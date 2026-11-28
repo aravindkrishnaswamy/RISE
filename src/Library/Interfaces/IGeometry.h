@@ -439,7 +439,7 @@ namespace RISE
 		//! sampled point emits from the face toward the receiver, a light
 		//! subpath leaves from either face with probability 1/2, and the
 		//! emitter's total power counts both faces.  See
-		//! docs/DL320_DOUBLE_SIDED_EMITTER.md.
+		//! docs/DEBT_LEDGER.md.
 		//!
 		//! TRUE for: `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed`
 		//! with `bDoubleSided`, `DisplacedGeometry` (its internal mesh's

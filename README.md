@@ -36,18 +36,18 @@ current references, active plans, and historical design records.
 
 ## Layout
 
-- `src/Library/`: active core rendering, CST/parser, editor, and agent library
+- `src/Library/`: active core rendering, CST/parser, simulation, editor, and agent library
 - `src/RISE/`: main CLI (`bin/rise`) and conversion tools
 - `scenes/FeatureBased/`: curated showcase and torture scenes
 - `scenes/Tests/`: isolated regression, comparison, and validation scenes
 - `tests/`: standalone executable tests (`fast` and `extended` tiers)
 - `evals/`: deterministic and live LLM scene-authoring evaluation harness
 - `skills/agent/`: runtime scene-authoring and viewport-observation skills loaded by the RISE agent
-- `docs/`: focused design notes, debt closure records, engineering skills (`docs/skills/`), and roadmaps
+- `docs/`: focused design notes, debt ledger, engineering skills (`docs/skills/`), and roadmaps
 - `build/make/rise/`: canonical GNU make build; `build/XCode/rise/`, `build/VS2022/`, `build/cmake/`: macOS GUI, Windows GUI/CLI, and Android/Windows-test CMake projects
 - `android/`: Android Kotlin/Compose + NDK viewport and editor app
-- `src/Blender/`: Blender 4.x render-engine add-on and native C ABI bridge
-- `textures/`, `models/`, `colors/`, `volume/`, `lightprobes/`, `media/`: scene data, spectral/thin-film curves, and media
+- `src/Blender/`: Blender 4.x–5.3 render-engine add-on and native C ABI bridge (v23)
+- `textures/`, `models/`, `colors/`, `data/`, `volume/`, `lightprobes/`, `media/`: scene data, optical/spectral/thin-film curves (`data/hylios/`, `colors/`), and media
 - `extlib/`: third-party dependencies and submodules (including OIDN and Jakob-Hanika spectral uplift LUTs)
 - `tools/` and `scripts/`: offline LUT generators, migration/validation scripts, red-proof runner, and release packaging
 - `src/DRISE/`, `src/PRISE/`, `src/3DSMax/`, `build/VS2005/` and the SGI / Solaris make configs: FROZEN legacy surfaces (kept in the tree, unsupported, may not build; see each one's README / header and [docs/LEGACY_DEPRECATION_ASSESSMENT.md](docs/LEGACY_DEPRECATION_ASSESSMENT.md) §13)
@@ -151,8 +151,9 @@ project links against the prebuilt `RISE.lib` from the VS2022 Library project,
 so build the Windows library/CLI once first.
 
 Note on incremental builds: the Unix GNU `Makefile` tracks header dependencies
-automatically via `-MMD -MP` `.d` sidecars and rebuilds the test library
-(`librise_test.a`, a non-LTO copy, on macOS, where the LTO-sensitive tests
-still link `librise.a`; `librise.a` elsewhere) before
-test targets. On Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before
-re-linking CMake test targets after `src/Library/` header or source edits.
+automatically via `-MMD -MP` `.d` sidecars (on macOS, `LTO=thin|full|off`
+defaults to `thin`; `make clean` when switching — see [docs/BUILD_FLAGS.md](docs/BUILD_FLAGS.md)) and rebuilds
+the test library (`librise_test.a`, a non-LTO copy, on macOS, where LTO-sensitive
+tests still link `librise.a`; `librise.a` elsewhere) before test targets. On
+Windows, rebuild the VS2022 `Library` project (`RISE.lib`) before re-linking
+CMake test targets after `src/Library/` header or source edits.

@@ -63,7 +63,7 @@
 //    and accepts after the user-equivalent "Trust" action); it persists
 //    into a probe-private defaults suite, removed afterwards.  The other
 //    steps need the cache location accepted (set the environment
-//    variable).  docs/SIMULATION_M5B_RESULTS.md has the full recipe.
+//    variable).  docs/SIMULATION_GUI_STATUS.md has the full recipe.
 //
 //////////////////////////////////////////////////////////////////////
 

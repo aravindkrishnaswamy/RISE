@@ -124,8 +124,8 @@ namespace RISE
 			std::uint64_t proposalId = 0;
 			std::string   message;
 		};
-		//! A STRUCTURED set-param patch (slice 0b: set only -- no text-patch,
-		//! no add/remove chunk; those are later slices).  Locates a named
+		//! A STRUCTURED set-param patch (chunk insertion/removal use
+		//! InsertChunk/RemoveChunk).  Locates a named
 		//! entity in the retained CST Document and sets one of its params to a
 		//! new value string, routed through Job::ApplyCstParamEditChecked --
 		//! the SAME edit pathway the GUI property panel uses (L2: the agent is
@@ -919,7 +919,7 @@ namespace RISE
 			//! defaults this to true for production beauty renders, requesting
 			//! albedo+normal+depth sidecars without changing beauty pixels.
 			bool                 perception = false;
-			//! R1b (2026-08-09, docs/agentic-redesign/75-expressive-surface-arc.md):
+			//! R1b (2026-08-09, docs/agentic-redesign/50-agentic-surface.md):
 			//! true iff this render request originated from the model-facing
 			//! agent RPC surface (AgentRpc.cpp's `render`/`render_async`
 			//! handlers -- the ONLY two call sites that set this true; every
@@ -2326,7 +2326,10 @@ namespace RISE
 		//!   * Blocked        -- EVERYTHING ELSE that is a rasterizer chunk.
 		//!                       Today that is exactly bdpt_pel /
 		//!                       bdpt_spectral / mlt / mlt_spectral / auto /
-		//!                       auto_spectral, but the classifier does NOT
+		//!                       auto_spectral, the two frozen pixel
+		//!                       rasterizers and the HyLIoS
+		//!                       hyperspectral_radiometric_rasterizer (a
+		//!                       measurement tool), but the classifier does NOT
 		//!                       read off a hard-coded blocked list at
 		//!                       runtime: anything that is a rasterizer chunk
 		//!                       and is in neither named set falls through to
@@ -2919,7 +2922,7 @@ namespace RISE
 			                                                  bool inPiecesPhase = false,
 			                                                  const AgentLightSoloMeasurementMap* soloCache = nullptr );
 
-			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			//! Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2,
 			//! RE-TARGETED by sec 7): the shared engine-side "design note"
 			//! scan.  STATELESS, like ValidateText above -- parses
 			//! `documentText` to its own throwaway CST and reports the two
@@ -3269,7 +3272,7 @@ namespace RISE
 			//! and submit it through InsertChunks -- so richness costs ONE
 			//! tool call and the model never hand-types a microsurface slot
 			//! or assembles the painter graph itself.  See
-			//! docs/agentic-redesign/75-expressive-surface-arc.md S2 for the
+			//! docs/agentic-redesign/50-agentic-surface.md S2 for the
 			//! design and AgentSession.cpp's BuildMaterialScaffold for the
 			//! per-family chunk-graph design + the binding-form rationale
 			//! (which slots take a colour-pipe painter vs a
@@ -3331,7 +3334,7 @@ namespace RISE
 			//! dielectric shell + painter-driven heterogeneous medium,
 			//! ready-wired -- the one family that DOES emit a material and
 			//! a standard_object; see InsertGeometryScaffold's doc for
-			//! why).  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! why).  See docs/agentic-redesign/50-agentic-surface.md
 			//! slice E3 for the design.
 			//! Creature scaffold slice (2026-08-25): Quadruped added, a
 			//! SEVENTH family and the first to emit a `skeleton_geometry`
@@ -3495,7 +3498,7 @@ namespace RISE
 			//! submit it through InsertChunks -- so an advanced geometric
 			//! form costs ONE tool call instead of hand-composing a
 			//! displaced_geometry/sweep_geometry/sdf_geometry chunk from
-			//! scratch.  See docs/agentic-redesign/75-expressive-surface-arc.md
+			//! scratch.  See docs/agentic-redesign/50-agentic-surface.md
 			//! S3b (original four) and E3 (blended_chain, volume_bank) for
 			//! the design and AgentSession.cpp's BuildGeometryScaffoldGraph
 			//! for the per-family chunk design + the param-flow rationale.
@@ -5339,7 +5342,7 @@ namespace RISE
 
 			//----------------------------------------------------------------
 			// ARC 81 (2026-08-12): `light_scene` -- A CLEAN-ROOM LIGHTING PASS.
-			// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md.
 			//
 			// THE MEASUREMENT.  Against the hand-authored frontier benchmark
 			// on the same prompt (scenes/Benchmarks/dreamscape_coral_queens_hour

@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  LiquidViscosity.h - Implicit constant viscosity of the liquid solver
-//  (simulation M7c, docs/SIMULATION_M7C_RESULTS.md).
+//  (simulation M7c, docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 //  Formulation (derived from the variational principle; the form of Batty
 //  and Bridson 2008, "Accurate viscous free surfaces for buckling, coiling,

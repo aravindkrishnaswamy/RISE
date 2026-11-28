@@ -256,7 +256,7 @@ full empirical writeup; quick decision tree:
    - Required (not optional) when `sms_seeding "uniform"` — without
      it, uniform mode produces variable-length chains and a 36-53 %
      phys-fail rate vs. snell's 3-17 %.  See commit `a3790c4` and
-     [docs/SMS_SEEDING_OVERTRACE_FIX.md](../SMS_SEEDING_OVERTRACE_FIX.md)
+     [docs/SMS.md](../SMS.md)
      §"Uniform-mode follow-up".
 
 3. **`sms_photon_count`**: default `0` = off.  Enable (`100000` is a

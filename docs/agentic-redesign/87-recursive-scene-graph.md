@@ -11,7 +11,7 @@ subtree.  Step 1's derive-tail and live-edit composes remain — they are what
 keeps a non-rendering edit correct — and the per-frame walk is what stops the
 stored parent world being a latch.
 Supersedes and DELETES the single-level grouping shipped in
-[86](86-object-grouping.md) (`48ab06b1`, `da0b6839`, `16b160a6`).
+[86](87-recursive-scene-graph.md) (`48ab06b1`, `da0b6839`, `16b160a6`).
 *(Post-2026-08-18 extensions built atop this graph: `standard_object.mirror` for bilateral
 symmetry in [89-generic-shape-operators.md](89-generic-shape-operators.md) Slice C, the
 zero-required-arg `collapse_to_instances` refactoring verb, and `populate_scene` `source`
@@ -423,7 +423,7 @@ what was authored, live material included).
      the `instance_array` `IAsciiChunkParser` subclass and its
      `CreateAllChunkParsers()` registration.  Neither exists: the generator was
      always CST-only (recorded in
-     [61](61-v6v7-parser-cutover-execution-plan.md) §"`instance_array` is
+     [61](10-scene-language-and-cst.md) §"`instance_array` is
      CST-only"), which is exactly why PASS-1 skipped its chunks and why its
      inputs were untraced in the first place.  Deleting the role skip is what
      retires the keyword: an `instance_array` chunk now reaches the registry

@@ -45,7 +45,11 @@ std::uint64_t DiskBuffer::Size64() const
 {
 	if( !hFile ) return 0;
 #ifdef _WIN32
+#ifdef _MSC_VER
+	struct __stat64 stats{};
+#else
 	struct _stat64 stats{};
+#endif
 	if( _fstat64(_fileno(hFile.get()), &stats) != 0 || stats.st_size < 0 ) return 0;
 #else
 	struct stat stats{};

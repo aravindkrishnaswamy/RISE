@@ -345,10 +345,8 @@ void PathTracingPelRasterizer::IntegratePixel(
 		directWeights = mDirectCompanionWeights[companionIndex];
 	}
 
-	// Welford online variance state (luminance-based)
-	Scalar wMean = 0;
-	Scalar wM2 = 0;
-	unsigned int wN = 0;
+	// Compensated signed luminance variance state
+	BeautyMoments moments;
 
 	uint32_t globalSampleIndex = 0;
 	bool converged = false;
@@ -358,9 +356,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 		colAccrued = px.LoadPelPassInit();
 		weights = px.weightSum;
 		alphas = px.alphaSum;
-		wMean = px.wMean;
-		wM2 = px.wM2;
-		wN = px.wN;
+		moments = px.beautyMoments;
 		globalSampleIndex = px.sampleIndex;
 	}
 
@@ -461,40 +457,21 @@ void PathTracingPelRasterizer::IntegratePixel(
 				alphas += sampleAlpha * weight;
 			}
 
-			// Welford update on luminance.  Gated on `adaptive` only:
+			// Compensated moment update on luminance.  Gated on `adaptive` only:
 			// see BDPTPelRasterizer for the multi-pass selection-bias
 			// rationale — convergence-based termination must NOT fire
 			// in non-adaptive progressive mode.
 			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
-				wN++;
-				const Scalar delta = lum - wMean;
-				wMean += delta / Scalar(wN);
-				const Scalar delta2 = lum - wMean;
-				wM2 += delta * delta2;
+				moments.Add( lum );
 			}
 
 			rc.pSampler = 0;
 		}
 
 		// Check convergence after enough batches for reliable statistics.
-		if( adaptive && wN >= 32 )
-		{
-			const Scalar variance = wM2 / Scalar(wN - 1);
-			const Scalar stdError = sqrt( variance / Scalar(wN) );
-			const Scalar meanAbs = fabs( wMean );
-
-			if( meanAbs > NEARZERO ) {
-				const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-				const Scalar threshold = adaptiveConfig.maxSamples > 0
-					? adaptiveConfig.threshold
-					: 0.01;
-				if( stdError / meanAbs < threshold * confidence ) {
-					converged = true;
-				}
-			} else if( wM2 < NEARZERO && wN >= 64 ) {
-				converged = true;
-			}
+		if( adaptive && moments.IsConverged( (adaptiveConfig.maxSamples > 0 ? adaptiveConfig.threshold : 0.01), NEARZERO ) ) {
+			converged = true;
 		}
 
 		if( !bMultiSample && !pProgFilm ) {
@@ -507,9 +484,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 		colAccrued = px.StorePelPassDelta( colAccrued );
 		px.weightSum = weights;
 		px.alphaSum = alphas;
-		px.wMean = wMean;
-		px.wM2 = wM2;
-		px.wN = wN;
+		px.beautyMoments = moments;
 		px.sampleIndex = globalSampleIndex;
 		px.converged = converged;
 	}

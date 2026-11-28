@@ -1364,7 +1364,7 @@ int main( int argc, char** argv )
         //   replay of the sampler's own inverse-CDF square (the
         //   dominant term is the specular lobe's geomN REJECTION rate,
         //   which no static reflectance ratio can see).  See
-        //   docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and the dedicated
+        //   docs/DEBT_LEDGER.md and the dedicated
         //   tests/IsotropicPhongSPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
         { "IsotropicPhong",                    phong,       false, false, true,  false, INTEGRAL_TOL },
@@ -1437,7 +1437,7 @@ int main( int argc, char** argv )
         //   tests/SchlickSPFPdfConsistencyTest.cpp's header.
         //
         // Integral: PASSES at the standard 5% tolerance since DL-67
-        //   Slice 0 (docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md).  Measured
+        //   Slice 0 (docs/DEBT_LEDGER.md).  Measured
         //   1.00166 @ 30deg, 0.999932 @ 60deg.
         //
         //   The tolerance used to be 15%, with a comment blaming "the
@@ -1474,7 +1474,7 @@ int main( int argc, char** argv )
         // Ward Isotropic / Anisotropic Elliptical Gaussian (Ward 1992):
         //
         // DL-177 (CLOSED 2026-09-18,
-        // docs/DL177_WARD_DENSITY_AND_KRAY.md).  Both rows used to skip
+        // docs/DEBT_LEDGER.md).  Both rows used to skip
         // chi2 with this note: "the Ward model is not energy-conserving.
         // The specular VNDF sampling doesn't perfectly match the BRDF
         // evaluation at grazing angles, causing histogram divergence"
@@ -1536,7 +1536,7 @@ int main( int argc, char** argv )
         //   one, because BOTH of its lobes carry a direction-dependent
         //   realized weight (the diffuse kray is
         //   Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i), not a
-        //   constant).  See docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and
+        //   constant).  See docs/DEBT_LEDGER.md and
         //   tests/AshikminShirleySPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
         { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  false, INTEGRAL_TOL },

@@ -11,7 +11,7 @@
 //  An external-modification guard refuses an IN-PLACE save when the
 //  loaded file changed on disk after load (metadata/file-id mismatch) —
 //  overwriting it with the in-memory scene would silently clobber those
-//  external edits (docs/ROUND_TRIP_SAVE_PLAN.md §11.6).  The controller
+//  external edits (docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §11.6).  The controller
 //  snapshots the CST-load FileIdentity alongside the Document.
 //
 //  (The legacy two-mode byte-splice save — Mode A in-place line rewrite

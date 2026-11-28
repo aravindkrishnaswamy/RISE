@@ -8,7 +8,7 @@ RISE ASCII SCENE 7
 #                   above the right half, 0.2-0.8 s) falls beside it; an overflow drain at the basin's far  #
 #                   corner removes what rises above 6 cm there.  The progress detail reports what each      #
 #                   source added and the drain removed, and the liquid's volume against the volume          #
-#                   correction's target (docs/SIMULATION_M9_RESULTS.md).                                    #
+#                   correction's target (src/Library/Parsers/README.md).                                    #
 #                                                                                                           #
 #   Bake:           bin/tools/rise_sim bake <this scene> basin                                              #
 #                   bin/tools/rise_sim status <this scene>                                                  #

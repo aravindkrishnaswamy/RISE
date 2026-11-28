@@ -1,5 +1,5 @@
 // Simulation M4: a scene simulation running live in the viewport from the scene
-// description alone (docs/SIMULATION_M4_RESULTS.md section 6).
+// description alone (docs/SIMULATION_SOLVER_CONTRACT.md section 6).
 //
 //   * a cloth_simulation with no cache: its consumer loads unbound and hidden;
 //     LiveSimulationAttachSimulation runs it and the consumer takes its topology
@@ -10,7 +10,7 @@
 //   * a parameter edit through the agent edit path restarts the run with the
 //     new key against the re-derived scene; detach unbinds the consumer again.
 //
-// Simulation M5c (docs/SIMULATION_M5C_RESULTS.md):
+// Simulation M5c (docs/SIMULATION_GUI_STATUS.md):
 //   * the controller's Simulation category: enumeration, descriptor-driven
 //     rows (with editable occurrence rows of repeatable fields), an edit
 //     through SetPropertyForCategory marks the simulation stale with its

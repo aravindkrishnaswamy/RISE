@@ -102,11 +102,21 @@ namespace RISE
 			// Required rejects these unsafe automatic staging locations.
 			// Failed in-place publication retains completed staging bytes for recovery;
 			// the destination may be partial. Required always publishes by rename.
+			// Retained completed staging files request owner-read permission after
+			// failed publication, without changing successful destination modes.
+			// Adjustment failures are logged separately; primary diagnostics and
+			// recoveryPath remain intact (WriteDiagnostics layout is unchanged).
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy );
 			static bool WriteAtomically( const std::string& path,
 				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
 				WriteDiagnostics* diagnostics );
+			// Explicit UTF8 pathname opt-in. Existing string APIs retain native
+			// pathname decoding. The same transaction/policies are used; returned
+			// recoveryPath/cleanupPath and path diagnostics use UTF8 for this API.
+			static bool WriteAtomicallyUTF8( const std::string& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write,
+				StagingPolicy policy = StagingPolicy::Required, WriteDiagnostics* diagnostics = nullptr );
 			// Automatic recovery names must never resolve or overwrite existing
 			// leaves. Try the requested name first; EEXIST tries a monotonic suffix
 			// before its extension, up to 16 candidates. Other failures never retry.
@@ -123,6 +133,13 @@ namespace RISE
 		private:
 			enum class OpenPolicy { Direct, ExclusiveStaging, ExclusiveRecovery, RegularOutput };
 			DiskFileWriteBuffer( const char* file_name, std::error_code* openFailure, OpenPolicy policy, bool* created = nullptr );
+			DiskFileWriteBuffer( const std::filesystem::path& nativePath, const std::string& displayName,
+				std::error_code* openFailure, OpenPolicy policy, bool* created = nullptr );
+			void OpenNative( const std::filesystem::path& nativePath, const std::string& displayName,
+				std::error_code* openFailure, OpenPolicy policy, bool* created );
+			static bool WriteAtomicallyNative( const std::filesystem::path& path,
+				const std::function<bool(DiskFileWriteBuffer&)>& write, StagingPolicy policy,
+				WriteDiagnostics* diagnostics, bool utf8Diagnostics );
 			bool hasWritten = false;
 			bool writeFailed = false;
 			std::error_code writeError;

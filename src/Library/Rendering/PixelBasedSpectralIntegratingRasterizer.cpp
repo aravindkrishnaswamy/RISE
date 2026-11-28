@@ -358,9 +358,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		ColorXYZ colAccruedXYZ( 0, 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
-		Scalar wMean = 0;
-		Scalar wM2 = 0;
-		unsigned int wN = 0;
+		BeautyMoments moments;
 
 		uint32_t sampleIndex = 0;
 		bool converged = false;
@@ -371,9 +369,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			colAccruedXYZ.a = px.alphaSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
-			wMean = px.wMean;
-			wM2 = px.wM2;
-			wN = px.wN;
+			moments = px.beautyMoments;
 			sampleIndex = px.sampleIndex;
 		}
 
@@ -442,7 +438,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 					}
 					// XYZ-only path: accumulate XYZ in both FilteredFilm
 					// and the local colAccruedXYZ.  No per-sample XYZ->
-					// ROMM conversion (deferred to per-pixel resolve).
+					// RGB working-space conversion (deferred to per-pixel resolve).
 					if( filmMode ) {
 						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c.base, *pPixelFilter );
 						colAccruedXYZ = colAccruedXYZ + c;
@@ -456,37 +452,17 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 						// XYZ.Y is the CIE photometric luminance — more
 						// principled than the previous max-of-RGB heuristic.
 						const Scalar lum = c.base.Y;
-						wN++;
-						const Scalar delta = lum - wMean;
-						wMean += delta / Scalar(wN);
-						const Scalar delta2 = lum - wMean;
-						wM2 += delta * delta2;
+						moments.Add( lum );
 					}
 				} else if( pProgFilm ) {
-					wN++;
-					const Scalar delta = -wMean;
-					wMean += delta / Scalar(wN);
-					const Scalar delta2 = -wMean;
-					wM2 += delta * delta2;
+					moments.Add( 0 );
 				}
 
 				rc.pSampler = 0;
 			}
 
-			if( pProgFilm && wN >= 32 )
-			{
-				const Scalar variance = wM2 / Scalar(wN - 1);
-				const Scalar stdError = sqrt( variance / Scalar(wN) );
-				const Scalar meanAbs = fabs( wMean );
-
-				if( meanAbs > NEARZERO ) {
-					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-					if( stdError / meanAbs < 0.01 * confidence ) {
-						converged = true;
-					}
-				} else if( wM2 < NEARZERO && wN >= 64 ) {
-					converged = true;
-				}
+			if( pProgFilm && moments.IsConverged( 0.01, NEARZERO ) ) {
+				converged = true;
 			}
 		}
 
@@ -496,9 +472,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			px.colorSum = colAccruedXYZ.base;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
-			px.wMean = wMean;
-			px.wM2 = wM2;
-			px.wN = wN;
+			px.beautyMoments = moments;
 			px.sampleIndex = sampleIndex;
 			px.converged = converged;
 		}

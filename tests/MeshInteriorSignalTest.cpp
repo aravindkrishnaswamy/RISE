@@ -84,7 +84,7 @@
 //        TessellateToMesh` now weld their own pole row to a single
 //        shared (position, normal, texcoord) index and skip the wedge
 //        triangle that entry would make degenerate (see
-//        docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md), so the
+//        docs/DEBT_LEDGER.md), so the
 //        raw triangle list fed into this mesh no longer contains ANY
 //        degenerate triangles at either pole -- DL-143's position-weld
 //        (whose tolerance also absorbs the ordinary u-seam's ~1e-16
@@ -630,7 +630,7 @@ static void TestFlatShadedPerCornerCubeWelds()
 //! `EllipsoidGeometry::TessellateToMesh` now weld every pole ROW to a
 //! single shared (position, normal, texcoord) index and skip the one
 //! wedge triangle per pole cell that entry would make degenerate (see
-//! docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md) -- so the raw
+//! docs/DEBT_LEDGER.md) -- so the raw
 //! triangle list fed into this mesh contains zero degenerate triangles
 //! at either pole, DL-143's position-weld finds a genuinely closed
 //! 2-manifold (its tolerance also swallows the ordinary u-seam's
@@ -942,7 +942,7 @@ public:
 //! bare tessellator this file already tests directly in (f)/(i)/(j).
 //! `DisplacedGeometry::BuildMesh` bakes via `m_pBase->TessellateToMesh`
 //! and copies positions VERBATIM (see `DisplacedGeometry.h`'s own class
-//! comment and `docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md`'s
+//! comment and `docs/DEBT_LEDGER.md`'s
 //! sibling-audit correction on this exact point), so the baked mesh's
 //! topology and DL-136 residual are identical to the un-wrapped case --
 //! this section exists to prove that identity holds through the real
@@ -2987,11 +2987,61 @@ static void TestDL623MeshCertificateReuseAndSubdivision()
 //! huge row and two small ones, so G has one large and two small
 //! eigenvalues -- the regime where computed Sylvester minors lose their
 //! sign (relative error ~ tr(G)^2 / lambda).
-static bool ExactLeadingMinorsPositive( const __int128 M[3][3] )
+#if defined(__SIZEOF_INT128__)
+using ExactInt128 = __int128;
+#else
+struct ExactInt128 {
+	std::int64_t hi;
+	std::uint64_t lo;
+
+	ExactInt128() : hi( 0 ), lo( 0 ) {}
+	ExactInt128( long long v ) : hi( v < 0 ? -1 : 0 ), lo( static_cast<std::uint64_t>( v ) ) {}
+	ExactInt128( int v ) : ExactInt128( static_cast<long long>( v ) ) {}
+	ExactInt128( std::int64_t h, std::uint64_t l ) : hi( h ), lo( l ) {}
+
+	ExactInt128 operator+( const ExactInt128& r ) const {
+		const std::uint64_t l = lo + r.lo;
+		const std::uint64_t carry = ( l < lo ) ? 1ull : 0ull;
+		const std::int64_t h = static_cast<std::int64_t>(
+			static_cast<std::uint64_t>( hi ) + static_cast<std::uint64_t>( r.hi ) + carry );
+		return ExactInt128( h, l );
+	}
+	ExactInt128 operator-( const ExactInt128& r ) const {
+		const std::uint64_t l = lo - r.lo;
+		const std::uint64_t borrow = ( lo < r.lo ) ? 1ull : 0ull;
+		const std::int64_t h = static_cast<std::int64_t>(
+			static_cast<std::uint64_t>( hi ) - static_cast<std::uint64_t>( r.hi ) - borrow );
+		return ExactInt128( h, l );
+	}
+	ExactInt128 operator*( const ExactInt128& r ) const {
+		const std::uint64_t a0 = lo & 0xFFFFFFFFull, a1 = lo >> 32;
+		const std::uint64_t b0 = r.lo & 0xFFFFFFFFull, b1 = r.lo >> 32;
+		const std::uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+		const std::uint64_t mid = ( p00 >> 32 ) + ( p01 & 0xFFFFFFFFull ) + ( p10 & 0xFFFFFFFFull );
+		const std::uint64_t l = ( p00 & 0xFFFFFFFFull ) | ( mid << 32 );
+		const std::uint64_t prodHi = p11 + ( p01 >> 32 ) + ( p10 >> 32 ) + ( mid >> 32 );
+		const std::int64_t h = static_cast<std::int64_t>(
+			prodHi + static_cast<std::uint64_t>( hi ) * r.lo + lo * static_cast<std::uint64_t>( r.hi ) );
+		return ExactInt128( h, l );
+	}
+	ExactInt128 operator<<( int shift ) const {
+		if( shift <= 0 ) return *this;
+		if( shift >= 64 ) return ExactInt128( static_cast<std::int64_t>( lo << ( shift - 64 ) ), 0ull );
+		return ExactInt128(
+			static_cast<std::int64_t>( ( static_cast<std::uint64_t>( hi ) << shift ) | ( lo >> ( 64 - shift ) ) ),
+			lo << shift );
+	}
+	bool operator>( const ExactInt128& r ) const {
+		return ( hi != r.hi ) ? ( hi > r.hi ) : ( lo > r.lo );
+	}
+};
+#endif
+
+static bool ExactLeadingMinorsPositive( const ExactInt128 M[3][3] )
 {
 	if( !( M[0][0] > 0 ) ) return false;
 	if( !( M[0][0] * M[1][1] - M[0][1] * M[0][1] > 0 ) ) return false;
-	const __int128 d = M[0][0] * ( M[1][1] * M[2][2] - M[1][2] * M[1][2] )
+	const ExactInt128 d = M[0][0] * ( M[1][1] * M[2][2] - M[1][2] * M[1][2] )
 		- M[0][1] * ( M[0][1] * M[2][2] - M[1][2] * M[0][2] )
 		+ M[0][2] * ( M[0][1] * M[1][2] - M[1][1] * M[0][2] );
 	return d > 0;
@@ -3020,10 +3070,10 @@ static void TestDL623RigorousEigenvalueBound()
 			G[r][c] = 0;
 			for( int k = 0; k < 3; ++k ) G[r][c] += B[k][r] * B[k][c];
 		}
-		__int128 M[3][3];
+		ExactInt128 M[3][3];
 		const auto pd = [&]( long long p ) {
 			for( int r = 0; r < 3; ++r ) for( int c = 0; c < 3; ++c ) {
-				M[r][c] = (__int128)G[r][c] * ( (__int128)1 << m ) - ( r == c ? (__int128)p : 0 );	// G may be negative off the diagonal: shifting a negative value is UB before C++20
+				M[r][c] = ExactInt128( G[r][c] ) * ( ExactInt128( 1 ) << m ) - ( r == c ? ExactInt128( p ) : ExactInt128( 0 ) );	// G may be negative off the diagonal: shifting a negative value is UB before C++20
 			}
 			return ExactLeadingMinorsPositive( M );
 		};

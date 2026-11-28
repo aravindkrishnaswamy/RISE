@@ -491,7 +491,7 @@ namespace RISE
 			///
 			/// Default `Snell` preserves backward compatibility.  Opt in
 			/// via the rasterizer's `sms_seeding "uniform"` parameter.
-			/// See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
+			/// See `docs/SMS.md`.
 			enum SeedingMode {
 				eSeedingSnell   = 0,
 				eSeedingUniform = 1

@@ -124,6 +124,9 @@
     <Filter Include="Materials\Dielectrics">
       <UniqueIdentifier>{b090d48a-b748-4167-891a-b13e8323c1e7}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Materials\HyLIoS">
+      <UniqueIdentifier>{ac00d8bf-7775-47be-bd92-8576ea81cf93}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Materials\BioSpec">
       <UniqueIdentifier>{7aabbaf2-c8ce-4a91-910e-0fa84a948b23}</UniqueIdentifier>
     </Filter>
@@ -657,6 +660,9 @@
     <ClCompile Include="..\..\..\src\Library\RasterImages\EXRWriter.cpp">
       <Filter>Raster Images\EXR</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\RadiometricEXRWriter.cpp">
+      <Filter>Raster Images\EXR</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\PPMWriter.cpp">
       <Filter>Raster Images\PPM</Filter>
     </ClCompile>
@@ -1014,6 +1020,54 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RoughDielectricEnergy.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOptics.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSlabTransport.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardTransport.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSParticleGeometry.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSParticleOverlap.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSReciprocalBoundary.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSpatialGeometry.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSResolvedExperiment.cpp">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
       <Filter>Materials\BioSpec</Filter>
     </ClCompile>
@@ -1224,6 +1278,9 @@
     <ClCompile Include="..\..\..\src\Library\Lights\PointLight.cpp">
       <Filter>Non Mesh Lights</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\PhysicalLightSpectrum.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Lights\SpotLight.cpp">
       <Filter>Non Mesh Lights</Filter>
     </ClCompile>
@@ -1241,6 +1298,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp">
       <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BeautyMoments.cpp">
+      <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
@@ -1619,6 +1679,15 @@
       <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricFilm.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp">
@@ -2331,6 +2400,9 @@
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h">
       <Filter>Raster Images\EXR</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\RadiometricEXRWriter.h">
+      <Filter>Raster Images\EXR</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRCompression.h">
       <Filter>Raster Images\EXR</Filter>
     </ClInclude>
@@ -2802,6 +2874,54 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RoughDielectricEnergyData.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOpticalData.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSOptics.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSlabTransport.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardTransport.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSParticleGeometry.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSParticleOverlap.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSComplexLayout.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSurfaceBoundary.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalBake.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSkinMaterial.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSReciprocalBoundary.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSSpatialGeometry.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponse.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSLocalResponseAsset.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSForwardExperiment.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HyLIoS\HyLIoSResolvedExperiment.h">
+      <Filter>Materials\HyLIoS</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">
       <Filter>Materials\BioSpec</Filter>
     </ClInclude>
@@ -3018,6 +3138,9 @@
     <ClInclude Include="..\..\..\src\Library\Lights\PointLight.h">
       <Filter>Non Mesh Lights</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\PhysicalLightSpectrum.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Lights\SpotLight.h">
       <Filter>Non Mesh Lights</Filter>
     </ClInclude>
@@ -3053,6 +3176,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\Rasterizer.h">
       <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BeautyMoments.h">
+      <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
@@ -3935,10 +4061,28 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h">
       <Filter>Rendering</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\SpectralSourceDomain.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\Film.h">
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\HyperspectralRadiometricRasterizer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricCheckpoint.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricPublication.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadiometricExactResolve.h">
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTRasterizer.h">

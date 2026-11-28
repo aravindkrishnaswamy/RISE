@@ -39,34 +39,34 @@ constexpr std::size_t InputBudget = std::size_t(256) << 20;
 // m7e.1: sheets coupled implicitly (the partner's linearised response in the
 // pressure solve, LiquidSheets.h); bakes without them publish the frames of m7d.1.
 // m7f.1: implicitly coupled sheets are walls of the level set's stencils and its boundary
-// where they hold liquid on one side (docs/SIMULATION_M7F_RESULTS.md); bakes without them
+// where they hold liquid on one side (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without them
 // publish the frames of m7e.1.
 // m7g.1: implicitly coupled sheets: the face liquid moves with the sheet along its normal, a free
 // surface below a sheet is not loaded on it, and the reinitialisation's wall ghosts are constant
-// (docs/SIMULATION_M7G_RESULTS.md); bakes without them publish the frames of m7f.1.
+// (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without them publish the frames of m7f.1.
 // m7h.1: implicitly coupled sheets use the cloth's corotational model inside the macro step
-// (cloth.shell's surface_elements, required with `response stiffness`; docs/SIMULATION_M7H_RESULTS.md);
+// (cloth.shell's surface_elements, required with `response stiffness`; docs/SIMULATION_SOLVER_CONTRACT.md);
 // bakes without them publish the frames of m7g.1.
 // m7i.1: implicitly coupled sheets with a free edge (a boundary edge not pinned at both ends) split
 // the faces the edge covers in part (LiquidSheets.h SheetCrossing::cover); the corotational
 // rotations are fitted to binary32-rounded positions; the surface output keeps clear of coupled
-// sheets (LiquidModel::ClearSheets) (docs/SIMULATION_M7I_RESULTS.md); bakes without implicitly coupled
+// sheets (LiquidModel::ClearSheets) (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without implicitly coupled
 // sheets publish the frames of m7h.1.
 // m7j.1: implicitly coupled sheets: the corotational elements' blocks are balanced (exactly
 // invariant to an element's translation, Cloth::CorotatedElements::Balance, as cloth.shell m3a.7
 // does), and the progress detail reports the corotational step's linearisation correction
-// (docs/SIMULATION_M7J_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7i.1.
+// (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without implicitly coupled sheets publish the frames of m7i.1.
 // m7k.1: implicitly coupled sheets: a sheet's contact with a free surface below it fades over a
 // quarter cell of the gap (LiquidModel::OpenUnwetted) instead of switching, and the sheet's copy
 // takes the velocities the cloth's own step gives with the binary32 impulse (SheetDynamics::Replay)
-// (docs/SIMULATION_M7K_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7j.1.
+// (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without implicitly coupled sheets publish the frames of m7j.1.
 // m7l.1: implicitly coupled sheets: the level set is two-valued at them (each side's own level set,
 // extended across the sheet along its normal for the other side's stencils; LiquidLevelSet.h
 // LevelSetBarrier::Second), in place of m7f's boundary values at a one-sided sheet's distance
-// (docs/SIMULATION_M7L_RESULTS.md); bakes without implicitly coupled sheets publish the frames of m7k.1.
+// (docs/SIMULATION_SOLVER_CONTRACT.md); bakes without implicitly coupled sheets publish the frames of m7k.1.
 // m7m.1: viscosity with prescribed and implicitly coupled sheets (no-slip walls of the viscous solve, each
 // wetted side on its own; a coupled sheet's velocities unknowns of it, its viscous impulse in its steps'
-// impulses; docs/SIMULATION_M7M_RESULTS.md); bakes without viscous sheets publish the frames of m7l.1.
+// impulses; docs/SIMULATION_SOLVER_CONTRACT.md); bakes without viscous sheets publish the frames of m7l.1.
 constexpr const char* SolverVersion = "m7m.1";
 // M7c: the per-step cost with viscosity relative to without (measured, section 8 of the results).
 constexpr double ViscousCostFactor = 2.8;
@@ -779,7 +779,7 @@ std::vector<EvidenceCase> MemoisedEvidence(std::mutex& mutex, std::map<std::stri
 
 struct CaseSpec { const char* id; const char* description; double tolerance; double withParticles = 0; };
 // Tolerances: 1.25 x the error observed with the default numerics at the
-// evidence resolution, rounded up (docs/SIMULATION_M7A_RESULTS.md section 5);
+// evidence resolution, rounded up (docs/SIMULATION_SOLVER_CONTRACT.md section 5);
 // orders: error = max(0, 1.8 - observed order) against 0.2; the rest at the
 // pressure solver's tolerance level.
 const CaseSpec Cases[] = {
@@ -880,7 +880,7 @@ std::vector<EvidenceCase> ComputeEvidence(const SolverOptions& options, unsigned
 
 // M7b: the rigid-body cases (computed only when the configuration has bodies).
 // Tolerances: 1.25 x the error observed with the default numerics, rounded
-// up (docs/SIMULATION_M7B_RESULTS.md section 5); the neutral body at the
+// up (docs/SIMULATION_SOLVER_CONTRACT.md section 5); the neutral body at the
 // solver's tolerance level; the impulse audit at round-off.
 const CaseSpec BodyCases[] = {
 	{"added-mass-cylinder-n64", "impulsive start of a circular cylinder (radius 0.15) in a concentric cut-cell container (radius 0.4), 2-D, 64 cells: |m_a / (rho pi a^2 (b^2 + a^2) / (b^2 - a^2)) - 1|", 2.6e-3},
@@ -943,7 +943,7 @@ std::vector<EvidenceCase> ComputeBodyEvidence(const SolverOptions& options, unsi
 
 // M7c: the viscosity and surface-tension cases (computed only when the option is on).
 // Tolerances: 1.25 x the error observed with the default numerics, rounded up
-// (docs/SIMULATION_M7C_RESULTS.md section 5); the rigid rotation at the solver's level.
+// (docs/SIMULATION_SOLVER_CONTRACT.md section 5); the rigid rotation at the solver's level.
 V PhysicsNumericsValue(const SolverOptions& o)
 {
 	return V::MapValue({{"base", NumericsValue(o)}, {"capillary_cfl", V::Float(o.capillaryCfl)},
@@ -1595,7 +1595,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			for (const std::string* n : {&sh.port, &sh.mechanicsPort, &sh.stiffnessPort, &sh.loadPort, &sh.stepsPort, &sh.elementsPort})
 				caps.ownedImplicitPorts.push_back(*n);
 	std::sort(caps.ownedImplicitPorts.begin(), caps.ownedImplicitPorts.end());
-	// Measured (docs/SIMULATION_M7A_RESULTS.md section 8): peak RSS 356 bytes per cell at
+	// Measured (docs/SIMULATION_SOLVER_CONTRACT.md section 8): peak RSS 356 bytes per cell at
 	// 128^3 (a dam break; 565 at 64^3 with the fixed part), particles about 140 bytes
 	// per cell at 16 per band cell, the fields output 48; declared with a 25% margin.
 	caps.memoryEstimate = (std::uint64_t(64) << 20) + std::uint64_t(cells)*450 +
@@ -1612,10 +1612,10 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		const double speed = std::max(std::sqrt(2*gn*depth), 1e-3);
 		const double steps = std::max(speed/(o.cfl*setup.grid.h), gn > 0 ? std::sqrt(gn*depth)/(o.waveCfl*setup.grid.h) : 0.0);
 		caps.costEstimate = 1.2e-7*double(cells)*steps*(o.particles ? 1.05 : 1.0);
-		// M7b: measured at 128^3, 16 threads (docs/SIMULATION_M7B_RESULTS.md section 10): one coupled
+		// M7b: measured at 128^3, 16 threads (docs/SIMULATION_SOLVER_CONTRACT.md section 10): one coupled
 		// body +35%, four +55%, eight +77% per step (more at 64^3).
 		if (!setup.bodies.empty()) caps.costEstimate *= 1.3 + 0.06*double(setup.bodies.size());
-		// M7c (docs/SIMULATION_M7C_RESULTS.md section 8): the viscous solve and the capillary limit.
+		// M7c (docs/SIMULATION_SOLVER_CONTRACT.md section 8): the viscous solve and the capillary limit.
 		if (setup.viscosity > 0) caps.costEstimate *= ViscousCostFactor;
 		if (setup.surfaceTension > 0) {
 			const double capDt = o.capillaryCfl*std::sqrt(setup.density*setup.grid.h*setup.grid.h*setup.grid.h/(2*3.14159265358979323846*setup.surfaceTension));
@@ -1746,7 +1746,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 		if (!limit.empty()) candidate.notes.push_back(limit + " (outside the certified scope)");
 		if (setup.viscosity > 0 && !setup.bodies.empty())
 			candidate.notes.push_back("viscosity with bodies: case 10 (a settling sphere) is in the validation test, not in this evidence "
-				"(too slow for Configure; docs/SIMULATION_M7C_RESULTS.md)");
+				"(too slow for Configure; docs/SIMULATION_SOLVER_CONTRACT.md)");
 	}
 	if (!setup.sheets.empty()) {
 		// M7d: sheets as moving boundaries, always preview.
@@ -1763,7 +1763,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			"the liquid's pressure impulse on those faces is the load on the sheet. This is preview and not certified: no case "
 			"bounds its error; a cell whose centre the sheet crosses changes side within one step (noise in the load); the load "
 			"returned to a cloth is lagged by one macro step of a staggered exchange, which is unstable for sheets light against "
-			"the liquid they move (the added-mass instability, measured in docs/SIMULATION_M7D_RESULTS.md); tangential (viscous) "
+			"the liquid they move (the added-mass instability, measured in docs/SIMULATION_SOLVER_CONTRACT.md); tangential (viscous) "
 			"traction is not returned; liquid films thinner than a cell on a sheet are not resolved.";
 		if (implicitSheets_)
 			candidate.evidence.scope += " M7e couples a sheet implicitly instead: its partner's linearised response over the macro step "
@@ -1771,13 +1771,13 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 				"pressure in one symmetric positive definite system, so the added mass and the elastic response to the pressure are "
 				"implicit, and the impulse on each vertex is returned as a force held over the macro step; this too is preview and not "
 				"certified: the linearisation is about the macro step's start, the partner's own nonlinear step then differs from the "
-				"liquid's linearised copy, and the accuracy cases of docs/SIMULATION_M7E_RESULTS.md are not in this evidence.";
+				"liquid's linearised copy, and the accuracy cases of docs/SIMULATION_SOLVER_CONTRACT.md are not in this evidence.";
 		if (setup.viscosity > 0)
 			candidate.evidence.scope += " M7m: with viscosity the sheets are no-slip walls of the viscous solve on each wetted side "
 				"(a difference that crosses a sheet is one-sided, the sheet's velocity at the crossing; no strain couples the liquid "
 				"across it); an implicitly coupled sheet's vertex velocities are unknowns of that solve with its step matrix as their "
 				"mass, so its viscous traction is implicit and returned in its steps' impulses; preview and not certified (the "
-				"comparison with a rigid floor in docs/SIMULATION_M7M_RESULTS.md is not in this evidence).";
+				"comparison with a rigid floor in docs/SIMULATION_SOLVER_CONTRACT.md is not in this evidence).";
 		candidate.evidence.fidelity = "preview";
 		if (caps.fidelityLimit.empty())
 			caps.fidelityLimit = implicitSheets_ ?
@@ -1792,7 +1792,7 @@ bool LiquidSolver::Configure(const V& parameters, const ISceneInputs& inputs, So
 			"(`owned <liquid> <cloth>`, the liquid first)" :
 			"sheets: face-crossing moving boundaries (preview); a port sheet's load is offered once per macro step from the sheet's "
 			"state at the macro step's start (the group serves that state in either Gauss-Seidel order)");
-		// Measured (docs/SIMULATION_M7D_RESULTS.md): the crossings cost little next to the pressure solve.
+		// Measured (docs/SIMULATION_SOLVER_CONTRACT.md): the crossings cost little next to the pressure solve.
 		caps.costEstimate *= 1.05;
 	}
 	if (!setup.sources.empty()) {
@@ -2177,7 +2177,7 @@ bool LiquidSolver::AcceptSheetDynamics(IPortExchange* ports, LiquidSheet& sh, st
 		std::string why;
 		if (ports->Accept(sh.elementsPort, s_.t, bytes, why) != PortStatus::Ready || !bytes)
 			return Fail(error, "implicit sheet " + sh.name + " needs " + sh.elementsPort + ": connect the cloth's surface_elements to it "
-				"(cloth.shell m3a.5; the cloth's model inside the macro step is corotational, docs/SIMULATION_M7H_RESULTS.md)" +
+				"(cloth.shell m3a.5; the cloth's model inside the macro step is corotational, docs/SIMULATION_SOLVER_CONTRACT.md)" +
 				(why.empty() ? std::string() : ": " + why));
 		if (!DecodeField(*bytes, InputBudget, ef, error)) return Fail(error, "sheet " + sh.name + ": " + sh.elementsPort + ": " + error);
 	}
@@ -2287,7 +2287,7 @@ std::string LiquidSolver::SheetRotationDetail() const
 	std::snprintf(buffer, sizeof buffer, ", sheet rotation stretch %s up to %.2g%%%s, cells wet across a sheet %llu (%.3g m^3, held), "
 		"wet without a wet neighbour %llu", corotatedSheets_ ? "per step (corotational)" : "per macro step", 100*sheetRotationStretch_,
 		sheetRotationStretch_ > 0.01 ? (corotatedSheets_ ? " (warning: above 1%, elements turn faster than the step predicts: shorten the macro step; a light free edge at a "
-			"waterline is a stated limit, docs/SIMULATION_M7M_RESULTS.md, Known limits: heavier cloth, pinned edges or a finer grid)" :
+			"waterline is a stated limit, docs/SIMULATION_SOLVER_CONTRACT.md, Known limits: heavier cloth, pinned edges or a finer grid)" :
 			" (warning: above 1%, the cloth's linear step within a macro step; shorten the macro step)") : "",
 		static_cast<unsigned long long>(model_.sheetCrossedCells), model_.sheetCrossedVolume, static_cast<unsigned long long>(model_.sheetUnfedCells));
 	std::string out = buffer;
@@ -2298,7 +2298,7 @@ std::string LiquidSolver::SheetRotationDetail() const
 		char b2[400];
 		std::snprintf(b2, sizeof b2, ", linearisation correction per step up to %.2g%%%s", 100*sheetCorrection_,
 			sheetCorrection_ > 0.01 ? " (warning: above 1%, the corotational step is inaccurate where the sheet is kicked, as a light free edge at a waterline "
-			"is: a stated limit, docs/SIMULATION_M7M_RESULTS.md, Known limits: heavier cloth, pinned edges or a finer grid)" : "");
+			"is: a stated limit, docs/SIMULATION_SOLVER_CONTRACT.md, Known limits: heavier cloth, pinned edges or a finer grid)" : "");
 		out += b2;
 	}
 	// m7h: the barrier's watertightness (sheets pinned all round only).

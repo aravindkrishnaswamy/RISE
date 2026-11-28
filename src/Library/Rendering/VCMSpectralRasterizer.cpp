@@ -139,7 +139,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 	const unsigned int batchSize = bMultiSample ? sampling->GetNumSamples() : 1;
 
 	// Adaptive sampling: when enabled, the per-pixel loop can take up
-	// to adaptiveConfig.maxSamples and uses Welford-based convergence
+	// to adaptiveConfig.maxSamples and uses compensated moment convergence
 	// to terminate early.  When disabled (the default), every pixel
 	// takes exactly batchSize samples per pass — convergence-based
 	// skipping is gated on `adaptive` so progressive multi-pass mode
@@ -208,9 +208,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 	XYZPel colAccrued( 0, 0, 0 );
 	Scalar weightsAccrued = 0;
 	Scalar alphasAccrued = 0;
-	Scalar wMean = 0;
-	Scalar wM2 = 0;
-	unsigned int wN = 0;
+	BeautyMoments moments;
 	uint32_t pixelSampleIndex = 0;
 	bool converged = false;
 
@@ -219,9 +217,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 		colAccrued = px.colorSum;
 		weightsAccrued = px.weightSum;
 		alphasAccrued = px.alphaSum;
-		wMean = px.wMean;
-		wM2 = px.wM2;
-		wN = px.wN;
+		moments = px.beautyMoments;
 		pixelSampleIndex = px.sampleIndex;
 	}
 
@@ -650,37 +646,21 @@ void VCMSpectralRasterizer::IntegratePixel(
 			colAccrued = colAccrued + spectralSum * weight;
 			alphasAccrued += sampleAlpha * weight;
 
-			// Welford update gated on `adaptive` only — see
+			// Compensated moment update gated on `adaptive` only — see
 			// BDPTPelRasterizer for the multi-pass selection-bias
 			// rationale (progressive must not trigger convergence-
 			// based termination on heavy-tailed sample distributions).
 			// XYZ.Y is the CIE photometric luminance.
 			if( adaptive ) {
 				const Scalar lum = spectralSum.Y;
-				wN++;
-				const Scalar delta = lum - wMean;
-				wMean += delta / Scalar( wN );
-				const Scalar delta2 = lum - wMean;
-				wM2 += delta * delta2;
+				moments.Add( lum );
 			}
 		}
 
 		// Adaptive convergence check.  Gated on `adaptive` only — see
-		// Welford comment above.
-		if( adaptive && wN >= 32 )
-		{
-			const Scalar variance = wM2 / Scalar( wN - 1 );
-			const Scalar stdError = sqrt( variance / Scalar( wN ) );
-			const Scalar meanAbs = fabs( wMean );
-
-			if( meanAbs > NEARZERO ) {
-				const Scalar confidence = 1.0 - 4.0 / Scalar( wN );
-				if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
-					converged = true;
-				}
-			} else if( wM2 < NEARZERO && wN >= 64 ) {
-				converged = true;
-			}
+		// moment-update comment above.
+		if( adaptive && moments.IsConverged( adaptiveConfig.threshold, NEARZERO ) ) {
+			converged = true;
 		}
 
 		if( !bMultiSample && !pProgFilm ) {
@@ -693,9 +673,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 		px.colorSum = colAccrued;
 		px.weightSum = weightsAccrued;
 		px.alphaSum = alphasAccrued;
-		px.wMean = wMean;
-		px.wM2 = wM2;
-		px.wN = wN;
+		px.beautyMoments = moments;
 		px.sampleIndex = pixelSampleIndex;
 		px.converged = converged;
 	}

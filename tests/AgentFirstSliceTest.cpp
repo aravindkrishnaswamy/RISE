@@ -843,9 +843,9 @@ int main(int argc,char** argv)
 	// {"samples":1e999... via a NaN-producing huge literal} likewise; both
 	// MUST be rejected as -32602 BEFORE the narrowing static_cast<int>(inf)
 	// (which is UB).  The guard is an explicit int32-range comparison rather
-	// than std::isfinite precisely so it survives the production -ffast-math
-	// (-ffinite-math-only) build, under which the isfinite intrinsic folds to
-	// `true` and the guard would be stripped as dead code.  We drive the raw
+	// than std::isfinite (historically required under bare -ffast-math /
+	// -ffinite-math-only; macOS now pairs -fno-finite-math-only, and the
+	// range check stays -Ofast-proof).  We drive the raw
 	// JSON line (not Req(), whose MakeNumber takes a finite double) so the
 	// dispatcher's OWN parser produces the infinity.  A normal {"samples":2}
 	// must still render ok (the guard is not over-broad).

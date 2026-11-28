@@ -1516,7 +1516,7 @@ namespace RISE
 		//! of the air/film/substrate stack at one wavelength.  Feeds the
 		//! Kulla-Conty multiscatter tail of the thin-film GGX mode: the film
 		//! shifts the average reflectance by up to ~0.5 vs the bare substrate
-		//! (tests/ThinFilmFurnaceTest.cpp), so the substrate average is unusable
+		//! (tests/ThinFilmBRDFTest.cpp), so the substrate average is unusable
 		//! there.  Uses the SAME 21-point Gauss-Legendre rule as the conductor's
 		//! MicrofacetEnergyLUT::ComputeFresnelAvg (same GL_nodes / GL_weights /
 		//! 2*mu*w weighting), so at film==air this average is byte-identical to

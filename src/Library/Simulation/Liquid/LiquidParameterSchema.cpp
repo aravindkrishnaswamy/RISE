@@ -309,7 +309,7 @@ ParameterSchema Build()
 		"every frame; render it with simulated_mesh_geometry and a dielectric), optionally `fields` (grid.v1: phi, "
 		"pressure, velocity) and `particles` (points.v1, the marker particles); rigid bodies (`body`) move with the liquid "
 		"in its pressure solve and publish `bodies` (transform.v1).  Parameters, evidence and limits: "
-		"docs/SIMULATION_M7A_RESULTS.md, docs/SIMULATION_M7B_RESULTS.md, docs/SIMULATION_M7C_RESULTS.md, docs/SIMULATION_M7D_RESULTS.md.";
+		"docs/SIMULATION_SOLVER_CONTRACT.md.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const char* doc) -> SchemaParameter& {
 		s.parameters.emplace_back();
 		SchemaParameter& p = s.parameters.back();
@@ -377,20 +377,20 @@ ParameterSchema Build()
 	F("sheet", SchemaChunkField::Kind::Text, "A thin open sheet as a moving boundary (m7d, preview): `<name> port [port <accepted>] "
 		"[load_port <offered>] [relaxation w]` follows a mesh surface (connect a cloth's surface_state to <accepted>, default "
 		"sheet_state, and <offered>, default sheet_load, to its surface_load in a simulation_group; the load is lagged one macro "
-		"step and unstable for light sheets: docs/SIMULATION_M7D_RESULTS.md; m7e: `coupling implicit` solves the cloth's linearised "
+		"step and unstable for light sheets: docs/SIMULATION_SOLVER_CONTRACT.md; m7e: `coupling implicit` solves the cloth's linearised "
 		"response with the pressure, stable for cloth of any weight: also connect its surface_mechanics and surface_stiffness to "
 		"<sheet_mechanics> and <sheet_stiffness>, and <sheet_load_steps> to its surface_load_steps, with `owned <liquid> <cloth>`; "
-		"docs/SIMULATION_M7E_RESULTS.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
+		"docs/SIMULATION_SOLVER_CONTRACT.md), or `<name> rect sx sy [divisions nx ny] [at x y z] "
 		"[orientation w x y z] [velocity vx vy vz] [spin wx wy wz] [amplitude ax ay az] [frequency f] [phase p]` a prescribed "
 		"rectangle (its frame's xy plane, normal +z).  With `viscosity` (m7m) prescribed and implicit sheets are no-slip walls "
 		"on each wetted side, an implicit cloth's velocities solved with the viscous step and its drag returned to it; a "
-		"staggered or one-way sheet with viscosity is refused (docs/SIMULATION_M7M_RESULTS.md).  Stated limits (preview): "
+		"staggered or one-way sheet with viscosity is refused (docs/SIMULATION_SOLVER_CONTRACT.md).  Stated limits (preview): "
 		"liquid resting on an implicit sheet needs a layer about 2.5 cells deep, as on a rigid floor (m7l, two-valued level "
 		"set; measured without the volume correction over 2 s: a held flat sheet's 2.4-cell sloshing layer loses 6%, a "
 		"sagging bag's 4%, a held bowl's 1.3-cell rim 2.5%, a rigid floor's 2.4 cells 4%); very light cloth (below about "
 		"0.1 kg/m^2) with a free edge at a waterline on a coarse grid is kicked at the edge (m7k: 0.05 kg/m^2 at 24 cells, "
 		"edge peaks of 4-9 m/s in a dam break), which the progress detail flags as a rotation stretch or linearisation "
-		"correction above 1%: use heavier cloth, pin the edge, or a finer grid (docs/SIMULATION_M7M_RESULTS.md, Known limits)");
+		"correction above 1%: use heavier cloth, pin the edge, or a finer grid (docs/SIMULATION_SOLVER_CONTRACT.md, Known limits)");
 	// Text, as rigid_simulation's body_object: the object's name is followed by options.
 	F("body_object", SchemaChunkField::Kind::Text, "A rigid body made from a scene object's closed mesh (m7d; world "
 		"space at t = 0, the body frame at its centroid and principal axes, mass properties from the mesh): `<object>` then the "
@@ -405,7 +405,7 @@ ParameterSchema Build()
 		"it take the velocity, so the flux is its exit area (seen along the direction) times the speed, plus its own volume "
 		"at the first fill; the volume correction's target gains that fill and then the nominal flux (or each drop's "
 		"volume), and the volumes are reported in the progress detail.  Emit into air, at least two cells from sheets and bodies; a jet narrower than about three cells thins "
-		"(docs/SIMULATION_M9_RESULTS.md)");
+		"(src/Library/Parsers/README.md)");
 	F("drain", SchemaChunkField::Kind::Text, "A drain (M9, preview): `<name> box cx cy cz sx sy sz | cylinder cx cy cz ax ay az r h | "
 		"sphere cx cy cz r` with `orientation w x y z` (box), `start t`, `end t`: the liquid inside it is removed each step "
 		"(an overflow or a plughole; the volume removed is reported and taken from the volume correction's target)");

@@ -26,7 +26,7 @@ namespace
 	//! Same role and tuning rationale as SchlickSPF.cpp's kSpecQuadN --
 	//! Scatter's accept boundary (the geomN gate) is the same kind of
 	//! bounded-but-non-smooth integrand.  See
-	//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 3.
+	//! docs/DEBT_LEDGER.md section 3.
 	const int kPhongQuadN = 16;
 
 	//! The specular lanes Scatter()/ScatterNM() would emit at this shading
@@ -56,7 +56,7 @@ static inline Scalar PhongDiffuseAcceptFraction( const Vector3& n, const Vector3
 }
 
 //! C_D -- the coefficient the diffuse sampling density carries in the
-//! aggregate density (see docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 2 for
+//! aggregate density (see docs/DEBT_LEDGER.md section 2 for
 //! the derivation, which mirrors DL-67 Slice 0's SchlickDiffuseSelectCoefficient).
 //! `wD` is the query-direction-independent diffuse selection weight
 //! (MaxValue(Rd) for RGB, the NM reflectance for spectral).
@@ -72,7 +72,7 @@ static inline Scalar PhongDiffuseAcceptFraction( const Vector3& n, const Vector3
 //! `nu,nv,nw` / `gu,gv,gw` are `n` / `geomN` projected into the frame
 //! GenerateSpecularRay's own Perturb() call builds internally around
 //! `reflected` (U = normalize(reflected), V,W its perpendiculars) -- see
-//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1 for the closed-form
+//! docs/DEBT_LEDGER.md section 1 for the closed-form
 //! derivation of GeometricUtilities::Perturb's frame, which lets a lane's
 //! emitted direction be written `cos(down)*U + sin(down)*sin(around)*V -
 //! sin(down)*cos(around)*W` without replaying the rotation matrices.
@@ -152,7 +152,7 @@ static Scalar PhongDiffuseSelectCoefficient(
 //! recovered exactly from wo's own (V,W) projection with no inversion at
 //! all, and the polar angle scales as a pure power law in cos(down) across
 //! lanes (cos(down_j) = cos(down_i)^((N_i+1)/(N_j+1))) -- see
-//! docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1.
+//! docs/DEBT_LEDGER.md section 1.
 static Scalar PhongSpecularDensity(
 	const Vector3& woNorm,
 	const Vector3& U, const Vector3& V, const Vector3& W,
@@ -549,7 +549,7 @@ Scalar IsotropicPhongSPF::Pdf(
 	}
 
 	// Frame GenerateSpecularRay's Perturb() call builds internally around
-	// `reflected` -- see docs/DL98_DL99_PHONG_PDF_WEIGHTS.md section 1.
+	// `reflected` -- see docs/DEBT_LEDGER.md section 1.
 	OrthonormalBasis3D uvw;
 	uvw.CreateFromU( reflected );
 	const Vector3& U = uvw.u();

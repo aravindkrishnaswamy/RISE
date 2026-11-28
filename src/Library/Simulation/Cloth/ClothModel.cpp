@@ -2,7 +2,7 @@
 //
 //  ClothModel.cpp - Structured sheet, cloth energies, implicit integrators
 //  (simulation M3a).  Formulas: ClothModel.h and
-//  docs/SIMULATION_M3A_RESULTS.md.
+//  docs/SIMULATION_SOLVER_CONTRACT.md.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

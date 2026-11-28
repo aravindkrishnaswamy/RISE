@@ -37,7 +37,7 @@
 //  refracted f_base for Oren-Nayar, a lobe reservoir built from the
 //  substrate's own first-bounce return for GGX.  Derivation and
 //  measurements: CoatedBRDF.cpp "SUBSTRATE IN THE COAT'S FRAME" and
-//  docs/DL388_COATED_REFRACTED_FRAME.md.
+//  docs/DEBT_LEDGER.md.
 //
 //  `f_coat` is a GGX lobe (7.2 types coat_roughness as "GGX alpha on
 //  the coat lobe") with dielectric Fresnel at the microfacet normal

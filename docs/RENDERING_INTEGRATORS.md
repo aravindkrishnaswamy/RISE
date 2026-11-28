@@ -1,19 +1,20 @@
 # Rendering Integrators — Selection Guide
 
-RISE ships twelve rasterizer chunks (eight active: `auto_rasterizer`,
+RISE ships thirteen rasterizer chunks (nine active: `auto_rasterizer`,
 `auto_spectral_rasterizer`, `pathtracing_pel_rasterizer`,
 `pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`,
-`bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`, and
-`vcm_spectral_rasterizer`; four **FROZEN** legacy chunks:
-`pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`,
-`mlt_rasterizer`, and `mlt_spectral_rasterizer`) plus an interactive
-viewport. They implement five distinct light-transport algorithms (PT,
-BDPT, VCM, frozen MLT, and the frozen shader-op pipeline) plus the
-auto-routing dispatcher across two colour modes (RGB "pel" and
-spectral). This doc explains **which to pick for which scene**, the
-architectural split between the two render pipelines, and the support
-matrix for the optional features (path guiding, adaptive sampling, SMS,
-optimal MIS, OIDN denoising).
+`bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`,
+`vcm_spectral_rasterizer`, and `hyperspectral_radiometric_rasterizer`; four
+**FROZEN** legacy chunks: `pixelpel_rasterizer`,
+`pixelintegratingspectral_rasterizer`, `mlt_rasterizer`, and
+`mlt_spectral_rasterizer`) plus an interactive viewport. They implement
+five distinct light-transport algorithms (PT, BDPT, VCM, frozen MLT, and
+the frozen shader-op pipeline) plus the auto-routing dispatcher and
+fixed-wavelength radiometric sweeps across RGB ("pel") and spectral modes.
+This doc explains **which to pick for which scene**, the architectural
+split between the two render pipelines, and the support matrix for the
+optional features (path guiding, adaptive sampling, SMS, optimal MIS, OIDN
+denoising).
 
 It is a selection guide, not a tutorial. Per-parameter behaviour lives
 in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md);
@@ -74,11 +75,15 @@ it from the per-pixel loop. No shader-op chain. This is faster,
 clearer, and the only path that wires up modern features (path
 guiding, adaptive sampling, optimal MIS, OIDN).
 
-**Active rasterizer chunks (8)**: `auto_rasterizer`,
+**Active rasterizer chunks (9)**: `auto_rasterizer`,
 `auto_spectral_rasterizer`, `pathtracing_pel_rasterizer`,
 `pathtracing_spectral_rasterizer`, `bdpt_pel_rasterizer`,
 `bdpt_spectral_rasterizer`, `vcm_pel_rasterizer`,
-`vcm_spectral_rasterizer`.
+`vcm_spectral_rasterizer`, `hyperspectral_radiometric_rasterizer` (fixed-wavelength
+NM radiometric PT sweeps with raw EXR/manifest output, checkpoint resume, strict
+sky preflight, and derived band/sensor observables — see
+[HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md) §13 and
+[RADIOMETRIC_PRIMITIVES.md](RADIOMETRIC_PRIMITIVES.md)).
 
 **Frozen pure-integrator chunks (2)**: `mlt_rasterizer`,
 `mlt_spectral_rasterizer` (**FROZEN** 2026-10-09 — use `bdpt_*`, `vcm_*`, or `auto_*`).
@@ -99,7 +104,7 @@ GUI bridges (macOS / Windows / Android) — see
 
 ## 2. Quick decision tree
 
-**Matrix-backed routing (2026-06-04 — [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md) + [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)).** The Phase-1 wall-clock-normalized variance (σ²·T) measurement gives a default-and-route rule — **the policy the shipping [`auto_rasterizer`](AUTO_RASTERIZER_DESIGN.md) encodes (using a two-gate render-time probe with merge flux share reach discrimination, DL-167); or pick by hand per this map:**
+**Matrix-backed routing (2026-06-04 — [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) + [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)).** The Phase-1 wall-clock-normalized variance (σ²·T) measurement gives a default-and-route rule — **the policy the shipping [`auto_rasterizer`](AUTO_RASTERIZER_DESIGN.md) encodes (using a two-gate render-time probe with merge flux share reach discrimination, DL-167); or pick by hand per this map:**
 
 - **Default → PT** (`pathtracing_pel_rasterizer`) — wins σ²·T on 10/13 converged classes (diffuse, glossy-metal, mixed, many-light, most env); **3–7× cheaper per sample** than BDPT, which outweighs BDPT/VCM's lower *raw* variance on the bulk.
 - **Strong-indirect / glossy interreflection → BDPT** (`bdpt_pel_rasterizer`) — the only regime where BDPT's connections beat its 3–7× per-sample penalty: gi_spheres-class (**56× σ²·T** over PT), alchemists, env+mesh. Signal: indirect dominates direct; glossy bounces; enclosed geometry.
@@ -169,7 +174,7 @@ The twelve rasterizer chunks (eight active, four **FROZEN**), grouped by algorit
 
 ### MLT (Metropolis light transport) -- FROZEN 2026-10-09
 
-Both MLT chunks are frozen (legacy, unsupported; [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)
+Both MLT chunks are frozen (legacy, unsupported; [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)
 had already retired MLT).  Use BDPT / VCM / auto.
 
 | Chunk | Pipeline | Notes |
@@ -209,6 +214,7 @@ wired, partial = subset.
 | `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | ✓ |
+| `hyperspectral_radiometric_rasterizer` | ✗ | ✗ | ✓ | ✗ | ✗ (raw radiometric EXR) |
 | `pixelpel_rasterizer` *(FROZEN)* | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
 | `pixelintegratingspectral_rasterizer` ¹ *(FROZEN)* | ✗ | ✗ | (via shader-op) | ✗ | ✓ |
 | `mlt_rasterizer` *(FROZEN)* | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film; retrace fallback if forced on) |
@@ -612,7 +618,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   the six-face `clippedplane` twin of the same box reads 0.99).  The
   fix unmasked **debt 27** (FIXED 2026-09-28 as ledger DL-05 -- delta-light
   NEE shadow rays now see through the gap; see
-  [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)): with `gap > 0` and the light OUTSIDE
+  [DEBT_LEDGER.md](DEBT_LEDGER.md)): with `gap > 0` and the light OUTSIDE
   a two-layer weave, PT reads UNDER BDPT/VCM by 1.28–1.30× at gap 0.1 and
   1.55× at gap 0.3 on box and free-standing planes alike, because the
   path light → straight through the far layer's delta gap → near layer's
@@ -1006,7 +1012,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   silently aliasing.  Sibling audit (SobolSampler/ZSobolSampler,
   IndependentSampler, legacy PixelBased rasterizers, photon tracers)
   found no other sampler exhibiting this pattern — see
-  [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md) for the full
+  [DEBT_LEDGER.md](DEBT_LEDGER.md) for the full
   derivation, the red-proof (`tests/PSSMLTStreamAliasingTest.cpp` Test
   F), and the sibling table.
   **Review-P1 follow-up, same day**: keeping `kNumStreams` at 4096 in a
@@ -1026,7 +1032,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   check was also promoted from `assert` (mischaracterized as "no cost in
   release" — false on mac/Linux, where `NDEBUG` is never defined) to an
   always-on branch.  See
-  [DL08_PSSMLT_LANE_LAYOUT.md](DL08_PSSMLT_LANE_LAYOUT.md)
+  [DEBT_LEDGER.md](DEBT_LEDGER.md)
   "Storage-cost follow-up" for the measured numbers, the confirmation
   that no shipped MLT scene reaches eye depth 32, and Tests G/H.
 
@@ -1133,7 +1139,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   `CausticPhotonMapNormalizationTest` puts its camera UNDER the water,
   so no interface sits on its eye side, and is unchanged (4/4) — which
   is also why
-  [CAUSTIC_PHOTONMAP_NORMALIZATION.md](CAUSTIC_PHOTONMAP_NORMALIZATION.md)
+  [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md)
   §11's measurements were blind to this factor and remain valid, and why
   §11.6's prohibition (on a MERGE-side rescale) is untouched.  See §13
   of that document.
@@ -1184,7 +1190,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      BDPT eye RIS's retained-SPF-only case was disclosed under DL-43
      (CLOSED `a69c9ce6`, 2026-09-13 -- eye RIS now achieves actual
      outward guide-direction substitutions; see docs/DEBT_LEDGER.md).
-     See [DL-03 closure and audit](DL03_GUIDED_IOR_CONTINUATION.md).
+     See [DL-03 closure and audit](DEBT_LEDGER.md).
   2. **`ScatteredRayContainer` overflow leak in the per-channel loop —
      CLOSED, review round 3 (in the same commit range that fixed debt
      30's review round 3 items C1/C2).**  Auditing the shape described
@@ -1220,7 +1226,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      divergence, not item 4's directional/Pdf contract or DL-38's
      separate BSDF/HWSS repricing gap. The actual scene parameter is
      `tau`, not `transmittance`. See
-     [DL-01 closure](DL01_TRANSLUCENT_EXIT_WEIGHT.md).
+     [DL-01 closure](DEBT_LEDGER.md).
   4. **~~RGB/NM exit density support/shape mismatch (DL-02).~~ CLOSED
      2026-09-12 — `a041e51d`, `TranslucentSpectralParityTest: 1918 checks,
      0 failures` (red: 324 failures).** Both pipes now sample and evaluate
@@ -1229,7 +1235,7 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
      sampled a Phong exit. Entry/backscatter Phong lobes are unchanged.
      Complete mixture/reverse densities remain DL-41; this closure does
      not assert integrator-wide MIS correctness. See
-     [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md).
+     [DL-02 closure](DEBT_LEDGER.md).
   Item 1 is recorded in
   [REFRACTIVE_RADIANCE_SCALING.md](REFRACTIVE_RADIANCE_SCALING.md) §10.3;
   items 3 and 4 are recorded there as well.

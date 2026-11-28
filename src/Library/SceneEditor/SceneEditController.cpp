@@ -3215,12 +3215,11 @@ bool SceneEditController::OnTimeScrub( Scalar t )
 	if( mAgentRenderBlocksInteractive.load( std::memory_order_acquire ) ) return false;
 	// Time-scrub mutations cascade through the animator's observer
 	// chain — a keyframed DisplacedGeometry, for example, destroys
-	// its TriangleMeshGeometryIndexed (and the BSP tree inside) and
+	// its TriangleMeshGeometryIndexed (and its BVH accelerator) and
 	// rebuilds at the new time.  If the render thread is mid-
-	// IntersectRay on that BSP when the destruction lands, we get a
-	// straight UAF (matches the crash report: main-thread
-	// ~BSPTreeNodeSAH recursion racing the render thread's
-	// IntersectRay through the same BSP).
+	// IntersectRay on that BVH when the destruction lands, we get a
+	// straight UAF (historically observed on the old BSPTreeNodeSAH
+	// destructor racing IntersectRay).
 	//
 	// Pattern: hold mMutex across the whole sequence so the render
 	// thread can neither be running while we mutate nor begin a new
@@ -11181,7 +11180,7 @@ void SceneEditController::KickRender()
 	mCV.notify_one();
 }
 
-// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the scene via
+// Phase 6.5 (docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §9.9): save the scene via
 // SaveEngine::Save -- an unconditional whole-Document SerializeCst
 // (NoOps on byte-equality; dirty state selects nothing, it only gates
 // the Save button).  Three-step cancel-and-park dance:
@@ -18255,7 +18254,7 @@ SceneEditController::AgentCommitResult SceneEditController::RemoveEntity( Catego
 
 // ============================ Environment / IBL ============================
 //
-// See docs/gui/ENVIRONMENT_SECTION.md.  The IBL environment is a scene-level
+// See docs/gui/APPROACHABILITY_FOUNDATION.md.  The IBL environment is a scene-level
 // singleton (NOT an ILight): an hdr_painter/exr_painter supplies the image and
 // four radiance_* params on the ACTIVE rasterizer chunk bind it as the global
 // radiance map.  READS come from the live active-rasterizer snapshot
@@ -21276,7 +21275,7 @@ void SceneEditController::DoOneRenderPass()
 
 // ---------------------------------------------------------------------------
 // Simulation M3c: playback clock, baked ranges, live simulation.  See
-// LiveSimulation.h and docs/SIMULATION_M3C_RESULTS.md for the threading model.
+// LiveSimulation.h and docs/SIMULATION_SOLVER_CONTRACT.md for the threading model.
 // ---------------------------------------------------------------------------
 
 namespace

@@ -1,11 +1,11 @@
 # Facet 6 — Supersession Inventory, Migration Path & Risk Register
 
 > **Status (updated 2026-11):** **CUTOVER COMPLETE; HYBRID SUPERSESSION SHIPPED.**
-> - **Shipped:** v6→v7 corpus migration; native v7-only CST runtime (`Cst.{h,cpp}`) and **176** registered
+> - **Shipped:** v6→v7 corpus migration; native v7-only CST runtime (`Cst.{h,cpp}`) and **193** registered
 >   chunk keywords in [`ChunkParserRegistry.cpp`](../../src/Library/Parsers/ChunkParserRegistry.cpp);
 >   deletion of `AsciiSceneParser`, legacy streaming/macro/`FOR` machinery, `SaveEngine` byte-splice,
 >   `SourceSpanIndex`, and `OverrideSpanIndex`; CST-native atomic CAS `SaveEngine`; and the full
->   `src/Library/Agent/` stack (5 chat providers, 38 chat tools + MCP server).
+>   `src/Library/Agent/` stack (5 chat providers, 49 chat tools / 54 MCP tools).
 > - **Retained & CST-adapted (rather than deleted per §2.3):** `SceneEditor`, `SceneEdit` (31 ops incl.
 >   `AgentEditBatch`), `EditHistory` (with exact-byte CST undo via `DocReplaceChunkIfText` /
 >   `mObjectSpellingJournal`), `DirtyTracker`, and 9 `*Introspection` classes.
@@ -133,7 +133,7 @@ corpus, and the `docs/gui/` roadmap directly.
 the code and the deep-dive specs implement Model A.** [GUI_ROADMAP.md](../GUI_ROADMAP.md)
 principle #1 ("Text is the source of truth") and #6 ("Everything routes through one
 mutation path") *are Model B in spirit*. But the actual spine —
-`src/Library/SceneEditor/` + [docs/gui/TRANSACTION_MODEL.md](../gui/TRANSACTION_MODEL.md)
+`src/Library/SceneEditor/` + [docs/gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md](../gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md)
 — is a mutable in-memory `Scene`/`Job` graph, mutated through
 `SceneEditController` → `SceneEditor::Apply`, with inverse-edit undo and a
 byte-splicing `SaveEngine` that **re-reads the file from disk at save time**
@@ -236,7 +236,7 @@ byte-splicing `SaveEngine` that **re-reads the file from disk at save time**
   = in-place value-token rewrite (comments/whitespace preserved by construction);
   Mode B = a sentinel-bracketed managed `# === RISE editor overrides ===` block.
   **Round-trip save IS implemented** (transform + property + created-camera passes),
-  contradicting `ROUND_TRIP_SAVE_PLAN.md`'s stale "design-pending" header. **The real
+  contradicting `../gui/ADR_DOCUMENT_FIRST_EDITOR.md`'s stale "design-pending" header. **The real
   gap is *creation*:** only cameras can be round-trip-*created* (`AddCamera` is the
   only creation `Op`; `CloneActiveCamera` is the only creation path); created
   objects/lights/materials/media don't persist; cross-file (`>load`) dirty entities
@@ -525,7 +525,7 @@ is never activated.
 |---|---|---|
 | `src/Library/Agent/` (MCP server, LLM runtime, providers, credential store) | **NEW (no supersession)** | Does not exist; built on the CST from the start (Facet 5). Model B is the cleanest substrate (read CST/text, propose patch, validate→derive→render). Per **D13/D38** the session publishes a coherent status `{ headVersion, requestedDerivedStamp, requestedPreparedStamp, publishedDerivedStamp, publishedPreparedStamp, status, diagnostics }` — **both requested and published stamps, with `status:ok` ⟺ full-stamp equality on every axis (D38)**: `read_document` is stamped with `headVersion`, `read_graph`/`render` with the published stamps (which may lag or be last-good), and a patch's optimistic-concurrency precondition is checked against `headVersion`. **`validate`/`propose_patch` precommit run the bounded synchronous semantic phase (D39)**, and an explicit "render this" is a **stamp-pinned render job (D43)** (not cancelled by a newer head). |
 | `docs/gui/MCP_TOOL_SURFACE.md` / `LLM_AGENT_RUNTIME.md` / `MATERIAL_EDITOR.md` / `SPECTRAL_DIFFERENTIATORS.md` / `CROSS_PLATFORM_ARCHITECTURE.md` | **SURVIVE (text-level by design)** | Already document/text-centric; Model B *enforces* their stated intent. The `apply_scene_text` wholesale-rewrite fallback becomes the canonical path. | 5 |
-| `docs/gui/TRANSACTION_MODEL.md` + `EDITOR_STATE_AND_TRANSACTION_HARDENING.md` | **SUPERSEDED** | The authoritative owners of the Model-A authority/transaction/undo machinery the charter replaces. | 3 |
+| `docs/gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md` + `EDITOR_STATE_AND_TRANSACTION_HARDENING.md` | **SUPERSEDED** | The authoritative owners of the Model-A authority/transaction/undo machinery the charter replaces. | 3 |
 | `docs/gui/VALIDATION_ARCHITECTURE.md` (Tier-1 parse-only IR) / `RENDER_COORDINATOR.md` / `ENTITY_CREATION.md` | **MOSTLY SURVIVE (re-layer onto CST)** | Tier-1 IR ≈ the CST seam; render scheduling neutral; entity-creation concepts (outliner = CST view, reference graph, safe deletion) survive — the `SceneEdit`-op *mechanism* dies. | 2/3/4 |
 
 ### 2.11 Subsystem-level summary
@@ -962,7 +962,7 @@ G2, the interactive premise needs rethinking first.
 
 **The risk.** A structured edit must not gratuitously reformat untouched text; a
 hand-edited file must survive parse→serialize unchanged. This is the single
-highest-risk *correctness* requirement of the pivot. `TRANSACTION_MODEL.md` already
+highest-risk *correctness* requirement of the pivot. `../gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md` already
 documents that re-serialize-from-introspection **cannot** reproduce unsupported
 chunks, `>` commands, macros, or FOR loops — which is exactly the silent-drop
 failure Model B must *not* inherit.
@@ -1249,7 +1249,7 @@ slice (and every phase) shippable**:
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| **R1** | **Lossless CST round-trip is incomplete** — a structured edit reformats untouched text, or a hand-edited file doesn't survive parse→serialize (silent loss of comments/whitespace/unsupported chunks). The inherited `TRANSACTION_MODEL.md` failure. | **High** | **High** | Reuse `RawTokenCapture`'s lossless trivia into the **green tree** (relative width, **D2**; `NodeId` in the red layer/side-map, **D15**; positions via the **red cursor over a persistent rope**, **O(log N)**, **D16**); mechanical byte-identical round-trip test over the whole corpus as gate **G1**; the red-green pivot makes save lossless by construction and edits **O(log N)** path-copies over the rope. **Note (D8):** v7 scenes contain *no* FOR/`$()` constructs (the migrator emits first-class v7 nodes), so there are no opaque legacy spans to preserve at runtime — round-trip only has to be lossless over the v7 grammar. **The #1 correctness risk — see §4.2.** |
+| **R1** | **Lossless CST round-trip is incomplete** — a structured edit reformats untouched text, or a hand-edited file doesn't survive parse→serialize (silent loss of comments/whitespace/unsupported chunks). The inherited `../gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md` failure. | **High** | **High** | Reuse `RawTokenCapture`'s lossless trivia into the **green tree** (relative width, **D2**; `NodeId` in the red layer/side-map, **D15**; positions via the **red cursor over a persistent rope**, **O(log N)**, **D16**); mechanical byte-identical round-trip test over the whole corpus as gate **G1**; the red-green pivot makes save lossless by construction and edits **O(log N)** path-copies over the rope. **Note (D8):** v7 scenes contain *no* FOR/`$()` constructs (the migrator emits first-class v7 nodes), so there are no opaque legacy spans to preserve at runtime — round-trip only has to be lossless over the v7 grammar. **The #1 correctness risk — see §4.2.** |
 | **R2** | **Incremental-derivation latency** — a localized edit rebuilds too much; the interactive bar stutters. | **Med-High** | **High** | **D1** gesture model (uncommitted head + ephemeral preview snapshot, debounced; no 60 Hz) + **reverse-dependency-closure COW re-derive (D11)**, **built→sealed→published at a pass boundary (D12)**, split into `DerivedScene`/`PreparedRenderState` (**D22**); reuse `DirtyScope` blast-radius taxonomy + realize/TLAS/photon seam; the cache is stamp-keyed on artifacts off the immutable Version (D29/D30), with an explicit edge lifecycle (D20); **derive/prepare run async + cancellable on the render arbiter, off the edit thread (D34)** so the edit thread only commits a cheap CST Version (a newer head cancels in-flight work) — this is *also* the source of the head-vs-derived lag (D13/D29); **gate G2 measures this on the P1 phase-1 fixture (cheapest edit) before the XL derivation work** — fail fast. (First impl may full-rebuild per D11 + full TLAS rebuild per D24, then add closure-tracking; the O(closure)/O(log N) target needs persistent containers — **see R13**.) §4.1. |
 | **R3** | **Big-bang scope creep** — the XL derivation + UI rewrite tempts a flag-day cut-over; the tree goes red for weeks; the 376-scene corpus / 146 tests can't all be kept green simultaneously. | **High** | **High** | The strangler-fig phasing (§3.3): the transitional v6-read and v7 paths coexist *during migration only* (D8); deletions only after the replacement is RED-proven and the equivalence harness is green; every phase independently shippable; the terminal v6-path deletion (P8) is the singular D8 contract. **Discipline, not architecture, is the mitigation** — and the user's own multi-agent worker discipline + adversarial-review-as-gate (`feedback_multiagent_worker_discipline.md`, `adversarial-code-review` skill) apply. |
 | **R4** | **Agent-edit safety** — an agent (or GUI-as-agent) commits a CST edit that is syntactically valid but semantically destructive (deletes a referenced node, writes an invalid material), and undo/version-history is the only firewall. | **Med** | **High** | the **bounded sync semantic phase** (parse/resolve/typecheck, D39) gates every agent patch *before* commit — but **commit is semantic-only (D51)**: asset-load/realize/prepare/render run async *after* commit, so a committed head can be a **broken-but-valid CST** (surfaced as `error` phase + diagnostics, never silent corruption), and a caller needing the stronger guarantee uses the opt-in `awaitFullValidation` mode (so the legacy `AI_SECURITY_MODEL.md` "full precommit gating" promise is **superseded** by D51); reference-safe deletion (block/cascade, from `ENTITY_CREATION.md`) at the CST level; CST version history makes every agent action atomically revertable; the `AI_SECURITY_MODEL.md` *threat model* (injection/SSRF/secrets/jail) still carries over. CST diffs make agent actions diff-reviewable (a Model B *advantage*). |

@@ -20,6 +20,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `Animation/`: polished animated showcase scenes rather than basic camera or timing checks
 - `BDPT/`: large BDPT showpieces and transport stress scenes
 - `Caustics/`: visually rich caustic showcases
+- `HyLIoS/`: hyperspectral radiometric skin sweep showcase (`hylios_radiometric_sweep.RISEscene`)
 - `Combined/`: scenes that intentionally exercise several subsystems together
 
   `pavilion_colonnade.RISEscene` is the Phase 3 CSG-neighbour showcase for cross-object

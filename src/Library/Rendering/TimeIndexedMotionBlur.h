@@ -20,9 +20,9 @@
 //  (Animation/TimeIndexedView.h).
 //
 //  WHAT IS TIME-INDEXED.
-//    - Object transforms (plain Object: position / orientation / scale
-//      keyframes), and every object the frame's per-sample hierarchy
-//      re-compose touches (children of moving parents, DL-457/463), with
+//    - Object transforms (exact built-in Object: position / orientation /
+//      scale keyframes), and every exact Object the frame's per-sample
+//      hierarchy re-compose touches (children of moving parents, DL-457/463), with
 //      that re-compose replayed on the clones.  Ray intersection, area
 //      sampling (luminaries), area, bounds, proximity queries and the world
 //      transform accessors all answer at the thread's sample time; a hit
@@ -30,8 +30,8 @@
 //      consumer (IOR stack, luminary pmf lookups, SMS) is unchanged.
 //    - The scene's active camera (any camera keyframe), through
 //      Scene::GetCamera().
-//    - Point, spot, directional and ambient lights (any of their
-//      keyframes): position / target / direction / colour / energy /
+//    - Exact built-in point, spot, directional and ambient lights (any
+//      of their keyframes): position / target / direction / colour / energy /
 //      cone, in NEE, light subpaths and photon emission alike.
 //  Shared and immutable during the pass: geometry, materials, painters,
 //  the TLAS (built from shutter-swept bounds, DL-457), the light-selection
@@ -57,8 +57,8 @@
 //
 //  WHAT KEEPS THE SINGLE-THREADED PATH (logged once per frame, naming the
 //  element): any unverified keyframed element (geometry parameters, painters,
-//  materials, media, CSG composites and their operands, an object whose
-//  shader keeps runtime data), a per-sample hierarchy re-compose no sweep
+//  materials, media, custom object/light subclasses, CSG composites and their
+//  operands, an object whose shader keeps runtime data), a per-sample hierarchy re-compose no sweep
 //  narrowed, and the legacy rasterizers (frozen). DL-531 permits exact
 //  UniformColorPainter keyframes only under the audited shading-only guard.
 //

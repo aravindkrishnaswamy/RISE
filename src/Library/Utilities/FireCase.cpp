@@ -13,6 +13,14 @@
 #include <limits>
 #include <sstream>
 
+#if defined(_MSC_VER)
+#define RISE_FIRECASE_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define RISE_FIRECASE_NOINLINE __attribute__((noinline))
+#else
+#define RISE_FIRECASE_NOINLINE
+#endif
+
 using RISE::RISECBOR64::Value;
 
 namespace
@@ -89,7 +97,7 @@ namespace
 	// r270 floor radiation stays out of line: BuildMethaneV1 is compiled with
 	// fast-math, and inlining new code there would perturb its historical
 	// identity-bearing arithmetic.
-	__attribute__((noinline)) bool DeriveFloorRadiationV1(const RISE::FireCase::AuthoredV1& a,
+	RISE_FIRECASE_NOINLINE bool DeriveFloorRadiationV1(const RISE::FireCase::AuthoredV1& a,
 		RISE::FireCase::DerivedV1& d,std::string& error)
 	{
 		if(!std::isfinite(a.floorEmissivity)||!(a.floorEmissivity>0.0)||a.floorEmissivity>1.0) {
@@ -100,13 +108,13 @@ namespace
 		return true;
 	}
 
-	__attribute__((noinline)) void AppendFloorAuthoredV1(const RISE::FireCase::AuthoredV1& a,
+	RISE_FIRECASE_NOINLINE void AppendFloorAuthoredV1(const RISE::FireCase::AuthoredV1& a,
 		Value::Members& members)
 	{
 		members.push_back({"floor_emissivity",Value::Float(a.floorEmissivity)});
 	}
 
-	__attribute__((noinline)) void AppendFloorDerivedV1(const RISE::FireCase::DerivedV1& d,
+	RISE_FIRECASE_NOINLINE void AppendFloorDerivedV1(const RISE::FireCase::DerivedV1& d,
 		Value::Members& members)
 	{
 		members.push_back({"floor_radiation",Value::MapValue({
@@ -220,14 +228,14 @@ double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
 		derived.flowThroughTimeS : derived.matchedScheduleFlowThroughTimeS;
 }
 
-__attribute__((noinline)) bool RISE::FireCase::InertPlumeSelected()
+RISE_FIRECASE_NOINLINE bool RISE::FireCase::InertPlumeSelected()
 {
 	static const bool selected=[](){const char* value=std::getenv("RISE_FIRE_INERT_PLUME");
 		return value&&std::strcmp(value,"1")==0;}();
 	return selected;
 }
 
-__attribute__((noinline)) double RISE::FireCase::InertPlumeFraction(const std::size_t layer)
+RISE_FIRECASE_NOINLINE double RISE::FireCase::InertPlumeFraction(const std::size_t layer)
 {
 	static const double fraction[InertPlumeLayers]={0.29275044241386805,0.15094146662912586,
 		0.0844006732609355,0.058700586497278794,0.047024621256962995,0.04097938478458258,
@@ -240,7 +248,7 @@ __attribute__((noinline)) double RISE::FireCase::InertPlumeFraction(const std::s
 	return layer<static_cast<std::size_t>(InertPlumeLayers)?fraction[layer]:0.0;
 }
 
-__attribute__((noinline)) double RISE::FireCase::InertPlumeLayerFraction(const std::size_t layer,
+RISE_FIRECASE_NOINLINE double RISE::FireCase::InertPlumeLayerFraction(const std::size_t layer,
 	const double cellWidthM,const double tier8CellWidthM)
 {
 	if(cellWidthM==tier8CellWidthM)return InertPlumeFraction(layer);
@@ -258,7 +266,7 @@ __attribute__((noinline)) double RISE::FireCase::InertPlumeLayerFraction(const s
 namespace
 {
 	// The historical pilot arithmetic, kept out of line so the r271 inert check below cannot perturb its fast-math code.
-	__attribute__((noinline)) bool EvaluatePilotSetpointTemperatureKV1(const RISE::FireCase::DerivedV1& derived,
+	RISE_FIRECASE_NOINLINE bool EvaluatePilotSetpointTemperatureKV1(const RISE::FireCase::DerivedV1& derived,
 	const bool maskCell,const double beginningTimeS,const double endTimeS,
 	double& result,std::string& error)
 {
@@ -287,7 +295,7 @@ namespace
 }
 }
 
-__attribute__((noinline)) double RISE::FireCase::InertPlumeSeedAmplitude()
+RISE_FIRECASE_NOINLINE double RISE::FireCase::InertPlumeSeedAmplitude()
 {
 	static const double amplitude=[](){const char* value=std::getenv("RISE_FIRE_INERT_SEED");if(!value)return 0.0;
 		char* end=nullptr;const double parsed=std::strtod(value,&end);

@@ -4,7 +4,7 @@
 **Goal**: replace RISE's legacy SAH-BSP / octree triangle accelerator with a modern BVH stack, ship the win to production scenes, and leave behind a clean codebase + measurement-backed documentation of every decision.
 **Outcome**: BVH is the only mesh accelerator in the tree.  All in-repo `.risemesh` assets re-baked to v4 with a cached BVH.  Public API + parser swept clean of the legacy `max_polys` / `max_recur` / `use_bsp` knobs.  Plain SAH BVH2 + BVH4 SIMD collapse + float Möller-Trumbore filter is the production configuration; SBVH spatial splits and uint8-quantised BVH4 nodes were measured, neither helped, both excised.
 
-This document supersedes the per-phase retrospective files that were drafted in flight (`BVH_PHASE1_BASELINE.md`, `BVH_PHASE1_PARTIAL_REPORT.md`, `BVH_PHASE2_REPORT.md`, `BVH_PHASE3_REPORT.md`, `BVH_TIER1_REPORT.md`, `BVH_XYZDRAGON_SHOOTOUT.md`, `BVH_CLEANUP_AND_NEXT.md`).  Those were working notes; this is the persistent record.  The original architectural plan is preserved separately in [`BVH_ACCELERATION_PLAN.md`](BVH_ACCELERATION_PLAN.md).
+This document supersedes the per-phase retrospective files that were drafted in flight (`BVH_PHASE1_BASELINE.md`, `BVH_PHASE1_PARTIAL_REPORT.md`, `BVH_PHASE2_REPORT.md`, `BVH_PHASE3_REPORT.md`, `BVH_TIER1_REPORT.md`, `BVH_XYZDRAGON_SHOOTOUT.md`, `BVH_CLEANUP_AND_NEXT.md`).  Those were working notes; this is the persistent record.  The original architectural plan is preserved separately in [`BVH_RETROSPECTIVE.md`](BVH_RETROSPECTIVE.md).
 
 ---
 
@@ -83,7 +83,7 @@ Four follow-on items from the Phase 3 wrap-up, all shipped in one round with ben
 
 ### Tier 1 §1 — SBVH spatial splits
 
-Implemented per [plan §5.3](BVH_ACCELERATION_PLAN.md): per-bin clipped-bbox SAH, ref-duplication budget, axis-aligned per-bin straddler clipping (looser than full Sutherland-Hodgman polygon clipping but conservative-correct).
+Implemented per [plan §5.3](BVH_RETROSPECTIVE.md): per-bin clipped-bbox SAH, ref-duplication budget, axis-aligned per-bin straddler clipping (looser than full Sutherland-Hodgman polygon clipping but conservative-correct).
 
 **Result**: 0% on small dragons, **−15% on the 7.2M xyzdragon**.  The ref-duplication memory cost + the duplicate-traversal overhead together exceeded the SAH-quality benefit.  This finding survived as a "disabled by default" knob through Tier 1 and was the trigger for the Tier B re-measurement (see below).
 
@@ -311,7 +311,7 @@ Cold-load reduction from `.risemesh` v3 cache: **−13% on xyzdragon-class meshe
 - **`tests/SceneEditorMemoryStressTest.cpp`** — interactive-renderer memory regression gate.
 
 ### Reference docs
-- **[`BVH_ACCELERATION_PLAN.md`](BVH_ACCELERATION_PLAN.md)** — original architectural plan.  Some forecasts didn't pan out (notably SBVH and 5× node compression); the retrospective in this document is the corrected record.
+- **[`BVH_RETROSPECTIVE.md`](BVH_RETROSPECTIVE.md)** — original architectural plan.  Some forecasts didn't pan out (notably SBVH and 5× node compression); the retrospective in this document is the corrected record.
 - **`AGENTS.md` → "Compiler Warnings Are Bugs"** — codebase convention established during Tier A.
 - **`docs/skills/performance-work-with-baselines.md`** — measurement protocol used throughout (baseline-before-code, ≥3 runs, 1σ overlap check, correctness invariant via noise floor).
 - **`docs/skills/adversarial-code-review.md`** — 3-reviewer pattern used for Tier A.

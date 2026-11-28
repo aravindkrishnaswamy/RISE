@@ -40,7 +40,7 @@
 //    because the walk updated it on arrival.  Before DL-09 the middle
 //    factor was missing and the stale `n_A` at the exit read stood in for
 //    it -- the same net 1, which is why this file was green then too.
-//    See docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md.
+//    See docs/DEBT_LEDGER.md.
 //
 //    WHAT THIS FILE CATCHES.  Either HALF of that change applied alone:
 //      * the fresh exit read WITHOUT the interior factor (tried and

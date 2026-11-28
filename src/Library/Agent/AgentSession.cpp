@@ -1149,7 +1149,7 @@ namespace RISE
 			//! Forward declaration: AppendDesignDiagnostics_ is DEFINED further
 			//! down this file (alongside ComputeDesignNoteConditionsFromDoc_ and
 			//! ComputeDesignNoteFromDoc_ -- creative-richness P2.b,
-			//! 73-creative-richness-design.md sec 9), but ValidateText (right
+			//! docs/agentic-redesign/50-agentic-surface.md sec 9), but ValidateText (right
 			//! below) needs to call it before that definition appears in file
 			//! order.  Every `namespace { ... }` block at this scope in this
 			//! translation unit reopens the SAME compiler-unique anonymous
@@ -2152,6 +2152,11 @@ namespace RISE
 			//! AgentRasterizerKindIsExplicitlyClassified can tell "blocked
 			//! because we decided to" apart from "blocked because nobody has
 			//! looked at it yet", which is what the coverage test asserts.
+			//! HyLIoS P6b (2026-11): hyperspectral_radiometric_rasterizer, the
+			//! fixed-wavelength raw radiometric rasterizer, is a specialised
+			//! measurement tool (strict preflight refusals, EXR + manifest
+			//! output, checkpoint resume), not a general-purpose integrator, so
+			//! the PT-and-VCM-only directive blocks it like the others.
 			const char* const kAgentBlockedRasterizers_[] = {
 				"bdpt_pel_rasterizer",
 				"bdpt_spectral_rasterizer",
@@ -2161,6 +2166,7 @@ namespace RISE
 				"auto_spectral_rasterizer",
 				"pixelpel_rasterizer",
 				"pixelintegratingspectral_rasterizer",
+				"hyperspectral_radiometric_rasterizer",
 			};
 
 			//! Is `kw` a real rasterizer CHUNK?  Two conditions, both from the
@@ -3677,7 +3683,7 @@ namespace RISE
 				out.push_back( d );
 			}
 
-			// (d) Creative-richness P2.b (73-creative-richness-design.md sec
+			// (d) Creative-richness P2.b (docs/agentic-redesign/50-agentic-surface.md sec
 			// 9): the SAME two design-note conditions the render-result note
 			// computes (AppendDesignDiagnostics_ / ComputeDesignNoteFromDoc_
 			// share ONE conditions scan, ComputeDesignNoteConditionsFromDoc_,
@@ -3686,7 +3692,7 @@ namespace RISE
 			// it calls validate and reads "no errors" (sec 9's qwen
 			// transcript: "validated clean - no errors ... just a design
 			// suggestion").  validate-ONLY: the render-result note path is
-			// untouched (see 73-creative-richness-design.md sec 9's closing
+			// untouched (see docs/agentic-redesign/50-agentic-surface.md sec 9's closing
 			// recommendation -- "keep the render-result note as-is").
 			// candidateDoc is ALREADY parsed above (step (a)), so this is a
 			// second scan of the same Document, not a re-parse.  (Doc 91)
@@ -3730,7 +3736,7 @@ namespace RISE
 				int  Count() const { return static_cast<int>( itemIndices.size() ); }
 			};
 
-			//! Creative-richness P2 / P2.b (73-creative-richness-design.md sec
+			//! Creative-richness P2 / P2.b (docs/agentic-redesign/50-agentic-surface.md sec
 			//! 2 P2, RE-TARGETED by sec 7 to the two MEASURED bare-prompt
 			//! deficits, DIAGNOSTIC-FRAMED by sec 9): the shared, engine-side
 			//! "design note conditions" scan CORE, over an ALREADY-PARSED
@@ -9971,7 +9977,7 @@ namespace RISE
 					// Round-3 review P1 fix named only ggx/ward here on the
 					// claim that pbr_metallic_roughness's `roughness` and
 					// cooktorrance's `facets` are baked ValueKind::Double.
-					// CORRECTION (2026-07-31, 74-creative-richness-arc-log.md
+					// CORRECTION (2026-07-31, docs/agentic-redesign/50-agentic-surface.md
 					// sec 4.3 correction note): that claim is FALSE -- both
 					// are Reference-kind painter slots (since 64ca16bc,
 					// 2026-04-30) and the parser accepts a painter binding.
@@ -10054,7 +10060,7 @@ namespace RISE
 			}
 
 			//! validate's Info-severity sibling of ComputeDesignNoteFromDoc_
-			//! (creative-richness P2.b, 73-creative-richness-design.md sec 9's
+			//! (creative-richness P2.b, docs/agentic-redesign/50-agentic-surface.md sec 9's
 			//! closing recommendation): consumes the SAME
 			//! ComputeDesignNoteConditionsFromDoc_ scan -- never re-derives the
 			//! >=3 / >=4 threshold logic -- and appends ZERO, ONE, or TWO
@@ -15437,7 +15443,7 @@ namespace RISE
 			// DisplacedSlab/SweepRail/BlendedVessel/SdfColumn, they are
 			// NOT routed through BuildGeometryScaffoldGraph below --
 			// InsertGeometryScaffold calls BuildBlendedChain/BuildVolumeBank
-			// directly.  See docs/agentic-redesign/75-expressive-surface-arc.md
+			// directly.  See docs/agentic-redesign/50-agentic-surface.md
 			// slice E3 for the full design; the census that motivated it
 			// (cheapest-primitive parts, assembly-by-overlap instead of
 			// smin, uniform-density atmosphere that cannot swirl).
@@ -15641,7 +15647,7 @@ namespace RISE
 			//! density comes from a domain-warped 3D noise painter (so the
 			//! volume genuinely SWIRLS, unlike a uniform-density sphere --
 			//! see the media-surface finding in
-			//! docs/agentic-redesign/75-expressive-surface-arc.md slice E3:
+			//! docs/agentic-redesign/50-agentic-surface.md slice E3:
 			//! RISE DOES support spatially-modulated density via ANY painter
 			//! bound to painter_heterogeneous_medium's `density_painter`
 			//! slot (ChunkParserRegistry.cpp's PainterHeterogeneousMedium
@@ -26228,7 +26234,7 @@ namespace RISE
 			// doRenderWork's production body, instead of re-dereferencing
 			// `rast` from the tail (see the `readBack` site below).
 			int productionSampleReadBack = -1;
-			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2 /
+			// Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2 /
 			// sec 7 re-target; RELOCATED post-review from a post-park
 			// ReadDocumentSnapshot() re-lock -- see ComputeDesignNoteFromDoc_'s
 			// doc and this closure's own tail comments for the full
@@ -27534,7 +27540,7 @@ namespace RISE
 					// the user's own full-scene production renders, keeps the
 					// wrong integrator and the confidently-wrong reason.
 					// (Missing caustic energy with no diagnostic pointing at
-					// the cause; per docs/UNIFIED_INTEGRATOR_DECISION.md, VCM
+					// the cause; per docs/RENDERING_INTEGRATORS.md, VCM
 					// is the only integrator that reaches some of it.)
 					//
 					// Forcing the resolution HERE -- full object set still
@@ -29469,7 +29475,7 @@ namespace RISE
 				res.message += zoomNote;
 			}
 
-			// Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
+			// Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2,
 			// RE-TARGETED by sec 7): attach the observed-state design note
 			// on a successful BEAUTY render only -- "production" or
 			// "draft" `renderMode`, deliberately never "objectmap" or a
@@ -33098,7 +33104,7 @@ namespace RISE
 
 		//======================================================================
 		// ARC 81 (2026-08-12) -- `light_scene`, A CLEAN-ROOM LIGHTING PASS.
-		// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+		// Design: docs/agentic-redesign/83-staged-construction-plan.md.
 		//
 		// Modelled directly on arc 79's `build_element`: the same host-mediated
 		// pattern, the same session credentials and transport (mTextCompleter),
@@ -41808,7 +41814,7 @@ namespace RISE
 						"surface material instead";
 				if( kind == "subsurfacescattering_material" || kind == "randomwalk_sss_material" ||
 				    kind == "donner_jensen_skin_bssrdf_material" || kind == "biospec_skin_material" ||
-				    kind == "generic_human_tissue_material" )
+				    kind == "hylios_skin_material" || kind == "generic_human_tissue_material" )
 					return "it is a BSSRDF / subsurface material (`" + kind + "`), whose volumetric random "
 						"walk has no hemispherical albedo for the sheen's energy subtraction to read";
 				if( kind == "coated_material" || kind == "composite_material" ||

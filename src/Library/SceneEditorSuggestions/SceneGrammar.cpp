@@ -27,7 +27,7 @@ namespace RISE
 
 			for( std::vector<ChunkParserEntry>::const_iterator it = mParsers.begin(); it != mParsers.end(); ++it ) {
 				const ChunkDescriptor& desc = it->parser->Describe();
-				// Always register the entry's keyword (how AsciiSceneParser
+				// Always register the entry's keyword (how Cst::DeriveToJob
 				// actually dispatches) so aliases like mis_pathtracing_shaderop
 				// — which share a parser class with pathtracing_shaderop and
 				// therefore expose the same Describe().keyword — still

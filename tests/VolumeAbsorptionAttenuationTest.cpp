@@ -1217,9 +1217,9 @@ static double Expected( double sa )
 // tau_obs ~ 2 * sigma_a * d (twice the authored optical depth).
 static double ObservedTau( double measured )
 {
-	// Build is -ffast-math (no infinities); clamp a non-positive measurement
-	// to a small floor so -ln() yields a large finite "very absorbed" tau for
-	// the diagnostic print rather than tripping UB.
+	// Clamp a non-positive measurement to a small floor so -ln() yields
+	// a large finite "very absorbed" tau for the diagnostic print rather
+	// than +inf.
 	const double m = std::fmax( measured, 1e-12 );
 	return -std::log( m );
 }

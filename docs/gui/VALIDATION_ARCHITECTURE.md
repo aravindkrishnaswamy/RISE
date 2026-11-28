@@ -15,7 +15,7 @@ This doc supersedes the original capturing `ValidationJob` sketch in [MCP_TOOL_S
 
 This doc honors the [GUI_ROADMAP.md](../GUI_ROADMAP.md) §1 principles — **#1 text is the source of truth**, **#2 maximize shared C++** (the validator is library code), **#6 everything routes through one mutation path** (validation never becomes a second write path) — and the §16 confirmed decisions: the adopted **`ParameterSemantics` structure on `ParameterDescriptor`** (separate fields, not one overloaded enum), the **`src/Library/Agent/`** subsystem name, and "**avoid the bare `MCP` token**" in type/dir names.
 
-> **Historical basis note.** Pre-cutover `file:line` citations in the body below were derived against the June 2026 baseline ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md)); see the 2026-07-02 erratum and Status banner above for what shipped since. `.claude/worktrees/` was ignored.
+> **Historical basis note.** Pre-cutover `file:line` citations in the body below were derived against the June 2026 baseline ([../GUI_ROADMAP.md](../GUI_ROADMAP.md)); see the 2026-07-02 erratum and Status banner above for what shipped since. `.claude/worktrees/` was ignored.
 
 ---
 
@@ -257,7 +257,7 @@ The strongest counterexample to "enum is a constraint": `pathguiding_sampling_ty
 
 > The schema is generated from the descriptor **plus the adopted `ParameterSemantics` structure** (separate fields: pipe `color`/`scalar`/`either`, cardinality, integer-ness, closed-vs-open enum, units, colour space, spatial-vs-spectral, `requireSingle`), and carries a **two-level severity**: a constraint maps to a schema **error** *only* when the real, tolerant parser also rejects it; every richer constraint the parser tolerates is a schema **warning** (§6.5). It is held honest by a **conformance test** (§5.4) that asserts the schema's **error** verdict neither over- nor under-accepts versus the real parser on a corpus — the *warnings* are deliberately permitted to be stricter than the parser and are **not** conformance failures. The schema is a fast **first-pass filter** for the LLM and the editor; the **`validate` tool (§3/§4) remains the authority**, because only it runs the parser's full accept/reject (including the runtime-manager checks of §1.4 that no static schema can express).
 
-The richer constraints live in the **`ParameterSemantics` structure on `ParameterDescriptor`** adopted in [GUI_ROADMAP.md](../GUI_ROADMAP.md) §16 — **separate fields** (pipe `color`/`scalar`/`either`, cardinality, units, colour space, spatial-vs-spectral, `requireSingle`), **not** one overloaded enum — owned by [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md). This doc consumes that structure; it does not own its shape. With it, the schema can finally type `ior`/`film_ior` (scalar pipe) differently from a true color slot — the very distinction the descriptor lacks today ([CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) §4, §7).
+The richer constraints live in the **`ParameterSemantics` structure on `ParameterDescriptor`** adopted in [GUI_ROADMAP.md](../GUI_ROADMAP.md) §16 — **separate fields** (pipe `color`/`scalar`/`either`, cardinality, units, colour space, spatial-vs-spectral, `requireSingle`), **not** one overloaded enum — owned by [MATERIAL_EDITOR.md](MATERIAL_EDITOR.md). This doc consumes that structure; it does not own its shape. With it, the schema can finally type `ior`/`film_ior` (scalar pipe) differently from a true color slot — the very distinction the descriptor lacks today ([../GUI_ROADMAP.md](../GUI_ROADMAP.md) §4, §7).
 
 ### 5.4 The conformance test (definition)
 
@@ -354,7 +354,7 @@ This is the **single, authoritative** severity definition; §5.3, §5.4, and §6
 | Editor gutter rendering (squiggle draw, hover/quick-fix UI) | **Platform** | macOS SwiftUI editor / Windows Qt editor; Android Compose |
 | Debounce + buffer→byte-offset mapping plumbing | **Platform-thin** | calls the one shared `SceneValidator` (Tier-1) |
 
-The entire validation *brain* is shared C++; platforms own only how a diagnostic is drawn. Per [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) cross-platform matrix, this is the same thin-shell pattern the property panel and picking already follow.
+The entire validation *brain* is shared C++; platforms own only how a diagnostic is drawn. Per [../GUI_ROADMAP.md](../GUI_ROADMAP.md) cross-platform matrix, this is the same thin-shell pattern the property panel and picking already follow.
 
 **Source-file checklist reminder.** Any new `.cpp`/`.h` under `src/Library/` here (e.g. `SceneValidator.{h,cpp}`, `SceneIR.h`) must be added to **all five** build projects per [CLAUDE.md](../../CLAUDE.md) "Source-file add/remove" — none auto-discovers files.
 
@@ -396,7 +396,7 @@ The entire validation *brain* is shared C++; platforms own only how a diagnostic
 ## 10. File-link index
 
 - Umbrella: [GUI_ROADMAP.md](../GUI_ROADMAP.md) (§1 principles, §9 LLM, §15 acceptance, §16 confirmed decisions incl. `pipe` field + `src/Library/Agent/` + Android Tier A)
-- Ground truth: [CURRENT_STATE_AUDIT.md](CURRENT_STATE_AUDIT.md) (§4 pipe-not-in-descriptor still stands; its §12 "no side-effect-free parse / `Job` retains no text" is superseded post-CST-cutover — see that doc's erratum)
+- Ground truth: [../GUI_ROADMAP.md](../GUI_ROADMAP.md) (§4 pipe-not-in-descriptor still stands; its §12 "no side-effect-free parse / `Job` retains no text" is superseded post-CST-cutover — see that doc's erratum)
 - The `validate` consumer (being corrected separately; this doc supersedes its §6 mechanism + §5.3 "no drift" claim): [MCP_TOOL_SURFACE.md](MCP_TOOL_SURFACE.md)
 - Shared `ProjectRootJail` + command policy reused by the Tier-2 sandbox (§3.5): [AI_SECURITY_MODEL.md](AI_SECURITY_MODEL.md) (§4.1 root-jail, §5 destructive-command policy that imports this doc's §2 barrier table, §12 jail tests)
 - Agent loop / scopes / diff-gate: [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md) (§7 guardrails)

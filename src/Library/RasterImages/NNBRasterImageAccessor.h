@@ -109,9 +109,8 @@ namespace RISE
 				// Repeat/MirroredRepeat becomes NaN too, and under
 				// ClampToEdge it previously saturated to an edge texel —
 				// returning the zero pel there is a deliberate change.
-				// Bit tests because plain FP comparisons are foldable
-				// under -ffast-math (rationale at
-				// BilinRasterImageAccessor::GetPel / FiniteMath.h).
+				// Uses FiniteMath.h bit tests for uniformity and -Ofast
+				// resistance (see FiniteMath.h).
 				if( !IsFiniteDouble( x ) || !IsFiniteDouble( y ) ) {
 					p = C();
 					return;

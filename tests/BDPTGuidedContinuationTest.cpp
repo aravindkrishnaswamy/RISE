@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BDPTGuidedContinuationTest.cpp - Generator-level red-proof for
-//    DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md) on BDPT's eye and
+//    DL-67 (docs/DEBT_LEDGER.md) on BDPT's eye and
 //    light subpath generators: path guiding must not move the
 //    expectation of the continuation weight at a MULTI-LOBE,
 //    multi-emit SPF.

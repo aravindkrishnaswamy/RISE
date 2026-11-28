@@ -447,8 +447,8 @@ namespace RISE
 			reaction->tree().setValueOn(openvdb::Coord(0,0,0),solver.reactionWPerM3);
 		}
 		if( includeChem ) {
-			// Fire solver version 4 (docs/SIMULATION_M8_RESULTS.md section 15; the r272 look,
-			// docs/FIRE_SMOKE_SOOT_R272.md): the chemistry-light channels are still a
+			// Fire solver version 4 (docs/FIRE_SMOKE_STATUS.md; the r272 look, its "r272
+			// soot" entry): the chemistry-light channels are still a
 			// SYNTHETIC_NON_PREDICTIVE preview, but they follow the local heat release only, at a
 			// fixed absolute scale: chem_CH = 3e-6 W/m3 of band power per W/m3 of reaction, C2 and
 			// CO2 at 50/120 and 8/120 of it (the r272 chem_from_reaction fractions).  The old

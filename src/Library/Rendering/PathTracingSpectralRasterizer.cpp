@@ -26,6 +26,8 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Interfaces/IScene.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Managers/ObjectManager.h"
 #include "ProgressiveFilm.h"
 
 using namespace RISE;
@@ -108,6 +110,31 @@ void PathTracingSpectralRasterizer::PreRenderSetup(
 	}
 	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
 	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
+}
+
+bool PathTracingSpectralRasterizer::ValidateSceneForRasterizer( const IScene& pScene ) const
+{
+	if( const ObjectManager* pObjMgr = dynamic_cast<const ObjectManager*>( pScene.GetObjects() ) ) {
+		std::string offender;
+		if( !pObjMgr->SceneCoversHyLIoSWavelengths( lambda_begin, lambda_end, &offender ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"PathTracingSpectralRasterizer:: Refusing scene: HyLIoS material on object '%s' "
+				"does not cover the requested spectral range [%.2f, %.2f] nm.",
+				offender.c_str(), lambda_begin, lambda_end );
+			return false;
+		}
+		if( pObjMgr->SceneHasSmoothNonlocalHyLIoS( &offender ) &&
+			pScene.GetLights() && !pScene.GetLights()->getLights().empty() )
+		{
+			GlobalLog()->PrintEx( eLog_Error,
+				"PathTracingSpectralRasterizer:: Refusing scene: smooth (boundary_roughness == 0) nonlocal "
+				"HyLIoS material on object '%s' cannot perform boundary-event NEE against delta lights "
+				"(use boundary_roughness > 0, area/environment lights, or baked_local mode).",
+				offender.c_str() );
+			return false;
+		}
+	}
+	return true;
 }
 
 unsigned int PathTracingSpectralRasterizer::GetProgressiveTotalSPP() const
@@ -294,9 +321,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		XYZPel colAccrued( 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
-		Scalar wMean = 0;
-		Scalar wM2 = 0;
-		unsigned int wN = 0;
+		BeautyMoments moments;
 
 		uint32_t sampleIndex = 0;
 		bool converged = false;
@@ -306,9 +331,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			colAccrued = px.colorSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
-			wMean = px.wMean;
-			wM2 = px.wM2;
-			wN = px.wN;
+			moments = px.beautyMoments;
 			sampleIndex = px.sampleIndex;
 		}
 
@@ -392,38 +415,19 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 					alphas += sampleAlpha * weight;
 				}
 
-				// Welford update gated on `adaptive` only (see
+				// Compensated moment update gated on `adaptive` only (see
 				// BDPTPelRasterizer for the multi-pass selection-bias
 				// rationale).  XYZ.Y is the CIE photometric luminance.
 				if( adaptive ) {
 					const Scalar lum = sampleXYZ.Y;
-					wN++;
-					const Scalar delta = lum - wMean;
-					wMean += delta / Scalar(wN);
-					const Scalar delta2 = lum - wMean;
-					wM2 += delta * delta2;
+					moments.Add( lum );
 				}
 
 				rc.pSampler = 0;
 			}
 
-			if( adaptive && wN >= 32 )
-			{
-				const Scalar variance = wM2 / Scalar(wN - 1);
-				const Scalar stdError = sqrt( variance / Scalar(wN) );
-				const Scalar meanAbs = fabs( wMean );
-
-				if( meanAbs > NEARZERO ) {
-					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-					const Scalar threshold = adaptiveConfig.maxSamples > 0
-						? adaptiveConfig.threshold
-						: 0.01;
-					if( stdError / meanAbs < threshold * confidence ) {
-						converged = true;
-					}
-				} else if( wM2 < NEARZERO && wN >= 64 ) {
-					converged = true;
-				}
+			if( adaptive && moments.IsConverged( (adaptiveConfig.maxSamples > 0 ? adaptiveConfig.threshold : 0.01), NEARZERO ) ) {
+				converged = true;
 			}
 		}
 
@@ -432,9 +436,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			px.colorSum = colAccrued;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
-			px.wMean = wMean;
-			px.wM2 = wM2;
-			px.wN = wN;
+			px.beautyMoments = moments;
 			px.sampleIndex = sampleIndex;
 			px.converged = converged;
 		}

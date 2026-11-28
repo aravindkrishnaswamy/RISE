@@ -730,7 +730,7 @@ DisplacedGeometry::DisplacedGeometry(
 				// vertex count) is stable across painter notifications
 				// because m_detail is a constructor argument — only
 				// vertex positions and normals change.  See
-				// docs/BVH_ACCELERATION_PLAN.md §4.6 for the full design.
+				// docs/BVH_RETROSPECTIVE.md §4.6 for the full design.
 				//
 				// DEFERRED-REALIZATION interaction: if the geometry has not
 				// been realized yet (painter changed during parse / before

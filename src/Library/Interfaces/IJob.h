@@ -54,6 +54,8 @@ namespace RISE
 	// pulling IMedium.h's full dependency chain into this header.
 	class IMedium;
 	class IGeometry;
+	struct HyLIoSSkinMaterialConfig;
+	struct HyperspectralRadiometricConfig;
 
 	//! One entry in a parallel-decode batch passed to
 	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
@@ -94,7 +96,7 @@ namespace RISE
 		//! WARNING!  Call this before adding objects, otherwise you will LOSE them!
 		//! \return TRUE if successful, FALSE otherwise
 		virtual bool SetPrimaryAcceleration(
-			const bool bUseBSPtree,									///< [in] Use BSP trees for spatial partitioning
+			const bool bUseBSPtree,									///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
@@ -3097,7 +3099,7 @@ namespace RISE
 		// compiled against the pre-Phase-3 header have no slot here.
 		// RISE's policy is "in-tree IJob impls only; out-of-tree
 		// callers must rebuild against the matching header."  See
-		// docs/skills/abi-preserving-api-evolution.md for the full
+		// AGENTS.md ("Interface ABI, hot-struct layout, and TLS invariants") for the full
 		// trade-off.  Out-of-tree IJob *callers* that don't dispatch
 		// through these methods are unaffected.
 		virtual bool        SetActiveRasterizer( const char* /*name*/ ) { return false; }
@@ -5094,6 +5096,19 @@ namespace RISE
 		{
 			return true;
 		}
+		//! Physical delta-source construction. See RISE_API.h for units and zero-outside policy.
+		virtual bool AddPhysicalPointOmniLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3], const bool) { return false; }
+		virtual bool AddPhysicalPointSpotLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3], const double, const double, const double[3], const bool) { return false; }
+		virtual bool AddPhysicalDirectionalLight(const char*, const unsigned int, const double*, const double*, const char*, const double, const double[3]) { return false; }
+
+		//! Adds a HyLIoS hyperspectral skin material (`hylios_skin_material`).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool AddHyLIoSSkinMaterial(const char*, const HyLIoSSkinMaterialConfig&) { return false; }
+
+		//! Installs a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer
+		//! (`hyperspectral_radiometric_rasterizer`).
+		//! NB: appended at the IJob tail (append-only ABI convention).
+		virtual bool SetHyperspectralRadiometricRasterizer(const HyperspectralRadiometricConfig&) { return false; }
 
 	};
 

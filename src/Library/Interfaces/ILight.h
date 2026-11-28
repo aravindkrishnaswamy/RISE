@@ -32,8 +32,8 @@ namespace RISE
 	class IORStack;
 	class IRayCaster;
 
-	//! This is a 'hacky' light that are not physically based, such as point lights
-	//! spot lights or directional lights
+	//! Non-mesh light sources, including point, spot, directional and legacy ambient lights.
+	//! Point/spot/directional sources support RGB authoring or explicit physical spectra.
 	class ILight :
 		public virtual IReference,
 		public virtual IKeyframable
@@ -80,8 +80,8 @@ namespace RISE
 		//! the authored RGB exactly.
 		//!
 		//! Default: uplift `emittedRadiance(vLightOut)` per call.  In-tree
-		//! lights override with a spectrum cached at construction (and
-		//! rebuilt on every colour mutation) so no LUT lookup happens on
+		//! lights override with a cached RGB uplift or an immutable physical SPD
+		//! (docs/PHYSICAL_LIGHT_SPECTRA.md), so no per-query RGB LUT lookup happens on
 		//! the hot path.  Declared out-of-line (defined in PointLight.cpp)
 		//! to keep the Jakob-Hanika LUT header out of every translation
 		//! unit that includes ILight.h.
@@ -112,7 +112,10 @@ namespace RISE
 		//! through `LightIntrospection`.  Default impls return
 		//! sentinel values (white / unit / zero) so subclasses that
 		//! haven't opted in yet still link.  Concrete light types
-		//! override to return their stored color / energy fields.
+		//! override to return their stored color / energy fields. Physical-SPD
+        //! lights return the current scale-applied finite visible preview as
+        //! emissionColor; it is bookkeeping, not an RGB reconstruction of SPD.
+        //! emissionEnergy remains the separately authored dimensionless scale.
 		virtual RISEPel emissionColor() const { return RISEPel( 1, 1, 1 ); }
 		virtual Scalar  emissionEnergy() const { return Scalar( 1 ); }
 
@@ -258,8 +261,9 @@ namespace RISE
 		//! the reference D65-shaped illuminant spectrum, not a flat
 		//! scalar -- concrete lights (`PointLight` / `SpotLight` /
 		//! `DirectionalLight` / `AmbientLight`) cache an
-		//! `RGBIlluminantSpectrum` built from their colour, rebuilt on
-		//! every colour write, and evaluate it at `nm` here.  A flat
+		//! `RGBIlluminantSpectrum` for RGB authoring, rebuilt on every colour
+		//! write. Point/spot/directional lights can instead evaluate an explicitly
+		//! authored physical SPD at `nm`. A flat
 		//! scalar reused at every wavelength would resolve to the
 		//! flat-spectrum chromaticity (1.20, 0.95, 0.91) on this film
 		//! instead of round-tripping to the authored RGB colour; the

@@ -286,7 +286,7 @@ normal should use the GEOMETRIC normal, not the shading normal."
 **Audit method**: spawned a sub-agent (general-purpose) with a
 specific brief: walk every `vNormal` consumer in RISE, decide per
 call site whether geometric or shading was correct, vet against
-PBRT/Mitsuba conventions.  Output: `docs/NORMAL_USAGE_AUDIT.md`.
+PBRT/Mitsuba conventions.  Output: `docs/ARCHITECTURE.md`.
 
 This is an important variant: when the audit scope is too broad
 for an inline pass, **delegate to a subagent with a specific

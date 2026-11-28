@@ -10,7 +10,7 @@
 //  verbatim (structural sharing).  This is the guarantee that lets "save =
 //  SerializeCst(head)" replace the legacy SaveEngine's verbatim-except-the-
 //  value byte-splice without regressing round-trip fidelity (G5 in
-//  docs/agentic-redesign/62-model-b-p5-save-as-cst-plan.md).
+//  docs/agentic-redesign/10-scene-language-and-cst.md).
 //
 //  The ONE intentional normalization (F-P5.3): the edited value itself is
 //  re-tokenized SINGLE-SPACED (WithParamValue, Cst.cpp), so a multi-token value

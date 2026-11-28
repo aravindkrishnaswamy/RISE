@@ -42,6 +42,7 @@
 #include "../Materials/LambertianLuminaireMaterial.h"
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Materials/BioSpecSkinMaterial.h"
+#include "../Materials/HyLIoS/HyLIoSSkinMaterial.h"
 #include "../Materials/SubSurfaceScatteringMaterial.h"
 #include "../Materials/RandomWalkSSSMaterial.h"
 #include "../Materials/CompositeMaterial.h"
@@ -206,6 +207,7 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	if( dynamic_cast<const LambertianLuminaireMaterial*>( &material ) )                 return String( "Lambertian Luminaire (emissive)" );
 	if( dynamic_cast<const PhongLuminaireMaterial*>( &material ) )                      return String( "Phong Luminaire (emissive)" );
 	if( dynamic_cast<const BioSpecSkinMaterial*>( &material ) )                         return String( "BioSpec Skin" );
+	if( dynamic_cast<const HyLIoSSkinMaterial*>( &material ) )                          return String( "HyLIoS Skin" );
 	if( dynamic_cast<const SubSurfaceScatteringMaterial*>( &material ) )                return String( "SSS (Diffusion Profile)" );
 	if( dynamic_cast<const RandomWalkSSSMaterial*>( &material ) )                       return String( "SSS (Random Walk)" );
 	if( dynamic_cast<const CompositeMaterial*>( &material ) )                           return String( "Composite (layered)" );
@@ -771,6 +773,21 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			rows.push_back( MakeReadOnlyRow( "passthrough", pwn.size() > 1 ? pwn : String( "(inline scalar)" ),
 				"Optional pass-through weight scalar painter (acts as alpha transparency 1 - w_clear)." ) );
 		}
+	}
+	else if( const HyLIoSSkinMaterial* hylios = dynamic_cast<const HyLIoSSkinMaterial*>( &material ) ) {
+		const HyLIoSSkinMaterialSummary& s = hylios->GetSummary();
+		rows.push_back( MakeReadOnlyRow( "transport_mode", String( s.transportMode.c_str() ),
+			"HyLIoS transport mode (baked_local / nonlocal / diagnostic)." ) );
+		rows.push_back( MakeReadOnlyRow( "boundary_mode", String( s.boundaryMode.c_str() ),
+			"HyLIoS outer surface boundary model." ) );
+		rows.push_back( MakeReadOnlyRow( "preset", String( s.preset.c_str() ),
+			"HyLIoS skin specimen preset." ) );
+		char bandBuf[96];
+		std::snprintf( bandBuf, sizeof( bandBuf ), "%.1f .. %.1f nm", s.coveredFirstNm, s.coveredLastNm );
+		rows.push_back( MakeReadOnlyRow( "covered_band", String( bandBuf ),
+			"Wavelength band covered by the loaded HyLIoS response asset." ) );
+		rows.push_back( MakeReadOnlyRow( "semantic_sha256", String( s.semanticSHA256.c_str() ),
+			"Independently verified semantic identity hash of the HyLIoS asset." ) );
 	}
 
 	// Read-only volumetric / SSS indicators — useful diagnostic info

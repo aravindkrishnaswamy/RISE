@@ -20,6 +20,10 @@
 #include <memory>
 #include <vector>
 
+#pragma push_macro("signals")
+#pragma push_macro("slots")
+#undef signals
+#undef slots
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
 #include "Interfaces/IRasterizer.h"
@@ -32,6 +36,8 @@
 #include "Agent/AgentRpc.h"
 #include "Agent/AgentChatCodecs.h"    // Arc 77 Phase 2 GUI wiring: MakeChatImageGenerator (imagine_scene)
 #include "Agent/ChatHttpTransport.h"  // Arc 77 Phase 2 GUI wiring: CreateSystemChatHttpTransport
+#pragma pop_macro("slots")
+#pragma pop_macro("signals")
 
 using namespace RISE;
 

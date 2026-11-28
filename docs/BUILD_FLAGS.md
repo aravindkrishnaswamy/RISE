@@ -321,7 +321,7 @@ even with the make flags. So the app's fire table package digest differs from th
 The owner chose option (b) of §7. Everything was first done in a private copy of `cc071c604`
 (`/Volumes/SSD/claude-tmp/strictpin-scratch/RISE`, its own git metadata so the build identity works; deleted afterwards, logs and bakes kept in that folder), then applied to
 the real checkout with one `make clean` and a thin rebuild. Physical consequences and the re-pinned values are in
-`docs/SIMULATION_M8_RESULTS.md` §15.
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md) ("Fire solver version 4").
 
 **The strict set.** The seven sources of §7 (`FireOptics`, `FireSimulationRecords`, `FireProductionTables`,
 `FireSequence`, `FireSequenceCache`, `FireParameterSchema`, `FireProductionComputeMac.mm`) now compile with
@@ -377,7 +377,7 @@ non-fire source (colour, spectral, interpolation and math helpers included) move
 of the "different optimisation of unrelated code" check, so `-funroll-loops` off was not run separately.
 
 **Real checkout** (`make clean`, then thin `all tests build-tool/rise_sim build-tool/simulation_cache_import`: warning-free):
-fire tier 19 of 19 after the strict re-pin, and 19 of 19 again after the chemistry-light change of §15 (which moved no
+fire tier 19 of 19 after the strict re-pin, and 19 of 19 again after the chemistry-light change (FIRE_SMOKE_STATUS.md, which moved no
 pinned value).
 
 **Xcode against make** (real checkout; derived data and per-configuration `DSTROOT` under the scratch folder):
@@ -400,6 +400,7 @@ flags (a Debug-build memory difference, not investigated).
 | 42 simulation, fire solver, fire production and OSL sources (lists in §6) | `-fno-fast-math -ffp-contract=off` | same |
 | `FireOptics`, `FireSimulationRecords`, `FireProductionTables`, `FireSequence`, `FireSequenceCache`, `FireParameterSchema` (.cpp), `FireProductionComputeMac.mm` (+ `-fobjc-arc`) | `-fno-fast-math -ffp-contract=off` | same |
 | `tools/fire_simulator.cpp`, `tests/FireOpticsPresetTest.cpp` | `-fno-fast-math -ffp-contract=off` | (not in the project) |
+| HyLIoS and radiometric sources (from the HyLIoS merge, after this document): `HyLIoSParticleGeometry`, `HyLIoSParticleOverlap`, `HyLIoSComplexLayout`, `HyLIoSSurfaceBoundary`, `HyLIoSLocalBake`, `HyLIoSSkinMaterial`, `HyLIoSReciprocalBoundary`, `HyLIoSSpatialGeometry`, `HyperspectralRadiometricRasterizer`, `BeautyMoments` | `-fno-fast-math -ffp-contract=off` (own rules; test copies in `TEST_SAFE_FP32_OBJS`) | same (checked when merged into `simulation-liquid`, 2026-11-27) |
 | `FireCase.cpp` | `-ffast-math ... -funroll-loops`, no LTO | `-O3 -ffast-math -fno-finite-math-only -funroll-loops -ffp-contract=fast -fno-lto` |
 | everything else | `-O3 -ffast-math -fno-finite-math-only -funroll-loops`, **thin LTO by default** (`LTO=full|off`) | `-O3` (`-O0` in Development) `-ffast-math -fno-finite-math-only`, thin LTO in Deployment, none in Development, full in Opto |
 

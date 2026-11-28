@@ -1,4 +1,4 @@
-// Simulation M3b: see SimulatedMeshSource.h and docs/SIMULATION_M3B_RESULTS.md.
+// Simulation M3b: see SimulatedMeshSource.h and docs/SIMULATION_SOLVER_CONTRACT.md.
 #include "pch.h"
 #include "SimulatedMeshSource.h"
 

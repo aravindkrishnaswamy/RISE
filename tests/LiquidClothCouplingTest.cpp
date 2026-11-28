@@ -1,5 +1,5 @@
 // liquid.mac + cloth.shell: sheets coupled implicitly (simulation M7e,
-// docs/SIMULATION_M7E_RESULTS.md section 10; preview).  Fast checks A-I run by
+// docs/SIMULATION_SOLVER_CONTRACT.md section 10; preview).  Fast checks A-I run by
 // default; --probe (the flap of section 4), --plate, --membrane (mode static |
 // freq | model), --copy and --free reproduce the tables of the results.
 #include "../src/Library/Simulation/Liquid/LiquidSolver.h"
@@ -2502,7 +2502,7 @@ void Cup()
 }
 
 // N (m7l): thin layers on a held curved sheet and on a pinned sagging one, without the volume
-// correction (docs/SIMULATION_M7L_RESULTS.md section 1): the held bowl's 1.3-cell rim sloshing
+// correction (docs/SIMULATION_SOLVER_CONTRACT.md section 1): the held bowl's 1.3-cell rim sloshing
 // (u0 0.2 m/s; m7k.1: -24% in 1 s, -44% in 2 s) and the bag's 2.4 cells (m7k.1: -18% in 1 s, -41% in 2 s) keep
 // their sharp volume, and no liquid reaches the dry side below the sheet beyond the cells beside it.
 void ThinLayers()

@@ -521,7 +521,7 @@ double PendulumError(double h)
 
 struct CaseSpec { const char* id; const char* description; double tolerance; };
 // Tolerances: about twice the error observed at the default substep (30 Hz x
-// 8 = 1/240 s), rounded up (docs/SIMULATION_M6_RESULTS.md); a coarser
+// 8 = 1/240 s), rounded up (docs/SIMULATION_SOLVER_CONTRACT.md); a coarser
 // substep can fail them and then publishes preview.
 const CaseSpec Cases[] = {
 	{"symmetric-top", "torque-free symmetric top, 5 s: max |R - R_exact|_F against the closed form", 7e-4},

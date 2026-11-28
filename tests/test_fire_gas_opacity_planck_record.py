@@ -22,7 +22,7 @@ DATA = REPO / "docs/data/gas_opacity"
 sys.path.insert(0, str(TOOLS))
 
 from generate_fire_gas_opacity_planck_record import (  # noqa: E402
-    INTERPOLATION_ERROR, PRUNING_ERROR, generate, payload,
+    INTERPOLATION_ERROR, PRUNING_ERROR, _matmul, generate, payload,
 )
 from fetch_verify_hitemp_planck_inputs import (  # noqa: E402
     compile_tool, stream_hitemp_to_reducer,
@@ -30,6 +30,13 @@ from fetch_verify_hitemp_planck_inputs import (  # noqa: E402
 
 
 class FireGasOpacityPlanckRecordTest(unittest.TestCase):
+    def test_python_sum_order_preserves_binary64_matrix_product(self) -> None:
+        # This pins the published transform's ordered binary64 cancellation,
+        # not the differently compensated result from newer Python float sum.
+        self.assertEqual([[0.0]], _matmul([[1e16, 1.0, -1e16]], [[1.0], [1.0], [1.0]]),
+                         "PYTHON_SUM_ORDER: matrix product must preserve sequential reduction")
+        print("PASS: PYTHON_SUM_ORDER preserves sequential binary64 matrix product")
+
     def test_frozen_record_is_reproducible_and_has_no_line_shape_axis(self) -> None:
         encoded, include = generate(DATA / "hitemp_sources_v1.json")
         self.assertEqual(

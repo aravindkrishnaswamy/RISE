@@ -145,7 +145,7 @@ Phase-2 entry conditions — in particular gate 9b, whose result §10.2's first
 condition consumes directly.
 **Date:** 2026-09-02.
 **Nature:** decision document + phased plan, in the mold of
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey →
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (survey →
 scored candidates against evidence → recommendation),
 [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) (model survey → geometry survey →
 phased plan with exit gates), and
@@ -3076,7 +3076,7 @@ author's behalf (§9.7) — and it is why §9.3's preset table has two columns.
 
 ### 9.9 Phase-1 exit gates
 
-Gated in the [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) /
+Gated in the [SMS.md](SMS.md) /
 [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) style — build gate, baseline gate,
 validation gate — with the
 [implementation-review-loop](skills/implementation-review-loop.md) run to zero
@@ -3149,7 +3149,7 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
      changed the GGX substrate's own diffuse/specular composition;
      config 17 now reads 0.7345 at θ = 80 and is bounded `rho <= 1.05` at
      every angle, no longer over unity — see
-     docs/DL37_GGX_DIFFUSE_TRANSMISSION.md. The over-unity number is kept
+     docs/DEBT_LEDGER.md. The over-unity number is kept
      here as the historical basis for this round-5 gate design; the
      `ρ_fabric(v) = E(α, cos v) + ρ_substrate(v)·(1 − E(α, cos v))`
      closed-form-against-measured-substrate mechanism itself is
@@ -4322,7 +4322,7 @@ dome — an unmistakable fibrous halo at showcase quality).
 
 **PT is the default and the target.** Fabric is the rough-glossy-plus-diffuse
 regime where PT already wins the σ²·T matrix on 10 of 13 converged classes
-([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)), and it adds
+([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)), and it adds
 no caustic-class transport that would re-route it. The `auto_rasterizer` Tier-1
 fall-through `else → PT` routes fabric scenes correctly **with no new clause**.
 
@@ -4881,7 +4881,7 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
     SEPARATE estimator with the same class of bug (a flat, alpha-independent
     macro-Fresnel average) -- CLOSED as DL-123 2026-09-17, dropping gate
     5(b)'s GGX rows from +4.2%..+7.7% to +0.007%..+0.026%; see
-    [docs/DL123_GGX_HEMISPHERICAL_ALBEDO.md](DL123_GGX_HEMISPHERICAL_ALBEDO.md).
+    [docs/DEBT_LEDGER.md](DEBT_LEDGER.md).
     `coated_material`'s Saunderson recycling denominator now inherits both
     fixes. Original text kept below for the historical record.
 
@@ -5607,7 +5607,7 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
       connectible, and a light inside a fog-filled glass shell is exactly
       that case, its NEE being dropped. Measured on such a scene, BDPT went
       from 0.90338 to 1.00356 of PT (RGB) and 0.79556 to 0.98217 (spectral).
-      See [DL126_BDPT_NULL_BSDF_CONTINUATION.md](DL126_BDPT_NULL_BSDF_CONTINUATION.md)
+      See [DEBT_LEDGER.md](DEBT_LEDGER.md)
       SS7.2 outcome and `tests/MediumEnclosureConnectibilityTest.cpp`. The
       guard named next remains a valid parity guard and still passes.
       Image-level guard landed once debt 25 closed:
@@ -6550,7 +6550,7 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
     after a gap — subsequently **CLOSED**; **DL-329**, HWSS companion gap
     throughput — subsequently **CLOSED** via `EvaluateKrayNM` on `WeaveSPF`,
     `FabricSPF`, and `CoatedSPF`):
-    [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+    [DEBT_LEDGER.md](DEBT_LEDGER.md).
     The history below is kept as written.
 
     Exposed by debt 25's fix — masked before it by the closed-box leak that
@@ -6622,7 +6622,7 @@ DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 al
     `ISPF::EvaluateKrayNM`, so PT's HWSS companion loop prices a
     `ScatterNM`-sampled continuation through the delta gap with the exact
     per-lobe companion throughput instead of falling back to the continuum
-    BSDF; see [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
+    BSDF; see [DEBT_LEDGER.md](DEBT_LEDGER.md)
     section 8.)
 ---
 
@@ -6771,7 +6771,7 @@ per the cite-only-if-verified rule it is omitted.
   and the cost precedent for adding a third.
 - [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.1 —
   `GetColorNM` vs `GetRadianceNM` and the `GuardedGetColorNM` rationale.
-- [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) +
+- [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) +
   [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2 — PT-default routing.
 - [OIDN.md](OIDN.md) — the AOV contract behind §12's denoiser rules.
 - [GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) — the `dpdu`/`dpdv` contract

@@ -6,7 +6,7 @@ pull: the *exact quantities* the records need, so an alternate source
 carrying the same data closes the gate equally well. The paper is the
 means; the data specification is the requirement. Compiled 2026-08-06.
 Access results and extracted alternate-source data are recorded in
-[FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md](FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md).
+[FIRE_SMOKE_STATUS.md](FIRE_SMOKE_STATUS.md).
 
 Ordering is by value. "Gate" names what the pull unblocks.
 

@@ -152,7 +152,7 @@ int SolveContacts(Body& a, Body* b, bool moveA, bool moveB, const std::vector<Co
 	double resting, int passes);
 
 //! M7h: a body's geometry and parameters for body-body contact (preview;
-//! docs/SIMULATION_M7H_RESULTS.md section 5), in the body frame (the centre of
+//! docs/SIMULATION_SOLVER_CONTRACT.md section 5), in the body frame (the centre of
 //! mass at the origin; analytic shapes keep their authoring axes).
 struct ContactShape {
 	enum class Type { None, Box, Sphere, Cylinder };

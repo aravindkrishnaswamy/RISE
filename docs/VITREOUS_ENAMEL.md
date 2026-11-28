@@ -19,7 +19,7 @@ also do flinqué / basse-taille** (translucent enamel over engine-turned
 guilloché); those two are the *same physics* (see §2.1).
 
 This document is the analogue, for vitreous enamel, of the guilloché-watch
-design arc (`THIN_FILM_INTERFERENCE.md`, `GUILLOCHE_3WAY_RESULTS.md`). It
+design arc (`THIN_FILM_INTERFERENCE.md`, `../scenes/FeatureBased/GuillocheWatch/README.md`). It
 captures: (1) the physics/optics of enamel a renderer must reproduce, (2) what
 already exists in RISE to build on, (3) the principled material model, (4) the
 gaps that decide "compose existing" vs "new feature", and (5) a phased plan.

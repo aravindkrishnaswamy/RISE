@@ -3,7 +3,7 @@
 // data).  It maps a render's time support to the cache frame exactly as the
 // simulated mesh does (MapCacheFrameTime), reads and verifies the payload,
 // resolves each point's radius and derives the sphere centres at the nominal
-// time and at the shutter keys.  See docs/SIMULATION_M7_PREREQ_RESULTS.md.
+// time and at the shutter keys.  See docs/SIMULATION_SOLVER_CONTRACT.md.
 #ifndef RISE_SIMULATION_SIMULATED_POINTS_SOURCE_H
 #define RISE_SIMULATION_SIMULATED_POINTS_SOURCE_H
 

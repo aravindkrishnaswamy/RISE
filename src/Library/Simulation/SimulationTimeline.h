@@ -1,6 +1,6 @@
 // Simulation M3c: what the timeline knows about a scene's time-varying assets
 // (simulated meshes, fire media): the scene-time range of each one's frames and
-// how much of it is baked.  See docs/SIMULATION_M3C_RESULTS.md.
+// how much of it is baked.  See docs/SIMULATION_SOLVER_CONTRACT.md.
 #ifndef RISE_SIMULATION_TIMELINE_H
 #define RISE_SIMULATION_TIMELINE_H
 

@@ -110,7 +110,7 @@ python3 tools/perception_ab_eval.py
 ```
 
 See [perception_ab/README.md](perception_ab/README.md) for the paired design and
-[../docs/PERCEPTION_ATLAS_AB_RESULTS.md](../docs/PERCEPTION_ATLAS_AB_RESULTS.md)
+[../docs/AGENT_PERCEPTION.md](../docs/AGENT_PERCEPTION.md)
 for the first measured result. Its compact audited evidence is tracked under
 `results/perception_ab_qwen36_20260726/`; other live artifacts remain under
 gitignored `evals/runs/` like the general harness.
@@ -250,7 +250,7 @@ plain text, for scenarios that ask the agent to reconstruct or match a scene
 from a photo:
 
 ```jsonc
-{ "text": "Match this reference photo.", "images": [ "evals/refs/example.png" ] }
+{ "text": "Match this reference photo.", "images": [ "evals/references/example.png" ] }
 ```
 
 - `text` is optional when `images` is non-empty (an attachment-only turn);
@@ -389,7 +389,7 @@ OpenAI-Chat-Completions-compatible wire shape) with a different
 
 - `anthropic`: `AnthropicChatCodec`, default model `"claude-sonnet-5"` (`ANTHROPIC_API_KEY`).
 - `gemini`: `GeminiChatCodec`, default model `"gemini-4-argon"` (`GEMINI_API_KEY`).
-- `openai`: `OpenAIChatCodec` built-in default config, default model `"gpt-5.6-terra"` (`OPENAI_API_KEY`).
+- `openai`: `OpenAIChatCodec` with `useResponsesApi = true` (`https://api.openai.com/v1/responses`), default model `"gpt-5.6-terra"` (`OPENAI_API_KEY`).
 - `xai`: `baseUrl = "https://api.x.ai/v1/chat/completions"`, default model
   `"grok-4.5"`, `requiresAuth = true` (Bearer auth via `XAI_API_KEY`).
 - `local`: `baseUrl` from `RISE_LOCAL_LLM_BASE_URL` (config, not a

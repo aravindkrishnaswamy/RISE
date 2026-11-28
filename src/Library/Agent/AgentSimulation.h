@@ -1,4 +1,4 @@
-// Simulation M5: the agent's simulation verbs (docs/SIMULATION_M5A_RESULTS.md,
+// Simulation M5: the agent's simulation verbs (docs/SIMULATION_SOLVER_CONTRACT.md,
 // docs/gui/MCP_TOOL_SURFACE.md §4.4a).  AgentRpc dispatches them here.
 //
 //   sim_list   {}                                      read-safe

@@ -8,7 +8,7 @@
 //  triangles.  Triangulation "alternating" flips the diagonal in a
 //  checkerboard (the union-jack pattern); "consistent" uses the same
 //  diagonal everywhere.  The choice matters for bending (see the hinge
-//  calibration below and docs/SIMULATION_M3A_RESULTS.md).
+//  calibration below and docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 //  Energies (all in material coordinates, thickness-integrated):
 //   * Membrane: orthotropic St. Venant-Kirchhoff on constant-strain
@@ -32,7 +32,7 @@
 //       (theta the dihedral angle), k = B_warp hv/(2 hu) on edges along v,
 //       B_weft hu/(2 hv) on edges along u.  Consistent but not stable on
 //       either structured triangulation (a grid-scale mode between rows
-//       softens it; docs/SIMULATION_M3A_RESULTS.md); kept for the record.
+//       softens it; docs/SIMULATION_SOLVER_CONTRACT.md); kept for the record.
 //     Diagonal hinges (both models): k = sqrt(B_warp B_weft) hu hv/(hu^2+hv^2).
 //     Clamp correction: an element one of whose wings is entirely pinned
 //     represents curvature over half a cell and gets twice the stiffness.

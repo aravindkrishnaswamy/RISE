@@ -159,7 +159,7 @@ public:
     void cancelAndJoinInFlightWork();
 
 public slots:
-    /// `untitled` (start-screen create path, docs/gui/START_SCREEN.md §5.2):
+    /// `untitled` (start-screen create path, docs/gui/APPROACHABILITY_FOUNDATION.md §5.2):
     /// `filePath` still names a real file on disk (the bundled starter
     /// template) that is actually read -- only `loadedFilePath()` is
     /// suppressed to empty, so every existing consumer (Save routing,

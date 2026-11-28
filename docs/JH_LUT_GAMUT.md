@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09 (Stage A update: 2026-05-24; Stage C resolution: 2026-09-01)
 **Status:** RESOLVED (Stage B Rec.709 working space + Stage C D65 reference-illuminant LUT, 2026-09-01); current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
-**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stages A–B complete), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) (Stage C complete)
+**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stages A–B complete), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) (Stage C complete)
 
 ---
 

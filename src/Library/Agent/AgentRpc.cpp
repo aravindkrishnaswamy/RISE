@@ -788,7 +788,7 @@ namespace RISE
 					}
 					result.set( "legend", legend );
 				}
-				// Creative-richness P2 (73-creative-richness-design.md sec 2 P2
+				// Creative-richness P2 (docs/agentic-redesign/50-agentic-surface.md sec 2 P2
 				// / sec 7 re-target): the observed-state design note
 				// (AgentSession::ComputeDesignNote, run inside RenderCore_ --
 				// see AgentRenderResult::note's doc). CONDITIONAL key, same
@@ -2034,7 +2034,7 @@ namespace RISE
 								&s->LightSoloMeasurements() ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
-						// Creative-richness P2.b (73-creative-richness-design.md
+						// Creative-richness P2.b (docs/agentic-redesign/50-agentic-surface.md
 						// sec 9's closing recommendation): validate no longer
 						// attaches a `note` field -- the SAME two design-note
 						// conditions now ride the `diagnostics` array above as
@@ -4986,7 +4986,7 @@ namespace RISE
 				//    from `--agent-stdio`.)
 				//
 				//   R1b slice (2026-08-09, docs/agentic-redesign/
-				//   75-expressive-surface-arc.md): the agent RPC surface is
+				//   docs/agentic-redesign/50-agentic-surface.md): the agent RPC surface is
 				//   now STRUCTURALLY unable to trigger an expensive
 				//   production render.  Motivating trajectory: a live GUI
 				//   session called `render {imageMaxEdge:512}` with no

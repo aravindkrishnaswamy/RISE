@@ -507,7 +507,7 @@ static const double SUB_LIMIT_COS = 1e-7;
 // grid, or a log-spaced alpha axis) is out of scope for this pass.  The
 // SEPARATE cosTheta end-cap (cos<0.0156) remains tracked as DL-86 and is
 // unaffected by this fix, isotropic or anisotropic.  See
-// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md's "DL-77" section, P2-2
+// docs/DEBT_LEDGER.md's "DL-77" section, P2-2
 // subsection, for the full sweep methodology and this correction.
 static const int ANISO_ALPHA_SIZE = 24;
 static const int ANISO_COS_SIZE = 32;
@@ -976,7 +976,7 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	// dependent per-axis Lambda (MicrofacetUtils::GGX_G2_Aniso), so for
 	// alphaX != alphaY the isotropized lookup under-compensates (measured
 	// 11-44% E_ss deficit at F0=1 -- see the DL-77 ledger row and
-	// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-77").
+	// docs/DEBT_LEDGER.md "DL-77").
 	//
 	// E_ss_TABLE_G2_ANISO/E_avg_TABLE_G2_ANISO below tabulate the SAME
 	// height-correlated-G2 directional albedo, resolved DIRECTLY by
@@ -1194,7 +1194,7 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	/// roughness (GGXBRDF.cpp/GGXSPF.cpp floor authored alpha at 1e-4,
 	/// comfortably inside the [AnisoAlphaLowNode(1)=7.8e-5,
 	/// AnisoAlphaLowNode(2)~1.6e-4) octave).  See
-	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	/// docs/DEBT_LEDGER.md "DL-161".
 	inline void AnisoAlphaLowIndex( const Scalar alpha, int& idx0, int& idx1, Scalar& frac )
 	{
 		const Scalar a = r_max( Scalar(0.0), alpha );
@@ -1461,12 +1461,12 @@ R"DL77ANISOBLOCK(	//////////////////////////////////////////////////////////////
 	/// interpolation error, not this end-cap's: <=0.57% with one alpha
 	/// off-node, 3-4% off-node on all three of alphaX, alphaY and phi
 	/// (DL-105 / DL-77's tracked ANISO_PHI and low-alpha residual).  See
-	/// docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-86" for the full
+	/// docs/DEBT_LEDGER.md "DL-86" for the full
 	/// before/after table and the probe protocol.
 	///
 	/// DL-161: LookupEssG2AnisoDirectionalLowX/LowXY below handle the
 	/// case where alphaX and/or alphaY fall below ANISO_ALPHA_LOW_A1 --
-	/// see this function's own dispatch and docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	/// see this function's own dispatch and docs/DEBT_LEDGER.md "DL-161".
 	inline Scalar LookupEssG2AnisoDirectionalLowX( const Scalar cosTheta, const Scalar localX, const Scalar localY, const Scalar aXLow, const Scalar aYOrd )
 	{
 		int xi0, xi1; Scalar xf;
@@ -2457,7 +2457,7 @@ int main() {
 	// actually draws, so the estimator stays unbiased regardless of the
 	// proposal's accuracy), not a correctness one -- only the two
 	// ENERGY-COMPENSATION call sites (LookupEssG2AnisoDirectional,
-	// LookupEavgG2Aniso) are fixed.  See docs/DL62_DL64_GGX_SAMPLE_EVAL_MISMATCH.md "DL-161".
+	// LookupEavgG2Aniso) are fixed.  See docs/DEBT_LEDGER.md "DL-161".
 	const double anisoAlphaLowA0 = 0.01;
 	const double anisoAlphaLowA1 = 0.01 + (1.0 - 0.01) * 1.0 / (double)(ANISO_ALPHA_SIZE - 1);
 

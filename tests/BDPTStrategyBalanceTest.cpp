@@ -1943,7 +1943,7 @@ static void TestSubmergedCeilingMISCombination()
 //
 // THIS TOPOLOGY'S BAND WAS PROVISIONAL PENDING DL-103; THAT ROW IS NOW
 // CLOSED AND THE MEAN BAND IS TIGHTENED TO 2%
-// (docs/DL103_PT_ESCAPE_MIS_PARTNER.md, 2026-09-17).
+// (docs/DEBT_LEDGER.md, 2026-09-17).
 //
 // The marker existed because the reference this row gates against is
 // PT, and PT was not integrator-free here: un-guided PT's escape-side
@@ -2599,7 +2599,7 @@ static void TestDataDrivenSPFDL325()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
+// Topology L, GUIDED (DL-67, docs/DEBT_LEDGER.md).
 //
 // Topology L's geometry and `schlick_material` walls with OpenPGL path
 // guiding ON in the integrator under test.  Guiding is a
@@ -3027,7 +3027,7 @@ static void TestSpectralHWSSCompanionLadder()
 	const double achroRatio = RunSpectralHWSSLadder( "topology L (DL-125 probe)", kSceneSchlickMultiLobeL );
 	if( achroRatio < 0 ) return;
 
-	// Calibration and tolerance derivation: DL69_BDPT_LOBE_THROUGHPUT.md §6.3.
+	// Calibration and tolerance derivation: docs/DEBT_LEDGER.md §6.3.
 	Check( std::fabs( achroRatio - 1.0 ) < 0.01,
 		"DL-125 parity control: spectral hwss TRUE achromatic mean stays within 1% of hwss FALSE on topology L" );
 }
@@ -3054,7 +3054,7 @@ static void TestSpectralHWSSCompanionLadderControl()
 // diffuse/specular colours. DL-219's remaining bundle discrepancy is
 // distinct from that fix. All four estimators here use matched spp and
 // num_wavelengths 160 (hero-only otherwise samples a coarse discrete grid).
-// See docs/DL69_BDPT_LOBE_THROUGHPUT.md §6.3 for repeat statistics at two
+// See docs/DEBT_LEDGER.md §6.3 for repeat statistics at two
 // sample counts and the historical isolated A/B evidence.
 //////////////////////////////////////////////////////////////////////
 static void ReplaceOnceOrFail( std::string& s, const std::string& from, const std::string& to,
@@ -3723,7 +3723,7 @@ static void TestGenericHumanTissueOriginFix()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Topologies Q and R: DL-05 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+// Topologies Q and R: DL-05 (docs/DEBT_LEDGER.md).
 //
 // The closed thin-weave box of docs/CLOTH_FABRIC_DESIGN.md section 15
 // debts 25/27 (`box_geometry` 2.8 x 2.8 x 1.0, `weave_material { fabric
@@ -3740,7 +3740,7 @@ static void TestGenericHumanTissueOriginFix()
 // 0.9933 post; the ~0.6 % left is the pre-existing closed-box residual
 // debt 25 records -- the SAME box at gap 0 (no pass-through exists, so
 // DL-05 cannot touch it) reads 0.9945 before and 0.9935 after (n = 4,
-// matching docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 5's own
+// matching docs/DEBT_LEDGER.md section 5's own
 // design-doc table row for this box).
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPTWeaveGap =
@@ -3874,7 +3874,7 @@ static void TestWeaveGapBoxHWSS()
 
 //////////////////////////////////////////////////////////////////////
 // Topology Z: the receiver is lit by the BACK face of a double-sided
-// mesh emitter (DL-320, docs/DL320_DOUBLE_SIDED_EMITTER.md).
+// mesh emitter (DL-320, docs/DEBT_LEDGER.md).
 //
 // Topology B's 1x1 quad at z = 4, wound so its normal points UP (+Z),
 // away from the receiver; `clippedplane_geometry`'s `doublesided`
@@ -3957,7 +3957,7 @@ static void TestBackFaceEmitterZ()
 
 //////////////////////////////////////////////////////////////////////
 // Topology W: NARROW-FOV light-tracing splat (DL-294,
-// docs/DL294_NARROW_FOV_SPLAT.md) -- NO weave anywhere.
+// docs/DEBT_LEDGER.md) -- NO weave anywhere.
 //
 // A spot light at (0, 1, 0) aimed UP at a perfect mirror (y = 2); the
 // reflected beam lights a Lambertian floor (rho 0.5) that a pinhole at
@@ -4274,7 +4274,7 @@ static void TestNarrowFovStripeGuard()
 	// coverage into (or out of) column 16 (the red-proof above measured
 	// PT-direct 0.0000 / BDPT-splat 0.4989, a 0.4989 mismatch), so 0.03
 	// is a ~4.5x margin over the measured spread and still a >15x margin
-	// below the defect it exists to catch.  See docs/DL294_NARROW_FOV_SPLAT.md section 4
+	// below the defect it exists to catch.  See docs/DEBT_LEDGER.md section 4
 	// for the full salted table and the red-proof numbers.
 	const double kBand = 0.06;
 	char buf[256];
@@ -4291,7 +4291,7 @@ static void TestNarrowFovStripeGuard()
 }
 
 //////////////////////////////////////////////////////////////////////
-// Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
+// Topologies U and V: DL-307 (docs/DEBT_LEDGER.md
 // section 8, "DL-307").
 //
 // Both BDPT subpath generators used to BREAK on an empty scatter
@@ -5074,7 +5074,7 @@ static bool MeasureDL381( const char* kind, int spp, const char* mat, bool glass
 //! pixel centres, so every constant here moved -- the old ones read
 //! sphere 0.1186 / 0.1052 / 0.0974.)  Smooth boundary (roughness
 //! 0) so the MC needs no microfacet model; the walk itself ignores
-//! roughness.  docs/DL381_RANDOM_WALK_RECIPROCITY.md.
+//! roughness.  docs/DEBT_LEDGER.md.
 static void CheckDL381( const char* label, double measured, double reference, double band )
 {
 	const double rel = measured / reference - 1.0;

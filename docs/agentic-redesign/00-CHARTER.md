@@ -3,7 +3,7 @@
 > **Status (2026-11):** **FOUNDING MODEL-B CHARTER — HYBRID ARCHITECTURE SHIPPED.**
 > This document is the ratified founding charter for the Model-B pivot. The canonical
 > lossless CST (`src/Library/Cst`), native v7 scene path, CST-backed edit/save/history,
-> schema-driven desktop UI, and 38-tool agentic surface have shipped. Rather than
+> schema-driven desktop UI, and 49-chat / 54-MCP tool agentic surface have shipped. Rather than
 > deleting `SceneEditor`/`SceneEdit`/`EditHistory`/`SaveEngine` wholesale (§4 L7) or
 > completing the full immutable COW `DerivedScene`/`PreparedRenderState` snapshot DAG,
 > RISE shipped a pragmatic **hybrid architecture**: the lossless CST (`Cst.cpp`) is the

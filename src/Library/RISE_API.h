@@ -304,6 +304,12 @@ namespace RISE
 		const Vector3 vDir										///< [in] Direction the light is shining
 		);
 
+	// Physical source samples: point/spot W/(sr nm), directional W/(m^2 nm).
+	// Linear interpolation; outsidePolicy must explicitly be "zero". Scale is dimensionless.
+	bool RISE_API_CreatePhysicalPointOmniLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalPointSpotLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Point3& position, const Point3& target, const Scalar inner, const Scalar outer, const bool shootPhotons);
+	bool RISE_API_CreatePhysicalDirectionalLight(ILightPriv** ppi, const unsigned int count, const double* nm, const double* values, const char* outsidePolicy, const double scale, const Vector3& direction);
+
 	///////////////////////////////////////////////////////////
 	// Defines Geometry creation
 	///////////////////////////////////////////////////////////
@@ -1035,6 +1041,16 @@ namespace RISE
 								const IScalarPainter& ext,		///< [in] Extinction (scalar)
 								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
 								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
+								);
+
+	struct HyLIoSSkinMaterialConfig;
+
+	//! Creates a HyLIoS hyperspectral skin material (P5 local baked mode).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyLIoSSkinMaterial(
+								IMaterial** ppi,											///< [out] Pointer to receive the material
+								const HyLIoSSkinMaterialConfig& config,						///< [in] Versioned HyLIoS material config
+								std::string* outError = 0									///< [out] Optional diagnostic string on failure
 								);
 
 	//! Creates a BioSpec skin material
@@ -2408,7 +2424,7 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateObjectManager(
 								IObjectManager** ppi,					///< [out] Pointer to recieve the manager
-								const bool bUseBSPtree,					///< [in] Use BSP trees for spatial partitioning
+								const bool bUseBSPtree,					///< [in] Build top-level BVH (historical param name; BSPTreeSAH TLAS was replaced by BVH4)
 								const bool bUseOctree,					///< [in] Use Octrees for spatial partitioning
 								const unsigned int nMaxObjectsPerNode,	///< [in] Maximum number of elements / node
 								const unsigned int nMaxTreeDepth		///< [in] Maximum tree depth
@@ -3717,6 +3733,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								);
 
 
+	struct HyperspectralRadiometricConfig;
+
+	//! Creates a dedicated raw radiometric fixed-wavelength hyperspectral rasterizer (P6b).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHyperspectralRadiometricRasterizer(
+								IRasterizer** ppi,									///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,									///< [in] The ray caster to use
+								const HyperspectralRadiometricConfig& config		///< [in] Versioned radiometric sweep config
+								);
+
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingSpectralRasterizer(
@@ -4739,7 +4765,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p );
 
 	// ---- Phase 6.5 scene-file save ----------------------------------
-	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
+	// Round-trip-save bindings.  See docs/gui/ADR_DOCUMENT_FIRST_EDITOR.md §9.9
 	// + SceneEditController.h "Phase 6.5".
 
 	//! Drives the GUI's "Save Scene" button enable state.
@@ -5002,7 +5028,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, bool* outHasAnimation );
 
 	// ---- Simulation M3c: viewport playback, baked ranges, live simulation ----
-	// (docs/SIMULATION_M3C_RESULTS.md).  GetHasAnimation above also reports
+	// (docs/SIMULATION_SOLVER_CONTRACT.md).  GetHasAnimation above also reports
 	// true for scenes whose only time-varying content is simulation assets
 	// (simulated meshes, fire media); GetAnimationOptions then takes the range
 	// from their caches' time maps when the scene declares no animation.  All
@@ -5117,7 +5143,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		unsigned long long* outFramesAvailable, unsigned long long* outFramesTotal,
 		char* cacheBuf, unsigned int cacheBufLen, char* errorBuf, unsigned int errorBufLen );
 
-	// ---- Simulation M5: baking (docs/SIMULATION_M5A_RESULTS.md) ----
+	// ---- Simulation M5: baking (docs/SIMULATION_SOLVER_CONTRACT.md) ----
 	// A bake is a separate rise-sim process run on the scene FILE, managed by
 	// one process-wide bake manager shared by every document and the agent:
 	// it queues simulations upstream first, runs one GPU bake at a time
@@ -5928,9 +5954,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! unclonable camera type, or `outLen == 0`.  Bumps the controller's
 	//! SceneEpoch so the platform UI auto-rebuilds the camera list.
 	//!
-	//! Persistence: the clone lives only in memory.  Reloading the
-	//! .RISEscene file drops it (scene-text round-trip is the
-	//! pending Phase 6 work).
+	//! Persistence: inserts the cloned camera chunk into the retained
+	//! CST Document (dirtying the scene so Save / Save As writes it).
 	bool RISE_API_SceneEditController_AddCameraFromActive(
 		SceneEditController* p,
 		const char* proposedName,
@@ -6124,7 +6149,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	//! -------- Environment / IBL section (GUI Environment panel) --------
 	//! See SceneEditController's EnvironmentInfo + env accessors and
-	//! docs/gui/ENVIRONMENT_SECTION.md.  The environment is a scene-level
+	//! docs/gui/APPROACHABILITY_FOUNDATION.md.  The environment is a scene-level
 	//! singleton (an hdr/exr painter bound via `radiance_*` on the active
 	//! rasterizer), not an ILight.
 
@@ -6164,7 +6189,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! when no editable environment exists.
 	bool RISE_API_SceneEditController_RemoveEnvironment( SceneEditController* p );
 
-	// ---- Simulation M5 (GUI shell support; docs/SIMULATION_M5B_RESULTS.md) ----
+	// ---- Simulation M5 (GUI shell support; docs/SIMULATION_GUI_STATUS.md) ----
 	// Additive wrappers the macOS (and later Windows) simulations panel needs.
 	// Same conventions as the M3c/M4 block: false on a null controller or a
 	// busy scene (poll again), text NUL-terminated and truncated, every out
@@ -6211,7 +6236,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! The trusted roots in force (environment, then added), joined by '\n'.
 	bool RISE_API_GetTrustedCacheRoots( char* buf, unsigned int bufLen );
 
-	// ---- Simulation M5c (docs/SIMULATION_M5C_RESULTS.md) ----
+	// ---- Simulation M5c (docs/SIMULATION_GUI_STATUS.md) ----
 
 	//! What GetSimulationDetails leaves out: the configuration's estimates and
 	//! why a stale cache is stale.  Same index and snapshot rules.

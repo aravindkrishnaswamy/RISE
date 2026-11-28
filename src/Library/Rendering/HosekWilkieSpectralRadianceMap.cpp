@@ -26,29 +26,19 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	// Adapter painter: EnvironmentSampler's CDF builder iterates a UV
-	// grid, asks the painter for radiance per cell, and accumulates
-	// luminance.  Without this adapter HW skies appear all-black to
-	// the CDF builder (since the radiance comes from the model, not
-	// the painter), and env importance sampling is disabled — the
-	// sun-disc gets missed by NEE.
-	//
-	// UV→direction inverse is the lat-long projection used by
-	// RadianceMap: u maps to azimuth, v maps to elevation.  The
-	// encoding in RadianceMap.h is non-standard
-	// (`0.5 + v.x * r * acos(-v.z) / sqrt(v.x²+v.y²)`); we use the
-	// standard equirectangular form here for the adapter, which is
-	// what most env-CDF builders assume.  The actual radiance the
-	// path tracer reads still comes from `GetRadiance` / `GetRadianceNM`
-	// (which use the un-mapped direction directly), so the adapter's
-	// projection only affects CDF weighting, not rendered radiance.
+    // Painter view for legacy environment importance weights. It deliberately
+    // retains the historical equirectangular UV approximation; RadianceMap's
+    // actual angular-probe source lookup is different. This approximation
+    // changes proposal quality, while GetRadiance/GetRadianceNM still query
+    // the sky's world-direction model directly. Own an immutable model copy:
+    // clients may retain GetPainter() after releasing the parent sky map.
 	class HWAdapterPainter : public Painter
 	{
-		const HosekWilkieSkyModel* model;
+		const HosekWilkieSkyModel model;
 	protected:
 		virtual ~HWAdapterPainter() {}
 	public:
-		HWAdapterPainter( const HosekWilkieSkyModel* m ) : model( m ) {}
+		HWAdapterPainter( const HosekWilkieSkyModel& m ) : model( m ) {}
 
 		static Vector3 UVtoDir( const Point2& uv )
 		{
@@ -64,18 +54,18 @@ namespace
 		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
 		{
 			const Vector3 dir = UVtoDir( ri.ptCoord );
-			return model->IntegrateRGB( dir );
+			return model.IntegrateRGB( dir );
 		}
 
 		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 		{
 			const Vector3 dir = UVtoDir( ri.ptCoord );
-			return model->SampleRadiance( dir, nm );
+			return model.SampleRadiance( dir, nm );
 		}
 
 		// PHYSICAL SPD -- pass through verbatim (Stage C slice 2), same
 		// as SpectralColorPainter / BlackBodyPainter / Function1D-
-		// SpectralPainter.  `model->SampleRadiance` IS an absolute sky
+		// SpectralPainter.  `model.SampleRadiance` IS an absolute sky
 		// radiance in W/(m^2 sr nm), not a Jakob-Hanika uplift of an RGB
 		// triple, and the sky is the archetypal SOURCE term.  Letting
 		// the IPainter default run would throw the model's spectrum away
@@ -108,12 +98,11 @@ HosekWilkieSpectralRadianceMap::HosekWilkieSpectralRadianceMap(
 	mxTransform = Matrix4Ops::Identity();
 	// GetPainter() must return a painter whose CDF integral is
 	// non-trivial — EnvironmentSampler builds its importance-sampling
-	// CDF by scanning the painter on a UV grid; an all-black painter
+	// CDF in equal-solid-angle cells and queries the probe-mapped painter; an all-black painter
 	// disables NEE for the sky entirely (the original bug round 2
-	// caught).  HWAdapterPainter back-references the model so the CDF
-	// reflects HW radiance.
-	pNullPainter = new HWAdapterPainter( &model );
-	pNullPainter->addref();
+    // caught). The adapter owns an immutable model copy, so a retained
+    // painter remains valid independently of this map's lifetime.
+    pNullPainter = new HWAdapterPainter(model);
 }
 
 HosekWilkieSpectralRadianceMap::~HosekWilkieSpectralRadianceMap()

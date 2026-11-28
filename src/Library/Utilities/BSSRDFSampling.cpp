@@ -597,7 +597,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 //////////////////////////////////////////////////////////////////////
 // DL-408: contact launches -- see BSSRDFSampling.h and
-// docs/DL408_SSS_CONTACT_CONTINUATION.md.
+// docs/DEBT_LEDGER.md.
 //////////////////////////////////////////////////////////////////////
 
 bool BSSRDFSampling::IntersectContactRay(

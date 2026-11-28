@@ -308,7 +308,7 @@ void SubSurfaceScatteringSPF::Scatter(
 		// and the next hit on the object is then misclassified.
 		//
 		// Disposal ruling, identical to DielectricSPF's (derivation in
-		// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+		// docs/DEBT_LEDGER.md): RE-DERIVE the
 		// refraction about the true geometric normal and recompute its
 		// Fresnel there.  Run BEFORE the reflection block below, because
 		// that block reads `R` -- a re-derivation that lands on TIR must
@@ -564,7 +564,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// and the next hit on the object is then misclassified.
 		//
 		// Disposal ruling, identical to DielectricSPF's (derivation in
-		// docs/DL111_DL112_TRANSMISSION_PUSH_GATES.md): RE-DERIVE the
+		// docs/DEBT_LEDGER.md): RE-DERIVE the
 		// refraction about the true geometric normal and recompute its
 		// Fresnel there.  Run BEFORE the reflection block below, because
 		// that block reads `R` -- a re-derivation that lands on TIR must

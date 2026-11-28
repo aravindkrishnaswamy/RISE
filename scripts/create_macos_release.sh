@@ -260,7 +260,7 @@ DSYM="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/RISE-GUI.app.dSYM"
 APP_EXECUTABLE="${APP}/Contents/MacOS/RISE-GUI"
 IMPORT_EXECUTABLE="${APP}/Contents/MacOS/rise-cache-import"
 # The simulation bake worker (Xcode target rise-sim, embedded by RISE-GUI);
-# the bake manager runs it from here first (docs/SIMULATION_M5C_RESULTS.md).
+# the bake manager runs it from here first (docs/SIMULATION_GUI_STATUS.md).
 SIM_EXECUTABLE="${APP}/Contents/MacOS/rise-sim"
 FRAMEWORKS_DIR="${APP}/Contents/Frameworks"
 DMG="${OUTPUT_DIR}/${ARTIFACT_BASENAME}.dmg"

@@ -141,7 +141,7 @@ ParameterSchema Build()
 		"gravity, loads from coupling ports, impulse contact with static planes; symplectic principal-axis splitting), "
 		"baked by `rise-sim bake <scene>`; couple it to a cloth with a `simulation_group`.  Publishes `bodies` "
 		"(transform.v1); a `standard_object` follows a body with `transform_source <name>.bodies[<body>]`.  "
-		"Parameters and evidence: docs/SIMULATION_M6_RESULTS.md.";
+		"Parameters and evidence: docs/SIMULATION_SOLVER_CONTRACT.md.";
 	auto P = [&s](const char* name, SchemaType type, const char* def, const char* units, const char* doc) -> SchemaParameter& {
 		s.parameters.emplace_back();
 		SchemaParameter& p = s.parameters.back();

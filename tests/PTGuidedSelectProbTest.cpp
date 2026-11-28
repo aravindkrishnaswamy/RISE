@@ -36,7 +36,7 @@
 //        scatterThroughput = kray * pS->pdf / (selectProb * combinedPdf)
 //
 //  DL-67 FIXED on the debt-dl67 branch (2026-09-27/28, three rounds;
-//  docs/DL67_GUIDED_GENERATING_DENSITY.md): the kept-direction branch
+//  docs/DEBT_LEDGER.md): the kept-direction branch
 //  this test pins is now `kray_I / selectProb * W_b(w) / (1 - a)`, W_b
 //  the BSDF share of ONE partition built from the AGGREGATE Pdf() and
 //  `a` the VERTEX-level one-sample firing probability (clamped to

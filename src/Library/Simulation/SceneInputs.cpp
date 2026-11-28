@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <typeinfo>
 
 namespace RISE { namespace Simulation {
 namespace {
@@ -273,9 +274,16 @@ std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std:
 		c->name = name;
 		IObjectPriv* item = objects->GetItem(name.c_str());
 		auto* object = dynamic_cast<Implementation::Object*>(item);
-		if (!object) {
-			error = item ? "scene object `" + name + "` is not a plain object (a CSG object cannot be a scene input)" :
+		// Pose holders are nonvirtual base-Object clones. Validate the entire
+		// chain before cloning so custom setters/finalization and CSG behavior
+		// cannot be silently discarded from a simulation input.
+		if (!object || typeid(*object) != typeid(Implementation::Object)) {
+			error = item ? "scene object `" + name + "` is not an exact built-in Object (CSG and custom subclasses cannot be scene inputs)" :
 				"no scene object named `" + name + "`";
+			return nullptr;
+		}
+		if (object->IsConsumed()) {
+			error = "scene object `" + name + "` is a CSG operand (its composite-local pose has no unique world placement)";
 			return nullptr;
 		}
 		// The chain from the root to the object.
@@ -287,7 +295,14 @@ std::shared_ptr<const ISceneInputs> SceneObjectInputProvider::Capture(const std:
 			const std::string p = parent;
 			if (!seen.insert(p).second) { error = "object hierarchy cycle at `" + p + "`"; return nullptr; }
 			auto* ancestor = dynamic_cast<Implementation::Object*>(objects->GetItem(p.c_str()));
-			if (!ancestor) { error = "the parent `" + p + "` of `" + name + "` is not a plain object"; return nullptr; }
+			if (!ancestor || typeid(*ancestor) != typeid(Implementation::Object)) {
+				error = "the parent `" + p + "` of `" + name + "` is not an exact built-in Object (CSG and custom subclasses cannot be scene inputs)";
+				return nullptr;
+			}
+			if (ancestor->IsConsumed()) {
+				error = "the parent `" + p + "` of `" + name + "` is a CSG operand (its composite-local pose has no unique world placement)";
+				return nullptr;
+			}
 			chain.push_back(ancestor);
 			chainNames.push_back(p);
 		}

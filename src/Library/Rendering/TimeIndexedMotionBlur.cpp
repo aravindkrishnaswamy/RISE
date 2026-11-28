@@ -62,6 +62,12 @@ namespace
 		if( dynamic_cast<const CSGObject*>( o ) ) {
 			return "a CSG composite";
 		}
+		// ClonePoseHolder is nonvirtual and creates an exact Object. A
+		// subclass may override keyframe setters, finalization or queries;
+		// keep those behaviors on the serial path instead of slicing them.
+		if( typeid(*o) != typeid(Object) ) {
+			return "a custom object subclass";
+		}
 		if( o->IsConsumed() ) {
 			return "a CSG operand";
 		}
@@ -170,6 +176,9 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 		e.shared = elem;
 		e.animated = true;
 		e.typed = 0;
+        // The light clone methods below nonvirtually copy their base class.
+        // Exact built-ins can use them; unknown derived lights must keep
+        // their overrides through the serial path instead of being sliced.
 		if( Object* o = dynamic_cast<Object*>( elem ) ) {
 			if( const char* why = ObjectRefusal( o ) ) {
 				return Fail::Out( f, reason, std::string( "a keyframed object is " ) + why );
@@ -211,22 +220,26 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 				f->camera = c;
 			}
 			continue;
-		} else if( PointLight* l = dynamic_cast<PointLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(PointLight) ) {
+            auto* l = dynamic_cast<PointLight*>(elem);
 			e.kind = kPointLight;
 			e.typed = static_cast<const PointLight*>( l );
-		} else if( SpotLight* l = dynamic_cast<SpotLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(SpotLight) ) {
+            auto* l = dynamic_cast<SpotLight*>(elem);
 			e.kind = kSpotLight;
 			e.typed = static_cast<const SpotLight*>( l );
-		} else if( DirectionalLight* l = dynamic_cast<DirectionalLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(DirectionalLight) ) {
+            auto* l = dynamic_cast<DirectionalLight*>(elem);
 			e.kind = kDirectionalLight;
 			e.typed = static_cast<const DirectionalLight*>( l );
-		} else if( AmbientLight* l = dynamic_cast<AmbientLight*>( elem ) ) {
+		} else if( typeid(*elem) == typeid(AmbientLight) ) {
+            auto* l = dynamic_cast<AmbientLight*>(elem);
 			e.kind = kAmbientLight;
 			e.typed = static_cast<const AmbientLight*>( l );
 		} else {
 			std::vector<String> params;
 			pAnimator->GetActiveAnimatedParameters( elem, params );
-			std::string why = std::string( "a keyframed " ) + typeid( *elem ).name();
+			std::string why = std::string(dynamic_cast<ILightPriv*>(elem) ? "a keyframed custom light " : "a keyframed ") + typeid(*elem).name();
 			if( !params.empty() ) {
 				why = why + " ('" + std::string( params[0].c_str() ) + "')";
 			}
@@ -276,6 +289,8 @@ TimeIndexedFrame* TimeIndexedFrame::TryCreate( const IScene& scene, std::string&
 			}
 			r.parent = f->SlotOf( parent );
 			if( r.parent < 0 ) {
+				// Unslotted parents are not cloned or re-posed. Keep their
+				// virtual world-transform query; no subclass slicing occurs.
 				r.parentShared = parent;
 			}
 		}

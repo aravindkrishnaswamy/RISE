@@ -1,4 +1,4 @@
-// Simulation M9 (docs/SIMULATION_M9_RESULTS.md, task 3): analytic rigid bodies two-way coupled to cloth that
+// Simulation M9 (src/Library/Parsers/README.md, "Coupling (M6)"): analytic rigid bodies two-way coupled to cloth that
 // also collide with each other.  A rigid.bodies sphere or box takes its coupling surface from a mesh
 // (`surface_vertices` / `surface_triangles`, or a scene object's geometry with `surface_input`; world space at
 // t = 0 with the body at its initial pose); the cloth's port collider made from the same mesh then has that
@@ -23,10 +23,17 @@
 #include "../src/Library/Simulation/Cloth/ClothSolver.h"
 #include "../src/Library/Simulation/Coupling/ClothRigidCoupling.h"
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace {
 using namespace RISE::Simulation;

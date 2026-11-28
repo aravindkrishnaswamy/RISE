@@ -9,6 +9,10 @@
 
 #include "RenderEngine.h"
 
+#pragma push_macro("signals")
+#pragma push_macro("slots")
+#undef signals
+#undef slots
 #include "VideoEncoder.h"
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
@@ -38,6 +42,8 @@
 #include "Interfaces/IFrameEncoder.h"
 #include "SceneEditor/SceneEditController.h"
 #include "SceneEditor/CancellableProgressCallback.h"
+#pragma pop_macro("slots")
+#pragma pop_macro("signals")
 
 #include <QDir>
 #include <QFileInfo>

@@ -1022,6 +1022,10 @@ namespace
 		{ "exr_painter",         "file",     false, "Path to an OpenEXR image file" },
 		{ "tiff_painter",        "file",     false, "Path to a TIFF image file" },
 		{ "datadriven_material", "filename", false, "Path to a measured-BRDF data file" },
+		// HyLIoS P5: the default `baked_local` transport reads a baked local
+		// response asset and Finalize refuses an empty path (the other modes
+		// need a `specimen_source` file instead, so no mode is file-free).
+		{ "hylios_skin_material", "response_asset", false, "Path to a baked HyLIoS local response asset (.hylios) for the default baked_local transport" },
 
 		// Job::AddCompositeFunction2DPainter (child_a/child_b) and
 		// Job::AddFunction2DColorPainter (function2d) both look the name up

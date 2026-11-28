@@ -487,7 +487,7 @@ unsigned int SMSPhotonMap::Build(
 		}
 		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
 		// DL-320: a double-sided luminary radiates from both faces
-		// (docs/DL320_DOUBLE_SIDED_EMITTER.md), exactly as SMS's own
+		// (docs/DEBT_LEDGER.md), exactly as SMS's own
 		// light-directed connection already treats it (its emitter
 		// cosine is `fabs`); its photon budget counts both faces and each
 		// seed photon leaves from a face chosen with probability 1/2.

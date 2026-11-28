@@ -4970,10 +4970,10 @@ static void TestContextLifetimeRetirementRound2()
 }
 
 //----------------------------------------------------------------------
-// T15: -ffast-math-safe non-finite guards in the module's dependencies
-//      (P2-C).  These paths run inside library objects compiled with
-//      the production CXXFLAGS (-ffast-math on this platform), so a
-//      std::isnan/isinf/isfinite guard would be folded away.
+// T15: non-finite guards in the module's dependencies (P2-C).
+//      Historically required under bare -ffast-math (-ffinite-math-only);
+//      macOS now pairs -fno-finite-math-only, and these checks stay as
+//      -Ofast-resistant regression coverage.
 //----------------------------------------------------------------------
 static void TestFastMathGuards()
 {

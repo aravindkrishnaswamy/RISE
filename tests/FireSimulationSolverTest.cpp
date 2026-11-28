@@ -1639,7 +1639,7 @@ int main()
 	// Re-pinned at fire solver version 4 under the new default thin LTO (were 0.0029506166530252633
 	// and 0.038419987516982668 under full LTO).  This test's own translation unit is fast-math
 	// reference-simulator code linked with LTO, so these bits still depend on the LTO mode; it is
-	// the one fire test that does (docs/BUILD_FLAGS.md section 8, docs/SIMULATION_M8_RESULTS.md section 15).
+	// the one fire test that does (docs/BUILD_FLAGS.md section 8, docs/FIRE_SMOKE_STATUS.md).
 	{
 		const double selectedDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OneWorker),
 			otherDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OtherBranch);
@@ -5715,7 +5715,7 @@ int main()
 				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
 	{
-		// r273 poor-burn opt-ins (docs/FIRE_SMOKE_POOR_BURN_R273.md): parsing, off
+		// r273 poor-burn opt-ins (docs/FIRE_SMOKE_STATUS.md): parsing, off
 		// identity, bounds and conservation of the soot radiation budget and the
 		// sub-grid sheet oxidation gate.
 		Check(ParseMethaneSootRadiativeFractionCap(0)==-1.0&&

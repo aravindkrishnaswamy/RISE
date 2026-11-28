@@ -14,7 +14,7 @@
 //
 // Pre-fix (master ba133dd38) the diffusion rows read 0.90 of their twins,
 // the reversed random-walk / Lambertian pair 0.9968; the fix is the contact
-// launch (docs/DL408_SSS_CONTACT_CONTINUATION.md).  Default: gate (exit 1
+// launch (docs/DEBT_LEDGER.md).  Default: gate (exit 1
 // on any failing row); `--measure` prints only.  `--only <substr>` filters.
 #define main SSSExteriorSuiteMain
 #include "SSSExteriorIndexInvarianceTest.cpp"

@@ -34,12 +34,12 @@ parser/registry surface
 ([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)), the
 derivation/threading model ([ARCHITECTURE.md](ARCHITECTURE.md),
 `docs/agentic-redesign/20-derivation-engine.md`), and the measured adoption
-record (doc 88, doc 75, `CREATIVITY_JOURNAL.md`). Contract conformance target:
+record (doc 88, doc 75, `agentic-redesign/50-agentic-surface.md`). Contract conformance target:
 [GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md). External prior art: the
 curvature / AO / thickness surfaces of Arnold, Blender, Substance 3D, RenderMan,
 V-Ray and Corona, plus the SDF curvature/AO literature — enumerated in §16.
 **Nature:** research + design recommendation, in the mold of
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey →
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (survey →
 candidates against evidence → recommendation) and
 [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) (gated phases). **The user drives
 implementation; this document proposes.**
@@ -389,7 +389,7 @@ tool exposes it. **Defer it to Phase 4, gated on observed need.**
    `(dpdu, dpdv, n)` frame cannot be recovered without a larger
    reparametrization). `curv`/`curvR` on a patch hit that did NOT need that
    flip are now genuine, resolution-free, exact differential curvature — see
-   [DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md)
+   [DEBT_LEDGER.md](DEBT_LEDGER.md)
    and `tests/PatchCurvatureTest.cpp`.
 
 **Why it is still the right Phase-1 signal.** The authoring that motivated this
@@ -1252,7 +1252,7 @@ blocker. If a chunk is ever wanted, `ramp_painter` is the shape to copy.
 ## 11. Adoption wiring
 
 New capability that no one uses is not shipped. The measured laws (doc 88 §2 /
-§7-8, doc 75, `CREATIVITY_JOURNAL.md`) are specific about what works:
+§7-8, doc 75, `agentic-redesign/50-agentic-surface.md`) are specific about what works:
 
 - **C-ADV — advice ≈ 0.** Design-note prose naming `scalar_painter` fired up to
   30× per session for **0/24 lifetime adoptions**; voluntary tools 0/64.
@@ -1962,7 +1962,7 @@ is the comparison to beat.
    documented conservative-reject cases (the point-only
    `ComputeSurfaceDerivatives(point, normal)` query, and a Bezier hit that
    needed the ray-facing winding-consistency flip) — see
-   [DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
+   [DEBT_LEDGER.md](DEBT_LEDGER.md).
 3. ~~**Displaced geometry: which curvature?**~~ **RESOLVED 2026-09-22 (DL-13).**
    Convention established and pinned in `tests/GeometryCurvatureConventionTest.cpp`
    (52 checks, 0 failures; red: 48 passed, 1 failed):
@@ -2125,7 +2125,7 @@ must conform to), [ARCHITECTURE.md](ARCHITECTURE.md) (threading phases,
 discipline), [MIS_HEURISTICS.md](MIS_HEURISTICS.md) (why auxiliary queries stay
 out of the weighting), [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) (phased-plan and
 observed-need-gating precedent),
-[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (decision-doc
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) (decision-doc
 form), `src/Library/Parsers/README.md` (descriptor-driven chunk parsers),
 `docs/agentic-redesign/20-derivation-engine.md` (incremental derive,
 drop-and-recreate, traced edges).

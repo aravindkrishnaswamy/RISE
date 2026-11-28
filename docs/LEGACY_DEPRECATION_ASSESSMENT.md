@@ -64,7 +64,7 @@ further debt work: bugs are won't-fix); **remove** (after migrating the scenes);
 | R9 | `sms_shaderop` | LEGACY | `pathtracing_*_rasterizer` `sms_*` parameters | 1 (coverage) | 0 | DL-451 (closed won't-fix) | **deprecated** (warn) in Phase 1, per §12 #18 (removal on hold) | no |
 | R10 | `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` (medical volume rendering) | LEGACY-NR | none | 0/1 (`visiblehuman`) | 2 / 1 | — | keep-for-now (freeze) | **yes** (D7) |
 | R11 | `ambient_light` | LEGACY | uniform environment `radiance_map` | 52/2/0 | 10 | none (historical DL-207) | deprecate-warn → migrate (removal on hold) | **yes** (D5, look change) |
-| R12 | `mlt_rasterizer`, `mlt_spectral_rasterizer` | LEGACY (declared so in `UNIFIED_INTEGRATOR_DECISION.md`, not in code) | BDPT / VCM / auto | 15 scenes in total (6/6 + 3/0) | 30 | DL-465, DL-475, DL-481..483 (shared with BDPT) | freeze (removal on hold) | **yes** (D8) |
+| R12 | `mlt_rasterizer`, `mlt_spectral_rasterizer` | LEGACY (declared so in `RENDERING_INTEGRATORS.md`, not in code) | BDPT / VCM / auto | 15 scenes in total (6/6 + 3/0) | 30 | DL-465, DL-475, DL-481..483 (shared with BDPT) | freeze (removal on hold) | **yes** (D8) |
 | R13 | 7 already-deprecated materials (Cook-Torrance, Phong, Ashikhmin-Shirley, Schlick, Ward ×2, Polished) | LEGACY | `ggx_material` / `coated_material` (§11.5 table) | 35 scenes in total | 53 (family) | DL-481 (shared), DL-339(a) (polished) | move from deprecate-warn to freeze → migrate (removal on hold) | **yes** (D9) |
 | R14 | `iridescent_painter` (view-angle colour lookalike) | LEGACY | `ggx_material` thin-film mode | 4/6/3 | 3 | — | deprecate-warn | yes (look change) |
 | R15 | `composite_material` | SOTA-capable, high debt | `coated_material` covers most layered looks | 1/0/0 | 15 | DL-221, DL-407, DL-472 | keep or freeze | **yes** (D10) |
@@ -308,7 +308,7 @@ VCM gap, not a light defect). glTF `KHR_lights_punctual` needs them. Keep.
 
 ## 6. Integrators
 
-**R12 MLT.** `UNIFIED_INTEGRATOR_DECISION.md` already states "**MLT is deprecated**
+**R12 MLT.** `RENDERING_INTEGRATORS.md` already states "**MLT is deprecated**
 (inherits BDPT, adds maintenance surface for no measured win on the corpus)" and "Retire
 as covered: MLT now". The code still treats it as a first-class choice: no deprecation
 flag; the Blender enum offers `MLT (Pel)`/`MLT (Spectral)`; it is mentioned in one Mac GUI
@@ -874,7 +874,7 @@ Reply by number. Each has a recommended default in brackets.
 6. **`ambientocclusion_shaderop`:** (a) remove with no replacement; (b) keep frozen;
    (c) add an AO AOV to the PT rasterizer. [a, unless AO passes are still wanted]
 7. **Direct volume rendering (`visiblehuman`, `Volume/`):** keep frozen or remove? [keep frozen]
-8. **MLT:** freeze and remove, as `UNIFIED_INTEGRATOR_DECISION.md` already decided;
+8. **MLT:** freeze and remove, as `RENDERING_INTEGRATORS.md` already decided;
    drop it from the Blender enum. [yes]
 9. **The seven deprecated materials:** promote to frozen (won't-fix) now; migrate 35 scenes
    (17 Polished FB showcases change look); remove in Phase 3. [yes]

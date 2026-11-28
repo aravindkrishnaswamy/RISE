@@ -2,7 +2,7 @@
 //
 //  BDPTSeeThroughMISPartitionTest.cpp - DL-424/425 review follow-up:
 //  a DETERMINISTIC partition-of-unity check for BDPT's see-through s = 1
-//  strategy (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 11).
+//  strategy (docs/DEBT_LEDGER.md section 11).
 //
 //  Tabs: 4
 //  Comments:

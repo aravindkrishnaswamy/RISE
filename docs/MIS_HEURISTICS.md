@@ -313,7 +313,7 @@ scene with the omni inside the same index-matched glass) it reads ~+5-8% over PT
 This is not a partition or weight defect -- an independent light tracer
 (`tools/DL381RandomWalkReciprocityMC.cpp`) reproduces each family from
 its own model, and exact transport sits above both, with the light family
-the closer one ([DL381_RANDOM_WALK_RECIPROCITY.md](DL381_RANDOM_WALK_RECIPROCITY.md)).
+the closer one ([DEBT_LEDGER.md](DEBT_LEDGER.md)).
 The diffusion BSSRDF has `Sw` at both ends and is reciprocal, which is
 why G agrees with PT there.
 
@@ -361,7 +361,7 @@ merging-off row also at the DL-317 merge revision and through the CLI):
   green (-0.233, 0.462, -0.029).  Clamping only the negative channels
   closes it to noise (DL-386, a policy question, not an SSS one; FIXED
   2026-10-02 by clamping negative reflectance channels at every material
-  read -- `BDPTStrategyBalanceTest --dl386-only`, [DL386_NEGATIVE_REFLECTANCE_CLAMP.md](DL386_NEGATIVE_REFLECTANCE_CLAMP.md)).
+  read -- `BDPTStrategyBalanceTest --dl386-only`, [DEBT_LEDGER.md](DEBT_LEDGER.md)).
 - Merging ON at the scene's authored `merge_radius 0.1` reads +1.5..+3.3 %
   on the frame and up to ~+15 % on the dragon -- kernel bias of a fixed
   radius that is wide against the dragon's thin, backlit features: it
@@ -558,7 +558,7 @@ constructing its nonlocal vertices. Positive-cap row L's optional
 Ordinary rough SSS reflection declares its reflection label and finite RGB/NM
 split, so the same reflection has the same charge as an interior vertex or a
 connection endpoint; strict SSSReflectionCapCloseoutTest and row S pin that
-parity. See [batch12 gates](BATCH12_DL482_GATES.md). See-through/guided
+parity. See [batch12 gates](DEBT_LEDGER.md). See-through/guided
 continuations remain a separate, owner-parked DL-483 contract.
 
 ### 5. SMS — no per-strategy MIS reweight
@@ -658,7 +658,7 @@ return `(1 - q_env) a(L)` and never the light BVH's pmf.  The BVH is PT's
 NEE sampler only, so PT's partner (`CachedPdfSelectLuminary`) is
 BVH-based.  Mixing the two families' pmfs breaks the partition; with
 `light_bvh` on (the default) and several lights VCM read 0.92 of the
-closed form until 2026-10-02 -- [DL348_MULTI_LUMINARY_SELECTION_PDF.md](DL348_MULTI_LUMINARY_SELECTION_PDF.md).
+closed form until 2026-10-02 -- [DEBT_LEDGER.md](DEBT_LEDGER.md).
 
 ## When BDPT and VCM disagree on the same scene
 

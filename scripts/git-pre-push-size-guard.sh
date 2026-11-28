@@ -9,6 +9,6 @@ while read local_ref local_sha remote_ref remote_sha; do
   if [ "$remote_sha" = "$zero" ]; then range="$local_sha --not --remotes"; else range="$remote_sha..$local_sha"; fi
   git rev-list --objects $range 2>/dev/null | git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)' | awk -v mb=$MAX_BLOB -v mt=$MAX_TOTAL -v ref="$local_ref" '
     $1=="blob" { total+=$2; if ($2>mb) { big++; printf "  %6.1f MB  %s\n", $2/1048576, $3 } }
-    END { if (big>0 || total>mt) { printf "pre-push guard: REFUSING %s (%d blobs over 50 MB, %.2f GB new blob bytes)\nMove run artifacts out of git (keep SHA manifests) — see docs/FIRE_SMOKE_COMMIT_MAP_ARCHIVE_STRIP.md\n", ref, big, total/1073741824; exit 1 } }' || status=1
+    END { if (big>0 || total>mt) { printf "pre-push guard: REFUSING %s (%d blobs over 50 MB, %.2f GB new blob bytes)\nMove run artifacts out of git (keep SHA manifests) — see docs/FIRE_SMOKE_STATUS.md\n", ref, big, total/1073741824; exit 1 } }' || status=1
 done
 exit $status

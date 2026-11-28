@@ -45,6 +45,7 @@
 #include <QMessageBox>
 #include <QDialog>
 #include <QPointer>
+#include <QTimer>
 #include <QStackedWidget>
 #include <QComboBox>
 #include <QLineEdit>

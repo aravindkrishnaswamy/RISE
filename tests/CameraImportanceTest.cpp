@@ -1016,7 +1016,7 @@ static void TestFisheyeFilmResponse( double pixelAR )
 // CORRECTION (external review, 2026-09-29): this test does NOT catch a
 // future ONE-SIDED convention change (the earlier claim that check (c)
 // "guards the other direction" was false, and so was the identical claim
-// in docs/DL294_NARROW_FOV_SPLAT.md section 4).  The reason is structural:
+// in docs/DEBT_LEDGER.md section 4).  The reason is structural:
 // `screen` above is built from `x + offs[a] - 0.5` / `H - y + offs[b] - 0.5`
 // -- this test's OWN copy of the rasterizers' convention -- so if a future
 // change moves ONLY the rasterizers' eye-ray placement (or only

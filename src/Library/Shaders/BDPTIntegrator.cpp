@@ -823,7 +823,7 @@ namespace
 	}
 
 	//////////////////////////////////////////////////////////////////
-	// DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md): the guided
+	// DL-67 (docs/DEBT_LEDGER.md): the guided
 	// continuation at one BDPT subpath vertex, shared by the eye and
 	// light generators (and so by MLT, which drives this generator; VCM
 	// shares it too but never installs a guiding field).
@@ -2642,7 +2642,7 @@ namespace {
 			// top <- n_here.  The stack top then IS the index the exit
 			// crossing's RadianceEtaScale reads and the index the vertex
 			// records for connections.  No-op unless the innermost medium is
-			// a graded field (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+			// a graded field (docs/DEBT_LEDGER.md).
 			{
 				Scalar gradedScale;
 				if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
@@ -2692,7 +2692,7 @@ namespace {
 			// Unconditional for both Pel and NM, mirroring GenerateLightSubpath
 			// {,NM}.  (Pel-only through Phase 2c F2a — that gate was a latent
 			// spectral-BDPT / VCM-spectral vertex-colour bug; see
-			// docs/PRE_PHASE1_STATUS.md "Phase 2c F2a outcome".)
+			// docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md "Phase 2c F2a outcome".)
 			v.vColor = ri.geometric.vColor;
 			v.bHasVertexColor = ri.geometric.bHasVertexColor;
 			// SHADING-INPUT STATE — the three fields a PAINTER reads and
@@ -3781,7 +3781,7 @@ namespace {
 			// gate breaks first -- that was already wrong before DL-126
 			// closed (the ACTUAL prior gate was `effectivePdf <= 0`,
 			// since neither SPF ever sets `ScatteredRay::pdf` either;
-			// see docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md), and is
+			// see docs/DEBT_LEDGER.md), and is
 			// simply false now that DL-126's `nullBSDFContinuation`
 			// branch (a few lines below) routes those materials around
 			// this whole block instead of reaching it.  The reachable
@@ -4024,7 +4024,7 @@ inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, con
 
 //////////////////////////////////////////////////////////////////////
 // DL-330 / DL-425: the s == 1 connection to a DELTA light THROUGH
-// thin-weave delta pass-throughs (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
+// thin-weave delta pass-throughs (docs/DEBT_LEDGER.md
 // sections 10 and 11).
 //
 // A delta pass-through (a `transmission thin` weave's gap) is a DELTA
@@ -5810,7 +5810,7 @@ ConnectAndEvaluateImplCore(
 	}
 }
 
-//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(iv)): every
+//! DL-09 (docs/DEBT_LEDGER.md §3(iv)): every
 //! CONNECTION strategy (s >= 1 and t >= 1 -- s==1 light-endpoint NEE, t==1
 //! camera splat, the general case) builds one straight segment between the
 //! eye endpoint and the light endpoint.  When both endpoints recorded the
@@ -6329,7 +6329,7 @@ EvaluateAllStrategiesImpl(
 					// quantity at the wrong location, not merely evaluating
 					// a legitimate lobe at zero.  Fed a directional/ambient
 					// light delivered EXACTLY ZERO direct light to every
-					// BSSRDF material under BDPT/MLT (docs/DL207_BDPT_ZERO_EXITANCE_BSSRDF.md).
+					// BSSRDF material under BDPT/MLT (docs/DEBT_LEDGER.md).
 					//
 					// This branch deliberately BYPASSES the general
 					// `isConnectible` gate below.  (Written when a
@@ -9296,7 +9296,7 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				// own independent subpath (PT's real architecture) instead
 				// of one shared geometry bundle -- a materially larger
 				// change than this row's scope.  See
-				// docs/DL126_BDPT_NULL_BSDF_CONTINUATION.md SS7.1 (P1-2)
+				// docs/DEBT_LEDGER.md SS7.1 (P1-2)
 				// for the measured variance cost of keeping
 				// terminate-and-renormalize instead.
 				cumulativeRatio = 0;

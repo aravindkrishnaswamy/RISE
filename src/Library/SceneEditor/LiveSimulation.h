@@ -17,7 +17,7 @@
 //      and counted as dropped; with live simulations the clock never runs
 //      ahead of the latest published frame.
 //
-//  Threading model and API: docs/SIMULATION_M3C_RESULTS.md.
+//  Threading model and API: docs/SIMULATION_SOLVER_CONTRACT.md.
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

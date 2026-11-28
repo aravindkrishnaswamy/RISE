@@ -109,7 +109,7 @@ depending on which method it overrides:
 | Pathway | Trigger | Where the work happens | Use when |
 |---|---|---|---|
 | **Diffusion-profile BSSRDF** | `GetDiffusionProfile()` returns non-null | Integrator does importance-sampled disk-projection probes; `ISubSurfaceDiffusionProfile::Rd(r)` weights each entry. | Skin, marble, jade — slabs where the diffusion approximation is accurate. |
-| **Random-walk SSS** | `GetRandomWalkSSSParams()` returns non-null (RGB) and/or `GetRandomWalkSSSParamsNM` returns true (spectral) | Integrator traces a volumetric random walk inside the mesh using `sigma_a` / `sigma_s` / HG `g`. `IsVolumetric()` returns true so BDPT uses `kray` for throughput instead of `BSDF·cos/pdf`. | Highly scattering media, dispersive skin (`BioSpecSkin` overrides only the NM form so RGB renderers fall back to the diffusion path), arbitrary non-flat geometry. |
+| **Random-walk SSS** | `GetRandomWalkSSSParams()` returns non-null (RGB) and/or `GetRandomWalkSSSParamsNM` returns true (spectral) | Integrator traces a volumetric random walk inside the mesh using `sigma_a` / `sigma_s` / HG `g`. `IsVolumetric()` returns true so BDPT uses `kray` for throughput instead of `BSDF·cos/pdf`. | Highly scattering media, arbitrary non-flat geometry (`randomwalk_sss_material`). Note: `BioSpecSkinMaterial` is SPF-only and does not override random-walk or diffusion-profile hooks. |
 | **Empty SPF + Composite outer layer** | A material with an `IBSDF` only, layered under a transmissive top via `composite_material`. | The composite layered model (§6) handles the boundary; the inner material need only provide the diffuse interior. | Layered surfaces where SSS is one component of a stack. |
 
 The two SSS modes are **mutually exclusive**: a material picks one. The
@@ -537,7 +537,7 @@ the unit story.
 
 ## 8. Material catalogue (parser keywords)
 
-These are the **29** material chunks registered in
+These are the **34** material chunks registered in
 [`CreateAllChunkParsers()`](../src/Library/Parsers/ChunkParserRegistry.cpp).
 Grouped by primary lobe shape — see the corresponding `*Material.h`
 file for parameter-by-parameter behaviour.
@@ -578,6 +578,10 @@ file for parameter-by-parameter behaviour.
   Fresnel term, ignores `ior`/`extinction`; Cycles' Glossy BSDF).
   Also accepts `tangent_rotation` (painter) or `tangent_rotation_scalar`
   (`IScalarPainter`) to rotate the anisotropic frame, plus optional emission.
+- `rough_dielectric_material` — anisotropic GGX VNDF rough reflection and
+  refraction with height-correlated Smith $G_2$ and reciprocal two-sided
+  Kulla–Conty multiscatter energy compensation (see §"Rough dielectric GGX"
+  below and [ROUGH_DIELECTRIC_ENERGY.md](ROUGH_DIELECTRIC_ENERGY.md)).
 - `pbr_metallic_roughness_material` — glTF-spec composition. Not its own
   material class; resolved at scene-build time in
   [`Job::AddPBRMetallicRoughnessMaterial`](../src/Library/Job.cpp) into
@@ -620,6 +624,10 @@ file for parameter-by-parameter behaviour.
   mixed by a weave-draft coverage field (§6.3). It is what makes satin's
   float sheen and denim's twill wale; it has no sheen term of its own,
   and it is an accepted `fabric_material` and `coated_material` substrate.
+- `mix_material` — stochastic per-hit binary selector mixing two child
+  materials by a scalar `factor` (`IScalarPainter`); propagates child
+  `PathDependence` flags and supports spatially varying SSS weights under PT
+  ([MIX_MATERIAL_PATH_STATE_AO_DESIGN.md](MIX_MATERIAL_PATH_STATE_AO_DESIGN.md)).
 - `composite_material` — **FROZEN** (`kLegacyTierTable`; use `coated_material`
   or `fabric_material`). Top/bottom layered composition with `CompositeBSDF`
   (DL-24) and `CompositeSPF` (§6).
@@ -633,14 +641,28 @@ file for parameter-by-parameter behaviour.
 - `randomwalk_sss_material` — random-walk volumetric SSS (§5).
 - `donner_jensen_skin_bssrdf_material` — Donner-Jensen multi-layer skin
   diffusion profile.
-- `biospec_skin_material` — biophysically-based skin, **spectral-only**
-  random walk (RGB renderers fall back to the diffusion variant via the
-  `GetRandomWalkSSSParamsNM` override pattern from §3 / §5).
+- `biospec_skin_material` — biophysically-based layered skin model
+  (Krishnaswamy & Baranoski 2004), SPF-only spectral scattering.
+- `hylios_skin_material` — HyLIoS hyperspectral 6-layer skin model
+  (Chen et al. 2015), supporting both `baked_local` validated local
+  response assets (`HyLIoSLocalResponseAsset` + `HyLIoSSupportedCameraProposal`)
+  and `nonlocal` spatial transport (`rise_reciprocal_boundary_v1` + finite
+  spatial domains: `planar_polygon`, `concentric_sphere`,
+  `concentric_cylinder`, `intrinsic_layer`), with v2 `wavelength_nm` subset
+  loading and spatially varying `boundary_roughness_map` in nonlocal mode,
+  a shared D65-weighted visible guide albedo, and PT-only routing
+  (`AutoRasterizer` -> PT; BDPT/VCM/MLT refuse; HWSS delegates per-lane to
+  scalar NM). See [HYLIOS_WORKPLAN.md](HYLIOS_WORKPLAN.md) §13.
 - `generic_human_tissue_material` — bulk-tissue scattering coefficients
   for human-body rendering.
 
-**Translucency:**
+**Translucency & boundary helpers:**
 - `translucent_material` — thin translucent surfaces (paper, leaves).
+- `diffuse_transmission_material` — thin Lambertian diffuse transmission BSDF
+  (paired with `lambertian_material` via `mix_material` for Blender Translucent
+  BSDF parity).
+- `null_boundary_material` — index-matched non-scattering boundary wrapper for
+  bounding participating media without surface reflection/refraction.
 
 **Luminaires** (§7):
 - `lambertian_luminaire_material` — cosine area emission.
@@ -652,8 +674,9 @@ file for parameter-by-parameter behaviour.
 ## 9. Adding a new BSDF — checklist
 
 1. **Pick the right base.** If the new lobe layers on top of an existing
-   material, it's a `*_material` whose constructor accepts a base
-   material reference and is stacked via `composite_material`. If it's a
+   material, follow the restricted-substrate wrapper pattern of
+   `coated_material` / `fabric_material` (or binary selection via
+   `mix_material` — `composite_material` is FROZEN). If it's a
    standalone closed-form lobe, it's a fresh triad
    (`XxxMaterial` + `XxxBRDF` + `XxxSPF`).
 2. **Implement the triad.** `XxxBRDF::value` and `XxxBRDF::valueNM` for

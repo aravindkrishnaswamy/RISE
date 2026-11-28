@@ -813,10 +813,9 @@ static std::string FindRepoRoot()
 }
 
 // Sentinel returned by ParseSceneUnitFromFile when no scene_unit is
-// found.  We use a negative number rather than NaN because the build
-// is compiled with -ffast-math (Config.OSX), which optimises away
-// std::isnan checks — the equivalent NaN sentinel would silently
-// pass every comparison and break this test.  scene_unit must be
+// found.  We use a negative number rather than NaN because NaN
+// control-flow sentinels are banned in tests by SourceHygieneTest
+// (historically folded under bare -ffast-math).  scene_unit must be
 // strictly positive, so any value < 0 is an unambiguous "missing".
 static constexpr double kSceneUnitMissing = -1.0;
 

@@ -1,5 +1,5 @@
 // Simulation M6: the co-stepping group host (the contract's
-// ISimulationGroupHost, SimulationHost.h; docs/SIMULATION_M6_RESULTS.md).
+// ISimulationGroupHost, SimulationHost.h; docs/SIMULATION_SOLVER_CONTRACT.md).
 //
 // Owns live member solvers, cached members (an immutable snapshot standing in
 // for a live upstream, read through CachedPortFeed) and PortConnections.  All

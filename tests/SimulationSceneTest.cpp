@@ -1,5 +1,7 @@
-// Simulation M4: simulations as scene elements (docs/SIMULATION_M4_RESULTS.md).
+// Simulation M4: simulations as scene elements (docs/SIMULATION_SOLVER_CONTRACT.md).
 //
+//   P  non-render pose-holder capture: exact Object chains accepted, custom/CSG nodes refused before cloning
+//      (`--pose-holder-only` runs only this section)
 //   A  the cloth parameter schema's defaults are what cloth.shell's Configure applies
 //   B  cloth_simulation parses, describes (missing), and its consumer is an unbound, hidden mesh
 //   C  `rise-sim bake <scene>` equals `rise-sim bake cloth.shell <params>` byte for byte
@@ -35,6 +37,11 @@
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Objects/CSGObject.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Interfaces/IAnimator.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
 #include "TestTempDir.h"
 
 #include <cmath>
@@ -752,7 +759,7 @@ void TestFire(const fs::path& root)
 	const std::string base = keyOf(window);
 	Check(!base.empty() && base == keyOf(window + "\tadvective_cfl\t0.5\n\tmode\tcertified\n\tinert_plume\tFALSE\n"),
 		"an option given its default value keys like the option left out");
-	// M8d: scene selection of the CPU backend (docs/SIMULATION_M8_RESULTS.md section 12.4). These
+	// M8d: scene selection of the CPU backend (docs/SIMULATION_SOLVER_CONTRACT.md section 12.4). These
 	// keys were recorded with the build before `backend` became a scene parameter (f005c0ac...df27,
 	// 5b419d96...712f) and re-pinned at the fire solver version bump 2 -> 3 (section 13: the
 	// rim-ignition witness, 4a205582...bc58, 1394dc8b...798d) and again at 3 -> 4 (section 15: strict
@@ -1103,12 +1110,143 @@ void TestDefaultCache(const fs::path& root)
 	}
 	SetOverride(saved.empty() ? nullptr : saved.c_str());
 }
+// Non-render capture-policy regression for every ClonePoseHolder input role.
+class CustomInputObject final : public Implementation::Object
+{
+public:
+    using Object::Object;
+    void SetIntermediateValue(const IKeyframeParameter& parameter) override
+    {
+        Object::SetIntermediateValue(parameter);
+        SetPosition(Point3(9,0,0));
+    }
+};
+class CaptureCountingSphere final : public Implementation::SphereGeometry
+{
+public:
+    CaptureCountingSphere():SphereGeometry(1) {}
+    void addref() const override { ++retains; SphereGeometry::addref(); }
+    mutable unsigned int retains=0;
+};
+void TestConsumedInputPolicy(const bool ancestor)
+{
+    using namespace Implementation;
+    const std::string label=std::string(ancestor ? "consumed ancestor":"shared CSG operand")+" [scene-input-pose-holder-policy] ";
+    const auto check=[&](bool ok,const std::string& what) {
+        Check(ok,label+what);
+        if(ok) std::printf("PASS: %s%s\n",label.c_str(),what.c_str());
+    };
+    Scene scene;
+    check(RISE_CreateJobPriv(&scene.job)&&scene.job,"job fixture");
+    if(!scene.job) return;
+    auto* geometry=new CaptureCountingSphere;
+    auto* operand=new Object(geometry);
+    auto* other=new Object(geometry);
+    Object* leaf=ancestor ? new Object(geometry):operand;
+    auto* manager=scene.job->GetObjects();
+    check(manager->AddItem(leaf,"input"),"input is registered");
+    if(ancestor) check(manager->AddItem(operand,"parent")&&manager->SetObjectParent("input","parent"),
+        "hierarchy link exists before its parent becomes an operand");
+    auto* first=new CSGObject(CSG_UNION);
+    auto* second=new CSGObject(CSG_UNION);
+    operand->SetPosition(Point3(1,0,0));operand->FinalizeTransformations();
+    first->SetPosition(Point3(10,0,0));first->FinalizeTransformations();
+    second->SetPosition(Point3(20,0,0));second->FinalizeTransformations();
+    check(first->AssignObjects(operand,other)&&second->AssignObjects(operand,other),"two composites share the exact Object operand");
+    check(manager->AddItem(first,"first")&&manager->AddItem(second,"second"),
+        "both transformed composites are registered");
+    const Point3 localOrigin=Point3Ops::Transform(operand->GetFinalTransformMatrix(),Point3(0,0,0));
+    const Point3 firstWorld=Point3Ops::Transform(first->GetFinalTransformMatrix(),localOrigin);
+    const Point3 secondWorld=Point3Ops::Transform(second->GetFinalTransformMatrix(),localOrigin);
+    check(operand->IsConsumed()&&localOrigin.x==1&&firstWorld.x==11&&secondWorld.x==21,
+        "one composite-local pose has two distinct world placements");
+    geometry->retains=0;
+    SceneObjectInputProvider provider(*scene.job->GetScene(),{});
+    std::string error;
+    auto inputs=provider.Capture({"input"},{},error);
+    if(inputs) {
+        RigidTransform t;
+        const bool sampled=inputs->SampleTransform("input",.5,t,error);
+        std::printf("  old capture sampled=%d x=%.17g; composite world x=11 and 21\n",sampled,sampled ? t.translation[0]:-1.0e30);
+    }
+    check(!inputs&&error.find("a CSG operand")!=std::string::npos,"ambiguous world-space input is refused explicitly");
+    check(geometry->retains==0,"refusal occurs before any geometry-owning pose holder is cloned");
+    check(operand->GetTimeSlot()==-1,"refusal leaves shared operand unslotted");
+    inputs.reset();
+    operand->release();other->release();first->release();second->release();geometry->release();
+    if(ancestor) leaf->release();
+}
+
+void TestPoseHolderInputPolicy()
+{
+    using namespace Implementation;
+    std::printf("P: exact Object scene-input pose-holder capture policy (no render)\n");
+    TestConsumedInputPolicy(false);
+    TestConsumedInputPolicy(true);
+    for(const bool ancestor : {false,true}) for(int kind=0;kind<3;++kind) {
+        const std::string label=std::string(ancestor ? "ancestor ":"leaf ")+
+            (kind==0 ? "built-in":kind==1 ? "custom":"CSG")+" [scene-input-pose-holder-policy] ";
+        const auto check=[&](bool ok,const std::string& what) {
+            Check(ok,label+what);
+            if(ok) std::printf("PASS: %s%s\n",label.c_str(),what.c_str());
+        };
+        Scene scene;
+        check(RISE_CreateJobPriv(&scene.job)&&scene.job,"job fixture");
+        if(!scene.job) continue;
+        auto* geometry=new CaptureCountingSphere;
+        Object* target=kind==0 ? new Object:kind==1 ? static_cast<Object*>(new CustomInputObject):
+            static_cast<Object*>(new CSGObject(CSG_UNION));
+        Object* leaf=ancestor ? new Object(geometry):target;
+        if(!ancestor&&kind!=2) target->AssignGeometry(*geometry);
+        auto* manager=scene.job->GetObjects();
+        check(manager->AddItem(leaf,"input"),"input fixture registered");
+        if(ancestor) check(manager->AddItem(target,"parent")&&manager->SetObjectParent("input","parent"),
+            "parent fixture linked");
+        auto* animator=scene.job->GetScene()->GetAnimator();
+        check(animator->InsertKeyframe(target,"position","0 0 0",0,nullptr,nullptr)&&
+            animator->InsertKeyframe(target,"position","2 0 0",1,nullptr,nullptr),"animated fixture");
+        const Matrix4 before=leaf->GetFinalTransformMatrix();
+        geometry->retains=0;
+        SceneObjectInputProvider provider(*scene.job->GetScene(),{});
+        std::string error;
+        auto inputs=provider.Capture({"input"},{},error);
+        if(kind==0) {
+            check(inputs!=nullptr,"exact Object chain remains capturable");
+            check(geometry->retains>0,"ordinary capture clones geometry-owning pose holders");
+            if(inputs) {
+                RigidTransform t;
+                const bool sampled=inputs->SampleTransform("input",.5,t,error);
+                check(sampled&&t.translation[0]==1&&t.translation[1]==0&&t.translation[2]==0,
+                    "private pose evaluates exact midpoint translation");
+            }
+        } else {
+            check(!inputs,"unsupported dynamic type is rejected");
+            check(error.find("not an exact built-in Object")!=std::string::npos&&
+                error.find(ancestor ? "parent `parent`":"scene object `input`")!=std::string::npos,
+                "diagnostic identifies unsupported capture role before geometry work");
+            check(geometry->retains==0,"rejected capture clones no geometry-owning holder");
+        }
+        const Matrix4 after=leaf->GetFinalTransformMatrix();
+        check(std::memcmp(&before,&after,sizeof(Matrix4))==0,"capture and sampling preserve live transform");
+        check(leaf->GetTimeSlot()==-1&&target->GetTimeSlot()==-1,"capture leaves no time slots");
+        inputs.reset();
+        leaf->release();
+        if(ancestor) target->release();
+        geometry->release();
+    }
+}
+
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 	std::printf("SimulationSceneTest (simulation M4)\n");
+	TestPoseHolderInputPolicy();
+	if(argc>1&&std::strcmp(argv[1],"--pose-holder-only")==0) {
+		std::printf("\n%d passed, %d failed\n",passes,failures);
+		return failures ? 1:0;
+	}
 	std::string error;
 	if (!RegisterBuiltinSolvers(error)) std::printf("note: %s\n", error.c_str());
 	const fs::path root = RISE::TestSupport::ScratchRunDir("rise_simulation_scene_", "suite");

@@ -234,7 +234,7 @@ bool SolveConjugateGradient(const BlockMatrix& a, const std::vector<double>& b, 
 	double rtol, int maxIterations, LinearSolveStats& stats, GridMultigrid& multigrid);
 
 //! M7h: a corotational linear elastic model about a configuration x0, element by
-//! element (docs/SIMULATION_M7H_RESULTS.md section 1).  Each element e keeps its
+//! element (docs/SIMULATION_SOLVER_CONTRACT.md section 1).  Each element e keeps its
 //! gradient g_e and projected Hessian K_e at x0 and a rotation R_e; with
 //! d_e = R_e^T p_e - x0_e (per vertex) its energy is g_e . d_e + d_e^T K_e d_e / 2,
 //! its gradient R_e (g_e + K_e d_e) and its Hessian R_e K_e R_e^T (symmetric,
